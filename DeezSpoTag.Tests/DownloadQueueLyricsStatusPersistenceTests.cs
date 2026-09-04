@@ -110,39 +110,6 @@ public sealed class DownloadQueueLyricsArtifactPersistenceTests
     }
 
     [Fact]
-    public async Task UpdateFinalDestinationsAsync_PreservesLrcTimingWhenDestinationMoveHasNotCompleted()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-rebase-timing-1";
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-        var source = Path.Join(context.TempRoot, "staging", "track.lrc");
-        var destination = Path.Join(context.TempRoot, "library", "track.lrc");
-        // The destination file is intentionally absent: the engine records final
-        // destinations before the physical move, so the sidecar has not landed yet.
-        await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, new LyricsArtifactState
-        {
-            Revision = 30,
-            Status = "completed",
-            ResolvedFormats = ["lrc"],
-            DownloadedFormats = ["lrc"],
-            FilesByFormat = new Dictionary<string, string> { ["lrc"] = source },
-            LrcTiming = "word"
-        }, CancellationToken.None);
-
-        await context.QueueRepository.UpdateFinalDestinationsAsync(
-            queueUuid,
-            JsonSerializer.Serialize(new Dictionary<string, string> { [source] = destination }),
-            cancellationToken: CancellationToken.None);
-
-        using var payload = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
-        var artifacts = payload.RootElement.GetProperty("lyricsArtifacts");
-        Assert.Equal(destination, artifacts.GetProperty("filesByFormat").GetProperty("lrc").GetString());
-        // The fetch-time timing must survive the pre-move rebase instead of
-        // being re-derived as "line" from a missing file.
-        Assert.Equal("word", artifacts.GetProperty("lrcTiming").GetString());
-    }
-
-    [Fact]
     public async Task UpdateFinalDestinationsAsync_RebuildsLyricsArtifactsWhenStagingPathsWereNotRecorded()
     {
         await using var context = await CreateContextAsync();

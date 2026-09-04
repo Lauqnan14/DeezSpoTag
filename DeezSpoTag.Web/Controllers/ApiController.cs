@@ -2916,7 +2916,7 @@ namespace DeezSpoTag.Web.Controllers
                 ?? string.Empty;
             var pictureUrl = BuildTidalImageUrl(picture);
             var popularity = ResolveTidalPopularity(attributes);
-            var biography = ResolveTidalBiography(artistData, included);
+            var biography = TidalBiographyParser.TryReadBiographyText(artistProfile.Value) ?? string.Empty;
             var artistMixId = ResolveTidalArtistMixId(attributes);
 
             var albumsTask = FetchTidalArtistReleaseBucketAsync(id, "albums", countryCode, token, cancellationToken);
@@ -3349,44 +3349,6 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             return null;
-        }
-
-        private static string ResolveTidalBiography(JsonElement artistData, Dictionary<string, JsonElement> included)
-        {
-            if (!artistData.TryGetProperty("relationships", out var relationships)
-                || relationships.ValueKind != JsonValueKind.Object
-                || !relationships.TryGetProperty("biography", out var biographyRelationship)
-                || biographyRelationship.ValueKind != JsonValueKind.Object
-                || !biographyRelationship.TryGetProperty("data", out var data)
-                || data.ValueKind != JsonValueKind.Object)
-            {
-                return string.Empty;
-            }
-
-            var bioId = GetScalarString(data, "id");
-            if (string.IsNullOrWhiteSpace(bioId))
-            {
-                return string.Empty;
-            }
-
-            var keys = new[] { $"biographies:{bioId}", $"biography:{bioId}" };
-            foreach (var key in keys)
-            {
-                if (!included.TryGetValue(key, out var biography)
-                    || !biography.TryGetProperty(AttributesField, out var attributes)
-                    || attributes.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var text = GetString(attributes, "text");
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
-
-            return string.Empty;
         }
 
         private static int ResolveTidalPopularity(JsonElement attributes)

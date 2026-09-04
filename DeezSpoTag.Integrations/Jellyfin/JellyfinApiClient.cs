@@ -328,6 +328,59 @@ public class JellyfinApiClient
         return matches.Count > 0 ? matches[0] : null;
     }
 
+    /// <summary>
+    /// Album titles of a Jellyfin artist — used to verify that a name-searched server
+    /// artist is really the library artist before pushing.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetArtistAlbumTitlesAsync(
+        string serverUrl,
+        string apiKey,
+        string artistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var url = BuildUrl(
+                serverUrl,
+                $"/Items?ParentId={Uri.EscapeDataString(artistId.Trim())}&IncludeItemTypes=MusicAlbum&Recursive=true&Limit=200&Fields=Name");
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<string>();
+            }
+
+            using var document = await System.Text.Json.JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("Items", out var items) || items.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            var titles = new List<string>();
+            foreach (var item in items.EnumerateArray())
+            {
+                var title = item.TryGetProperty("Name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    titles.Add(title);
+                }
+            }
+
+            return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     public async Task<List<JellyfinAudioTrack>> SearchTracksAsync(
         string serverUrl,
         string apiKey,

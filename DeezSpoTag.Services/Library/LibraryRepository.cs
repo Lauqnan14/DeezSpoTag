@@ -7602,6 +7602,63 @@ LIMIT @limit;";
         return titles;
     }
 
+    public async Task<IReadOnlyList<ArtistLocalAudioPathDto>> GetArtistLocalAudioPathsAsync(
+        long artistId,
+        CancellationToken cancellationToken = default,
+        long? folderId = null)
+    {
+        if (artistId <= 0)
+        {
+            return Array.Empty<ArtistLocalAudioPathDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string baseSql = @"
+SELECT af.path, af.relative_path, f.root_path
+FROM album al
+JOIN track t ON t.album_id = al.id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE al.artist_id = @artistId
+  AND f.enabled = TRUE";
+        var sql = folderId.HasValue
+            ? baseSql + @"
+  AND f.id = @folderId;"
+            : baseSql + ";";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        if (folderId.HasValue)
+        {
+            command.Parameters.AddWithValue("folderId", folderId.Value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var paths = new List<ArtistLocalAudioPathDto>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var storedPath = await reader.IsDBNullAsync(0, cancellationToken) ? null : reader.GetString(0);
+            var relativePath = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
+            var rootPath = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+            var filePath = BuildAbsolutePath(rootPath, relativePath, storedPath);
+            if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(rootPath))
+            {
+                continue;
+            }
+
+            var key = filePath + "\0" + rootPath;
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+
+            paths.Add(new ArtistLocalAudioPathDto(filePath, rootPath));
+        }
+
+        return paths;
+    }
+
     public async Task<IReadOnlyList<WatchlistArtistDto>> GetWatchlistAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -14498,6 +14555,27 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
             && ex.Message.Contains("FOREIGN KEY constraint failed", StringComparison.OrdinalIgnoreCase);
     }
 
+    public async Task DeleteArtistArtworkCacheBySourceAsync(
+        long artistId,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM artist_artwork_cache
+WHERE artist_id = @artistId
+  AND LOWER(source) = LOWER(@source);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("source", source.Trim());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task RemoveArtistSourceAsync(long artistId, string source, CancellationToken cancellationToken = default)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
@@ -19307,6 +19385,237 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task RefreshSelectedArtistBiographyAsync(long artistId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE artist_biography_cache
+SET selected = CASE
+    WHEN source = (
+        SELECT source
+        FROM artist_biography_cache
+        WHERE artist_id = @artistId
+          AND biography IS NOT NULL
+          AND TRIM(biography) <> ''
+        ORDER BY
+            CASE lower(source)
+                WHEN 'spotify' THEN 0
+                WHEN 'apple' THEN 1
+                WHEN 'tidal' THEN 2
+                WHEN 'qobuz' THEN 3
+                WHEN 'lastfm' THEN 4
+                ELSE 5
+            END,
+            fetched_at DESC
+        LIMIT 1
+    ) THEN 1
+    ELSE 0
+END
+WHERE artist_id = @artistId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SelectArtistBiographySourceAsync(
+        long artistId,
+        string? requiredSource,
+        CancellationToken cancellationToken = default)
+    {
+        var sources = await ListArtistBiographySourcesAsync(artistId, cancellationToken);
+        if (sources.Count == 0)
+        {
+            return;
+        }
+
+        string next;
+        if (!string.IsNullOrWhiteSpace(requiredSource)
+            && sources.Exists(source => string.Equals(source, requiredSource, StringComparison.OrdinalIgnoreCase)))
+        {
+            next = requiredSource!;
+        }
+        else
+        {
+            var lastSource = await GetLastBiographySourceAsync(artistId, cancellationToken);
+            next = sources[0];
+            if (!string.IsNullOrWhiteSpace(lastSource) && sources.Count > 1)
+            {
+                var index = sources.FindIndex(source => string.Equals(source, lastSource, StringComparison.OrdinalIgnoreCase));
+                next = sources[(index + 1) % sources.Count];
+            }
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE artist_biography_cache
+SET selected = CASE WHEN lower(source) = lower(@nextSource) THEN 1 ELSE 0 END
+WHERE artist_id = @artistId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("nextSource", next);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await SetLastBiographySourceAsync(artistId, next, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<string>> GetUsedVisualHashesAsync(
+        long artistId,
+        string slot,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(slot))
+        {
+            return Array.Empty<string>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT content_hash
+FROM artist_visual_usage
+WHERE artist_id = @artistId
+  AND lower(slot) = lower(@slot);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("slot", slot.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var hashes = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var hash = reader.GetString(0);
+            if (!string.IsNullOrWhiteSpace(hash))
+            {
+                hashes.Add(hash);
+            }
+        }
+
+        return hashes;
+    }
+
+    public async Task RecordVisualUsageAsync(
+        long artistId,
+        string slot,
+        string contentHash,
+        string? identity,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(slot) || string.IsNullOrWhiteSpace(contentHash))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_visual_usage (artist_id, slot, content_hash, identity, used_at)
+VALUES (@artistId, @slot, @contentHash, @identity, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id, slot, content_hash) DO UPDATE SET
+    identity = excluded.identity,
+    used_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("slot", slot.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("contentHash", contentHash.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("identity", (object?)identity ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ClearVisualUsageAsync(
+        long artistId,
+        string slot,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(slot))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM artist_visual_usage
+WHERE artist_id = @artistId
+  AND lower(slot) = lower(@slot);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("slot", slot.Trim());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<string?> GetLastBiographySourceAsync(long artistId, CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0)
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT last_source
+FROM artist_biography_rotation
+WHERE artist_id = @artistId
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string value && !string.IsNullOrWhiteSpace(value) ? value : null;
+    }
+
+    public async Task SetLastBiographySourceAsync(
+        long artistId,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_biography_rotation (artist_id, last_source, used_at)
+VALUES (@artistId, @source, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id) DO UPDATE SET
+    last_source = excluded.last_source,
+    used_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("source", source.Trim().ToLowerInvariant());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<List<string>> ListArtistBiographySourcesAsync(long artistId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source
+FROM artist_biography_cache
+WHERE artist_id = @artistId
+  AND biography IS NOT NULL
+  AND TRIM(biography) <> ''
+ORDER BY
+    CASE lower(source)
+        WHEN 'spotify' THEN 0
+        WHEN 'apple' THEN 1
+        WHEN 'tidal' THEN 2
+        WHEN 'qobuz' THEN 3
+        WHEN 'lastfm' THEN 4
+        ELSE 5
+    END,
+    fetched_at DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var sources = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var source = reader.GetString(0);
+            if (!string.IsNullOrWhiteSpace(source)
+                && !sources.Contains(source, StringComparer.OrdinalIgnoreCase))
+            {
+                sources.Add(source);
+            }
+        }
+
+        return sources;
+    }
+
     public async Task<ArtistBiographyCacheDto?> GetArtistBiographyCacheAsync(
         long artistId,
         string? preferredSource,
@@ -19322,8 +19631,16 @@ WHERE artist_id = @artistId
   AND TRIM(biography) <> ''
   AND (@allowFallback = 1 OR source = @preferredSource)
 ORDER BY
-    CASE WHEN source = @preferredSource THEN 0 ELSE 1 END,
-    selected DESC,
+    CASE WHEN @preferredSource IS NULL AND selected = 1 THEN 0 ELSE 1 END,
+    CASE WHEN @preferredSource IS NOT NULL AND lower(source) = lower(@preferredSource) THEN 0 ELSE 1 END,
+    CASE lower(source)
+        WHEN 'spotify' THEN 0
+        WHEN 'apple' THEN 1
+        WHEN 'tidal' THEN 2
+        WHEN 'qobuz' THEN 3
+        WHEN 'lastfm' THEN 4
+        ELSE 5
+    END,
     fetched_at DESC
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
@@ -19342,6 +19659,47 @@ LIMIT 1;";
             reader.GetString(1),
             reader.GetInt64(2) != 0,
             reader.GetString(3));
+    }
+
+    public async Task<IReadOnlyList<ArtistBiographyCacheRowDto>> GetArtistBiographyRowsAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0)
+        {
+            return Array.Empty<ArtistBiographyCacheRowDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, biography, selected
+FROM artist_biography_cache
+WHERE artist_id = @artistId
+  AND biography IS NOT NULL
+  AND TRIM(biography) <> ''
+ORDER BY
+    CASE lower(source)
+        WHEN 'spotify' THEN 0
+        WHEN 'apple' THEN 1
+        WHEN 'tidal' THEN 2
+        WHEN 'qobuz' THEN 3
+        WHEN 'lastfm' THEN 4
+        ELSE 5
+    END,
+    fetched_at DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<ArtistBiographyCacheRowDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new ArtistBiographyCacheRowDto(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.GetInt64(2) != 0));
+        }
+
+        return rows;
     }
 
     public async Task UpsertArtistServerSyncStateAsync(
@@ -19714,6 +20072,11 @@ public sealed record ArtistMetadataPolicyDto(
     bool SyncBlocked,
     bool OcrTextArtBlockingEnabled,
     IReadOnlyList<string> SelectedTargets);
+
+public sealed record ArtistBiographyCacheRowDto(
+    string Source,
+    string? Biography,
+    bool Selected);
 
 public sealed record ArtistArtworkCacheUpsertInput(
     long ArtistId,

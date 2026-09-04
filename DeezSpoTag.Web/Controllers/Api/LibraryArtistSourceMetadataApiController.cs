@@ -21,6 +21,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     private readonly SpotifyArtistService _spotifyArtistService;
     private readonly ArtistPageCacheRepository _artistPageCache;
     private readonly SpotifyMetadataCacheRepository _spotifyMetadataCache;
+    private readonly LastFmArtistImageService _lastFmArtistImageService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistSourceMetadataApiController> _logger;
 
@@ -35,8 +36,91 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         _spotifyArtistService = metadataServices.SpotifyArtistService;
         _artistPageCache = metadataServices.ArtistPageCache;
         _spotifyMetadataCache = metadataServices.SpotifyMetadataCache;
+        _lastFmArtistImageService = metadataServices.LastFmArtistImageService;
         _environment = metadataServices.Environment;
         _logger = logger;
+    }
+
+    [HttpGet("lastfm-biography")]
+    public async Task<IActionResult> GetLastFmBiography(
+        [FromQuery] string? artistName,
+        CancellationToken cancellationToken)
+    {
+        var name = (artistName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return BadRequest("artistName is required.");
+        }
+
+        var result = await _lastFmArtistImageService.GetArtistBiographyAsync(name, cancellationToken);
+        return Ok(new
+        {
+            available = result is not null,
+            biography = result?.Biography ?? string.Empty
+        });
+    }
+
+    [HttpGet("{id:long}/biographies")]
+    public async Task<IActionResult> GetBiographies(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(LibraryDbNotConfiguredMessage);
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        var rows = await _repository.GetArtistBiographyRowsAsync(id, cancellationToken);
+        var selected = rows.FirstOrDefault(row => row.Selected)?.Source;
+        return Ok(new
+        {
+            sources = rows.Select(row => new
+            {
+                source = row.Source,
+                biography = row.Biography,
+                selected = row.Selected
+            }),
+            selected
+        });
+    }
+
+    [HttpPost("{id:long}/biographies/select")]
+    public async Task<IActionResult> SelectBiographySource(
+        long id,
+        [FromBody] BiographySourceSelectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(LibraryDbNotConfiguredMessage);
+        }
+
+        var source = (request?.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return BadRequest("source is required.");
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        // SelectArtistBiographySourceAsync keeps the requested source when it exists in
+        // the artist's biography cache; otherwise it leaves the current selection intact.
+        var cachedSources = await _repository.GetArtistBiographyRowsAsync(id, cancellationToken);
+        if (!cachedSources.Any(row => string.Equals(row.Source, source, StringComparison.OrdinalIgnoreCase)))
+        {
+            return BadRequest($"No cached biography for source '{source}'.");
+        }
+
+        await _repository.SelectArtistBiographySourceAsync(id, source, cancellationToken);
+        return Ok(new { selected = source });
     }
 
     [HttpGet("unmatched-spotify")]
@@ -632,6 +716,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     public sealed record TidalIdUpdateRequest(string TidalId);
 
     public sealed record QobuzIdUpdateRequest(string QobuzId);
+
+    public sealed record BiographySourceSelectionRequest(string? Source);
 
     private sealed record UnmatchedSpotifyArtistDto(long ArtistId, string ArtistName);
 }

@@ -269,25 +269,39 @@ public sealed class QobuzApiClient : IQobuzApiClient
     {
         var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);
         var zone = QobuzStoreManager.GetZone(resolvedStore);
-        var cookies = await GetStoreCookiesAsync(resolvedStore, cancellationToken);
-        if (string.IsNullOrWhiteSpace(cookies))
-        {
-            return null;
-        }
-
         var url = $"/api.json/0.2/artist/get?artist_id={artistId}&extra=albums_with_last_release&limit={limit}&offset={offset}&zone={zone}&store={resolvedStore}";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.TryAddWithoutValidation("x-app-id", _config.AppId);
-        request.Headers.TryAddWithoutValidation("cookie", cookies);
+        var cookies = await GetStoreCookiesAsync(resolvedStore, cancellationToken);
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        async Task<QobuzArtist?> SendAsync(bool attachCookies)
         {
-            return null;
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("x-app-id", _config.AppId);
+            if (attachCookies && !string.IsNullOrWhiteSpace(cookies))
+            {
+                request.Headers.TryAddWithoutValidation("cookie", cookies);
+            }
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return await JsonSerializer.DeserializeAsync<QobuzArtist>(stream, _serializerOptions, cancellationToken);
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonSerializer.DeserializeAsync<QobuzArtist>(stream, _serializerOptions, cancellationToken);
+        // The public artist/get endpoint works without store cookies; send them when
+        // available but never abort because the discover-page scrape failed.
+        var artist = await SendAsync(attachCookies: true);
+        if (artist is null && !string.IsNullOrWhiteSpace(cookies))
+        {
+            // Stale cached cookies can trigger 401/403; retry once without them.
+            _cache.Remove($"qobuz_store_cookie_{resolvedStore}");
+            artist = await SendAsync(attachCookies: false);
+        }
+
+        return artist;
     }
 
     public async Task<QobuzTrackSearchResponse?> SearchTracksAsync(string query, int limit, int offset, CancellationToken cancellationToken)

@@ -39,7 +39,8 @@ public sealed class AppleArtistBiographyService
     public async Task<AppleArtistBiographyResult?> ResolveByArtistIdAsync(
         string appleArtistId,
         string? expectedArtistName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowArtistPageScrape = true)
     {
         var id = (appleArtistId ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(id))
@@ -65,17 +66,23 @@ public sealed class AppleArtistBiographyService
         var image = attrs.ValueKind == JsonValueKind.Object
             ? AppleCatalogJsonHelper.ResolveArtwork(attrs)
             : string.Empty;
-        var biography = await ResolveAppleArtistBiographyAsync(id, FirstNonEmpty(name, expectedArtistName), storefront, attrs, cancellationToken);
+        var biography = await ResolveAppleArtistBiographyAsync(
+            id,
+            FirstNonEmpty(name, expectedArtistName),
+            storefront,
+            attrs,
+            allowArtistPageScrape,
+            cancellationToken);
         return new AppleArtistBiographyResult(id, name, image, biography ?? string.Empty);
     }
 
-    public async Task<AppleArtistBiographyResult?> ResolveByExactArtistNameAndTracksAsync(
+    public async Task<AppleArtistBiographyResult?> ResolveByExactArtistNameAsync(
         string artistName,
-        IReadOnlyCollection<string> trackTitles,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowArtistPageScrape = true)
     {
         var normalizedName = NormalizeArtistName(artistName);
-        if (string.IsNullOrWhiteSpace(normalizedName) || trackTitles.Count == 0)
+        if (string.IsNullOrWhiteSpace(normalizedName))
         {
             return null;
         }
@@ -93,20 +100,41 @@ public sealed class AppleArtistBiographyService
             return null;
         }
 
-        if (!await HasMatchingAppleTrackAsync(normalizedName, trackTitles, storefront, cancellationToken))
+        return await ResolveByArtistIdAsync(appleId, normalizedName, cancellationToken, allowArtistPageScrape);
+    }
+
+    public async Task<AppleArtistBiographyResult?> ResolveByExactArtistNameAndTracksAsync(
+        string artistName,
+        IReadOnlyCollection<string> trackTitles,
+        CancellationToken cancellationToken)
+    {
+        var appleId = await ResolveArtistIdFromLocalTracksAsync(artistName, trackTitles, cancellationToken);
+        if (string.IsNullOrWhiteSpace(appleId))
         {
             return null;
         }
 
-        return await ResolveByArtistIdAsync(appleId, normalizedName, cancellationToken);
+        return await ResolveByArtistIdAsync(appleId, artistName, cancellationToken);
     }
 
-    private async Task<bool> HasMatchingAppleTrackAsync(
-        string normalizedArtistName,
+    public Task<string?> ResolveArtistIdFromLocalTracksAsync(
+        string artistName,
+        IReadOnlyCollection<string> trackTitles,
+        CancellationToken cancellationToken)
+        => ResolveArtistIdFromLocalTracksAsync(artistName, trackTitles, GetStorefront(), cancellationToken);
+
+    private async Task<string?> ResolveArtistIdFromLocalTracksAsync(
+        string artistName,
         IReadOnlyCollection<string> trackTitles,
         string storefront,
         CancellationToken cancellationToken)
     {
+        var normalizedName = NormalizeArtistName(artistName);
+        if (string.IsNullOrWhiteSpace(normalizedName) || trackTitles.Count == 0)
+        {
+            return null;
+        }
+
         foreach (var trackTitle in trackTitles
                      .Select(NormalizeTrackTitle)
                      .Where(static title => title.Length > 0)
@@ -114,40 +142,99 @@ public sealed class AppleArtistBiographyService
                      .Take(8))
         {
             using var doc = await _catalog.SearchAsync(
-                $"{normalizedArtistName} {trackTitle}",
+                $"{normalizedName} {trackTitle}",
                 10,
                 storefront,
                 DefaultLanguage,
                 cancellationToken,
-                new AppleMusicCatalogService.AppleSearchOptions(TypesOverride: "songs"));
-            if (AppleSongSearchHasExactTrack(doc.RootElement, normalizedArtistName, trackTitle))
+                new AppleMusicCatalogService.AppleSearchOptions(
+                    TypesOverride: "songs",
+                    IncludeOverride: "artists"));
+            var appleId = await ResolveMatchingAppleSongArtistIdAsync(
+                doc.RootElement,
+                normalizedName,
+                trackTitle,
+                storefront,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(appleId))
             {
-                return true;
+                return appleId;
             }
         }
 
-        return false;
+        return null;
     }
 
-    private static bool AppleSongSearchHasExactTrack(JsonElement root, string normalizedArtistName, string normalizedTrackTitle)
+    private async Task<string?> ResolveMatchingAppleSongArtistIdAsync(
+        JsonElement root,
+        string normalizedArtistName,
+        string normalizedTrackTitle,
+        string storefront,
+        CancellationToken cancellationToken)
     {
         if (!TryGetAppleSongsData(root, out var data))
         {
-            return false;
+            return null;
         }
 
-        foreach (var attrs in data.EnumerateArray()
-                     .Select(static item => item.TryGetProperty(AttributesField, out var attributes) && attributes.ValueKind == JsonValueKind.Object
-                         ? attributes
-                         : default))
+        foreach (var item in data.EnumerateArray())
         {
-            if (attrs.ValueKind != JsonValueKind.Object)
+            var attrs = item.TryGetProperty(AttributesField, out var attributes) && attributes.ValueKind == JsonValueKind.Object
+                ? attributes
+                : default;
+            if (attrs.ValueKind != JsonValueKind.Object
+                || !AppleSongAttributesMatch(attrs, normalizedArtistName, normalizedTrackTitle))
             {
                 continue;
             }
 
-            if (AppleSongAttributesMatch(attrs, normalizedArtistName, normalizedTrackTitle))
+            if (TryReadRelatedArtistId(item, out var appleId))
             {
+                return appleId;
+            }
+
+            var songId = item.TryGetProperty("id", out var idElement) ? idElement.GetString()?.Trim() : null;
+            if (string.IsNullOrWhiteSpace(songId))
+            {
+                continue;
+            }
+
+            using var songDoc = await _catalog.GetSongAsync(songId, storefront, DefaultLanguage, cancellationToken);
+            if (AppleCatalogJsonHelper.TryGetDataArray(songDoc.RootElement, out var songData)
+                && songData.GetArrayLength() > 0
+                && TryReadRelatedArtistId(songData[0], out appleId))
+            {
+                return appleId;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryReadRelatedArtistId(JsonElement songItem, out string appleId)
+    {
+        appleId = string.Empty;
+        if (!songItem.TryGetProperty("relationships", out var relationships)
+            || relationships.ValueKind != JsonValueKind.Object
+            || !relationships.TryGetProperty("artists", out var artists)
+            || artists.ValueKind != JsonValueKind.Object
+            || !artists.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var artist in data.EnumerateArray())
+        {
+            if (!artist.TryGetProperty("id", out var idElement))
+            {
+                continue;
+            }
+
+            var id = idElement.GetString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                appleId = id;
                 return true;
             }
         }
@@ -181,12 +268,18 @@ public sealed class AppleArtistBiographyService
         string artistName,
         string storefront,
         JsonElement attributes,
+        bool allowArtistPageScrape,
         CancellationToken cancellationToken)
     {
         var editorialNotes = ResolveEditorialNotes(attributes);
         if (!string.IsNullOrWhiteSpace(editorialNotes))
         {
             return editorialNotes;
+        }
+
+        if (!allowArtistPageScrape)
+        {
+            return null;
         }
 
         return await ResolveAppleArtistPageBiographyAsync(id, artistName, storefront, cancellationToken);

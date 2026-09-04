@@ -3994,12 +3994,12 @@ function initMediaOperationsHelp() {
                 <h4>What does this tool do?</h4>
                 <p>Refresh Cache fetches and stores provider metadata. Begin Update uses only that local cache when pushing selected fields to target servers.</p>
 
-                <h4>Refresh Interval Options</h4>
+                <h4>Schedules</h4>
                 <ul>
-                    <li><strong>6 months:</strong> Only updates metadata for artists not updated in the last 180 days</li>
-                    <li><strong>3 months:</strong> Updates metadata for artists not updated in the last 90 days</li>
-                    <li><strong>1 month:</strong> Updates metadata for artists not updated in the last 30 days</li>
-                    <li><strong>Force All:</strong> Updates all artists regardless of when they were last updated</li>
+                    <li><strong>Cache refresh schedule:</strong> How often DeezSpoTag walks the library and refreshes provider metadata into the local cache. The clock starts when a sweep finishes walking the artist list, including runs that had some artist failures.</li>
+                    <li><strong>Target update schedule:</strong> How often cached fields are pushed to the selected media servers. This clock is independent of cache refresh.</li>
+                    <li><strong>Manual only:</strong> Disables that automatic sweep. Use Refresh Cache or Begin Update to run immediately.</li>
+                    <li>Cancel stops the current sweep without treating it as a finished run, so the schedule stays due.</li>
                 </ul>
 
                 <h4>Metadata source options</h4>
@@ -4017,7 +4017,7 @@ function initMediaOperationsHelp() {
                 <ul>
                     <li><strong>Refresh Cache:</strong> Fetches and validates multi-provider artwork and biographies without updating servers.</li>
                     <li><strong>Begin Update:</strong> Pushes only already-cached artwork and biographies without contacting providers.</li>
-                    <li>When both automatic schedules are due together, cache refresh completes before target updating begins.</li>
+                    <li>When both automatic schedules are due together, cache refresh runs first, then target update, even if some cache artists failed.</li>
                 </ul>
 
                 <h4>What gets updated?</h4>
@@ -4340,6 +4340,7 @@ function initMetadataUpdater() {
     const sourceSelect = document.getElementById('metadata-source-platform');
     const cacheIntervalSelect = document.getElementById('metadata-cache-refresh-interval');
     const targetIntervalSelect = document.getElementById('metadata-target-update-interval');
+    const deepRefreshSelect = document.getElementById('metadata-deep-refresh-interval');
     const folderSelect = document.getElementById('metadata-library-folder');
     const targetContainer = document.getElementById('metadata-target-server');
     const includeAvatarCheckbox = document.getElementById('metadata-include-avatar');
@@ -4348,6 +4349,7 @@ function initMetadataUpdater() {
     const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
     const missingArtistArtOnlyCheckbox = document.getElementById('metadata-missing-artist-art-only');
     const ocrTextArtBlockingCheckbox = document.getElementById('metadata-ocr-text-art-blocking');
+    const saveArtistFolderImageCheckbox = document.getElementById('metadata-save-artist-folder-image');
     const phaseLabel = document.getElementById('metadata-phase-label');
     const progressLabel = document.getElementById('metadata-progress-label');
     const progressBar = document.getElementById('metadata-progress-bar');
@@ -4367,7 +4369,9 @@ function initMetadataUpdater() {
     const legacyIntervalKey = 'deezspotag-metadata-updater-interval-days';
     const cacheIntervalKey = 'deezspotag-metadata-cache-refresh-interval-days';
     const targetIntervalKey = 'deezspotag-metadata-target-update-interval-days';
+    const deepRefreshKey = 'deezspotag-metadata-deep-refresh-interval-days';
     const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
+    const saveArtistFolderImageKey = 'deezspotag-metadata-updater-save-artist-folder-image';
 
     const persistMetadataUpdaterSettings = async () => {
         const targets = getMetadataUpdaterTargets();
@@ -4376,24 +4380,28 @@ function initMetadataUpdater() {
         localStorage.setItem(folderKey, folderSelect?.value || '');
         localStorage.setItem(cacheIntervalKey, String(Number(cacheIntervalSelect?.value || 30)));
         localStorage.setItem(targetIntervalKey, String(Number(targetIntervalSelect?.value || 30)));
+        localStorage.setItem(deepRefreshKey, String(Number(deepRefreshSelect?.value || 0)));
         localStorage.setItem(includeAvatarKey, includeAvatarCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(includeBackgroundKey, includeBackgroundCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(includeBioKey, includeBioCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(popularSongsKey, popularSongsCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(missingArtistArtOnlyKey, missingArtistArtOnlyCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(ocrTextArtBlockingKey, ocrTextArtBlockingCheckbox?.checked !== false ? 'true' : 'false');
+        localStorage.setItem(saveArtistFolderImageKey, saveArtistFolderImageCheckbox?.checked === true ? 'true' : 'false');
         if (window.UserPrefs) {
             window.UserPrefs.set('metadataUpdaterTargets', targets);
             window.UserPrefs.set('metadataUpdaterSource', sourceSelect?.value || 'auto');
             window.UserPrefs.set('metadataUpdaterFolderId', folderSelect?.value || null);
             window.UserPrefs.set('metadataCacheRefreshIntervalDays', Number(cacheIntervalSelect?.value || 30));
             window.UserPrefs.set('metadataTargetUpdateIntervalDays', Number(targetIntervalSelect?.value || 30));
+            window.UserPrefs.set('metadataDeepRefreshIntervalDays', Number(deepRefreshSelect?.value || 0));
             window.UserPrefs.set('metadataUpdaterIncludeAvatar', includeAvatarCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterIncludeBackground', includeBackgroundCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterIncludeBio', includeBioCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterMissingArtistArtworkOnly', missingArtistArtOnlyCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterOcrTextArtBlocking', ocrTextArtBlockingCheckbox?.checked !== false);
+            window.UserPrefs.set('metadataUpdaterSaveArtistFolderImage', saveArtistFolderImageCheckbox?.checked === true);
             await window.UserPrefs.flush(false);
         }
     };
@@ -4419,6 +4427,7 @@ function initMetadataUpdater() {
             includeBio: includeBioCheckbox?.checked === true,
             includePopularSongs: popularSongsCheckbox?.checked === true,
             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
+            saveArtistFolderImage: saveArtistFolderImageCheckbox?.checked === true,
             includeAllArtists: true,
             force: forceManualRun === true || missingArtistArtworkOnly || intervalDays === 0
         };
@@ -4483,13 +4492,23 @@ function initMetadataUpdater() {
                     if (!response.ok) {
                         throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
                     }
-                    notifyActivity(payload?.cancelled
-                        ? 'Metadata updater cancellation requested.'
-                        : 'No metadata operation is running.', payload?.cancelled ? 'info' : 'warning');
+                    const status = payload?.status;
+                    const stillRunning = Boolean(
+                        status?.activeOperation
+                        || status?.cacheRefresh?.running
+                        || status?.targetUpdate?.running);
+                    const cancelled = payload?.cancelled === true || stillRunning;
+                    notifyActivity(
+                        cancelled
+                            ? 'Metadata updater cancellation requested.'
+                            : 'No metadata operation is running.',
+                        cancelled ? 'info' : 'warning');
                 } catch (error) {
                     notifyActivity(`Metadata cancellation failed: ${error?.message || error}`, 'error');
+                } finally {
+                    await refreshLibraryScanAndMetadataStatus();
                 }
-            });
+            }, { restoreDisabled: false });
         });
     }
 
@@ -4533,7 +4552,8 @@ function initMetadataUpdater() {
     const serverPreferences = window.__userPrefsData || {};
     [
         [cacheIntervalSelect, cacheIntervalKey, 'metadataCacheRefreshIntervalDays'],
-        [targetIntervalSelect, targetIntervalKey, 'metadataTargetUpdateIntervalDays']
+        [targetIntervalSelect, targetIntervalKey, 'metadataTargetUpdateIntervalDays'],
+        [deepRefreshSelect, deepRefreshKey, 'metadataDeepRefreshIntervalDays']
     ].forEach(([input, key, preferenceKey]) => {
         if (!input) return;
         const savedInterval = localStorage.getItem(key)
@@ -4541,8 +4561,8 @@ function initMetadataUpdater() {
             ?? legacyInterval;
         if (savedInterval !== null) input.value = savedInterval;
         input.addEventListener('change', () => {
-            localStorage.setItem(key, input.value || '30');
-            if (window.UserPrefs) window.UserPrefs.set(preferenceKey, Number(input.value || 30));
+            localStorage.setItem(key, input.value || (input === deepRefreshSelect ? '0' : '30'));
+            if (window.UserPrefs) window.UserPrefs.set(preferenceKey, Number(input.value || (input === deepRefreshSelect ? 0 : 30)));
         });
     });
     if (legacyInterval !== null) {
@@ -4569,7 +4589,7 @@ function initMetadataUpdater() {
         popularSongsCheckbox.checked = localStorage.getItem(popularSongsKey) === 'true';
         popularSongsCheckbox.addEventListener('change', () => {
             localStorage.setItem(popularSongsKey, popularSongsCheckbox.checked ? 'true' : 'false');
-            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterPopularSongs', popularSongsCheckbox.checked);
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox.checked);
         });
     }
 
@@ -4587,6 +4607,14 @@ function initMetadataUpdater() {
         ocrTextArtBlockingCheckbox.addEventListener('change', () => {
             localStorage.setItem(ocrTextArtBlockingKey, ocrTextArtBlockingCheckbox.checked ? 'true' : 'false');
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterOcrTextArtBlocking', ocrTextArtBlockingCheckbox.checked);
+        });
+    }
+
+    if (saveArtistFolderImageCheckbox) {
+        saveArtistFolderImageCheckbox.checked = localStorage.getItem(saveArtistFolderImageKey) === 'true';
+        saveArtistFolderImageCheckbox.addEventListener('change', () => {
+            localStorage.setItem(saveArtistFolderImageKey, saveArtistFolderImageCheckbox.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterSaveArtistFolderImage', saveArtistFolderImageCheckbox.checked);
         });
     }
 
@@ -5312,28 +5340,13 @@ async function clearCanceledTasks() {
 	            : progressValue;
 	        queueProgressCache[taskId] = progressStart;
 	        const hasMeasuredProgress = progressValue > 0 || progressStart > 0;
-	        const frozenProgressLabels = {
-	            failed: 'Stopped at',
-	            unavailable: 'Stopped at',
-	            canceled: 'Stopped at',
-	            paused: 'Paused at',
-	            retrying: 'Retrying from',
-	            queued: 'Queued at'
-	        };
-	        const frozenProgressLabel = frozenProgressLabels[statusForUi] || '';
 		        const progressHtml = statusForUi === 'running'
 		            ? (hasMeasuredProgress
 		                ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
 		                   <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
 		                : `<div class="progress-text"><span>Downloading...</span><span class="progress-value">Working</span></div>
 		                   <div class="progress-bar is-indeterminate"><div class="progress-fill"></div></div>`)
-		            // Persisted progress is shown as a frozen bar for non-running
-		            // states, so a page refresh (or a failure) no longer erases the
-		            // percentage the download had reached.
-		            : (frozenProgressLabel && hasMeasuredProgress
-		                ? `<div class="progress-text"><span>${frozenProgressLabel}</span><span class="progress-value">${formatQueueProgressPercent(progressStart)}%</span></div>
-		                   <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%"></div></div>`
-		                : '');
+		            : '';
 		        if (statusForUi !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
 		            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
 		            delete queueProgressTextAnimationByTask[taskId];
@@ -5892,7 +5905,6 @@ function mapQueueItem(item) {
     const mappedStatus = mapStatus(item.status);
     const lyricsBadges = resolveLyricsBadgesForQueueItem(item);
     const lyricsRevision = getLyricsArtifactRevision(item.lyricsArtifacts ?? item.LyricsArtifacts);
-    const lrcTiming = getLrcTimingFromArtifacts(item.lyricsArtifacts ?? item.LyricsArtifacts);
     const artworkBadges = resolveArtworkBadgesForQueueItem(item);
     return {
         taskId,
@@ -5917,7 +5929,6 @@ function mapQueueItem(item) {
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
-        lrcTiming,
         artworkBadges,
         requestedQuality: readQueueItemText(item, ['requestedQuality', 'RequestedQuality']),
         deliveredQuality: readQueueItemText(item, ['deliveredQuality', 'DeliveredQuality']),
@@ -6027,7 +6038,6 @@ function mergeQueueTask(existing, incoming) {
         existing.status,
         incoming.status);
     const mergedStatus = resolveMergedQueueStatus(existing.status, incoming.status, mergedProgress);
-    const mergedLyrics = mergeLyricsBadgeState(existing, incoming);
 
     return {
         ...existing,
@@ -6054,9 +6064,12 @@ function mergeQueueTask(existing, incoming) {
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
-        lyricsRevision: mergedLyrics.lyricsRevision,
-        lyricsBadges: mergedLyrics.lyricsBadges,
-        lrcTiming: mergedLyrics.lrcTiming,
+        lyricsRevision: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsRevision
+            : existing.lyricsRevision,
+        lyricsBadges: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsBadges
+            : existing.lyricsBadges,
         artworkBadges: incoming.artworkBadges && incoming.artworkBadges.length
             ? incoming.artworkBadges
             : (existing.artworkBadges || []),
@@ -6712,19 +6725,9 @@ function applyQueueRealtimeUpdate(payload) {
     const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update);
     if (nextLyricsBadges
         && incomingLyricsRevision >= (task.lyricsRevision || 0)) {
-        const incomingTiming = getLrcTimingFromArtifacts(incomingLyricsArtifacts);
-        // Sticky timing: an unknown incoming lrcTiming must not downgrade a
-        // known word-timed badge to plain "synced" (see mergeLyricsBadgeState).
-        const downgradesTiming = !incomingTiming
-            && task.lrcTiming === 'word'
-            && hasLyricsBadge(task.lyricsBadges, 'enhanced-synchronized')
-            && hasLyricsBadge(nextLyricsBadges, 'synced');
-        if (!downgradesTiming) {
-            if (!areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
-                task.lyricsBadges = nextLyricsBadges;
-                taskChanged = true;
-            }
-            task.lrcTiming = incomingTiming || task.lrcTiming || '';
+        if (!areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
+            task.lyricsBadges = nextLyricsBadges;
+            taskChanged = true;
         }
         task.lyricsRevision = incomingLyricsRevision;
     }
@@ -7177,54 +7180,6 @@ function getLyricsArtifactRevision(artifacts) {
     }
     const value = Number(artifacts.revision ?? artifacts.Revision ?? 0);
     return Number.isSafeInteger(value) && value > 0 ? value : 0;
-}
-
-function getLrcTimingFromArtifacts(artifacts) {
-    if (!artifacts || typeof artifacts !== 'object') {
-        return '';
-    }
-    return String(artifacts.lrcTiming ?? artifacts.LrcTiming ?? '').trim().toLowerCase();
-}
-
-function hasLyricsBadge(badges, name) {
-    return Array.isArray(badges) && badges.some(value => String(value).toLowerCase() === name);
-}
-
-function mergeLyricsBadgeState(existing, incoming) {
-    const existingBadges = Array.isArray(existing?.lyricsBadges) ? existing.lyricsBadges : [];
-    const incomingBadges = Array.isArray(incoming?.lyricsBadges) ? incoming.lyricsBadges : [];
-    const existingRevision = existing?.lyricsRevision || 0;
-    const incomingRevision = incoming?.lyricsRevision || 0;
-    if (incomingRevision < existingRevision) {
-        return {
-            lyricsBadges: existingBadges,
-            lyricsRevision: existingRevision,
-            lrcTiming: existing?.lrcTiming || ''
-        };
-    }
-
-    const incomingTiming = String(incoming?.lrcTiming || '').trim().toLowerCase();
-    const existingTiming = String(existing?.lrcTiming || '').trim().toLowerCase();
-    // Sticky timing: an unknown incoming lrcTiming (older payload, or an
-    // unreadable sidecar while the destination move is in flight) must not
-    // downgrade a known word-timed badge to plain "synced" - only an explicit
-    // "line" value may do that.
-    if (!incomingTiming
-        && existingTiming === 'word'
-        && hasLyricsBadge(existingBadges, 'enhanced-synchronized')
-        && hasLyricsBadge(incomingBadges, 'synced')) {
-        return {
-            lyricsBadges: existingBadges,
-            lyricsRevision: incomingRevision,
-            lrcTiming: existingTiming
-        };
-    }
-
-    return {
-        lyricsBadges: incomingBadges,
-        lyricsRevision: incomingRevision,
-        lrcTiming: incomingTiming
-    };
 }
 
 function areSameBadgeSet(left, right) {

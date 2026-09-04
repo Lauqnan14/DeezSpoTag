@@ -292,6 +292,22 @@ CREATE TABLE IF NOT EXISTS artist_biography_cache (
     PRIMARY KEY (artist_id, source)
 );", cancellationToken);
         await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_visual_usage (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    slot TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    identity TEXT,
+    used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, slot, content_hash)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_biography_rotation (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    last_source TEXT NOT NULL,
+    used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS artist_server_sync_state (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
     server TEXT NOT NULL,

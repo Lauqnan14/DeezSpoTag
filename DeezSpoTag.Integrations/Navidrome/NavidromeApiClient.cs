@@ -368,6 +368,69 @@ public sealed class NavidromeApiClient
             .ToList();
     }
 
+    /// <summary>
+    /// Album titles of a Navidrome artist (Subsonic getArtist) — used to verify that a
+    /// name-searched server artist is really the library artist before pushing.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetArtistAlbumTitlesAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string artistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(artistId))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var url = BuildUrl(serverUrl, "getArtist", username, password, new[] { new KeyValuePair<string, string?>("id", artistId.Trim()) });
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<string>();
+            }
+
+            using var document = await System.Text.Json.JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            var albumContainer = document.RootElement;
+            if (albumContainer.TryGetProperty("subsonic-response", out var subsonic))
+            {
+                albumContainer = subsonic;
+            }
+
+            if (!albumContainer.TryGetProperty("artist", out var artist)
+                || !artist.TryGetProperty("album", out var albums)
+                || albums.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            var titles = new List<string>();
+            foreach (var album in albums.EnumerateArray())
+            {
+                var title = album.TryGetProperty("name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
+                if (string.IsNullOrWhiteSpace(title) && album.TryGetProperty("title", out var titleElement))
+                {
+                    title = titleElement.GetString()?.Trim();
+                }
+
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    titles.Add(title);
+                }
+            }
+
+            return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     public async Task<NavidromeArtistInfo?> GetArtistInfoAsync(
         string serverUrl,
         string username,

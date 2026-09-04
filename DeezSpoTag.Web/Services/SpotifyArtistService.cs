@@ -119,7 +119,8 @@ public sealed class SpotifyArtistService
     public async Task<string?> EnsureSpotifyArtistIdAsync(long artistId, string artistName, CancellationToken cancellationToken)
     {
         var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(spotifyId))
+        if (!string.IsNullOrWhiteSpace(spotifyId)
+            && !await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, spotifyId, cancellationToken))
         {
             return spotifyId;
         }
@@ -191,7 +192,8 @@ public sealed class SpotifyArtistService
         bool forceRefresh,
         bool forceRematch,
         CancellationToken cancellationToken,
-        bool includeDeezerLinking = true)
+        bool includeDeezerLinking = true,
+        bool includeDiscography = true)
     {
         var allowCache = !forceRefresh && !forceRematch;
 
@@ -200,9 +202,19 @@ public sealed class SpotifyArtistService
         {
             spotifyId = null;
         }
+        else if (!string.IsNullOrWhiteSpace(spotifyId)
+                 && await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, spotifyId, cancellationToken))
+        {
+            AddActivity("warn", $"[spotify] stored artist id has no local album overlap, rematching: {artistName} ({spotifyId}).");
+            spotifyId = null;
+        }
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
-            spotifyId = await EnsureSpotifyArtistIdAsync(artistId, artistName, cancellationToken);
+            spotifyId = await ResolveArtistIdBySpotiflacSearchAsync(artistName, artistId, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(spotifyId))
+            {
+                await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
+            }
         }
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
@@ -216,6 +228,7 @@ public sealed class SpotifyArtistService
             allowCache,
             artistId,
             includeDeezerLinking,
+            includeDiscography,
             cancellationToken);
         if (result != null || forceRematch)
         {
@@ -242,6 +255,7 @@ public sealed class SpotifyArtistService
             allowCache: false,
             artistId,
             includeDeezerLinking,
+            includeDiscography,
             cancellationToken);
     }
 
@@ -258,7 +272,7 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        return await GetArtistPageBySpotifyIdInternalAsync(spotifyId, artistName, true, null, includeDeezerLinking: true, cancellationToken);
+        return await GetArtistPageBySpotifyIdInternalAsync(spotifyId, artistName, true, null, includeDeezerLinking: true, includeDiscography: true, cancellationToken);
     }
 
     public async Task<IReadOnlyList<SpotifyArtistMatchSuggestion>> GetArtistMatchSuggestionsAsync(
@@ -333,7 +347,7 @@ public sealed class SpotifyArtistService
 
         var normalizedName = string.IsNullOrWhiteSpace(artistName) ? spotifyId : artistName.Trim();
         var allowCache = !forceRefresh;
-        return await GetArtistPageBySpotifyIdInternalAsync(spotifyId, normalizedName, allowCache, null, includeDeezerLinking: true, cancellationToken);
+        return await GetArtistPageBySpotifyIdInternalAsync(spotifyId, normalizedName, allowCache, null, includeDeezerLinking: true, includeDiscography: true, cancellationToken);
     }
 
     public async Task<SpotifyArtistPageResult?> TryGetCachedArtistPageAsync(
@@ -380,6 +394,7 @@ public sealed class SpotifyArtistService
         bool allowCache,
         long? localArtistId,
         bool includeDeezerLinking,
+        bool includeDiscography,
         CancellationToken cancellationToken)
     {
         var (cachedResult, staleCachedPayload) = await TryGetArtistPageFromCacheAsync(
@@ -394,7 +409,7 @@ public sealed class SpotifyArtistService
 
         AddActivity("info", $"[spotify] pathfinder fetch: {artistName}.");
         var artistPage = await TryFetchSpotifyAsync(
-            ct => _pathfinderMetadataClient.FetchArtistHydratedPageAsync(spotifyId, ct),
+            ct => _pathfinderMetadataClient.FetchArtistHydratedPageAsync(spotifyId, ct, includeDiscography),
             artistName,
             "artist page",
             cancellationToken);
@@ -414,10 +429,13 @@ public sealed class SpotifyArtistService
             artistPage,
             staleCachedPayload,
             cancellationToken);
-        result = result with
+        if (includeDiscography)
         {
-            TopTracks = await EnrichTopTracksWithIsrcsAsync(result.TopTracks, cancellationToken)
-        };
+            result = result with
+            {
+                TopTracks = await EnrichTopTracksWithIsrcsAsync(result.TopTracks, cancellationToken)
+            };
+        }
         result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
         await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken);
         return result;
@@ -1669,6 +1687,14 @@ public sealed class SpotifyArtistService
                 $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
                 $"(exact_name=true, local_album_overlap={best.LocalAlbumOverlap}).");
             return best.Candidate.Id;
+        }
+
+        if (localAlbumTitleSet.Count > 0)
+        {
+            AddActivity(
+                "info",
+                $"[spotify] skipped canonical name fallback for {artistName}: local albums exist but none overlapped.");
+            return null;
         }
 
         var canonicalFallback = await TrySelectCanonicalFallbackExactCandidateAsync(
@@ -3222,6 +3248,26 @@ public sealed class SpotifyArtistService
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return filtered.Count > 0 ? filtered : source;
+    }
+
+    private async Task<bool> StoredSpotifyIdLacksLocalEvidenceAsync(
+        long artistId,
+        string spotifyId,
+        CancellationToken cancellationToken)
+    {
+        var localAlbumTitleSet = FilterResolvableAlbumTitles(
+            await TryGetLocalAlbumTitleSetAsync(artistId, cancellationToken));
+        if (localAlbumTitleSet.Count == 0)
+        {
+            return false;
+        }
+
+        var overlap = await ResolveLocalAlbumOverlapAsync(
+            spotifyId,
+            requireLocalAlbumOverlap: true,
+            localAlbumTitleSet,
+            cancellationToken);
+        return overlap <= 0;
     }
 
     private static bool ShouldRequireLocalAlbumOverlap(HashSet<string> localAlbumTitleSet)

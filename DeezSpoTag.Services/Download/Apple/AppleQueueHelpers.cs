@@ -666,7 +666,8 @@ public static class AppleQueueHelpers
         string? artist,
         int size,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowArtistPageScrape = true)
     {
         if (string.IsNullOrWhiteSpace(artist))
         {
@@ -689,7 +690,8 @@ public static class AppleQueueHelpers
                 url,
                 normalizedArtist,
                 size,
-                cancellationToken);
+                cancellationToken,
+                allowArtistPageScrape);
             if (!string.IsNullOrWhiteSpace(pageArtwork))
             {
                 CacheArtistArtwork(cacheKey, pageArtwork);
@@ -721,7 +723,8 @@ public static class AppleQueueHelpers
         string searchUrl,
         string normalizedArtist,
         int size,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowArtistPageScrape)
     {
         using var response = await client.GetAsync(searchUrl, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -738,7 +741,16 @@ public static class AppleQueueHelpers
 
         foreach (var entry in results.EnumerateArray())
         {
-            if (!TryResolveItunesArtistLink(entry, normalizedArtist, out var artistLinkUrl))
+            var searchArtwork = TryReadItunesString(entry, "artworkUrl100")
+                ?? TryReadItunesString(entry, "artworkUrl60");
+            if (!string.IsNullOrWhiteSpace(searchArtwork)
+                && IsLikelyUsableItunesArtistPageArtwork(searchArtwork))
+            {
+                return NormalizeArtworkUrl(searchArtwork, size);
+            }
+
+            if (!allowArtistPageScrape
+                || !TryResolveItunesArtistLink(entry, normalizedArtist, out var artistLinkUrl))
             {
                 continue;
             }

@@ -24,9 +24,15 @@ public sealed class ArtistMetadataAutomationResilienceTests
     public void CancellationIsLinkedToShutdownSoTheAppCanStopARun()
     {
         var source = ReadCoordinator();
+        var updater = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
 
-        Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken)", source, StringComparison.Ordinal);
+        Assert.Contains("CreateLinkedTokenSource(_userCancelCts.Token, _shutdownToken)", source, StringComparison.Ordinal);
         Assert.Contains("public bool Cancel()", source, StringComparison.Ordinal);
+        Assert.Contains("_targetUpdate.Cancel()", source, StringComparison.Ordinal);
+        Assert.Contains("return requested || running;", source, StringComparison.Ordinal);
+        Assert.Contains("public bool Cancel()", updater, StringComparison.Ordinal);
+        Assert.Contains("CreateLinkedTokenSource(cancellationToken, runCts.Token)", updater, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -87,8 +93,68 @@ public sealed class ArtistMetadataAutomationResilienceTests
 
         Assert.Contains("CheckpointCompletedIds()", coordinator, StringComparison.Ordinal);
         Assert.Contains("NoteArtistCompleted(value.CompletedArtistId)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("SaveCheckpointAfterAsync(_checkpointSave)", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("CheckpointSaveEvery", coordinator, StringComparison.Ordinal);
         Assert.Contains("completedArtistIds is null || !completedArtistIds.Contains(artist.Id)", cache, StringComparison.Ordinal);
         Assert.Contains("completedArtistIds is not null && completedArtistIds.Contains(tracked.ArtistId)", updater, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FinishedSweepsStampLastRunEvenWhenSomeArtistsFailed()
+    {
+        var coordinator = ReadCoordinator();
+
+        Assert.DoesNotContain("IsCacheRefreshComplete", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await RunCacheRefreshAsync(request, automatic: false, token);\n                return true;", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await RunCacheRefreshAsync(cacheRequest, automatic: true, token);\n                        return true;", coordinator, StringComparison.Ordinal);
+        var cacheRun = coordinator.IndexOf("if (cacheDue)", StringComparison.Ordinal);
+        var targetRun = coordinator.IndexOf("if (updateDue)", StringComparison.Ordinal);
+        Assert.True(cacheRun >= 0 && targetRun > cacheRun);
+    }
+
+    [Fact]
+    public void CancelClearsActiveRunWithoutStampingLastRun()
+    {
+        var coordinator = ReadCoordinator();
+        var start = coordinator.IndexOf("private async Task RunManualOperationAsync", StringComparison.Ordinal);
+        var end = coordinator.IndexOf("private void RecordOperationFailure", start, StringComparison.Ordinal);
+        var body = coordinator[start..end];
+
+        Assert.Contains("catch (OperationCanceledException)", body, StringComparison.Ordinal);
+        Assert.Contains("await ClearActiveRunWithoutStampingAsync();", body, StringComparison.Ordinal);
+        Assert.Contains("await StopCheckpointWritesAsync();", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.LastCacheRefreshUtc = DateTimeOffset.UtcNow;", body.Substring(body.IndexOf("catch (OperationCanceledException)", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("state.ActiveRun = null;", coordinator, StringComparison.Ordinal);
+        Assert.Contains("state.LastCacheRefreshUtc = DateTimeOffset.UtcNow;", coordinator, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetUpdateDoesNotHoldTheGlobalHeavyLockForTheWholeSweep()
+    {
+        var updater = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
+        var runStart = updater.IndexOf("public async Task<bool> RunAndWaitAsync(", StringComparison.Ordinal);
+        var runEnd = updater.IndexOf("private async Task RunInternalAsync(", runStart, StringComparison.Ordinal);
+        var run = updater[runStart..runEnd];
+
+        Assert.DoesNotContain("RunHeavyWorkAsync", updater, StringComparison.Ordinal);
+        Assert.Contains("catch (OperationCanceledException)", run, StringComparison.Ordinal);
+        Assert.Contains("return false;", run, StringComparison.Ordinal);
+        Assert.Contains("return !linkedCts.Token.IsCancellationRequested;", run, StringComparison.Ordinal);
+        Assert.Contains("throw;", updater.Substring(updater.IndexOf("Phase = \"Metadata update cancelled\"", StringComparison.Ordinal), 500), StringComparison.Ordinal);
+        Assert.Contains("await Task.Delay(ArtistYield, cancellationToken);", updater, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecordOperationFailureCoversCacheAndTarget()
+    {
+        var source = ReadCoordinator();
+        var start = source.IndexOf("private void RecordOperationFailure", StringComparison.Ordinal);
+        var body = source[start..(start + 1600)];
+
+        Assert.Contains("operation == \"cache-refresh\"", body, StringComparison.Ordinal);
+        Assert.Contains("Phase = \"Cache refresh failed\"", body, StringComparison.Ordinal);
+        Assert.Contains("Phase = \"Metadata update failed\"", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -140,6 +206,8 @@ public sealed class ArtistMetadataAutomationResilienceTests
         Assert.Contains("metadataCancel.disabled = !metadataRunning;", view, StringComparison.Ordinal);
         Assert.DoesNotContain("cancellation is not available yet", view, StringComparison.Ordinal);
         Assert.Contains("id=\"metadata-cancel-button\" class=\"action-btn action-btn-sm\" type=\"button\">Cancel<", view, StringComparison.Ordinal);
+        Assert.Contains("const cancelled = payload?.cancelled === true || stillRunning;", view, StringComparison.Ordinal);
+        Assert.Contains("{ restoreDisabled: false }", view, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -165,12 +233,21 @@ public sealed class ArtistMetadataAutomationResilienceTests
     }
 
     [Fact]
-    public void BiographyProvidersAreQueriedConcurrently()
+    public void BiographyProvidersAreQueriedSequentiallyThroughTheProviderGate()
     {
         var cache = ReadCacheRefresh();
+        var catalog = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.cs"));
 
-        Assert.Contains("await Task.WhenAll(requestedProviders", cache, StringComparison.Ordinal);
-        Assert.DoesNotContain("var biography = await ResolveBiographyAsync(", cache, StringComparison.Ordinal);
+        Assert.DoesNotContain("await Task.WhenAll(requestedProviders", cache, StringComparison.Ordinal);
+        Assert.DoesNotContain("await Task.WhenAll(providers)", catalog, StringComparison.Ordinal);
+        Assert.Contains("foreach (var provider in requestedProviders)", cache, StringComparison.Ordinal);
+        Assert.Contains("gate.RunAsync(", cache, StringComparison.Ordinal);
+        Assert.Contains("gate.IsUnavailable(providerName)", cache, StringComparison.Ordinal);
+        Assert.Contains("new ArtistMetadataProviderGate(_logger)", cache, StringComparison.Ordinal);
+        Assert.Contains("await AddRemoteProviderAsync(", catalog, StringComparison.Ordinal);
+        Assert.Contains("ArtistMetadataProviderGate.ThrowIfRateLimited(response)", cache, StringComparison.Ordinal);
+        Assert.Contains("ArtistMetadataProviderGate.ThrowIfRateLimited(response)", catalog, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -178,8 +255,9 @@ public sealed class ArtistMetadataAutomationResilienceTests
     {
         var cache = ReadCacheRefresh();
 
-        Assert.Contains("biographies.Add((requestedProviders[index], biography!));", cache, StringComparison.Ordinal);
-        Assert.Contains("var selectedBiographyProvider = biographies.FirstOrDefault().Provider;", cache, StringComparison.Ordinal);
+        Assert.Contains("biographies.Add((provider, biography!));", cache, StringComparison.Ordinal);
+        Assert.Contains("SelectArtistBiographySourceAsync(", cache, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshSelectedArtistBiographyAsync(artistId, cancellationToken)", cache, StringComparison.Ordinal);
     }
 
     private static string ReadCacheRefresh()

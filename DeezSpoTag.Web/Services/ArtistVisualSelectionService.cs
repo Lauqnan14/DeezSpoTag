@@ -77,6 +77,28 @@ public sealed class ArtistVisualSelectionService
         return ArtistVisualSelectionResult.Ok(avatarVisual?.LocalPath, backgroundVisual?.LocalPath, warnings);
     }
 
+    public async Task<ArtistVisualSelectionResult> ResetAsync(
+        long artistId,
+        CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured)
+        {
+            return ArtistVisualSelectionResult.BadRequest("Library DB not configured.");
+        }
+
+        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
+        {
+            return ArtistVisualSelectionResult.NotFound("Artist not found.");
+        }
+
+        // DB preferred paths are the single source of truth: reset clears them so the
+        // page and the push layer fall back to the automatic selection together.
+        await _libraryRepository.UpdateArtistImagePathAsync(artistId, null!, cancellationToken);
+        await _libraryRepository.UpdateArtistBackgroundPathAsync(artistId, null!, cancellationToken);
+        return ArtistVisualSelectionResult.Ok(null, null, Array.Empty<string>());
+    }
+
     public static ResolvedArtistVisualSelection? ResolveVisualSelection(
         string cacheRoot,
         string? explicitLocalPath,

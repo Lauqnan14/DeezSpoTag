@@ -36,6 +36,15 @@
         <option value="0">Manual only</option>
         </select>
     </label>
+    <label>
+        <span>Deep refresh schedule</span>
+        <select id="metadata-deep-refresh-interval" aria-label="Deep refresh schedule">
+        <option value="0" selected>Off</option>
+        <option value="365">Yearly</option>
+        <option value="180">6 months</option>
+        <option value="90">3 months</option>
+        </select>
+    </label>
 </div>
 <div class="metadata-updater-option-group">
     <div class="metadata-updater-group-label">Targets</div>
@@ -60,6 +69,11 @@
         <label class="metadata-updater-option">
             <input type="checkbox" id="metadata-include-avatar" checked />
             <span>Artist art</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-save-artist-folder-image" />
+            <span>Save artist art to folder</span>
+            <span class="metadata-updater-tooltip-icon" title="Writes the new artist art into each local artist folder using the same filename template as downloads (default folder.jpg) and overwrites the current file. DeezSpoTag and the selected target servers still receive the art." aria-label="Writes the new artist art into each local artist folder using the same filename template as downloads and overwrites the current file.">?</span>
         </label>
         <label class="metadata-updater-option">
             <input type="checkbox" id="metadata-include-background" checked />

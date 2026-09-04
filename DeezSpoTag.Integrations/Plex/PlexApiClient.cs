@@ -397,6 +397,47 @@ public class PlexApiClient
         return matches.Count > 0 ? matches[0] : null;
     }
 
+    /// <summary>
+    /// Album titles of a Plex artist (children directories) — used to verify that a
+    /// name-searched server artist is really the library artist before pushing.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetArtistAlbumTitlesAsync(
+        string serverUrl,
+        string token,
+        string ratingKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey.Trim())}/children?X-Plex-Token={Uri.EscapeDataString(token)}";
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<string>();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = System.Xml.Linq.XDocument.Parse(content);
+            return doc.Descendants()
+                .Where(element => string.Equals(element.Name.LocalName, "Directory", StringComparison.OrdinalIgnoreCase))
+                .Select(element => element.Attribute("title")?.Value?.Trim())
+                .Where(title => !string.IsNullOrWhiteSpace(title))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Plex artist album titles fetch failed for ratingKey {RatingKey}.", ratingKey);
+            return Array.Empty<string>();
+        }
+    }
+
     public async Task<PlexArtistMetadata?> GetArtistMetadataAsync(
         string serverUrl,
         string token,

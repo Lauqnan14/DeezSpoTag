@@ -213,6 +213,14 @@ public sealed class UserPreferencesDto
     public bool MetadataUpdaterIncludePopularSongs { get; set; } = false;
     public bool MetadataUpdaterMissingArtistArtworkOnly { get; set; } = false;
     public bool MetadataUpdaterOcrTextArtBlocking { get; set; } = true;
+    public bool MetadataUpdaterSaveArtistFolderImage { get; set; } = false;
+
+    /// <summary>
+    /// Optional deep refresh cadence: when due, cache refresh runs with
+    /// forceProviderRefresh so every artwork provider is re-queried regardless of the
+    /// 7-day freshness skip. 0 disables deep refresh.
+    /// </summary>
+    public int MetadataDeepRefreshIntervalDays { get; set; } = 0;
 
     // Home / Search
     public JsonElement? SpotiflacRecentSearches { get; set; }

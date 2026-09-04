@@ -4319,29 +4319,10 @@ async function loadAlbums(artistId) {
     updateArtistBiographySourceControls();
     bindArtistMediaSourceControls(artistIdValue);
     initAppleLazyLoad(resolvedArtist?.name, storedIds.appleId);
-    loadAppleArtistBiography(storedIds.appleId);
-    loadTidalArtistBiography(storedIds.tidalId);
-    loadQobuzArtistBiography(storedIds.qobuzId);
-    loadLastFmArtistBiography(libraryState.currentLocalArtistName);
+    await loadArtistBiographiesFromCache(artistIdValue);
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
     initQobuzIdEditor(artistIdValue);
-    if (!storedIds.tidalId && resolvedArtist?.name) {
-        resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name)
-            .then((tidalId) => {
-                if (tidalId) {
-                    loadTidalArtistBiography(tidalId);
-                }
-            });
-    }
-    if (!storedIds.qobuzId && resolvedArtist?.name) {
-        resolveAndStoreQobuzArtistId(artistIdValue, resolvedArtist.name)
-            .then((qobuzId) => {
-                if (qobuzId) {
-                    loadQobuzArtistBiography(qobuzId);
-                }
-            });
-    }
 }
 
 function applyLocalArtistHeader(resolvedArtist) {
@@ -4714,8 +4695,33 @@ function initSpotifyCacheControls(artistId) {
     bindArtistMetadataPolicyControls(artistId, artistSyncBlockedCheckbox);
     if (biographySourceSelect && biographySourceSelect.dataset.bound !== 'true') {
         biographySourceSelect.dataset.bound = 'true';
-        biographySourceSelect.addEventListener('change', () => {
+        biographySourceSelect.addEventListener('change', async () => {
+            biographySourceSelect.dataset.userSelected = 'true';
             applySelectedArtistBiographySource();
+            try {
+                await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/biographies/select`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: getSelectedArtistBiographySource() })
+                });
+            } catch (error) {
+                console.warn('Biography source selection persist failed.', error);
+            }
+        });
+    }
+    const biographyRefreshButton = document.getElementById('artist-biography-refresh');
+    if (biographyRefreshButton && biographyRefreshButton.dataset.bound !== 'true') {
+        biographyRefreshButton.dataset.bound = 'true';
+        biographyRefreshButton.addEventListener('click', async () => {
+            biographyRefreshButton.disabled = true;
+            try {
+                await refreshArtistBiographiesFromSources(artistId);
+                showToast('Artist biographies refreshed from sources.');
+            } catch (error) {
+                showToast(`Biography refresh failed: ${error?.message || error}`, true);
+            } finally {
+                biographyRefreshButton.disabled = false;
+            }
         });
     }
     updateArtistBiographySourceControls();
@@ -4840,6 +4846,22 @@ function initSpotifyCacheControls(artistId) {
             popularSongsSyncButton.disabled = false;
         }
     });
+
+    // Surface the Navidrome biography limitation when it matters for this panel.
+    const navidromeHint = document.getElementById('navidrome-bio-hint');
+    if (navidromeHint) {
+        const updateNavidromeHint = () => {
+            const includeBio = document.getElementById('sync-include-bio')?.checked ?? false;
+            const navidromeSelected = getArtistSyncTargets().includes('navidrome');
+            navidromeHint.style.display = includeBio && navidromeSelected ? 'block' : 'none';
+        };
+        if (!navidromeHint.dataset.bound) {
+            navidromeHint.dataset.bound = 'true';
+            targetContainer.addEventListener('change', updateNavidromeHint);
+            document.getElementById('sync-include-bio')?.addEventListener('change', updateNavidromeHint);
+        }
+        updateNavidromeHint();
+    }
 
     loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId);
 }
@@ -5996,9 +6018,6 @@ function initTidalIdEditor(artistIdValue) {
     editButton.dataset.bound = 'true';
 
     editButton.addEventListener('click', async () => {
-        if (!libraryState.appleExtras.storedTidalId) {
-            await resolveAndStoreTidalArtistId(artistIdValue, libraryState.currentLocalArtistName || libraryState.appleExtras.term);
-        }
         const current = libraryState.appleExtras.storedTidalId || '';
         const updated = await DeezSpoTag.ui.prompt('Tidal artist ID (numeric)', {
             title: 'Update Tidal Artist ID',
@@ -6040,61 +6059,12 @@ function initTidalIdEditor(artistIdValue) {
     });
 }
 
-async function resolveAndStoreArtistPlatformId(artistIdValue, artistName, platform) {
-    const normalizedArtistId = String(artistIdValue || '').trim();
-    const term = String(artistName || '').trim();
-    const storedIdKey = `stored${platform.displayName}Id`;
-    if (!normalizedArtistId || !term || libraryState.appleExtras[storedIdKey]) {
-        return null;
-    }
-
-    try {
-        const data = await fetchJsonOptional(`/api/${platform.route}/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
-        const artists = Array.isArray(data?.artists) ? data.artists : [];
-        if (artists.length === 0) {
-            return null;
-        }
-
-        const normalizedTerm = normalizeArtistName(term);
-        const match = artists.find(artist => normalizeArtistName(artist?.name) === normalizedTerm)
-            || artists.find(artist => normalizeArtistName(artist?.name).includes(normalizedTerm))
-            || null;
-        const platformId = String(match?.[platform.idProperty] || match?.id || '').trim();
-        if (!/^\d+$/.test(platformId)) {
-            return null;
-        }
-
-        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/${platform.route}-id`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [platform.idProperty]: platformId })
-        });
-        libraryState.appleExtras[storedIdKey] = platformId;
-        libraryState.appleExtras[`${platform.route}ArtistId`] = platformId;
-        return platformId;
-    } catch (error) {
-        console.warn(`${platform.displayName} artist ID auto-resolve failed`, error);
-        return null;
-    }
-}
-
-async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
-    return resolveAndStoreArtistPlatformId(artistIdValue, artistName, {
-        route: 'tidal',
-        displayName: 'Tidal',
-        idProperty: 'tidalId'
-    });
-}
-
 function initQobuzIdEditor(artistIdValue) {
     const editButton = document.getElementById('qobuzIdEdit');
     if (!editButton || !artistIdValue || editButton.dataset.bound === 'true') return;
     editButton.dataset.bound = 'true';
 
     editButton.addEventListener('click', async () => {
-        if (!libraryState.appleExtras.storedQobuzId) {
-            await resolveAndStoreQobuzArtistId(artistIdValue, libraryState.currentLocalArtistName || libraryState.appleExtras.term);
-        }
         const current = libraryState.appleExtras.storedQobuzId || '';
         const updated = await DeezSpoTag.ui.prompt('Qobuz artist ID (numeric)', {
             title: 'Update Qobuz Artist ID',
@@ -6131,14 +6101,6 @@ function initQobuzIdEditor(artistIdValue) {
         } finally {
             editButton.disabled = false;
         }
-    });
-}
-
-async function resolveAndStoreQobuzArtistId(artistIdValue, artistName) {
-    return resolveAndStoreArtistPlatformId(artistIdValue, artistName, {
-        route: 'qobuz',
-        displayName: 'Qobuz',
-        idProperty: 'qobuzId'
     });
 }
 
@@ -6420,7 +6382,9 @@ function applyStoredArtistBackgroundVisual(artistId, prefs) {
         }
         const fallback = libraryState.artistVisuals.headerImageUrl
             || selectImage(libraryState.currentSpotifyArtist?.images, 'large');
-        if (fallback) {
+        const avatarEl = document.getElementById('artistAvatar');
+        const avatarSrc = normalizeArtistVisualUrl(avatarEl?.querySelector('img')?.src);
+        if (fallback && normalizeArtistVisualUrl(fallback) !== avatarSrc) {
             applyArtistHeroBackgroundImage(fallback, false);
         }
         const hasSavedPath = !!((resolvedPrefs.backgroundPath || '').toString().trim() || serverBackgroundPath);
@@ -6468,6 +6432,7 @@ function getArtistBiographySourceLabel(source) {
 }
 
 function getArtistBiographyBySource(source) {
+    libraryState.cachedBiographies = libraryState.cachedBiographies || {};
     if (source === 'apple') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.biography || '');
     }
@@ -6481,7 +6446,76 @@ function getArtistBiographyBySource(source) {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.lastFmBiography || '');
     }
 
-    return normalizeArtistBiographyForSync(libraryState.currentSpotifyArtist?.biography || '');
+    return normalizeArtistBiographyForSync(libraryState.cachedBiographies.spotify || libraryState.currentSpotifyArtist?.biography || '');
+}
+
+// Loads the biographies the automation already cached for this artist (single source
+// of truth shared with pushes). Per-source live fetches stay available through the
+// explicit "Refresh bios" action instead of firing on every page load.
+async function loadArtistBiographiesFromCache(artistId) {
+    if (!artistId) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/biographies`);
+        libraryState.cachedBiographies = { spotify: null };
+        const sources = Array.isArray(data?.sources) ? data.sources : [];
+        sources.forEach(row => {
+            const text = normalizeArtistBiographyForSync(row?.biography || '') || null;
+            const source = String(row?.source || '').trim().toLowerCase();
+            if (source === 'apple') {
+                libraryState.appleExtras.biography = text;
+            } else if (source === 'tidal') {
+                libraryState.appleExtras.tidalBiography = text;
+            } else if (source === 'qobuz') {
+                libraryState.appleExtras.qobuzBiography = text;
+            } else if (source === 'lastfm') {
+                libraryState.appleExtras.lastFmBiography = text;
+            } else if (source === 'spotify') {
+                libraryState.cachedBiographies.spotify = text;
+            }
+        });
+
+        const select = document.getElementById('artist-biography-source');
+        const selected = String(data?.selected || '').trim().toLowerCase();
+        if (select && selected && !select.dataset.userSelected) {
+            select.value = selected;
+        }
+        updateArtistBiographySourceControls();
+        applySelectedArtistBiographySource();
+    } catch (error) {
+        console.warn('Cached biography load failed; falling back to live sources.', error);
+        const appleExtras = libraryState.appleExtras;
+        await Promise.allSettled([
+            loadAppleArtistBiography(appleExtras.appleArtistId),
+            loadTidalArtistBiography(appleExtras.tidalArtistId),
+            loadQobuzArtistBiography(appleExtras.qobuzArtistId),
+            loadLastFmArtistBiography(libraryState.currentLocalArtistName)
+        ]);
+    }
+}
+
+// Explicit per-source live refresh, used by the "Refresh bios" action.
+async function refreshArtistBiographiesFromSources(artistId) {
+    const appleExtras = libraryState.appleExtras;
+    await Promise.allSettled([
+        loadAppleArtistBiography(appleExtras.appleArtistId),
+        loadTidalArtistBiography(appleExtras.tidalArtistId),
+        loadQobuzArtistBiography(appleExtras.qobuzArtistId),
+        loadLastFmArtistBiography(libraryState.currentLocalArtistName)
+    ]);
+    applySelectedArtistBiographySource();
+    const selected = getSelectedArtistBiographySource();
+    try {
+        await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/biographies/select`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: selected })
+        });
+    } catch (error) {
+        console.warn('Biography source selection persist failed.', error);
+    }
 }
 
 function updateArtistBiographySourceControls() {
@@ -6687,9 +6721,16 @@ function getSpotifySyncSelectionState(artistId) {
             prefs.backgroundUrl
             || backgroundPathUrl
             || serverBackgroundUrl
-            || libraryState.artistVisuals.headerImageUrl
-            || selectImage(libraryState.currentSpotifyArtist?.images, 'large')
         );
+        if (!backgroundVisualUrl) {
+            const headerFallback = libraryState.artistVisuals.headerImageUrl
+                || selectImage(libraryState.currentSpotifyArtist?.images, 'large');
+            const avatarUrl = normalizeArtistVisualUrl(avatarVisualUrl);
+            const headerUrl = normalizeArtistVisualUrl(headerFallback);
+            if (headerUrl && headerUrl !== avatarUrl) {
+                backgroundVisualUrl = headerUrl;
+            }
+        }
     }
 
     return {
@@ -6843,14 +6884,6 @@ async function loadExternalArtistVisuals(artistName, artistId) {
         }
         mergeArtistVisualPickerResult(visuals, cached);
         renderArtistVisualPicker(artistId);
-
-        const refreshed = await fetchJsonOptional(
-            `/api/library/artists/${encodeURIComponent(artistId)}/artwork/refresh?force=true`,
-            { method: 'POST' });
-        if (visuals.externalRequestId !== requestId) {
-            return;
-        }
-        mergeArtistVisualPickerResult(visuals, refreshed);
     } catch (error) {
         console.warn('Failed to load cached artist artwork.', error);
     } finally {
@@ -7047,17 +7080,30 @@ function renderArtistVisualPicker(artistId) {
     const resetButton = document.getElementById('artist-visuals-reset');
     if (resetButton && !resetButton.dataset.bound) {
         resetButton.dataset.bound = 'true';
-        resetButton.addEventListener('click', () => {
+        resetButton.addEventListener('click', async () => {
+            // Server preferred paths are the source of truth: clear them first so the
+            // page and the push layer fall back together, then drop the local mirror.
+            try {
+                await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/visuals/reset`, { method: 'POST' });
+            } catch (error) {
+                console.warn('Visual reset on server failed; clearing local selection anyway.', error);
+            }
             localStorage.removeItem(getArtistVisualStorageKey(artistId));
             const avatarEl = document.getElementById('artistAvatar');
             if (avatarEl) {
                 delete avatarEl.dataset.localAvatar;
+                avatarEl.replaceChildren();
+                const placeholder = avatarEl.querySelector('.avatar-placeholder') || avatarEl;
+                placeholder.style.display = '';
             }
             const bgEl = document.querySelector('.artist-page');
             if (bgEl) {
                 libraryState.artistVisuals.backgroundApplyId = (libraryState.artistVisuals.backgroundApplyId || 0) + 1;
                 delete bgEl.dataset.localBackground;
+                bgEl.style.removeProperty('--hero-url');
             }
+            libraryState.artistVisuals.preferredAvatarPath = null;
+            libraryState.artistVisuals.preferredBackgroundPath = null;
             const artist = libraryState.currentSpotifyArtist;
             if (artist) {
                 applySpotifyArtistProfile(artist);

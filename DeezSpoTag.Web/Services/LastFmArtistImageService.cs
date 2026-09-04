@@ -33,6 +33,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
     private readonly PlatformAuthService _platformAuthService;
     private readonly ILogger<LastFmArtistImageService> _logger;
     private string? _cachedApiKey;
+    private bool _missingApiKeyWarned;
 
     public LastFmArtistImageService(
         IHttpClientFactory httpClientFactory,
@@ -72,14 +73,6 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
                 candidates.AddRange(await SearchArtistInfoImagesAsync(normalizedArtist, apiKey, limit, cancellationToken));
             }
 
-            if (candidates.Count < limit)
-            {
-                candidates.AddRange(await SearchArtistGalleryImagesAsync(
-                    normalizedArtist,
-                    limit - candidates.Count,
-                    cancellationToken));
-            }
-
             return candidates
                 .GroupBy(candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
@@ -109,6 +102,13 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         var apiKey = await ResolveApiKeyAsync();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
+            if (!_missingApiKeyWarned)
+            {
+                _missingApiKeyWarned = true;
+                _logger.LogWarning(
+                    "Last.fm biography lookup skipped because no Last.fm API key is configured (login page or Lastfm:ApiKey).");
+            }
+
             return null;
         }
 
@@ -118,6 +118,10 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
             using var response = await client.GetAsync(BuildArtistInfoUri(normalizedArtist, apiKey), cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
+                _logger.LogWarning(
+                    "Last.fm biography lookup failed for {ArtistName} with HTTP {StatusCode}.",
+                    LogSanitizer.OneLine(normalizedArtist),
+                    (int)response.StatusCode);
                 return null;
             }
 
@@ -125,10 +129,22 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             if (doc.RootElement.TryGetProperty("error", out var error)
                 && error.ValueKind == JsonValueKind.Number
-                && error.TryGetInt32(out var errorCode)
-                && errorCode == 10)
+                && error.TryGetInt32(out var errorCode))
             {
-                _cachedApiKey = null;
+                if (errorCode == 10)
+                {
+                    _cachedApiKey = null;
+                    _logger.LogWarning(
+                        "Last.fm rejected the configured API key (error 10, invalid key); biography lookup disabled until a valid key is set.");
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Last.fm biography lookup returned error {ErrorCode} for {ArtistName}.",
+                        errorCode,
+                        LogSanitizer.OneLine(normalizedArtist));
+                }
+
                 return null;
             }
 
@@ -300,13 +316,28 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         => NormalizeArtistNameForComparison(expectedName) == NormalizeArtistNameForComparison(returnedName);
 
     private static string NormalizeArtistNameForComparison(string? value)
-        => Regex.Replace(
-                WebUtility.HtmlDecode(value ?? string.Empty).Trim().ToLowerInvariant(),
+    {
+        var decoded = WebUtility.HtmlDecode(value ?? string.Empty).Trim().ToLowerInvariant();
+        var formD = decoded.Normalize(System.Text.NormalizationForm.FormD);
+        var builder = new System.Text.StringBuilder(formD.Length);
+        foreach (var character in formD)
+        {
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(character)
+                != System.Globalization.UnicodeCategory.NonSpacingMark)
+            {
+                builder.Append(character);
+            }
+        }
+
+        var accentFolded = builder.ToString().Normalize(System.Text.NormalizationForm.FormC);
+        return Regex.Replace(
+                accentFolded,
                 @"[^\p{L}\p{N}]+",
                 " ",
                 RegexOptions.None,
                 RegexTimeout)
             .Trim();
+    }
 
     private static Uri BuildArtistGalleryUri(string artistName)
     {

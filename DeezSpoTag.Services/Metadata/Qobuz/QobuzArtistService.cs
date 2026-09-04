@@ -18,6 +18,25 @@ public sealed class QobuzArtistService
         _config = options.Value;
     }
 
+    public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, CancellationToken ct)
+    {
+        var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);
+        var cacheKey = $"qobuz_artist_profile_{resolvedStore}_{artistId}";
+        if (_cache.TryGetValue<QobuzArtist>(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        var artist = await _apiClient.GetArtistAsync(artistId, resolvedStore, offset: 0, limit: 1, ct);
+        if (artist != null)
+        {
+            var cacheMinutes = _config.CacheDurationMinutes > 0 ? _config.CacheDurationMinutes : 60;
+            _cache.Set(cacheKey, artist, TimeSpan.FromMinutes(cacheMinutes));
+        }
+
+        return artist;
+    }
+
     public async Task<QobuzArtist?> GetArtistWithDiscographyAsync(int artistId, string store, CancellationToken ct)
     {
         var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);

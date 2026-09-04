@@ -43,4 +43,27 @@ public sealed class LibraryArtistVisualSelectionApiController : ControllerBase
         });
     }
 
+    [HttpPost("{id:long}/visuals/reset")]
+    public async Task<IActionResult> ResetVisuals(
+        long id,
+        CancellationToken cancellationToken)
+    {
+        if (id <= 0)
+        {
+            return BadRequest("ArtistId is required.");
+        }
+
+        var result = await _artistVisualSelectionService.ResetAsync(id, cancellationToken);
+        if (!result.Success)
+        {
+            return StatusCode(result.StatusCode, result.Error);
+        }
+
+        return Ok(new
+        {
+            reset = true,
+            avatarPath = result.AvatarPath,
+            backgroundPath = result.BackgroundPath
+        });
+    }
 }

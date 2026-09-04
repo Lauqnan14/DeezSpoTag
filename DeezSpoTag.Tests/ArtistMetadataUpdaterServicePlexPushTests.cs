@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,8 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -203,6 +206,231 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
     }
 
     [Fact]
+    public async Task PrepareVisualsAsync_DoesNotReuseSameImageBytesForBackgroundWhenAnotherImageExists()
+    {
+        await DataRootEnvironmentGate.WaitAsync();
+        var tempRoot = CreateTempDirectory();
+        var service = CreateServiceForVisualPreparation(tempRoot);
+        var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", Path.Join(tempRoot, "Data"));
+        try
+        {
+            var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
+            Directory.CreateDirectory(managedRoot);
+            var duplicateA = Path.Join(managedRoot, "dup-a.png");
+            var duplicateB = Path.Join(managedRoot, "dup-b.png");
+            var distinct = Path.Join(managedRoot, "other.png");
+            WriteSolidPng(duplicateA, new Rgba32(220, 20, 60));
+            File.Copy(duplicateA, duplicateB, overwrite: true);
+            WriteSolidPng(distinct, new Rgba32(25, 80, 210));
+
+            var tracked = new MetadataUpdaterTrackedArtist
+            {
+                ArtistId = 42,
+                ArtistName = "Artist",
+                IncludeAvatar = true,
+                IncludeBackground = true
+            };
+
+            var prepared = await InvokePrepareVisualsAsync(
+                service,
+                tracked,
+                (duplicateA, "spotify:one", "spotify"),
+                (duplicateB, "apple:two", "apple"),
+                (distinct, "tidal:three", "tidal"));
+
+            var avatar = GetPreparedPath(prepared, "AvatarPath");
+            var background = GetPreparedPath(prepared, "BackgroundPath");
+            Assert.False(string.IsNullOrWhiteSpace(avatar));
+            Assert.False(string.IsNullOrWhiteSpace(background));
+            Assert.NotEqual(
+                Convert.ToHexString(await File.ReadAllBytesAsync(avatar!)),
+                Convert.ToHexString(await File.ReadAllBytesAsync(background!)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+            DataRootEnvironmentGate.Release();
+        }
+    }
+
+    [Fact]
+    public async Task PrepareVisualsAsync_SkipsTopHeavyTitleTextWhenOcrBlockingEnabled()
+    {
+        await DataRootEnvironmentGate.WaitAsync();
+        var tempRoot = CreateTempDirectory();
+        var service = CreateServiceForVisualPreparation(tempRoot);
+        var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", Path.Join(tempRoot, "Data"));
+        try
+        {
+            var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
+            Directory.CreateDirectory(managedRoot);
+            var titled = Path.Join(managedRoot, "titled.png");
+            var clean = Path.Join(managedRoot, "clean.png");
+            WriteTopTitleTextPng(titled);
+            WriteSolidPng(clean, new Rgba32(25, 80, 210), 96);
+
+            var tracked = new MetadataUpdaterTrackedArtist
+            {
+                ArtistId = 42,
+                ArtistName = "Artist",
+                IncludeAvatar = true,
+                IncludeBackground = false,
+                OcrTextArtBlockingEnabled = true
+            };
+
+            var prepared = await InvokePrepareVisualsAsync(
+                service,
+                tracked,
+                (titled, "deezer:cover", "deezer"),
+                (clean, "tidal:photo", "tidal"));
+
+            var avatar = GetPreparedPath(prepared, "AvatarPath");
+            Assert.False(string.IsNullOrWhiteSpace(avatar));
+            Assert.Equal(
+                Convert.ToHexString(await File.ReadAllBytesAsync(clean)),
+                Convert.ToHexString(await File.ReadAllBytesAsync(avatar!)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+            DataRootEnvironmentGate.Release();
+        }
+    }
+
+    [Fact]
+    public async Task PrepareVisualsAsync_DoesNotReuseSamePhotoAtDifferentResolutionWhenAnotherImageExists()
+    {
+        await DataRootEnvironmentGate.WaitAsync();
+        var tempRoot = CreateTempDirectory();
+        var service = CreateServiceForVisualPreparation(tempRoot);
+        var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", Path.Join(tempRoot, "Data"));
+        try
+        {
+            var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
+            Directory.CreateDirectory(managedRoot);
+            var avatarPath = Path.Join(managedRoot, "avatar.png");
+            var backgroundPath = Path.Join(managedRoot, "background.png");
+            var samePhotoLarge = Path.Join(managedRoot, "same-large.png");
+            var distinct = Path.Join(managedRoot, "other.png");
+            WriteSolidPng(avatarPath, new Rgba32(220, 20, 60), 16);
+            WriteSolidPng(backgroundPath, new Rgba32(220, 20, 60), 64);
+            WriteSolidPng(samePhotoLarge, new Rgba32(220, 20, 60), 128);
+            WriteSolidPng(distinct, new Rgba32(25, 80, 210), 48);
+
+            var tracked = new MetadataUpdaterTrackedArtist
+            {
+                ArtistId = 42,
+                ArtistName = "Artist",
+                IncludeAvatar = true,
+                IncludeBackground = true
+            };
+
+            var prepared = await InvokePrepareVisualsAsync(
+                service,
+                tracked,
+                (samePhotoLarge, "apple:two", "apple"),
+                (distinct, "tidal:three", "tidal"));
+
+            var avatar = GetPreparedPath(prepared, "AvatarPath");
+            var background = GetPreparedPath(prepared, "BackgroundPath");
+            Assert.False(string.IsNullOrWhiteSpace(avatar));
+            Assert.False(string.IsNullOrWhiteSpace(background));
+            Assert.Equal(
+                Convert.ToHexString(await File.ReadAllBytesAsync(distinct)),
+                Convert.ToHexString(await File.ReadAllBytesAsync(background!)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+            DataRootEnvironmentGate.Release();
+        }
+    }
+
+    [Fact]
+    public async Task PrepareVisualsAsync_SkipsUsedHashesThenWrapsOnCacheRefresh()
+    {
+        await DataRootEnvironmentGate.WaitAsync();
+        var tempRoot = CreateTempDirectory();
+        var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", Path.Join(tempRoot, "Data"));
+        try
+        {
+            var dbPath = Path.Join(tempRoot, "library.db");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+                })
+                .Build();
+            await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+            await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                await connection.OpenAsync();
+                await using var command = new SqliteCommand(
+                    "INSERT INTO artist (id, name) VALUES (42, 'Artist');",
+                    connection);
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var service = CreateServiceForVisualPreparation(tempRoot);
+            SetPrivateField(service, "_libraryRepository", repository);
+
+            var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
+            Directory.CreateDirectory(managedRoot);
+            var red = Path.Join(managedRoot, "red.png");
+            var green = Path.Join(managedRoot, "green.png");
+            var blue = Path.Join(managedRoot, "blue.png");
+            WriteSolidPng(red, new Rgba32(220, 20, 60), 96);
+            WriteSolidPng(green, new Rgba32(20, 180, 60), 96);
+            WriteSolidPng(blue, new Rgba32(25, 80, 210), 96);
+            var redHash = ComputeFileHash(red);
+            var greenHash = ComputeFileHash(green);
+            var blueHash = ComputeFileHash(blue);
+
+            var tracked = new MetadataUpdaterTrackedArtist
+            {
+                ArtistId = 42,
+                ArtistName = "Artist",
+                IncludeAvatar = true,
+                IncludeBackground = false,
+                OcrTextArtBlockingEnabled = false
+            };
+            var candidates = new (string Path, string Identity, string Source)[]
+            {
+                (red, "spotify:profile:one", "spotify"),
+                (green, "apple:two", "apple"),
+                (blue, "tidal:three", "tidal")
+            };
+
+            var first = await InvokePrepareVisualsAsync(service, tracked, preferExistingSlots: false, candidates);
+            Assert.Equal(redHash, ComputeFileHash(GetPreparedPath(first, "AvatarPath")!));
+
+            var second = await InvokePrepareVisualsAsync(service, tracked, preferExistingSlots: false, candidates);
+            var secondHash = ComputeFileHash(GetPreparedPath(second, "AvatarPath")!);
+            Assert.NotEqual(redHash, secondHash);
+            Assert.Contains(secondHash, new[] { greenHash, blueHash });
+
+            var third = await InvokePrepareVisualsAsync(service, tracked, preferExistingSlots: false, candidates);
+            var thirdHash = ComputeFileHash(GetPreparedPath(third, "AvatarPath")!);
+            Assert.NotEqual(redHash, thirdHash);
+            Assert.NotEqual(secondHash, thirdHash);
+            Assert.Contains(thirdHash, new[] { greenHash, blueHash });
+
+            var wrapped = await InvokePrepareVisualsAsync(service, tracked, preferExistingSlots: false, candidates);
+            Assert.Equal(redHash, ComputeFileHash(GetPreparedPath(wrapped, "AvatarPath")!));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+            DataRootEnvironmentGate.Release();
+        }
+    }
+
+    [Fact]
     public async Task RegisterFromManualPushAsync_MarksArtistAsRecentlyPushed()
     {
         var tempRoot = CreateTempDirectory();
@@ -359,9 +587,26 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         return path;
     }
 
-    private static void WriteSolidPng(string path, Rgba32 color)
+    private static void WriteSolidPng(string path, Rgba32 color, int size = 4)
     {
-        using var image = new Image<Rgba32>(4, 4, color);
+        using var image = new Image<Rgba32>(size, size, color);
+        image.SaveAsPng(path);
+    }
+
+    private static void WriteTopTitleTextPng(string path)
+    {
+        const int size = 128;
+        using var image = new Image<Rgba32>(size, size, new Rgba32(12, 12, 12));
+        for (var y = 48; y < 72; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                image[x, y] = (x / 4) % 2 == 0
+                    ? new Rgba32(250, 220, 40)
+                    : new Rgba32(20, 20, 40);
+            }
+        }
+
         image.SaveAsPng(path);
     }
 
@@ -487,22 +732,43 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         await runningTask;
     }
 
+    private static Task<object> InvokePrepareVisualsAsync(
+        ArtistMetadataUpdaterService service,
+        MetadataUpdaterTrackedArtist tracked,
+        params (string Path, string Identity, string Source)[] sourceCandidates)
+        => InvokePrepareVisualsAsync(service, tracked, preferExistingSlots: true, sourceCandidates);
+
     private static async Task<object> InvokePrepareVisualsAsync(
         ArtistMetadataUpdaterService service,
-        MetadataUpdaterTrackedArtist tracked)
+        MetadataUpdaterTrackedArtist tracked,
+        bool preferExistingSlots,
+        params (string Path, string Identity, string Source)[] sourceCandidates)
     {
         var method = typeof(ArtistMetadataUpdaterService).GetMethod("PrepareVisualsAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         var candidateType = typeof(ArtistMetadataUpdaterService).GetNestedType("ArtworkCandidate", BindingFlags.NonPublic);
         Assert.NotNull(candidateType);
-        var candidates = Array.CreateInstance(candidateType!, 0);
+        var candidates = Array.CreateInstance(candidateType!, sourceCandidates.Length);
+        var fromLocal = candidateType!.GetMethod("FromLocal", BindingFlags.Public | BindingFlags.Static);
+        Assert.NotNull(fromLocal);
+        for (var index = 0; index < sourceCandidates.Length; index++)
+        {
+            var source = sourceCandidates[index];
+            candidates.SetValue(fromLocal!.Invoke(null, [source.Path, source.Identity, source.Source, null]), index);
+        }
 
-        var task = method!.Invoke(service, [tracked, candidates, CancellationToken.None]);
+        var task = method!.Invoke(service, [tracked, candidates, CancellationToken.None, preferExistingSlots]);
         var runningTask = Assert.IsAssignableFrom<Task>(task);
         await runningTask;
         var resultProperty = runningTask.GetType().GetProperty("Result", BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(resultProperty);
         return resultProperty!.GetValue(runningTask)!;
+    }
+
+    private static string ComputeFileHash(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
     private static string? GetPreparedPath(object prepared, string propertyName)

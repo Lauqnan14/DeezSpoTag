@@ -603,7 +603,6 @@ public static class ArtworkFallbackHelper
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
         if (deezerClient == null)
         {
             return null;
@@ -617,7 +616,7 @@ public static class ArtworkFallbackHelper
 
         try
         {
-            var artist = await deezerClient.GetArtistAsync(normalizedArtistId);
+            var artist = await deezerClient.GetArtistAsync(normalizedArtistId).WaitAsync(cancellationToken);
             return BuildDeezerArtistImageUrl(
                 artist.Md5Image,
                 size > 0 ? size : 1200,

@@ -25,6 +25,7 @@ public sealed class ArtistMetadataCacheRefreshService
         BiographyProvider.Qobuz,
         BiographyProvider.LastFm
     ];
+    private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
     private readonly LibraryRepository _repository;
     private readonly ArtistArtworkCatalogService _artworkCatalog;
     private readonly SpotifyArtistService _spotify;
@@ -32,6 +33,8 @@ public sealed class ArtistMetadataCacheRefreshService
     private readonly ITidalAccessTokenProvider _tidalTokens;
     private readonly QobuzArtistService _qobuz;
     private readonly LastFmArtistImageService _lastFm;
+    private readonly ArtistMetadataUpdaterService _visualSlots;
+    private readonly UserPreferencesStore _preferences;
     private readonly IHttpClientFactory _httpClients;
     private readonly ILogger<ArtistMetadataCacheRefreshService> _logger;
 
@@ -43,6 +46,8 @@ public sealed class ArtistMetadataCacheRefreshService
         ITidalAccessTokenProvider tidalTokens,
         QobuzArtistService qobuz,
         LastFmArtistImageService lastFm,
+        ArtistMetadataUpdaterService visualSlots,
+        UserPreferencesStore preferences,
         IHttpClientFactory httpClients,
         ILogger<ArtistMetadataCacheRefreshService> logger)
     {
@@ -53,6 +58,8 @@ public sealed class ArtistMetadataCacheRefreshService
         _tidalTokens = tidalTokens;
         _qobuz = qobuz;
         _lastFm = lastFm;
+        _visualSlots = visualSlots;
+        _preferences = preferences;
         _httpClients = httpClients;
         _logger = logger;
     }
@@ -81,6 +88,7 @@ public sealed class ArtistMetadataCacheRefreshService
             .ToList();
         var succeeded = 0;
         var failed = 0;
+        var gate = new ArtistMetadataProviderGate(_logger);
         for (var index = 0; index < artists.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -94,7 +102,9 @@ public sealed class ArtistMetadataCacheRefreshService
                     artist.Name,
                     request.Source,
                     request.IncludePopularSongs,
-                    cancellationToken);
+                    cancellationToken,
+                    gate,
+                    request.ForceProviderRefresh);
                 succeeded++;
                 progress?.Report(new ArtistMetadataOperationProgress(
                     index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
@@ -106,23 +116,36 @@ public sealed class ArtistMetadataCacheRefreshService
                     index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
                 _logger.LogWarning(ex, "Artist metadata cache refresh failed for artist {ArtistId}.", artist.Id);
             }
+
+            await Task.Delay(ArtistYield, cancellationToken);
         }
 
         return new ArtistMetadataCacheRefreshResult(artists.Count, succeeded, failed, null);
     }
+
+    public Task<bool> RefreshArtistAsync(
+        long artistId,
+        string artistName,
+        string? source,
+        bool includePopularSongs,
+        CancellationToken cancellationToken)
+        => RefreshArtistAsync(artistId, artistName, source, includePopularSongs, cancellationToken, providerGate: null);
 
     public async Task<bool> RefreshArtistAsync(
         long artistId,
         string artistName,
         string? source,
         bool includePopularSongs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArtistMetadataProviderGate? providerGate,
+        bool forceProviderRefresh = false)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
         {
             return false;
         }
 
+        var gate = providerGate ?? new ArtistMetadataProviderGate(_logger);
         var selectedProvider = ParseProvider(source);
         var normalizedSource = selectedProvider.HasValue
             ? ProviderName(selectedProvider.Value)
@@ -138,48 +161,72 @@ public sealed class ArtistMetadataCacheRefreshService
             artist.PreferredImagePath,
             cancellationToken,
             normalizedSource == "auto" ? null : normalizedSource,
-            forceProviderRefresh: true);
+            forceProviderRefresh: forceProviderRefresh,
+            providerGate: gate,
+            includeGallery: false,
+            allowArtistPageScrape: false);
+        var preferences = await _preferences.LoadAsync();
+        await _visualSlots.ApplyCatalogVisualsToSlotsAsync(
+            artistId,
+            artistName,
+            preferences.MetadataUpdaterOcrTextArtBlocking,
+            cancellationToken);
         IReadOnlyList<BiographyProvider> requestedProviders = selectedProvider.HasValue
             ? [selectedProvider.Value]
             : BiographyProviders;
 
-        cancellationToken.ThrowIfCancellationRequested();
-        var resolved = await Task.WhenAll(requestedProviders
-            .Select(provider => ResolveBiographyAsync(provider, artistId, artistName, cancellationToken)));
         var biographies = new List<(BiographyProvider Provider, string Biography)>();
-        for (var index = 0; index < requestedProviders.Count; index++)
+        foreach (var provider in requestedProviders)
         {
-            var biography = SanitizeBiography(resolved[index]);
+            cancellationToken.ThrowIfCancellationRequested();
+            var providerName = ProviderName(provider);
+            if (gate.IsUnavailable(providerName))
+            {
+                continue;
+            }
+
+            var biography = ArtistBiographySanitizer.Clean(await gate.RunAsync(
+                providerName,
+                token => ResolveBiographyAsync(provider, artistId, artistName, token),
+                cancellationToken));
             if (!string.IsNullOrWhiteSpace(biography))
             {
-                biographies.Add((requestedProviders[index], biography!));
+                biographies.Add((provider, biography!));
             }
         }
 
         if (includePopularSongs
             && selectedProvider.HasValue
-            && selectedProvider.Value != BiographyProvider.Spotify)
+            && selectedProvider.Value != BiographyProvider.Spotify
+            && !gate.IsUnavailable(ProviderName(BiographyProvider.Spotify)))
         {
-            await _spotify.GetArtistPageAsync(
-                artistId,
-                artistName,
-                forceRefresh: true,
-                forceRematch: false,
-                cancellationToken,
-                includeDeezerLinking: true);
-        }
-
-        var selectedBiographyProvider = biographies.FirstOrDefault().Provider;
-        foreach (var biography in biographies)
-        {
-            var biographySource = ProviderName(biography.Provider);
-            await _repository.UpsertArtistBiographyCacheAsync(
-                artistId,
-                biographySource,
-                biography.Biography,
-                biography.Provider == selectedBiographyProvider,
+            await gate.RunAsync(
+                ProviderName(BiographyProvider.Spotify),
+                token => _spotify.GetArtistPageAsync(
+                    artistId,
+                    artistName,
+                    forceRefresh: false,
+                    forceRematch: false,
+                    token,
+                    includeDeezerLinking: false,
+                    includeDiscography: false),
                 cancellationToken);
         }
+
+        foreach (var biography in biographies)
+        {
+            await _repository.UpsertArtistBiographyCacheAsync(
+                artistId,
+                ProviderName(biography.Provider),
+                biography.Biography,
+                selected: false,
+                cancellationToken);
+        }
+
+        await _repository.SelectArtistBiographySourceAsync(
+            artistId,
+            selectedProvider.HasValue ? ProviderName(selectedProvider.Value) : null,
+            cancellationToken);
 
         return true;
     }
@@ -195,7 +242,13 @@ public sealed class ArtistMetadataCacheRefreshService
             return provider switch
             {
                 BiographyProvider.Spotify => (await _spotify.GetArtistPageAsync(
-                    artistId, artistName, forceRefresh: true, forceRematch: false, cancellationToken))?.Artist?.Biography,
+                    artistId,
+                    artistName,
+                    forceRefresh: false,
+                    forceRematch: false,
+                    cancellationToken,
+                    includeDeezerLinking: false,
+                    includeDiscography: false))?.Artist?.Biography,
                 BiographyProvider.Apple => await ResolveAppleBiographyAsync(artistId, artistName, cancellationToken),
                 BiographyProvider.Tidal => await ResolveTidalBiographyAsync(artistId, cancellationToken),
                 BiographyProvider.Qobuz => await ResolveQobuzBiographyAsync(artistId, cancellationToken),
@@ -203,9 +256,14 @@ public sealed class ArtistMetadataCacheRefreshService
                 _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
         {
-            _logger.LogDebug(ex, "Artist biography provider {Provider} failed for artist {ArtistId}.", provider, artistId);
+            _logger.LogWarning(
+                ex,
+                "Artist biography provider {Provider} failed for artist {ArtistId} ({ArtistName}).",
+                provider,
+                artistId,
+                artistName);
             return null;
         }
     }
@@ -216,11 +274,15 @@ public sealed class ArtistMetadataCacheRefreshService
         AppleArtistBiographyResult? result;
         if (!string.IsNullOrWhiteSpace(appleId))
         {
-            result = await _apple.ResolveByArtistIdAsync(appleId, artistName, cancellationToken);
+            result = await _apple.ResolveByArtistIdAsync(
+                appleId,
+                artistName,
+                cancellationToken,
+                allowArtistPageScrape: false);
         }
         else
         {
-            var tracks = await _repository.GetArtistTrackTitlesAsync(artistId, 25, cancellationToken);
+            var tracks = await _repository.GetArtistTrackTitlesAsync(artistId, 8, cancellationToken);
             result = await _apple.ResolveByExactArtistNameAndTracksAsync(artistName, tracks, cancellationToken);
             if (!string.IsNullOrWhiteSpace(result?.AppleId))
             {
@@ -240,7 +302,7 @@ public sealed class ArtistMetadataCacheRefreshService
             return null;
         }
 
-        var artist = await _qobuz.GetArtistWithDiscographyAsync(qobuzId, "us-en", cancellationToken);
+        var artist = await _qobuz.GetArtistAsync(qobuzId, "us-en", cancellationToken);
         return FirstNonEmpty(artist?.Biography?.Content, artist?.Biography?.Summary);
     }
 
@@ -254,50 +316,29 @@ public sealed class ArtistMetadataCacheRefreshService
 
         var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
         var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken) ?? "US";
-        var url = $"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(sourceId)}?countryCode={Uri.EscapeDataString(country)}&include=biography&collapseBy=FINGERPRINT";
+        var url = $"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(sourceId)}?countryCode={Uri.EscapeDataString(country)}&include=biography";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         using var response = await _httpClients.CreateClient().SendAsync(request, cancellationToken);
+        ArtistMetadataProviderGate.ThrowIfRateLimited(response);
         if (!response.IsSuccessStatusCode)
         {
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                _logger.LogWarning(
+                    "Tidal biography lookup rejected with HTTP {StatusCode} for artist {ArtistId}; check Tidal credentials/openapi access.",
+                    (int)response.StatusCode,
+                    artistId);
+            }
+
             return null;
         }
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        if (!document.RootElement.TryGetProperty("data", out var data)
-            || !TryGetRelationshipId(data, "biography", out var biographyId)
-            || !document.RootElement.TryGetProperty("included", out var included))
-        {
-            return null;
-        }
-
-        foreach (var item in included.EnumerateArray())
-        {
-            if (GetString(item, "id") != biographyId
-                || !item.TryGetProperty("attributes", out var attributes))
-            {
-                continue;
-            }
-
-            return GetString(attributes, "text");
-        }
-
-        return null;
-    }
-
-    private static bool TryGetRelationshipId(JsonElement root, string name, out string id)
-    {
-        id = string.Empty;
-        if (!root.TryGetProperty("relationships", out var relationships)
-            || !relationships.TryGetProperty(name, out var relationship)
-            || !relationship.TryGetProperty("data", out var data))
-        {
-            return false;
-        }
-
-        var value = data.ValueKind == JsonValueKind.Array ? data.EnumerateArray().FirstOrDefault() : data;
-        id = GetString(value, "id") ?? string.Empty;
-        return id.Length > 0;
+        var biographyText = TidalBiographyParser.TryReadBiographyText(document.RootElement);
+        return string.IsNullOrWhiteSpace(biographyText)
+            ? null
+            : biographyText;
     }
 
     private static BiographyProvider? ParseProvider(string? source)
@@ -325,11 +366,6 @@ public sealed class ArtistMetadataCacheRefreshService
             _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
         };
 
-    private static string? SanitizeBiography(string? value)
-        => string.IsNullOrWhiteSpace(value)
-            ? null
-            : value.Trim().Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
 
@@ -345,6 +381,7 @@ public sealed record ArtistMetadataCacheRefreshRequest(
     long? ArtistId,
     long? FolderId,
     string? Source,
-    bool IncludePopularSongs = false);
+    bool IncludePopularSongs = false,
+    bool ForceProviderRefresh = false);
 public sealed record ArtistMetadataCacheRefreshResult(int Total, int Succeeded, int Failed, string? Error);
 public sealed record ArtistMetadataOperationProgress(int Processed, int Total, string? CurrentArtist, long? CompletedArtistId = null, int Succeeded = 0, int Failed = 0);

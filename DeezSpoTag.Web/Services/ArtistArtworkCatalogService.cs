@@ -14,15 +14,16 @@ using SixLabors.ImageSharp;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class ArtistArtworkCatalogService
+public sealed partial class ArtistArtworkCatalogService
 {
-    private static readonly TimeSpan ProviderTimeout = TimeSpan.FromSeconds(20);
     private const string CandidateRole = "candidate";
     private readonly LibraryRepository _repository;
     private readonly SpotifyArtistService _spotify;
     private readonly DeezerClient _deezer;
     private readonly ITidalAccessTokenProvider _tidalTokens;
     private readonly QobuzArtistService _qobuz;
+    private readonly IQobuzMetadataService _qobuzMetadata;
+    private readonly AppleArtistBiographyService _apple;
     private readonly LastFmArtistImageService _lastFm;
     private readonly IHttpClientFactory _httpClients;
     private readonly ILogger<ArtistArtworkCatalogService> _logger;
@@ -44,6 +45,8 @@ public sealed class ArtistArtworkCatalogService
         DeezerClient deezer,
         ITidalAccessTokenProvider tidalTokens,
         QobuzArtistService qobuz,
+        IQobuzMetadataService qobuzMetadata,
+        AppleArtistBiographyService apple,
         LastFmArtistImageService lastFm,
         IHttpClientFactory httpClients,
         IWebHostEnvironment environment,
@@ -56,6 +59,8 @@ public sealed class ArtistArtworkCatalogService
         _deezer = deezer;
         _tidalTokens = tidalTokens;
         _qobuz = qobuz;
+        _qobuzMetadata = qobuzMetadata;
+        _apple = apple;
         _lastFm = lastFm;
         _httpClients = httpClients;
         _logger = logger;
@@ -84,7 +89,8 @@ public sealed class ArtistArtworkCatalogService
                 item.LocalPath!,
                 BuildLocalUrl(item.LocalPath!),
                 item.Width,
-                item.Height))
+                item.Height,
+                item.ContentHash))
             .ToList();
         return new ArtistArtworkCatalogResult(artist.Id, artist.Name, visuals, providerResults);
     }
@@ -95,11 +101,15 @@ public sealed class ArtistArtworkCatalogService
         string? localImagePath,
         CancellationToken cancellationToken,
         string? onlyProvider = null,
-        bool forceProviderRefresh = false)
+        bool forceProviderRefresh = false,
+        ArtistMetadataProviderGate? providerGate = null,
+        bool includeGallery = true,
+        bool allowArtistPageScrape = true)
     {
+        var rematchedProviders = await EnsureMatchedSourceIdsAsync(artistId, artistName, cancellationToken);
         var existing = await _repository.GetArtistArtworkCacheAsync(artistId, cancellationToken);
         var staleBefore = DateTimeOffset.UtcNow.AddDays(-7);
-        bool NeedsRefresh(string provider) => forceProviderRefresh || !existing.Any(item =>
+        bool HasFreshCachedArtwork(string provider) => existing.Any(item =>
             string.Equals(item.Source, provider, StringComparison.OrdinalIgnoreCase)
             && !item.UserBlocked
             && !item.TextArtBlocked
@@ -107,45 +117,104 @@ public sealed class ArtistArtworkCatalogService
             && File.Exists(item.LocalPath)
             && DateTimeOffset.TryParse(item.LastSeenAt, out var seen)
             && seen >= staleBefore);
+        if (!forceProviderRefresh)
+        {
+            // When a provider is about to be queried anyway (stale/absent cache), the
+            // stored platform id is revalidated against local album titles first.
+            await RevalidateStoredPlatformArtistIdsAsync(
+                artistId,
+                artistName,
+                rematchedProviders,
+                provider => !HasFreshCachedArtwork(provider),
+                cancellationToken);
+        }
+
+        bool NeedsRefresh(string provider) => forceProviderRefresh
+            || rematchedProviders.Contains(provider)
+            || !HasFreshCachedArtwork(provider);
         bool Includes(string provider) => string.IsNullOrWhiteSpace(onlyProvider)
             || string.Equals(provider, onlyProvider, StringComparison.OrdinalIgnoreCase)
             || string.Equals(onlyProvider, "apple", StringComparison.OrdinalIgnoreCase)
                && string.Equals(provider, "itunes", StringComparison.OrdinalIgnoreCase);
 
-        var providers = new List<Task<ProviderResolution>>
+        var gate = providerGate ?? new ArtistMetadataProviderGate(_logger);
+        var resolutions = new List<ProviderResolution>
         {
-            ResolveLocalAsync(artistId, localImagePath, cancellationToken)
+            await ResolveLocalAsync(artistId, localImagePath, cancellationToken)
         };
-        if (Includes("spotify") && NeedsRefresh("spotify")) providers.Add(RunProviderAsync(artistId, "spotify", token => ResolveSpotifyAsync(artistId, artistName, token), cancellationToken));
-        if (Includes("deezer") && NeedsRefresh("deezer")) providers.Add(RunProviderAsync(artistId, "deezer", token => ResolveDeezerAsync(artistId, artistName, token), cancellationToken));
-        if (Includes("itunes") && NeedsRefresh("itunes")) providers.Add(RunProviderAsync(artistId, "itunes", token => ResolveItunesAsync(artistName, token), cancellationToken));
-        if (Includes("tidal") && NeedsRefresh("tidal")) providers.Add(RunProviderAsync(artistId, "tidal", token => ResolveTidalAsync(artistId, token), cancellationToken));
-        if (Includes("qobuz") && NeedsRefresh("qobuz")) providers.Add(RunProviderAsync(artistId, "qobuz", token => ResolveQobuzAsync(artistId, token), cancellationToken));
-        if (Includes("lastfm") && NeedsRefresh("lastfm")) providers.Add(RunProviderAsync(artistId, "lastfm", token => ResolveLastFmAsync(artistName, token), cancellationToken));
-        var resolutions = await Task.WhenAll(providers);
-        var results = new List<ArtistArtworkProviderResult>(resolutions.Length);
+        await AddRemoteProviderAsync(resolutions, gate, "spotify", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "spotify", inner => ResolveSpotifyAsync(artistId, artistName, includeGallery, inner), token), cancellationToken);
+        await AddRemoteProviderAsync(resolutions, gate, "deezer", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "deezer", inner => ResolveDeezerAsync(artistId, artistName, inner), token), cancellationToken);
+        await AddRemoteProviderAsync(resolutions, gate, "itunes", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "itunes", inner => ResolveItunesAsync(artistId, artistName, allowArtistPageScrape, inner), token), cancellationToken);
+        await AddRemoteProviderAsync(resolutions, gate, "tidal", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "tidal", inner => ResolveTidalAsync(artistId, inner), token), cancellationToken);
+        await AddRemoteProviderAsync(resolutions, gate, "qobuz", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "qobuz", inner => ResolveQobuzAsync(artistId, inner), token), cancellationToken);
+        await AddRemoteProviderAsync(resolutions, gate, "lastfm", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "lastfm", inner => ResolveLastFmAsync(artistName, includeGallery, inner), token), cancellationToken);
+        var results = new List<ArtistArtworkProviderResult>(resolutions.Count);
         foreach (var resolution in resolutions)
         {
             if (resolution.Candidates.Count == 0)
             {
+                if (resolution.Skipped)
+                {
+                    results.Add(new ArtistArtworkProviderResult(
+                        resolution.Provider,
+                        true,
+                        0,
+                        resolution.Message));
+                    continue;
+                }
+
                 var localCached = string.Equals(resolution.Provider, "local", StringComparison.OrdinalIgnoreCase)
                     && string.IsNullOrWhiteSpace(resolution.Message);
                 results.Add(new ArtistArtworkProviderResult(resolution.Provider, localCached, localCached ? 1 : 0, resolution.Message));
                 continue;
             }
 
-            var cached = 0;
-            foreach (var candidate in resolution.Candidates)
-            {
-                if (await CacheCandidateAsync(artistId, candidate, cancellationToken) is not null)
-                {
-                    cached++;
-                }
-            }
-            results.Add(new ArtistArtworkProviderResult(resolution.Provider, cached > 0, cached, cached > 0 ? null : "No valid artwork could be cached."));
+            results.Add(new ArtistArtworkProviderResult(
+                resolution.Provider,
+                resolution.CachedCount > 0,
+                resolution.CachedCount,
+                resolution.CachedCount > 0 ? null : resolution.Message ?? "No valid artwork could be cached."));
         }
 
         return results;
+    }
+
+    private async Task AddRemoteProviderAsync(
+        List<ProviderResolution> resolutions,
+        ArtistMetadataProviderGate gate,
+        string provider,
+        Func<string, bool> includes,
+        Func<string, bool> needsRefresh,
+        Func<CancellationToken, Task<ProviderResolution>> run,
+        CancellationToken cancellationToken)
+    {
+        if (!includes(provider) || !needsRefresh(provider))
+        {
+            if (includes(provider))
+            {
+                // Make the freshness skip visible instead of silently omitting the provider.
+                _logger.LogInformation(
+                    "Artist artwork provider {Provider} skipped; cached artwork is fresh.",
+                    provider);
+                resolutions.Add(new ProviderResolution(
+                    provider,
+                    Array.Empty<RemoteCandidate>(),
+                    "skipped; cached artwork is fresh",
+                    0,
+                    Skipped: true));
+            }
+
+            return;
+        }
+
+        if (gate.IsUnavailable(provider))
+        {
+            resolutions.Add(new ProviderResolution(provider, Array.Empty<RemoteCandidate>(), ArtistMetadataProviderGate.UnavailableMessage));
+            return;
+        }
+
+        var resolution = await gate.RunAsync(provider, run, cancellationToken);
+        resolutions.Add(resolution ?? new ProviderResolution(provider, Array.Empty<RemoteCandidate>(), ArtistMetadataProviderGate.UnavailableMessage));
     }
 
     private async Task<ProviderResolution> RunProviderAsync(
@@ -154,19 +223,32 @@ public sealed class ArtistArtworkCatalogService
         Func<CancellationToken, Task<IReadOnlyList<RemoteCandidate>>> resolve,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ProviderTimeout);
         try
         {
-            return new ProviderResolution(provider, await resolve(timeout.Token), null);
+            var candidates = await resolve(cancellationToken);
+            var cached = 0;
+            foreach (var candidate in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await CacheCandidateAsync(artistId, candidate, cancellationToken) is not null)
+                {
+                    cached++;
+                }
+            }
+
+            return new ProviderResolution(
+                provider,
+                candidates,
+                cached == 0 && candidates.Count > 0 ? "No valid artwork could be cached." : null,
+                cached);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
         {
-            return new ProviderResolution(provider, Array.Empty<RemoteCandidate>(), "Timed out.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Artist artwork provider {Provider} failed for artist {ArtistId}.", provider, artistId);
+            _logger.LogWarning(
+                ex,
+                "Artist artwork provider {Provider} failed for artist {ArtistId}.",
+                provider,
+                artistId);
             return new ProviderResolution(provider, Array.Empty<RemoteCandidate>(), ex.Message);
         }
     }
@@ -181,19 +263,33 @@ public sealed class ArtistArtworkCatalogService
         return new ProviderResolution("local", Array.Empty<RemoteCandidate>(), cached is null ? "Local artwork is invalid." : null);
     }
 
-    private async Task<IReadOnlyList<RemoteCandidate>> ResolveSpotifyAsync(long artistId, string artistName, CancellationToken token)
+    private async Task<IReadOnlyList<RemoteCandidate>> ResolveSpotifyAsync(
+        long artistId,
+        string artistName,
+        bool includeGallery,
+        CancellationToken token)
     {
-        var page = await _spotify.GetArtistPageAsync(artistId, artistName, false, false, token);
+        var page = await _spotify.GetArtistPageAsync(
+            artistId,
+            artistName,
+            false,
+            false,
+            token,
+            includeDeezerLinking: false,
+            includeDiscography: false);
         if (page?.Artist is null) return Array.Empty<RemoteCandidate>();
 
         var candidates = page.Artist.Images
             .Where(image => !string.IsNullOrWhiteSpace(image.Url))
-            .Select(image => new RemoteCandidate("spotify", $"spotify:{image.Url}", image.Url!, image.Width, image.Height))
+            .Select(image => new RemoteCandidate("spotify", $"spotify:profile:{image.Url}", image.Url!, image.Width, image.Height))
             .ToList();
-        AddSpotifyCandidate(candidates, page.Artist.HeaderImageUrl);
-        foreach (var galleryUrl in page.Artist.Gallery)
+        AddSpotifyCandidate(candidates, page.Artist.HeaderImageUrl, "header");
+        if (includeGallery)
         {
-            AddSpotifyCandidate(candidates, galleryUrl);
+            foreach (var galleryUrl in page.Artist.Gallery)
+            {
+                AddSpotifyCandidate(candidates, galleryUrl, "gallery");
+            }
         }
 
         return candidates
@@ -202,47 +298,55 @@ public sealed class ArtistArtworkCatalogService
             .ToList();
     }
 
-    private static void AddSpotifyCandidate(List<RemoteCandidate> candidates, string? url)
+    private static void AddSpotifyCandidate(List<RemoteCandidate> candidates, string? url, string kind)
     {
         if (!string.IsNullOrWhiteSpace(url))
         {
-            candidates.Add(new RemoteCandidate("spotify", $"spotify:{url}", url, null, null));
+            candidates.Add(new RemoteCandidate("spotify", $"spotify:{kind}:{url}", url, null, null));
         }
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveDeezerAsync(long artistId, string artistName, CancellationToken token)
     {
-        var stored = await _repository.GetArtistSourceIdAsync(artistId, "deezer", token);
-        if (!string.IsNullOrWhiteSpace(stored))
+        var deezerId = await _repository.GetArtistSourceIdAsync(artistId, "deezer", token);
+        if (string.IsNullOrWhiteSpace(deezerId))
         {
-            var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, stored, ResolveRequestSize("deezer"), _logger, token);
-            return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("deezer", $"deezer:{stored}", url!, null, null) };
+            return Array.Empty<RemoteCandidate>();
         }
 
-        var search = await _deezer.SearchArtistAsync(artistName, new ApiOptions { Limit = 10, Strict = true }).WaitAsync(token);
-        foreach (var raw in search.Data ?? Array.Empty<object>())
-        {
-            var obj = raw as JObject ?? (raw is JToken tokenValue ? tokenValue as JObject : null);
-            var name = obj?["name"]?.Value<string>()?.Trim();
-            var id = obj?["id"]?.ToString()?.Trim();
-            if (!string.Equals(name, artistName.Trim(), StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(id)) continue;
-            var url = new[]
-                {
-                    obj?["picture_xl"]?.Value<string>(),
-                    obj?["picture_big"]?.Value<string>(),
-                    obj?["picture_medium"]?.Value<string>()
-                }
-                .FirstOrDefault(DeezerImageUrlValidator.IsAllowedDeezerImageUrl);
-            if (string.IsNullOrWhiteSpace(url)) continue;
-            await _repository.UpsertArtistSourceIdAsync(artistId, "deezer", id, token);
-            return new[] { new RemoteCandidate("deezer", $"deezer:{id}", url, null, null) };
-        }
-        return Array.Empty<RemoteCandidate>();
+        var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, deezerId, ResolveRequestSize("deezer"), _logger, token);
+        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("deezer", $"deezer:{deezerId}", url!, null, null) };
     }
 
-    private async Task<IReadOnlyList<RemoteCandidate>> ResolveItunesAsync(string artistName, CancellationToken token)
+    private async Task<IReadOnlyList<RemoteCandidate>> ResolveItunesAsync(
+        long artistId,
+        string artistName,
+        bool allowArtistPageScrape,
+        CancellationToken token)
     {
-        var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(_httpClients, artistName, ResolveRequestSize("apple"), _logger, token);
+        var appleId = await _repository.GetArtistSourceIdAsync(artistId, "apple", token);
+        if (!string.IsNullOrWhiteSpace(appleId))
+        {
+            var resolved = await _apple.ResolveByArtistIdAsync(appleId, artistName, token, allowArtistPageScrape: false);
+            if (!string.IsNullOrWhiteSpace(resolved?.Image))
+            {
+                return new[] { new RemoteCandidate("itunes", $"apple:{appleId}", resolved.Image, null, null) };
+            }
+        }
+
+        var titles = await LoadLocalTitlesAsync(artistId, token);
+        if (titles.Count > 0)
+        {
+            return Array.Empty<RemoteCandidate>();
+        }
+
+        var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
+            _httpClients,
+            artistName,
+            ResolveRequestSize("apple"),
+            _logger,
+            token,
+            allowArtistPageScrape);
         return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("itunes", $"itunes:{url}", url, null, null) };
     }
 
@@ -250,7 +354,7 @@ public sealed class ArtistArtworkCatalogService
     {
         var stored = await _repository.GetArtistSourceIdAsync(artistId, "qobuz", token);
         if (!int.TryParse(stored, out var id) || id <= 0) return Array.Empty<RemoteCandidate>();
-        var artist = await _qobuz.GetArtistWithDiscographyAsync(id, "us-en", token);
+        var artist = await _qobuz.GetArtistAsync(id, "us-en", token);
         var url = FirstNonEmpty(artist?.Image?.Mega, artist?.Image?.ExtraLarge, artist?.Image?.Large, artist?.Image?.Medium);
         return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("qobuz", $"qobuz:{id}", url!, null, null) };
     }
@@ -265,14 +369,26 @@ public sealed class ArtistArtworkCatalogService
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
         using var response = await _httpClients.CreateClient().SendAsync(request, token);
-        if (!response.IsSuccessStatusCode) return Array.Empty<RemoteCandidate>();
+        ArtistMetadataProviderGate.ThrowIfRateLimited(response);
+        if (!response.IsSuccessStatusCode)
+        {
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                _logger.LogWarning(
+                    "Tidal profileArt lookup rejected with HTTP {StatusCode} for artist {ArtistId}; check Tidal credentials/openapi access.",
+                    (int)response.StatusCode,
+                    artistId);
+            }
+
+            return Array.Empty<RemoteCandidate>();
+        }
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
         if (!TryFindTidalArtworkHref(document.RootElement, out var href)) return Array.Empty<RemoteCandidate>();
         return new[] { new RemoteCandidate("tidal", $"tidal:{stored}", href, null, null) };
     }
 
-    private async Task<IReadOnlyList<RemoteCandidate>> ResolveLastFmAsync(string artistName, CancellationToken token)
-        => (await _lastFm.SearchArtistImagesAsync(artistName, 8, token))
+    private async Task<IReadOnlyList<RemoteCandidate>> ResolveLastFmAsync(string artistName, bool includeGallery, CancellationToken token)
+        => (await _lastFm.SearchArtistImagesAsync(artistName, includeGallery ? 8 : 1, token))
             .Where(x => !string.IsNullOrWhiteSpace(x.Url))
             .Select(x => new RemoteCandidate("lastfm", $"lastfm:{x.Url}", x.Url, null, null)).ToList();
 
@@ -288,7 +404,11 @@ public sealed class ArtistArtworkCatalogService
         try
         {
             using var response = await _httpClients.CreateClient().GetAsync(uri, token);
-            if (!response.IsSuccessStatusCode || response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true) return null;
+            if (!response.IsSuccessStatusCode
+                || response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true)
+            {
+                return null;
+            }
             await using (var input = await response.Content.ReadAsStreamAsync(token))
             await using (var output = File.Create(temp)) { await input.CopyToAsync(output, token); }
             using var image = await Image.LoadAsync(temp, token);
@@ -349,9 +469,9 @@ public sealed class ArtistArtworkCatalogService
     private static string BuildLocalUrl(string path) => $"/api/library/image?path={Uri.EscapeDataString(Path.GetFullPath(path))}&size=640";
     private static string? FirstNonEmpty(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     private sealed record RemoteCandidate(string Provider, string Identity, string Url, int? Width, int? Height);
-    private sealed record ProviderResolution(string Provider, IReadOnlyList<RemoteCandidate> Candidates, string? Message);
+    private sealed record ProviderResolution(string Provider, IReadOnlyList<RemoteCandidate> Candidates, string? Message, int CachedCount = 0, bool Skipped = false);
 }
 
 public sealed record ArtistArtworkCatalogResult(long ArtistId, string ArtistName, IReadOnlyList<ArtistArtworkVisual> Visuals, IReadOnlyList<ArtistArtworkProviderResult> Providers);
-public sealed record ArtistArtworkVisual(string Source, string Identity, string? OriginalUrl, string Path, string Url, int? Width, int? Height);
+public sealed record ArtistArtworkVisual(string Source, string Identity, string? OriginalUrl, string Path, string Url, int? Width, int? Height, string? ContentHash = null);
 public sealed record ArtistArtworkProviderResult(string Provider, bool Success, int CachedCount, string? Message);

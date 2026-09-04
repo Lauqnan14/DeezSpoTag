@@ -24,11 +24,9 @@ public sealed class ArtistVisualPickerNoDeletionGuardrailTests
 
         Assert.DoesNotContain("cachedPickerImages = []", loader, StringComparison.Ordinal);
         Assert.Contains("mergeArtistVisualPickerResult(visuals, cached)", loader, StringComparison.Ordinal);
-        Assert.Contains("mergeArtistVisualPickerResult(visuals, refreshed)", loader, StringComparison.Ordinal);
-        Assert.True(
-            loader.IndexOf("/artwork`", StringComparison.Ordinal)
-            < loader.IndexOf("/artwork/refresh", StringComparison.Ordinal),
-            "Cached artwork must load before an artwork refresh starts.");
+        Assert.DoesNotContain("/artwork/refresh", loader, StringComparison.Ordinal);
+        Assert.DoesNotContain("force=true", loader, StringComparison.Ordinal);
+        Assert.Contains("/artwork", loader, StringComparison.Ordinal);
         Assert.DoesNotContain("ArtistMetadataCacheRefreshService", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshArtistAsync", controller, StringComparison.Ordinal);
         Assert.Contains("_artwork.RefreshAsync(", controller, StringComparison.Ordinal);

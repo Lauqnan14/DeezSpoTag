@@ -129,6 +129,62 @@ public sealed class MetadataAgentArtistResolutionTests : IAsyncLifetime
         Assert.Null(await _repository.GetArtistBiographyCacheAsync(4102, null, allowFallback: true));
     }
 
+    [Fact]
+    public async Task AutoBiographyPrefersSpotifyOverNewerAppleAndSwitchesWhenSpotifyAppears()
+    {
+        await _repository.UpsertArtistBiographyCacheAsync(4102, "apple", "Apple bio.", selected: true);
+        var appleOnly = await _repository.GetArtistBiographyCacheAsync(4102, null, allowFallback: true);
+        Assert.Equal("apple", appleOnly!.Source);
+
+        await _repository.UpsertArtistBiographyCacheAsync(4102, "spotify", "Spotify bio.", selected: false);
+        await _repository.RefreshSelectedArtistBiographyAsync(4102);
+        var both = await _repository.GetArtistBiographyCacheAsync(4102, null, allowFallback: true);
+        Assert.Equal("spotify", both!.Source);
+
+        var lockedApple = await _repository.GetArtistBiographyCacheAsync(4102, "apple", allowFallback: false);
+        Assert.Equal("apple", lockedApple!.Source);
+    }
+
+    [Fact]
+    public async Task AutoBiographyRotatesToTheNextAvailableSourceAfterLastUsed()
+    {
+        await _repository.UpsertArtistBiographyCacheAsync(4101, "spotify", "Spotify bio.", selected: true);
+        await _repository.UpsertArtistBiographyCacheAsync(4101, "lastfm", "Last.fm bio.", selected: false);
+
+        await _repository.SelectArtistBiographySourceAsync(4101, null);
+        var first = await _repository.GetArtistBiographyCacheAsync(4101, null, allowFallback: true);
+        Assert.Equal("spotify", first!.Source);
+
+        await _repository.SelectArtistBiographySourceAsync(4101, null);
+        var second = await _repository.GetArtistBiographyCacheAsync(4101, null, allowFallback: true);
+        Assert.Equal("lastfm", second!.Source);
+
+        await _repository.SelectArtistBiographySourceAsync(4101, null);
+        var third = await _repository.GetArtistBiographyCacheAsync(4101, null, allowFallback: true);
+        Assert.Equal("spotify", third!.Source);
+    }
+
+    [Fact]
+    public async Task AutoBiographyPrefersTheSelectedSourceOverRanking()
+    {
+        await _repository.UpsertArtistBiographyCacheAsync(4101, "spotify", "Spotify bio.", selected: false);
+        await _repository.UpsertArtistBiographyCacheAsync(4101, "lastfm", "Last.fm bio.", selected: true);
+
+        var selected = await _repository.GetArtistBiographyCacheAsync(4101, null, allowFallback: true);
+        Assert.Equal("lastfm", selected!.Source);
+    }
+
+    [Fact]
+    public async Task VisualUsageRecordsSkipUntilTheSlotWraps()
+    {
+        await _repository.RecordVisualUsageAsync(4101, "avatar", "aaa111", "spotify:one");
+        var used = await _repository.GetUsedVisualHashesAsync(4101, "avatar");
+        Assert.Contains("aaa111", used);
+
+        await _repository.ClearVisualUsageAsync(4101, "avatar");
+        Assert.Empty(await _repository.GetUsedVisualHashesAsync(4101, "avatar"));
+    }
+
     /// <summary>
     /// Spotify and Qobuz biographies arrive as HTML with anchors pointing at
     /// spotify: URIs, which are dead links in any Subsonic client.

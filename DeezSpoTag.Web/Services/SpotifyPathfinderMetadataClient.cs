@@ -874,7 +874,10 @@ public sealed class SpotifyPathfinderMetadataClient
         return MergeArtistOverview(primary, fallback);
     }
 
-    public async Task<SpotifyArtistHydratedPage?> FetchArtistHydratedPageAsync(string artistId, CancellationToken cancellationToken)
+    public async Task<SpotifyArtistHydratedPage?> FetchArtistHydratedPageAsync(
+        string artistId,
+        CancellationToken cancellationToken,
+        bool includeDiscography = true)
     {
         if (string.IsNullOrWhiteSpace(artistId))
         {
@@ -887,8 +890,17 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
         Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
-        Task<List<SpotifyAlbumSummary>> discographyTask = FetchArtistDiscographyAsync(context, artistId, cancellationToken);
-        await Task.WhenAll(artistTask, overviewTask, discographyTask);
+        Task<List<SpotifyAlbumSummary>>? discographyTask = includeDiscography
+            ? FetchArtistDiscographyAsync(context, artistId, cancellationToken)
+            : null;
+        if (discographyTask is null)
+        {
+            await Task.WhenAll(artistTask, overviewTask);
+        }
+        else
+        {
+            await Task.WhenAll(artistTask, overviewTask, discographyTask);
+        }
         JsonElement? artist = await artistTask;
         JsonElement? overview = await overviewTask;
         if (!artist.HasValue && !overview.HasValue)
@@ -905,7 +917,9 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             _logger.LogDebug("Spotify Pathfinder biography hydration skipped: no alternate auth context available.");
         }
-        List<SpotifyAlbumSummary> albums = await discographyTask;
+        List<SpotifyAlbumSummary> albums = discographyTask is null
+            ? new List<SpotifyAlbumSummary>()
+            : await discographyTask;
         SpotifyArtistOverview parsedOverview = MergeArtistOverview(artist.HasValue ? ParseArtistOverview(artistId, artist.Value) : null, overview.HasValue ? ParseArtistOverview(artistId, overview.Value) : null) ?? ParseArtistOverview(artistId, primaryArtistValue);
         List<SpotifyTrackSummary> topTracks = MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
         List<SpotifyRelatedArtist> relatedArtists = ParseArtistRelatedArtists(primaryArtistValue);

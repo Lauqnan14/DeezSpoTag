@@ -528,6 +528,8 @@ public sealed record ArtistExternalMetadataBackfillDto(
     DateTimeOffset? LastFmImagesCheckedAt,
     string? AppleId);
 
+public sealed record ArtistLocalAudioPathDto(string FilePath, string RootPath);
+
 public sealed record AlbumDto(
     long Id,
     long ArtistId,

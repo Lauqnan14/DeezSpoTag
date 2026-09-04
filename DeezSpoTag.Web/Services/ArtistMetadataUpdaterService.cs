@@ -1,10 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
@@ -32,6 +35,8 @@ public sealed partial class ArtistMetadataUpdaterService
     private const string LegacyBothTargets = "both";
     private const string AvatarSlot = "avatar";
     private const string BackgroundSlot = "background";
+    private const string FileFingerprintPrefix = "f:";
+    private const double VisualDuplicateMeanAbsDifference = 28d;
 
     private readonly LibraryRepository _libraryRepository;
     private readonly PlatformAuthService _platformAuthService;
@@ -41,10 +46,11 @@ public sealed partial class ArtistMetadataUpdaterService
     private readonly ArtistPopularSongsSyncService _artistPopularSongsSyncService;
     private readonly ArtistArtworkCatalogService _artistArtworkCatalog;
     private readonly LibraryConfigStore _configStore;
+    private readonly ISettingsService _settingsService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<ArtistMetadataUpdaterService> _logger;
-    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly SemaphoreSlim _runGate = new(1, 1);
+    private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
     private readonly object _statusLock = new();
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -54,6 +60,7 @@ public sealed partial class ArtistMetadataUpdaterService
     private readonly string _statePath;
     private MetadataUpdaterStatusSnapshot _status = MetadataUpdaterStatusSnapshot.Idle();
     private Task? _activeRun;
+    private CancellationTokenSource? _runCts;
 
     public ArtistMetadataUpdaterService(
         IServiceProvider serviceProvider,
@@ -68,9 +75,9 @@ public sealed partial class ArtistMetadataUpdaterService
         _artistPopularSongsSyncService = serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
         _artistArtworkCatalog = serviceProvider.GetRequiredService<ArtistArtworkCatalogService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
+        _settingsService = serviceProvider.GetRequiredService<ISettingsService>();
         _environment = environment;
         _logger = logger;
-        _workCoordinator = serviceProvider.GetRequiredService<DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator>();
         _statePath = Path.Join(
             AppDataPaths.GetDataRoot(environment),
             "library-artist-images",
@@ -83,6 +90,36 @@ public sealed partial class ArtistMetadataUpdaterService
         lock (_statusLock)
         {
             return _status;
+        }
+    }
+
+    public bool Cancel()
+    {
+        CancellationTokenSource? cts;
+        bool running;
+        lock (_statusLock)
+        {
+            cts = _runCts;
+            running = _status.Running || _activeRun is { IsCompleted: false };
+        }
+
+        if (cts is null)
+        {
+            return running;
+        }
+
+        try
+        {
+            if (!cts.IsCancellationRequested)
+            {
+                cts.Cancel();
+            }
+
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return running;
         }
     }
 
@@ -149,6 +186,8 @@ public sealed partial class ArtistMetadataUpdaterService
         CancellationToken cancellationToken)
     {
         Task run;
+        CancellationTokenSource? runCts = null;
+        CancellationTokenSource? linkedCts = null;
         await _runGate.WaitAsync(cancellationToken);
         try
         {
@@ -156,14 +195,20 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 return false;
             }
-            run = _workCoordinator.RunHeavyWorkAsync(
-                token => RunInternalAsync(
-                    request ?? new MetadataUpdaterRunRequest(),
-                    isAutomatic,
-                    progress,
-                    completedArtistIds,
-                    token),
-                cancellationToken);
+
+            runCts = new CancellationTokenSource();
+            linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, runCts.Token);
+            lock (_statusLock)
+            {
+                _runCts = runCts;
+            }
+
+            run = RunInternalAsync(
+                request ?? new MetadataUpdaterRunRequest(),
+                isAutomatic,
+                progress,
+                completedArtistIds,
+                linkedCts.Token);
             _activeRun = run;
         }
         finally
@@ -171,8 +216,33 @@ public sealed partial class ArtistMetadataUpdaterService
             _runGate.Release();
         }
 
-        await run;
-        return true;
+        try
+        {
+            await run;
+            return !linkedCts.Token.IsCancellationRequested;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        finally
+        {
+            lock (_statusLock)
+            {
+                if (runCts is not null && ReferenceEquals(_runCts, runCts))
+                {
+                    _runCts = null;
+                }
+
+                if (ReferenceEquals(_activeRun, run))
+                {
+                    _activeRun = null;
+                }
+            }
+
+            linkedCts?.Dispose();
+            runCts?.Dispose();
+        }
     }
 
     private async Task RunInternalAsync(
@@ -228,6 +298,7 @@ public sealed partial class ArtistMetadataUpdaterService
                     counters.TotalArtists,
                     tracked.ArtistName,
                     tracked.ArtistId));
+                await Task.Delay(ArtistYield, cancellationToken);
             }
 
             UpdateStatus(_status with
@@ -250,6 +321,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 Phase = "Metadata update cancelled",
                 Message = "Metadata updater was cancelled."
             });
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -262,6 +334,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 Phase = "Metadata update failed",
                 Message = ex.Message
             });
+            throw;
         }
     }
 
@@ -382,7 +455,7 @@ public sealed partial class ArtistMetadataUpdaterService
         }
         try
         {
-            var updated = await PushTrackedArtistMetadataAsync(tracked, auth, cancellationToken);
+            var updated = await PushTrackedArtistMetadataAsync(tracked, auth, request.FolderId, cancellationToken);
             return updated
                 ? ArtistProcessingOutcome.Succeeded
                 : ArtistProcessingOutcome.Failed;
@@ -492,11 +565,17 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             tracked.OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled.Value;
         }
+
+        if (request.SaveArtistFolderImage.HasValue)
+        {
+            tracked.SaveArtistFolderImage = request.SaveArtistFolderImage.Value;
+        }
     }
 
     private async Task<bool> PushTrackedArtistMetadataAsync(
         MetadataUpdaterTrackedArtist tracked,
         PlatformAuthState auth,
+        long? folderId,
         CancellationToken cancellationToken)
     {
         var artist = await _libraryRepository.GetArtistAsync(tracked.ArtistId, cancellationToken);
@@ -545,6 +624,18 @@ public sealed partial class ArtistMetadataUpdaterService
             return true;
         }
 
+        if (tracked.SaveArtistFolderImage
+            && tracked.IncludeAvatar
+            && !string.IsNullOrWhiteSpace(prepared.AvatarPath))
+        {
+            await SaveAvatarIntoArtistFoldersAsync(
+                artist.Id,
+                artist.Name,
+                prepared.AvatarPath!,
+                folderId,
+                cancellationToken);
+        }
+
         var biography = tracked.IncludeBio
             ? SanitizeBiography(resolved.Biography)
             : null;
@@ -582,7 +673,7 @@ public sealed partial class ArtistMetadataUpdaterService
                     artist.Id,
                     target,
                     DateTimeOffset.UtcNow,
-                    target == NavidromeTarget && pushed.Warnings.Any(warning => warning.Contains("Navidrome artist metadata sync is not supported", StringComparison.OrdinalIgnoreCase))
+                    target == NavidromeTarget && pushed.Warnings.Any(warning => warning.Contains("Navidrome biography is read-only", StringComparison.OrdinalIgnoreCase))
                         ? null
                         : DateTimeOffset.UtcNow,
                     ComputeFileHashOrNull(prepared.AvatarPath),
@@ -650,6 +741,161 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 await _libraryRepository.UpdateArtistBackgroundPathAsync(linkedArtistId, prepared.BackgroundPath!, cancellationToken);
             }
+        }
+    }
+
+    private async Task SaveAvatarIntoArtistFoldersAsync(
+        long artistId,
+        string artistName,
+        string avatarPath,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(avatarPath) || !File.Exists(avatarPath))
+        {
+            _logger.LogWarning(
+                "Artist-folder image save skipped because the prepared avatar is missing. artist={ArtistId} artistName={ArtistName}",
+                artistId,
+                artistName);
+            return;
+        }
+
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var linkedArtistId in await ResolveLinkedArtistIdsAsync(artistId, cancellationToken))
+        {
+            foreach (var directory in await ResolveArtistDirectoriesAsync(linkedArtistId, folderId, cancellationToken))
+            {
+                directories.Add(directory);
+            }
+        }
+
+        if (directories.Count == 0)
+        {
+            _logger.LogWarning(
+                "Artist-folder image save skipped because no local artist folders could be resolved from the library. artist={ArtistId} artistName={ArtistName} folderId={FolderId}",
+                artistId,
+                artistName,
+                folderId);
+            return;
+        }
+
+        DeezSpoTagSettings settings;
+        try
+        {
+            settings = _settingsService.LoadSettings();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not load download settings for artist-folder image save. artist={ArtistId}", artistId);
+            return;
+        }
+
+        var template = string.IsNullOrWhiteSpace(settings.ArtistImageTemplate)
+            ? "folder"
+            : settings.ArtistImageTemplate.Trim();
+        var stem = PathTemplateGenerator.GenerateArtistName(
+            template,
+            new DeezSpoTag.Core.Models.Artist(artistId, artistName),
+            settings,
+            rootArtist: null);
+        stem = Path.GetFileName(stem.Replace('\\', '/').Trim('/'));
+        if (string.IsNullOrWhiteSpace(stem))
+        {
+            stem = "folder";
+        }
+
+        var extension = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(avatarPath));
+        foreach (var directory in directories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var destination = Path.Join(directory, stem + extension);
+                await using (var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                await using (var destinationStream = File.Create(destination))
+                {
+                    await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+                }
+
+                DeleteArtistFolderImageVariants(directory, stem, destination);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to write artist-folder image. artist={ArtistId} directory={Directory}",
+                    artistId,
+                    directory);
+            }
+        }
+    }
+
+    private async Task<IReadOnlyCollection<string>> ResolveArtistDirectoriesAsync(
+        long artistId,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        var paths = await _libraryRepository.GetArtistLocalAudioPathsAsync(artistId, cancellationToken, folderId);
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in paths)
+        {
+            if (string.IsNullOrWhiteSpace(item.FilePath) || string.IsNullOrWhiteSpace(item.RootPath))
+            {
+                continue;
+            }
+
+            string fullPath;
+            string rootPath;
+            try
+            {
+                fullPath = Path.GetFullPath(item.FilePath);
+                rootPath = Path.GetFullPath(item.RootPath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                continue;
+            }
+
+            if (!fullPath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var relative = Path.GetRelativePath(rootPath, fullPath);
+            var firstSegment = relative
+                .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(firstSegment)
+                || firstSegment is "." or "..")
+            {
+                continue;
+            }
+
+            var artistDirectory = Path.Join(rootPath, firstSegment);
+            if (Directory.Exists(artistDirectory))
+            {
+                directories.Add(artistDirectory);
+            }
+        }
+
+        return directories;
+    }
+
+    private static void DeleteArtistFolderImageVariants(string directory, string stem, string keepPath)
+    {
+        if (!Directory.Exists(directory) || string.IsNullOrWhiteSpace(stem))
+        {
+            return;
+        }
+
+        foreach (var path in Directory.GetFiles(directory, stem + ".*", SearchOption.TopDirectoryOnly))
+        {
+            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(keepPath), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TryDeleteBestEffort(path);
         }
     }
 
@@ -1054,6 +1300,10 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 tracked.OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled.Value;
             }
+            if (request.SaveArtistFolderImage.HasValue)
+            {
+                tracked.SaveArtistFolderImage = request.SaveArtistFolderImage.Value;
+            }
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         }
     }
@@ -1072,7 +1322,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 || string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
                 || normalizedSource == MetadataSourceApple
                    && string.Equals(item.Source, "itunes", StringComparison.OrdinalIgnoreCase))
-            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source))
+            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash))
             .ToList();
         var biography = includeBiography
             ? await _libraryRepository.GetArtistBiographyCacheAsync(
@@ -1089,10 +1339,50 @@ public sealed partial class ArtistMetadataUpdaterService
         return new ResolvedArtistMetadata(biography?.Biography, candidates);
     }
 
+    public async Task ApplyCatalogVisualsToSlotsAsync(
+        long artistId,
+        string artistName,
+        bool ocrTextArtBlockingEnabled,
+        CancellationToken cancellationToken)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
+        {
+            return;
+        }
+
+        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken);
+        var candidates = artwork.Visuals
+            .Where(item => !IsNameOnlyItunesIdentity(item.Identity))
+            .OrderBy(item => RankArtworkSource(item.Source, item.Identity))
+            .ThenByDescending(item => (item.Width ?? 0) * (item.Height ?? 0))
+            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash))
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var tracked = new MetadataUpdaterTrackedArtist
+        {
+            ArtistId = artistId,
+            ArtistName = artistName,
+            IncludeAvatar = true,
+            IncludeBackground = true,
+            OcrTextArtBlockingEnabled = ocrTextArtBlockingEnabled
+        };
+        var prepared = await PrepareVisualsAsync(
+            tracked,
+            candidates,
+            cancellationToken,
+            preferExistingSlots: false);
+        await UpdateManagedArtistVisualsAsync(artistId, prepared, cancellationToken);
+    }
+
     private async Task<PreparedVisuals> PrepareVisualsAsync(
         MetadataUpdaterTrackedArtist tracked,
         IReadOnlyList<ArtworkCandidate> sourceCandidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preferExistingSlots = true)
     {
         var managedRoot = Path.Join(
             AppDataPaths.GetDataRoot(_environment),
@@ -1107,24 +1397,31 @@ public sealed partial class ArtistMetadataUpdaterService
 
         var avatarSlot = ResolveSlotCandidate(managedRoot, AvatarSlot);
         var backgroundSlot = ResolveSlotCandidate(managedRoot, BackgroundSlot);
-        var avatarCandidates = BuildSlotCandidates(avatarSlot, AvatarSlot, sourceCandidatesNormalized);
-        var backgroundCandidates = BuildSlotCandidates(backgroundSlot, BackgroundSlot, sourceCandidatesNormalized);
+        var avatarCandidates = preferExistingSlots
+            ? BuildSlotCandidates(avatarSlot, AvatarSlot, RankCandidatesForSlot(sourceCandidatesNormalized, AvatarSlot))
+            : RankCandidatesForSlot(sourceCandidatesNormalized, AvatarSlot);
+        var backgroundCandidates = preferExistingSlots
+            ? BuildSlotCandidates(backgroundSlot, BackgroundSlot, RankCandidatesForSlot(sourceCandidatesNormalized, BackgroundSlot))
+            : RankCandidatesForSlot(sourceCandidatesNormalized, BackgroundSlot);
 
         var nextAvatarIndex = tracked.AvatarRotationIndex;
         var nextBackgroundIndex = tracked.BackgroundRotationIndex;
         string? avatarPath = avatarSlot;
         string? backgroundPath = backgroundSlot;
         ArtworkCandidate? selectedAvatarCandidate = null;
+        var rotateUnused = !preferExistingSlots && tracked.ArtistId > 0;
 
         if (tracked.IncludeAvatar)
         {
-            var avatarSelection = await RotateAndMaterializeSlotAsync(
+            var avatarSelection = await SelectAndMaterializeSlotAsync(
+                tracked.ArtistId,
                 avatarCandidates,
                 tracked.AvatarRotationIndex,
                 managedRoot,
                 AvatarSlot,
-                excludedIdentity: null,
-                textArtBlockingEnabled: tracked.OcrTextArtBlockingEnabled,
+                excludedFingerprints: null,
+                tracked.OcrTextArtBlockingEnabled,
+                rotateUnused,
                 cancellationToken);
             avatarPath = avatarSelection.Path;
             selectedAvatarCandidate = avatarSelection.Candidate;
@@ -1136,14 +1433,32 @@ public sealed partial class ArtistMetadataUpdaterService
 
         if (tracked.IncludeBackground)
         {
-            var backgroundSelection = await RotateAndMaterializeSlotAsync(
+            var excluded = BuildArtworkFingerprints(selectedAvatarCandidate, avatarPath);
+            var backgroundSelection = await SelectAndMaterializeSlotAsync(
+                tracked.ArtistId,
                 backgroundCandidates,
                 tracked.BackgroundRotationIndex,
                 managedRoot,
                 BackgroundSlot,
-                selectedAvatarCandidate?.Identity,
-                textArtBlockingEnabled: tracked.OcrTextArtBlockingEnabled,
+                excluded,
+                tracked.OcrTextArtBlockingEnabled,
+                rotateUnused,
                 cancellationToken);
+            if (string.IsNullOrWhiteSpace(backgroundSelection.Path)
+                && excluded.Count > 0)
+            {
+                backgroundSelection = await SelectAndMaterializeSlotAsync(
+                    tracked.ArtistId,
+                    backgroundCandidates,
+                    tracked.BackgroundRotationIndex,
+                    managedRoot,
+                    BackgroundSlot,
+                    excludedFingerprints: null,
+                    tracked.OcrTextArtBlockingEnabled,
+                    rotateUnused,
+                    cancellationToken);
+            }
+
             backgroundPath = backgroundSelection.Path;
             if (!string.IsNullOrWhiteSpace(backgroundPath))
             {
@@ -1152,6 +1467,95 @@ public sealed partial class ArtistMetadataUpdaterService
         }
 
         return new PreparedVisuals(avatarPath, backgroundPath, nextAvatarIndex, nextBackgroundIndex);
+    }
+
+    private async Task<(string? Path, ArtworkCandidate? Candidate)> SelectAndMaterializeSlotAsync(
+        long artistId,
+        IReadOnlyList<ArtworkCandidate> candidates,
+        int rotationIndex,
+        string managedRoot,
+        string slot,
+        IReadOnlySet<string>? excludedFingerprints,
+        bool textArtBlockingEnabled,
+        bool rotateUnused,
+        CancellationToken cancellationToken)
+    {
+        var pool = candidates;
+        var wrapped = false;
+        if (rotateUnused && artistId > 0)
+        {
+            var used = await _libraryRepository.GetUsedVisualHashesAsync(artistId, slot, cancellationToken);
+            var unused = FilterUnusedCandidates(candidates, used);
+            if (unused.Count == 0)
+            {
+                await _libraryRepository.ClearVisualUsageAsync(artistId, slot, cancellationToken);
+                wrapped = true;
+            }
+            else
+            {
+                pool = unused;
+            }
+        }
+
+        var selected = await RotateAndMaterializeSlotAsync(
+            pool,
+            rotationIndex,
+            managedRoot,
+            slot,
+            excludedFingerprints,
+            textArtBlockingEnabled,
+            cancellationToken);
+        if (rotateUnused
+            && artistId > 0
+            && !wrapped
+            && selected.Candidate is null
+            && candidates.Count > 0)
+        {
+            await _libraryRepository.ClearVisualUsageAsync(artistId, slot, cancellationToken);
+            selected = await RotateAndMaterializeSlotAsync(
+                candidates,
+                rotationIndex,
+                managedRoot,
+                slot,
+                excludedFingerprints,
+                textArtBlockingEnabled,
+                cancellationToken);
+        }
+
+        if (rotateUnused && artistId > 0 && selected.Candidate is not null)
+        {
+            var hash = selected.Candidate.ContentHash ?? ComputeFileHashOrNull(selected.Path);
+            if (!string.IsNullOrWhiteSpace(hash))
+            {
+                await _libraryRepository.RecordVisualUsageAsync(
+                    artistId,
+                    slot,
+                    hash,
+                    selected.Candidate.Identity,
+                    cancellationToken);
+            }
+        }
+
+        return selected;
+    }
+
+    private static List<ArtworkCandidate> FilterUnusedCandidates(
+        IReadOnlyList<ArtworkCandidate> candidates,
+        IReadOnlyCollection<string> usedHashes)
+    {
+        if (usedHashes.Count == 0)
+        {
+            return candidates.ToList();
+        }
+
+        var used = new HashSet<string>(
+            usedHashes.Where(hash => !string.IsNullOrWhiteSpace(hash)).Select(hash => hash.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        return candidates
+            .Where(candidate =>
+                string.IsNullOrWhiteSpace(candidate.ContentHash)
+                || !used.Contains(candidate.ContentHash.Trim()))
+            .ToList();
     }
 
     private static List<ArtworkCandidate> BuildSlotCandidates(
@@ -1177,13 +1581,13 @@ public sealed partial class ArtistMetadataUpdaterService
         int rotationIndex,
         string managedRoot,
         string slot,
-        string? excludedIdentity,
+        IReadOnlySet<string>? excludedFingerprints,
         bool textArtBlockingEnabled,
         CancellationToken cancellationToken)
     {
         if (candidates.Count == 0)
         {
-            return (ResolveSlotCandidate(managedRoot, slot), null);
+            return (ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints), null);
         }
 
         var boundedIndex = Math.Abs(rotationIndex) % candidates.Count;
@@ -1201,21 +1605,21 @@ public sealed partial class ArtistMetadataUpdaterService
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(excludedIdentity)
-                && candidates.Count > 1
-                && string.Equals(selected.Identity, excludedIdentity, StringComparison.OrdinalIgnoreCase))
+            if (excludedFingerprints is { Count: > 0 } && IsExcludedArtwork(selected, excludedFingerprints))
             {
                 continue;
             }
 
             var materialized = await TryMaterializeSlotCandidateAsync(selected, managedRoot, slot, textArtBlockingEnabled, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(materialized.Path))
+            if (!string.IsNullOrWhiteSpace(materialized.Path)
+                && (excludedFingerprints is not { Count: > 0 }
+                    || !IsExcludedPath(materialized.Path, excludedFingerprints)))
             {
                 return materialized;
             }
         }
 
-        return (ResolveSlotCandidate(managedRoot, slot), null);
+        return (ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints), null);
     }
 
     private async Task<(string? Path, ArtworkCandidate? Candidate)> TryMaterializeSlotCandidateAsync(
@@ -1247,7 +1651,9 @@ public sealed partial class ArtistMetadataUpdaterService
         string? localPath,
         CancellationToken cancellationToken)
     {
-        if (!long.TryParse(Path.GetFileName(managedRoot), out var artistId) || artistId <= 0)
+        if (_libraryRepository is null
+            || !long.TryParse(Path.GetFileName(managedRoot), out var artistId)
+            || artistId <= 0)
         {
             return;
         }
@@ -1295,7 +1701,10 @@ public sealed partial class ArtistMetadataUpdaterService
             return candidate with
             {
                 LocalPath = fullPath,
-                Identity = string.IsNullOrWhiteSpace(candidate.Identity) ? fullPath : candidate.Identity
+                Identity = string.IsNullOrWhiteSpace(candidate.Identity) ? fullPath : candidate.Identity,
+                ContentHash = string.IsNullOrWhiteSpace(candidate.ContentHash)
+                    ? ComputeFileHashOrNull(fullPath)
+                    : candidate.ContentHash
             };
         }
 
@@ -1307,9 +1716,228 @@ public sealed partial class ArtistMetadataUpdaterService
             .Select(NormalizeCandidate)
             .Where(candidate => candidate is not null)
             .Select(candidate => candidate!)
-            .GroupBy(candidate => candidate.Identity, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(candidate => ArtworkFingerprint(candidate) ?? candidate.Identity, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToList();
+
+    private static HashSet<string> BuildArtworkFingerprints(ArtworkCandidate? candidate, string? materializedPath)
+    {
+        var fingerprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddFingerprint(fingerprints, ArtworkFingerprint(candidate));
+        AddFingerprint(fingerprints, PathFingerprint(materializedPath));
+        AddFingerprint(fingerprints, PathFingerprint(candidate?.LocalPath));
+        AddFingerprint(fingerprints, FileFingerprint(materializedPath));
+        AddFingerprint(fingerprints, FileFingerprint(candidate?.LocalPath));
+        return fingerprints;
+    }
+
+    private static bool IsExcludedArtwork(ArtworkCandidate candidate, IReadOnlySet<string> excludedFingerprints)
+        => excludedFingerprints.Contains(ArtworkFingerprint(candidate) ?? string.Empty)
+           || excludedFingerprints.Contains(PathFingerprint(candidate.LocalPath) ?? string.Empty)
+           || IsVisuallyExcluded(candidate.LocalPath, excludedFingerprints);
+
+    private static bool IsExcludedPath(string path, IReadOnlySet<string> excludedFingerprints)
+        => excludedFingerprints.Contains(PathFingerprint(path) ?? string.Empty)
+           || IsVisuallyExcluded(path, excludedFingerprints);
+
+    private static bool IsVisuallyExcluded(string? path, IReadOnlySet<string> excludedFingerprints)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        foreach (var fingerprint in excludedFingerprints)
+        {
+            if (!fingerprint.StartsWith(FileFingerprintPrefix, StringComparison.OrdinalIgnoreCase)
+                || fingerprint.Length <= FileFingerprintPrefix.Length)
+            {
+                continue;
+            }
+
+            if (AreVisuallyTheSamePhoto(path, fingerprint[FileFingerprintPrefix.Length..]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string? FileFingerprint(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return null;
+        }
+
+        return FileFingerprintPrefix + Path.GetFullPath(path);
+    }
+
+    private static bool AreVisuallyTheSamePhoto(string pathA, string pathB)
+    {
+        if (string.IsNullOrWhiteSpace(pathA) || string.IsNullOrWhiteSpace(pathB))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fullA = Path.GetFullPath(pathA);
+            var fullB = Path.GetFullPath(pathB);
+            if (string.Equals(fullA, fullB, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!File.Exists(fullA) || !File.Exists(fullB))
+            {
+                return false;
+            }
+
+            using var imageA = Image.Load<Rgba32>(fullA);
+            using var imageB = Image.Load<Rgba32>(fullB);
+            if (imageA.Width <= 0 || imageA.Height <= 0 || imageB.Width <= 0 || imageB.Height <= 0)
+            {
+                return false;
+            }
+
+            var areaA = (long)imageA.Width * imageA.Height;
+            var areaB = (long)imageB.Width * imageB.Height;
+            var larger = areaA >= areaB ? imageA : imageB;
+            var smaller = areaA >= areaB ? imageB : imageA;
+            using var resized = larger.Clone(ctx => ctx.Resize(smaller.Width, smaller.Height));
+            return MeanAbsoluteDifference(resized, smaller) <= VisualDuplicateMeanAbsDifference;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static double MeanAbsoluteDifference(Image<Rgba32> left, Image<Rgba32> right)
+    {
+        if (left.Width != right.Width || left.Height != right.Height || left.Width == 0 || left.Height == 0)
+        {
+            return double.MaxValue;
+        }
+
+        long total = 0;
+        var count = (long)left.Width * left.Height;
+        for (var y = 0; y < left.Height; y++)
+        {
+            for (var x = 0; x < left.Width; x++)
+            {
+                var a = left[x, y];
+                var b = right[x, y];
+                total += Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
+            }
+        }
+
+        return total / (3d * count);
+    }
+
+    private static string? ArtworkFingerprint(ArtworkCandidate? candidate)
+    {
+        if (candidate is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(candidate.ContentHash))
+        {
+            return "h:" + candidate.ContentHash.Trim().ToLowerInvariant();
+        }
+
+        return PathFingerprint(candidate.LocalPath);
+    }
+
+    private static string? PathFingerprint(string? path)
+    {
+        var hash = ComputeFileHashOrNull(path);
+        return string.IsNullOrWhiteSpace(hash) ? null : "h:" + hash;
+    }
+
+    private static void AddFingerprint(HashSet<string> fingerprints, string? fingerprint)
+    {
+        if (!string.IsNullOrWhiteSpace(fingerprint))
+        {
+            fingerprints.Add(fingerprint);
+        }
+    }
+
+    private static bool IsNameOnlyItunesIdentity(string? identity)
+        => !string.IsNullOrWhiteSpace(identity)
+           && identity.StartsWith("itunes:http", StringComparison.OrdinalIgnoreCase);
+
+    private static List<ArtworkCandidate> RankCandidatesForSlot(
+        IReadOnlyList<ArtworkCandidate> candidates,
+        string slot)
+        => candidates
+            .OrderBy(candidate => RankCandidateForSlot(candidate, slot))
+            .ToList();
+
+    private static int RankCandidateForSlot(ArtworkCandidate candidate, string slot)
+    {
+        var identity = candidate.Identity ?? string.Empty;
+        if (identity.Contains(":profile:", StringComparison.OrdinalIgnoreCase))
+        {
+            return slot == AvatarSlot ? 0 : 2;
+        }
+
+        if (identity.Contains(":header:", StringComparison.OrdinalIgnoreCase))
+        {
+            return slot == BackgroundSlot ? 0 : 2;
+        }
+
+        var aspect = TryReadAspectRatio(candidate.LocalPath);
+        if (slot == AvatarSlot)
+        {
+            return 10 + (int)Math.Round(Math.Abs(aspect - 1d) * 100) + RankArtworkSource(candidate.Source, identity);
+        }
+
+        return aspect >= 1.35 ? 1 : 20 + RankArtworkSource(candidate.Source, identity);
+    }
+
+    private static double TryReadAspectRatio(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return 1d;
+        }
+
+        try
+        {
+            var info = Image.Identify(path);
+            return info.Height <= 0 ? 1d : info.Width / (double)info.Height;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return 1d;
+        }
+    }
+
+    private static int RankArtworkSource(string? source, string? identity)
+    {
+        if (!string.IsNullOrWhiteSpace(identity)
+            && identity.StartsWith("apple:", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        return source?.Trim().ToLowerInvariant() switch
+        {
+            "spotify" => 0,
+            "apple" => 1,
+            "deezer" => 2,
+            "tidal" => 3,
+            "qobuz" => 4,
+            "lastfm" => 5,
+            "itunes" => 6,
+            "local" => 7,
+            _ => 8
+        };
+    }
 
     private async Task<PushOutcome> PushArtistMetadataAsync(
         PushMetadataRequest request,
@@ -1363,6 +1991,20 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 warnings.Add("Navidrome artist not found.");
                 return;
+            }
+
+            var localAlbumTitles = await GetLocalAlbumTitlesForServerVerificationAsync(request.LocalArtistId, cancellationToken);
+            if (localAlbumTitles.Count > 0)
+            {
+                var candidateAlbumTitles = new List<IReadOnlyList<string>>();
+                foreach (var candidateId in artistIds.Take(8))
+                {
+                    candidateAlbumTitles.Add(
+                        await _navidromeClient.GetArtistAlbumTitlesAsync(navidrome.Url, navidrome.Username, navidrome.Password, candidateId, cancellationToken));
+                }
+
+                var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, warnings, "Navidrome");
+                artistIds = verifiedIndices.Select(index => artistIds[index]).ToList();
             }
 
             if (request.LocalArtistId > 0)
@@ -1432,6 +2074,20 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 warnings.Add("Plex artist not found.");
                 return;
+            }
+
+            var localAlbumTitles = await GetLocalAlbumTitlesForServerVerificationAsync(request.LocalArtistId, cancellationToken);
+            if (localAlbumTitles.Count > 0)
+            {
+                var candidateAlbumTitles = new List<IReadOnlyList<string>>();
+                foreach (var location in locations.Take(8))
+                {
+                    candidateAlbumTitles.Add(
+                        await _plexClient.GetArtistAlbumTitlesAsync(plexUrl, plexToken, location.RatingKey, cancellationToken));
+                }
+
+                var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, warnings, "Plex");
+                locations = verifiedIndices.Select(index => locations[index]).ToList();
             }
 
             await UpsertPlexSourceIdAsync(request, locations[0], cancellationToken);
@@ -1584,6 +2240,20 @@ public sealed partial class ArtistMetadataUpdaterService
                 return;
             }
 
+            var localAlbumTitles = await GetLocalAlbumTitlesForServerVerificationAsync(request.LocalArtistId, cancellationToken);
+            if (localAlbumTitles.Count > 0)
+            {
+                var candidateAlbumTitles = new List<IReadOnlyList<string>>();
+                foreach (var candidateId in artistIds.Take(8))
+                {
+                    candidateAlbumTitles.Add(
+                        await _jellyfinClient.GetArtistAlbumTitlesAsync(jellyfin.Url, jellyfin.ApiKey, candidateId, cancellationToken));
+                }
+
+                var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, warnings, "Jellyfin");
+                artistIds = verifiedIndices.Select(index => artistIds[index]).ToList();
+            }
+
             if (request.LocalArtistId > 0)
             {
                 await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, JellyfinTarget, artistIds[0], cancellationToken);
@@ -1666,6 +2336,7 @@ public sealed partial class ArtistMetadataUpdaterService
             await sourceStream.CopyToAsync(destinationStream, cancellationToken);
         }
 
+        DeleteSlotVariants(managedRoot, slot, destination);
         return destination;
     }
 
@@ -1716,7 +2387,71 @@ public sealed partial class ArtistMetadataUpdaterService
         var middle = AnalyzeBand(sampled, middleStart, middleHeight);
         var bottom = AnalyzeBand(sampled, bottomBandStart, sampled.Height - bottomBandStart);
 
-        return IsTextHeavyBand(top, middle) || IsTextHeavyBand(bottom, middle);
+        if (IsTextHeavyBand(top, middle) || IsTextHeavyBand(bottom, middle))
+        {
+            return true;
+        }
+
+        return IsLikelyAlbumCoverWithTitle(sampled);
+    }
+
+    private static bool IsLikelyAlbumCoverWithTitle(Image<Rgba32> image)
+    {
+        if (image.Height <= 0)
+        {
+            return false;
+        }
+
+        var aspect = image.Width / (double)image.Height;
+        if (aspect < 0.85 || aspect > 1.15)
+        {
+            return false;
+        }
+
+        var start = (int)Math.Round(image.Height * 0.28);
+        var height = Math.Max(8, (int)Math.Round(image.Height * 0.44));
+        var rates = RowJumpRates(image, start, height);
+        if (rates.Count == 0)
+        {
+            return false;
+        }
+
+        var ordered = rates.OrderBy(static rate => rate).ToList();
+        var median = ordered[ordered.Count / 2];
+        var max = ordered[^1];
+        return (median < 0.10 && max >= 0.16)
+               || (median < 0.18 && max >= 0.25 && max >= median * 1.8);
+    }
+
+    private static List<double> RowJumpRates(Image<Rgba32> image, int startRow, int height)
+    {
+        const double jumpThreshold = 20d;
+        var yStart = Math.Max(0, startRow);
+        var yEnd = Math.Min(image.Height, startRow + Math.Max(1, height));
+        var rates = new List<double>(Math.Max(0, yEnd - yStart));
+        if (yEnd <= yStart || image.Width < 2)
+        {
+            return rates;
+        }
+
+        for (var y = yStart; y < yEnd; y++)
+        {
+            var jumps = 0;
+            var previous = GetLuminance(image[0, y]);
+            for (var x = 1; x < image.Width; x++)
+            {
+                var current = GetLuminance(image[x, y]);
+                if (Math.Abs(current - previous) >= jumpThreshold)
+                {
+                    jumps++;
+                    previous = current;
+                }
+            }
+
+            rates.Add(jumps / (double)image.Width);
+        }
+
+        return rates;
     }
 
     private static ArtworkBandAnalysis AnalyzeBand(Image<Rgba32> image, int startRow, int height)
@@ -1786,16 +2521,29 @@ public sealed partial class ArtistMetadataUpdaterService
         => (pixel.R * 0.299) + (pixel.G * 0.587) + (pixel.B * 0.114);
 
     private static string? ResolveSlotCandidate(string managedRoot, string slot)
+        => ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints: null);
+
+    private static string? ResolveDistinctSlotCandidate(
+        string managedRoot,
+        string slot,
+        IReadOnlySet<string>? excludedFingerprints)
     {
         if (!Directory.Exists(managedRoot))
         {
             return null;
         }
 
-        return Directory.GetFiles(managedRoot, $"{slot}.*", SearchOption.TopDirectoryOnly)
+        var path = Directory.GetFiles(managedRoot, $"{slot}.*", SearchOption.TopDirectoryOnly)
             .Where(File.Exists)
-            .OrderByDescending(path => new FileInfo(path).LastWriteTimeUtc)
+            .OrderByDescending(item => new FileInfo(item).LastWriteTimeUtc)
             .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(path)
+            || (excludedFingerprints is { Count: > 0 } && IsExcludedPath(path, excludedFingerprints)))
+        {
+            return null;
+        }
+
+        return path;
     }
 
     private static void DeleteSlotVariants(string managedRoot, string slot, string keepPath)
@@ -1981,6 +2729,7 @@ public sealed partial class ArtistMetadataUpdaterService
             return null;
         }
 
+        text = ArtistBiographySanitizer.StripPlatformMarkup(text);
         text = text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
         return text;
@@ -2002,6 +2751,75 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             return null;
         }
+    }
+
+
+
+    /// <summary>
+    /// Local album titles used to verify that a name-searched server artist is really
+    /// the library artist before pushing metadata to it.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> GetLocalAlbumTitlesForServerVerificationAsync(
+        long artistId,
+        CancellationToken cancellationToken)
+    {
+        if (artistId <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var albums = await _libraryRepository.GetArtistAlbumsAsync(artistId, cancellationToken);
+            return ArtistIdentityTextNormalizer.FilterResolvableTitles(
+                albums
+                    .Select(album => album.Title ?? string.Empty)
+                    .Where(title => !string.IsNullOrWhiteSpace(title))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Could not load local album titles for server-artist verification. artist={ArtistId}", artistId);
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// Picks which server-side candidates receive the push: when the library has at
+    /// least two resolvable albums, only candidates whose own album list overlaps the
+    /// library are kept. If none overlap, the original candidates are kept and a
+    /// warning is surfaced so pushes never silently break.
+    /// </summary>
+    private static List<int> SelectServerCandidatesByAlbumOverlap(
+        IReadOnlyList<string> localAlbumTitles,
+        IReadOnlyList<IReadOnlyList<string>> candidateAlbumTitles,
+        ICollection<string> warnings,
+        string serverLabel)
+    {
+        var allIndices = Enumerable.Range(0, candidateAlbumTitles.Count).ToList();
+        if (!ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(localAlbumTitles)
+            || candidateAlbumTitles.Count == 0)
+        {
+            return allIndices;
+        }
+
+        var verified = new List<int>();
+        for (var index = 0; index < candidateAlbumTitles.Count; index++)
+        {
+            if (ArtistIdentityTextNormalizer.CountAlbumOverlap(localAlbumTitles, candidateAlbumTitles[index]) > 0)
+            {
+                verified.Add(index);
+            }
+        }
+
+        if (verified.Count > 0)
+        {
+            return verified;
+        }
+
+        warnings.Add(
+            $"{serverLabel} artist matches could not be verified against local albums; pushing to all name matches.");
+        return allIndices;
     }
 
     private static string? ComputeTextHashOrNull(string? value)
@@ -2087,10 +2905,10 @@ public sealed partial class ArtistMetadataUpdaterService
     {
         public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated;
     }
-    private sealed record ArtworkCandidate(string Identity, string Source, string LocalPath)
+    private sealed record ArtworkCandidate(string Identity, string Source, string LocalPath, string? ContentHash = null)
     {
-        public static ArtworkCandidate FromLocal(string path, string identity, string source)
-            => new(identity, source, path);
+        public static ArtworkCandidate FromLocal(string path, string identity, string source, string? contentHash = null)
+            => new(identity, source, path, contentHash);
     }
     private sealed record PushOutcome(bool Updated, IReadOnlyList<string> Warnings);
     private sealed record PushMetadataRequest(
@@ -2136,6 +2954,7 @@ public sealed class MetadataUpdaterRunRequest
     public bool? IncludeBio { get; set; }
     public bool? IncludePopularSongs { get; set; }
     public bool? OcrTextArtBlockingEnabled { get; set; }
+    public bool? SaveArtistFolderImage { get; set; }
     public bool? IncludeAllArtists { get; set; }
     public bool? Force { get; set; }
     public long? FolderId { get; set; }
@@ -2175,6 +2994,7 @@ public sealed class MetadataUpdaterTrackedArtist
     public bool IncludeBio { get; set; }
     public bool IncludePopularSongs { get; set; }
     public bool OcrTextArtBlockingEnabled { get; set; } = true;
+    public bool SaveArtistFolderImage { get; set; }
     public int IntervalDays { get; set; } = 30;
     public DateTimeOffset? LastPushedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;

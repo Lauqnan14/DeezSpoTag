@@ -18,7 +18,8 @@ public sealed class AppleMusicCatalogService
     public sealed record AppleSearchOptions(
         string? TypesOverride = null,
         int Offset = 0,
-        bool IncludeRelationshipsTracks = true);
+        bool IncludeRelationshipsTracks = true,
+        string? IncludeOverride = null);
 
     private sealed record AppleSearchContext(
         string Term,
@@ -27,7 +28,8 @@ public sealed class AppleMusicCatalogService
         string Language,
         string Types,
         int Offset,
-        bool IncludeRelationshipsTracks);
+        bool IncludeRelationshipsTracks,
+        string? IncludeOverride);
 
     private const string AppleMusicScheme = "https";
     private const string AppleMusicHost = "music.apple.com";
@@ -115,7 +117,8 @@ public sealed class AppleMusicCatalogService
             language,
             types,
             options.Offset,
-            options.IncludeRelationshipsTracks);
+            options.IncludeRelationshipsTracks,
+            options.IncludeOverride);
         return await SearchWithTokenAsync(context, cancellationToken);
     }
 
@@ -141,9 +144,9 @@ public sealed class AppleMusicCatalogService
     {
         var url =
             $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/songs/{Uri.EscapeDataString(id)}" +
-            $"?extend=editorialVideo,extendedAssetUrls&l={Uri.EscapeDataString(language)}";
-        // Versioned cache key so older cached song payloads (without extendedAssetUrls) are not reused.
-        var cacheKey = $"apple:song:v2:{storefront}:{id}";
+            $"?include=artists&extend=editorialVideo,extendedAssetUrls&l={Uri.EscapeDataString(language)}";
+        // Versioned cache key so older cached song payloads (without artists/extendedAssetUrls) are not reused.
+        var cacheKey = $"apple:song:v3:{storefront}:{id}";
         return await GetCachedJsonAsync(
             cacheKey,
             TimeSpan.FromMinutes(15),
@@ -493,26 +496,12 @@ public sealed class AppleMusicCatalogService
             return paged;
         }
 
-        var url = BuildCatalogSearchUrl(
-            context.Term,
-            types,
-            context.Limit,
-            context.Storefront,
-            context.Language,
-            context.Offset,
-            context.IncludeRelationshipsTracks);
-        var cacheKey = $"apple:search:{context.Storefront}:{context.Language}:{context.Term}:{types}:{context.Limit}:{context.Offset}:{context.IncludeRelationshipsTracks}";
+        var url = BuildCatalogSearchUrl(context, types);
+        var cacheKey = $"apple:search:{context.Storefront}:{context.Language}:{context.Term}:{types}:{context.Limit}:{context.Offset}:{context.IncludeRelationshipsTracks}:{context.IncludeOverride}";
         var payload = await GetCachedPayloadAsync(cacheKey, TimeSpan.FromMinutes(5), () => SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken));
         if (!context.Storefront.Equals(DefaultStorefront, StringComparison.OrdinalIgnoreCase) && IsSearchEmpty(payload))
         {
-            var fallbackUrl = BuildCatalogSearchUrl(
-                context.Term,
-                types,
-                context.Limit,
-                DefaultStorefront,
-                context.Language,
-                context.Offset,
-                context.IncludeRelationshipsTracks);
+            var fallbackUrl = BuildCatalogSearchUrl(context with { Storefront = DefaultStorefront }, types);
             var fallbackPayload = await SendWithTokenRetryRawAsync(HttpMethod.Get, fallbackUrl, cancellationToken);
             if (!IsSearchEmpty(fallbackPayload))
             {
@@ -530,14 +519,7 @@ public sealed class AppleMusicCatalogService
     {
         var requested = Math.Max(context.Limit, 1);
         var pageLimit = Math.Clamp(requested, 1, 25);
-        var nextRequestUrl = BuildCatalogSearchUrl(
-            context.Term,
-            type,
-            pageLimit,
-            context.Storefront,
-            context.Language,
-            context.Offset,
-            context.IncludeRelationshipsTracks);
+        var nextRequestUrl = BuildCatalogSearchUrl(context, type, pageLimit);
         var nextResultPath = string.Empty;
         var data = new List<JsonElement>(requested);
 
@@ -590,18 +572,16 @@ public sealed class AppleMusicCatalogService
         return !string.IsNullOrWhiteSpace(nextResultPath);
     }
 
-    private static string BuildCatalogSearchUrl(
-        string term,
-        string types,
-        int limit,
-        string storefront,
-        string language,
-        int offset,
-        bool includeRelationshipsTracks)
+    private static string BuildCatalogSearchUrl(AppleSearchContext context, string types, int? limitOverride = null)
     {
-        var include = includeRelationshipsTracks ? "&include=relationships.tracks" : string.Empty;
+        var include = !string.IsNullOrWhiteSpace(context.IncludeOverride)
+            ? "&include=" + context.IncludeOverride
+            : context.IncludeRelationshipsTracks
+                ? "&include=relationships.tracks"
+                : string.Empty;
+        var limit = limitOverride ?? context.Limit;
         return
-            $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/search?term={Uri.EscapeDataString(term)}&types={Uri.EscapeDataString(types)}&limit={limit}&l={Uri.EscapeDataString(language)}&offset={offset}{include}";
+            $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(context.Storefront)}/search?term={Uri.EscapeDataString(context.Term)}&types={Uri.EscapeDataString(types)}&limit={limit}&l={Uri.EscapeDataString(context.Language)}&offset={context.Offset}{include}";
     }
 
     private static bool IsSingleCatalogType(string types)

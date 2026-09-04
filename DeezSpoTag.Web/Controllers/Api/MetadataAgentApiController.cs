@@ -66,22 +66,8 @@ public sealed partial class MetadataAgentApiController(
             return string.Empty;
         }
 
-        var unwrapped = AnchorTagPattern().Replace(biography, "$1");
-        var stripped = HtmlTagPattern().Replace(unwrapped, string.Empty);
-        var decoded = System.Net.WebUtility.HtmlDecode(stripped);
-        return WhitespaceRunPattern().Replace(decoded, " ").Trim();
+        return ArtistBiographySanitizer.Clean(biography) ?? string.Empty;
     }
-
-    [System.Text.RegularExpressions.GeneratedRegex(
-        "<a\\b[^>]*>(.*?)</a\\s*>",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline)]
-    private static partial System.Text.RegularExpressions.Regex AnchorTagPattern();
-
-    [System.Text.RegularExpressions.GeneratedRegex("<[^>]+>")]
-    private static partial System.Text.RegularExpressions.Regex HtmlTagPattern();
-
-    [System.Text.RegularExpressions.GeneratedRegex("\\s{2,}")]
-    private static partial System.Text.RegularExpressions.Regex WhitespaceRunPattern();
 
     [HttpGet("artist/top-songs")]
     public async Task<IActionResult> TopSongs(
