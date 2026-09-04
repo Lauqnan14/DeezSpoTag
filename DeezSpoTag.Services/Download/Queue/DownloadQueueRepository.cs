@@ -1024,8 +1024,6 @@ SET status = @status,
     progress = CASE
         WHEN @progress IS NOT NULL
             THEN @progress
-        WHEN lower(@status) IN ('queued', 'inqueue', 'retrying')
-            THEN 0
         WHEN lower(@status) IN ('completed', 'complete')
             THEN 100
         ELSE progress
@@ -1621,16 +1619,21 @@ WHERE queue_uuid = @queueUuid
 
     private static void MergeFileArrays(JsonObject current, JsonObject incoming)
     {
-        if (current["Files"] is not JsonArray currentFiles || currentFiles.Count == 0)
+        // Payload writers disagree on casing: engine serialization emits "Files"
+        // (PascalCase) while UpdatePrefetchFilesAndArtworkAsync writes "files"
+        // (camelCase). Treat them as the same array, otherwise artwork/file
+        // entries persisted under one casing are silently dropped by the other.
+        var currentFiles = current["Files"] as JsonArray ?? current["files"] as JsonArray;
+        if (currentFiles is not { Count: > 0 })
         {
             return;
         }
 
-        var merged = incoming["Files"] is JsonArray incomingFiles
-            ? (JsonArray)incomingFiles.DeepClone()
-            : new JsonArray();
+        var incomingFiles = (incoming["Files"] as JsonArray ?? incoming["files"] as JsonArray)
+            ?.DeepClone() as JsonArray
+            ?? new JsonArray();
         var serialized = new HashSet<string>(
-            merged.Where(node => node != null).Select(node => node!.ToJsonString()),
+            incomingFiles.Where(node => node != null).Select(node => node!.ToJsonString()),
             StringComparer.Ordinal);
         foreach (var file in currentFiles)
         {
@@ -1639,10 +1642,11 @@ WHERE queue_uuid = @queueUuid
                 continue;
             }
 
-            merged.Add(file.DeepClone());
+            incomingFiles.Add(file.DeepClone());
         }
 
-        incoming["Files"] = merged;
+        incoming["Files"] = incomingFiles;
+        incoming["files"] = incomingFiles.DeepClone();
     }
 
     public async Task UpdatePrefetchFilesAndArtworkAsync(
@@ -1659,7 +1663,13 @@ UPDATE download_task
 SET payload = CASE
         WHEN json_valid(payload) THEN json_set(
             payload,
+            -- Write both casings: engine payloads serialize the Files property as
+            -- PascalCase, while this path historically wrote camelCase. Keeping both
+            -- in sync prevents the artwork/file entries from being dropped by
+            -- case-sensitive deserialization (QueueHelperUtils.ParseQueuePayload) or
+            -- by MergeFileArrays.
             '$.files', json(@files),
+            '$.Files', json(@files),
             '$.ArtworkStatus', @artworkStatus,
             '$.ArtworkError', @artworkError)
         ELSE payload
@@ -2736,6 +2746,9 @@ WHERE (
             AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
         )
     )
+    -- Rows the user cleared from Activities are no longer in the queue:
+    -- they must not block re-downloading the same track.
+    AND activities_cleared_at IS NULL
 ORDER BY
     CASE
         WHEN lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 0

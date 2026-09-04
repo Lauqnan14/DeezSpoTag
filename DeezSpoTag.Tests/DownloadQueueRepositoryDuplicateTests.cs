@@ -708,7 +708,10 @@ public sealed class DownloadQueueRepositoryDuplicateTests
 
         var queued = await context.QueueRepository.GetByUuidAsync("progress-preserve", CancellationToken.None);
         Assert.NotNull(queued);
-        Assert.Equal(0, queued!.Progress);
+        // Requeueing (e.g. pause -> resume) must preserve the last persisted
+        // progress so a page refresh restores the bar; genuine restarts zero
+        // progress explicitly via RequeueAsync/ScheduleRetryAsync/SendRunningStartedAsync.
+        Assert.Equal(42.5, queued!.Progress);
 
         await context.QueueRepository.UpdateStatusAsync(
             "progress-preserve",
