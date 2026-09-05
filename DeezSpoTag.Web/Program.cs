@@ -1565,6 +1565,7 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>()));
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>();
         services.AddScoped<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(sp =>
             new DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices(
                 sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
@@ -1587,7 +1588,8 @@ public partial class Program
                 MusicServices = sp.GetRequiredService<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(),
                 TracklistSongCacheStore = sp.GetRequiredService<DeezSpoTag.Web.Services.TracklistSongCacheStore>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
-                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
+                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
+                AudiomackArtistLocation = sp.GetRequiredService<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices>(sp =>
             new DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices

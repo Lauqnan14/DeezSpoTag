@@ -41,7 +41,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             MusicServices = musicServices,
             TracklistSongCacheStore = null!,
             CrossDeviceSyncService = null!,
-            TidalAccessTokenProvider = null!
+            TidalAccessTokenProvider = null!,
+            AudiomackArtistLocation = null!
         });
 
         var recoverMethod = typeof(ApiController).GetMethod(
@@ -91,7 +92,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             MusicServices = musicServices,
             TracklistSongCacheStore = null!,
             CrossDeviceSyncService = null!,
-            TidalAccessTokenProvider = null!
+            TidalAccessTokenProvider = null!,
+            AudiomackArtistLocation = null!
         });
 
         var method = typeof(ApiController).GetMethod(
@@ -221,7 +223,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             MusicServices = musicServices,
             TracklistSongCacheStore = null!,
             CrossDeviceSyncService = null!,
-            TidalAccessTokenProvider = null!
+            TidalAccessTokenProvider = null!,
+            AudiomackArtistLocation = null!
         });
     }
 

@@ -94,6 +94,12 @@
     font-size: 14px;
 }
 
+.artist-hero__location {
+    color: var(--text-secondary);
+    font-size: 14px;
+    letter-spacing: 0.2px;
+}
+
 .artist-hero__genres {
     display: flex;
     flex-wrap: wrap;
@@ -851,6 +857,7 @@ function formatArtistData(data) {
         artistAvatar: data.picture_medium || data.picture_small || data.picture || data.picture_xl || '',
         artistGenres: mergeGenres(data.genres, data.local_genres),
         artistFans: data.nb_fan || 0,
+        artistLocation: formatArtistLocation(data),
         artistReleases: releases,
         artistTopTracks: topTracks,
         artistRelated: Array.isArray(data.related) ? data.related : [],
@@ -873,6 +880,22 @@ function formatArtistStatText(data) {
     }
 
     return `${formatNumber(value)} fans`;
+}
+
+function flagEmoji(countryCode) {
+    const code = String(countryCode || '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) return '';
+    return String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+function formatArtistLocation(data) {
+    const city = String(data?.city || '').trim();
+    const country = String(data?.country || '').trim();
+    const flag = flagEmoji(data?.country_code);
+    if (city && country) return `${flag ? `${flag} ` : ''}${city}, ${country}`;
+    if (country) return `${flag ? `${flag} ` : ''}${country}`;
+    if (city) return city;
+    return '';
 }
 
 function normalizeReleaseTabKey(key) {
@@ -920,6 +943,9 @@ function displayArtist(data) {
         ? data.artistGenres.map(genre => `<span class="artist-hero__genre">${escapeHtml(genre)}</span>`).join('')
         : '';
     const fansText = formatArtistStatText(data);
+    const locationHtml = data.artistLocation
+        ? `<div class="artist-hero__location">${escapeHtml(data.artistLocation)}</div>`
+        : '';
 
     const topTracksHtml = renderTopTracks(data.artistTopTracks);
     const discographyTabs = tabsWithData.length ? tabsWithData : availableTabs;
@@ -936,6 +962,7 @@ function displayArtist(data) {
                     <div class="artist-hero__stats">
                         <span>${fansText}</span>
                     </div>
+                    ${locationHtml}
                     ${genreChips ? `<div class="artist-hero__genres">${genreChips}</div>` : ''}
                     <div class="artist-hero__actions">
                         <button class="btn btn-secondary action-btn action-btn--wide" onclick="downloadArtist('${data.downloadLink}/discography')" ${!data.downloadLink ? 'style="display:none"' : ''}>Download Discography</button>

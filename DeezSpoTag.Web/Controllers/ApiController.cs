@@ -140,6 +140,7 @@ namespace DeezSpoTag.Web.Controllers
         private readonly TracklistSongCacheStore _tracklistSongCacheStore;
         private readonly CrossDeviceSyncService _crossDeviceSyncService;
         private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
+        private readonly DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService _audiomackArtistLocation;
 
         public sealed class ApiControllerMusicServices
         {
@@ -183,6 +184,7 @@ namespace DeezSpoTag.Web.Controllers
             public required TracklistSongCacheStore TracklistSongCacheStore { get; init; }
             public required CrossDeviceSyncService CrossDeviceSyncService { get; init; }
             public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
+            public required DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService AudiomackArtistLocation { get; init; }
         }
 
         public ApiController(ApiControllerDependencies dependencies)
@@ -204,6 +206,7 @@ namespace DeezSpoTag.Web.Controllers
             _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
             _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
             _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
+            _audiomackArtistLocation = dependencies.AudiomackArtistLocation;
         }
 
         // Login endpoints removed - handled by DeezSpoTag.API.Controllers.LoginController
@@ -2043,6 +2046,51 @@ namespace DeezSpoTag.Web.Controllers
         private static bool IsSupportedArtistPageSource(string source) =>
             source == DeezerSource || source == AppleSource || source == SpotifySource || source == TidalSource || source == AmazonSource;
 
+        private async Task AttachArtistLocationAsync(Dictionary<string, object> payload, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (payload.ContainsKey("location_source"))
+                {
+                    return;
+                }
+
+                if (!payload.TryGetValue("name", out var nameValue) || nameValue is not string artistName
+                    || string.IsNullOrWhiteSpace(artistName))
+                {
+                    return;
+                }
+
+                var location = await _audiomackArtistLocation.ResolveAsync(artistName, cancellationToken);
+                if (location == null)
+                {
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.City))
+                {
+                    payload["city"] = location.City;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.Country))
+                {
+                    payload["country"] = location.Country;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.CountryCode))
+                {
+                    payload["country_code"] = location.CountryCode;
+                }
+
+                payload["location_source"] = "audiomack";
+                payload["raw_location"] = location.RawLocation;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Artist location lookup failed; continuing without location");
+            }
+        }
+
         private async Task<ArtistCacheEntry?> GetArtistPageCacheSnapshotAsync(
             string cacheKey,
             bool refreshRequested,
@@ -2114,6 +2162,7 @@ namespace DeezSpoTag.Web.Controllers
                     return NotFound("Artist not found");
                 }
 
+                await AttachArtistLocationAsync(payload, cancellationToken);
                 var payloadJson = JsonSerializer.Serialize(payload);
                 var releaseCount = CountDiscographyEntries(payload);
                 var existingReleaseCount = existingCache == null ? 0 : CountDiscographyEntries(existingCache.PayloadJson);
@@ -2168,6 +2217,8 @@ namespace DeezSpoTag.Web.Controllers
                 {
                     return NotFound("Artist not found");
                 }
+
+                await AttachArtistLocationAsync(payload, cancellationToken);
 
                 var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
                 if (_logger.IsEnabled(LogLevel.Information))
@@ -3886,6 +3937,7 @@ namespace DeezSpoTag.Web.Controllers
                     return;
                 }
 
+                await AttachArtistLocationAsync(payload, CancellationToken.None);
                 var payloadJson = JsonSerializer.Serialize(payload);
                 var cacheKey = $"{source}:{id}";
                 var incomingReleaseCount = CountDiscographyEntries(payload);
