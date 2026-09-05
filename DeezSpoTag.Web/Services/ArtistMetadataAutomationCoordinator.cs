@@ -371,8 +371,21 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            _logger.LogInformation("Artist metadata {Operation} was cancelled.", operation);
-            await ClearActiveRunWithoutStampingAsync();
+            // Distinguish app shutdown from a user cancel: shutdown must KEEP the run
+            // so it resumes on the next start; only an explicit user cancel clears it.
+            if (_shutdownToken.IsCancellationRequested)
+            {
+                _logger.LogInformation(
+                    "Artist metadata {Operation} was interrupted by shutdown; keeping the run for resume ({Completed} artist(s) done).",
+                    operation,
+                    _checkpoint?.CompletedArtistIds.Count ?? 0);
+                await PersistCheckpointAsync();
+            }
+            else
+            {
+                _logger.LogInformation("Artist metadata {Operation} was cancelled.", operation);
+                await ClearActiveRunWithoutStampingAsync();
+            }
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -619,7 +632,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 LastCacheRefreshUtc = state.LastCacheRefreshUtc,
                 LastTargetUpdateUtc = state.LastTargetUpdateUtc,
                 NextCacheRefreshUtc = NextDue(state.LastCacheRefreshUtc, preferences.MetadataCacheRefreshIntervalDays, now),
-                NextTargetUpdateUtc = NextDue(state.LastTargetUpdateUtc, preferences.MetadataTargetUpdateIntervalDays, now)
+                NextTargetUpdateUtc = NextDue(state.LastTargetUpdateUtc, preferences.MetadataTargetUpdateIntervalDays, now),
+                ResumeNotice = state.ActiveRun is null
+                    ? null
+                    : $"Interrupted {state.ActiveRun.Operation.Replace('-', ' ')} will resume where it stopped ({state.ActiveRun.CompletedArtistIds.Count} artist(s) already done)."
             };
         }
     }
@@ -736,7 +752,8 @@ public sealed record ArtistMetadataAutomationStatus(
     DateTimeOffset? LastCacheRefreshUtc,
     DateTimeOffset? LastTargetUpdateUtc,
     DateTimeOffset? NextCacheRefreshUtc,
-    DateTimeOffset? NextTargetUpdateUtc)
+    DateTimeOffset? NextTargetUpdateUtc,
+    string? ResumeNotice = null)
 {
     public static ArtistMetadataAutomationStatus Idle()
         => new(null, ArtistMetadataCacheStatus.Idle(), MetadataUpdaterStatusSnapshot.Idle(), null, null, null, null);

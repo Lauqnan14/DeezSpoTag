@@ -4881,6 +4881,9 @@ async function refreshLibraryScanAndMetadataStatus() {
             const metadataStatus = pickMetadataStatus(automationStatus);
             metadataRunning = Boolean(automationStatus?.activeOperation || metadataStatus?.running);
             applyMetadataUpdaterStatus(metadataStatus || {}, metadataPhase, metadataProgressLabel, metadataProgressBar);
+            if (automationStatus?.resumeNotice && !metadataRunning) {
+                metadataPhase.textContent = automationStatus.resumeNotice;
+            }
             if (metadataUpdate) {
                 metadataUpdate.disabled = metadataRunning;
             }

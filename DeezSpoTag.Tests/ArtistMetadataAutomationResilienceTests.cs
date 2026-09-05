@@ -9,6 +9,25 @@ namespace DeezSpoTag.Tests;
 public sealed class ArtistMetadataAutomationResilienceTests
 {
     [Fact]
+    public void ShutdownKeepsInterruptedRunResumable_UserCancelClearsIt()
+    {
+        var source = ReadCoordinator();
+        var methodStart = source.IndexOf("private async Task RunManualOperationAsync", StringComparison.Ordinal);
+        var start = source.IndexOf("catch (OperationCanceledException)", methodStart, StringComparison.Ordinal);
+        var body = source[start..source.IndexOf("catch (Exception ex)", start, StringComparison.Ordinal)];
+
+        // Shutdown must keep the run so it resumes on the next start.
+        Assert.Contains("_shutdownToken.IsCancellationRequested", body, StringComparison.Ordinal);
+        Assert.Contains("keeping the run for resume", body, StringComparison.Ordinal);
+        Assert.Contains("PersistCheckpointAsync", body, StringComparison.Ordinal);
+
+        // Only the user-cancel branch clears the run.
+        var clearIndex = body.IndexOf("ClearActiveRunWithoutStampingAsync", StringComparison.Ordinal);
+        Assert.True(clearIndex > body.IndexOf("else", StringComparison.Ordinal),
+            "The clear path must be the user-cancel branch, not the shutdown branch.");
+    }
+
+    [Fact]
     public void ManualRunsUseARealCancellationTokenNotNone()
     {
         var source = ReadCoordinator();
