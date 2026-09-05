@@ -301,6 +301,15 @@ CREATE TABLE IF NOT EXISTS artist_visual_usage (
     PRIMARY KEY (artist_id, slot, content_hash)
 );", cancellationToken);
         await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_location_override (
+    artist_id BIGINT NOT NULL,
+    city TEXT,
+    country TEXT,
+    country_code TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS artist_biography_rotation (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
     last_source TEXT NOT NULL,

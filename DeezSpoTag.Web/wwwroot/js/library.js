@@ -1658,7 +1658,8 @@ function normalizeSpotifyArtistProfileObject(artist) {
         headerImageUrl: (artist.headerImageUrl || artist.HeaderImageUrl || '').toString() || null,
         gallery,
         discographyType: (artist.discographyType || artist.DiscographyType || '').toString() || null,
-        totalAlbums: artist.totalAlbums ?? artist.TotalAlbums ?? null
+        totalAlbums: artist.totalAlbums ?? artist.TotalAlbums ?? null,
+        location: artist.location ?? artist.Location ?? null
     };
 }
 
@@ -4323,6 +4324,8 @@ async function loadAlbums(artistId) {
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
     initQobuzIdEditor(artistIdValue);
+    initAudiomackIdEditor(artistIdValue);
+    initArtistLocationEditor(artistIdValue);
 }
 
 function applyLocalArtistHeader(resolvedArtist) {
@@ -6100,6 +6103,101 @@ function initQobuzIdEditor(artistIdValue) {
             showToast(`Qobuz ID update failed: ${error.message}`, true);
         } finally {
             editButton.disabled = false;
+        }
+    });
+}
+
+async function initAudiomackIdEditor(artistIdValue) {
+    const editButton = document.getElementById('audiomackIdEdit');
+    if (!editButton || !artistIdValue || editButton.dataset.bound === 'true') return;
+    editButton.dataset.bound = 'true';
+
+    editButton.addEventListener('click', async () => {
+        let current = '';
+        try {
+            const stored = await fetchJson(`/api/library/artists/${artistIdValue}/audiomack-id`);
+            current = String(stored?.audiomackId || '');
+        } catch {
+            // Best effort only: an empty prompt value is fine.
+        }
+
+        const updated = await DeezSpoTag.ui.prompt('Audiomack artist slug or profile URL', {
+            title: 'Update Audiomack ID',
+            value: current,
+            placeholder: 'e.g. alikiba or https://audiomack.com/alikiba'
+        });
+        if (updated === null) return;
+        const trimmed = updated.trim();
+        if (!trimmed) {
+            showToast('Audiomack ID is required.', true);
+            return;
+        }
+
+        editButton.disabled = true;
+        try {
+            await fetchJson(`/api/library/artists/${artistIdValue}/audiomack-id`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ audiomackId: trimmed })
+            });
+            showToast('Audiomack ID updated. Refreshing location…');
+            await loadSpotifyArtist(artistIdValue, true, false);
+        } catch (error) {
+            showToast(`Audiomack ID update failed: ${error.message}`, true);
+        } finally {
+            editButton.disabled = false;
+        }
+    });
+}
+
+function initArtistLocationEditor(artistIdValue) {
+    const cityInput = document.getElementById('artist-location-city');
+    const countryInput = document.getElementById('artist-location-country');
+    const saveButton = document.getElementById('artist-location-save');
+    const clearButton = document.getElementById('artist-location-clear');
+    if (!cityInput || !countryInput || !saveButton || !clearButton || !artistIdValue || saveButton.dataset.bound === 'true') return;
+    saveButton.dataset.bound = 'true';
+
+    const putOverride = async (city, country) => {
+        await fetchJson(`/api/library/artists/${artistIdValue}/location-override`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ city, country })
+        });
+    };
+
+    saveButton.addEventListener('click', async () => {
+        const city = cityInput.value.trim();
+        const country = countryInput.value.trim();
+        if (!city && !country) {
+            showToast('Enter a city and/or country, or use "Use Audiomack" to reset.', true);
+            return;
+        }
+
+        saveButton.disabled = true;
+        try {
+            await putOverride(city, country);
+            await loadSpotifyArtist(artistIdValue, true, false);
+            showToast('Location updated.');
+        } catch (error) {
+            showToast(`Location update failed: ${error.message}`, true);
+        } finally {
+            saveButton.disabled = false;
+        }
+    });
+
+    clearButton.addEventListener('click', async () => {
+        clearButton.disabled = true;
+        try {
+            await putOverride('', '');
+            cityInput.value = '';
+            countryInput.value = '';
+            await loadSpotifyArtist(artistIdValue, true, false);
+            showToast('Location reset to source data.');
+        } catch (error) {
+            showToast(`Location reset failed: ${error.message}`, true);
+        } finally {
+            clearButton.disabled = false;
         }
     });
 }

@@ -121,7 +121,9 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
             spotifyMetadataCache: null!,
             lastFmArtistImageService: null!,
             artistVisualSelectionService: null!,
-            environment: _environment);
+            environment: _environment,
+            audiomackArtistLocation: null!,
+            locationOverrides: null!);
 
         return new LibraryArtistSourceMetadataApiController(
             _repository,

@@ -1477,6 +1477,7 @@ public partial class Program
             sp.GetRequiredService<DeezSpoTag.Web.Services.LastFmArtistImageService>());
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
+        services.AddSingleton<DeezSpoTag.Services.Library.ArtistLocationOverrideStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataServices>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueDependencies>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
@@ -1565,6 +1566,8 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>()));
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackWebCredentialsProvider>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackApiClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>();
         services.AddScoped<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(sp =>
             new DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices(

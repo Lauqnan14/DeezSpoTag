@@ -40,6 +40,7 @@ public sealed class LiveDiagnosticsTests
     private const string IdentityResolverLiveFlag = "DEEZSPOTAG_LIVE_IDENTITY_RESOLVER_TESTS";
     private const string TargetIngestLiveFlag = "DEEZSPOTAG_LIVE_TARGET_INGEST_TESTS";
     private const string AppleLyricsLiveFlag = "DEEZSPOTAG_LIVE_APPLE_LYRICS_TESTS";
+    private const string AudiomackLocationLiveFlag = "DEEZSPOTAG_LIVE_AUDIOMACK_LOCATION_TESTS";
     private const string DataRootEnv = "DEEZSPOTAG_DATA_DIR";
 
     [Fact]
@@ -992,6 +993,64 @@ GROUP BY service;";
         {
             return false;
         }
+    }
+
+    [Fact]
+    public async Task AudiomackArtistLocation_LiveResolvesRealArtistsWhenEnabled()
+    {
+        if (!IsEnabled(AudiomackLocationLiveFlag))
+        {
+            return;
+        }
+
+        using var services = BuildAudiomackLocationServices();
+        var service = services.GetRequiredService<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>();
+
+        // Diagnostic, not a content assertion: Audiomack profiles are user-editable,
+        // so only invariants are checked — a result must be internally coherent,
+        // and no artist may ever receive another artist's location (name gate).
+        foreach (var artistName in new[] { "Olamide", "Black Sherif", "Still Shadey", "Khaligraph Jones" })
+        {
+            var location = await service.ResolveAsync(artistName);
+            if (location == null)
+            {
+                continue;
+            }
+
+            Assert.True(
+                !string.IsNullOrWhiteSpace(location.City) || !string.IsNullOrWhiteSpace(location.Country),
+                $"{artistName}: result without city or country: {Describe(location)}");
+            Assert.True(
+                location.Country == null || Regex.IsMatch(location.CountryCode ?? string.Empty, "^[A-Z]{2}$"),
+                $"{artistName}: country without valid ISO code: {Describe(location)}");
+            Assert.True(
+                (location.Country == null) == (location.CountryCode == null),
+                $"{artistName}: country/code mismatch: {Describe(location)}");
+        }
+    }
+
+    private static string Describe(DeezSpoTag.Web.Services.Audiomack.AudiomackLocationResult? location) =>
+        location == null ? "null" : $"raw={location.RawLocation} city={location.City} country={location.Country} code={location.CountryCode}";
+
+    private static ServiceProvider BuildAudiomackLocationServices()
+    {
+        // Isolated throwaway DB (no schema) so the test always exercises the real
+        // fetch + parse pipeline instead of serving previously cached rows.
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(Path.GetTempPath(), $"audiomack-live-{Guid.NewGuid():N}.db")}"
+            })
+            .Build());
+        services.AddLogging();
+        services.AddHttpClient();
+        services.AddSingleton<DeezSpoTag.Services.Library.ArtistPageCacheRepository>();
+        services.AddSingleton<DeezSpoTag.Services.Library.LibraryRepository>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackWebCredentialsProvider>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackApiClient>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>();
+        return services.BuildServiceProvider();
     }
 
     private sealed class LiveWebHostEnvironment : IWebHostEnvironment

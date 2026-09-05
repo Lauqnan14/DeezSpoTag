@@ -1,74 +1,231 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services.Audiomack;
 
 /// <summary>
 /// Extracts the raw artist location (hometown/location) from a public Audiomack
-/// artist page. The page embeds its data as flight-payload strings where JSON
-/// quotes are escaped (\"), so values are read after unescaping and anchored on
-/// the artist object whose url_slug matches the requested slug exactly. The
-/// object's own name is cross-checked against the expected artist name, because
-/// slugs can be recycled or reassigned to a different artist; a mismatch (or a
-/// non-match) returns null instead of guessing, so a wrong artist can never
-/// contribute a location.
+/// artist page. The page embeds its data in Next.js flight chunks
+/// (self.__next_f.push([1,"&lt;escaped json&gt;"])). Each chunk string is decoded
+/// exactly one level with a real escape decoder and the decoded stream is
+/// reassembled, so objects fragmented across chunks become whole. Balanced,
+/// string-aware object spans are then collected over the decoded stream and the
+/// artist object whose url_slug matches the requested slug is parsed with a real
+/// JSON parser — name, hometown and location therefore always come from the same
+/// object, never from neighbouring objects on the page. The object's name is
+/// cross-checked against the expected artist name, because slugs can be
+/// recycled or reassigned to a different artist; a mismatch (or a non-match)
+/// returns null instead of guessing, so a wrong artist can never contribute a
+/// location.
 /// </summary>
+/// Result of a successful artist-object match: the canonical url_slug of the
+/// matched profile (always equal to the requested slug today, but carried
+/// explicitly so callers can persist the identifier) plus the raw location.
+public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation);
+
 public static class AudiomackArtistPageParser
 {
-    private const int LookupWindowChars = 5000;
-    private const int MinimumNameLengthForPrefixMatch = 4;
+    private static readonly Regex PushChunkRegex =
+        new("self\\.__next_f\\.push\\(\\[1,\\s*\"(?<payload>(?:[^\"\\\\]|\\\\.)*)\"\\]\\)", RegexOptions.Compiled);
 
     private static readonly Regex UrlSlugRegex =
         new("\"url_slug\"\\s*:\\s*\"(?<slug>[^\"]*)\"", RegexOptions.Compiled);
 
-    // Matches the "name" key of a JSON object (after '{' or ',' or a flight-chunk
-    // counter) while excluding keys that merely end in "name" (e.g. "twitter_name").
-    private static readonly Regex ArtistNameRegex =
-        new("(?<![\\w])\"name\"\\s*:\\s*\"(?<value>[^\"]*)\"", RegexOptions.Compiled);
-
-    private static readonly Regex HometownRegex =
-        new("\"hometown\"\\s*:\\s*(?:null|\"(?<value>.*?)\")", RegexOptions.Compiled);
-
-    private static readonly Regex LocationFieldRegex =
-        new("\"location\"\\s*:\\s*(?:null|\"(?<value>.*?)\")", RegexOptions.Compiled);
-
     public static string? TryExtractRawLocation(string? html, string? urlSlug, string? expectedArtistName)
+    {
+        return TryExtractArtistPageInfo(html, urlSlug, expectedArtistName)?.RawLocation;
+    }
+
+    public static AudiomackArtistPageInfo? TryExtractArtistPageInfo(string? html, string? urlSlug, string? expectedArtistName)
     {
         if (string.IsNullOrWhiteSpace(html) || string.IsNullOrWhiteSpace(urlSlug) || string.IsNullOrWhiteSpace(expectedArtistName))
         {
             return null;
         }
 
-        // Flight payloads embed JSON inside strings: \"hometown\":\"Lagos, Nigeria\".
-        var unescaped = html.Replace("\\\"", "\"");
-        foreach (Match slugMatch in UrlSlugRegex.Matches(unescaped))
+        var decoded = new StringBuilder();
+        foreach (Match chunk in PushChunkRegex.Matches(html))
+        {
+            var chunkText = TryDecodeFlightChunk(chunk.Groups["payload"].Value);
+            if (chunkText != null)
+            {
+                decoded.Append(chunkText);
+            }
+        }
+
+        if (decoded.Length == 0)
+        {
+            return null;
+        }
+
+        var stream = decoded.ToString();
+        var objectSpans = CollectBalancedObjectSpans(stream);
+
+        foreach (Match slugMatch in UrlSlugRegex.Matches(stream))
         {
             if (!string.Equals(slugMatch.Groups["slug"].Value, urlSlug, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            var windowStart = Math.Max(0, slugMatch.Index - LookupWindowChars);
-            var windowLength = Math.Min(unescaped.Length, slugMatch.Index + LookupWindowChars) - windowStart;
-            var window = unescaped.Substring(windowStart, windowLength);
-            var slugIndexInWindow = slugMatch.Index - windowStart;
-
-            var objectName = ExtractClosestValue(window, ArtistNameRegex, slugIndexInWindow);
-            if (!IsExpectedArtist(objectName, expectedArtistName))
+            var span = FindInnermostSpanContaining(objectSpans, slugMatch.Index);
+            if (span == null)
             {
                 continue;
             }
 
-            var raw = ExtractClosestValue(window, HometownRegex, slugIndexInWindow)
-                      ?? ExtractClosestValue(window, LocationFieldRegex, slugIndexInWindow);
+            string? name;
+            string? hometown;
+            string? location;
+            string? canonicalSlug = null;
+            try
+            {
+                using var document = JsonDocument.Parse(stream[span.Value.Open..(span.Value.Close + 1)]);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                name = GetTrimmedStringOrNull(root, "name");
+                hometown = GetTrimmedStringOrNull(root, "hometown");
+                location = GetTrimmedStringOrNull(root, "location")
+                           ?? GetLocationDisplayOrNull(root);
+                canonicalSlug = GetTrimmedStringOrNull(root, "url_slug");
+            }
+            catch (JsonException)
+            {
+                // Unparsable fragment: skip rather than guess.
+                continue;
+            }
+
+            if (!IsExpectedArtist(name, expectedArtistName))
+            {
+                continue;
+            }
+
+            var raw = !string.IsNullOrWhiteSpace(hometown) ? hometown : location;
             if (!string.IsNullOrWhiteSpace(raw))
             {
-                return raw.Trim();
+                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, raw.Trim());
             }
         }
 
         return null;
+    }
+
+    /// <summary>Decodes the escaped chunk string pushed into the flight stream.</summary>
+    private static string? TryDecodeFlightChunk(string payload)
+    {
+        try
+        {
+            return Regex.Unescape(payload);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// One forward pass over the decoded stream, tracking string literals and
+    /// escapes, recording the (open, close) index pair of every balanced JSON
+    /// object.
+    /// </summary>
+    private static List<ObjectSpan> CollectBalancedObjectSpans(string text)
+    {
+        var spans = new List<ObjectSpan>();
+        var openBraces = new Stack<int>();
+        var inString = false;
+        var escaped = false;
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '{')
+            {
+                openBraces.Push(i);
+            }
+            else if (c == '}' && openBraces.Count > 0)
+            {
+                spans.Add(new ObjectSpan(openBraces.Pop(), i));
+            }
+        }
+
+        return spans;
+    }
+
+    private static ObjectSpan? FindInnermostSpanContaining(List<ObjectSpan> spans, int index)
+    {
+        ObjectSpan? innermost = null;
+        foreach (var span in spans)
+        {
+            if (span.Open <= index && index <= span.Close
+                && (innermost == null || span.Open > innermost.Value.Open))
+            {
+                innermost = span;
+            }
+        }
+
+        return innermost;
+    }
+
+    private static string? GetTrimmedStringOrNull(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var raw = value.GetString();
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+    }
+
+    /// <summary>
+    /// Some profiles carry location as a structured object instead of a string,
+    /// e.g. {"tag":"ghanagreateraccraaccra","display":"Accra, Ghana"}; its
+    /// display value is the artist's normalized "City, Country" text.
+    /// </summary>
+    private static string? GetLocationDisplayOrNull(JsonElement root)
+    {
+        if (!root.TryGetProperty("location", out var value) || value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!value.TryGetProperty("display", out var display) || display.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var raw = display.GetString();
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
     }
 
     private static bool IsExpectedArtist(string? objectName, string expectedArtistName)
@@ -90,39 +247,14 @@ public static class AudiomackArtistPageParser
             return true;
         }
 
-        return expected.Length >= MinimumNameLengthForPrefixMatch
-            && actual.Length >= MinimumNameLengthForPrefixMatch
+        const int minimumNameLengthForPrefixMatch = 4;
+        return expected.Length >= minimumNameLengthForPrefixMatch
+            && actual.Length >= minimumNameLengthForPrefixMatch
             && (expected.StartsWith(actual, StringComparison.Ordinal) || actual.StartsWith(expected, StringComparison.Ordinal));
     }
 
     private static string NormalizeName(string value) =>
         new(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
 
-    private static string? ExtractClosestValue(string window, Regex regex, int anchorIndex)
-    {
-        string? closest = null;
-        var closestDistance = int.MaxValue;
-        foreach (Match match in regex.Matches(window))
-        {
-            if (!match.Groups["value"].Success)
-            {
-                continue;
-            }
-
-            var value = match.Groups["value"].Value;
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
-
-            var distance = Math.Abs(match.Index - anchorIndex);
-            if (distance < closestDistance)
-            {
-                closestDistance = distance;
-                closest = value;
-            }
-        }
-
-        return closest;
-    }
+    private readonly record struct ObjectSpan(int Open, int Close);
 }

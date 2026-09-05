@@ -7,6 +7,7 @@
       "applicationUrl": "http://localhost:8668",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Production",
+        "DEEZSPOTAG_BOOTSTRAP_USER": "DeezSpoTag",
         "DEEZSPOTAG_DATA_DIR": "../DeezSpoTag.Workers/Data",
         "DEEZSPOTAG_CONFIG_DIR": "../DeezSpoTag.Workers/Data",
         "DEEZSPOTAG_APPLE_WRAPPER_MODE": "external",

@@ -271,6 +271,52 @@ function setSpotifyArtistGenres(genres) {
     });
 }
 
+function flagEmojiFromCountryCode(countryCode) {
+    const code = String(countryCode || '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) return '';
+    return String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+function setSpotifyArtistLocation(location) {
+    const element = document.getElementById('artistLocation');
+    if (!element) {
+        return;
+    }
+
+    const city = String(location?.city || '').trim();
+    const country = String(location?.country || '').trim();
+    const flag = flagEmojiFromCountryCode(location?.country_code);
+    let text = '';
+    if (city && country) text = `${flag ? `${flag} ` : ''}${city}, ${country}`;
+    else if (country) text = `${flag ? `${flag} ` : ''}${country}`;
+    else if (city) text = city;
+
+    if (!text) {
+        element.replaceChildren();
+        element.style.display = 'none';
+        return;
+    }
+
+    const valueSpan = document.createElement('span');
+    valueSpan.textContent = text;
+    element.replaceChildren(valueSpan);
+    element.style.display = '';
+
+    syncArtistLocationEditorInputs(location);
+}
+
+function syncArtistLocationEditorInputs(location) {
+    const cityInput = document.getElementById('artist-location-city');
+    const countryInput = document.getElementById('artist-location-country');
+    if (!cityInput || !countryInput || document.activeElement === cityInput || document.activeElement === countryInput) {
+        return;
+    }
+
+    const isManual = location?.source === 'manual';
+    cityInput.value = isManual ? String(location.city || '') : '';
+    countryInput.value = isManual ? String(location.country || '') : '';
+}
+
 function setSpotifyArtistStats(artist) {
     [
         ['artistFollowers', typeof artist.followers === 'number' ? formatCompactNumber(artist.followers) : null],
@@ -284,6 +330,8 @@ function setSpotifyArtistStats(artist) {
             element.textContent = value;
         }
     });
+
+    setSpotifyArtistLocation(artist.location);
 
     const verifiedBadgeEl = document.getElementById('artistVerifiedBadge');
     if (verifiedBadgeEl) {

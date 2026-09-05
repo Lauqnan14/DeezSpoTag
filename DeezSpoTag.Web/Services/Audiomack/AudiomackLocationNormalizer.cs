@@ -9,7 +9,8 @@ public sealed record AudiomackLocationResult(
     string RawLocation,
     string? City,
     string? Country,
-    string? CountryCode);
+    string? CountryCode,
+    string Source = "audiomack");
 
 /// <summary>
 /// Normalizes raw Audiomack artist location values (for example "Lagos, Nigeria",

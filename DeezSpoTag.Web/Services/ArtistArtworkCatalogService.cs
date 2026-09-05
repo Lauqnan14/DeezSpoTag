@@ -92,7 +92,83 @@ public sealed partial class ArtistArtworkCatalogService
                 item.Height,
                 item.ContentHash))
             .ToList();
+
+        // Once an image is cached on disk it must always be selectable, regardless
+        // of what the metadata rotation or a platform refresh did to the catalog
+        // rows. Merge every cached file under the artist's provider folders that
+        // the catalog does not already list. Explicitly blocked images stay out.
+        visuals.AddRange(ScanUncataloguedVisuals(artist.Id, visuals, cached));
         return new ArtistArtworkCatalogResult(artist.Id, artist.Name, visuals, providerResults);
+    }
+
+    private static readonly string[] CachedImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"];
+
+    private List<ArtistArtworkVisual> ScanUncataloguedVisuals(
+        long artistId,
+        List<ArtistArtworkVisual> existing,
+        IReadOnlyList<ArtistArtworkCacheDto> catalogEntries)
+    {
+        var knownPaths = existing
+            .Select(item => string.IsNullOrWhiteSpace(item.Path) ? string.Empty : Path.GetFullPath(item.Path))
+            .Where(path => path.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Honour blocks recorded against a hash, identity or path even when the
+        // catalog row itself is no longer listed.
+        var blockedKeys = catalogEntries
+            .Where(item => item.UserBlocked || item.TextArtBlocked)
+            .SelectMany(item => new[]
+            {
+                item.ContentHash,
+                item.Identity,
+                string.IsNullOrWhiteSpace(item.LocalPath) ? null : Path.GetFileNameWithoutExtension(item.LocalPath)
+            })
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key!.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var scanned = new List<ArtistArtworkVisual>();
+        if (!Directory.Exists(_cacheRoot))
+        {
+            return scanned;
+        }
+
+        foreach (var providerDir in Directory.EnumerateDirectories(_cacheRoot))
+        {
+            var artistDir = Path.Combine(providerDir, artistId.ToString());
+            if (!Directory.Exists(artistDir))
+            {
+                continue;
+            }
+
+            var provider = Path.GetFileName(providerDir);
+            foreach (var file in Directory.EnumerateFiles(artistDir))
+            {
+                var extension = Path.GetExtension(file);
+                var fileName = Path.GetFileNameWithoutExtension(file);
+                if (!CachedImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+                    || knownPaths.Contains(Path.GetFullPath(file))
+                    || blockedKeys.Contains(fileName))
+                {
+                    continue;
+                }
+
+                scanned.Add(new ArtistArtworkVisual(
+                    provider,
+                    file,
+                    null,
+                    file,
+                    BuildLocalUrl(file),
+                    null,
+                    null,
+                    fileName));
+            }
+        }
+
+        return scanned
+            .OrderBy(item => item.Source, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Identity, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<ArtistArtworkProviderResult>> RefreshAsync(

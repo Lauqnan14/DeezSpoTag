@@ -46,6 +46,10 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                                 <span>Edit Spotify ID</span>
                             </button>
+                            <button id="audiomackIdEdit" class="dropdown-item" type="button" aria-label="Edit Audiomack ID">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                <span>Edit Audiomack ID</span>
+                            </button>
                             <button id="appleIdEdit" class="dropdown-item" type="button" aria-label="Edit Apple Music ID">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                                 <span>Edit Apple Music ID</span>
@@ -131,10 +135,22 @@
                                 </div>
                                 <div class="dropdown-visuals-grid" id="artist-visuals-grid"></div>
                             </div>
+                            <div class="dropdown-divider"></div>
+                            <div class="dropdown-section">
+                                <div class="dropdown-section__title">Location (manual override)</div>
+                                <input type="text" id="artist-location-city" class="dropdown-location-input" placeholder="City — e.g. Atlanta" autocomplete="off" maxlength="64" />
+                                <input type="text" id="artist-location-country" class="dropdown-location-input" placeholder="Country — e.g. USA (empty = no flag)" autocomplete="off" maxlength="64" />
+                                <div class="dropdown-visuals-actions">
+                                    <button class="btn btn-secondary action-btn action-btn-sm" id="artist-location-clear" type="button">Use Audiomack</button>
+                                    <button class="btn btn-secondary action-btn action-btn-sm" id="artist-location-save" type="button">Save</button>
+                                </div>
+                                <div class="dropdown-hint">Manual values override the Audiomack location. Clear both and use "Use Audiomack" to fall back to source data.</div>
+                            </div>
                         </div>
                     </div>
                 </div>
                 <div class="hero-modern__genres" id="artistGenres"></div>
+                <div class="hero-modern__location" id="artistLocation" style="display:none;"></div>
                 <div class="hero-modern__stats">
                     <div class="stat-item">
                         <span class="stat-value" id="artistMonthlyListeners">—</span>

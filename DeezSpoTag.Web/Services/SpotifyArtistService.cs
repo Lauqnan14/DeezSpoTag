@@ -203,6 +203,7 @@ public sealed class SpotifyArtistService
             spotifyId = null;
         }
         else if (!string.IsNullOrWhiteSpace(spotifyId)
+                 && !await HasUsableCachedArtistPageAsync(spotifyId, cancellationToken)
                  && await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, spotifyId, cancellationToken))
         {
             AddActivity("warn", $"[spotify] stored artist id has no local album overlap, rematching: {artistName} ({spotifyId}).");
@@ -439,6 +440,19 @@ public sealed class SpotifyArtistService
         result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
         await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken);
         return result;
+    }
+
+    /// <summary>
+    /// True when a cached artist page exists inside the usable (stale-allowed) window.
+    /// Used to skip the local-evidence rematch probe on page loads the cache is about to
+    /// serve anyway: the stored id was validated when the page was cached, and the probe
+    /// costs a full Spotify discography fetch (one request per album) before the cache
+    /// is ever consulted.
+    /// </summary>
+    private async Task<bool> HasUsableCachedArtistPageAsync(string spotifyId, CancellationToken cancellationToken)
+    {
+        var cached = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
+        return cached != null && _cacheRepository.IsUsable(cached.FetchedUtc);
     }
 
     private async Task<(SpotifyArtistPageResult? CachedResult, SpotifyArtistPageResult? StalePayload)> TryGetArtistPageFromCacheAsync(

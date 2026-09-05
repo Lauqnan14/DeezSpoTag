@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 using System.Security.Cryptography;
 using System.Text;
@@ -2019,12 +2020,13 @@ namespace DeezSpoTag.Web.Controllers
 
             var cacheKey = $"{normalizedSource}:{id}";
             var existingCache = await GetArtistPageCacheSnapshotAsync(cacheKey, refreshRequested, cancellationToken);
-            var cachedResponse = TryGetCachedArtistPageResponseAsync(
+            var cachedResponse = await TryGetCachedArtistPageResponseAsync(
                 id,
                 normalizedSource,
                 startedUtc,
                 refreshRequested,
-                existingCache);
+                existingCache,
+                cancellationToken);
             if (cachedResponse != null)
             {
                 return cachedResponse;
@@ -2120,12 +2122,13 @@ namespace DeezSpoTag.Web.Controllers
             return existingCache;
         }
 
-        private ContentResult? TryGetCachedArtistPageResponseAsync(
+        private async Task<ContentResult?> TryGetCachedArtistPageResponseAsync(
             string id,
             string normalizedSource,
             DateTimeOffset startedUtc,
             bool refreshRequested,
-            ArtistCacheEntry? existingCache)
+            ArtistCacheEntry? existingCache,
+            CancellationToken cancellationToken)
         {
             if (refreshRequested || existingCache == null || !_artistPageCache.IsUsable(existingCache.FetchedUtc) || !HasArtistPageExtras(existingCache.PayloadJson))
             {
@@ -2137,12 +2140,68 @@ namespace DeezSpoTag.Web.Controllers
                 _ = RefreshArtistPageCacheAsync(id, normalizedSource);
             }
 
+            var payloadJson = await TryAttachLocationToCachedPayloadAsync(existingCache.PayloadJson, cancellationToken);
+
             var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Artist page response (cache). elapsed_ms={ElapsedMs}", elapsedMs);
             }
-            return Content(existingCache.PayloadJson, ApplicationJsonContentType);
+            return Content(payloadJson, ApplicationJsonContentType);
+        }
+
+        /// <summary>
+        /// Cached payloads written before artist-location support lack the location
+        /// fields; resolve them on the fly so old cache entries surface location
+        /// without waiting for their next refresh.
+        /// </summary>
+        private async Task<string> TryAttachLocationToCachedPayloadAsync(string payloadJson, CancellationToken cancellationToken)
+        {
+            if (payloadJson.Contains("\"location_source\"", StringComparison.Ordinal))
+            {
+                return payloadJson;
+            }
+
+            try
+            {
+                var node = JsonNode.Parse(payloadJson);
+                if (node is not JsonObject root || !root.TryGetPropertyValue("name", out var nameNode)
+                    || nameNode is not JsonValue nameValue || !nameValue.TryGetValue<string>(out var artistName)
+                    || string.IsNullOrWhiteSpace(artistName))
+                {
+                    return payloadJson;
+                }
+
+                var location = await _audiomackArtistLocation.ResolveAsync(artistName, cancellationToken);
+                if (location == null)
+                {
+                    return payloadJson;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.City))
+                {
+                    root["city"] = location.City;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.Country))
+                {
+                    root["country"] = location.Country;
+                }
+
+                if (!string.IsNullOrWhiteSpace(location.CountryCode))
+                {
+                    root["country_code"] = location.CountryCode;
+                }
+
+                root["location_source"] = "audiomack";
+                root["raw_location"] = location.RawLocation;
+                return root.ToJsonString();
+            }
+            catch (System.Text.Json.JsonException ex)
+            {
+                _logger.LogWarning(ex, "Could not attach artist location to cached payload; returning cache as-is");
+                return payloadJson;
+            }
         }
 
         private async Task<IActionResult> BuildFetchedArtistPageResponseAsync(
@@ -2171,12 +2230,13 @@ namespace DeezSpoTag.Web.Controllers
                     _logger.LogWarning(
                         "Returning previous artist-page payload to preserve non-empty discography. existing_releases={ExistingCount}",
                         existingReleaseCount);
+                    var fallbackPayloadJson = await TryAttachLocationToCachedPayloadAsync(existingCache!.PayloadJson, cancellationToken);
                     var fallbackElapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
                     if (_logger.IsEnabled(LogLevel.Information))
                     {
                         _logger.LogInformation("Artist page response (fallback-cache). elapsed_ms={ElapsedMs}", fallbackElapsedMs);
                     }
-                    return Content(existingCache!.PayloadJson, ApplicationJsonContentType);
+                    return Content(fallbackPayloadJson, ApplicationJsonContentType);
                 }
 
                 if (normalizedSource != DeezerSource || releaseCount > 0)

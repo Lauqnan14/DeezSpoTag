@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -12,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 {
     private const string SpotifySource = "spotify";
+    private const string AudiomackSource = DeezSpoTag.Web.Services.Audiomack.AudiomackApiClient.SourceName;
     private const string AppleSource = "apple";
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
@@ -24,6 +27,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     private readonly LastFmArtistImageService _lastFmArtistImageService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistSourceMetadataApiController> _logger;
+    private readonly DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService _audiomackArtistLocation;
+    private readonly DeezSpoTag.Services.Library.ArtistLocationOverrideStore _locationOverrides;
 
     public LibraryArtistSourceMetadataApiController(
         LibraryRepository repository,
@@ -38,6 +43,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         _spotifyMetadataCache = metadataServices.SpotifyMetadataCache;
         _lastFmArtistImageService = metadataServices.LastFmArtistImageService;
         _environment = metadataServices.Environment;
+        _audiomackArtistLocation = metadataServices.AudiomackArtistLocation;
+        _locationOverrides = metadataServices.LocationOverrides;
         _logger = logger;
     }
 
@@ -239,7 +246,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return CreateSpotifyUnavailableResult();
         }
 
-        return CreateSpotifyArtistResult(result);
+        return await CreateSpotifyArtistResultAsync(id, result);
     }
 
     [HttpPost("{id:long}/spotify-reset")]
@@ -318,6 +325,144 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             $"[spotify] manual id set for artist {id}."));
 
         return Ok(new { spotifyId });
+    }
+
+    [HttpGet("{id:long}/audiomack-id")]
+    public async Task<IActionResult> GetAudiomackId(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(new { audiomackId = default(string) });
+        }
+
+        var audiomackId = await _repository.GetArtistSourceIdAsync(id, AudiomackSource, cancellationToken);
+        return Ok(new { audiomackId });
+    }
+
+    /// <summary>
+    /// Stores the Audiomack artist identity (canonical profile slug) used by the
+    /// artist-location pipeline. Auto-discovered anonymously via Audiomack's web
+    /// search API; this endpoint lets the user correct a mismatch — a wrong slug
+    /// can never attach a wrong artist's location because the page parser
+    /// cross-checks the profile name, and both the old and new slug location
+    /// caches are cleared so the next page load re-resolves fresh.
+    /// </summary>
+    [HttpPut("{id:long}/audiomack-id")]
+    public async Task<IActionResult> UpdateAudiomackId(long id, [FromBody] DeezSpoTag.Web.Services.Audiomack.AudiomackIdUpdateRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.AudiomackId))
+        {
+            return BadRequest("Audiomack artist slug or profile URL is required.");
+        }
+
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(LibraryDbNotConfiguredMessage);
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        var audiomackId = DeezSpoTag.Web.Services.Audiomack.AudiomackIdNormalizer.Normalize(request.AudiomackId);
+        if (audiomackId is null)
+        {
+            return BadRequest("Enter an Audiomack artist slug (letters, numbers, dashes) or a profile URL.");
+        }
+
+        var existingAudiomackId = await _repository.GetArtistSourceIdAsync(id, AudiomackSource, cancellationToken);
+        await _repository.UpsertArtistSourceIdAsync(id, AudiomackSource, audiomackId, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(existingAudiomackId))
+        {
+            await _artistPageCache.ClearEntryAsync(
+                DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService.LocationCacheSource,
+                existingAudiomackId,
+                cancellationToken);
+        }
+
+        await _artistPageCache.ClearEntryAsync(
+            DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService.LocationCacheSource,
+            audiomackId,
+            cancellationToken);
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"[audiomack] manual id set for artist {id}."));
+
+        return Ok(new { audiomackId });
+    }
+
+    /// <summary>
+    /// Manual artist location override rendered by the library hero. When both
+    /// fields are empty the override is removed and the page falls back to the
+    /// Audiomack-resolved location. The country code is derived from the country
+    /// name with the same normalizer the Audiomack pipeline uses, so flags stay
+    /// consistent.
+    /// </summary>
+    [HttpPut("{id:long}/location-override")]
+    public async Task<IActionResult> UpdateLocationOverride(long id, [FromBody] LocationOverrideUpdateRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return BadRequest("Request body is required.");
+        }
+
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(LibraryDbNotConfiguredMessage);
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        const int maxFieldLength = 64;
+        var city = request.City?.Trim() ?? string.Empty;
+        var country = request.Country?.Trim() ?? string.Empty;
+        if (city.Length > maxFieldLength || country.Length > maxFieldLength)
+        {
+            return BadRequest("City and country must be 64 characters or fewer.");
+        }
+
+        if (city.Length == 0 && country.Length == 0)
+        {
+            await _locationOverrides.SetAsync(id, null, null, null, cancellationToken);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"[location] manual override cleared for artist {id}."));
+            return Ok(new { cleared = true });
+        }
+
+        // Reuse the Audiomack normalizer so "City, Country" input derives a valid
+        // ISO code exactly like the resolved pipeline does.
+        var normalized = DeezSpoTag.Web.Services.Audiomack.AudiomackLocationNormalizer.Normalize(
+            country.Length > 0
+                ? string.IsNullOrWhiteSpace(city) ? country : $"{city}, {country}"
+                : city);
+
+        var storedCity = normalized?.City ?? (city.Length > 0 ? city : null);
+        var storedCountry = normalized?.Country ?? (country.Length > 0 ? country : null);
+        await _locationOverrides.SetAsync(id, storedCity, storedCountry, normalized?.CountryCode, cancellationToken);
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"[location] manual override set for artist {id}: {storedCity}, {storedCountry}."));
+
+        return Ok(new
+        {
+            city = storedCity,
+            country = storedCountry,
+            countryCode = normalized?.CountryCode,
+            source = "manual"
+        });
     }
 
     [HttpGet("{id:long}/apple-id")]
@@ -473,7 +618,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             effectiveArtistName,
             allowStale: true,
             cancellationToken);
-        return cached is null ? CreateSpotifyUnavailableResult() : CreateSpotifyArtistResult(cached);
+        return cached is null ? CreateSpotifyUnavailableResult() : await CreateSpotifyArtistResultAsync(id, cached);
     }
 
     private async Task<SpotifyArtistPageResult?> ResolveSpotifyArtistPageResultAsync(
@@ -532,19 +677,93 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return Ok(new { available = false });
     }
 
-    private OkObjectResult CreateSpotifyArtistResult(SpotifyArtistPageResult result)
+    private async Task<OkObjectResult> CreateSpotifyArtistResultAsync(long artistId, SpotifyArtistPageResult result)
     {
         var artistPagePayload = SpotifyArtistPagePayloadMapper.Build(result);
+        var artistNode = await AttachArtistLocationToArtistNodeAsync(artistId, result);
         return Ok(new
         {
             available = result.Available,
-            artist = result.Artist,
+            artist = artistNode,
             albums = result.Albums,
             appearsOn = result.AppearsOn,
             topTracks = result.TopTracks,
             relatedArtists = result.RelatedArtists,
             artistPage = artistPagePayload
         });
+    }
+
+    /// <summary>
+    /// Serializes the artist profile and embeds the resolved location
+    /// (city/country/country_code) so the library artist hero can render a flag.
+    /// Failures degrade silently to the plain profile.
+    /// </summary>
+    private async Task<JsonNode?> AttachArtistLocationToArtistNodeAsync(long artistId, SpotifyArtistPageResult result)
+    {
+        var artistName = result.Artist?.Name;
+        JsonNode? node;
+        try
+        {
+            node = JsonSerializer.SerializeToNode(result.Artist, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not serialize artist profile for location attach");
+            return null;
+        }
+
+        if (node is not JsonObject artistObject || string.IsNullOrWhiteSpace(artistName))
+        {
+            return node;
+        }
+
+        // Manual override (library page "Location" editor) always wins over the
+        // Audiomack-resolved value.
+        var manualOverride = await _locationOverrides.GetAsync(artistId, CancellationToken.None);
+        if (manualOverride != null
+            && (!string.IsNullOrWhiteSpace(manualOverride.City) || !string.IsNullOrWhiteSpace(manualOverride.Country)))
+        {
+            var overrideNode = JsonSerializer.SerializeToNode(new
+            {
+                city = manualOverride.City,
+                country = manualOverride.Country,
+                country_code = manualOverride.CountryCode,
+                source = "manual"
+            });
+            if (overrideNode != null)
+            {
+                artistObject["location"] = overrideNode;
+            }
+
+            return node;
+        }
+
+        try
+        {
+            var location = await _audiomackArtistLocation.ResolveAsync(artistId, artistName, CancellationToken.None);
+            if (location == null)
+            {
+                return node;
+            }
+
+            var locationNode = JsonSerializer.SerializeToNode(new
+            {
+                city = location.City,
+                country = location.Country,
+                country_code = location.CountryCode,
+                source = location.Source
+            });
+            if (locationNode != null)
+            {
+                artistObject["location"] = locationNode;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Artist location lookup failed; continuing without location");
+        }
+
+        return node;
     }
 
     private async Task PurgeSpotifyVisualFilesAsync(long artistId, string? previousSpotifyId, CancellationToken cancellationToken)
@@ -712,6 +931,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     public sealed record SpotifyIdUpdateRequest(string SpotifyId);
 
     public sealed record AppleIdUpdateRequest(string AppleId);
+
+    public sealed record LocationOverrideUpdateRequest(string? City, string? Country);
 
     public sealed record TidalIdUpdateRequest(string TidalId);
 

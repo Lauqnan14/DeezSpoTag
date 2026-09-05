@@ -124,6 +124,13 @@
     margin-bottom: 20px;
 }
 
+.artist-page .hero-modern__location {
+    margin-bottom: 16px;
+    color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+    font-size: 14px;
+    letter-spacing: 0.2px;
+}
+
 .artist-page .stat-item {
     display: flex;
     flex-direction: column;
@@ -252,6 +259,26 @@
     gap: 8px;
     max-height: 210px;
     overflow: auto;
+}
+
+.artist-page .dropdown-location-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary, inherit);
+    font-size: 13px;
+}
+
+.artist-page .dropdown-location-input:focus {
+    outline: none;
+    border-color: var(--accent-color, #4c9aff);
+}
+
+.artist-page .dropdown-location-input::placeholder {
+    color: var(--text-secondary, rgba(255, 255, 255, 0.45));
 }
 
 @media (max-width: 768px) {
