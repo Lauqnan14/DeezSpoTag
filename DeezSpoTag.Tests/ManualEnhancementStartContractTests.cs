@@ -171,7 +171,7 @@ public sealed class ManualEnhancementStartContractTests
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
         var update = ExtractSourceSpan(
             source,
-            "private static void TryUpdateResumeCheckpoint",
+            "private static bool TryUpdateResumeCheckpoint",
             "private static AutoTagResumeCursor? ResolveResumeCursor");
 
         // Invariant: every successfully processed file advances the checkpoint — no silent skips.

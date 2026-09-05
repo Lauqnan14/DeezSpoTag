@@ -2,7 +2,6 @@ using DeezSpoTag.Workers;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Extensions;
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Services.Tagging;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Utils;
 
@@ -42,7 +41,6 @@ builder.Configuration["ConnectionStrings:Queue"] = queueConnectionString;
 Environment.SetEnvironmentVariable("QUEUE_DB", queueConnectionString);
 
 var enableContentSync = builder.Configuration.GetValue("Workers:ContentSync:Enabled", true);
-var enableFileTaggingWorker = builder.Configuration.GetValue("Workers:FileTagging:Enabled", false);
 var enableRealtimeLibraryScanner = builder.Configuration.GetValue("Workers:RealtimeLibraryScanner:Enabled", true);
 
 // Add worker services
@@ -50,17 +48,9 @@ Console.WriteLine(enableContentSync
     ? "ℹ️  Workers.ContentSync is handled by the Web host and is not registered in Workers."
     : "ℹ️  Workers.ContentSync disabled by configuration.");
 
-if (enableFileTaggingWorker)
-{
-    builder.Services.AddSingleton<TaggingJobStore>();
-    builder.Services.AddSingleton<FileTaggingWorker>();
-    builder.Services.AddSingleton<ITaggingJobQueue>(sp => sp.GetRequiredService<FileTaggingWorker>());
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<FileTaggingWorker>());
-}
-else
-{
-    Console.WriteLine("ℹ️  Workers.FileTagging disabled by configuration.");
-}
+// Workers.FileTagging was removed: the durable retag queue had no producers anywhere
+// in the codebase (nothing ever enqueued a job), so the worker only ever polled an
+// empty queue.db. The durable-queue design lives in git history if it is ever wanted.
 
 builder.Services.AddDeezSpoTagServices();
 builder.Services.Configure<QobuzApiConfig>(builder.Configuration.GetSection("Qobuz"));

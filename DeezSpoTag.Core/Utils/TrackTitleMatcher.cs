@@ -23,7 +23,9 @@ public static class TrackTitleMatcher
     private static readonly string[] StrictVariantMarkers =
     {
         "instrumental", "live", "acoustic", "remix", "demo", "sped up", "slowed", "nightcore",
-        "acapella", "a cappella", "made famous by", "made popular by", "as made famous by"
+        "acapella", "a cappella", "made famous by", "made popular by", "as made famous by",
+        // "remaster" alone also matches "remastered"/"remasters" via substring.
+        "remaster"
     };
 
     public static bool HasVersionDrift(string? expected, string? actual)
@@ -57,6 +59,104 @@ public static class TrackTitleMatcher
             || (!string.IsNullOrWhiteSpace(expectedSignature.CompactTitle)
                 && expectedSignature.CompactTitle == actualSignature.CompactTitle)
             || HasSafeContainmentMatch(expectedSignature.BaseTitle, actualSignature.BaseTitle);
+    }
+
+    /// <summary>
+    /// True when the incoming title is the same work with the same variant intent as
+    /// the source title but different variant wording (e.g. "Song (Live)" vs
+    /// "Song (Live at Wembley)", "Song (Remastered)" vs "Song (2011 Remaster)").
+    /// In that case the match is valid but the provider must not overwrite the
+    /// source's own title wording — only the tags the source is missing.
+    /// </summary>
+    public static bool ShouldPreserveSourceTitleWording(string? sourceTitle, string? incomingTitle)
+    {
+        if (TrackIdentityTrust.IsWeakMetadataValue(sourceTitle)
+            || TrackIdentityTrust.IsWeakMetadataValue(incomingTitle))
+        {
+            return false;
+        }
+
+        var source = BuildSignature(sourceTitle);
+        var incoming = BuildSignature(incomingTitle);
+        if (source.BaseTitle.Length == 0 || incoming.BaseTitle.Length == 0)
+        {
+            return false;
+        }
+
+        if (HasIncompatibleVariants(source, incoming))
+        {
+            return false;
+        }
+
+        // Same work = identical core title once every variant section (parenthesized
+        // segments and variant-marked dash tails) is removed from both sides. The
+        // signature base alone is not enough because non-edition variant sections
+        // ("(Live)") stay in the base text.
+        var sourceCore = BuildCoreTitleWithoutVariantSections(sourceTitle);
+        var incomingCore = BuildCoreTitleWithoutVariantSections(incomingTitle);
+        if (sourceCore.Length == 0
+            || !string.Equals(sourceCore, incomingCore, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var sourceRaw = NormalizeText(sourceTitle);
+        var incomingRaw = NormalizeText(incomingTitle);
+        return !string.Equals(sourceRaw, incomingRaw, StringComparison.Ordinal);
+    }
+
+    private static string BuildCoreTitleWithoutVariantSections(string? title)
+    {
+        var normalized = NormalizeText(title);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var core = Regex.Replace(
+            normalized,
+            @"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}",
+            " ",
+            RegexOptions.None,
+            RegexTimeout);
+
+        // A trailing "- …" tail counts as a variant section only when it carries a
+        // variant marker ("song - live at wembley"); plain subtitles ("song - part 2")
+        // stay part of the core title.
+        var dashIndex = core.LastIndexOf(" - ", StringComparison.Ordinal);
+        if (dashIndex >= 0)
+        {
+            var tail = core[(dashIndex + 3)..];
+            if (ContainsAnyVariantMarker(tail))
+            {
+                core = core[..dashIndex];
+            }
+        }
+
+        core = Regex.Replace(core, @"[^\p{L}\p{Nd}]+", " ", RegexOptions.None, RegexTimeout);
+        return Regex.Replace(core, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
+    }
+
+    private static bool ContainsAnyVariantMarker(string value)
+    {
+        var normalized = NormalizeText(value);
+        foreach (var marker in StrictVariantMarkers)
+        {
+            if (normalized.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        foreach (var marker in ToxicVariantMarkers)
+        {
+            if (normalized.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

@@ -422,7 +422,7 @@ public sealed class EnhancementMultiSectionRunTests
         var workflows = ReadEnhancementWorkflows();
         var start = workflows.IndexOf("private async Task RunIntegratedEnhancementWorkflowsAsync", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var end = workflows.IndexOf("private async Task<bool> ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
+        var end = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
         var method = workflows[start..end];
 
         var sidecarIndex = method.IndexOf("EnhancementFeatureSidecars", StringComparison.Ordinal);
@@ -522,7 +522,7 @@ public sealed class EnhancementMultiSectionRunTests
         var statusScript = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
 
         Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs")), StringComparison.Ordinal);
-        var applyBatch = workflows.IndexOf("private async Task<bool> ApplyCompletedGapFillBatchAsync", StringComparison.Ordinal);
+        var applyBatch = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", StringComparison.Ordinal);
         Assert.True(applyBatch > 0);
         var applyBody = workflows[applyBatch..(applyBatch + 2500)];
         Assert.Contains("IsSidecarsRunnable", applyBody, StringComparison.Ordinal);

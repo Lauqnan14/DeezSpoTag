@@ -1339,7 +1339,8 @@ public class AutoTagLibraryOrganizer
                 _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
             }
             log?.Invoke($"organizer moved file: {action.SourcePath} -> {action.DestinationPath}");
-            report?.Entries.Add($"move-file: {action.SourcePath} -> {action.DestinationPath}");
+            report?.Entries.Add(
+                $"{AutoTag.AutoTagProtocol.MoveFileEntryPrefix}{action.SourcePath}{AutoTag.AutoTagProtocol.MoveFileEntrySeparator}{action.DestinationPath}");
             MoveSidecarFiles(new SidecarMoveContext(
                 rootPath,
                 action.SourceDir,
@@ -3670,15 +3671,47 @@ public class AutoTagLibraryOrganizer
         IOFile.WriteAllLines(destinationPath, destinationLines);
     }
 
+    /// <summary>
+    /// Artwork conflict score: prefer the image with more pixels (real resolution).
+    /// Files that cannot be decoded as images fall back to file size, so the
+    /// "prefer higher resolution" policy never silently means "prefer larger file".
+    /// </summary>
     private static long TryGetArtworkScore(string path)
     {
         try
         {
+            if (TryGetImageArea(path, out var area))
+            {
+                return area;
+            }
+
             return new FileInfo(path).Length;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return 0;
+        }
+    }
+
+    private static bool TryGetImageArea(string path, out long area)
+    {
+        area = 0;
+        try
+        {
+            using var stream = IOFile.OpenRead(path);
+            var info = SixLabors.ImageSharp.Image.Identify(stream);
+            if (info == null)
+            {
+                return false;
+            }
+
+            area = (long)Math.Max(0, info.Width) * Math.Max(0, info.Height);
+            return area > 0;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Corrupt/truncated/non-image payloads fall back to the file-size score.
+            return false;
         }
     }
 

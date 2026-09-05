@@ -1347,6 +1347,7 @@
             state.manualHistorySelection = false;
         }
         updateStatus(job.id, job.status);
+        offerResumeIfResumable(job);
         const hasLogsPayload = Array.isArray(job?.logs) || typeof job?.logs === "string";
         if (hasLogsPayload) {
             updateLogs(logs);
@@ -1381,6 +1382,19 @@
                 runId: job?.id || ""
             }
         }));
+    }
+
+    // Surface the shared resume banner when the polled run ended in a resumable
+    // state (paused / interrupted / failed with a checkpoint). The module is
+    // chain-loaded with this script by the Activities page.
+    function offerResumeIfResumable(job) {
+        if (!job || !window.EnhancementResume || typeof window.EnhancementResume.offerResume !== "function") {
+            return;
+        }
+        if (!isTerminalRunStatus(job.status)) {
+            return;
+        }
+        window.EnhancementResume.offerResume(job.id, job);
     }
 
     function schedulePoll() {

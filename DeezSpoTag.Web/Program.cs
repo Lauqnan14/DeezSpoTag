@@ -1302,7 +1302,11 @@ public partial class Program
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 ServiceScopeFactory = sp.GetRequiredService<IServiceScopeFactory>(),
                 TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
-                PlatformRegistry = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>()
+                PlatformRegistry = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>(),
+                AlbumIdentityStorePath = Path.Join(
+                    AppDataPaths.GetDataRoot(sp.GetRequiredService<IWebHostEnvironment>()),
+                    "autotag",
+                    "album-identities.json")
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagRunIndexWarmupHostedService>();

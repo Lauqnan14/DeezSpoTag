@@ -25,7 +25,10 @@ public sealed class SecurityHardeningGuardrailTests
             .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            // Only exclude nested worktrees *inside* the scan root; when the repo
+            // itself is checked out under a .dsh-worktrees path, the absolute-path
+            // check would exclude every file and the scan would see nothing.
+            .Where(path => !path.Substring(srcRoot.Length).Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.EndsWith("SecurityHardeningGuardrailTests.cs", StringComparison.Ordinal))
             .Where(path => File.ReadAllText(path).Contains(taskRunPattern, StringComparison.Ordinal))
             .ToList();
@@ -43,7 +46,10 @@ public sealed class SecurityHardeningGuardrailTests
             .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            // Only exclude nested worktrees *inside* the scan root; when the repo
+            // itself is checked out under a .dsh-worktrees path, the absolute-path
+            // check would exclude every file and the scan would see nothing.
+            .Where(path => !path.Substring(srcRoot.Length).Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path =>
             {
                 var source = File.ReadAllText(path);

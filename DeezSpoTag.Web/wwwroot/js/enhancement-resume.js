@@ -133,6 +133,27 @@
         if (storedId) {
             checkJob(storedId);
         }
+        return storedId;
+    }
+
+    // Page-load discovery: when no job id is stored (fresh browser, cleared storage,
+    // or the run was stopped elsewhere), ask the server for the latest run so a
+    // resumable paused/interrupted/failed job still surfaces the banner.
+    async function checkLatestJob() {
+        try {
+            var response = await fetch("/api/autotag/jobs/latest?includeLogs=false&includeStatusHistory=false");
+            if (!response.ok) {
+                return;
+            }
+            var job = await response.json().catch(function () { return null; });
+            var jobId = job && (job.id || job.Id);
+            if (!jobId || !isResumable(job)) {
+                return;
+            }
+            showBanner(String(jobId), job);
+        } catch (error) {
+            console.debug("Enhancement latest-run resume check failed.", error);
+        }
     }
 
     // Called by pollers when a monitored job reaches a non-running terminal state.
@@ -145,10 +166,16 @@
     }
 
     function init() {
+        var start = function () {
+            var storedId = checkStoredJob();
+            if (!storedId) {
+                checkLatestJob();
+            }
+        };
         if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", checkStoredJob);
+            document.addEventListener("DOMContentLoaded", start);
         } else {
-            checkStoredJob();
+            start();
         }
     }
 
