@@ -143,7 +143,8 @@ public sealed class NavidromeApiClient
                 song.Artist ?? string.Empty,
                 song.Duration.HasValue ? (int)Math.Round(song.Duration.Value * 1000d) : null,
                 ResolveNativeSongPath(song.LibraryPath, song.Path),
-                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                song.Size))
             .ToList();
     }
 
@@ -179,7 +180,8 @@ public sealed class NavidromeApiClient
                 song.Artist ?? string.Empty,
                 song.Duration.HasValue ? (int)Math.Round(song.Duration.Value * 1000d) : null,
                 ResolveNativeSongPath(song.LibraryPath, song.Path),
-                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                song.Size))
             .ToList();
     }
 
@@ -1390,7 +1392,8 @@ public sealed record NavidromeAudioTrack(
     string Artist,
     int? DurationMs,
     string? FilePath = null,
-    string? LibraryId = null);
+    string? LibraryId = null,
+    long? SizeBytes = null);
 public sealed record NavidromeHistoryItem(
     string ItemId,
     string Title,
@@ -1508,6 +1511,9 @@ internal sealed class NavidromeNativeSong
     public DateTimeOffset? PlayDate { get; set; }
     [JsonPropertyName("playCount")]
     public long PlayCount { get; set; }
+    [JsonPropertyName("size")]
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    public long? Size { get; set; }
 }
 
 file sealed class NavidromeSearchResponse
@@ -1623,6 +1629,9 @@ file sealed class NavidromeSong
     [JsonPropertyName("musicFolderId")]
     [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
     public int? MusicFolderId { get; set; }
+    [JsonPropertyName("size")]
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    public long? Size { get; set; }
 }
 
 file sealed class NavidromeArtist

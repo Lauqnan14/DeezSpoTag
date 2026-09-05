@@ -539,6 +539,15 @@ CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     PRIMARY KEY (track_id, service)
 );", cancellationToken);
         await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS media_server_path_mapping (
+    service TEXT NOT NULL,
+    server_root TEXT NOT NULL,
+    local_root TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY (service, server_root)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS media_server_track_variant_metadata (
     track_id BIGINT NOT NULL,
     service TEXT NOT NULL,

@@ -147,7 +147,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("TargetServerIdentityLocalTrackDto", repository, StringComparison.Ordinal);
         Assert.Contains("TargetIdentityLocalIndex.Build", service, StringComparison.Ordinal);
         Assert.Contains("localIndex.MissingTrackIds.Count == 0", service, StringComparison.Ordinal);
-        Assert.Contains("TryResolveByPath", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveCandidate", service, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetIdentitySearchLimit", service, StringComparison.Ordinal);
         Assert.Contains("DeleteOrphanedMediaServerTrackMetadataAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveMissingTargetIdentitiesBySearchAsync", service, StringComparison.Ordinal);
@@ -528,7 +528,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("IngestTargetTracksAsync(JellyfinService", source, StringComparison.Ordinal);
         Assert.Contains("IngestTargetTracksAsync(NavidromeService", source, StringComparison.Ordinal);
         Assert.Contains("TargetIdentityLocalIndex.Build", source, StringComparison.Ordinal);
-        Assert.Contains("TryResolveByPath", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveCandidate", source, StringComparison.Ordinal);
         Assert.Contains("DeleteOrphanedMediaServerTrackMetadataAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveMissingTargetIdentitiesBySearchAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("IngestTargetTracksWithMetadataAsync", source, StringComparison.Ordinal);

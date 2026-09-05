@@ -1080,7 +1080,10 @@ public class PlexApiClient
             Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
             Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
             DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
-            FilePath = NormalizeTrackFilePath(track.Descendants("Part").FirstOrDefault()?.Attribute("file")?.Value)
+            FilePath = NormalizeTrackFilePath(track.Descendants("Part").FirstOrDefault()?.Attribute("file")?.Value),
+            SizeBytes = ParseLong(track.Descendants("Part").FirstOrDefault()?.Attribute("size")?.Value) is > 0
+                ? ParseLong(track.Descendants("Part").FirstOrDefault()?.Attribute("size")?.Value)
+                : null
         };
     }
 
@@ -2969,6 +2972,7 @@ public class PlexTrack
     public string Album { get; set; } = "";
     public long DurationMs { get; set; }
     public string FilePath { get; set; } = "";
+    public long? SizeBytes { get; set; }
 }
 
 public class PlexPlaylist

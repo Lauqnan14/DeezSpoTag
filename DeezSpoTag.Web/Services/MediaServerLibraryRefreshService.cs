@@ -37,7 +37,8 @@ public sealed class MediaServerLibraryRefreshService
         string? Title,
         string? Artist,
         string? Album,
-        int? DurationMs);
+        int? DurationMs,
+        long? SizeBytes = null);
 
     public sealed record TargetIdentityRefreshProgressDto(
         string Service,
@@ -54,18 +55,23 @@ public sealed class MediaServerLibraryRefreshService
 
     private sealed class TargetIdentityLocalIndex
     {
-        private readonly Dictionary<string, long> _pathMap;
-        private readonly Dictionary<string, long> _suffixMap;
-        private readonly Dictionary<string, long> _parentFileMap;
-        private readonly Dictionary<string, long> _albumTitlePathMap;
+        private const int DurationToleranceMs = 2000;
+
+        private readonly Dictionary<string, List<long>> _pathMap;
+        private readonly Dictionary<string, List<long>> _suffixMap;
+        private readonly Dictionary<string, List<long>> _parentFileMap;
+        private readonly Dictionary<string, List<long>> _albumTitlePathMap;
+        private readonly Dictionary<long, TargetServerIdentityLocalTrackDto> _tracksById;
+        private readonly IReadOnlyDictionary<string, string> _pathMappings;
 
         private TargetIdentityLocalIndex(
             IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks,
             HashSet<long> missingTrackIds,
-            Dictionary<string, long> pathMap,
-            Dictionary<string, long> suffixMap,
-            Dictionary<string, long> parentFileMap,
-            Dictionary<string, long> albumTitlePathMap)
+            Dictionary<string, List<long>> pathMap,
+            Dictionary<string, List<long>> suffixMap,
+            Dictionary<string, List<long>> parentFileMap,
+            Dictionary<string, List<long>> albumTitlePathMap,
+            IReadOnlyDictionary<string, string> pathMappings)
         {
             Tracks = tracks;
             MissingTrackIds = missingTrackIds;
@@ -73,23 +79,28 @@ public sealed class MediaServerLibraryRefreshService
             _suffixMap = suffixMap;
             _parentFileMap = parentFileMap;
             _albumTitlePathMap = albumTitlePathMap;
+            _pathMappings = pathMappings;
+            _tracksById = tracks.ToDictionary(track => track.TrackId, track => track);
         }
 
         public IReadOnlyList<TargetServerIdentityLocalTrackDto> Tracks { get; }
         public HashSet<long> MissingTrackIds { get; }
+        public IReadOnlyDictionary<string, string> PathMappings => _pathMappings;
+
         public static TargetIdentityLocalIndex Build(
             IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks,
-            IReadOnlyCollection<long>? requestedTrackIds = null)
+            IReadOnlyCollection<long>? requestedTrackIds = null,
+            IReadOnlyDictionary<string, string>? pathMappings = null)
         {
             if (requestedTrackIds is { Count: > 0 })
             {
                 var requested = requestedTrackIds.Where(static id => id > 0).ToHashSet();
                 tracks = tracks.Where(track => requested.Contains(track.TrackId)).ToList();
             }
-            var pathMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            var suffixMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            var parentFileMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            var albumTitlePathMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var pathMap = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+            var suffixMap = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+            var parentFileMap = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+            var albumTitlePathMap = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
             var missingTrackIds = tracks
                 .Where(static track => string.IsNullOrWhiteSpace(track.TargetItemId))
                 .Select(static track => track.TrackId)
@@ -107,52 +118,206 @@ public sealed class MediaServerLibraryRefreshService
                 pathMap,
                 suffixMap,
                 parentFileMap,
-                albumTitlePathMap);
+                albumTitlePathMap,
+                pathMappings ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
         }
 
-        public bool TryResolveByPath(TargetTrackIdentityCandidate candidate, out long trackId)
+        /// <summary>
+        /// Layered resolution for one server item:
+        ///   1. stored server-root -> local-root mapping turns the server path into a
+        ///      deterministic local path (exact lookup);
+        ///   2. exact normalized path;
+        ///   3. path-suffix / parent-file / album-title tiers, collecting ALL matching
+        ///      local candidates and narrowing them with size+duration fingerprints;
+        ///   4. ties that survive fingerprinting are reported as ambiguous instead of
+        ///      being guessed.
+        /// </summary>
+        public TargetIdentityPathResolution ResolveCandidate(TargetTrackIdentityCandidate candidate)
         {
-            trackId = 0;
             var normalized = NormalizePathForIdentity(candidate.FilePath);
             if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return TargetIdentityPathResolution.Unmatched();
+            }
+
+            // 1. deterministic transform via a learned/overridden root mapping.
+            foreach (var mapping in _pathMappings)
+            {
+                var serverRoot = NormalizePathForIdentity(mapping.Key);
+                var localRoot = NormalizePathForIdentity(mapping.Value);
+                if (serverRoot.Length == 0
+                    || localRoot.Length == 0
+                    || !normalized.StartsWith(serverRoot + "/", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var mappedPath = localRoot + "/" + normalized[(serverRoot.Length + 1)..];
+                if (TrySingle(_pathMap, mappedPath, out var mappedTrackId))
+                {
+                    return TargetIdentityPathResolution.Mapped(mappedTrackId);
+                }
+            }
+
+            // 2. exact normalized path.
+            if (TrySingle(_pathMap, normalized, out var exactTrackId))
+            {
+                return TargetIdentityPathResolution.Mapped(exactTrackId);
+            }
+
+            // 3. tiered path evidence, fingerprint-narrowed.
+            var tierCandidates = new List<long>();
+            var matchedSuffixLength = 0;
+            string? matchedSuffix = null;
+            foreach (var suffix in BuildPathSuffixes(normalized))
+            {
+                if (_suffixMap.TryGetValue(suffix, out var tier))
+                {
+                    tierCandidates = tier.ToList();
+                    matchedSuffixLength = suffix.Split('/').Length;
+                    matchedSuffix = suffix;
+                    break;
+                }
+            }
+
+            if (tierCandidates.Count == 0)
+            {
+                var parentFileKey = BuildParentFileKey(normalized);
+                if (!string.IsNullOrWhiteSpace(parentFileKey)
+                    && _parentFileMap.TryGetValue(parentFileKey, out var parentTier))
+                {
+                    tierCandidates = parentTier.ToList();
+                }
+            }
+
+            if (tierCandidates.Count == 0)
+            {
+                var albumTitleKey = BuildAlbumTitleKeyFromPath(normalized);
+                if (!string.IsNullOrWhiteSpace(albumTitleKey)
+                    && _albumTitlePathMap.TryGetValue(albumTitleKey, out var albumTier))
+                {
+                    tierCandidates = albumTier.ToList();
+                }
+            }
+
+            tierCandidates = tierCandidates
+                .Where(MissingTrackIds.Contains)
+                .Distinct()
+                .ToList();
+            if (tierCandidates.Count == 0)
+            {
+                return TargetIdentityPathResolution.Unmatched();
+            }
+
+            var fingerprinted = tierCandidates
+                .Where(trackId => FingerprintMatches(candidate, trackId))
+                .ToList();
+            if (fingerprinted.Count == 1)
+            {
+                var bound = fingerprinted[0];
+                var derivation = DeriveMappingCandidate(
+                    normalized, matchedSuffix, _tracksById[bound].AbsolutePath);
+                return TargetIdentityPathResolution.Mapped(
+                    bound,
+                    derivation.ServerRoot,
+                    derivation.LocalRoot);
+            }
+
+            if (fingerprinted.Count > 1)
+            {
+                return TargetIdentityPathResolution.CreateAmbiguous(fingerprinted);
+            }
+
+            // No fingerprint evidence on either side: single tier hit is acceptable,
+            // multiple tier hits are ambiguous rather than guessed.
+            if (tierCandidates.Count == 1 && !HasFingerprintEvidence(candidate))
+            {
+                var bound = tierCandidates[0];
+                var derivation = DeriveMappingCandidate(
+                    normalized, matchedSuffix, _tracksById[bound].AbsolutePath);
+                return TargetIdentityPathResolution.Mapped(
+                    bound,
+                    derivation.ServerRoot,
+                    derivation.LocalRoot);
+            }
+
+            return TargetIdentityPathResolution.CreateAmbiguous(tierCandidates);
+        }
+
+        private bool FingerprintMatches(TargetTrackIdentityCandidate candidate, long trackId)
+        {
+            if (!_tracksById.TryGetValue(trackId, out var local))
             {
                 return false;
             }
 
-            if (_pathMap.TryGetValue(normalized, out trackId) && trackId > 0)
+            if (candidate.SizeBytes.HasValue && local.SizeBytes.HasValue)
             {
+                return candidate.SizeBytes.Value == local.SizeBytes.Value;
+            }
+
+            if (candidate.DurationMs.HasValue && local.DurationMs.HasValue)
+            {
+                return Math.Abs(candidate.DurationMs.Value - local.DurationMs.Value) <= DurationToleranceMs;
+            }
+
+            return true;
+        }
+
+        private static bool HasFingerprintEvidence(TargetTrackIdentityCandidate candidate)
+            => candidate.SizeBytes.HasValue || candidate.DurationMs.HasValue;
+
+        private static (string? ServerRoot, string? LocalRoot) DeriveMappingCandidate(
+            string candidatePath,
+            string? matchedSuffix,
+            string? localAbsolutePath)
+        {
+            if (string.IsNullOrWhiteSpace(matchedSuffix)
+                || string.IsNullOrWhiteSpace(localAbsolutePath))
+            {
+                return (null, null);
+            }
+
+            var normalizedLocal = NormalizePathForIdentity(localAbsolutePath);
+            var suffixIndex = normalizedLocal.EndsWith(matchedSuffix, StringComparison.Ordinal)
+                ? normalizedLocal.Length - matchedSuffix.Length
+                : -1;
+            if (suffixIndex <= 0)
+            {
+                return (null, null);
+            }
+
+            var localRoot = normalizedLocal[..suffixIndex].TrimEnd('/');
+            var serverRoot = candidatePath[..^matchedSuffix.Length].TrimEnd('/');
+            if (localRoot.Length == 0 || serverRoot.Length == 0)
+            {
+                return (null, null);
+            }
+
+            return (serverRoot, localRoot);
+        }
+
+        private static bool TrySingle(Dictionary<string, List<long>> map, string key, out long trackId)
+        {
+            trackId = 0;
+            if (map.TryGetValue(key, out var matches)
+                && matches.Count == 1
+                && matches[0] > 0)
+            {
+                trackId = matches[0];
                 return true;
             }
 
-            foreach (var suffix in BuildPathSuffixes(normalized))
-            {
-                if (_suffixMap.TryGetValue(suffix, out trackId) && trackId > 0)
-                {
-                    return true;
-                }
-            }
-
-            var parentFileKey = BuildParentFileKey(normalized);
-            if (!string.IsNullOrWhiteSpace(parentFileKey)
-                && _parentFileMap.TryGetValue(parentFileKey, out trackId)
-                && trackId > 0)
-            {
-                return true;
-            }
-
-            var albumTitleKey = BuildAlbumTitleKeyFromPath(normalized);
-            return !string.IsNullOrWhiteSpace(albumTitleKey)
-                   && _albumTitlePathMap.TryGetValue(albumTitleKey, out trackId)
-                   && trackId > 0;
+            return false;
         }
 
         private static void AddPathKeys(
             string? path,
             long trackId,
-            Dictionary<string, long> pathMap,
-            Dictionary<string, long> suffixMap,
-            Dictionary<string, long> parentFileMap,
-            Dictionary<string, long> albumTitlePathMap)
+            Dictionary<string, List<long>> pathMap,
+            Dictionary<string, List<long>> suffixMap,
+            Dictionary<string, List<long>> parentFileMap,
+            Dictionary<string, List<long>> albumTitlePathMap)
         {
             var normalized = NormalizePathForIdentity(path);
             if (string.IsNullOrWhiteSpace(normalized))
@@ -170,23 +335,23 @@ public sealed class MediaServerLibraryRefreshService
             AddUnique(albumTitlePathMap, BuildAlbumTitleKeyFromPath(normalized), trackId);
         }
 
-        private static void AddUnique(Dictionary<string, long> map, string key, long trackId)
+        private static void AddUnique(Dictionary<string, List<long>> map, string key, long trackId)
         {
             if (string.IsNullOrWhiteSpace(key))
             {
                 return;
             }
 
-            if (map.TryGetValue(key, out var existing))
+            if (!map.TryGetValue(key, out var existing))
             {
-                if (existing != trackId)
-                {
-                    map[key] = 0;
-                }
+                map[key] = [trackId];
                 return;
             }
 
-            map[key] = trackId;
+            if (!existing.Contains(trackId))
+            {
+                existing.Add(trackId);
+            }
         }
 
         private static IEnumerable<string> BuildPathSuffixes(string normalizedPath)
@@ -221,6 +386,31 @@ public sealed class MediaServerLibraryRefreshService
                 : $"{album}|{title}";
         }
 
+    }
+
+    /// <summary>
+    /// Outcome of layered path resolution for one server item. Ambiguous means the
+    /// path evidence tied between multiple local tracks even after fingerprinting —
+    /// reported instead of guessed.
+    /// </summary>
+    internal sealed record TargetIdentityPathResolution(
+        long? TrackId,
+        bool Ambiguous,
+        IReadOnlyList<long> TiedTrackIds,
+        string? DerivedServerRoot,
+        string? DerivedLocalRoot)
+    {
+        public static TargetIdentityPathResolution Mapped(
+            long trackId,
+            string? derivedServerRoot = null,
+            string? derivedLocalRoot = null)
+            => new(trackId, false, [trackId], derivedServerRoot, derivedLocalRoot);
+
+        public static TargetIdentityPathResolution CreateAmbiguous(IReadOnlyList<long> tiedTrackIds)
+            => new(null, true, tiedTrackIds, null, null);
+
+        public static TargetIdentityPathResolution Unmatched()
+            => new(null, false, [], null, null);
     }
 
     public MediaServerLibraryRefreshService(
@@ -838,7 +1028,8 @@ public sealed class MediaServerLibraryRefreshService
                             track.Title,
                             track.Artist,
                             track.Album,
-                            track.DurationMs > 0 ? checked((int)Math.Min(track.DurationMs, int.MaxValue)) : null))
+                            track.DurationMs > 0 ? checked((int)Math.Min(track.DurationMs, int.MaxValue)) : null,
+                            track.SizeBytes))
                         .ToList();
                     var ingest = await IngestTargetTracksAsync(PlexService, folderId, tracks, localIndex, cancellationToken);
                     mappedCount += ingest.Mapped;
@@ -1008,7 +1199,8 @@ public sealed class MediaServerLibraryRefreshService
                             track.Name,
                             track.Artist,
                             track.Album,
-                            track.DurationMs))
+                            track.DurationMs,
+                            SizeBytes: null))
                         .ToList();
                     var ingest = await IngestTargetTracksAsync(JellyfinService, folderId, tracks, localIndex, cancellationToken);
                     mappedCount += ingest.Mapped;
@@ -1103,7 +1295,8 @@ public sealed class MediaServerLibraryRefreshService
                         track.Title,
                         track.Artist,
                         Album: null,
-                        track.DurationMs))
+                        track.DurationMs,
+                        track.SizeBytes))
                     .ToList();
                 var ingest = await IngestTargetTracksAsync(NavidromeService, folderId, tracks, localIndex, cancellationToken);
                 mappedCount += ingest.Mapped;
@@ -1124,7 +1317,7 @@ public sealed class MediaServerLibraryRefreshService
         }
     }
 
-    private async Task<(int Mapped, int Unmapped)> IngestTargetTracksAsync(
+    private async Task<(int Mapped, int Unmapped, int Ambiguous)> IngestTargetTracksAsync(
         string service,
         long? folderId,
         IReadOnlyList<TargetTrackIdentityCandidate> tracks,
@@ -1133,11 +1326,12 @@ public sealed class MediaServerLibraryRefreshService
     {
         if (tracks.Count == 0)
         {
-            return (0, 0);
+            return (0, 0, 0);
         }
 
         var now = DateTimeOffset.UtcNow;
         var mappedTracks = new List<(TargetTrackIdentityCandidate Track, long LocalTrackId)>();
+        var ambiguous = new List<(string TargetItemId, string FilePath, IReadOnlyList<long> TiedTrackIds)>();
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1146,17 +1340,43 @@ public sealed class MediaServerLibraryRefreshService
                 break;
             }
 
-            if (localIndex.TryResolveByPath(track, out var localTrackId)
-                && localIndex.MissingTrackIds.Contains(localTrackId))
+            var resolution = localIndex.ResolveCandidate(track);
+            if (resolution.TrackId is > 0
+                && localIndex.MissingTrackIds.Contains(resolution.TrackId.Value))
             {
-                mappedTracks.Add((track, localTrackId));
-                localIndex.MissingTrackIds.Remove(localTrackId);
+                mappedTracks.Add((track, resolution.TrackId.Value));
+                localIndex.MissingTrackIds.Remove(resolution.TrackId.Value);
                 ReportTargetIdentityProgress(service, folderId, localIndex);
+
+                // Learn the server-root -> local-root transform from this bind so later
+                // items from the same library resolve deterministically.
+                if (!string.IsNullOrWhiteSpace(resolution.DerivedServerRoot)
+                    && !string.IsNullOrWhiteSpace(resolution.DerivedLocalRoot)
+                    && !localIndex.PathMappings.ContainsKey(resolution.DerivedServerRoot))
+                {
+                    await _libraryRepository.UpsertMediaServerPathMappingAsync(
+                        service,
+                        resolution.DerivedServerRoot,
+                        resolution.DerivedLocalRoot,
+                        CancellationToken.None);
+                }
+            }
+            else if (resolution.Ambiguous)
+            {
+                ambiguous.Add((track.TargetItemId, track.FilePath, resolution.TiedTrackIds));
             }
         }
 
+        if (ambiguous.Count > 0)
+        {
+            _logger.LogWarning(
+                "{Service} identity ingest left {AmbiguousCount} server item(s) ambiguous between multiple local tracks; they were not bound.",
+                service,
+                ambiguous.Count);
+        }
+
         await PersistTargetIdentityMappingsAsync(service, mappedTracks, now, cancellationToken);
-        return (mappedTracks.Count, tracks.Count - mappedTracks.Count);
+        return (mappedTracks.Count, tracks.Count - mappedTracks.Count, ambiguous.Count);
     }
 
     private void LogIdentityIngest(string service, int mappedCount, int unmappedCount)
@@ -1212,9 +1432,17 @@ public sealed class MediaServerLibraryRefreshService
         CancellationToken cancellationToken)
     {
         await _libraryRepository.DeleteOrphanedMediaServerTrackMetadataAsync(service, cancellationToken);
+        var mappings = await _libraryRepository.GetMediaServerPathMappingsAsync(service, cancellationToken);
+        var mappingLookup = mappings
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.ServerRoot))
+            .ToDictionary(
+                mapping => mapping.ServerRoot,
+                mapping => mapping.LocalRoot,
+                StringComparer.OrdinalIgnoreCase);
         return TargetIdentityLocalIndex.Build(
             await _libraryRepository.GetTargetServerIdentityLocalTracksAsync(service, folderId, cancellationToken),
-            requestedTrackIds);
+            requestedTrackIds,
+            mappingLookup);
     }
 
     private async Task<bool> RetryRefreshAsync(

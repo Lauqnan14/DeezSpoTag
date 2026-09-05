@@ -10,6 +10,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         ".aac", ".mp3", ".wma", ".ogg", ".opus", ".oga", ".ape", ".wv", ".dsf", ".dff"
     };
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(10);
+    private const int MaxVerificationAttempts = 40;
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(5);
     private readonly LibraryRepository _repository;
     private readonly MediaServerLibraryRefreshService _refreshService;
@@ -152,6 +153,38 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
     {
         try
         {
+            // A job for a server that is no longer configured can never complete:
+            // fail it terminally instead of retrying forever.
+            var configuredServices = await _refreshService.GetConfiguredServicesAsync();
+            if (!configuredServices.Contains(job.TargetService, StringComparer.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "Media-server refresh job {JobId} for {Service} failed: the server is not configured.",
+                    job.Id,
+                    job.TargetService);
+                await _repository.FailMediaServerRefreshAsync(
+                    job.Id,
+                    _leaseOwner,
+                    $"{job.TargetService} is not configured; job abandoned.",
+                    cancellationToken);
+                return;
+            }
+
+            if (job.AttemptCount >= MaxVerificationAttempts)
+            {
+                _logger.LogWarning(
+                    "Media-server refresh job {JobId} for {Service} exceeded {MaxAttempts} attempts; failing.",
+                    job.Id,
+                    job.TargetService,
+                    MaxVerificationAttempts);
+                await _repository.FailMediaServerRefreshAsync(
+                    job.Id,
+                    _leaseOwner,
+                    job.LastError ?? "Exceeded the maximum number of identity verification attempts.",
+                    cancellationToken);
+                return;
+            }
+
             if (job.AttemptCount == 0)
             {
                 var submitted = await _refreshService.RequestLibraryRefreshAsync(

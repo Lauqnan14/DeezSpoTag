@@ -4144,7 +4144,8 @@ SELECT DISTINCT
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name, '') AS artist,
        COALESCE(NULLIF(t.tag_album, ''), al.title, '') AS album,
        COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS duration_ms,
-       m.target_item_id
+       m.target_item_id,
+       af.size
 FROM track_local tl
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
@@ -4168,6 +4169,9 @@ WHERE f.enabled = TRUE
             var rootPath = await ReadNullableStringAsync(reader, 3, cancellationToken);
             var relativePath = await ReadNullableStringAsync(reader, 2, cancellationToken);
             var rawPath = await ReadNullableStringAsync(reader, 1, cancellationToken);
+            var sizeBytes = await reader.IsDBNullAsync(9, cancellationToken)
+                ? (long?)null
+                : reader.GetInt64(9);
             result.Add(new TargetServerIdentityLocalTrackDto(
                 reader.GetInt64(0),
                 BuildAbsolutePath(rootPath, relativePath, rawPath),
@@ -4176,7 +4180,8 @@ WHERE f.enabled = TRUE
                 await ReadNullableStringAsync(reader, 5, cancellationToken) ?? string.Empty,
                 await ReadNullableStringAsync(reader, 6, cancellationToken) ?? string.Empty,
                 await ReadNullableIntAsync(reader, 7, cancellationToken),
-                await ReadNullableStringAsync(reader, 8, cancellationToken)));
+                await ReadNullableStringAsync(reader, 8, cancellationToken),
+                sizeBytes));
         }
 
         return result;
@@ -4293,6 +4298,110 @@ WHERE service = @service
         CancellationToken cancellationToken = default)
     {
         await UpsertMediaServerTrackMetadataReturningNewAsync(metadata, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<MediaServerPathMappingDto>> GetMediaServerPathMappingsAsync(
+        string service,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        if (string.IsNullOrWhiteSpace(normalizedService))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT service, server_root, local_root, sample_count
+FROM media_server_path_mapping
+WHERE service = @service
+ORDER BY sample_count DESC, server_root;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<MediaServerPathMappingDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new MediaServerPathMappingDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetInt32(3)));
+        }
+
+        return result;
+    }
+
+    public async Task UpsertMediaServerPathMappingAsync(
+        string service,
+        string serverRoot,
+        string localRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        var normalizedServerRoot = NormalizePathRoot(serverRoot);
+        var normalizedLocalRoot = NormalizePathRoot(localRoot);
+        if (string.IsNullOrWhiteSpace(normalizedService)
+            || string.IsNullOrWhiteSpace(normalizedServerRoot)
+            || string.IsNullOrWhiteSpace(normalizedLocalRoot))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO media_server_path_mapping (service, server_root, local_root, sample_count, updated_at_utc)
+VALUES (@service, @serverRoot, @localRoot, 1, CURRENT_TIMESTAMP)
+ON CONFLICT(service, server_root) DO UPDATE SET
+    local_root = excluded.local_root,
+    sample_count = sample_count + 1,
+    updated_at_utc = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        command.Parameters.AddWithValue("serverRoot", normalizedServerRoot);
+        command.Parameters.AddWithValue("localRoot", normalizedLocalRoot);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SetMediaServerPathMappingAsync(
+        string service,
+        string serverRoot,
+        string localRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        var normalizedServerRoot = NormalizePathRoot(serverRoot);
+        var normalizedLocalRoot = NormalizePathRoot(localRoot);
+        if (string.IsNullOrWhiteSpace(normalizedService)
+            || string.IsNullOrWhiteSpace(normalizedServerRoot)
+            || string.IsNullOrWhiteSpace(normalizedLocalRoot))
+        {
+            throw new ArgumentException("service, serverRoot and localRoot are required.");
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO media_server_path_mapping (service, server_root, local_root, sample_count, updated_at_utc)
+VALUES (@service, @serverRoot, @localRoot, 0, CURRENT_TIMESTAMP)
+ON CONFLICT(service, server_root) DO UPDATE SET
+    local_root = excluded.local_root,
+    updated_at_utc = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        command.Parameters.AddWithValue("serverRoot", normalizedServerRoot);
+        command.Parameters.AddWithValue("localRoot", normalizedLocalRoot);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static string NormalizePathRoot(string? path)
+    {
+        var normalized = (path ?? string.Empty).Trim().Replace('\\', '/').TrimEnd('/');
+        while (normalized.Contains("//", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        return normalized;
     }
 
     public async Task<IReadOnlyList<(long TrackId, string Service)>> UpsertMediaServerTrackMetadataReturningNewAsync(
@@ -13229,6 +13338,23 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
                 : JsonSerializer.Serialize(requestedTrackIds.Where(static trackId => trackId > 0).Distinct()));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
+    public async Task<bool> FailMediaServerRefreshAsync(
+        long id,
+        string leaseOwner,
+        string error,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE media_server_refresh_outbox
+SET status='failed',lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner);
+        command.Parameters.AddWithValue("error", error);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
 
     public async Task<(int Pending, int Processing, int Retry)> GetMediaServerRefreshOutboxCountsAsync(
         CancellationToken cancellationToken = default)
