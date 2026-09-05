@@ -143,6 +143,78 @@ public class AudioTagger
         _settingsService = settingsService;
     }
 
+    /// <summary>
+    /// Rewrites the track's artist credits, main/album artist names, and
+    /// "feat." strings inside track/album titles so every user-defined alias
+    /// becomes its preferred name before tags are written. Independent of
+    /// enrichment settings: downloads always honor the alias preference.
+    /// </summary>
+    private static void ApplyArtistAliasPreference(DeezSpoTag.Core.Models.Track track)
+    {
+        try
+        {
+            if (track == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(track.MainArtist?.Name))
+            {
+                track.MainArtist.Name = Library.ArtistAliasGateway.Resolve(track.MainArtist.Name);
+            }
+
+            if (!string.IsNullOrWhiteSpace(track.Album?.MainArtist?.Name))
+            {
+                track.Album.MainArtist.Name = Library.ArtistAliasGateway.Resolve(track.Album.MainArtist.Name);
+            }
+
+            foreach (var bucket in track.Artist.ToList())
+            {
+                track.Artist[bucket.Key] = bucket.Value
+                    .Select(Library.ArtistAliasGateway.ResolveCredit)
+                    .ToList();
+            }
+
+            track.Artists = track.Artists
+                .Select(Library.ArtistAliasGateway.ResolveCredit)
+                .ToList();
+
+            track.ArtistString = Library.ArtistAliasGateway.ResolveCredit(track.ArtistString);
+            track.ArtistsString = Library.ArtistAliasGateway.ResolveCredit(track.ArtistsString);
+            track.MainArtistsString = Library.ArtistAliasGateway.ResolveCredit(track.MainArtistsString);
+            track.FeatArtistsString = Library.ArtistAliasGateway.ResolveCredit(track.FeatArtistsString);
+            track.FullArtistsString = Library.ArtistAliasGateway.ResolveCredit(track.FullArtistsString);
+
+            if (!string.IsNullOrWhiteSpace(track.Title))
+            {
+                track.Title = Library.ArtistAliasGateway.ResolveCredit(track.Title);
+            }
+
+            if (!string.IsNullOrWhiteSpace(track.Album?.Title))
+            {
+                track.Album.Title = Library.ArtistAliasGateway.ResolveCredit(track.Album.Title);
+            }
+
+            if (track.Album != null)
+            {
+                foreach (var bucket in track.Album.Artist.ToList())
+                {
+                    track.Album.Artist[bucket.Key] = bucket.Value
+                        .Select(Library.ArtistAliasGateway.ResolveCredit)
+                        .ToList();
+                }
+
+                track.Album.Artists = track.Album.Artists
+                    .Select(Library.ArtistAliasGateway.ResolveCredit)
+                    .ToList();
+            }
+        }
+        catch
+        {
+            // Alias resolution must never break tagging.
+        }
+    }
+
     private static string ResolvePrimaryAlbumArtist(DeezSpoTag.Core.Models.Track track)
     {
         if (!string.IsNullOrWhiteSpace(track.Album?.MainArtist?.Name))
@@ -222,6 +294,8 @@ public class AudioTagger
     /// </summary>
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
+        ApplyArtistAliasPreference(track);
+
         var finalPathExtension = Path.GetExtension(writePath);
         var normalizedExtension = string.Empty;
         if (!string.IsNullOrWhiteSpace(finalPathExtension))

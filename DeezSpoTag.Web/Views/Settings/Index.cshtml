@@ -841,6 +841,101 @@
     margin: 0;
 }
 
+/* Artist's Aliases */
+.artist-alias-picker {
+    display: grid;
+    gap: 10px;
+}
+
+.artist-alias-search-wrap {
+    position: relative;
+}
+
+.artist-alias-results {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--bg-elevated, var(--bg-secondary, #1d1f24));
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.artist-alias-result-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.artist-alias-result-item:hover,
+.artist-alias-result-item--active {
+    background: var(--bg-tertiary, rgba(255, 255, 255, 0.06));
+}
+
+.artist-alias-result-empty {
+    padding: 8px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.artist-alias-free-text {
+    display: flex;
+    gap: 8px;
+}
+
+.artist-alias-free-text input {
+    flex: 1;
+}
+
+.artist-alias-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.artist-alias-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-secondary);
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
+}
+
+.artist-alias-chip--preferred {
+    border-color: var(--accent, #4f8cff);
+    color: var(--accent, #4f8cff);
+}
+
+.artist-alias-chip-remove {
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    font-size: 14px;
+}
+
+.artist-alias-chip-remove:hover {
+    color: var(--danger, #ff5c5c);
+}
+
+.artist-alias-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
 .server-library-hidden-note {
     margin: 0 0 10px 0;
     color: var(--text-muted);
@@ -1603,6 +1698,59 @@
                     <label for="genreTagBlockList">Blocked genres</label>
                     <textarea id="genreTagBlockList" rows="4" placeholder="One genre per line, or comma-separated"></textarea>
                     <div class="warning-text">Blocked genres are removed before genre tags are written. Other, Others, and Worldwide are blocked by default.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-section" id="artist-aliases-settings">
+            <div class="settings-header">
+                <span class="material-icons">merge_type</span>
+                Artist's Aliases
+            </div>
+            <div class="settings-content">
+                <div class="warning-text">Merge two or more artist names that refer to the same artist and keep one preferred name. Saving a merge re-points the library, merges folders on disk, rewrites names, and starts a targeted AutoTag run for the affected files (including featured appearances).</div>
+
+                <div class="form-group">
+                    <div class="form-label">Artists to merge</div>
+                    <div class="artist-alias-picker">
+                        <div class="artist-alias-search-wrap">
+                            <input type="text" id="artistAliasSearch" placeholder="Search library artists…" autocomplete="off">
+                            <div id="artistAliasSearchResults" class="artist-alias-results" hidden></div>
+                        </div>
+                        <div class="artist-alias-free-text">
+                            <input type="text" id="artistAliasFreeText" placeholder="Or type a name not in the library…">
+                            <button type="button" class="btn btn-secondary" id="artistAliasAddText">Add</button>
+                        </div>
+                        <div id="artistAliasSelected" class="artist-alias-chips"></div>
+                        <p class="server-library-empty" id="artistAliasSelectedEmpty">No artists selected yet. Add at least two names.</p>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="artistAliasPreferred">Preferred name (used everywhere after the merge)</label>
+                    <select id="artistAliasPreferred" disabled><option value="">Select artists first</option></select>
+                </div>
+
+                <div class="artist-alias-actions">
+                    <button type="button" class="btn btn-primary" id="artistAliasMergeBtn" disabled>Merge artists</button>
+                    <span class="helper" id="artistAliasStatus"></span>
+                </div>
+
+                <div class="form-group" id="artistAliasGroupsGroup">
+                    <div class="form-label">Existing merge groups</div>
+                    <div class="server-library-table-wrap">
+                        <table class="server-library-table" id="artistAliasGroupsTable">
+                            <thead>
+                                <tr>
+                                    <th>Preferred name</th>
+                                    <th>Aliases</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="artistAliasGroupsBody"></tbody>
+                        </table>
+                    </div>
+                    <p class="server-library-empty" id="artistAliasGroupsEmpty" hidden>No alias groups yet.</p>
                 </div>
             </div>
         </div>
@@ -5211,5 +5359,304 @@ async function resetSettings() {
     } catch (error) {
         console.error('Error resetting settings:', error);
     }
-}</script>
+}
+
+// ------------------------------------------------------------------
+// Artist's Aliases section
+// ------------------------------------------------------------------
+(function initArtistAliases() {
+    const root = document.getElementById('artist-aliases-settings');
+    if (!root) {
+        return;
+    }
+
+    const searchInput = document.getElementById('artistAliasSearch');
+    const searchResults = document.getElementById('artistAliasSearchResults');
+    const freeTextInput = document.getElementById('artistAliasFreeText');
+    const addButton = document.getElementById('artistAliasAddText');
+    const selectedWrap = document.getElementById('artistAliasSelected');
+    const selectedEmpty = document.getElementById('artistAliasSelectedEmpty');
+    const preferredSelect = document.getElementById('artistAliasPreferred');
+    const mergeButton = document.getElementById('artistAliasMergeBtn');
+    const statusLabel = document.getElementById('artistAliasStatus');
+    const groupsBody = document.getElementById('artistAliasGroupsBody');
+    const groupsEmpty = document.getElementById('artistAliasGroupsEmpty');
+
+    let selectedNames = [];
+    let searchDebounce = 0;
+    let searchSeq = 0;
+
+    function csrfHeaders(extra) {
+        const headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
+        const token = document.querySelector('meta[name="deezspotag-csrf-token"]')?.getAttribute('content')?.trim();
+        if (token) {
+            headers['X-CSRF-TOKEN'] = token;
+        }
+        return headers;
+    }
+
+    function setSelected(names) {
+        selectedNames = names.filter((name, index) => name && names.indexOf(name) === index);
+        renderSelected();
+    }
+
+    function addName(name) {
+        const trimmed = (name || '').trim();
+        if (!trimmed || selectedNames.some(existing => existing.toLowerCase() === trimmed.toLowerCase())) {
+            return;
+        }
+        selectedNames.push(trimmed);
+        renderSelected();
+    }
+
+    function removeName(name) {
+        selectedNames = selectedNames.filter(existing => existing !== name);
+        renderSelected();
+    }
+
+    function renderSelected() {
+        if (!selectedWrap) {
+            return;
+        }
+        selectedWrap.innerHTML = '';
+        selectedEmpty.hidden = selectedNames.length > 0;
+        selectedNames.forEach(name => {
+            const chip = document.createElement('span');
+            chip.className = 'artist-alias-chip';
+            const label = document.createElement('span');
+            label.textContent = name;
+            chip.appendChild(label);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'artist-alias-chip-remove';
+            remove.textContent = '×';
+            remove.setAttribute('aria-label', `Remove ${name}`);
+            remove.addEventListener('click', () => removeName(name));
+            chip.appendChild(remove);
+            selectedWrap.appendChild(chip);
+        });
+
+        renderPreferredOptions();
+        mergeButton.disabled = selectedNames.length < 2;
+    }
+
+    function renderPreferredOptions() {
+        const current = preferredSelect.value;
+        preferredSelect.innerHTML = '';
+        selectedNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            preferredSelect.appendChild(option);
+        });
+        const preferredAvailable = selectedNames.length >= 2;
+        preferredSelect.disabled = !preferredAvailable;
+        if (preferredAvailable) {
+            const stillValid = selectedNames.includes(current);
+            preferredSelect.value = stillValid ? current : selectedNames[0];
+        } else {
+            preferredSelect.innerHTML = '<option value="">Select artists first</option>';
+        }
+        markPreferredChip();
+    }
+
+    function markPreferredChip() {
+        const preferred = preferredSelect.value;
+        selectedWrap.querySelectorAll('.artist-alias-chip').forEach((chip, index) => {
+            chip.classList.toggle('artist-alias-chip--preferred', selectedNames[index] === preferred && selectedNames.length >= 2);
+        });
+    }
+
+    async function runSearch() {
+        const query = searchInput.value.trim();
+        const seq = ++searchSeq;
+        try {
+            const response = await fetch(`/api/artists/aliases/library-artists?search=${encodeURIComponent(query)}&limit=25`, {
+                credentials: 'same-origin'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            if (seq !== searchSeq) {
+                return;
+            }
+            renderSearchResults(payload.items || [], query);
+        } catch (error) {
+            console.warn('Artist alias search failed.', error);
+        }
+    }
+
+    function renderSearchResults(items, query) {
+        searchResults.innerHTML = '';
+        if (!items.length) {
+            const empty = document.createElement('div');
+            empty.className = 'artist-alias-result-empty';
+            empty.textContent = query ? `No library artists match "${query}". Use the box below to add the name manually.` : 'Type to search library artists.';
+            searchResults.appendChild(empty);
+            searchResults.hidden = false;
+            return;
+        }
+        items.forEach(item => {
+            const row = document.createElement('div');
+            row.className = 'artist-alias-result-item';
+            row.textContent = item.name;
+            row.addEventListener('click', () => {
+                addName(item.name);
+                searchResults.hidden = true;
+                searchInput.value = '';
+            });
+            searchResults.appendChild(row);
+        });
+        searchResults.hidden = false;
+    }
+
+    async function mergeArtists() {
+        if (selectedNames.length < 2) {
+            return;
+        }
+        const preferred = preferredSelect.value || selectedNames[0];
+        const confirmed = await (window.DeezSpoTag?.ui?.confirm
+            ? window.DeezSpoTag.ui.confirm(
+                `Merge "${selectedNames.join('", "')}" into the preferred name "${preferred}"? Folders will be merged, names rewritten on disk, and a targeted AutoTag run will start. This cannot be undone automatically.`,
+                { title: 'Merge Artist Aliases' })
+            : Promise.resolve(window.confirm(`Merge ${selectedNames.length} artist names into "${preferred}"?`)));
+        if (!confirmed) {
+            return;
+        }
+
+        mergeButton.disabled = true;
+        statusLabel.textContent = 'Merging artists… this moves files and may take a moment.';
+        try {
+            const aliases = selectedNames.filter(name => name !== preferred);
+            const response = await fetch('/api/artists/aliases', {
+                method: 'POST',
+                headers: csrfHeaders(),
+                credentials: 'same-origin',
+                body: JSON.stringify({ preferredName: preferred, aliases })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload.error || `HTTP ${response.status}: ${response.statusText}`);
+            }
+            const merge = payload.merge;
+            const jobCount = (payload.enhancementJobIds || []).length;
+            const parts = [];
+            if (merge) {
+                parts.push(`${merge.filesMoved} file(s) moved`);
+                if (merge.artworkFilesMoved > 0) {
+                    parts.push(`${merge.artworkFilesMoved} artwork/sidecar file(s) moved`);
+                }
+                if (merge.conflictsResolved > 0) {
+                    parts.push(`${merge.conflictsResolved} duplicate(s) resolved`);
+                }
+                parts.push(`${merge.trackRowsRewritten} track row(s) updated`);
+            }
+            parts.push(jobCount === 1 ? 'enhancement job started' : `${jobCount} enhancement jobs started`);
+            statusLabel.textContent = `Merged into "${payload.group?.preferredName || preferred}": ${parts.join(', ')}.`;
+            if (payload.error) {
+                statusLabel.textContent = payload.error;
+            }
+            setSelected([]);
+            await loadGroups();
+        } catch (error) {
+            console.error('Artist alias merge failed.', error);
+            statusLabel.textContent = `Merge failed: ${error.message}`;
+        } finally {
+            mergeButton.disabled = selectedNames.length < 2;
+        }
+    }
+
+    async function loadGroups() {
+        try {
+            const response = await fetch('/api/artists/aliases', { credentials: 'same-origin' });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            renderGroups(payload.groups || []);
+        } catch (error) {
+            console.warn('Failed to load artist alias groups.', error);
+        }
+    }
+
+    function renderGroups(groups) {
+        groupsBody.innerHTML = '';
+        groupsEmpty.hidden = groups.length > 0;
+        document.getElementById('artistAliasGroupsTable').hidden = groups.length === 0;
+        groups.forEach(group => {
+            const row = document.createElement('tr');
+            const preferredCell = document.createElement('td');
+            preferredCell.textContent = group.preferredName;
+            const aliasesCell = document.createElement('td');
+            aliasesCell.textContent = (group.aliases || []).join(', ');
+            const actionsCell = document.createElement('td');
+            actionsCell.className = 'server-library-include-cell';
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-secondary';
+            removeButton.textContent = 'Un-merge';
+            removeButton.addEventListener('click', async () => {
+                const confirmed = await (window.DeezSpoTag?.ui?.confirm
+                    ? window.DeezSpoTag.ui.confirm(
+                        `Stop treating "${(group.aliases || []).join('", "')}" as aliases of "${group.preferredName}"? Already merged files stay where they are.`,
+                        { title: 'Un-merge Artist Aliases' })
+                    : Promise.resolve(window.confirm(`Un-merge "${group.preferredName}"?`)));
+                if (!confirmed) {
+                    return;
+                }
+                try {
+                    const response = await fetch(`/api/artists/aliases/${group.id}`, {
+                        method: 'DELETE',
+                        headers: csrfHeaders(),
+                        credentials: 'same-origin'
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    await loadGroups();
+                } catch (error) {
+                    console.error('Failed to delete artist alias group.', error);
+                }
+            });
+            actionsCell.appendChild(removeButton);
+            row.appendChild(preferredCell);
+            row.appendChild(aliasesCell);
+            row.appendChild(actionsCell);
+            groupsBody.appendChild(row);
+        });
+    }
+
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(runSearch, 250);
+    });
+    searchInput.addEventListener('focus', () => {
+        if (searchInput.value.trim()) {
+            runSearch();
+        }
+    });
+    document.addEventListener('click', (event) => {
+        if (!searchResults.hidden && !searchResults.contains(event.target) && event.target !== searchInput) {
+            searchResults.hidden = true;
+        }
+    });
+    addButton.addEventListener('click', () => {
+        addName(freeTextInput.value);
+        freeTextInput.value = '';
+    });
+    freeTextInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addName(freeTextInput.value);
+            freeTextInput.value = '';
+        }
+    });
+    preferredSelect.addEventListener('change', markPreferredChip);
+    mergeButton.addEventListener('click', mergeArtists);
+
+    renderSelected();
+    loadGroups();
+})();
+</script>
 }

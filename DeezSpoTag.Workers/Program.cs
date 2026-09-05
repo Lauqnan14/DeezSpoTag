@@ -80,6 +80,7 @@ builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerClient>();
 builder.Services.AddScoped<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
 builder.Services.AddDownloadEngine();
 builder.Services.AddSingleton<AudioQualitySignalAnalyzer>();
+builder.Services.AddSingleton<ArtistAliasService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadQueueExecutionGate, WorkerDownloadQueueExecutionGate>();
 
 if (enableRealtimeLibraryScanner)
@@ -110,6 +111,10 @@ builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDec
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
 
 var host = builder.Build();
+
+// Wire the static alias gateway used by non-DI download components.
+DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(
+    host.Services.GetRequiredService<DeezSpoTag.Services.Library.ArtistAliasService>());
 
 Console.WriteLine("🚀 DeezSpoTag Workers starting...");
 

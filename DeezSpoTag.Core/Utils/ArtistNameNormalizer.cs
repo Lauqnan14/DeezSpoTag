@@ -67,6 +67,55 @@ public static class ArtistNameNormalizer
     }
 
     /// <summary>
+    /// Split a combined artist name into parts AND the separators between them,
+    /// so a rewrite can replace individual parts while keeping the original
+    /// joiners ("feat.", "&", "," …) intact. parts.Count == separators.Count + 1.
+    /// </summary>
+    public static List<string> SplitCombinedNameForRewrite(string? artistName, out List<string> separators)
+    {
+        separators = new List<string>();
+        var credit = artistName ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(credit))
+        {
+            return new List<string>();
+        }
+
+        var matches = CollaborationSplitRegex.Matches(credit);
+        if (matches.Count == 0)
+        {
+            return new List<string> { credit.Trim() };
+        }
+
+        var parts = new List<string>();
+        var lastIndex = 0;
+        foreach (Match match in matches)
+        {
+            var part = credit[lastIndex..match.Index].Trim();
+            if (part.Length > 0 || parts.Count > 0)
+            {
+                parts.Add(part);
+            }
+
+            separators.Add(match.Value);
+            lastIndex = match.Index + match.Length;
+        }
+
+        var tail = credit[lastIndex..].Trim();
+        if (tail.Length > 0)
+        {
+            parts.Add(tail);
+        }
+
+        // A separator with no following part (trailing "feat.") is dropped.
+        while (separators.Count >= parts.Count)
+        {
+            separators.RemoveAt(separators.Count - 1);
+        }
+
+        return parts;
+    }
+
+    /// <summary>
     /// Check if an artist name appears to be a combined/collaboration name.
     /// </summary>
     public static bool IsCombinedName(string? artistName)

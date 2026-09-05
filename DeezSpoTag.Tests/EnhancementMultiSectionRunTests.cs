@@ -585,15 +585,22 @@ public sealed class EnhancementMultiSectionRunTests
     }
 
     [Fact]
-    public void AnimatedArtworkBadgesAreEmittedForAlbumFilesWithoutInflatingCounts()
+    public void AnimatedArtworkBadgeIsCarriedByOneRepresentativeTrackPerAlbum()
     {
         var workflows = ReadEnhancementWorkflows();
 
+        // One record per album, attributed to a representative track so the
+        // sidecar tab merges it with that track's lyrics card. Artwork must
+        // not be emitted for every track of the album, and album titles must
+        // not be used as the card title.
         Assert.Contains("bool countOutcome = true", workflows, StringComparison.Ordinal);
         Assert.Contains("if (countOutcome)", workflows, StringComparison.Ordinal);
-        Assert.Contains("album.AudioFilePaths is { Count: > 0 }", workflows, StringComparison.Ordinal);
-        Assert.Contains("foreach (var audioPath in album.AudioFilePaths)", workflows, StringComparison.Ordinal);
-        Assert.Contains("countOutcome: false", workflows, StringComparison.Ordinal);
+        Assert.Contains("ResolveAlbumRepresentativeTracksAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("long? representativeTrackId = representative is { TrackId: > 0 } ? representative.TrackId : null;", workflows, StringComparison.Ordinal);
+        Assert.Contains("trackId: representativeTrackId);", workflows, StringComparison.Ordinal);
+        Assert.Contains("sourceTitle: representative?.Title,", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var audioPath in album.AudioFilePaths)", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("sourceTitle: album.Album,", workflows, StringComparison.Ordinal);
     }
 
     [Fact]

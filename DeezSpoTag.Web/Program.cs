@@ -1380,6 +1380,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.ExternalFileImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagConfigBuilder>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTagAliasEnhancementLauncher>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadTagSettingsConverter>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadTagSettingsResolver, DeezSpoTag.Web.Services.DownloadTagSettingsResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.TagSettingsMigrationService>();
@@ -1478,6 +1479,8 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Services.Library.ArtistLocationOverrideStore>();
+        services.AddSingleton<DeezSpoTag.Services.Library.ArtistAliasService>();
+        services.AddSingleton<DeezSpoTag.Services.Library.ArtistAliasMergeService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataServices>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueDependencies>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
@@ -1929,6 +1932,10 @@ public partial class Program
         var dbService = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Library.LibraryDbService>();
         await dbService.EnsureSchemaAsync();
         RecordStartupCheckpoint(startupState, app.Logger, "schema ensured");
+
+        // Wire the static alias gateway used by non-DI download components.
+        DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(
+            scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Library.ArtistAliasService>());
         await RunStartupMigrationsAsync(scope.ServiceProvider, app.Logger);
 
         var configStore = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>();

@@ -50,6 +50,7 @@ internal static class AutoTagLiterals
     internal const string RunIntentEnhancementOnly = "enhancement_only";
     internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
     internal const string RunIntentManualEnrichment = "manual_enrichment";
+    internal const string RunIntentAliasMerge = "artist_alias_merge";
     internal const string CanceledStatus = "canceled";
     internal const string InterruptedStatus = "interrupted";
     internal const string PausedStatus = "paused";
@@ -4857,6 +4858,7 @@ public partial class AutoTagService
             AutoTagLiterals.RunIntentEnhancementOnly => AutoTagLiterals.RunIntentEnhancementOnly,
             AutoTagLiterals.RunIntentEnhancementRecentDownloads => AutoTagLiterals.RunIntentEnhancementRecentDownloads,
             AutoTagLiterals.RunIntentManualEnrichment => AutoTagLiterals.RunIntentManualEnrichment,
+            AutoTagLiterals.RunIntentAliasMerge => AutoTagLiterals.RunIntentAliasMerge,
             _ => AutoTagLiterals.RunIntentDefault
         };
     }
@@ -4887,6 +4889,7 @@ public partial class AutoTagService
         {
             AutoTagLiterals.RunIntentEnhancementOnly => true,
             AutoTagLiterals.RunIntentEnhancementRecentDownloads => true,
+            AutoTagLiterals.RunIntentAliasMerge => true,
             _ => false
         };
     }

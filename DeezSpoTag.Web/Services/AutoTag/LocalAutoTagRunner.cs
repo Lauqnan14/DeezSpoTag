@@ -5587,6 +5587,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         EnsureReleaseCategory(track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
         var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
+        ApplyArtistAliasPreference(track);
         NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
         var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
         string? tempCoverPath = null;
@@ -5829,6 +5830,38 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         return sourcePrimary.Contains(matchedPrimary, StringComparison.OrdinalIgnoreCase)
             || matchedPrimary.Contains(sourcePrimary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Rewrites the track's artist credits, album artists, and "feat." strings
+    /// inside track/album titles so every user-defined alias becomes its
+    /// preferred name before tags are written. Applies to every tagging run —
+    /// enrichment, enhancement, and merge-triggered runs alike.
+    /// </summary>
+    private static void ApplyArtistAliasPreference(AutoTagTrack track)
+    {
+        try
+        {
+            track.Artists = track.Artists
+                .Select(DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit)
+                .ToList();
+            track.AlbumArtists = track.AlbumArtists
+                .Select(DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit)
+                .ToList();
+            if (!string.IsNullOrWhiteSpace(track.Title))
+            {
+                track.Title = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Title);
+            }
+
+            if (!string.IsNullOrWhiteSpace(track.Album))
+            {
+                track.Album = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Album);
+            }
+        }
+        catch
+        {
+            // Alias resolution must never break tagging.
+        }
     }
 
     private static void NormalizeTrackArtistsForTagging(AutoTagTrack track, bool singleAlbumArtist)

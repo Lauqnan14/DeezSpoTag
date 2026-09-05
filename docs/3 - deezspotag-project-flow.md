@@ -189,6 +189,20 @@ It can:
 So it is not "download once and forget."
 It is closer to a full music-management workflow.
 
+## Step 8b: Artist's Aliases keep one name everywhere
+
+Some artists appear under several names. The **Artist's Aliases** section in Settings lets you merge those names and pick one **preferred name**.
+
+When you confirm a merge:
+
+- The library database re-points the merged artists to the preferred name.
+- Folders on disk are merged: files under an alias folder move into the preferred artist's folder, and names containing the alias are rewritten. The alias no longer appears on disk.
+- **Downloads** use the preferred name for folders and tags, even when enrichment is turned off.
+- **AutoTag** runs (enrichment or enhancement) also rewrite artist credits and "feat." strings in titles to the preferred name.
+- A **targeted enhancement run** starts for the affected files — tracks where the artist is the main artist or a featured artist — resolved from the library database.
+
+Un-merging a group stops future rewrites; already-merged files stay where they are.
+
 ## Step 9: You watch everything in Activities
 
 The **Activities page** is where you monitor the whole system.

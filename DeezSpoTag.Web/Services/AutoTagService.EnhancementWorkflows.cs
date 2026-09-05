@@ -417,7 +417,8 @@ public partial class AutoTagService
         string? sourceTitle = null,
         string? sourceArtist = null,
         string? coverPath = null,
-        bool countOutcome = true)
+        bool countOutcome = true,
+        long? trackId = null)
     {
         lock (job)
         {
@@ -435,7 +436,7 @@ public partial class AutoTagService
                     Message = message,
                     SourceTitle = lyrics?.Title ?? sourceTitle,
                     SourceArtist = lyrics?.ArtistName ?? sourceArtist,
-                    LyricsTrackId = lyrics?.TrackId,
+                    LyricsTrackId = lyrics?.TrackId ?? trackId,
                     LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath ?? coverPath),
                     LyricsBadges = lyrics?.TimingBadges.ToList() ?? new List<string>(),
                     ArtworkBadges = artworkBadges?.ToList() ?? new List<string>()
@@ -1320,6 +1321,14 @@ public partial class AutoTagService
             return EnhancementWorkflowOutcome.Skipped("no eligible audio files were found.");
         }
 
+        // One unified sidecar pass: attribute each album's artwork outcome to a
+        // single representative track so the sidecar tab shows one per-track
+        // card per album (merged with that track's lyrics card) instead of a
+        // separate album-titled artwork run.
+        var representativeTracks = await ResolveAlbumRepresentativeTracksAsync(
+            albumRepresentatives,
+            cancellationToken);
+
         var batchCount = (int)Math.Ceiling(albumRepresentatives.Count / (double)EnhancementBatchSize);
         var totalUpdated = 0;
         var totalSkipped = 0;
@@ -1327,7 +1336,7 @@ public partial class AutoTagService
         AppendLog(job, $"enhancement workflow: cover maintenance starting ({albumRepresentatives.Count} unique album(s), {batchCount} batch(es)).");
         PublishEnhancementPhaseHeartbeat(
             job,
-            AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+            AutoTagLiterals.EnhancementFeatureSidecars,
             $"cover maintenance starting ({albumRepresentatives.Count} album(s)).");
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
@@ -1338,11 +1347,11 @@ public partial class AutoTagService
                 .ToList();
             PublishEnhancementPhaseHeartbeat(
                 job,
-                AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+                AutoTagLiterals.EnhancementFeatureSidecars,
                 $"Fetching cover artwork for batch {batchIndex + 1} of {batchCount}.");
             SetEnhancementPhase(
                 job,
-                AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+                AutoTagLiterals.EnhancementFeatureSidecars,
                 batchIndex * EnhancementBatchSize,
                 albumRepresentatives.Count,
                 batchIndex + 1,
@@ -1388,13 +1397,26 @@ public partial class AutoTagService
                         : album.Status.Equals("ok", StringComparison.OrdinalIgnoreCase)
                             ? AutoTagLiterals.OkStatus
                             : AutoTagLiterals.SkippedStatus;
-                    var primaryPath = album.RepresentativeFilePath ?? album.AlbumDirectory;
+                    representativeTracks.TryGetValue(album.AlbumDirectory, out var representative);
+                    if (representative == null
+                        && album.RepresentativeFilePath is { } representativePath)
+                    {
+                        representativeTracks.TryGetValue(
+                            Path.GetDirectoryName(representativePath) ?? string.Empty,
+                            out representative);
+                    }
+
+                    var primaryPath = representative?.FilePath ?? album.RepresentativeFilePath ?? album.AlbumDirectory;
                     var animatedBadges = album.HasAnimatedArtwork ? new[] { "animated-artwork" } : null;
+                    long? representativeTrackId = representative is { TrackId: > 0 } ? representative.TrackId : null;
                     lock (job)
                     {
+                        // One card per album, carried by its representative track:
+                        // the sidecar tab merges it with that track's lyrics card
+                        // (unified lyrics + artwork pass, like the download flow).
                         RecordEnhancementItemStatus(
                             job,
-                            AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+                            AutoTagLiterals.EnhancementFeatureSidecars,
                             primaryPath,
                             status,
                             album.Message,
@@ -1405,41 +1427,10 @@ public partial class AutoTagService
                             completed,
                             albumCount,
                             artworkBadges: animatedBadges,
-                            sourceTitle: album.Album,
-                            sourceArtist: album.Artist,
-                            coverPath: album.CoverPath);
-                        if (album.HasAnimatedArtwork && album.AudioFilePaths is { Count: > 0 })
-                        {
-                            var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                            {
-                                primaryPath
-                            };
-                            foreach (var audioPath in album.AudioFilePaths)
-                            {
-                                if (!emitted.Add(audioPath))
-                                {
-                                    continue;
-                                }
-
-                                RecordEnhancementItemStatus(
-                                    job,
-                                    AutoTagLiterals.EnhancementPhaseSidecarsCovers,
-                                    audioPath,
-                                    status,
-                                    album.Message,
-                                    processed,
-                                    albumRepresentatives.Count,
-                                    batchIndex + 1,
-                                    batchCount,
-                                    completed,
-                                    albumCount,
-                                    artworkBadges: animatedBadges,
-                                    sourceTitle: album.Album,
-                                    sourceArtist: album.Artist,
-                                    coverPath: album.CoverPath,
-                                    countOutcome: false);
-                            }
-                        }
+                            sourceTitle: representative?.Title,
+                            sourceArtist: representative?.Artist,
+                            coverPath: album.CoverPath,
+                            trackId: representativeTrackId);
                     }
 
                     return ValueTask.CompletedTask;
@@ -1458,6 +1449,57 @@ public partial class AutoTagService
         return totalErrors > 0
             ? throw new InvalidOperationException(message)
             : EnhancementWorkflowOutcome.Completed(message);
+    }
+
+    private sealed record SidecarAlbumRepresentative(string FilePath, long TrackId, string? Title, string? Artist);
+
+    private async Task<IReadOnlyDictionary<string, SidecarAlbumRepresentative>> ResolveAlbumRepresentativeTracksAsync(
+        IReadOnlyList<string> albumRepresentatives,
+        CancellationToken cancellationToken)
+    {
+        var representatives = new Dictionary<string, SidecarAlbumRepresentative>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var trackIdsByPath = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+                albumRepresentatives,
+                cancellationToken);
+            foreach (var path in albumRepresentatives)
+            {
+                var directory = Path.GetDirectoryName(path) ?? string.Empty;
+                if (representatives.ContainsKey(directory))
+                {
+                    continue;
+                }
+
+                var trackId = trackIdsByPath.TryGetValue(path, out var resolved) ? resolved : 0;
+                string? title = null;
+                string? artist = null;
+                if (trackId > 0)
+                {
+                    try
+                    {
+                        var identity = await _libraryRepository.GetLocalTrackIdentityAsync(trackId, cancellationToken);
+                        if (identity != null)
+                        {
+                            title = identity.Title;
+                            artist = identity.Artist;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // Identity enrichment is best-effort; artwork reporting proceeds.
+                    }
+                }
+
+                representatives[directory] = new SidecarAlbumRepresentative(path, trackId, title, artist);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Track attribution is best-effort; fall back to file-level reporting.
+        }
+
+        return representatives;
     }
 
     private async Task<EnhancementWorkflowOutcome> RunConfiguredQualityChecksAsync(
@@ -1527,11 +1569,33 @@ public partial class AutoTagService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var trackId = batch[itemIndex];
+
+                // Resolve the track's real identity once so the sidecar
+                // progress cards show the actual title/artist (and cover
+                // fallback path) instead of a bare "track {id}" placeholder.
+                string? trackFilePath = null;
+                string? sourceTitle = null;
+                string? sourceArtist = null;
+                try
+                {
+                    trackFilePath = await _libraryRepository.GetTrackPrimaryFilePathAsync(trackId, cancellationToken);
+                    var identity = await _libraryRepository.GetLocalTrackIdentityAsync(trackId, cancellationToken);
+                    if (identity != null)
+                    {
+                        sourceTitle = identity.Title;
+                        sourceArtist = identity.Artist;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Identity enrichment is best-effort; refresh proceeds.
+                }
+
                 LyricsRefreshTrackResult result;
                 RecordEnhancementItemStatus(
                     job,
-                    AutoTagLiterals.EnhancementPhaseSidecarsLyrics,
-                    $"track {trackId}",
+                    AutoTagLiterals.EnhancementFeatureSidecars,
+                    trackFilePath ?? $"track {trackId}",
                     AutoTagLiterals.TaggingStatus,
                     "Fetching lyrics",
                     processed + 1,
@@ -1540,6 +1604,8 @@ public partial class AutoTagService
                     batchCount,
                     itemIndex + 1,
                     batch.Count,
+                    sourceTitle: sourceTitle,
+                    sourceArtist: sourceArtist,
                     countOutcome: false);
                 try
                 {
@@ -1556,8 +1622,8 @@ public partial class AutoTagService
                 processed++;
                 RecordEnhancementItemStatus(
                     job,
-                    AutoTagLiterals.EnhancementPhaseSidecarsLyrics,
-                    result.FilePath ?? $"track {trackId}",
+                    AutoTagLiterals.EnhancementFeatureSidecars,
+                    result.FilePath ?? trackFilePath ?? $"track {trackId}",
                     result.Success ? AutoTagLiterals.OkStatus : AutoTagLiterals.SkippedStatus,
                     result.Message,
                     processed,
@@ -1566,7 +1632,9 @@ public partial class AutoTagService
                     batchCount,
                     itemIndex + 1,
                     batch.Count,
-                    result);
+                    result,
+                    sourceTitle: sourceTitle,
+                    sourceArtist: sourceArtist);
             }
 
         }
@@ -1908,7 +1976,7 @@ public partial class AutoTagService
                 var processed = ++processedTotal;
                 RecordEnhancementItemStatus(
                     job,
-                    AutoTagLiterals.EnhancementPhaseSidecarsLyrics,
+                    AutoTagLiterals.EnhancementFeatureSidecars,
                     result.FilePath ?? $"{track.ArtistName} - {track.Title}",
                     result.Success ? AutoTagLiterals.OkStatus : AutoTagLiterals.SkippedStatus,
                     result.Message,

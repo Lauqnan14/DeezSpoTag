@@ -725,12 +725,75 @@
         img.replaceWith(placeholder);
     };
 
+    // Phase progress records are emitted against the library folder root
+    // ("cover maintenance starting…", "Fetching cover artwork for batch…").
+    // They are run-level progress, not sidecar items — never render them.
+    function isSidecarPhaseHeartbeat(inner) {
+        const message = String(inner?.message || "").toLowerCase();
+        return message.startsWith("cover maintenance starting")
+            || message.startsWith("fetching cover artwork");
+    }
+
+    // Collapse the per-track progress records ("Fetching lyrics" + result) of
+    // one sidecar workflow item into a single card that updates in place, so a
+    // normal user sees one row per track instead of frozen placeholder pairs.
+    function sidecarRowKey(inner) {
+        const path = String(inner?.path || "");
+        const trackIdMatch = path.match(/^track\s+(\d+)$/i);
+        if (trackIdMatch) {
+            return `tid:${trackIdMatch[1]}`;
+        }
+        if (inner?.lyricsTrackId) {
+            return `tid:${inner.lyricsTrackId}`;
+        }
+        return `path:${path.toLowerCase()}`;
+    }
+
+    function mergeSidecarRows(rows) {
+        // rows are newest-first: keep the newest record per track, union the
+        // badges of the group (so e.g. an animated-artwork badge survives the
+        // lyrics record landing later), and inherit title/artist/cover from
+        // older records when the newest lacks them.
+        const groups = new Map();
+        rows.forEach((entry) => {
+            const inner = entry?.status?.status || {};
+            if (isSidecarPhaseHeartbeat(inner)) {
+                return;
+            }
+            const key = sidecarRowKey(inner);
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(entry);
+        });
+        return Array.from(groups.values()).map((group) => {
+            const kept = group[0];
+            const keptInner = kept?.status?.status || {};
+            const lyricsBadges = new Set(Array.isArray(keptInner.lyricsBadges) ? keptInner.lyricsBadges : []);
+            const artworkBadges = new Set(Array.isArray(keptInner.artworkBadges) ? keptInner.artworkBadges : []);
+            for (const entry of group.slice(1)) {
+                const other = entry?.status?.status || {};
+                (Array.isArray(other.lyricsBadges) ? other.lyricsBadges : []).forEach((badge) => lyricsBadges.add(badge));
+                (Array.isArray(other.artworkBadges) ? other.artworkBadges : []).forEach((badge) => artworkBadges.add(badge));
+                if (!keptInner.sourceTitle && other.sourceTitle) {
+                    keptInner.sourceTitle = other.sourceTitle;
+                    keptInner.sourceArtist = keptInner.sourceArtist || other.sourceArtist || "";
+                }
+                keptInner.lyricsCoverUrl = keptInner.lyricsCoverUrl || other.lyricsCoverUrl;
+            }
+            keptInner.lyricsBadges = Array.from(lyricsBadges);
+            keptInner.artworkBadges = Array.from(artworkBadges);
+            return kept;
+        });
+    }
+
     function renderLyricsCards(rows) {
         const container = el("autotag-lyrics-list");
         if (!container) {
             return;
         }
 
+        rows = mergeSidecarRows(rows || []);
         setText("autotag-lyrics-count", String(rows.length));
         if (!state.selectedRunId) {
             container.innerHTML = `<div class="autotag-run-empty">${escapeHtml(state.runSelectionMessage || "Select a run to load sidecar results.")}</div>`;
@@ -754,7 +817,11 @@
                 ? lyricsBadges.map(lyricsBadgeMarkup).join("")
                 : lyricsMissingMarkup(inner, platform);
             const artworkHtml = artworkBadges.map(artworkBadgeMarkup).join("");
-            const badgeHtml = `${lyricsHtml}${artworkHtml}` || '<span class="text-muted">--</span>';
+            const isFetching = String(inner.message || "").toLowerCase().includes("fetching lyrics");
+            const badgeHtml = `${lyricsHtml}${artworkHtml}`
+                || (isFetching
+                    ? '<span class="badge badge-lyrics-unsynced">Fetching lyrics…</span>'
+                    : '<span class="text-muted">--</span>');
             return `<div class="lyrics-row" title="${escapeHtml(inner.path || "")}">
                 <div class="lyrics-row-index">${index + 1}</div>
                 ${art}

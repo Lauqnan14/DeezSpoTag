@@ -1272,3 +1272,21 @@ CREATE TABLE IF NOT EXISTS quality_scan_action_log (
 
 CREATE INDEX IF NOT EXISTS idx_quality_scan_action_run ON quality_scan_action_log (run_id);
 CREATE INDEX IF NOT EXISTS idx_quality_scan_action_track ON quality_scan_action_log (track_id);
+
+CREATE TABLE IF NOT EXISTS artist_alias_group (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    preferred_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artist_alias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id BIGINT NOT NULL REFERENCES artist_alias_group(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_alias_group ON artist_alias (group_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_alias_normalized ON artist_alias (normalized_name);

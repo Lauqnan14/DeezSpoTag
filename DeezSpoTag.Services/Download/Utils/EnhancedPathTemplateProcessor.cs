@@ -417,7 +417,10 @@ public class EnhancedPathTemplateProcessor
 
     private static string GetPathArtistName(string? artistName, DeezSpoTagSettings settings)
     {
-        var fallback = string.IsNullOrWhiteSpace(artistName) ? UnknownValue : artistName.Trim();
+        // User-defined artist aliases resolve to the preferred name before any
+        // other treatment, so downloads always land under the preferred artist.
+        var resolved = Library.ArtistAliasGateway.ResolveCredit(artistName);
+        var fallback = string.IsNullOrWhiteSpace(resolved) ? UnknownValue : resolved.Trim();
         if (settings.Tags?.SingleAlbumArtist != true)
         {
             return fallback;
