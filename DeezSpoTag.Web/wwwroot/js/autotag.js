@@ -6758,9 +6758,17 @@
             return;
         }
 
-        updateStatus(activeJobId, "paused");
+        const payload = await response.json().catch(() => null);
+        const stopStatus = String(payload?.status || "paused");
+        updateStatus(activeJobId, stopStatus);
         localStorage.removeItem("autotagJobId");
-        showToast("AutoTag paused — resume from the banner on reload.", "success");
+        if (stopStatus === "canceled") {
+            showToast("AutoTag run canceled.", "success");
+        } else if (stopStatus === "interrupted") {
+            showToast("AutoTag run interrupted — resume from the banner when it reappears.", "success");
+        } else {
+            showToast("AutoTag paused — resume from the banner when it reappears.", "success");
+        }
     }
 
     function hasStatusUI() {

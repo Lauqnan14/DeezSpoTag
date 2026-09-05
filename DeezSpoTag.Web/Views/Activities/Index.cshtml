@@ -3661,6 +3661,7 @@ let queueHydrationRefreshTimer = null;
 let lastQueueHydrationRefreshAt = 0;
 const activityLazyScripts = new Map();
 const activityLazyScriptUrls = {
+    enhancementResume: '@AssetUrl.Versioned(ViewContext, Url, "~/js/enhancement-resume.js")',
     autoTagStatus: '@AssetUrl.Versioned(ViewContext, Url, "~/js/autotag-status.js")',
     watchlistHistory: '@Url.Content("~/js/watchlist-history.js")',
     meloday: '@AssetUrl.Versioned(ViewContext, Url, "~/js/meloday.js")'
@@ -3708,7 +3709,10 @@ function loadActivityScript(key, src) {
 }
 
 function loadAutoTagStatusScript() {
-    return loadActivityScript('autoTagStatus', activityLazyScriptUrls.autoTagStatus);
+    // The resume banner module must be present before the status poller starts so a
+    // paused/interrupted run seen here can offer an in-place resume.
+    return loadActivityScript('enhancementResume', activityLazyScriptUrls.enhancementResume)
+        .then(() => loadActivityScript('autoTagStatus', activityLazyScriptUrls.autoTagStatus));
 }
 
 function loadWatchlistHistoryScript() {

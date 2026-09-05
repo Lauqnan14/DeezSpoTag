@@ -722,7 +722,9 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("plan.Files.Sort(CompareLibraryWideEnhancementFiles);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
-        Assert.Contains("if (await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token))", batchBody, StringComparison.Ordinal);
+        Assert.Contains("await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);", batchBody, StringComparison.Ordinal);
+        // The batch hook is a notification: the runner must not offer a stop-after-batch control.
+        Assert.DoesNotContain("Func<IReadOnlyList<string>, CancellationToken, Task<bool>>", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("(files, token) => ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);
         Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", autoTagSource, StringComparison.Ordinal);
         Assert.Contains("OrganizePathInBatchesAsync", workflowSource, StringComparison.Ordinal);

@@ -456,7 +456,6 @@ internal static class Program
         SetProperty(config, "DownloadTagSource", "spotify");
         SetProperty(config, "IncludeSubfolders", false);
         SetProperty(config, "SkipTagged", false);
-        SetProperty(config, "Multiplatform", false);
         SetProperty(config, "Overwrite", true);
 
         if (configJson.TryGetPropertyValue("tags", out var tagsNode) && tagsNode is JsonArray tagsArray)

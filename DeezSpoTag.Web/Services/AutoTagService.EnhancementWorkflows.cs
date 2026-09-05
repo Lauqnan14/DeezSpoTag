@@ -4,6 +4,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services.AutoTag;
 using DeezSpoTag.Web.Services.CoverPort;
 
 namespace DeezSpoTag.Web.Services;
@@ -531,7 +532,7 @@ public partial class AutoTagService
         }
     }
 
-    private async Task<bool> ApplyCompletedGapFillBatchAsync(
+    private async Task ApplyCompletedGapFillBatchAsync(
         AutoTagJob job,
         string configPath,
         IReadOnlyList<string> batchFiles,
@@ -545,20 +546,20 @@ public partial class AutoTagService
         if (currentFiles.Count == 0)
         {
             AppendLog(job, "enhancement batch skipped: no existing audio files remained after gap-fill.");
-            return false;
+            return;
         }
 
         var root = LoadConfigRoot(configPath);
         if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
         {
-            return false;
+            return;
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         var context = BuildEnhancementBatchContext(currentFiles, currentFiles, enabledFolders);
         if (!EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))
         {
-            return false;
+            return;
         }
 
         AppendLog(job, $"enhancement batch: gap-fill completed for {currentFiles.Count} file(s); running opted-in sidecars.");
@@ -578,7 +579,6 @@ public partial class AutoTagService
 
         await EnqueueMediaRefreshForBatchAsync(job, context, cancellationToken);
         SaveJob(job);
-        return false;
     }
 
     private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync(
@@ -1034,8 +1034,8 @@ public partial class AutoTagService
 
     private static (string? Source, string? Destination) TryParseMoveFileEntry(string entry)
     {
-        const string prefix = "move-file: ";
-        const string separator = " -> ";
+        const string prefix = AutoTagProtocol.MoveFileEntryPrefix;
+        const string separator = AutoTagProtocol.MoveFileEntrySeparator;
         if (!entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
             return (null, null);

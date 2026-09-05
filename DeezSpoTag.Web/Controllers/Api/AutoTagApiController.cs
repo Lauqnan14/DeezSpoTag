@@ -827,6 +827,7 @@ public class AutoTagJobsController : ControllerBase
             job.EnhancementWorkflows,
             job.CurrentPlatform,
             job.LastStatus,
+            job.ResumeCheckpoint,
             logCount,
             statusEntryCount,
             lastLogLine,
@@ -936,13 +937,15 @@ public class AutoTagJobsController : ControllerBase
     [HttpPost("jobs/{id}/stop")]
     public async Task<IActionResult> StopJob(string id, [FromBody] AutoTagStopRequest? request)
     {
-        var stopped = await _autoTagService.StopJobAsync(id, request?.Actor);
-        if (!stopped)
+        var outcome = await _autoTagService.StopJobWithStatusAsync(id, request?.Actor);
+        if (!outcome.Stopped)
         {
             return NotFound();
         }
 
-        return Ok(new { id, status = "paused" });
+        // Report the status actually applied (canceled / paused / interrupted) instead
+        // of a hardcoded "paused" so clients display the truth.
+        return Ok(new { id, status = outcome.Status });
     }
 
     [HttpPost("jobs/{id}/resume")]

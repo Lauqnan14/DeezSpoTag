@@ -57,6 +57,7 @@ internal static class AutoTagLiterals
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
     internal const string ResumedStatus = "resumed";
+    internal const string BlockedStatus = "blocked";
     internal const string EnrichmentStage = "enrichment";
     internal const string EnhancementStage = "enhancement";
     internal const string MultiPlatformKey = "multiplatform";
@@ -297,6 +298,9 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, byte> _stuckRecoveryJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunIndexUpdateUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastJobFullSaveUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _archivedLogLineCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _archivedStatusEntryCounts = new(StringComparer.OrdinalIgnoreCase);
     private AutoTagJob? _latestTerminalJob;
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
@@ -341,6 +345,13 @@ public partial class AutoTagService
     private static readonly TimeSpan ArchivedRunSummariesCacheTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ArchivedRunPruneInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan RunIndexUpdateInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Minimum interval between full job-JSON rewrites for routine progress updates
+    /// (per-file statuses and log lines). Checkpoint updates and terminal transitions
+    /// always save immediately, so resume state is never delayed by this throttle.
+    /// </summary>
+    private static readonly TimeSpan JobSaveThrottleInterval = TimeSpan.FromSeconds(1);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -1062,7 +1073,7 @@ public partial class AutoTagService
         var blockedJob = new AutoTagJob
         {
             Id = Guid.NewGuid().ToString("N"),
-            Status = "blocked",
+            Status = AutoTagLiterals.BlockedStatus,
             StartedAt = DateTimeOffset.UtcNow,
             FinishedAt = DateTimeOffset.UtcNow,
             Error = error,
@@ -2136,17 +2147,32 @@ public partial class AutoTagService
 
     public async Task<bool> StopJobAsync(string id, string? stopReason = null)
     {
+        var outcome = await StopJobInternalAsync(id, stopReason);
+        return outcome.Stopped;
+    }
+
+    /// <summary>
+    /// Stop a job and report the status actually applied (canceled / paused /
+    /// interrupted), so callers can surface the truth instead of assuming "paused".
+    /// </summary>
+    public async Task<StopJobOutcome> StopJobWithStatusAsync(string id, string? stopReason = null)
+    {
+        return await StopJobInternalAsync(id, stopReason);
+    }
+
+    private async Task<StopJobOutcome> StopJobInternalAsync(string id, string? stopReason)
+    {
         if (!_jobs.TryGetValue(id, out var job))
         {
             var loaded = LoadJob(id);
             if (loaded == null)
             {
-                return false;
+                return new StopJobOutcome(false, null);
             }
             NormalizeLoadedJobState(loaded);
             if (!IsActiveJobStatus(loaded.Status))
             {
-                return false;
+                return new StopJobOutcome(false, null);
             }
             job = loaded;
             _jobs[id] = job;
@@ -2173,7 +2199,7 @@ public partial class AutoTagService
                 job.Id,
                 BuildStopActivityLog(stopStatus, normalizedStopReason));
             NotifyRunStopped(job, stopStatus, normalizedStopReason);
-            return true;
+            return new StopJobOutcome(true, job.Status);
         }
 
         if (string.Equals(job.Status, stopStatus, StringComparison.OrdinalIgnoreCase))
@@ -2183,13 +2209,15 @@ public partial class AutoTagService
             SaveJob(job);
         }
 
-        return false;
+        return new StopJobOutcome(false, null);
     }
 
     /// <summary>
     /// Outcome of an explicit resume attempt for API surfacing.
     /// </summary>
     public sealed record ResumeJobOutcome(bool Success, string? Error, string? ResumedJobId);
+
+    public sealed record StopJobOutcome(bool Stopped, string? Status);
 
     /// <summary>
     /// Explicitly resumes a paused/interrupted/failed AutoTag job from its checkpoint.
@@ -2278,6 +2306,23 @@ public partial class AutoTagService
             return new ResumeJobOutcome(false, "Resume was blocked (downloads are active or another run holds the scope).", null);
         }
 
+        // StartJob returns job objects as admission failures (blocked/skipped). Treat
+        // those as resume failures: never stamp the source job as resumed and never
+        // report a running successor that will not actually run.
+        if (IsBlockedResumeSuccessor(resumed))
+        {
+            _logger.LogWarning(
+                "Resume of job {JobId} produced a '{Status}' successor job {SuccessorJobId}: {Error}",
+                id,
+                resumed.Status,
+                resumed.Id,
+                resumed.Error);
+            return new ResumeJobOutcome(
+                false,
+                resumed.Error ?? $"Resume successor job was '{resumed.Status}' and will not run.",
+                null);
+        }
+
         // Mark the source job as resumed AFTER StartJob consumed its checkpoint seed.
         job.Status = AutoTagLiterals.ResumedStatus;
         job.Error = $"Resumed by successor job {resumed.Id}.";
@@ -2286,6 +2331,23 @@ public partial class AutoTagService
         SaveJob(job);
 
         return new ResumeJobOutcome(true, null, resumed.Id);
+    }
+
+    /// <summary>
+    /// StartJob returns a job object for every admission failure. A resume successor
+    /// that was admitted as blocked/skipped will never run, so the resume must be
+    /// reported as failed instead of stamping the source job as resumed.
+    /// </summary>
+    internal static bool IsBlockedResumeSuccessor(AutoTagJob? successor)
+    {
+        if (successor == null)
+        {
+            return false;
+        }
+
+        var status = successor.Status?.Trim();
+        return string.Equals(status, AutoTagLiterals.BlockedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private void NotifyRunStopped(AutoTagJob job, string stopStatus, string stopReason)
@@ -2716,14 +2778,15 @@ public partial class AutoTagService
                     : null,
                 resumeCursor,
                 cancellationToken);
-            if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
+            if (result.Outcome == AutoTagRunOutcome.Stopped)
             {
                 return HandleStoppedStage(job);
             }
 
             if (!result.Success)
             {
-                if (TryHandlePausedStage(job, result.Error))
+                if (result.Outcome == AutoTagRunOutcome.Paused
+                    && TryHandlePausedStage(job, result.Error))
                 {
                     return new StageExecutionResult(false);
                 }
@@ -2748,16 +2811,18 @@ public partial class AutoTagService
         }
     }
 
+    /// <summary>
+    /// Applies a paused runner outcome (AutoTagRunOutcome.Paused) to the job. The
+    /// outcome is typed; the error argument is the pause reason itself.
+    /// </summary>
     private bool TryHandlePausedStage(AutoTagJob job, string? error)
     {
-        const string PausedPrefix = "paused:";
-        if (string.IsNullOrWhiteSpace(error)
-            || !error.TrimStart().StartsWith(PausedPrefix, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(error))
         {
             return false;
         }
 
-        var message = error.TrimStart()[PausedPrefix.Length..].Trim();
+        var message = error.Trim();
         if (string.IsNullOrWhiteSpace(message))
         {
             message = "AutoTag paused.";
@@ -4908,6 +4973,15 @@ public partial class AutoTagService
             return true;
         }
 
+        // The recovery trigger is only ever produced by resume paths (explicit resume
+        // endpoint and stuck-job recovery). Without it, explicitly resuming an
+        // enhancement job would be admitted as a blocked successor while the source
+        // job was stamped resumed - reporting "running" while nothing runs.
+        if (string.Equals(trigger, AutoTagLiterals.RecoveryTrigger, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -5196,8 +5270,10 @@ public partial class AutoTagService
                 job.SkippedCount += 1;
                 break;
         }
-        TryUpdateResumeCheckpoint(job, stageName, stageConfigHash, status);
-        SaveJob(job);
+        var checkpointChanged = TryUpdateResumeCheckpoint(job, stageName, stageConfigHash, status);
+        // A checkpoint change must reach disk immediately (it is the resume anchor);
+        // routine counter/progress updates may share the throttle window.
+        SaveJobThrottled(job, force: checkpointChanged);
     }
 
     private static void TrackEnhancedFilePath(AutoTagJob job, string stageName, TaggingStatusWrap status)
@@ -5439,7 +5515,7 @@ public partial class AutoTagService
         };
     }
 
-    private static void TryUpdateResumeCheckpoint(
+    private static bool TryUpdateResumeCheckpoint(
         AutoTagJob job,
         string stageName,
         string stageConfigHash,
@@ -5447,7 +5523,7 @@ public partial class AutoTagService
     {
         if (!IsTerminalStatus(status.Status?.Status))
         {
-            return;
+            return false;
         }
 
         var nextPlatformIndex = status.NextPlatformIndex;
@@ -5465,7 +5541,7 @@ public partial class AutoTagService
             if (status.PlatformIndex is not int currentPlatform
                 || status.FileIndex is not int currentFile)
             {
-                return;
+                return false;
             }
 
             platformCount = Math.Max(1, status.PlatformCount ?? 0);
@@ -5490,6 +5566,7 @@ public partial class AutoTagService
             LastPath = status.Status?.Path,
             UpdatedAt = DateTimeOffset.UtcNow
         };
+        return true;
     }
 
     private static AutoTagResumeCursor? ResolveResumeCursor(AutoTagJob job, AutoTagStageConfig stage)
@@ -6004,7 +6081,7 @@ public partial class AutoTagService
         }
         AppendActivityLog(job.Id, cleaned);
         AppendArchivedLog(job.Id, cleaned);
-        SaveJob(job);
+        SaveJobThrottled(job);
     }
 
     private void AppendActivityLog(string jobId, string line)
@@ -6061,7 +6138,7 @@ public partial class AutoTagService
             return;
         }
 
-        var summary = $"onetagger_autotag: platforms started: {string.Join(", ", job.StartedPlatforms)}";
+        var summary = $"{AutoTagProtocol.LogMarker} platforms started: {string.Join(", ", job.StartedPlatforms)}";
         AppendActivityLog(job.Id, summary);
     }
 
@@ -6073,7 +6150,7 @@ public partial class AutoTagService
             return false;
         }
 
-        const string marker = "onetagger_autotag:";
+        const string marker = AutoTagProtocol.LogMarker;
         var markerIndex = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         if (markerIndex < 0)
         {
@@ -6081,7 +6158,7 @@ public partial class AutoTagService
         }
 
         var message = line[(markerIndex + marker.Length)..].TrimStart();
-        const string starting = "starting ";
+        const string starting = AutoTagProtocol.StartingPlatformMessage;
         if (!message.StartsWith(starting, StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -6700,6 +6777,7 @@ public partial class AutoTagService
             {
                 Directory.CreateDirectory(GetRunHistoryDirectory(jobId));
                 File.AppendAllText(GetRunLogPath(jobId), line + Environment.NewLine, new UTF8Encoding(false));
+                _archivedLogLineCounts.AddOrUpdate(jobId, 1, static (_, count) => count + 1);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6726,6 +6804,7 @@ public partial class AutoTagService
                 Directory.CreateDirectory(GetRunHistoryDirectory(jobId));
                 var json = JsonSerializer.Serialize(snapshot, _jsonCompactOptions);
                 File.AppendAllText(GetRunStatusHistoryPath(jobId), json + Environment.NewLine, new UTF8Encoding(false));
+                _archivedStatusEntryCounts.AddOrUpdate(jobId, 1, static (_, count) => count + 1);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -7054,12 +7133,16 @@ public partial class AutoTagService
         }
     }
 
+    /// <summary>
+    /// Archived log-line count. Seeded from the file once per job, then maintained
+    /// incrementally by <see cref="AppendArchivedLog"/> — previously this re-read the
+    /// entire log file on every per-file status and log line.
+    /// </summary>
     private int GetArchivedLogCount(string jobId, int fallback)
     {
         try
         {
-            var path = GetRunLogPath(jobId);
-            return File.Exists(path) ? File.ReadLines(path, Encoding.UTF8).Count() : fallback;
+            return _archivedLogLineCounts.GetOrAdd(jobId, static (_, ctx) => CountArchiveFileLines(ctx.path) ?? ctx.fallback, (path: GetRunLogPath(jobId), fallback));
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -7067,23 +7150,30 @@ public partial class AutoTagService
         }
     }
 
+    /// <summary>
+    /// Archived status-entry count. Seeded from the file once per job, then maintained
+    /// incrementally by <see cref="AppendArchivedStatus"/>.
+    /// </summary>
     private int GetArchivedStatusCount(string jobId, int fallback)
     {
         try
         {
-            var path = GetRunStatusHistoryPath(jobId);
-            if (!File.Exists(path))
-            {
-                return fallback;
-            }
-
-            var (entries, _) = ParseStatusHistoryEntries(path);
-            return entries.Count;
+            return _archivedStatusEntryCounts.GetOrAdd(jobId, static (_, ctx) => CountArchiveFileLines(ctx.path) ?? ctx.fallback, (path: GetRunStatusHistoryPath(jobId), fallback));
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return fallback;
         }
+    }
+
+    private static int? CountArchiveFileLines(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        return File.ReadLines(path, Encoding.UTF8).Count();
     }
 
     private string GetRunHistoryDirectory(string jobId) => Path.Join(_historyDir, jobId);
@@ -7522,6 +7612,7 @@ public partial class AutoTagService
             var json = JsonSerializer.Serialize(CreateJobPersistenceSnapshot(job), _jsonOptions);
             File.WriteAllText(path, json, new UTF8Encoding(false));
             SaveRunSummary(job);
+            _lastJobFullSaveUtc[job.Id] = DateTimeOffset.UtcNow;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -7530,6 +7621,29 @@ public partial class AutoTagService
                 _logger.LogDebug(ex, "Failed to persist AutoTag job {JobId}", job.Id);
             }
         }
+    }
+
+    /// <summary>
+    /// Save for routine progress updates (per-file statuses, log lines). Rewriting the
+    /// full job JSON per event is IO-amplifying on long runs, so updates inside the
+    /// throttle window are skipped — the next event (or any forced save) persists the
+    /// accumulated state. Terminal transitions, checkpoint updates, and other
+    /// resume-critical callers must pass <paramref name="force"/> (or call SaveJob).
+    /// </summary>
+    private void SaveJobThrottled(AutoTagJob job, bool force = false)
+    {
+        if (force
+            || !ShouldThrottleJobSave(
+                _lastJobFullSaveUtc.TryGetValue(job.Id, out var lastSave) ? lastSave : null,
+                DateTimeOffset.UtcNow))
+        {
+            SaveJob(job);
+        }
+    }
+
+    internal static bool ShouldThrottleJobSave(DateTimeOffset? lastSaveUtc, DateTimeOffset now)
+    {
+        return lastSaveUtc.HasValue && now - lastSaveUtc.Value < JobSaveThrottleInterval;
     }
 
     private AutoTagJob? LoadJob(string id)

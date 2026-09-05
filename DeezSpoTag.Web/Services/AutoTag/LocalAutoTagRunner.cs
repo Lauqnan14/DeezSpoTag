@@ -482,7 +482,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken)
     {
@@ -512,20 +512,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 token);
             await ApplyPostLoopFallbackAsync(plan, token);
 
-            return new AutoTagRunResult(true, null);
+            return AutoTagRunResult.Completed();
         }
         catch (OperationCanceledException)
         {
-            return new AutoTagRunResult(false, "stopped");
+            return AutoTagRunResult.Stopped();
         }
         catch (AutoTagRunPausedException ex)
         {
-            return new AutoTagRunResult(false, $"paused: {ex.Message}");
+            // Typed outcome: the message is the pause reason, no string prefix needed.
+            return AutoTagRunResult.Paused(ex.Message);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Local AutoTag run failed.");
-            return new AutoTagRunResult(false, ex.ToString());
+            return AutoTagRunResult.Failed(ex.ToString());
         }
         finally
         {
@@ -542,7 +543,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (!IOFile.Exists(configPath))
         {
-            return (null, new AutoTagRunResult(false, "Config not found."));
+            return (null, AutoTagRunResult.Failed("Config not found."));
         }
 
         var configJson = await IOFile.ReadAllTextAsync(configPath, token);
@@ -550,7 +551,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var targetPath = string.IsNullOrWhiteSpace(rootPath) ? config.Path : rootPath;
         if (string.IsNullOrWhiteSpace(targetPath) || !Directory.Exists(targetPath))
         {
-            return (null, new AutoTagRunResult(false, "Target path not found."));
+            return (null, AutoTagRunResult.Failed("Target path not found."));
         }
 
         var matchingConfig = new AutoTagMatchingConfig
@@ -615,7 +616,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
@@ -647,7 +648,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             token.ThrowIfCancellationRequested();
             var platform = plan.EffectivePlatforms[platformIndex];
-            logCallback($"onetagger_autotag: starting {platform}");
+            logCallback($"{AutoTagProtocol.LogMarker} {AutoTagProtocol.StartingPlatformMessage}{platform}");
 
             var fileStart = platformIndex == startPlatformIndex ? startFileIndex : 0;
             for (var fileIndex = fileStart; fileIndex < plan.FileCount; fileIndex++)
@@ -683,7 +684,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         int startPlatformIndex,
         int startFileIndex,
         CancellationToken token)
@@ -707,7 +708,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 token.ThrowIfCancellationRequested();
                 var platform = plan.EffectivePlatforms[platformIndex];
-                logCallback($"onetagger_autotag: starting {platform}");
+                logCallback($"{AutoTagProtocol.LogMarker} {AutoTagProtocol.StartingPlatformMessage}{platform}");
 
                 var fileStart = batchStart == resumeBatchStart
                     && platformIndex == startPlatformIndex
@@ -764,10 +765,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (batchCompletedCallback != null)
             {
-                if (await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token))
-                {
-                    return;
-                }
+                // The batch hook is a notification, not a stop control: it can never
+                // halt the run (sidecar work must never prevent the next batch).
+                await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);
             }
         }
     }
@@ -4374,7 +4374,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ConflictResolution = raw.ConflictResolution,
             SkipTagged = raw.SkipTagged,
             IncludeSubfolders = raw.IncludeSubfolders,
-            Multiplatform = raw.Multiplatform,
             ParseFilename = raw.ParseFilename,
             Id3v24 = raw.Id3v24,
             TrackNumberLeadingZeroes = raw.TrackNumberLeadingZeroes,
@@ -10812,7 +10811,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? ConflictResolution { get; set; }
         public bool SkipTagged { get; set; }
         public bool IncludeSubfolders { get; set; } = true;
-        public bool Multiplatform { get; set; }
         public bool ParseFilename { get; set; }
         public bool Id3v24 { get; set; } = true;
         public int TrackNumberLeadingZeroes { get; set; }
