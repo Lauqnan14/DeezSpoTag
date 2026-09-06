@@ -719,10 +719,15 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("LibraryWideEnhancementBatchSize", runnerSource, StringComparison.Ordinal);
         Assert.Contains("ExecuteLibraryWideEnhancementBatchesAsync", executeBody, StringComparison.Ordinal);
         Assert.Contains("config.TargetFiles == null || config.TargetFiles.Count == 0", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("plan.Files.Sort(CompareLibraryWideEnhancementFiles);", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
+        // Artist-alphabetical two-wave order keeps albums contiguous inside an artist block.
+        Assert.Contains("OrderFilesForEnhancementRun(", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("ReadArtistSortMeta(file)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("BuildLibraryWideEnhancementBatchRanges(plan.Files, passFileCount, batchSize)", batchBody, StringComparison.Ordinal);
+        // Batches extend past the limit only to finish the active album.
+        Assert.Contains("end - start < resolvedBatchSize", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("SameAlbumDirectory(files[end - 1], files[end])", runnerSource, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
-        Assert.Contains("await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);", batchBody, StringComparison.Ordinal);
+        Assert.Contains("await batchCompletedCallback(batchFiles, token);", batchBody, StringComparison.Ordinal);
         // The batch hook is a notification: the runner must not offer a stop-after-batch control.
         Assert.DoesNotContain("Func<IReadOnlyList<string>, CancellationToken, Task<bool>>", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("(files, token) => ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);

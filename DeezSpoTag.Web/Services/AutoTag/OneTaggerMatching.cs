@@ -159,11 +159,29 @@ internal static class OneTaggerMatching
         TrackSelectors<T> selectors,
         bool matchArtist = true)
     {
+        var ranked = MatchTrackRanked(info, tracks, config, selectors, matchArtist);
+        return ranked.Count > 0 ? ranked[0] : null;
+    }
+
+    /// <summary>
+    /// All viable candidates ordered best-first (exact-fallback candidates first, then
+    /// fuzzy matches by descending score with tie-break ordering). Lets matchers try
+    /// the next-ranked candidate when the best one fails a downstream gate instead of
+    /// dropping the platform for that file.
+    /// </summary>
+    public static IReadOnlyList<MatchSelection<T>> MatchTrackRanked<T>(
+        AutoTagAudioInfo info,
+        IReadOnlyList<T> tracks,
+        AutoTagMatchingConfig config,
+        TrackSelectors<T> selectors,
+        bool matchArtist = true)
+    {
+        var ranked = new List<MatchSelection<T>>();
         var requireArtistMatch = matchArtist && info.Artists.Any(a => !string.IsNullOrWhiteSpace(a));
         var exact = MatchTrackExactFallback(info, tracks, config, selectors, requireArtistMatch);
         if (exact != null)
         {
-            return exact;
+            ranked.Add(exact);
         }
 
         var cleanTitle = CleanTitleMatching(info.Title);
@@ -201,17 +219,31 @@ internal static class OneTaggerMatching
             }
         }
 
-        if (fuzzy.Count == 0)
+        if (fuzzy.Count > 0)
         {
-            return null;
+            fuzzy.Sort((a, b) => b.Score.CompareTo(a.Score));
+            // Emit best-first: ties at each score level keep the MultipleMatches order.
+            var index = 0;
+            while (index < fuzzy.Count)
+            {
+                var runEnd = index + 1;
+                while (runEnd < fuzzy.Count && fuzzy[runEnd].Score.Equals(fuzzy[index].Score))
+                {
+                    runEnd++;
+                }
+
+                var run = fuzzy[index..runEnd];
+                SortTracks(run, config.MultipleMatches, selectors.GetReleaseDate);
+                foreach (var item in run)
+                {
+                    ranked.Add(new MatchSelection<T>(item.Score, item.Track));
+                }
+
+                index = runEnd;
+            }
         }
 
-        fuzzy.Sort((a, b) => b.Score.CompareTo(a.Score));
-        var bestScore = fuzzy[0].Score;
-        var top = fuzzy.Where(item => item.Score >= bestScore).ToList();
-        SortTracks(top, config.MultipleMatches, selectors.GetReleaseDate);
-
-        return new MatchSelection<T>(top[0].Score, top[0].Track);
+        return ranked;
     }
 
     private static double ApplyEvidenceCaps(

@@ -18,6 +18,7 @@
             mp4: ", "
         },
         id3v24: true,
+        editionConflictReview: false,
         overwrite: false,
         threads: 16,
         strictness: 0.7,
@@ -2944,6 +2945,7 @@
 
         setChecked("autotag-overwrite", state.config.overwrite);
         setChecked("autotag-id3v24", state.config.id3v24);
+        setChecked("autotag-edition-conflict-review", state.config.editionConflictReview);
         setChecked("autotag-short-title", state.config.shortTitle);
         setChecked("autotag-merge-genres", state.config.mergeGenres);
         setChecked("autotag-camelot", state.config.camelot);
@@ -4004,6 +4006,7 @@
     function readBaseAutoTagConfig(getChecked, getValue) {
         state.config.overwrite = getChecked("autotag-overwrite", state.config.overwrite);
         state.config.id3v24 = getChecked("autotag-id3v24", state.config.id3v24);
+        state.config.editionConflictReview = getChecked("autotag-edition-conflict-review", state.config.editionConflictReview);
         state.config.shortTitle = getChecked("autotag-short-title", state.config.shortTitle);
         const saveArtworkEnabled = getChecked(
             "saveArtwork",

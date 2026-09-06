@@ -205,8 +205,8 @@ public sealed class AutoTagProviderCapabilityContractTests
         var map = GetSupportedTagMap();
         var writable = map.Values.Cast<SupportedTag>().ToHashSet();
 
-        Assert.Equal(16, descriptors.Count);
-        Assert.Equal(16, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(17, descriptors.Count);
+        Assert.Equal(17, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(descriptors, descriptor =>
         {
             Assert.NotEmpty(descriptor.SupportedTags);
@@ -922,6 +922,7 @@ public sealed class AutoTagProviderCapabilityContractTests
             new ShazamPlatform(environment),
             new BandcampPlatform(environment),
             new BpmSupremePlatform(environment),
+            new AudiomackPlatform(environment),
             new ItunesPlatform(environment),
             new MusixmatchPlatform(environment),
             new LrclibPlatform(environment),

@@ -7,8 +7,6 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed class MusicBrainzMatcher
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
-    private static readonly Regex VariantSegmentRegex = CreateVariantRegex(@"(?:\(|\[|\{)(?<value>[^)\]\}]+)(?:\)|\]|\})");
-    private static readonly Regex TrailingVariantRegex = CreateVariantRegex(@"\b(?<value>instrumental|radio edit|radio version|club version|club mix|extended(?: mix| version| edit)?|live|acoustic|karaoke|remix|remastered)\b$");
     private static readonly (string Key, Regex Pattern)[] VariantPatterns =
     [
         ("instrumental", CreateVariantRegex(@"\binstrumental\b")),
@@ -156,23 +154,33 @@ public sealed class MusicBrainzMatcher
         MusicBrainzPreferences preferences,
         CancellationToken cancellationToken)
     {
-        var match = MatchTracks(info, tracks, matchingConfig);
-        if (match == null)
+        // Ranked candidates: when the best-scored candidate fails the compatibility
+        // gate (e.g. a variant-titled recording), fall through to the next-ranked
+        // candidate instead of dropping MusicBrainz for the file.
+        var candidates = MatchTracks(info, tracks, matchingConfig);
+        foreach (var candidate in candidates)
         {
-            return null;
+            // The compatibility gate only reads title/artists/duration, which are
+            // populated before the release lookup — gate first, extend only the winner.
+            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig))
+            {
+                continue;
+            }
+
+            await ExtendTrackAsync(info, candidate.Track, preferences, cancellationToken);
+            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig))
+            {
+                continue;
+            }
+
+            return new AutoTagMatchResult
+            {
+                Accuracy = candidate.Accuracy,
+                Track = ToAutoTagTrack(candidate.Track)
+            };
         }
 
-        await ExtendTrackAsync(info, match.Track, preferences, cancellationToken);
-        if (!IsCandidateCompatibleWithSource(info, match.Track, matchingConfig))
-        {
-            return null;
-        }
-
-        return new AutoTagMatchResult
-        {
-            Accuracy = match.Accuracy,
-            Track = ToAutoTagTrack(match.Track)
-        };
+        return null;
     }
 
     private static List<string> BuildQueries(AutoTagAudioInfo info)
@@ -198,9 +206,9 @@ public sealed class MusicBrainzMatcher
 
     private static string EscapeQuery(string input) => input.Replace("\"", "\\\"");
 
-    private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<MusicBrainzTrack> tracks, AutoTagMatchingConfig config)
+    private static List<MatchCandidate> MatchTracks(AutoTagAudioInfo info, List<MusicBrainzTrack> tracks, AutoTagMatchingConfig config)
     {
-        var match = OneTaggerMatching.MatchTrack(
+        var ranked = OneTaggerMatching.MatchTrackRanked(
             info,
             tracks,
             config,
@@ -212,7 +220,9 @@ public sealed class MusicBrainzMatcher
                 track => track.ReleaseDate),
             matchArtist: true);
 
-        return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
+        return ranked
+            .Select(match => new MatchCandidate(match.Accuracy, match.Track))
+            .ToList();
     }
 
     private static MusicBrainzTrack ToTrack(Recording recording, MusicBrainzPreferences preferences)
@@ -265,7 +275,15 @@ public sealed class MusicBrainzMatcher
                 return;
             }
 
-            var release = SelectBestRelease(releases.Releases, track.ReleaseDate, preferences, track.ReleaseId, info.Album);
+            // Anchor the release on the file's own album id when present: tracks of one
+            // album downloaded in different sessions must resolve to the same release.
+            var fileAlbumId = ReadFileAlbumId(info);
+            var release = SelectBestRelease(
+                releases.Releases,
+                track.ReleaseDate,
+                preferences,
+                string.IsNullOrWhiteSpace(track.ReleaseId) ? fileAlbumId : track.ReleaseId,
+                info.Album);
             if (release == null)
             {
                 return;
@@ -436,6 +454,23 @@ public sealed class MusicBrainzMatcher
             preferences);
     }
 
+    private static string? ReadFileAlbumId(AutoTagAudioInfo info)
+    {
+        foreach (var key in new[] { "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID" })
+        {
+            if (info.Tags.TryGetValue(key, out var values) && values is { Count: > 0 })
+            {
+                var value = values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static Release? SelectBestRelease(
         List<Release> releases,
         DateTime? preferredDate,
@@ -482,9 +517,12 @@ public sealed class MusicBrainzMatcher
         if (!string.IsNullOrWhiteSpace(preferredAlbum)
             && !string.IsNullOrWhiteSpace(release.Title))
         {
+            // Compare the album CORE (edition markers stripped) so "Album (Deluxe)"
+            // scores against the deluxe release, not against the standard album;
+            // then reward matching edition intent and penalize edition mismatch.
             var albumScore = AutoTagSimilarity.ComputeScore(
-                AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(preferredAlbum)),
-                AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(release.Title)));
+                AlbumTitleNormalizer.CoreTitle(preferredAlbum),
+                AlbumTitleNormalizer.CoreTitle(release.Title));
             if (albumScore >= 0.90d)
             {
                 score += 8;
@@ -492,6 +530,14 @@ public sealed class MusicBrainzMatcher
             else if (albumScore < 0.55d)
             {
                 score -= 6;
+            }
+
+            var preferredEditions = AlbumTitleNormalizer.EditionIntent(preferredAlbum);
+            if (preferredEditions.Count > 0)
+            {
+                score += AlbumTitleNormalizer.EditionIntent(release.Title).SetEquals(preferredEditions)
+                    ? 4
+                    : -5;
             }
         }
 
@@ -665,6 +711,11 @@ public sealed class MusicBrainzMatcher
         return TrackTitleMatcher.HasCompatibleTitleIdentity(sourceTitle, candidateTitle);
     }
 
+    /// <summary>
+    /// Variant markers are extracted from the whole title, not only from parenthesized
+    /// segments: forms like "Song - Live at Wembley" (unparenthesized, non-trailing)
+    /// previously escaped the gate and let MB adopt variant-titled recordings.
+    /// </summary>
     private static HashSet<string> ExtractVariantMarkers(string? title)
     {
         var markers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -673,34 +724,15 @@ public sealed class MusicBrainzMatcher
             return markers;
         }
 
-        foreach (Match match in VariantSegmentRegex.Matches(title))
-        {
-            AddVariantMarkers(markers, match.Groups["value"].Value);
-        }
-
-        var trailing = TrailingVariantRegex.Match(title);
-        if (trailing.Success)
-        {
-            AddVariantMarkers(markers, trailing.Groups["value"].Value);
-        }
-
-        return markers;
-    }
-
-    private static void AddVariantMarkers(HashSet<string> markers, string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
         foreach (var (key, pattern) in VariantPatterns)
         {
-            if (pattern.IsMatch(value))
+            if (pattern.IsMatch(title))
             {
                 markers.Add(key);
             }
         }
+
+        return markers;
     }
 
     private static void AddOtherValue(List<(string Key, List<string> Values)> other, string key, string? value)

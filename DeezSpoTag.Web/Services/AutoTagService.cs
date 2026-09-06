@@ -100,6 +100,8 @@ internal static class AutoTagLiterals
     internal const string ManualForceFingerprintKey = "manualForceFingerprint";
     internal const string EnhancementForceFingerprintKey = "enhancementForceFingerprint";
     internal const string EnhancementUntrustedTargetsKey = "enhancementUntrustedTargets";
+    internal const string PriorityTargetFilesKey = "priorityTargetFiles";
+    internal const string EditionConflictReviewKey = "editionConflictReview";
 }
 
 public abstract class AutoTagRunState
@@ -206,6 +208,16 @@ public class TaggingStatusWrap
     public int? FileCount { get; set; }
     public int? NextPlatformIndex { get; set; }
     public int? NextFileIndex { get; set; }
+
+    /// <summary>
+    /// Actual batch position reported by the runner when the run uses album-boundary
+    /// batches. Null when the run is not batched, in which case the job falls back to
+    /// fixed-window display math.
+    /// </summary>
+    public int? BatchNumber { get; set; }
+    public int? BatchCount { get; set; }
+    public int? BatchSize { get; set; }
+    public int? BatchProcessed { get; set; }
 }
 
 public class TaggingStatus
@@ -3655,6 +3667,8 @@ public partial class AutoTagService
             "forceShazam",
             AutoTagLiterals.IncludeSubfoldersKey,
             AutoTagLiterals.MultiPlatformKey,
+            "priorityTargetFiles",
+            "editionConflictReview",
             "parseFilename",
             "id3v24",
             "trackNumberLeadingZeroes",
@@ -5243,10 +5257,25 @@ public partial class AutoTagService
                 : job.EnhancementFeature;
             job.TotalItems = job.TargetUsable > 0 ? job.TargetUsable : status.FileCount.Value;
             job.ProcessedItems = Math.Min(job.TotalItems, fileIndex + 1);
-            job.BatchSize = Math.Min(EnhancementBatchSize, status.FileCount.Value - (fileIndex / EnhancementBatchSize * EnhancementBatchSize));
-            job.CurrentBatch = fileIndex / EnhancementBatchSize + 1;
-            job.BatchCount = (int)Math.Ceiling(status.FileCount.Value / (double)EnhancementBatchSize);
-            job.BatchProcessed = fileIndex % EnhancementBatchSize + 1;
+            if (status.BatchNumber is int batchNumber
+                && status.BatchCount is int batchCount
+                && status.BatchSize is int batchSize
+                && status.BatchProcessed is int batchProcessed)
+            {
+                // The runner reports the true album-boundary batch position.
+                job.CurrentBatch = batchNumber;
+                job.BatchCount = batchCount;
+                job.BatchSize = batchSize;
+                job.BatchProcessed = batchProcessed;
+            }
+            else
+            {
+                // Fixed-window fallback for runs that are not album-batched.
+                job.BatchSize = Math.Min(EnhancementBatchSize, status.FileCount.Value - (fileIndex / EnhancementBatchSize * EnhancementBatchSize));
+                job.CurrentBatch = fileIndex / EnhancementBatchSize + 1;
+                job.BatchCount = (int)Math.Ceiling(status.FileCount.Value / (double)EnhancementBatchSize);
+                job.BatchProcessed = fileIndex % EnhancementBatchSize + 1;
+            }
         }
         TryCaptureTagDiff(job, status);
         ApplyIdentityReviewGuard(job, status);

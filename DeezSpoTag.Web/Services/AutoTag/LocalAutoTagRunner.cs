@@ -142,6 +142,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string TitleTag = "title";
     private const string ArtistTag = "artist";
     private const string BoomplayPlatform = "boomplay";
+    private const string AudiomackPlatform = "audiomack";
     private const string DiscNumberTag = "discNumber";
     private const string DiscTotalTag = "discTotal";
     private const string GenreTag = "genre";
@@ -430,6 +431,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly DeezerMatcher _deezerMatcher;
     private readonly LastFmMatcher _lastFmMatcher;
     private readonly BoomplayMatcher _boomplayMatcher;
+    private readonly AudiomackMatcher _audiomackMatcher;
     private readonly ShazamMatcher _shazamMatcher;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly AppleLyricsService _appleLyricsService;
@@ -453,6 +455,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     public LocalAutoTagRunner(LocalAutoTagRunnerCollaborators collaborators)
     {
         _logger = collaborators.Logger;
+        _albumIdentityStorePath = collaborators.AlbumIdentityStorePath;
         _httpClientFactory = collaborators.HttpClientFactory;
         _musicBrainzMatcher = collaborators.MusicBrainzMatcher;
         _beatportMatcher = collaborators.BeatportMatcher;
@@ -465,6 +468,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _deezerMatcher = collaborators.DeezerMatcher;
         _lastFmMatcher = collaborators.LastFmMatcher;
         _boomplayMatcher = collaborators.BoomplayMatcher;
+        _audiomackMatcher = collaborators.AudiomackMatcher;
         _shazamMatcher = collaborators.ShazamMatcher;
         _shazamRecognitionService = collaborators.ShazamRecognitionService;
         _appleLyricsService = collaborators.AppleLyricsService;
@@ -511,6 +515,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 resumeCursor,
                 token);
             await ApplyPostLoopFallbackAsync(plan, token);
+            PersistAlbumIdentities(plan);
 
             return AutoTagRunResult.Completed();
         }
@@ -567,6 +572,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var settings = LoadRuntimeSettings(config.Technical, config);
         settings.DownloadLocation = targetPath;
         var shazamBehavior = ResolveShazamEnrichmentBehavior(config);
+        LoadPersistedAlbumIdentities();
         var plan = new AutoTagRunPlan
         {
             JobId = jobId,
@@ -584,6 +590,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ForceShazamMatch = shazamBehavior.ForceMatch,
             ShazamConflictResolution = IsShazamConflictResolution(config)
         };
+        SeedPlanAlbumIdentities(plan);
 
         if (config.SkipTagged)
         {
@@ -592,7 +599,22 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (IsLibraryWideEnhancementBatchingEnabled(config))
         {
-            plan.Files.Sort(CompareLibraryWideEnhancementFiles);
+            // Enhancement runs are alphabetical by main artist: wave 1 holds the files
+            // the library DB flagged as missing core metadata plus files with unknown
+            // artist/album tags; wave 2 holds the rest. Within a wave: main artist,
+            // then album, then track number. Albums stay contiguous inside an artist
+            // block so batch windows can still honor album boundaries.
+            foreach (var file in plan.Files)
+            {
+                plan.ArtistSortMeta[file] = ReadArtistSortMeta(file);
+            }
+
+            var orderedFiles = OrderFilesForEnhancementRun(
+                plan.Files,
+                plan.ArtistSortMeta,
+                BuildNormalizedPathSet(config.PriorityTargetFiles));
+            plan.Files.Clear();
+            plan.Files.AddRange(orderedFiles);
         }
 
         return (plan, null);
@@ -630,20 +652,64 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             plan,
             resumeCursor,
             preferPathAnchor: !string.IsNullOrWhiteSpace(resumeMismatchReason));
-        if (IsLibraryWideEnhancementBatchingEnabled(plan.Config))
-        {
-            await ExecuteLibraryWideEnhancementBatchesAsync(
-                plan,
-                jobMatchCache,
-                statusCallback,
-                logCallback,
-                batchCompletedCallback,
-                startPlatformIndex,
-                startFileIndex,
-                token);
-            return;
-        }
 
+        // Mid-run pickup: files added while the run is in progress join the run when
+        // their artist sorts after the current position, and are deferred to an
+        // alphabetical end-wave when their position was already passed.
+        var scheduler = new EnhancementPickupScheduler(plan, logCallback);
+        var (passPlatformStart, passFileStart) = (startPlatformIndex, startFileIndex);
+        while (true)
+        {
+            var passFileCount = plan.FileCount;
+            if (IsLibraryWideEnhancementBatchingEnabled(plan.Config))
+            {
+                await ExecuteLibraryWideEnhancementBatchesAsync(
+                    plan,
+                    jobMatchCache,
+                    statusCallback,
+                    logCallback,
+                    batchCompletedCallback,
+                    passPlatformStart,
+                    passFileStart,
+                    passFileCount,
+                    scheduler,
+                    token);
+            }
+            else
+            {
+                await ExecutePlainPlatformPassAsync(
+                    plan,
+                    jobMatchCache,
+                    statusCallback,
+                    logCallback,
+                    passPlatformStart,
+                    passFileStart,
+                    passFileCount,
+                    scheduler,
+                    token);
+            }
+
+            if (!scheduler.BeginNextPass(plan, logCallback))
+            {
+                break;
+            }
+
+            passPlatformStart = 0;
+            passFileStart = passFileCount;
+        }
+    }
+
+    private async Task ExecutePlainPlatformPassAsync(
+        AutoTagRunPlan plan,
+        JobMatchCacheState jobMatchCache,
+        Action<TaggingStatusWrap> statusCallback,
+        Action<string> logCallback,
+        int startPlatformIndex,
+        int startFileIndex,
+        int passFileCount,
+        EnhancementPickupScheduler scheduler,
+        CancellationToken token)
+    {
         for (var platformIndex = startPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
         {
             token.ThrowIfCancellationRequested();
@@ -651,7 +717,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             logCallback($"{AutoTagProtocol.LogMarker} {AutoTagProtocol.StartingPlatformMessage}{platform}");
 
             var fileStart = platformIndex == startPlatformIndex ? startFileIndex : 0;
-            for (var fileIndex = fileStart; fileIndex < plan.FileCount; fileIndex++)
+            for (var fileIndex = fileStart; fileIndex < passFileCount; fileIndex++)
             {
                 token.ThrowIfCancellationRequested();
                 if (plan.ReviewedFiles.Contains(plan.Files[fileIndex]))
@@ -667,16 +733,133 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     PlatformIndex = platformIndex,
                     FileIndex = fileIndex,
                     File = plan.Files[fileIndex],
-                    Progress = ComputeOverallProgress(platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
-                    NextPlatformIndex = ComputeNextPlatformIndex(platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
-                    NextFileIndex = ComputeNextFileIndex(fileIndex, plan.FileCount),
+                    Progress = ComputeOverallProgress(platformIndex, fileIndex, plan.PlatformCount, passFileCount),
+                    NextPlatformIndex = ComputeNextPlatformIndex(platformIndex, fileIndex, plan.PlatformCount, passFileCount),
+                    NextFileIndex = ComputeNextFileIndex(fileIndex, passFileCount),
                     StatusCallback = statusCallback,
                     LogCallback = logCallback,
                     Token = token
                 };
                 await ProcessPlatformFileAsync(context);
             }
+
+            scheduler.ScanIfDue(Math.Min(passFileCount, plan.FileCount) - 1, token);
         }
+    }
+
+    /// <summary>
+    /// Harvests files that appeared after the run started. Files whose artist sorts
+    /// after the runner's current position join the run (appended before the deferred
+    /// wave); files at or before the current position are deferred to the very end so
+    /// a new file never jumps ahead of the alphabetical flow.
+    /// </summary>
+    private sealed class EnhancementPickupScheduler
+    {
+        private const int PickupScanIntervalSeconds = 30;
+
+        private readonly AutoTagRunPlan _plan;
+        private readonly Action<string> _log;
+        private readonly bool _enabled;
+        private readonly HashSet<string> _knownFiles;
+        private readonly List<string> _included = new();
+        private readonly List<string> _deferred = new();
+        private DateTimeOffset _lastScanUtc = DateTimeOffset.MinValue;
+
+        public EnhancementPickupScheduler(AutoTagRunPlan plan, Action<string> log)
+        {
+            _plan = plan;
+            _log = log;
+            // Pickups apply to library-wide runs only; scoped target-file runs keep
+            // their explicit scope.
+            _enabled = plan.Config.TargetFiles is null or { Count: 0 };
+            _knownFiles = new HashSet<string>(plan.Files, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public void ScanIfDue(int currentFileIndex, CancellationToken token)
+        {
+            if (!_enabled || currentFileIndex < 0)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastScanUtc < TimeSpan.FromSeconds(PickupScanIntervalSeconds))
+            {
+                return;
+            }
+
+            _lastScanUtc = now;
+            var currentKey = ArtistKeyAt(currentFileIndex);
+            var discovered = 0;
+            foreach (var file in EnumerateAudioFiles(_plan.TargetPath, _plan.Config.IncludeSubfolders))
+            {
+                token.ThrowIfCancellationRequested();
+                if (!_knownFiles.Add(file))
+                {
+                    continue;
+                }
+
+                discovered++;
+                if (_plan.Config.SkipTagged && HasExistingTags(file))
+                {
+                    continue;
+                }
+
+                var meta = ReadArtistSortMeta(file);
+                _plan.ArtistSortMeta[file] = meta;
+                if (string.Compare(meta.ArtistKey, currentKey, StringComparison.Ordinal) <= 0)
+                {
+                    _deferred.Add(file);
+                }
+                else
+                {
+                    _included.Add(file);
+                }
+            }
+
+            if (discovered > 0)
+            {
+                _log($"onetagger_autotag: {discovered} new file(s) detected mid-run "
+                     + $"({_included.Count} join the run, {_deferred.Count} deferred to the end wave).");
+            }
+        }
+
+        public bool BeginNextPass(AutoTagRunPlan plan, Action<string> log)
+        {
+            var source = _included.Count > 0 ? _included : _deferred;
+            if (source.Count == 0)
+            {
+                return false;
+            }
+
+            var ordered = source
+                .Select(file => (File: file, Meta: PlanMeta(plan, file)))
+                .OrderBy(item => item.Meta.ArtistKey, StringComparer.Ordinal)
+                .ThenBy(item => item.Meta.AlbumKey, StringComparer.Ordinal)
+                .ThenBy(item => item.Meta.TrackNumber ?? int.MaxValue)
+                .ThenBy(item => item.File, StringComparer.OrdinalIgnoreCase)
+                .Select(item => item.File)
+                .ToList();
+            var kind = ReferenceEquals(source, _included) ? "current-run" : "deferred";
+            log($"onetagger_autotag: running {ordered.Count} mid-run pickup file(s) ({kind} wave).");
+            source.Clear();
+            plan.Files.AddRange(ordered);
+            return true;
+        }
+
+        private string ArtistKeyAt(int fileIndex)
+        {
+            var index = Math.Clamp(fileIndex, 0, _plan.FileCount - 1);
+            var file = _plan.Files[index];
+            return _plan.ArtistSortMeta.TryGetValue(file, out var meta)
+                ? meta.ArtistKey
+                : string.Empty;
+        }
+
+        private static ArtistSortMeta PlanMeta(AutoTagRunPlan plan, string file) =>
+            plan.ArtistSortMeta.TryGetValue(file, out var meta)
+                ? meta
+                : new ArtistSortMeta(string.Empty, string.Empty, null, true);
     }
 
     private async Task ExecuteLibraryWideEnhancementBatchesAsync(
@@ -687,6 +870,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         int startPlatformIndex,
         int startFileIndex,
+        int passFileCount,
+        EnhancementPickupScheduler scheduler,
         CancellationToken token)
     {
         if (startPlatformIndex >= plan.PlatformCount)
@@ -695,14 +880,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var batchSize = Math.Max(1, plan.Config.LibraryWideEnhancementBatchSize ?? DefaultLibraryWideEnhancementBatchSize);
-        var resumeBatchStart = startFileIndex - (startFileIndex % batchSize);
-        var batchStart = resumeBatchStart;
-        for (; batchStart < plan.FileCount; batchStart += batchSize)
+        // The pass works on a frozen snapshot; mid-run pickups are appended between passes.
+        var ranges = BuildLibraryWideEnhancementBatchRanges(plan.Files, passFileCount, batchSize);
+
+        // Resume inside the range that contains the checkpoint's file index.
+        var resumeRangeIndex = ranges.FindIndex(range => startFileIndex < range.End);
+        if (resumeRangeIndex < 0)
         {
-            var batchEnd = Math.Min(batchStart + batchSize, plan.FileCount);
-            var firstPlatformIndex = batchStart == resumeBatchStart
-                ? startPlatformIndex
-                : 0;
+            return;
+        }
+
+        for (var rangeIndex = resumeRangeIndex; rangeIndex < ranges.Count; rangeIndex++)
+        {
+            var (batchStart, batchEnd) = ranges[rangeIndex];
+            var firstPlatformIndex = rangeIndex == resumeRangeIndex ? startPlatformIndex : 0;
+            var rangeFileStart = rangeIndex == resumeRangeIndex ? Math.Max(startFileIndex, batchStart) : batchStart;
 
             for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
             {
@@ -710,10 +902,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 var platform = plan.EffectivePlatforms[platformIndex];
                 logCallback($"{AutoTagProtocol.LogMarker} {AutoTagProtocol.StartingPlatformMessage}{platform}");
 
-                var fileStart = batchStart == resumeBatchStart
-                    && platformIndex == startPlatformIndex
-                        ? startFileIndex
-                        : batchStart;
+                var fileStart = platformIndex == firstPlatformIndex ? rangeFileStart : batchStart;
                 for (var fileIndex = fileStart; fileIndex < batchEnd; fileIndex++)
                 {
                     token.ThrowIfCancellationRequested();
@@ -732,7 +921,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
                     if (nextPlatformIndex >= plan.PlatformCount)
                     {
-                        if (batchEnd >= plan.FileCount)
+                        if (batchEnd >= passFileCount)
                         {
                             nextFileIndex = 0;
                             nextPlatformIndex = plan.PlatformCount;
@@ -757,7 +946,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                         NextFileIndex = nextFileIndex,
                         StatusCallback = statusCallback,
                         LogCallback = logCallback,
-                        Token = token
+                        Token = token,
+                        // True album-boundary batch position for the progress display.
+                        BatchNumber = rangeIndex + 1,
+                        BatchCount = ranges.Count,
+                        BatchSize = batchEnd - batchStart,
+                        BatchProcessed = fileIndex - batchStart + 1
                     };
                     await ProcessPlatformFileAsync(context);
                 }
@@ -765,10 +959,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (batchCompletedCallback != null)
             {
-                // The batch hook is a notification, not a stop control: it can never
-                // halt the run (sidecar work must never prevent the next batch).
-                await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);
+                // Album-coherent batch: the sidecar/refresh hook sees complete albums.
+                var batchFiles = plan.Files.GetRange(batchStart, batchEnd - batchStart);
+                await batchCompletedCallback(batchFiles, token);
             }
+
+            scheduler.ScanIfDue(batchEnd - 1, token);
         }
     }
 
@@ -821,36 +1017,159 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
            || settings.SaveArtwork
            || settings.EmbedMaxQualityCover;
 
-    private static int CompareLibraryWideEnhancementFiles(string? left, string? right)
+    private static HashSet<string> BuildNormalizedPathSet(IEnumerable<string>? paths)
+        => paths?
+            .Select(NormalizeOrderPath)
+            .Where(path => path.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase)
+           ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    private static string NormalizeOrderPath(string path)
     {
-        var leftTimestamp = GetLibraryWideEnhancementSortTimestamp(left);
-        var rightTimestamp = GetLibraryWideEnhancementSortTimestamp(right);
-        var timestampComparison = leftTimestamp.CompareTo(rightTimestamp);
-        return timestampComparison != 0
-            ? timestampComparison
-            : string.Compare(left, right, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return path.Trim();
+        }
     }
 
-    private static DateTimeOffset GetLibraryWideEnhancementSortTimestamp(string? path)
+    private sealed record ArtistSortMeta(string ArtistKey, string AlbumKey, int? TrackNumber, bool WeakIdentity);
+
+    /// <summary>
+    /// Reads the ordering metadata for one file: the alphabetically-first main artist
+    /// (multi-artist credits sort under their first artist), the album title, and the
+    /// track number. Files that cannot be read sort as unknown-identity material.
+    /// </summary>
+    private static ArtistSortMeta ReadArtistSortMeta(string path)
+    {
+        try
+        {
+            using var file = TagLib.File.Create(path);
+            var tag = file.Tag;
+            var artists = (tag.Artists ?? Array.Empty<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToList();
+            var albumArtist = !string.IsNullOrWhiteSpace(tag.FirstAlbumArtist)
+                ? tag.FirstAlbumArtist
+                : tag.FirstAlbumArtistSort ?? tag.JoinedAlbumArtists;
+            if (artists.Count == 0 && !string.IsNullOrWhiteSpace(tag.FirstPerformer))
+            {
+                artists.Add(tag.FirstPerformer);
+            }
+
+            var artistKey = ArtistOrderKey.ResolveMainArtistKey(artists, albumArtist);
+            var album = string.IsNullOrWhiteSpace(tag.Album) ? null : tag.Album;
+            var weakIdentity = TrackIdentityTrust.IsWeakMetadataValue(artists.FirstOrDefault() ?? albumArtist)
+                || TrackIdentityTrust.IsWeakMetadataValue(album);
+            return new ArtistSortMeta(
+                artistKey,
+                AlbumTitleNormalizer.CoreTitle(album),
+                tag.Track > 0 ? (int)tag.Track : null,
+                weakIdentity);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new ArtistSortMeta(string.Empty, string.Empty, null, WeakIdentity: true);
+        }
+    }
+
+    /// <summary>
+    /// Two-wave enhancement order: wave 1 = files flagged missing core metadata by the
+    /// library DB plus files with unknown artist/album tags; wave 2 = everything else.
+    /// Within a wave: main artist, album, track number, path — all alphabetical.
+    /// </summary>
+    private static List<string> OrderFilesForEnhancementRun(
+        IReadOnlyList<string> files,
+        IReadOnlyDictionary<string, ArtistSortMeta> meta,
+        HashSet<string> priorityPaths)
+    {
+        ArtistSortMeta MetaFor(string file) =>
+            meta.TryGetValue(file, out var value) ? value : new ArtistSortMeta(string.Empty, string.Empty, null, true);
+
+        IEnumerable<string> Ordered(IEnumerable<string> source) => source
+            .Select(file => (File: file, Meta: MetaFor(file)))
+            .OrderBy(item => item.Meta.ArtistKey, StringComparer.Ordinal)
+            .ThenBy(item => item.Meta.AlbumKey, StringComparer.Ordinal)
+            .ThenBy(item => item.Meta.TrackNumber ?? int.MaxValue)
+            .ThenBy(item => item.File, StringComparer.OrdinalIgnoreCase)
+            .Select(item => item.File);
+
+        var wave1 = new List<string>();
+        var wave2 = new List<string>();
+        foreach (var file in files)
+        {
+            var isPriority = priorityPaths.Contains(NormalizeOrderPath(file)) || MetaFor(file).WeakIdentity;
+            (isPriority ? wave1 : wave2).Add(file);
+        }
+
+        return Ordered(wave1).Concat(Ordered(wave2)).ToList();
+    }
+
+    private static string GetAlbumSortKey(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            return DateTimeOffset.MaxValue;
+            return string.Empty;
         }
 
         try
         {
-            var creationTime = IOFile.GetCreationTimeUtc(path);
-            var writeTime = IOFile.GetLastWriteTimeUtc(path);
-            var timestamp = creationTime <= writeTime ? creationTime : writeTime;
-            return timestamp == DateTime.MinValue
-                ? DateTimeOffset.MaxValue
-                : new DateTimeOffset(timestamp, TimeSpan.Zero);
+            return Path.GetDirectoryName(Path.GetFullPath(path)) ?? string.Empty;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            return DateTimeOffset.MaxValue;
+            return string.Empty;
         }
+    }
+
+    private static bool SameAlbumDirectory(string? left, string? right)
+        => string.Equals(GetAlbumSortKey(left), GetAlbumSortKey(right), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Contiguous batch ranges of at most <paramref name="batchSize"/> files, extended
+    /// past the limit only to finish the album that is currently being processed
+    /// ("active album"). With the album-major sort this makes every batch a set of
+    /// complete albums — an album is never split across batches.
+    /// </summary>
+    internal static List<(int Start, int End)> BuildLibraryWideEnhancementBatchRanges(
+        IReadOnlyList<string> files,
+        int batchSize)
+    {
+        return BuildLibraryWideEnhancementBatchRanges(files, files.Count, batchSize);
+    }
+
+    internal static List<(int Start, int End)> BuildLibraryWideEnhancementBatchRanges(
+        IReadOnlyList<string> files,
+        int fileCount,
+        int batchSize)
+    {
+        var ranges = new List<(int Start, int End)>();
+        if (files.Count == 0 || fileCount <= 0)
+        {
+            return ranges;
+        }
+
+        var resolvedBatchSize = Math.Max(1, batchSize);
+        var limit = Math.Min(fileCount, files.Count);
+        var start = 0;
+        while (start < limit)
+        {
+            var end = start + 1;
+            while (end < limit
+                   && (end - start < resolvedBatchSize
+                       || SameAlbumDirectory(files[end - 1], files[end])))
+            {
+                end++;
+            }
+
+            ranges.Add((start, end));
+            start = end;
+        }
+
+        return ranges;
     }
 
     private static string? GetResumeCheckpointMismatchReason(AutoTagRunPlan plan, AutoTagResumeCursor? resumeCursor)
@@ -1419,14 +1738,36 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        // Album/folder-aware edition handling: when the file's album and the matched
+        // candidate are the same album but different editions (standard vs deluxe,
+        // 2009 vs 2011 remaster), never silently rewrite the album identity — keep
+        // the edition the user's download source provided, or flag for review when
+        // the profile opts into edition-conflict review.
+        var editionConflict = PreserveAlbumEditionIdentity(validationBasis, match.Track);
+        if (editionConflict && context.Plan.Config.EditionConflictReview == true)
+        {
+            var editionMessage = "album edition conflict: file and provider describe different editions of the same album";
+            EmitReviewStatus(
+                context,
+                editionMessage,
+                usedShazamForStatus,
+                AutoTagReviewMetadata.FromMatch(validationInfo, match.Track),
+                "rejected",
+                tagPlan,
+                match);
+            context.Plan.ReviewedFiles.Add(context.File);
+            return;
+        }
+
         EmitTaggingStatus(context, match.Accuracy, usedShazamForStatus);
 
         try
         {
             var originalFile = context.File;
+            PreserveSourceTitleWording(validationBasis, match.Track);
             PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
             ApplyFolderContextGuards(context.File, context.Plan.TargetPath, match.Track);
-            ApplyAlbumIdentityConsensus(context, match.Track);
+            ApplyAlbumIdentityConsensus(context, validationBasis, match.Track);
             if (isManualEnrichment && frozenRelease == null)
             {
                 frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
@@ -2193,6 +2534,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             FileCount = context.Plan.FileCount,
             NextPlatformIndex = context.NextPlatformIndex,
             NextFileIndex = context.NextFileIndex,
+            BatchNumber = context.BatchNumber,
+            BatchCount = context.BatchCount,
+            BatchSize = context.BatchSize,
+            BatchProcessed = context.BatchProcessed,
             Status = new TaggingStatus
             {
                 Status = status,
@@ -3704,6 +4049,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context.MatchingConfig,
                     LoadConfig(context.Config.Custom, BoomplayPlatform, new BoomplayConfig()),
                     token);
+            case AudiomackPlatform:
+                return await _audiomackMatcher.MatchAsync(
+                    info,
+                    context.MatchingConfig,
+                    LoadConfig(context.Config.Custom, AudiomackPlatform, new AudiomackMatchConfig()),
+                    token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:
@@ -4350,6 +4701,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DownloadTagSource = raw.DownloadTagSource,
             Path = raw.Path,
             TargetFiles = raw.TargetFiles?.Where(path => !string.IsNullOrWhiteSpace(path)).ToList(),
+            PriorityTargetFiles = raw.PriorityTargetFiles?.Where(path => !string.IsNullOrWhiteSpace(path)).ToList(),
+            EditionConflictReview = raw.EditionConflictReview,
             Tags = raw.Tags ?? new List<string>(),
             OverwriteTags = raw.OverwriteTags ?? new List<string>(),
             Separators = raw.Separators == null
@@ -5425,11 +5778,86 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static readonly string[] AlbumIdentityDateRawNames = ["DATE", "TDRC", "TDRL", "TYER"];
 
-    private static void ApplyAlbumIdentityConsensus(AutoTagFileRunContext context, AutoTagTrack track)
+    private AlbumIdentityStore? _albumIdentityStore;
+    private readonly string? _albumIdentityStorePath;
+
+    /// <summary>
+    /// Loads the cross-run album identity store so a track downloaded months after
+    /// the rest of its album converges onto the same album id and release date as
+    /// the earlier tracks.
+    /// </summary>
+    private void LoadPersistedAlbumIdentities()
+    {
+        var storePath = _albumIdentityStorePath;
+        if (string.IsNullOrWhiteSpace(storePath))
+        {
+            return;
+        }
+
+        try
+        {
+            _albumIdentityStore = IOFile.Exists(storePath)
+                ? AlbumIdentityStore.Load(storePath)
+                : new AlbumIdentityStore();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to load the album identity store.");
+            _albumIdentityStore = new AlbumIdentityStore();
+        }
+    }
+
+    private void SeedPlanAlbumIdentities(AutoTagRunPlan plan)
+    {
+        if (_albumIdentityStore == null)
+        {
+            return;
+        }
+
+        foreach (var (key, identity, updatedAt) in _albumIdentityStore.Entries)
+        {
+            plan.AlbumIdentities.Seed(key, identity, updatedAt);
+        }
+    }
+
+    /// <summary>Merges the run's established album identities back into the cross-run store.</summary>
+    private void PersistAlbumIdentities(AutoTagRunPlan plan)
+    {
+        var storePath = _albumIdentityStorePath;
+        if (string.IsNullOrWhiteSpace(storePath) || _albumIdentityStore == null || !plan.AlbumIdentities.IsDirty)
+        {
+            return;
+        }
+
+        try
+        {
+            _albumIdentityStore.Merge(plan.AlbumIdentities.Snapshot());
+            _albumIdentityStore.Save(storePath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to persist the album identity store.");
+        }
+    }
+
+    private sealed record FolderAlbumIdentity(
+        string AlbumTitle,
+        string? AlbumArtist,
+        AlbumIdentity Identity);
+
+    /// <summary>
+    /// Folder-keyed album identity: every file in the same album folder adopts ONE
+    /// established identity — album title wording, album artist, release date and
+    /// album ids — no matter which platform matched it. This is what keeps
+    /// Navidrome-visible tags identical across files, platforms and sessions.
+    /// </summary>
+    private void ApplyAlbumIdentityConsensus(AutoTagFileRunContext context, AutoTagAudioInfo sourceInfo, AutoTagTrack track)
     {
         var albumArtist = track.AlbumArtists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
             ?? track.Artists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-        var key = AlbumIdentity.BuildKey(albumArtist, track.Album);
+        // Edition-aware key: standard vs deluxe stay separate identities; different
+        // wordings of the same edition ("Deluxe" vs "Deluxe Edition") share one key.
+        var key = AlbumIdentity.BuildEditionAwareKey(albumArtist, track.Album);
         if (key is null)
         {
             return;
@@ -5467,6 +5895,99 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (!string.IsNullOrWhiteSpace(established.AlbumArtistId))
         {
             track.AlbumArtistId = established.AlbumArtistId;
+        }
+
+        ApplyFolderAlbumIdentity(context, sourceInfo, track, albumArtist, established);
+    }
+
+    /// <summary>
+    /// Folder-level flattening: once one platform establishes the album wording for a
+    /// folder, every later platform pass for files in that folder adopts it (same
+    /// core + edition), so the last-matching platform can no longer vary the album
+    /// title, album artist or date per file.
+    /// </summary>
+    private void ApplyFolderAlbumIdentity(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo sourceInfo,
+        AutoTagTrack track,
+        string? candidateAlbumArtist,
+        AlbumIdentity establishedIdentity)
+    {
+        var folderKey = ResolveAlbumFolderKey(context, track);
+        if (string.IsNullOrWhiteSpace(folderKey))
+        {
+            return;
+        }
+
+        if (!context.Plan.AlbumFolderIdentities.TryGetValue(folderKey, out var establishedFolder))
+        {
+            // First matched file for this folder: seed from the file's own existing
+            // tags (download source wording) and fall back to the candidate wording.
+            var sourceAlbum = string.IsNullOrWhiteSpace(sourceInfo?.Album) ? null : sourceInfo.Album.Trim();
+            var sourceAlbumArtist = sourceInfo?.Tags.TryGetValue("ALBUMARTIST", out var albumArtistValues) == true
+                ? albumArtistValues.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim()
+                : null;
+            establishedFolder = new FolderAlbumIdentity(
+                sourceAlbum ?? track.Album ?? string.Empty,
+                sourceAlbumArtist ?? candidateAlbumArtist,
+                establishedIdentity);
+            context.Plan.AlbumFolderIdentities[folderKey] = establishedFolder;
+            return;
+        }
+
+        // Same album and same edition: adopt the folder's established wording and
+        // identity so every platform writes identical values.
+        if (AlbumTitleNormalizer.IsSameEdition(establishedFolder.AlbumTitle, track.Album))
+        {
+            if (!string.IsNullOrWhiteSpace(establishedFolder.AlbumTitle))
+            {
+                track.Album = establishedFolder.AlbumTitle;
+            }
+
+            if (!string.IsNullOrWhiteSpace(establishedFolder.AlbumArtist))
+            {
+                track.AlbumArtists = new List<string> { establishedFolder.AlbumArtist };
+            }
+        }
+        else if (AlbumTitleNormalizer.IsEditionConflict(establishedFolder.AlbumTitle, track.Album))
+        {
+            // A later platform matched a different edition of the same album: keep the
+            // folder's established edition entirely.
+            track.Album = establishedFolder.AlbumTitle;
+            if (!string.IsNullOrWhiteSpace(establishedFolder.AlbumArtist))
+            {
+                track.AlbumArtists = new List<string> { establishedFolder.AlbumArtist };
+            }
+
+            if (!string.IsNullOrWhiteSpace(establishedFolder.Identity.AlbumId))
+            {
+                track.AlbumId = establishedFolder.Identity.AlbumId;
+                track.ReleaseId = establishedFolder.Identity.AlbumId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(establishedFolder.Identity.AlbumArtistId))
+            {
+                track.AlbumArtistId = establishedFolder.Identity.AlbumArtistId;
+            }
+        }
+    }
+
+    private static string ResolveAlbumFolderKey(AutoTagFileRunContext context, AutoTagTrack track)
+    {
+        var prospective = TryResolveProspectiveAlbumDirectory(context, track);
+        if (!string.IsNullOrWhiteSpace(prospective))
+        {
+            return Path.GetFullPath(prospective).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        try
+        {
+            return Path.GetDirectoryName(Path.GetFullPath(context.File))?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return string.Empty;
         }
     }
 
@@ -5724,6 +6245,88 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         coreTrack.ApplySettings(settings);
 
         return coreTrack;
+    }
+
+    /// <summary>
+    /// Keeps the file's own title wording when the provider returned the same work
+    /// with the same variant intent but different variant text ("Song (Live)" vs
+    /// "Song (Live at Wembley)", "Song (Remastered)" vs "Song (2011 Remaster)").
+    /// Providers must enrich missing tags, not rename tracks the user already titled.
+    /// </summary>
+    /// <summary>
+    /// Keeps the file's own album identity (title, album id, album-artist id) when
+    /// the provider matched a different edition of the same album. Returns true when
+    /// an edition conflict was detected and preserved.
+    /// </summary>
+    private static bool PreserveAlbumEditionIdentity(AutoTagAudioInfo sourceInfo, AutoTagTrack track)
+    {
+        if (track == null || string.IsNullOrWhiteSpace(sourceInfo?.Album))
+        {
+            return false;
+        }
+
+        if (!AlbumTitleNormalizer.IsEditionConflict(sourceInfo.Album, track.Album))
+        {
+            return false;
+        }
+
+        track.Album = sourceInfo.Album.Trim();
+        var sourceAlbumId = ReadFirstRawTagValue(sourceInfo, AlbumIdAlbumTagNames);
+        if (!string.IsNullOrWhiteSpace(sourceAlbumId))
+        {
+            track.AlbumId = sourceAlbumId;
+            track.ReleaseId = sourceAlbumId;
+        }
+
+        var sourceAlbumArtistId = ReadFirstRawTagValue(sourceInfo, AlbumArtistIdAlbumTagNames);
+        if (!string.IsNullOrWhiteSpace(sourceAlbumArtistId))
+        {
+            track.AlbumArtistId = sourceAlbumArtistId;
+        }
+
+        return true;
+    }
+
+    private static readonly string[] AlbumIdAlbumTagNames =
+        ["MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID"];
+    private static readonly string[] AlbumArtistIdAlbumTagNames =
+        ["MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID", "ALBUMARTISTID", "MB_ALBUM_ARTIST_ID"];
+
+    private static string? ReadFirstRawTagValue(AutoTagAudioInfo info, string[] tagNames)
+    {
+        foreach (var tagName in tagNames)
+        {
+            if (info.Tags.TryGetValue(tagName, out var values) && values is { Count: > 0 })
+            {
+                var value = values.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void PreserveSourceTitleWording(AutoTagAudioInfo sourceInfo, AutoTagTrack track)
+    {
+        if (track == null || string.IsNullOrWhiteSpace(sourceInfo?.Title))
+        {
+            return;
+        }
+
+        var incomingFullTitle = OneTaggerMatching.FullTitle(track.Title, track.Version);
+        if (!TrackTitleMatcher.ShouldPreserveSourceTitleWording(sourceInfo.Title, incomingFullTitle))
+        {
+            return;
+        }
+
+        // The source title already carries its own variant wording, so the incoming
+        // version fragment must be dropped — WriteTitleTag re-appends Version in
+        // parentheses when ShortTitle is off, which would duplicate the variant.
+        track.Title = sourceInfo.Title.Trim();
+        track.Version = null;
     }
 
     private static void PreserveRicherArtistCreditsFromSource(
@@ -6505,9 +7108,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         WriteSingleRawTag(tagWriteContext, context, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, context.SourceTrack.RecordingId);
         WriteSingleRawTag(tagWriteContext, context, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, context.SourceTrack.ArtistId);
-        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, context.SourceTrack.AlbumArtistId);
-        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, context.SourceTrack.ReleaseGroupId);
-        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, context.SourceTrack.AlbumId);
+        // The generic ALBUMARTISTID/ALBUMID tags are one shared namespace: only
+        // GUID-shaped (MusicBrainz) values may be written there. Platform-local ids
+        // (Deezer numeric ids, Spotify ids, …) keep their own <PLATFORM>_… tags, so
+        // files of one album cannot end up with mixed id namespaces.
+        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.AlbumArtistId));
+        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.ReleaseGroupId));
+        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.AlbumId));
         WriteSingleRawTag(tagWriteContext, context, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, context.SourceTrack.ReleaseStatus);
         WriteSingleRawTag(tagWriteContext, context, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, context.SourceTrack.ReleaseCountry);
         WriteSingleRawTag(tagWriteContext, context, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, context.SourceTrack.Barcode);
@@ -6516,6 +7123,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);
         }
     }
+
+    private static string? ToMusicBrainzShapedId(string? value)
+        => Guid.TryParse(value, out _) ? value : null;
 
     private static void WriteSingleRawTag(
         TagWriteContext tagWriteContext,
@@ -8482,6 +9092,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required DeezerMatcher DeezerMatcher { get; init; }
         public required LastFmMatcher LastFmMatcher { get; init; }
         public required BoomplayMatcher BoomplayMatcher { get; init; }
+        public required AudiomackMatcher AudiomackMatcher { get; init; }
         public required ShazamMatcher ShazamMatcher { get; init; }
         public required ShazamRecognitionService ShazamRecognitionService { get; init; }
         public required AppleLyricsService AppleLyricsService { get; init; }
@@ -8491,6 +9102,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required IServiceScopeFactory ServiceScopeFactory { get; init; }
         public required ITrackIdentityResolver TrackIdentityResolver { get; init; }
         public PortedPlatformRegistry? PlatformRegistry { get; init; }
+
+        /// <summary>Optional path of the cross-run album identity store; persistence is disabled when null.</summary>
+        public string? AlbumIdentityStorePath { get; init; }
     }
 
     private readonly record struct TagWriteContext(
@@ -10665,6 +11279,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public Dictionary<int, ManualReleaseIdentity> FrozenManualReleases { get; } = new();
         public AlbumIdentityRegistry AlbumIdentities { get; } = new();
         public HashSet<string> SeededAlbumIdentityKeys { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, ArtistSortMeta> ArtistSortMeta { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, FolderAlbumIdentity> AlbumFolderIdentities { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<int, string> MaterializedManualPaths { get; } = new();
         public HashSet<string> AttemptedArtistArtworkPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<int> AttemptedAppleExtras { get; } = new();
@@ -10738,6 +11354,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required CancellationToken Token { get; init; }
         public string? MatchFailureOutcome { get; set; }
         public string? MatchFailureMessage { get; set; }
+
+        // Actual album-boundary batch position; null when the run is not batched.
+        public int? BatchNumber { get; init; }
+        public int? BatchCount { get; init; }
+        public int? BatchSize { get; init; }
+        public int? BatchProcessed { get; init; }
     }
 
     private sealed class JobMatchCacheState
@@ -10794,6 +11416,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? DownloadTagSource { get; set; }
         public string? Path { get; set; }
         public List<string>? TargetFiles { get; set; }
+
+        /// <summary>Files the library DB flagged as missing core metadata; they run in priority wave 1.</summary>
+        public List<string>? PriorityTargetFiles { get; set; }
+
+        /// <summary>Flag a file for review instead of silently resolving an album edition conflict.</summary>
+        public bool? EditionConflictReview { get; set; }
         public List<string> Tags { get; set; } = new();
         public List<string> OverwriteTags { get; set; } = new();
         public AutoTagSeparators? Separators { get; set; }

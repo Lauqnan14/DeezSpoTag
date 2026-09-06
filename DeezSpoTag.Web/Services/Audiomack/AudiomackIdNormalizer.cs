@@ -56,4 +56,43 @@ public static class AudiomackIdNormalizer
 
         return value;
     }
+
+    /// <summary>
+    /// Extracts the artist and song slugs from an Audiomack song URL
+    /// ("https://audiomack.com/&lt;artist&gt;/song/&lt;song&gt;").
+    /// </summary>
+    public static bool TryExtractSongSlugs(string? url, out string artistSlug, out string songSlug)
+    {
+        artistSlug = string.Empty;
+        songSlug = string.Empty;
+        if (string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+            || !uri.Host.EndsWith("audiomack.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        // Expected shape: /<artist>/song/<song> — tolerate omitting the "song" segment.
+        if (segments.Length >= 3
+            && segments[1].Equals("song", StringComparison.OrdinalIgnoreCase))
+        {
+            artistSlug = segments[0];
+            songSlug = segments[2];
+        }
+        else if (segments.Length == 2)
+        {
+            artistSlug = segments[0];
+            songSlug = segments[1];
+        }
+        else
+        {
+            return false;
+        }
+
+        return Normalize(artistSlug) is { Length: > 0 } normalizedArtist
+            && Normalize(songSlug) is { Length: > 0 } normalizedSong
+            && (artistSlug = normalizedArtist) is not null
+            && (songSlug = normalizedSong) is not null;
+    }
 }

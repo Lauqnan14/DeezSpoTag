@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
@@ -121,6 +122,46 @@ public partial class AutoTagService
                 root.Remove(AutoTagLiterals.EnhancementUntrustedTargetsKey);
                 File.WriteAllText(configPath, root.ToJsonString(_jsonOptions), new System.Text.UTF8Encoding(false));
                 AppendLog(job, "enhancement missing core metadata DB audit found no files; gap-fill will use the selected folder.");
+            }
+        }
+
+        // Full-scope runs: flag the library DB's missing-core-metadata files as
+        // priority targets so the runner processes them in wave 1, without restricting
+        // the run's scope (the explicit missing-metadata scan instead narrows targets).
+        if (existingTargets.Count == 0
+            && job.RunIntent == AutoTagLiterals.RunIntentEnhancementOnly
+            && !root.ContainsKey(AutoTagLiterals.PriorityTargetFilesKey))
+        {
+            try
+            {
+                var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+                var scopedFolders = ResolveEnhancementJobFolders(
+                    job,
+                    enhancementRoot,
+                    enabledFolders,
+                    AutoTagLiterals.EnhancementFeatureQualityChecks);
+                if (scopedFolders.Count > 0)
+                {
+                    var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
+                        scopedFolders.Select(folder => folder.Id).ToList(),
+                        cancellationToken);
+                    var priorityPaths = missingFiles
+                        .Select(file => file.FilePath)
+                        .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                        .Select(path => Path.GetFullPath(path))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (priorityPaths.Count > 0)
+                    {
+                        WriteStringList(root, AutoTagLiterals.PriorityTargetFilesKey, priorityPaths);
+                        File.WriteAllText(configPath, root.ToJsonString(_jsonOptions), new System.Text.UTF8Encoding(false));
+                        AppendLog(job, $"enhancement priority wave: {priorityPaths.Count} indexed file(s) missing core metadata will run first.");
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Enhancement priority audit failed; continuing without a priority wave.");
             }
         }
 
@@ -1795,7 +1836,8 @@ public partial class AutoTagService
         var orderedTracks = tracks
             .GroupBy(track => track.TrackId)
             .Select(group => group.First())
-            .OrderBy(track => track.AlbumId)
+            .OrderBy(track => ArtistOrderKey.ResolveMainArtistKey([track.ArtistName], null), StringComparer.Ordinal)
+            .ThenBy(track => track.AlbumTitle, StringComparer.OrdinalIgnoreCase)
             .ThenBy(track => track.DiscNumber ?? 1)
             .ThenBy(track => track.TrackNumber ?? int.MaxValue)
             .ThenBy(track => track.TrackId)
@@ -1948,6 +1990,9 @@ public partial class AutoTagService
             .GroupBy(track => track.TrackId)
             .Select(group => group.First())
             .ToList();
+        // Enhancement runs are alphabetical by main artist: order the albums (and
+        // their tracks) by main artist before the album-boundary batching.
+        uniqueTracks.Sort(CompareQualityScanTracksByArtist);
         var batches = BuildAlbumBoundaryBatches(
             uniqueTracks,
             static track => track.AudioFilePath);
@@ -2007,6 +2052,26 @@ public partial class AutoTagService
 
     private static void ApplyProfileArtworkExtras(JsonObject configRoot, DeezSpoTagSettings settings)
         => CoverMaintenanceProfilePreferences.ApplyToSettings(configRoot, settings);
+
+    private static int CompareQualityScanTracksByArtist(QualityScanTrackDto left, QualityScanTrackDto right)
+    {
+        var artistComparison = string.Compare(
+            ArtistOrderKey.ResolveMainArtistKey([left.ArtistName], null),
+            ArtistOrderKey.ResolveMainArtistKey([right.ArtistName], null),
+            StringComparison.Ordinal);
+        if (artistComparison != 0)
+        {
+            return artistComparison;
+        }
+
+        var albumComparison = string.Compare(left.AlbumTitle, right.AlbumTitle, StringComparison.OrdinalIgnoreCase);
+        if (albumComparison != 0)
+        {
+            return albumComparison;
+        }
+
+        return (left.TrackNumber ?? int.MaxValue).CompareTo(right.TrackNumber ?? int.MaxValue);
+    }
 
     internal static List<List<T>> BuildAlbumBoundaryBatches<T>(
         IReadOnlyList<T> items,

@@ -60,7 +60,14 @@ public static class TrackIdentityTrust
             return true;
         }
 
-        return NoisyCoreTagRegex.IsMatch(normalized);
+        // A value is only "noisy junk" when nothing meaningful remains after stripping
+        // the noise words ("official audio", "lyric video"). Legit titles that merely
+        // contain one of those words ("Master of Puppets") must keep their identity
+        // protections — they were previously treated as weak, which disabled the title
+        // drift guards and let providers rewrite them with variant titles.
+        var withoutNoise = NoisyCoreTagRegex.Replace(normalized, " ");
+        withoutNoise = Regex.Replace(withoutNoise, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
+        return withoutNoise.Length < 2;
     }
 
     public static bool IsUntrustedIdentity(string? title, string? artist, string? filePath)
