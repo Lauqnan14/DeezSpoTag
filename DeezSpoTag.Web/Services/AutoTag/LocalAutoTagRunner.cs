@@ -142,6 +142,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string TitleTag = "title";
     private const string ArtistTag = "artist";
     private const string BoomplayPlatform = "boomplay";
+    private const string AudiomackPlatform = "audiomack";
     private const string DiscNumberTag = "discNumber";
     private const string DiscTotalTag = "discTotal";
     private const string GenreTag = "genre";
@@ -430,6 +431,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly DeezerMatcher _deezerMatcher;
     private readonly LastFmMatcher _lastFmMatcher;
     private readonly BoomplayMatcher _boomplayMatcher;
+    private readonly AudiomackMatcher _audiomackMatcher;
     private readonly ShazamMatcher _shazamMatcher;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly AppleLyricsService _appleLyricsService;
@@ -466,6 +468,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _deezerMatcher = collaborators.DeezerMatcher;
         _lastFmMatcher = collaborators.LastFmMatcher;
         _boomplayMatcher = collaborators.BoomplayMatcher;
+        _audiomackMatcher = collaborators.AudiomackMatcher;
         _shazamMatcher = collaborators.ShazamMatcher;
         _shazamRecognitionService = collaborators.ShazamRecognitionService;
         _appleLyricsService = collaborators.AppleLyricsService;
@@ -4045,6 +4048,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     info,
                     context.MatchingConfig,
                     LoadConfig(context.Config.Custom, BoomplayPlatform, new BoomplayConfig()),
+                    token);
+            case AudiomackPlatform:
+                return await _audiomackMatcher.MatchAsync(
+                    info,
+                    context.MatchingConfig,
+                    LoadConfig(context.Config.Custom, AudiomackPlatform, new AudiomackMatchConfig()),
                     token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
@@ -9083,6 +9092,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required DeezerMatcher DeezerMatcher { get; init; }
         public required LastFmMatcher LastFmMatcher { get; init; }
         public required BoomplayMatcher BoomplayMatcher { get; init; }
+        public required AudiomackMatcher AudiomackMatcher { get; init; }
         public required ShazamMatcher ShazamMatcher { get; init; }
         public required ShazamRecognitionService ShazamRecognitionService { get; init; }
         public required AppleLyricsService AppleLyricsService { get; init; }

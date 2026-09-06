@@ -12,6 +12,123 @@ using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Web.Services.Audiomack;
 
+/// <summary>
+/// A song candidate parsed from Audiomack's web API. Field names follow
+/// Audiomack's own JSON; every field is optional and parsed defensively
+/// because the API is undocumented and shapes may drift.
+/// </summary>
+public sealed record AudiomackSongCandidate(
+    string? Id,
+    string? Title,
+    string? Artist,
+    string? Album,
+    string? Genre,
+    string? Mood,
+    string? Isrc,
+    string? Label,
+    int? DurationSeconds,
+    string? ArtworkUrl,
+    string? ReleasedDate,
+    string? Url,
+    string? UrlSlug,
+    string? ArtistSlug,
+    string? UploaderName,
+    string? AlbumId)
+{
+    public bool HasIdentity => !string.IsNullOrWhiteSpace(Id) || !string.IsNullOrWhiteSpace(Url);
+
+    /// <summary>
+    /// Parses a song object defensively. Unknown or reshaped fields degrade to null
+    /// instead of throwing, so one odd result never breaks a run.
+    /// </summary>
+    public static AudiomackSongCandidate? FromJson(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var title = GetStringOrNull(element, "title");
+        var id = GetNumberOrStringOrNull(element, "id") ?? GetStringOrNull(element, "music_id");
+        if (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var artist = GetStringOrNull(element, "artist");
+        var uploaderName = null as string;
+        var uploaderUrlSlug = null as string;
+        if (element.TryGetProperty("uploader", out var uploader) && uploader.ValueKind == JsonValueKind.Object)
+        {
+            uploaderName = GetStringOrNull(uploader, "name") ?? GetStringOrNull(uploader, "url_slug");
+            uploaderUrlSlug = GetStringOrNull(uploader, "url_slug");
+        }
+
+        return new AudiomackSongCandidate(
+            Id: id,
+            Title: title,
+            Artist: artist,
+            Album: GetStringOrNull(element, "album"),
+            Genre: GetStringOrNull(element, "genre"),
+            Mood: GetStringOrNull(element, "mood"),
+            Isrc: GetStringOrNull(element, "isrc"),
+            Label: GetStringOrNull(element, "label"),
+            DurationSeconds: GetIntOrNull(element, "duration") ?? GetIntOrNull(element, "duration_seconds"),
+            ArtworkUrl: GetHttpUrlOrNull(element, "image") ?? GetHttpUrlOrNull(element, "artwork") ?? GetHttpUrlOrNull(element, "artwork_url"),
+            ReleasedDate: GetStringOrNull(element, "released_date")
+                ?? GetStringOrNull(element, "released")
+                ?? GetStringOrNull(element, "created_date"),
+            Url: GetHttpUrlOrNull(element, "url") ?? GetHttpUrlOrNull(element, "full_url") ?? GetHttpUrlOrNull(element, "share_url"),
+            UrlSlug: GetStringOrNull(element, "url_slug"),
+            ArtistSlug: GetStringOrNull(element, "artist_slug") ?? uploaderUrlSlug,
+            UploaderName: uploaderName,
+            AlbumId: GetStringOrNull(element, "album_id"));
+    }
+
+    private static string? GetStringOrNull(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString()!.Trim()
+            : null;
+
+    private static string? GetNumberOrStringOrNull(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString())
+                ? null
+                : value.GetString()!.Trim(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null
+        };
+    }
+
+    private static int? GetIntOrNull(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number
+            : int.TryParse(value.GetString(), out var parsed) ? parsed : null;
+    }
+
+    private static string? GetHttpUrlOrNull(JsonElement element, string propertyName)
+    {
+        var url = GetStringOrNull(element, propertyName);
+        return url is not null && (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            ? url
+            : null;
+    }
+}
+
 /// <summary>An Audiomack artist resolved from the public search API.</summary>
 public sealed record AudiomackArtistCandidate(long? Id, string UrlSlug, string Name, bool Verified);
 
@@ -84,6 +201,215 @@ public sealed class AudiomackApiClient
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Audiomack artist search failed ({ArtistName})", LogSanitizer.OneLine(query));
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Searches Audiomack for songs. Results are parsed defensively: the API is
+    /// undocumented, so unknown or reshaped fields degrade to null per field.
+    /// </summary>
+    public async Task<IReadOnlyList<AudiomackSongCandidate>> SearchSongsAsync(
+        string? query,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        var trimmed = query?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return Array.Empty<AudiomackSongCandidate>();
+        }
+
+        try
+        {
+            var credentials = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
+            var songs = await SearchSongsOnceAsync(credentials, trimmed, limit, cancellationToken).ConfigureAwait(false);
+            if (songs.Count > 0 || !_credentialsWasRejected)
+            {
+                return songs;
+            }
+
+            // A rejected signature surfaces as 401; re-discover once and retry before
+            // concluding there were no results.
+            _credentialsProvider.Invalidate();
+            var refreshed = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await SearchSongsOnceAsync(refreshed, trimmed, limit, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Audiomack song search failed ({Query})", LogSanitizer.OneLine(trimmed));
+            return Array.Empty<AudiomackSongCandidate>();
+        }
+    }
+
+    private async Task<IReadOnlyList<AudiomackSongCandidate>> SearchSongsOnceAsync(
+        AudiomackWebCredentials credentials,
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        _credentialsWasRejected = false;
+        using var httpClient = _httpClientFactory.CreateClient();
+        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+        httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(RequestTimeout);
+
+        var url = BuildSignedUrl(credentials, "search", new Dictionary<string, string>
+        {
+            ["q"] = query,
+            ["type"] = "songs"
+        });
+        using var response = await httpClient.GetAsync(url, timeoutCts.Token).ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            _credentialsWasRejected = true;
+            return Array.Empty<AudiomackSongCandidate>();
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return Array.Empty<AudiomackSongCandidate>();
+        }
+
+        var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+        return ParseSongSearchResponse(json, limit);
+    }
+
+    /// <summary>Fetches a song by its artist/song slugs (parsed from an embedded Audiomack URL).</summary>
+    public async Task<AudiomackSongCandidate?> GetSongAsync(
+        string artistSlug,
+        string songSlug,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(artistSlug) || string.IsNullOrWhiteSpace(songSlug))
+        {
+            return null;
+        }
+
+        try
+        {
+            var credentials = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
+            var song = await GetSongOnceAsync(credentials, artistSlug, songSlug, cancellationToken).ConfigureAwait(false);
+            if (song != null || !_credentialsWasRejected)
+            {
+                return song;
+            }
+
+            _credentialsProvider.Invalidate();
+            var refreshed = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await GetSongOnceAsync(refreshed, artistSlug, songSlug, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Audiomack song lookup failed ({ArtistSlug}/{SongSlug})", artistSlug, songSlug);
+            return null;
+        }
+    }
+
+    private async Task<AudiomackSongCandidate?> GetSongOnceAsync(
+        AudiomackWebCredentials credentials,
+        string artistSlug,
+        string songSlug,
+        CancellationToken cancellationToken)
+    {
+        _credentialsWasRejected = false;
+        using var httpClient = _httpClientFactory.CreateClient();
+        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+        httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(RequestTimeout);
+
+        var url = BuildSignedUrl(credentials, $"music/{Uri.EscapeDataString(artistSlug)}/song/{Uri.EscapeDataString(songSlug)}", new Dictionary<string, string>());
+        using var response = await httpClient.GetAsync(url, timeoutCts.Token).ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            _credentialsWasRejected = true;
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+        return ParseSongResponse(json);
+    }
+
+    internal static IReadOnlyList<AudiomackSongCandidate> ParseSongSearchResponse(string? json, int limit)
+    {
+        var songs = new List<AudiomackSongCandidate>();
+        if (string.IsNullOrWhiteSpace(json) || limit <= 0)
+        {
+            return songs;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("results", out var results)
+                || results.ValueKind != JsonValueKind.Array)
+            {
+                return songs;
+            }
+
+            foreach (var item in results.EnumerateArray())
+            {
+                if (songs.Count >= limit)
+                {
+                    break;
+                }
+
+                var candidate = AudiomackSongCandidate.FromJson(item);
+                if (candidate != null)
+                {
+                    songs.Add(candidate);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<AudiomackSongCandidate>();
+        }
+
+        return songs;
+    }
+
+    internal static AudiomackSongCandidate? ParseSongResponse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            // Some endpoints wrap the payload in {"data": {...}} or {"results": {...}}.
+            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                root = data;
+            }
+            else if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Object)
+            {
+                root = results;
+            }
+
+            return AudiomackSongCandidate.FromJson(root);
+        }
+        catch (JsonException)
+        {
             return null;
         }
     }
