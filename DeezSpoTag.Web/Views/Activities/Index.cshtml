@@ -2247,7 +2247,7 @@ span.badge.badge-artwork-animated {
 
 .media-operations-tab .ops-secondary .mini-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     grid-template-rows: auto;
     gap: 18px;
 }
@@ -3853,37 +3853,7 @@ span.badge.badge-artwork-animated {
                                 </div>
                             </div>
 
-                            <div class="tool-card" id="media-scan-card">
-                                <div class="tool-card-header">
-                                    <h4 class="tool-card-title">Plex Scan</h4>
-                                    <button class="tool-help-button" type="button" data-tool="media-scan">
-                                        ?
-                                        <span class="tool-help-tooltip">Learn more about this tool</span>
-                                    </button>
-                                </div>
-                                <p class="tool-card-info">Manually trigger Plex music library scans</p>
-                                <div class="tool-card-stats">
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Last Scan:</span>
-                                        <span class="stat-item-value" id="media-scan-last-time">Never</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Status:</span>
-                                        <span class="stat-item-value" id="media-scan-status">Idle</span>
-                                    </div>
-                                </div>
-                                <div class="tool-card-progress-section">
-                                    <p class="progress-phase-label" id="media-scan-phase">Ready to scan</p>
-                                    <div class="progress-bar-container">
-                                         <div class="progress-bar-fill" id="media-scan-progress-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <p class="progress-details-label" id="media-scan-progress-label">0 / 0 items (0.0%)</p>
-                                </div>
-                                <div class="tool-card-footer">
-                                    <button id="media-scan-button" class="action-btn action-btn-sm" type="button">Run Scan</button>
-                                </div>
-                            </div>
-
+                            
                         </div>
                     </div>
                 </div>
@@ -4457,35 +4427,6 @@ function initMediaOperationsHelp() {
                 <h4>What does this tool do?</h4>
                 <p>Cleanup Missing removes database entries for files that no longer exist on disk.</p>
                 <p>Clear Library deletes library metadata only. It does not delete audio files.</p>
-            `
-        },
-        'media-scan': {
-            title: 'Plex Scan',
-            content: `
-                <h4>What does this tool do?</h4>
-                <p>The Plex Scan tool manually triggers Plex library scans to detect newly downloaded music files.</p>
-
-                <h4>When to use it?</h4>
-                <ul>
-                    <li>After downloading new tracks to refresh your Plex libraries</li>
-                    <li>When new music isn't showing up in your media server</li>
-                    <li>To force an immediate library update instead of waiting for auto-scan</li>
-                </ul>
-
-                <h4>What happens when you scan?</h4>
-                <ol>
-                    <li><strong>Plex scan:</strong> Your server scans music folders for new/changed files</li>
-                    <li><strong>Library refreshed:</strong> New music appears in your server and DeezSpoTag within moments</li>
-                </ol>
-
-                <h4>Stats Explained</h4>
-                <ul>
-                    <li><strong>Last Scan:</strong> Time of the most recent scan request</li>
-                    <li><strong>Status:</strong> Current scan state (Idle, Scanning, Error)</li>
-                </ul>
-
-                <h4>Scan workflow</h4>
-                <p>This tool replicates the same scan process that runs automatically after completing a download modal - ensuring your new tracks are immediately available in your library!</p>
             `
         },
         'vibe-analysis': {
@@ -5333,58 +5274,6 @@ function startLibraryScanStatusPolling() {
 
         await refreshLibraryScanAndMetadataStatus();
     }, 5000);
-}
-
-function initMediaServerScan() {
-    const scanButton = document.getElementById('media-scan-button');
-    const statusLabel = document.getElementById('media-scan-status');
-    const lastScanLabel = document.getElementById('media-scan-last-time');
-    const phaseLabel = document.getElementById('media-scan-phase');
-    const progressLabel = document.getElementById('media-scan-progress-label');
-    const progressBar = document.getElementById('media-scan-progress-bar');
-
-    if (!scanButton) {
-        return;
-    }
-
-    scanButton.addEventListener('click', async () => {
-        await runActivityButtonAction(scanButton, async () => {
-            try {
-                statusLabel && (statusLabel.textContent = 'Scanning');
-                phaseLabel && (phaseLabel.textContent = 'Scan started');
-                progressLabel && (progressLabel.textContent = 'Scanning libraries...');
-                progressBar && (progressBar.style.width = '10%');
-                notifyActivity('Media server scan started.');
-
-                const response = await activityFetch('/api/media-server/scan', { method: 'POST', keepalive: true });
-                if (!response.ok) {
-                    throw new Error(await response.text());
-                }
-                const payload = await response.json().catch(() => null);
-                if (payload && payload.success === false) {
-                    phaseLabel && (phaseLabel.textContent = payload.message || 'Scan skipped');
-                    progressLabel && (progressLabel.textContent = payload.message || 'No libraries refreshed');
-                    progressBar && (progressBar.style.width = '0%');
-                    statusLabel && (statusLabel.textContent = 'Idle');
-                    notifyActivity(payload.message || 'Media server scan skipped.', 'warning');
-                    return;
-                }
-
-                lastScanLabel && (lastScanLabel.textContent = new Date().toLocaleString());
-                phaseLabel && (phaseLabel.textContent = 'Scan completed');
-                progressLabel && (progressLabel.textContent = `${payload?.refreshed ?? 0} libraries refreshed`);
-                progressBar && (progressBar.style.width = '100%');
-                statusLabel && (statusLabel.textContent = 'Idle');
-                notifyActivity('Media server scan completed.');
-            } catch (error) {
-                statusLabel && (statusLabel.textContent = 'Error');
-                phaseLabel && (phaseLabel.textContent = 'Scan failed');
-                progressLabel && (progressLabel.textContent = 'Unable to refresh media server');
-                progressBar && (progressBar.style.width = '0%');
-                notifyActivity(`Media server scan failed: ${error?.message || error}`, 'error');
-            }
-        });
-    });
 }
 
 async function confirmAction(message, title) {
@@ -8713,7 +8602,6 @@ async function initMediaOperationsSection() {
 
         initMediaOperationsHelp();
         initMetadataUpdater();
-        initMediaServerScan();
         initDatabaseUpdater();
         initAnalysisCard();
         initLibraryMaintenance();
