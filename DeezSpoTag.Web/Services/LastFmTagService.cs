@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using DeezSpoTag.Web.Services.Vibe;
 using DeezSpoTag.Core.Utils;
 using System.Globalization;
 using System.Net.Http.Json;
@@ -38,14 +39,35 @@ public sealed class LastFmTagService
     private const int MaxTagCacheEntries = 10000;
     private const int MaxSimilarArtistCacheEntries = 5000;
     private const int MaxSimilarTrackCacheEntries = 10000;
-    private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<string>?>> _tagCache = new();
+    private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<LastFmTagEvidence>?>> _tagCache = new();
     private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<string>?>> _similarArtistCache = new();
     private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<LastFmSimilarTrack>?>> _similarTrackCache = new();
+    private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<LastFmTagEvidence>?>> _artistTagCache = new();
 
     private static readonly HashSet<string> JunkTags = new(StringComparer.OrdinalIgnoreCase)
     {
         "seen live"
     };
+
+    /// <summary>Relative-weight floor for including a Last.fm tag as Vibe evidence.</summary>
+    public const double VibeRelativeWeightFloor = 0.20;
+
+    /// <summary>Vibe authority multiplier for Last.fm track tags.</summary>
+    public const double VibeTrackTagWeight = 0.75;
+
+    /// <summary>Vibe authority multiplier for Last.fm artist tags (weak fallback).</summary>
+    public const double VibeArtistTagWeight = 0.40;
+
+    public sealed record LastFmTagEvidence
+    {
+        public required string Name { get; init; }
+
+        public int Count { get; init; }
+
+        public double RelativeWeight { get; init; }
+
+        public VibeEvidenceScope Scope { get; init; }
+    }
 
     public LastFmTagService(
         IHttpClientFactory clientFactory,
@@ -74,7 +96,7 @@ public sealed class LastFmTagService
         var cacheKey = $"tags:{NormalizeCacheKey(normalizedArtist)}:{NormalizeCacheKey(normalizedTrack)}";
         if (_tagCache.TryGetValue(cacheKey, out var cached) && !cached.IsExpired)
         {
-            return cached.Value;
+            return cached.Value?.Count > 0 ? cached.Value.Select(tag => tag.Name).ToList() : null;
         }
 
         var apiKey = await ResolveApiKeyAsync();
@@ -128,17 +150,8 @@ public sealed class LastFmTagService
                 return null;
             }
 
-            var tags = response.Toptags?.Tag?
-                .Select(tag => new { Name = NormalizeDisplayValue(tag.Name), Count = tag.Count })
-                .Where(entry => !string.IsNullOrWhiteSpace(entry.Name))
-                .Where(entry => !IsJunkTag(entry.Name!))
-                .OrderByDescending(entry => entry.Count ?? 0)
-                .Select(entry => entry.Name!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(12)
-                .ToList();
-
-            var result = tags?.Count > 0 ? tags : null;
+            var evidence = BuildTagEvidenceFromResponse(response);
+            var result = evidence?.Count > 0 ? evidence : null;
             SetCacheEntry(_tagCache, cacheKey, result, TagCacheTtl, MaxTagCacheEntries);
             if (result is null)
             {
@@ -149,7 +162,7 @@ public sealed class LastFmTagService
                 Interlocked.Increment(ref _trackTagMatches);
             }
             MaybeLogTrackTagMetrics();
-            return result;
+            return result?.Count > 0 ? result.Select(tag => tag.Name).ToList() : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -159,6 +172,106 @@ public sealed class LastFmTagService
             return null;
         }
     }
+
+    /// <summary>
+    /// Track top tags with their raw counts and relative weights preserved
+    /// (RelativeWeight = count / highest count). The legacy GetTrackTagsAsync
+    /// discarded this signal; Vibe must not.
+    /// </summary>
+    public async Task<IReadOnlyList<LastFmTagEvidence>?> GetTrackTagEvidenceAsync(
+        string artistName,
+        string trackTitle,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedArtist = NormalizeArtistForLookup(artistName);
+        var cacheKey = $"tags:{NormalizeCacheKey(normalizedArtist)}:{NormalizeCacheKey(trackTitle ?? string.Empty)}";
+        await GetTrackTagsAsync(artistName, trackTitle, cancellationToken).ConfigureAwait(false);
+        if (_tagCache.TryGetValue(cacheKey, out var cached) && !cached.IsExpired)
+        {
+            return cached.Value;
+        }
+
+        return null;
+    }
+
+    /// <summary>Artist top tags as weak fallback evidence (scope Artist).</summary>
+    public async Task<IReadOnlyList<LastFmTagEvidence>?> GetArtistTagEvidenceAsync(
+        string artistName,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsInvalidArtistName(artistName))
+        {
+            return null;
+        }
+
+        var apiKey = await ResolveApiKeyAsync();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return null;
+        }
+
+        var normalizedArtist = NormalizeArtistForLookup(artistName);
+        var cacheKey = $"artist-top-tags:{NormalizeCacheKey(normalizedArtist)}";
+        if (_artistTagCache.TryGetValue(cacheKey, out var cached) && !cached.IsExpired)
+        {
+            return cached.Value;
+        }
+
+        try
+        {
+            var client = _clientFactory.CreateClient();
+            var uri = $"https://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={Uri.EscapeDataString(normalizedArtist)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
+            var response = await client.GetFromJsonAsync<LastFmTrackTagsResponse>(uri, cancellationToken);
+            if (response?.Error is > 0)
+            {
+                SetCacheEntry(_artistTagCache, cacheKey, null, TagCacheTtl, MaxTagCacheEntries);
+                return null;
+            }
+
+            var evidence = BuildEvidence(
+                response?.Toptags?.Tag?.Select(tag => (Name: NormalizeDisplayValue(tag.Name), Count: tag.Count ?? 0)) ?? Enumerable.Empty<(string, int)>(),
+                VibeEvidenceScope.Artist);
+            SetCacheEntry(_artistTagCache, cacheKey, evidence, TagCacheTtl, MaxTagCacheEntries);
+            return evidence;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Last.fm artist tag lookup failed for {Artist}", artistName);
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<LastFmTagEvidence>? BuildEvidence(
+        IEnumerable<(string Name, int Count)> entries,
+        VibeEvidenceScope scope)
+    {
+        var parsed = entries
+            .Select(entry => (Name: entry.Name.Trim(), entry.Count))
+            .Where(entry => entry.Name.Length > 0 && !IsJunkTag(entry.Name))
+            .GroupBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderByDescending(entry => entry.Count)
+            .Take(12)
+            .ToList();
+        if (parsed.Count == 0)
+        {
+            return null;
+        }
+
+        var highest = parsed[0].Count > 0 ? (double)parsed[0].Count : 1d;
+        return parsed.Select(entry => new LastFmTagEvidence
+        {
+            Name = entry.Name,
+            Count = entry.Count,
+            RelativeWeight = Math.Round(Math.Min(1d, entry.Count / highest), 3),
+            Scope = scope
+        }).ToList();
+    }
+
+    private static IReadOnlyList<LastFmTagEvidence>? BuildTagEvidenceFromResponse(LastFmTrackTagsResponse? response)
+        => BuildEvidence(
+            response?.Toptags?.Tag?.Select(tag => (Name: NormalizeDisplayValue(tag.Name), Count: tag.Count ?? 0)) ?? Enumerable.Empty<(string, int)>(),
+            VibeEvidenceScope.Track);
 
     public async Task<IReadOnlyList<string>?> GetSimilarArtistsAsync(string artistName, int limit = 30, CancellationToken cancellationToken = default)
     {
