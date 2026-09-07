@@ -7632,14 +7632,20 @@ function applyLatestAnalysis(latest, addToRecent = true) {
         if (resolvedTags.length > 0) {
             lastfmEl.textContent = formatList(resolvedTags);
         } else {
-            // Legacy rows: no persisted evidence — derive engines from what the
-            // analyzer recorded (genreModel / valence+arousal sources / lastfm).
-            const legacyEngine = analysis?.genreModel === 'discogs519-maest-30s-pw-519l'
-                ? 'Discogs519'
-                : (analysis?.genreModel ? 'Essentia' : 'Last.fm');
-            const legacyTags = (Array.isArray(analysis?.essentiaGenres) && analysis.essentiaGenres.length > 0)
-                ? analysis.essentiaGenres.map(formatEngineTagPartial(legacyEngine))
-                : (Array.isArray(analysis?.lastfmTags) ? analysis.lastfmTags.map(formatEngineTagPartial('Last.fm')) : []);
+            // Legacy rows: label each value with the engine that actually
+            // produced it — Essentia genres (with the --- hierarchy split for
+            // display) and Last.fm tags. Never mix the two.
+            const legacyTags = [];
+            (Array.isArray(analysis?.essentiaGenres) ? analysis.essentiaGenres : []).forEach((label) => {
+                const sep = label.indexOf('---');
+                const parts = sep > 0
+                    ? [label.slice(0, sep).trim(), label.slice(sep + 3).trim()]
+                    : [label.trim()];
+                parts.filter(Boolean).forEach((part) => legacyTags.push(`${part} · Essentia`));
+            });
+            (Array.isArray(analysis?.lastfmTags) ? analysis.lastfmTags : []).forEach((tag) => {
+                legacyTags.push(`${tag} · Last.fm`);
+            });
             lastfmEl.textContent = formatList(legacyTags);
         }
     }
