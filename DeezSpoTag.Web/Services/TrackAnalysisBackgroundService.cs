@@ -1,4 +1,6 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services.Audiomack;
+using DeezSpoTag.Web.Services.Vibe;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -81,6 +83,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly LibraryConfigStore _configStore;
     private readonly VibeAnalysisSettingsStore _settingsStore;
     private readonly LastFmTagService _lastFmTagService;
+    private readonly IAudiomackVibeMetadataService _vibeMetadataService;
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
@@ -112,6 +115,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         ILogger<TrackAnalysisBackgroundService> logger,
         VibeAnalysisSettingsStore settingsStore,
         LastFmTagService lastFmTagService,
+        IAudiomackVibeMetadataService vibeMetadataService,
         MoodBucketService moodBucketService,
         IConfiguration configuration)
     {
@@ -120,6 +124,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _logger = logger;
         _settingsStore = settingsStore;
         _lastFmTagService = lastFmTagService;
+        _vibeMetadataService = vibeMetadataService;
         _moodBucketService = moodBucketService;
         _configuration = configuration;
     }
@@ -471,7 +476,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var summary = summaries.Count > 0 ? summaries[0] : null;
             SetCurrentAnalysis(track, summary);
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, run.Token);
-            var result = await AnalyzeTrackAsync(track, null, run.Token);
+            var result = await AnalyzeTrackAsync(track, null, run.Token, summary);
             result = await AttachLastFmTagsIfMissingAsync(result, summary, run.Token);
 
             await _repository.UpsertTrackAnalysisAsync(result, run.Token);
@@ -689,14 +694,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
         CancellationToken cancellationToken)
     {
-        var result = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken);
+        var result = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken, summary);
         return await AttachLastFmTagsIfMissingAsync(result, summary, cancellationToken);
     }
 
     private async Task<TrackAnalysisResultDto> AnalyzeTrackAsync(
         TrackAnalysisInputDto track,
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MixTrackDto? summary = null)
     {
         try
         {
@@ -726,7 +732,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidate.Track.FilePath, predictionFailure);
                 }
 
-                return CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput);
+                var vibe = await BuildVibeSemanticsAsync(analysisOutput, summary, cancellationToken);
+                return CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput, summary, vibe);
             }
 
             return CreateFailure(
@@ -1145,7 +1152,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return true;
     }
 
-    private sealed record TrackSignalMetrics(
+    internal sealed record TrackSignalMetrics(
         double Energy,
         double Rms,
         double ZeroCrossing,
@@ -1185,10 +1192,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             brightness);
     }
 
-    private static TrackAnalysisResultDto CreateCompletedAnalysisResult(
+    internal static TrackAnalysisResultDto CreateCompletedAnalysisResult(
         TrackAnalysisInputDto track,
         TrackSignalMetrics metrics,
-        AnalysisOutput? analysisOutput)
+        AnalysisOutput? analysisOutput,
+        MixTrackDto? summary = null,
+        VibeSemantics? vibe = null)
     {
         var moodScores = analysisOutput?.MoodScores;
         var analyzerReportedMode = analysisOutput?.AnalysisMode;
@@ -1259,7 +1268,121 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             analysisOutput?.ValenceMl,
             analysisOutput?.ArousalMl,
             analysisOutput?.DynamicComplexity,
-            analysisOutput?.Loudness);
+            analysisOutput?.Loudness,
+            vibe?.ResolvedGenres,
+            vibe?.ResolvedStyles,
+            vibe?.ResolvedMoods,
+            vibe?.SemanticEvidenceJson,
+            analysisOutput?.GenreModel ?? vibe?.GenreModel,
+            analysisOutput?.ValenceSource ?? vibe?.ValenceSource,
+            analysisOutput?.ArousalSource ?? vibe?.ArousalSource);
+    }
+
+    /// <summary>
+    /// Orchestrates Vibe semantics: online lookups (Last.fm + Audiomack, both
+    /// non-fatal) plus acoustic evidence from the analyzer output, resolved by
+    /// VibeSemanticResolver. Audiomack/Last.fm failure must never fail analysis.
+    /// </summary>
+    internal async Task<VibeSemantics?> BuildVibeSemanticsAsync(
+        AnalysisOutput? analysisOutput,
+        MixTrackDto? summary,
+        CancellationToken cancellationToken)
+    {
+        var artist = summary?.ArtistName?.Trim();
+        var title = summary?.Title?.Trim();
+
+        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? trackTags = null;
+        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags = null;
+        AudiomackVibeMetadata? audiomack = null;
+
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        {
+            try
+            {
+                trackTags = await _lastFmTagService
+                    .GetTrackTagEvidenceAsync(artist, title, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Vibe Last.fm track evidence failed for {Artist} - {Title}", artist, title);
+            }
+
+            try
+            {
+                artistTags = await _lastFmTagService
+                    .GetArtistTagEvidenceAsync(artist, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Vibe Last.fm artist evidence failed for {Artist}", artist);
+            }
+
+            try
+            {
+                audiomack = await _vibeMetadataService.FindTrackAsync(artist, title, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Vibe Audiomack lookup failed for {Artist} - {Title}", artist, title);
+            }
+        }
+
+        return BuildVibeSemanticsCore(analysisOutput, audiomack, trackTags, artistTags);
+    }
+
+    internal static VibeSemantics BuildVibeSemanticsCore(
+        AnalysisOutput? analysisOutput,
+        AudiomackVibeMetadata? audiomack,
+        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? trackTags,
+        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags)
+    {
+        var acousticGenres = analysisOutput?.EssentiaGenreEvidence?
+            .Select(item => new VibeSemanticResolver.AcousticGenreEvidence(item.Label, item.Score, item.Model))
+            .ToList();
+
+        List<VibeSemanticResolver.AcousticMoodEvidence>? acousticMoods = null;
+        var moodScores = analysisOutput?.MoodScores;
+        if (moodScores is not null)
+        {
+            acousticMoods = new List<VibeSemanticResolver.AcousticMoodEvidence>
+            {
+                new("Happy", moodScores.Happy),
+                new("Sad", moodScores.Sad),
+                new("Relaxed", moodScores.Relaxed),
+                new("Aggressive", moodScores.Aggressive),
+                new("Party", moodScores.Party),
+                new("Acoustic", moodScores.Acoustic),
+                new("Electronic", moodScores.Electronic)
+            };
+        }
+
+        var resolution = VibeSemanticResolver.Resolve(audiomack, trackTags, artistTags, acousticGenres, acousticMoods);
+
+        var evidenceJson = JsonSerializer.Serialize(
+            resolution.SemanticEvidence.Select(item => new
+            {
+                source = item.Source,
+                kind = item.Kind.ToString().ToLowerInvariant(),
+                rawValue = item.RawValue,
+                canonicalValue = item.CanonicalValue,
+                scope = item.Scope.ToString().ToLowerInvariant(),
+                strength = item.Strength,
+                matchConfidence = item.MatchConfidence,
+                finalWeight = item.FinalWeight
+            }),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        return new VibeSemantics(
+            resolution.ResolvedGenres,
+            resolution.ResolvedStyles,
+            resolution.ResolvedMoods,
+            evidenceJson,
+            analysisOutput?.GenreModel,
+            analysisOutput?.ValenceSource,
+            analysisOutput?.ArousalSource);
     }
 
     private static TrackAnalysisResultDto CreateFailure(
@@ -1305,6 +1428,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             null,
             null,
             // Vibe analysis - new fields (all null for failure)
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
             null,
             null,
             null,
@@ -2350,7 +2480,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         yield return Path.GetFullPath(Path.Join(AppContext.BaseDirectory, path));
     }
 
-    private sealed record MoodScores(
+    internal sealed record MoodScores(
         double Happy,
         double Sad,
         double Relaxed,
@@ -2359,7 +2489,18 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         double Acoustic,
         double Electronic);
 
-    private sealed record AnalysisOutput(
+    internal sealed record VibeGenreEvidenceDto(string Label, double Score, string Model);
+
+    internal sealed record VibeSemantics(
+        IReadOnlyList<string>? ResolvedGenres,
+        IReadOnlyList<string>? ResolvedStyles,
+        IReadOnlyList<string>? ResolvedMoods,
+        string? SemanticEvidenceJson,
+        string? GenreModel,
+        string? ValenceSource,
+        string? ArousalSource);
+
+    internal sealed record AnalysisOutput(
         string? AnalysisMode,
         double? Bpm,
         int? BeatsCount,
@@ -2388,7 +2529,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         double? ArousalMl,
         double? DanceabilityMl,
         double? Loudness,
-        double? DynamicComplexity)
+        double? DynamicComplexity,
+        IReadOnlyList<VibeGenreEvidenceDto>? EssentiaGenreEvidence,
+        string? GenreModel,
+        string? ValenceSource,
+        string? ArousalSource)
     {
         public MoodScores? MoodScores => Happy.HasValue
             ? new MoodScores(

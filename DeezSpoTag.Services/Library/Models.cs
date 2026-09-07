@@ -277,7 +277,14 @@ public sealed record TrackAnalysisResultDto(
     double? ValenceMl,
     double? ArousalMl,
     double? DynamicComplexity,
-    double? LoudnessMl);
+    double? LoudnessMl,
+    IReadOnlyList<string>? ResolvedGenres = null,
+    IReadOnlyList<string>? ResolvedStyles = null,
+    IReadOnlyList<string>? ResolvedMoods = null,
+    string? SemanticEvidenceJson = null,
+    string? GenreModel = null,
+    string? ValenceSource = null,
+    string? ArousalSource = null);
 
 public sealed record PlayHistoryEntryDto(
     long TrackId,

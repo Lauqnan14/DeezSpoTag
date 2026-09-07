@@ -5860,6 +5860,10 @@ WHERE f.enabled = 1
         bool includeVibeMetrics = false)
     {
         var moodTags = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 25, cancellationToken));
+        var (resolvedGenres, resolvedStyles, resolvedMoods, semanticEvidenceJson, genreModel, valenceSource, arousalSource) =
+            includeVibeMetrics
+                ? ReadVibeMetadataBlob(reader, offset + 43, cancellationToken)
+                : (null, null, null, null, null, null, null);
         var essentiaGenres = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 33, cancellationToken));
         var lastfmTags = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 34, cancellationToken));
         var analyzedAtText = await ReadNullableStringAsync(reader, offset + 21, cancellationToken);
@@ -5908,7 +5912,55 @@ WHERE f.enabled = 1
             await ReadOptionalVibeMetricAsync(reader, offset + 39, includeVibeMetrics, cancellationToken),
             await ReadOptionalVibeMetricAsync(reader, offset + 40, includeVibeMetrics, cancellationToken),
             await ReadOptionalVibeMetricAsync(reader, offset + 41, includeVibeMetrics, cancellationToken),
-            await ReadOptionalVibeMetricAsync(reader, offset + 42, includeVibeMetrics, cancellationToken));
+            await ReadOptionalVibeMetricAsync(reader, offset + 42, includeVibeMetrics, cancellationToken),
+            resolvedGenres,
+            resolvedStyles,
+            resolvedMoods,
+            semanticEvidenceJson,
+            genreModel,
+            valenceSource,
+            arousalSource);
+    }
+
+    private static (List<string>? Genres, List<string>? Styles, List<string>? Moods, string? EvidenceJson, string? GenreModel, string? ValenceSource, string? ArousalSource) ReadVibeMetadataBlob(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    {
+        var json = reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return (null, null, null, null, null, null, null);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            List<string>? ParseArray(string name)
+                => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array
+                    ? value.EnumerateArray()
+                        .Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString())
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .Cast<string>()
+                        .ToList()
+                    : null;
+
+            string? PlainString(string name)
+                => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
+
+            string? evidence = null;
+            if (root.TryGetProperty("semanticEvidence", out var semantic) && semantic.ValueKind == JsonValueKind.Array)
+            {
+                evidence = semantic.GetRawText();
+            }
+
+            return (ParseArray("resolvedGenres"), ParseArray("resolvedStyles"), ParseArray("resolvedMoods"), evidence, PlainString("genreModel"), PlainString("valenceSource"), PlainString("arousalSource"));
+        }
+        catch (JsonException)
+        {
+            return (null, null, null, null, null, null, null);
+        }
     }
 
     private static async Task<double?> ReadOptionalVibeMetricAsync(
@@ -5929,7 +5981,7 @@ WHERE f.enabled = 1
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml
+SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml, metadata_json
 FROM track_analysis
 WHERE track_id = @trackId;";
         await using var command = new SqliteCommand(sql, connection);
@@ -5956,7 +6008,7 @@ WHERE track_id = @trackId;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var sql = @"
-SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml
+SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml, metadata_json
 FROM track_analysis
 WHERE track_id <> @sourceTrackId
   AND status IN ('complete', 'completed')";
@@ -6121,7 +6173,7 @@ WHERE status IN ('complete', 'completed')
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml
+SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml, metadata_json
 FROM track_analysis
 WHERE track_id IN (
     SELECT CAST(value AS INTEGER)
