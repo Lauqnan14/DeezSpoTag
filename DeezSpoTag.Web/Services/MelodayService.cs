@@ -14,7 +14,6 @@ public sealed class MelodayOptions
 {
     [JsonRequired]
     public bool Enabled { get; set; }
-    public string PlaylistPrefix { get; set; } = "Meloday for";
     public string? BaseUrl { get; set; }
     public int ExcludePlayedDays { get; set; } = 4;
     public int HistoryLookbackDays { get; set; } = 30;
@@ -275,23 +274,23 @@ public sealed class MelodayService
         var instances = new List<MelodayPlaylistInstance>();
         foreach (var library in effective.Libraries)
         {
-            if (!library.Enabled)
+            if (!library.IsTargeted)
             {
                 continue;
             }
 
-            foreach (var assignment in library.Slots)
+            foreach (var slotId in library.SlotIds)
             {
                 var slot = effective.Slots.FirstOrDefault(candidate => string.Equals(
                     candidate.Id,
-                    assignment.SlotId,
+                    slotId,
                     StringComparison.OrdinalIgnoreCase));
-                if (slot is null || !slot.Enabled)
+                if (slot is null)
                 {
                     continue;
                 }
 
-                foreach (var mode in ResolveRunModes(assignment.Mode))
+                foreach (var mode in ResolveRunModes(library.Mode))
                 {
                     instances.Add(new MelodayPlaylistInstance(library, slot, mode));
                 }
@@ -633,14 +632,9 @@ public sealed class MelodayService
             orderedTrackIds,
             cancellationToken);
 
-        var playlistPrefix = string.IsNullOrWhiteSpace(context.SimilarContext.Options.PlaylistPrefix)
-            ? "Meloday"
-            : context.SimilarContext.Options.PlaylistPrefix.Trim();
-        var optionsForTitle = CloneOptionsWithPlaylistPrefix(
-            context.SimilarContext.Options,
-            $"{playlistPrefix} {context.Library.Name} {context.SlotName} {GetModeLabel(mode)} —");
+        var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode);
         var playlistText = BuildTitleAndDescription(new PlaylistDescriptionContext(
-            optionsForTitle,
+            context.SimilarContext.Options,
             context.SlotId,
             context.SlotName,
             context.SlotGenerateAt,
@@ -651,7 +645,6 @@ public sealed class MelodayService
             trackAnalyses,
             context.Username,
             DateTimeOffset.Now));
-        var title = playlistText.Title;
         var description = playlistText.Description;
 
         var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
@@ -669,7 +662,7 @@ public sealed class MelodayService
         await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
 
         var cover = await TryGenerateCoverAsync(
-            optionsForTitle,
+            context.SimilarContext.Options,
             context.SlotName,
             context.SlotId,
             context.Library.Id,
@@ -681,7 +674,7 @@ public sealed class MelodayService
             new PlaylistSyncService.GeneratedLocalPlaylistSyncRequest(
                 title,
                 description,
-                BuildStableMelodayPlaylistPrefix(optionsForTitle.PlaylistPrefix, context.Library.Name, context.SlotName, mode),
+                title,
                 mixTracks,
                 context.TargetServers.Select(static target => target.Service).ToList(),
                 cover?.FilePath,
@@ -731,32 +724,6 @@ public sealed class MelodayService
 
         return next.ToUniversalTime();
     }
-
-    private static string BuildStableMelodayPlaylistPrefix(string playlistPrefix, string libraryName, string slotName, string mode)
-    {
-        var prefix = string.IsNullOrWhiteSpace(playlistPrefix) ? "Meloday for" : playlistPrefix.Trim();
-        var library = string.IsNullOrWhiteSpace(libraryName) ? "Library" : libraryName.Trim();
-        var slot = string.IsNullOrWhiteSpace(slotName) ? "Meloday" : slotName.Trim();
-        return $"{prefix} {library} {slot} {GetModeLabel(mode)}";
-    }
-
-    private static MelodayOptions CloneOptionsWithPlaylistPrefix(MelodayOptions source, string playlistPrefix) => new()
-    {
-        Enabled = source.Enabled,
-        PlaylistPrefix = playlistPrefix,
-        BaseUrl = source.BaseUrl,
-        ExcludePlayedDays = source.ExcludePlayedDays,
-        HistoryLookbackDays = source.HistoryLookbackDays,
-        MaxTracks = source.MaxTracks,
-        HistoricalRatio = source.HistoricalRatio,
-        SonicSimilarLimit = source.SonicSimilarLimit,
-        SonicSimilarityDistance = source.SonicSimilarityDistance,
-        UpdateIntervalMinutes = source.UpdateIntervalMinutes,
-        Mode = source.Mode,
-        MoodMapPath = source.MoodMapPath,
-        TargetServers = MelodayTargetServers.Normalize(source.TargetServers, defaultToAll: true),
-        TargetLibraryIds = NormalizeTargetLibraryIds(source.TargetLibraryIds)
-    };
 
     private static IReadOnlyList<MediaServerTarget> ResolveTargetServers(
         PlatformAuthState auth,
@@ -2010,12 +1977,6 @@ public sealed class MelodayService
         var descriptor = ChooseDescriptor(descriptorMap, descriptorSource);
 
         var dayName = context.Now.ToString("dddd");
-        var title = context.Options.PlaylistPrefix.Trim();
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            title = "Meloday";
-        }
-        title = $"{title} {ToDisplayLabel(mostCommonMood)} {descriptor} {ToDisplayLabel(mostCommonGenre)} {dayName} {context.SlotName}";
 
         var highlights = BuildHighlightStyles(sortedGenres, sortedMoods, mostCommonGenre, mostCommonMood);
         var highlightsText = FormatHighlightStyles(highlights);
@@ -2029,7 +1990,7 @@ public sealed class MelodayService
         description += $"\n\nMade for {displayUser} • Next update at {nextUpdate}.";
 
         var coverTagline = $"{ToDisplayLabel(mostCommonMood)} · {ToDisplayLabel(mostCommonGenre)}";
-        return new MelodayPlaylistText(title, description, coverTagline);
+        return new MelodayPlaylistText(description, coverTagline);
     }
 
     private static string NormalizeVibeGenre(string genre)
@@ -2254,7 +2215,7 @@ public sealed class MelodayService
 
     private sealed record GeneratedMelodayCover(string? Url, string? FilePath, string ContentType);
 
-    private sealed record MelodayPlaylistText(string Title, string Description, string CoverTagline);
+    private sealed record MelodayPlaylistText(string Description, string CoverTagline);
 
     private sealed record PlaylistDescriptionContext(
         MelodayOptions Options,

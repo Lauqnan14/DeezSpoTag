@@ -97,24 +97,18 @@ public sealed class MelodaySettingsApiController : ControllerBase
         if (request.Enabled)
         {
             _libraryNamesById = await LoadLibraryNamesAsync(cancellationToken);
-            var enabledLibraries = libraries.Where(static library => library.Enabled).ToList();
-            if (enabledLibraries.Count == 0)
+            var targetedLibraries = libraries.Where(static library => library.IsTargeted).ToList();
+            if (targetedLibraries.Count == 0)
             {
-                return BadRequest("Select at least one Meloday target library.");
+                return BadRequest("Select at least one time slot for at least one library.");
             }
 
-            foreach (var library in enabledLibraries)
+            foreach (var library in targetedLibraries)
             {
-                if (library.Slots.Count == 0)
-                {
-                    return BadRequest($"{ResolveLibraryDisplayName(library.LibraryId)}: select at least one scheduled slot.");
-                }
-
-                var playlistCount = MelodayScheduleSlots.CountPlaylists(library);
-                if (playlistCount > library.MaxActivePlaylists)
+                if (library.SlotIds.Count > library.MaxActivePlaylists)
                 {
                     return BadRequest(
-                        $"{ResolveLibraryDisplayName(library.LibraryId)}: {playlistCount} of {library.MaxActivePlaylists} Meloday playlists selected — raise the maximum or disable slots.");
+                        $"{ResolveLibraryDisplayName(library.LibraryId)}: {library.SlotIds.Count} of {library.MaxActivePlaylists} playlist slots selected — raise the maximum or deselect slots.");
                 }
             }
         }
@@ -122,7 +116,6 @@ public sealed class MelodaySettingsApiController : ControllerBase
         var cleaned = new MelodayOptions
         {
             Enabled = request.Enabled,
-            PlaylistPrefix = string.IsNullOrWhiteSpace(request.PlaylistPrefix) ? _defaults.PlaylistPrefix : request.PlaylistPrefix.Trim(),
             BaseUrl = string.IsNullOrWhiteSpace(request.BaseUrl) ? _defaults.BaseUrl : request.BaseUrl.Trim(),
             ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(request.ExcludePlayedDays, _defaults.ExcludePlayedDays, 0, 365),
             HistoryLookbackDays = MelodayClamp.PositiveOrDefault(request.HistoryLookbackDays, _defaults.HistoryLookbackDays, 1, 365),
@@ -131,14 +124,14 @@ public sealed class MelodaySettingsApiController : ControllerBase
             SonicSimilarLimit = MelodayClamp.PositiveOrDefault(request.SonicSimilarLimit, _defaults.SonicSimilarLimit, 1, 50),
             SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(request.SonicSimilarityDistance, _defaults.SonicSimilarityDistance, 0.05d, 1d),
             UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(request.UpdateIntervalMinutes, _defaults.UpdateIntervalMinutes, 5, 1440),
-            Mode = MelodayModes.Normalize(request.Mode),
+            Mode = MelodayModes.Sonic,
             MoodMapPath = _defaults.MoodMapPath,
             Slots = slots,
             Libraries = libraries,
             MissedRunGraceMinutes = MelodayClamp.PositiveOrDefault(request.MissedRunGraceMinutes, _defaults.MissedRunGraceMinutes, 0, 720),
             TargetServers = targetServers,
             // Kept in sync for settings files written by older builds; the scheduler reads Libraries.
-            TargetLibraryIds = libraries.Where(static library => library.Enabled).Select(static library => library.LibraryId).ToList()
+            TargetLibraryIds = libraries.Where(static library => library.IsTargeted).Select(static library => library.LibraryId).ToList()
         };
 
         var saved = await _store.SaveAsync(cleaned);

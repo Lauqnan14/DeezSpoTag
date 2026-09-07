@@ -98,20 +98,20 @@ public sealed class MelodayHostedService : BackgroundService
         var today = DateOnly.FromDateTime(now.DateTime);
         var nowTime = TimeOnly.FromDateTime(now.DateTime);
 
-        foreach (var library in effective.Libraries.Where(static schedule => schedule.Enabled))
+        foreach (var library in effective.Libraries.Where(static schedule => schedule.IsTargeted))
         {
-            foreach (var assignment in library.Slots)
+            foreach (var slotId in library.SlotIds)
             {
                 var slot = effective.Slots.FirstOrDefault(candidate => string.Equals(
                     candidate.Id,
-                    assignment.SlotId,
+                    slotId,
                     StringComparison.OrdinalIgnoreCase));
                 if (slot is null)
                 {
                     continue;
                 }
 
-                var stateKey = MelodayRunStateStore.Key(library.LibraryId, slot.Id, assignment.Mode);
+                var stateKey = MelodayRunStateStore.Key(library.LibraryId, slot.Id, library.Mode);
                 var state = await _runStateStore.GetAsync(stateKey, stoppingToken);
                 if (!MelodayScheduleMath.IsDue(slot, today, nowTime, state, effective.MissedRunGraceMinutes))
                 {
@@ -120,7 +120,7 @@ public sealed class MelodayHostedService : BackgroundService
 
                 MelodayRunResult? result = null;
                 await _workCoordinator.RunHeavyWorkAsync(
-                    async token => result = await _melodayService.RunSlotAsync(library.LibraryId, slot.Id, assignment.Mode, token),
+                    async token => result = await _melodayService.RunSlotAsync(library.LibraryId, slot.Id, library.Mode, token),
                     stoppingToken);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
@@ -128,7 +128,7 @@ public sealed class MelodayHostedService : BackgroundService
                         "Meloday scheduled generation for {LibraryId}/{SlotId}/{Mode}: {Message}",
                         library.LibraryId,
                         slot.Id,
-                        assignment.Mode,
+                        library.Mode,
                         result?.Message);
                 }
 

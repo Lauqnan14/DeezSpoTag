@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Hosting;
 
 namespace DeezSpoTag.Web.Services;
@@ -42,7 +43,7 @@ public sealed class MelodaySettingsStore
             }
 
             var json = await File.ReadAllTextAsync(_settingsPath);
-            var stored = JsonSerializer.Deserialize<MelodayOptions>(json, _jsonOptions);
+            var stored = DeserializeWithShapeConversion(json);
             if (stored == null)
             {
                 _cached = Clone(defaults);
@@ -95,12 +96,100 @@ public sealed class MelodaySettingsStore
     public Task<bool> WaitForChangeAsync(TimeSpan timeout, CancellationToken cancellationToken)
         => _changed.WaitAsync(timeout, cancellationToken);
 
+    /// <summary>
+    /// Settings files written by earlier Meloday models store libraries in older shapes
+    /// (per-slot assignments, or none at all). Convert them to the current per-library
+    /// mode + slot-id shape before model binding.
+    /// </summary>
+    private MelodayOptions? DeserializeWithShapeConversion(string json)
+    {
+        var node = JsonNode.Parse(json);
+        if (node is not JsonObject root)
+        {
+            return JsonSerializer.Deserialize<MelodayOptions>(json, _jsonOptions);
+        }
+
+        if (root["libraries"] is JsonArray libraries)
+        {
+            var converted = new JsonArray();
+            foreach (var library in libraries.OfType<JsonObject>())
+            {
+                converted.Add(ConvertLibraryShape(library));
+            }
+
+            root["libraries"] = converted;
+        }
+
+        return root.Deserialize<MelodayOptions>(_jsonOptions);
+    }
+
+    private static JsonObject ConvertLibraryShape(JsonObject library)
+    {
+        long libraryId = library.TryGetPropertyValue("libraryId", out var idNode)
+            && idNode is JsonValue idValue
+            && idValue.TryGetValue<long>(out var parsedId)
+            ? parsedId
+            : 0;
+        int maxActivePlaylists = library.TryGetPropertyValue("maxActivePlaylists", out var maxNode)
+            && maxNode is JsonValue maxValue
+            && maxValue.TryGetValue<int>(out var parsedMax)
+            ? parsedMax
+            : MelodayScheduleSlots.DefaultMaxActivePlaylists;
+        var mode = library.TryGetPropertyValue("mode", out var modeNode)
+            && modeNode is JsonValue modeValue
+            && modeValue.TryGetValue<string>(out var parsedMode)
+            ? parsedMode
+            : string.Empty;
+
+        var slotIds = new List<string>();
+        if (library.TryGetPropertyValue("slotIds", out var slotIdsNode) && slotIdsNode is JsonArray slotIdArray)
+        {
+            slotIds.AddRange(slotIdArray
+                .OfType<JsonValue>()
+                .Where(static value => value.TryGetValue<string>(out _))
+                .Select(static value => value.GetValue<string>() ?? string.Empty));
+        }
+        else if (library.TryGetPropertyValue("slots", out var slotsNode) && slotsNode is JsonArray slotsArray)
+        {
+            // Per-slot-era shape: [{ slotId, mode }]. The first assignment's mode becomes
+            // the library mode.
+            foreach (var slot in slotsArray.OfType<JsonObject>())
+            {
+                var slotId = slot.TryGetPropertyValue("slotId", out var slotIdNode)
+                    && slotIdNode is JsonValue slotIdValue
+                    && slotIdValue.TryGetValue<string>(out var parsedSlotId)
+                    ? parsedSlotId
+                    : null;
+                if (string.IsNullOrWhiteSpace(slotId))
+                {
+                    continue;
+                }
+
+                slotIds.Add(slotId);
+                if (string.IsNullOrWhiteSpace(mode)
+                    && slot.TryGetPropertyValue("mode", out var slotModeNode)
+                    && slotModeNode is JsonValue slotModeValue
+                    && slotModeValue.TryGetValue<string>(out var parsedSlotMode))
+                {
+                    mode = parsedSlotMode;
+                }
+            }
+        }
+
+        return new JsonObject
+        {
+            ["libraryId"] = libraryId,
+            ["maxActivePlaylists"] = maxActivePlaylists,
+            ["mode"] = mode,
+            ["slotIds"] = new JsonArray(slotIds.Select(slotId => JsonValue.Create(slotId)).ToArray())
+        };
+    }
+
     private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored)
     {
         var merged = new MelodayOptions
         {
             Enabled = stored.Enabled,
-            PlaylistPrefix = string.IsNullOrWhiteSpace(stored.PlaylistPrefix) ? defaults.PlaylistPrefix : stored.PlaylistPrefix,
             BaseUrl = string.IsNullOrWhiteSpace(stored.BaseUrl) ? defaults.BaseUrl : stored.BaseUrl,
             ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(stored.ExcludePlayedDays, defaults.ExcludePlayedDays, 0, 365),
             HistoryLookbackDays = MelodayClamp.PositiveOrDefault(stored.HistoryLookbackDays, defaults.HistoryLookbackDays, 1, 365),
@@ -123,9 +212,9 @@ public sealed class MelodaySettingsStore
     }
 
     /// <summary>
-    /// One-time settings upgrade: files saved before scheduled slots carried only
-    /// TargetLibraryIds + a global mode. Those become per-library schedules with every
-    /// slot enabled at the previous global mode, bounded by the default playlist limit.
+    /// One-time upgrade for the very first scheduled-slot generation: files saved before
+    /// scheduled slots carried only TargetLibraryIds + a global mode. Those become
+    /// per-library schedules with every slot at the previous global mode.
     /// </summary>
     private static void MigrateLegacyLibraryTargets(MelodayOptions merged)
     {
@@ -137,18 +226,15 @@ public sealed class MelodaySettingsStore
         merged.Libraries = merged.TargetLibraryIds
             .Select(libraryId => new MelodayLibrarySchedule(
                 libraryId,
-                true,
                 MelodayScheduleSlots.DefaultMaxActivePlaylists,
-                MelodayScheduleSlots.Defaults
-                    .Select(slot => new MelodayLibrarySlotAssignment(slot.Id, merged.Mode))
-                    .ToList()))
+                merged.Mode,
+                MelodayScheduleSlots.Defaults.Select(static slot => slot.Id).ToList()))
             .ToList();
     }
 
     private static MelodayOptions Clone(MelodayOptions source) => new()
     {
         Enabled = source.Enabled,
-        PlaylistPrefix = source.PlaylistPrefix,
         BaseUrl = source.BaseUrl,
         ExcludePlayedDays = source.ExcludePlayedDays,
         HistoryLookbackDays = source.HistoryLookbackDays,

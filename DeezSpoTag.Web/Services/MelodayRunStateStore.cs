@@ -151,11 +151,6 @@ public static class MelodayScheduleMath
         MelodayRunStateEntry? state,
         int graceMinutes)
     {
-        if (!slot.Enabled)
-        {
-            return false;
-        }
-
         var generateAt = MelodayScheduleSlots.TryParseMinutes(slot.GenerateAt);
         if (generateAt is null)
         {
@@ -185,11 +180,6 @@ public static class MelodayScheduleMath
         var nextDelta = int.MaxValue;
         foreach (var slot in slots ?? Array.Empty<MelodayScheduleSlot>())
         {
-            if (!slot.Enabled)
-            {
-                continue;
-            }
-
             var generateAt = MelodayScheduleSlots.TryParseMinutes(slot.GenerateAt);
             if (generateAt is null)
             {

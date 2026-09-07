@@ -1764,38 +1764,6 @@ span.badge.badge-artwork-animated {
     margin-top: 6px;
 }
 
-.media-operations-tab #meloday-card .meloday-summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.media-operations-tab #meloday-card .meloday-history-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.media-operations-tab #meloday-card .meloday-history-grid .form-control {
-    min-width: 0;
-    width: 100%;
-}
-
-.media-operations-tab #meloday-card .meloday-history-grid .field-input {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.media-operations-tab #meloday-card .meloday-history-grid .field-unit {
-    min-width: 0;
-    text-align: left;
-    white-space: nowrap;
-}
-
-.media-operations-tab #meloday-card .meloday-similarity-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.media-operations-tab #meloday-card .meloday-target-server-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .media-operations-tab .ops-primary .tool-card-header {
     margin-bottom: 0;
 }
@@ -1828,130 +1796,6 @@ span.badge.badge-artwork-animated {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
-}
-
-.media-operations-tab .meloday-settings .form-control {
-    min-width: 180px;
-    background: var(--bg-secondary);
-    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
-    color: var(--text-primary);
-    border-radius: 14px;
-    padding: 10px 12px;
-}
-
-.media-operations-tab .meloday-settings .form-control::placeholder {
-    color: var(--text-muted);
-}
-
-.media-operations-tab .meloday-section-hint {
-    margin: 0 0 8px;
-    color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.4;
-}
-
-.media-operations-tab .meloday-schedule-list,
-.media-operations-tab .meloday-library-schedules {
-    display: grid;
-    gap: 8px;
-    width: min(520px, 100%);
-}
-
-.media-operations-tab .meloday-schedule-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.media-operations-tab .meloday-slot-time {
-    min-width: 110px;
-    width: 110px;
-}
-
-.media-operations-tab .meloday-library-schedule {
-    display: grid;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--primary-color) 22%, var(--border-secondary));
-    border-radius: 14px;
-    background: var(--bg-secondary);
-}
-
-.media-operations-tab .meloday-library-schedule-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.media-operations-tab .meloday-library-max {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.media-operations-tab .meloday-library-max .form-control {
-    min-width: 70px;
-    width: 70px;
-}
-
-.media-operations-tab .meloday-library-max-label {
-    color: var(--text-muted);
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.media-operations-tab .meloday-library-slot-rows {
-    display: grid;
-    gap: 4px;
-}
-
-.media-operations-tab .meloday-library-slot-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.media-operations-tab .meloday-slot-mode {
-    min-width: 104px;
-    width: 104px;
-    padding: 6px 10px;
-}
-
-.media-operations-tab .meloday-library-counter {
-    color: var(--text-muted);
-    font-size: 12px;
-}
-
-.media-operations-tab .meloday-library-counter.is-over-limit {
-    color: var(--danger-color, #e5484d);
-    font-weight: 700;
-}
-
-.media-operations-tab .meloday-artwork-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.media-operations-tab .meloday-artwork-count {
-    color: var(--text-primary);
-    font-size: 13px;
-    font-weight: 600;
-}
-
-.media-operations-tab .meloday-artwork-assignments {
-    display: grid;
-    gap: 4px;
-    margin-top: 6px;
-}
-
-.media-operations-tab .meloday-artwork-assignment {
-    color: var(--text-muted);
-    font-size: 12px;
 }
 
 .media-operations-tab .vibe-analysis-settings .form-control {
@@ -2768,14 +2612,6 @@ span.badge.badge-artwork-animated {
         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
 
-    .media-operations-tab #meloday-card .meloday-summary-grid,
-    .media-operations-tab #meloday-card .meloday-history-grid,
-    .media-operations-tab #meloday-card .meloday-similarity-grid,
-    .media-operations-tab #meloday-card .meloday-target-server-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .media-operations-tab .meloday-settings .form-control,
     .media-operations-tab .vibe-analysis-settings .form-control {
         min-width: 0;
         width: 100%;
@@ -2876,12 +2712,7 @@ span.badge.badge-artwork-animated {
         align-items: stretch;
     }
 
-    .media-operations-tab #meloday-card .meloday-summary-grid,
-    .media-operations-tab #meloday-card .meloday-history-grid,
-    .media-operations-tab #meloday-card .meloday-similarity-grid,
-    .media-operations-tab #meloday-card .meloday-target-server-grid {
-        grid-template-columns: 1fr;
-    }
+
 
     .media-operations-tab .field-unit {
         min-width: 0;
@@ -3325,7 +3156,7 @@ span.badge.badge-artwork-animated {
                                     <span class="tool-help-tooltip">Learn more about this tool</span>
                                 </button>
                             </div>
-                            <p class="tool-card-info">Generate library-scoped daypart playlists from configured media-server history.</p>
+                            <p class="tool-card-info">Scheduled daypart playlists generated from your media-server history and synced to your servers.</p>
                             <div class="tool-card-body">
                                 <div class="analysis-summary-grid analysis-summary-grid-main">
                                     <div class="analysis-summary-card">
@@ -3345,135 +3176,11 @@ span.badge.badge-artwork-animated {
                                         <span class="analysis-summary-value" id="melodayHistorySources">Not checked</span>
                                     </div>
                                 </div>
-                                <div class="section-divider"></div>
-                                <div class="tool-card-controls meloday-settings">
-                                    <div class="section-label">Playlist identity</div>
-                                    <div class="settings-grid">
-                                        <div class="field-group">
-                                            <label class="field-label" for="meloday-playlist-prefix">Playlist prefix</label>
-                                            <input id="meloday-playlist-prefix" class="form-control" type="text" />
-                                        </div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="metadata-updater-option-group">
-                                        <div class="metadata-updater-group-label">Target servers</div>
-                                        <div class="metadata-updater-checkbox-grid meloday-target-server-grid" id="meloday-target-servers" role="group" aria-label="Meloday target servers">
-                                            <label class="metadata-updater-option">
-                                                <input type="checkbox" data-meloday-target-server="plex" />
-                                                <span>Plex</span>
-                                            </label>
-                                            <label class="metadata-updater-option">
-                                                <input type="checkbox" data-meloday-target-server="jellyfin" />
-                                                <span>Jellyfin</span>
-                                            </label>
-                                            <label class="metadata-updater-option">
-                                                <input type="checkbox" data-meloday-target-server="navidrome" />
-                                                <span>Navidrome</span>
-                                            </label>
-                                        </div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="settings-section">
-                                        <div class="section-label section-label-sub">Playlist schedule</div>
-                                        <p class="meloday-section-hint">Each slot generates its playlist once per day at its exact time. Libraries below choose which slots they want.</p>
-                                        <div id="meloday-schedule-slots" class="meloday-schedule-list" role="group" aria-label="Meloday schedule slots"></div>
-                                        <div class="settings-grid meloday-history-grid">
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-grace-minutes">Missed-run grace window</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-grace-minutes" class="form-control" type="number" min="0" max="720" />
-                                                    <span class="field-unit">minutes</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="settings-section">
-                                        <div class="section-label section-label-sub">Libraries</div>
-                                        <p class="meloday-section-hint">Each library picks its scheduled slots. "Both" counts as two playlists against the library maximum.</p>
-                                        <div id="meloday-library-schedules" class="meloday-library-schedules"></div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="settings-section">
-                                        <div class="section-label section-label-sub">Meloday artwork</div>
-                                        <p class="meloday-section-hint">Covers stay unique across playlists until every image has been used, and each playlist keeps its cover across regenerations.</p>
-                                        <div class="meloday-artwork-row">
-                                            <span id="meloday-artwork-count" class="meloday-artwork-count">—</span>
-                                            <input id="meloday-artwork-upload" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
-                                            <button id="meloday-artwork-add" class="action-btn action-btn-sm" type="button">Add Images</button>
-                                        </div>
-                                        <div id="meloday-artwork-assignments" class="meloday-artwork-assignments"></div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="settings-section">
-                                        <div class="section-label section-label-sub">History settings</div>
-                                        <div class="settings-grid meloday-history-grid">
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-max-tracks">Max tracks</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-max-tracks" class="form-control" type="number" min="10" max="500" />
-                                                    <span class="field-unit">tracks</span>
-                                                </div>
-                                            </div>
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-lookback-days">History lookback</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-lookback-days" class="form-control" type="number" min="1" max="365" />
-                                                    <span class="field-unit">days</span>
-                                                </div>
-                                            </div>
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-exclude-days">Exclude played</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-exclude-days" class="form-control" type="number" min="0" max="365" />
-                                                    <span class="field-unit">days</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                    <div class="settings-section">
-                                        <div class="section-label section-label-sub">Similarity logic</div>
-                                        <div class="settings-grid meloday-similarity-grid">
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-similarity-distance">Similarity distance</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-similarity-distance" class="form-control" type="number" min="0.05" max="1" step="0.01" />
-                                                    <span class="field-unit">0–1</span>
-                                                </div>
-                                            </div>
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-similar-limit">Similar limit</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-similar-limit" class="form-control" type="number" min="1" max="50" />
-                                                    <span class="field-unit">tracks</span>
-                                                </div>
-                                            </div>
-                                            <div class="field-group">
-                                                <label class="field-label" for="meloday-historical-ratio">Historical ratio</label>
-                                                <div class="field-input">
-                                                    <input id="meloday-historical-ratio" class="form-control" type="number" min="0" max="1" step="0.05" />
-                                                    <span class="field-unit">0–1</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="section-divider"></div>
-                                </div>
-                                <div class="tool-card-footer">
-                                    <div class="toggle-row">
-                                        <label class="toggle-label" for="meloday-enabled">Enable Meloday</label>
-                                        <span class="switch">
-                                            <input id="meloday-enabled" type="checkbox" />
-                                            <span class="slider" aria-hidden="true"></span>
-                                        </span>
-                                    </div>
-                                    <div class="tool-card-action-group">
-                                        <button id="runMeloday" class="action-btn action-btn-sm" type="button">Run Meloday</button>
-                                        <button id="saveMelodaySettings" class="action-btn action-btn-sm" type="button">Save Settings</button>
-                                    </div>
-                                </div>
                             </div>
+                            <div class="tool-card-footer">
+                                <a class="action-btn action-btn-sm" href="@Url.Action("Index", "Meloday")">Open Meloday settings</a>
+                            </div>
+                        </div>
                         </div>
                     </div>
 

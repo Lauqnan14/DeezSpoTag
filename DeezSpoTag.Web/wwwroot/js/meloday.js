@@ -67,7 +67,9 @@ function melodayFormatTimestamp(value) {
 const melodayState = {
     enabled: true,
     settings: null,
-    libraries: []
+    slots: [],
+    libraries: [],
+    view: 'grid'
 };
 
 const melodayDefaults = {
@@ -78,13 +80,73 @@ const melodayDefaults = {
     missedRunGraceMinutes: 60
 };
 
-const melodaySlotModes = ['sonic', 'direct', 'both'];
+const melodayCanonicalSlots = [
+    ['early-morning', 'Early Morning', '05:30', 'wb_twilight'],
+    ['morning', 'Morning', '08:30', 'wb_sunny'],
+    ['midday', 'Midday', '11:00', 'light_mode'],
+    ['noon', 'Noon', '13:00', 'flare'],
+    ['afternoon', 'Afternoon', '16:00', 'wb_cloudy'],
+    ['evening', 'Evening', '19:00', 'nights_stay'],
+    ['late-evening', 'Late Evening', '22:30', 'bedtime']
+];
+
+const melodaySlotModes = ['direct', 'sonic', 'both'];
 
 function melodayLog(level, message, timestamp) {
     const logger = globalThis.DeezSpoTag?.DownloadLogger;
     logger?.[level]?.(message, { engine: 'meloday', timestamp });
 }
 
+function melodayNotify(message, isError) {
+    if (typeof notifyActivity === 'function') {
+        notifyActivity(message, isError ? 'error' : undefined);
+    } else if (typeof showToast === 'function') {
+        showToast(message, Boolean(isError));
+    }
+}
+
+function melodayNormalizeMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'direct' || normalized === 'both') {
+        return normalized;
+    }
+    return 'sonic';
+}
+
+function melodayFormatMode(value) {
+    const normalized = melodayNormalizeMode(value);
+    if (normalized === 'direct') return 'Direct';
+    if (normalized === 'both') return 'Both';
+    return 'Sonic';
+}
+
+/* ------------------------------------------------------------------ *
+ * Rule-based playlist naming (mirrors MelodayScheduleSlots server side)
+ * ------------------------------------------------------------------ */
+function melodayPlaylistName(libraryName, slotName, mode) {
+    const library = String(libraryName || 'Library').trim() || 'Library';
+    return melodayNormalizeMode(mode) === 'sonic'
+        ? `${slotName} Sonic Playlist for ${library}`
+        : `${slotName} Playlist for ${library}`;
+}
+
+function melodayPlaylistNamesForMode(libraryName, slotName, mode) {
+    if (melodayNormalizeMode(mode) === 'both') {
+        return [
+            melodayPlaylistName(libraryName, slotName, 'direct'),
+            melodayPlaylistName(libraryName, slotName, 'sonic')
+        ];
+    }
+    return [melodayPlaylistName(libraryName, slotName, mode)];
+}
+
+function melodayCountPlaylists(library) {
+    return (library?.slotIds || []).length * (melodayNormalizeMode(library?.mode) === 'both' ? 2 : 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * Activities status card
+ * ------------------------------------------------------------------ */
 function updateMelodayStatusPill() {
     const statusPill = document.getElementById('melodayStatusPill');
     if (!statusPill) {
@@ -99,7 +161,6 @@ async function loadMelodayStatus() {
     const periodEl = document.getElementById('melodayPeriod');
     const lastMessageEl = document.getElementById('melodayLastMessage');
     const historySourcesEl = document.getElementById('melodayHistorySources');
-    const settingsSummaryEl = document.getElementById('melodaySettingsSummary');
     try {
         const status = await melodayFetchJson('/api/meloday/status');
         melodayState.enabled = Boolean(status.enabled);
@@ -116,66 +177,110 @@ async function loadMelodayStatus() {
         if (historySourcesEl) {
             const sources = Array.isArray(status.historySources) ? status.historySources : [];
             historySourcesEl.textContent = sources.length > 0
-	                ? sources.map(source => {
-	                    const service = String(source.service || 'server');
-	                    const endpointStatus = String(source.endpointStatus || source.status || 'unknown');
-	                    const mappingStatus = String(source.mappingStatus || source.status || 'unknown');
-	                    const resolved = Number(source.resolved || 0);
-	                    const fetched = Number(source.fetched || 0);
-	                    return `${service}: endpoint ${endpointStatus}, mapping ${mappingStatus} (${resolved}/${fetched} resolved)`;
-	                }).join(' • ')
+                ? sources.map(source => {
+                    const service = String(source.service || 'server');
+                    const endpointStatus = String(source.endpointStatus || source.status || 'unknown');
+                    const mappingStatus = String(source.mappingStatus || source.status || 'unknown');
+                    const resolved = Number(source.resolved || 0);
+                    const fetched = Number(source.fetched || 0);
+                    return `${service}: endpoint ${endpointStatus}, mapping ${mappingStatus} (${resolved}/${fetched} resolved)`;
+                }).join(' • ')
                 : 'Not checked';
-        }
-        if (settingsSummaryEl) {
-            const tracks = status.maxTracks ?? melodayDefaults.maxTracks;
-            const lookback = status.historyLookbackDays ?? melodayDefaults.historyLookbackDays;
-            const exclude = status.excludePlayedDays ?? melodayDefaults.excludePlayedDays;
-            const grace = status.missedRunGraceMinutes ?? melodayDefaults.missedRunGraceMinutes;
-            settingsSummaryEl.textContent = `Tracks: ${tracks} • Lookback: ${lookback}d • Exclude: ${exclude}d • Grace: ${grace}m`;
-        }
-        if (status.lastRunUtc && status.lastRunUtc !== melodayLastLogRun) {
-            melodayLog('info', `Meloday run at ${melodayFormatTimestamp(status.lastRunUtc)}`, status.lastRunUtc);
-            melodayLastLogRun = status.lastRunUtc;
         }
     } catch (error) {
         updateMelodayStatusPill();
-        if (lastRunEl) {
-            lastRunEl.textContent = 'Unknown';
-        }
-        if (periodEl) {
-            periodEl.textContent = '--';
-        }
-        if (lastMessageEl) {
-            lastMessageEl.textContent = '—';
-        }
-        if (historySourcesEl) {
-            historySourcesEl.textContent = 'Unavailable';
-        }
-        if (settingsSummaryEl) {
-            settingsSummaryEl.textContent = '—';
-        }
+        if (lastRunEl) lastRunEl.textContent = 'Unknown';
+        if (periodEl) periodEl.textContent = '--';
+        if (lastMessageEl) lastMessageEl.textContent = '—';
+        if (historySourcesEl) historySourcesEl.textContent = 'Unavailable';
         console.warn('Meloday status failed.', error);
     }
 }
 
-function melodayParseNumber(value, fallback) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
+/* ------------------------------------------------------------------ *
+ * Configuration page state
+ * ------------------------------------------------------------------ */
+function melodayNormalizeSlots(values) {
+    const stored = new Map();
+    (Array.isArray(values) ? values : []).forEach((slot) => {
+        if (slot?.id) {
+            stored.set(String(slot.id), slot);
+        }
+    });
+
+    return melodayCanonicalSlots.map(([id, name, defaultTime, icon]) => {
+        const saved = stored.get(id) || {};
+        const time = typeof saved.generateAt === 'string' && /^\d{2}:\d{2}$/.test(saved.generateAt)
+            ? saved.generateAt
+            : defaultTime;
+        return { id, name, generateAt: time, icon };
+    });
 }
 
-function melodayNormalizeMode(value) {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'direct' || normalized === 'both') {
-        return normalized;
+function melodayNormalizeLibraries(values, libraryCatalog) {
+    const stored = new Map();
+    (Array.isArray(values) ? values : []).forEach((library) => {
+        const id = Number(library?.libraryId);
+        if (Number.isFinite(id) && id > 0) {
+            stored.set(id, library);
+        }
+    });
+
+    return (Array.isArray(libraryCatalog) ? libraryCatalog : []).map((catalogLibrary) => {
+        const id = Number(catalogLibrary?.id || 0);
+        const saved = stored.get(id) || {};
+        const slotIds = [];
+        (Array.isArray(saved.slotIds) ? saved.slotIds : []).forEach((slotId) => {
+            const normalized = String(slotId || '').trim().toLowerCase();
+            if (normalized && !slotIds.includes(normalized)) {
+                slotIds.push(normalized);
+            }
+        });
+
+        return {
+            libraryId: id,
+            name: catalogLibrary?.name || `Library ${id}`,
+            trackCount: Number(catalogLibrary?.trackCount || 0),
+            maxActivePlaylists: Math.max(1, Math.min(7, Number(saved.maxActivePlaylists) || melodayDefaults.maxActivePlaylists)),
+            mode: melodayNormalizeMode(saved.mode),
+            slotIds
+        };
+    });
+}
+
+async function loadMelodayPageConfig() {
+    const [settings, libraries] = await Promise.all([
+        melodayFetchJson('/api/meloday/settings'),
+        melodayFetchJson('/api/meloday/settings/libraries')
+    ]);
+
+    melodayState.settings = settings;
+    melodayState.enabled = settings.enabled ?? true;
+    melodayState.slots = melodayNormalizeSlots(settings.slots);
+    melodayState.libraries = melodayNormalizeLibraries(settings.libraries, libraries);
+
+    const enabledEl = document.getElementById('meloday-enabled');
+    if (enabledEl) {
+        enabledEl.checked = melodayState.enabled;
     }
-    return 'sonic';
-}
+    melodaySetTargetServers(settings.targetServers);
+    const maxTracks = document.getElementById('meloday-max-tracks');
+    const lookback = document.getElementById('meloday-lookback-days');
+    const exclude = document.getElementById('meloday-exclude-days');
+    const similarityDistance = document.getElementById('meloday-similarity-distance');
+    const similarLimit = document.getElementById('meloday-similar-limit');
+    const historicalRatio = document.getElementById('meloday-historical-ratio');
+    const grace = document.getElementById('meloday-grace-minutes');
+    if (maxTracks) maxTracks.value = settings.maxTracks ?? 50;
+    if (lookback) lookback.value = settings.historyLookbackDays ?? 30;
+    if (exclude) exclude.value = settings.excludePlayedDays ?? 4;
+    if (similarityDistance) similarityDistance.value = settings.sonicSimilarityDistance ?? 0.35;
+    if (similarLimit) similarLimit.value = settings.sonicSimilarLimit ?? 8;
+    if (historicalRatio) historicalRatio.value = settings.historicalRatio ?? 0.3;
+    if (grace) grace.value = settings.missedRunGraceMinutes ?? 60;
 
-function melodayFormatMode(value) {
-    const normalized = melodayNormalizeMode(value);
-    if (normalized === 'direct') return 'Direct';
-    if (normalized === 'both') return 'Both';
-    return 'Sonic';
+    renderMelodayScheduleSlots();
+    renderMelodayLibraryCards();
 }
 
 function melodayNormalizeTargetServers(values, defaultToAll = true) {
@@ -208,85 +313,9 @@ function melodayGetTargetServers() {
         false);
 }
 
-function melodayNormalizeSlots(values) {
-    const stored = new Map();
-    (Array.isArray(values) ? values : []).forEach((slot) => {
-        if (slot?.id) {
-            stored.set(String(slot.id), slot);
-        }
-    });
-
-    // Canonical slot order is fixed; stored rows only override enabled + time.
-    const canonical = [
-        ['early-morning', 'Early Morning', '05:30'],
-        ['morning', 'Morning', '08:30'],
-        ['midday', 'Midday', '11:00'],
-        ['noon', 'Noon', '13:00'],
-        ['afternoon', 'Afternoon', '16:00'],
-        ['evening', 'Evening', '19:00'],
-        ['late-evening', 'Late Evening', '22:30']
-    ];
-    return canonical.map(([id, name, defaultTime], order) => {
-        const saved = stored.get(id) || {};
-        const time = typeof saved.generateAt === 'string' && /^\d{2}:\d{2}$/.test(saved.generateAt)
-            ? saved.generateAt
-            : defaultTime;
-        return {
-            id,
-            name,
-            generateAt: time,
-            enabled: Boolean(saved.enabled),
-            order
-        };
-    });
-}
-
-function melodayNormalizeLibraries(values, libraryCatalog) {
-    const stored = new Map();
-    (Array.isArray(values) ? values : []).forEach((library) => {
-        const id = Number(library?.libraryId);
-        if (Number.isFinite(id) && id > 0) {
-            stored.set(id, library);
-        }
-    });
-
-    return (Array.isArray(libraryCatalog) ? libraryCatalog : []).map((catalogLibrary) => {
-        const id = Number(catalogLibrary?.id || 0);
-        const saved = stored.get(id) || {};
-        const assignments = new Map();
-        (Array.isArray(saved.slots) ? saved.slots : []).forEach((assignment) => {
-            if (assignment?.slotId) {
-                assignments.set(String(assignment.slotId), melodayNormalizeMode(assignment.mode));
-            }
-        });
-
-        const slots = [];
-        if (Object.keys(saved).length > 0) {
-            assignments.forEach((mode, slotId) => slots.push({ slotId, mode }));
-        } else {
-            // A library with no saved schedule starts with the first four slots at its maximum.
-            melodayState.slots.slice(0, melodayDefaults.maxActivePlaylists).forEach((slot) => {
-                slots.push({ slotId: slot.id, mode: 'sonic' });
-            });
-        }
-
-        return {
-            libraryId: id,
-            name: catalogLibrary?.name || `Library ${id}`,
-            trackCount: Number(catalogLibrary?.trackCount || 0),
-            enabled: saved.enabled !== false,
-            maxActivePlaylists: melodayParseNumber(saved.maxActivePlaylists, melodayDefaults.maxActivePlaylists),
-            slots
-        };
-    });
-}
-
-function melodayCountPlaylists(library) {
-    return (library?.slots || []).reduce((total, assignment) => (
-        total + (melodayNormalizeMode(assignment.mode) === 'both' ? 2 : 1)
-    ), 0);
-}
-
+/* ------------------------------------------------------------------ *
+ * Rendering: schedule slots
+ * ------------------------------------------------------------------ */
 function renderMelodayScheduleSlots() {
     const container = document.getElementById('meloday-schedule-slots');
     if (!container) {
@@ -294,42 +323,60 @@ function renderMelodayScheduleSlots() {
     }
     container.innerHTML = '';
     melodayState.slots.forEach((slot) => {
-        const row = document.createElement('div');
-        row.className = 'meloday-schedule-row';
+        const card = document.createElement('div');
+        card.className = 'meloday-time-slot';
 
-        const label = document.createElement('label');
-        label.className = 'metadata-updater-option meloday-slot-toggle';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.setAttribute('data-meloday-slot-enabled', slot.id);
-        checkbox.checked = slot.enabled;
-        checkbox.addEventListener('change', () => {
-            slot.enabled = checkbox.checked;
-            renderMelodayLibrarySchedules();
-        });
+        const icon = document.createElement('span');
+        icon.className = 'meloday-time-slot-icon';
+        const iconGlyph = document.createElement('span');
+        iconGlyph.className = 'material-icons';
+        iconGlyph.textContent = slot.icon;
+        icon.appendChild(iconGlyph);
+
         const name = document.createElement('span');
+        name.className = 'meloday-time-slot-name';
         name.textContent = slot.name;
-        label.append(checkbox, name);
 
+        const field = document.createElement('label');
+        field.className = 'meloday-time-field';
+        const clockIcon = document.createElement('span');
+        clockIcon.className = 'material-icons';
+        clockIcon.textContent = 'access_time';
         const time = document.createElement('input');
         time.type = 'time';
-        time.className = 'form-control meloday-slot-time';
         time.value = slot.generateAt;
         time.setAttribute('data-meloday-slot-time', slot.id);
         time.setAttribute('aria-label', `${slot.name} generation time`);
         time.addEventListener('change', () => {
             if (/^\d{2}:\d{2}$/.test(time.value)) {
                 slot.generateAt = time.value;
-                renderMelodayLibrarySchedules();
+                renderMelodayLibraryCards();
+            } else {
+                time.value = slot.generateAt;
             }
         });
+        field.append(clockIcon, time);
 
-        row.append(label, time);
-        container.appendChild(row);
+        card.append(icon, name, field);
+        container.appendChild(card);
     });
 }
 
-function renderMelodayLibrarySchedules() {
+function melodayResetScheduleToDefault() {
+    melodayState.slots.forEach((slot) => {
+        const canonical = melodayCanonicalSlots.find(entry => entry[0] === slot.id);
+        if (canonical) {
+            slot.generateAt = canonical[2];
+        }
+    });
+    renderMelodayScheduleSlots();
+    renderMelodayLibraryCards();
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering: library cards
+ * ------------------------------------------------------------------ */
+function renderMelodayLibraryCards() {
     const container = document.getElementById('meloday-library-schedules');
     if (!container) {
         return;
@@ -341,147 +388,222 @@ function renderMelodayLibrarySchedules() {
     }
 
     melodayState.libraries.forEach((library) => {
-        const card = document.createElement('div');
-        card.className = 'meloday-library-schedule';
-
-        const header = document.createElement('div');
-        header.className = 'meloday-library-schedule-header';
-
-        const toggleLabel = document.createElement('label');
-        toggleLabel.className = 'metadata-updater-option';
-        const enabledInput = document.createElement('input');
-        enabledInput.type = 'checkbox';
-        enabledInput.setAttribute('data-meloday-library-enabled', String(library.libraryId));
-        enabledInput.checked = library.enabled;
-        enabledInput.addEventListener('change', () => {
-            library.enabled = enabledInput.checked;
-        });
-        const title = document.createElement('span');
-        title.textContent = `${library.name} (${library.trackCount} tracks)`;
-        toggleLabel.append(enabledInput, title);
-
-        const maxWrap = document.createElement('div');
-        maxWrap.className = 'field-input meloday-library-max';
-        const maxInput = document.createElement('input');
-        maxInput.type = 'number';
-        maxInput.min = '1';
-        maxInput.max = '7';
-        maxInput.className = 'form-control';
-        maxInput.value = library.maxActivePlaylists;
-        maxInput.setAttribute('aria-label', `Maximum Meloday playlists for ${library.name}`);
-        maxInput.addEventListener('change', () => {
-            library.maxActivePlaylists = Math.max(1, Math.min(7, melodayParseNumber(maxInput.value, melodayDefaults.maxActivePlaylists)));
-            maxInput.value = library.maxActivePlaylists;
-            updateMelodayLibraryCounter(library);
-        });
-        const maxLabel = document.createElement('span');
-        maxLabel.className = 'meloday-library-max-label';
-        maxLabel.textContent = 'Maximum playlists';
-        maxWrap.append(maxInput, maxLabel);
-
-        header.append(toggleLabel, maxWrap);
-
-        const rows = document.createElement('div');
-        rows.className = 'meloday-library-slot-rows';
-        melodayState.slots.forEach((slot) => {
-            const row = document.createElement('div');
-            row.className = 'meloday-library-slot-row';
-
-            const assignment = library.slots.find(candidate => candidate.slotId === slot.id) || null;
-            const slotCheck = document.createElement('label');
-            slotCheck.className = 'metadata-updater-option meloday-slot-toggle';
-            const input = document.createElement('input');
-            input.type = 'checkbox';
-            input.setAttribute('data-meloday-library-slot', `${library.libraryId}:${slot.id}`);
-            input.checked = Boolean(assignment);
-            input.disabled = !slot.enabled;
-            input.addEventListener('change', () => {
-                if (input.checked) {
-                    library.slots.push({ slotId: slot.id, mode: 'sonic' });
-                } else {
-                    library.slots = library.slots.filter(candidate => candidate.slotId !== slot.id);
-                }
-                updateMelodayLibraryCounter(library);
-                renderMelodayLibrarySchedules();
-            });
-            const slotName = document.createElement('span');
-            slotName.textContent = slot.enabled ? `${slot.name} · ${slot.generateAt}` : `${slot.name} (slot disabled)`;
-            slotCheck.append(input, slotName);
-
-            const modeSelect = document.createElement('select');
-            modeSelect.className = 'form-control meloday-slot-mode';
-            modeSelect.setAttribute('aria-label', `Playlist mode for ${slot.name} in ${library.name}`);
-            modeSelect.disabled = !input.checked;
-            melodaySlotModes.forEach((mode) => {
-                const option = document.createElement('option');
-                option.value = mode;
-                option.textContent = melodayFormatMode(mode);
-                option.selected = melodayNormalizeMode(assignment?.mode) === mode;
-                modeSelect.appendChild(option);
-            });
-            modeSelect.addEventListener('change', () => {
-                const current = library.slots.find(candidate => candidate.slotId === slot.id);
-                if (current) {
-                    current.mode = melodayNormalizeMode(modeSelect.value);
-                }
-                updateMelodayLibraryCounter(library);
-            });
-
-            row.append(slotCheck, modeSelect);
-            rows.appendChild(row);
-        });
-
-        const counter = document.createElement('div');
-        counter.className = 'meloday-library-counter';
-        counter.setAttribute('data-meloday-library-counter', String(library.libraryId));
-
-        card.append(header, rows, counter);
-        container.appendChild(card);
-        updateMelodayLibraryCounter(library);
+        container.appendChild(buildMelodayLibraryCard(library));
     });
 }
 
-function updateMelodayLibraryCounter(library) {
-    const counter = document.querySelector(`[data-meloday-library-counter="${library.libraryId}"]`);
-    if (!counter) {
+function buildMelodayLibraryCard(library) {
+    const card = document.createElement('article');
+    card.className = 'meloday-library-card';
+    card.setAttribute('data-meloday-library', String(library.libraryId));
+
+    const head = document.createElement('header');
+    head.className = 'meloday-library-head';
+
+    const accentIndex = melodayState.libraries.indexOf(library) % 7;
+    const tile = document.createElement('span');
+    tile.className = `meloday-library-tile accent-${accentIndex}`;
+    const tileIcon = document.createElement('span');
+    tileIcon.className = 'material-icons';
+    tileIcon.textContent = 'library_music';
+    tile.appendChild(tileIcon);
+
+    const identity = document.createElement('div');
+    identity.className = 'meloday-library-id';
+    const title = document.createElement('h3');
+    title.textContent = library.name;
+    const trackCount = document.createElement('p');
+    trackCount.textContent = `${library.trackCount.toLocaleString()} track${library.trackCount === 1 ? '' : 's'}`;
+    identity.append(title, trackCount);
+
+    const maxWrap = document.createElement('div');
+    maxWrap.className = 'meloday-library-max';
+    const maxLabel = document.createElement('label');
+    maxLabel.textContent = 'Maximum playlists';
+    const maxSelect = document.createElement('select');
+    maxSelect.setAttribute('data-meloday-library-max', String(library.libraryId));
+    maxSelect.setAttribute('aria-label', `Maximum playlists for ${library.name}`);
+    for (let value = 1; value <= 7; value++) {
+        const option = document.createElement('option');
+        option.value = String(value);
+        option.textContent = String(value);
+        option.selected = library.maxActivePlaylists === value;
+        maxSelect.appendChild(option);
+    }
+    maxSelect.addEventListener('change', () => {
+        library.maxActivePlaylists = Number(maxSelect.value) || melodayDefaults.maxActivePlaylists;
+        updateMelodayLibraryFooter(library);
+    });
+    maxWrap.append(maxLabel, maxSelect);
+
+    const modeWrap = document.createElement('div');
+    modeWrap.className = 'meloday-library-mode';
+    const modeLabel = document.createElement('label');
+    modeLabel.textContent = 'Mode';
+    const modeGroup = document.createElement('div');
+    modeGroup.className = 'meloday-mode-segmented';
+    modeGroup.setAttribute('role', 'radiogroup');
+    modeGroup.setAttribute('data-meloday-library-mode', String(library.libraryId));
+    modeGroup.setAttribute('aria-label', `Playlist mode for ${library.name}`);
+    melodaySlotModes.forEach((mode) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('data-mode', mode);
+        button.textContent = melodayFormatMode(mode);
+        button.classList.toggle('is-active', melodayNormalizeMode(library.mode) === mode);
+        button.addEventListener('click', () => {
+            library.mode = melodayNormalizeMode(mode);
+            modeGroup.querySelectorAll('button').forEach(candidate => {
+                candidate.classList.toggle('is-active', candidate === button);
+            });
+            updateMelodayLibraryFooter(library);
+        });
+        modeGroup.appendChild(button);
+    });
+    modeWrap.append(modeLabel, modeGroup);
+
+    head.append(tile, identity, maxWrap, modeWrap);
+
+    const chips = document.createElement('div');
+    chips.className = 'meloday-library-chips';
+    melodayState.slots.forEach((slot) => {
+        chips.appendChild(buildMelodaySlotChip(library, slot));
+    });
+
+    const foot = document.createElement('footer');
+    foot.className = 'meloday-library-foot';
+    const example = document.createElement('div');
+    example.className = 'meloday-library-example';
+    example.setAttribute('data-meloday-library-example', String(library.libraryId));
+    const meta = document.createElement('div');
+    meta.className = 'meloday-library-meta';
+    const counter = document.createElement('span');
+    counter.className = 'meloday-library-counter';
+    counter.setAttribute('data-meloday-library-counter', String(library.libraryId));
+    const note = document.createElement('span');
+    note.className = 'meloday-library-note';
+    note.textContent = 'Names are generated automatically';
+    meta.append(counter, note);
+    foot.append(example, meta);
+
+    card.append(head, chips, foot);
+    updateMelodayLibraryFooter(library);
+    return card;
+}
+
+function buildMelodaySlotChip(library, slot) {
+    const chip = document.createElement('label');
+    chip.className = 'meloday-slot-chip';
+    const selected = library.slotIds.includes(slot.id);
+    chip.classList.toggle('is-selected', selected);
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = selected;
+    input.setAttribute('data-meloday-library-slot', `${library.libraryId}:${slot.id}`);
+    input.setAttribute('aria-label', `${slot.name} ${slot.generateAt} for ${library.name}`);
+    input.addEventListener('change', () => {
+        if (input.checked) {
+            if (library.slotIds.length >= library.maxActivePlaylists) {
+                input.checked = false;
+                melodayNotify(
+                    `${library.name}: maximum ${library.maxActivePlaylists} playlist slots — deselect one first.`,
+                    true);
+                melodayLog('error', `${library.name}: maximum ${library.maxActivePlaylists} playlist slots.`);
+                return;
+            }
+            library.slotIds.push(slot.id);
+        } else {
+            library.slotIds = library.slotIds.filter(slotId => slotId !== slot.id);
+        }
+        updateMelodayLibraryCard(library);
+    });
+
+    const check = document.createElement('span');
+    check.className = 'meloday-slot-chip-check';
+    const checkIcon = document.createElement('span');
+    checkIcon.className = 'material-icons';
+    checkIcon.textContent = 'check';
+    check.appendChild(checkIcon);
+
+    const name = document.createElement('span');
+    name.className = 'meloday-slot-chip-name';
+    name.textContent = slot.name;
+
+    const time = document.createElement('span');
+    time.className = 'meloday-slot-chip-time';
+    time.textContent = slot.generateAt;
+
+    chip.append(input, check, name, time);
+    return chip;
+}
+
+function updateMelodayLibraryCard(library) {
+    const card = document.querySelector(`[data-meloday-library="${library.libraryId}"]`);
+    if (!card) {
         return;
     }
-    const count = melodayCountPlaylists(library);
-    const over = count > library.maxActivePlaylists;
-    counter.textContent = `${count} of ${library.maxActivePlaylists} playlists selected`;
-    counter.classList.toggle('is-over-limit', over);
-}
-
-function readMelodaySlotsFromDom() {
-    melodayState.slots.forEach((slot) => {
-        const checkbox = document.querySelector(`[data-meloday-slot-enabled="${slot.id}"]`);
-        if (checkbox) {
-            slot.enabled = checkbox.checked;
-        }
-        const time = document.querySelector(`[data-meloday-slot-time="${slot.id}"]`);
-        if (time && /^\d{2}:\d{2}$/.test(time.value)) {
-            slot.generateAt = time.value;
-        }
+    card.querySelectorAll('.meloday-slot-chip').forEach((chip) => {
+        const input = chip.querySelector('input');
+        const slotId = String(input?.getAttribute('data-meloday-library-slot') || '').split(':')[1];
+        const selected = library.slotIds.includes(slotId);
+        input.checked = selected;
+        chip.classList.toggle('is-selected', selected);
     });
-    return melodayState.slots.map(slot => ({
-        id: slot.id,
-        name: slot.name,
-        enabled: slot.enabled,
-        generateAt: slot.generateAt,
-        order: slot.order
-    }));
+    updateMelodayLibraryFooter(library);
 }
 
+function updateMelodayLibraryFooter(library) {
+    const counter = document.querySelector(`[data-meloday-library-counter="${library.libraryId}"]`);
+    if (counter) {
+        const selected = library.slotIds.length;
+        const over = selected > library.maxActivePlaylists;
+        counter.textContent = `${selected} of ${library.maxActivePlaylists} selected`;
+        counter.classList.toggle('is-over-limit', over);
+    }
+
+    const example = document.querySelector(`[data-meloday-library-example="${library.libraryId}"]`);
+    if (example) {
+        example.innerHTML = '';
+        const lastSlotId = melodayState.slots
+            .filter(slot => library.slotIds.includes(slot.id))
+            .sort((a, b) => melodaySlotOrder(b.id) - melodaySlotOrder(a.id))[0];
+        if (lastSlotId) {
+            const names = melodayPlaylistNamesForMode(library.name, lastSlotId.name, library.mode);
+            const label = document.createElement('span');
+            label.className = 'meloday-library-example-label';
+            label.textContent = names.length > 1 ? 'Example names:' : 'Example name:';
+            example.appendChild(label);
+            names.forEach((name, index) => {
+                const strong = document.createElement('strong');
+                strong.textContent = names.length > 1 ? `${index + 1}) ${name}` : name;
+                strong.title = name;
+                example.appendChild(strong);
+            });
+        }
+    }
+}
+
+function melodaySlotOrder(slotId) {
+    const index = melodayCanonicalSlots.findIndex(entry => entry[0] === slotId);
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+/* ------------------------------------------------------------------ *
+ * Payload, save, run, enable
+ * ------------------------------------------------------------------ */
 function buildMelodayLibrariesFromDom() {
     return melodayState.libraries.map(library => ({
         libraryId: library.libraryId,
-        enabled: library.enabled,
         maxActivePlaylists: library.maxActivePlaylists,
-        slots: library.slots.map(assignment => ({
-            slotId: assignment.slotId,
-            mode: melodayNormalizeMode(assignment.mode)
-        }))
+        mode: melodayNormalizeMode(library.mode),
+        slotIds: [...library.slotIds]
     }));
+}
+
+function melodayParseNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function buildMelodayPayload(enabledOverride) {
@@ -492,29 +614,23 @@ function buildMelodayPayload(enabledOverride) {
         throw new Error('Select at least one Meloday target server.');
     }
 
-    const slots = readMelodaySlotsFromDom();
     const libraries = buildMelodayLibrariesFromDom();
     if (enabled) {
-        const enabledLibraries = libraries.filter(library => library.enabled);
-        if (enabledLibraries.length === 0) {
-            throw new Error('Select at least one Meloday target library.');
+        const targeted = libraries.filter(library => library.slotIds.length > 0);
+        if (targeted.length === 0) {
+            throw new Error('Select at least one time slot for at least one library.');
         }
-        for (const library of enabledLibraries) {
+        for (const library of targeted) {
             const state = melodayState.libraries.find(candidate => candidate.libraryId === library.libraryId);
-            const playlistCount = state ? melodayCountPlaylists(state) : 0;
-            if (library.slots.length === 0) {
-                throw new Error(`${state?.name || `Library ${library.libraryId}`}: select at least one scheduled slot.`);
-            }
-            if (playlistCount > library.maxActivePlaylists) {
+            if (library.slotIds.length > library.maxActivePlaylists) {
                 throw new Error(
-                    `${state?.name || `Library ${library.libraryId}`}: ${playlistCount} of ${library.maxActivePlaylists} Meloday playlists selected — raise the maximum or disable slots.`);
+                    `${state?.name || `Library ${library.libraryId}`}: ${library.slotIds.length} of ${library.maxActivePlaylists} playlist slots selected — raise the maximum or deselect slots.`);
             }
         }
     }
 
     return {
         enabled,
-        playlistPrefix: document.getElementById('meloday-playlist-prefix')?.value || '',
         maxTracks: melodayParseNumber(document.getElementById('meloday-max-tracks')?.value, 50),
         historyLookbackDays: melodayParseNumber(document.getElementById('meloday-lookback-days')?.value, 30),
         excludePlayedDays: melodayParseNumber(document.getElementById('meloday-exclude-days')?.value, 4),
@@ -522,51 +638,33 @@ function buildMelodayPayload(enabledOverride) {
         sonicSimilarLimit: melodayParseNumber(document.getElementById('meloday-similar-limit')?.value, 8),
         historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3),
         missedRunGraceMinutes: melodayParseNumber(document.getElementById('meloday-grace-minutes')?.value, 60),
-        slots,
+        slots: melodayState.slots.map(slot => ({
+            id: slot.id,
+            name: slot.name,
+            generateAt: slot.generateAt
+        })),
         libraries,
         targetServers
     };
 }
 
-async function loadMelodaySettings() {
+function applyMelodaySettingsResponse(settings) {
+    melodayState.settings = settings;
+    melodayState.enabled = settings.enabled ?? melodayState.enabled;
+    melodayState.slots = melodayNormalizeSlots(settings.slots);
+    const namesById = new Map(melodayState.libraries.map(library => [Number(library.libraryId), library]));
+    melodayState.libraries = melodayNormalizeLibraries(settings.libraries, melodayState.libraries.map(library => ({
+        id: library.libraryId,
+        name: library.name,
+        trackCount: library.trackCount
+    })));
     const enabledEl = document.getElementById('meloday-enabled');
-    if (!enabledEl) {
-        return;
+    if (enabledEl) {
+        enabledEl.checked = melodayState.enabled;
     }
-    try {
-        const [settings, libraries] = await Promise.all([
-            melodayFetchJson('/api/meloday/settings'),
-            melodayFetchJson('/api/meloday/settings/libraries')
-        ]);
-        enabledEl.checked = settings.enabled ?? true;
-        melodayState.enabled = enabledEl.checked;
-        melodayState.settings = { ...settings, enabled: enabledEl.checked };
-        melodayState.slots = melodayNormalizeSlots(settings.slots);
-        melodayState.libraries = melodayNormalizeLibraries(settings.libraries, libraries);
-        updateMelodayStatusPill();
-        melodaySetTargetServers(settings.targetServers);
-        const playlistPrefix = document.getElementById('meloday-playlist-prefix');
-        const maxTracks = document.getElementById('meloday-max-tracks');
-        const lookback = document.getElementById('meloday-lookback-days');
-        const exclude = document.getElementById('meloday-exclude-days');
-        const similarityDistance = document.getElementById('meloday-similarity-distance');
-        const similarLimit = document.getElementById('meloday-similar-limit');
-        const historicalRatio = document.getElementById('meloday-historical-ratio');
-        const grace = document.getElementById('meloday-grace-minutes');
-        if (playlistPrefix) playlistPrefix.value = settings.playlistPrefix || '';
-        if (maxTracks) maxTracks.value = settings.maxTracks ?? 50;
-        if (lookback) lookback.value = settings.historyLookbackDays ?? 30;
-        if (exclude) exclude.value = settings.excludePlayedDays ?? 4;
-        if (similarityDistance) similarityDistance.value = settings.sonicSimilarityDistance ?? 0.35;
-        if (similarLimit) similarLimit.value = settings.sonicSimilarLimit ?? 8;
-        if (historicalRatio) historicalRatio.value = settings.historicalRatio ?? 0.3;
-        if (grace) grace.value = settings.missedRunGraceMinutes ?? 60;
-        renderMelodayScheduleSlots();
-        renderMelodayLibrarySchedules();
-        await loadMelodayArtwork();
-    } catch (error) {
-        console.warn('Meloday settings failed to load.', error);
-    }
+    renderMelodayScheduleSlots();
+    renderMelodayLibraryCards();
+    void namesById;
 }
 
 async function saveMelodaySettings() {
@@ -579,24 +677,17 @@ async function saveMelodaySettings() {
     }
     try {
         const payload = buildMelodayPayload();
-        await melodayFetchJson('/api/meloday/settings', {
+        const saved = await melodayFetchJson('/api/meloday/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        melodayState.settings = { ...payload };
-        if (typeof notifyActivity === 'function') {
-            notifyActivity('Meloday settings saved.');
-        } else if (typeof showToast === 'function') {
-            showToast('Meloday settings saved.');
-        }
-        await loadMelodayStatus();
+        applyMelodaySettingsResponse(saved);
+        updateMelodayStatusPill();
+        melodayNotify('Meloday settings saved.');
+        melodayLog('info', 'Meloday settings saved.');
     } catch (error) {
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(`Failed to save Meloday settings: ${error.message}`, 'error');
-        } else if (typeof showToast === 'function') {
-            showToast(`Failed to save Meloday settings: ${error.message}`, true);
-        }
+        melodayNotify(`Failed to save Meloday settings: ${error.message}`, true);
         melodayLog('error', `Failed to save Meloday settings: ${error.message}`);
     } finally {
         if (saveButton) {
@@ -613,83 +704,58 @@ async function saveMelodayEnabled(enabled) {
     }
     try {
         const payload = buildMelodayPayload(enabled);
-        await melodayFetchJson('/api/meloday/settings', {
+        const saved = await melodayFetchJson('/api/meloday/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        melodayState.enabled = enabled;
-        melodayState.settings = { ...payload };
+        applyMelodaySettingsResponse(saved);
         updateMelodayStatusPill();
-        const message = enabled ? 'Meloday enabled.' : 'Meloday disabled.';
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(message);
-        } else if (typeof showToast === 'function') {
-            showToast(message);
-        }
-        await loadMelodayStatus();
+        melodayNotify(enabled ? 'Meloday enabled.' : 'Meloday disabled.');
     } catch (error) {
         if (enabledEl) {
             enabledEl.checked = previous;
         }
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(`Failed to update Meloday: ${error.message}`, 'error');
-        } else if (typeof showToast === 'function') {
-            showToast(`Failed to update Meloday: ${error.message}`, true);
-        }
+        melodayNotify(`Failed to update Meloday: ${error.message}`, true);
         melodayLog('error', `Failed to update Meloday: ${error.message}`);
     }
 }
 
 async function runMeloday() {
     const button = document.getElementById('runMeloday');
-    const lastMessageEl = document.getElementById('melodayLastMessage');
     if (!button) {
         return;
     }
     button.disabled = true;
-    const originalText = button.textContent;
-    button.textContent = 'Running...';
-    if (lastMessageEl) {
-        lastMessageEl.textContent = 'Saving settings and running Meloday...';
-    }
     try {
         const payload = buildMelodayPayload();
-        await melodayFetchJson('/api/meloday/settings', {
+        const saved = await melodayFetchJson('/api/meloday/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        melodayState.settings = { ...payload };
+        applyMelodaySettingsResponse(saved);
 
         const result = await melodayFetchJson('/api/meloday/run', { method: 'POST' });
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(result?.message || 'Meloday playlists updated.');
-        } else if (typeof showToast === 'function') {
-            showToast(result?.message || 'Meloday playlists updated.');
-        }
+        melodayNotify(result?.message || 'Meloday playlists updated.');
         melodayLog('info', result?.message || 'Meloday playlists updated.');
         await loadMelodayStatus();
     } catch (error) {
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(`Meloday failed: ${error.message}`, 'error');
-        } else if (typeof showToast === 'function') {
-            showToast(`Meloday failed: ${error.message}`, true);
-        }
-        if (lastMessageEl) {
-            lastMessageEl.textContent = error.message || 'Meloday failed.';
-        }
+        melodayNotify(`Meloday failed: ${error.message}`, true);
         melodayLog('error', `Meloday failed: ${error.message}`);
     } finally {
-        button.textContent = originalText || 'Run Meloday';
         button.disabled = false;
     }
 }
 
+/* ------------------------------------------------------------------ *
+ * Artwork
+ * ------------------------------------------------------------------ */
 async function loadMelodayArtwork() {
     const countEl = document.getElementById('meloday-artwork-count');
+    const gridEl = document.getElementById('meloday-artwork-grid');
     const assignmentsEl = document.getElementById('meloday-artwork-assignments');
-    if (!countEl && !assignmentsEl) {
+    if (!countEl && !gridEl) {
         return;
     }
     try {
@@ -698,36 +764,80 @@ async function loadMelodayArtwork() {
             const count = Number(artwork?.count || 0);
             countEl.textContent = `${count} image${count === 1 ? '' : 's'} available`;
         }
-        if (assignmentsEl) {
+
+        if (gridEl) {
+            const images = Array.isArray(artwork?.images) ? artwork.images : [];
             const assignments = Array.isArray(artwork?.assignments) ? artwork.assignments : [];
-            const libraryNames = new Map(melodayState.libraries.map(library => [Number(library.libraryId), library.name]));
-            assignmentsEl.innerHTML = '';
-            if (assignments.length === 0) {
-                assignmentsEl.textContent = 'No playlists own artwork yet.';
+            const ownersByImage = new Map();
+            assignments.forEach((assignment) => {
+                const owners = ownersByImage.get(assignment.imageId) || [];
+                const library = melodayState.libraries.find(candidate => Number(candidate.libraryId) === Number(assignment.libraryId));
+                owners.push(`${library?.name || `Library ${assignment.libraryId}`} · ${melodaySlotDisplayName(assignment.slotId)} · ${melodayFormatMode(assignment.mode)}`);
+                ownersByImage.set(assignment.imageId, owners);
+            });
+
+            gridEl.innerHTML = '';
+            if (images.length === 0) {
+                assignmentsEl.innerHTML = '';
+                const empty = document.createElement('div');
+                empty.className = 'meloday-artwork-assignment';
+                empty.textContent = 'No artwork yet — add images to give every playlist a unique cover.';
+                assignmentsEl.appendChild(empty);
                 return;
             }
-            assignments.forEach((assignment) => {
-                const row = document.createElement('div');
-                row.className = 'meloday-artwork-assignment';
-                const libraryName = libraryNames.get(Number(assignment.libraryId)) || `Library ${assignment.libraryId}`;
-                row.textContent = `${libraryName} — ${melodaySlotDisplayName(assignment.slotId)} (${melodayFormatMode(assignment.mode)}) → ${assignment.imageId}`;
-                assignmentsEl.appendChild(row);
+
+            images.forEach((imageId) => {
+                const thumb = document.createElement('div');
+                thumb.className = 'meloday-artwork-thumb';
+                const img = document.createElement('img');
+                img.src = `/images/meloday/source/${encodeURIComponent(imageId)}`;
+                img.alt = imageId;
+                img.loading = 'lazy';
+                const owners = ownersByImage.get(imageId);
+                if (owners && owners.length > 0) {
+                    const badge = document.createElement('span');
+                    badge.className = 'meloday-artwork-owners';
+                    badge.textContent = String(owners.length);
+                    badge.title = owners.join('\n');
+                    thumb.appendChild(badge);
+                }
+                thumb.title = owners && owners.length > 0 ? owners.join('\n') : 'Unassigned';
+                thumb.appendChild(img);
+                gridEl.appendChild(thumb);
             });
+
+            if (assignmentsEl) {
+                assignmentsEl.innerHTML = '';
+                if (assignments.length === 0) {
+                    const none = document.createElement('div');
+                    none.className = 'meloday-artwork-assignment';
+                    none.textContent = 'No playlists own artwork yet.';
+                    assignmentsEl.appendChild(none);
+                    return;
+                }
+                assignments.forEach((assignment) => {
+                    const row = document.createElement('div');
+                    row.className = 'meloday-artwork-assignment';
+                    const library = melodayState.libraries.find(candidate => Number(candidate.libraryId) === Number(assignment.libraryId));
+                    row.textContent = `${library?.name || `Library ${assignment.libraryId}`} — ${melodaySlotDisplayName(assignment.slotId)} (${melodayFormatMode(assignment.mode)}) → ${assignment.imageId}`;
+                    assignmentsEl.appendChild(row);
+                });
+            }
         }
     } catch (error) {
-        if (countEl) {
-            countEl.textContent = '—';
-        }
-        if (assignmentsEl) {
-            assignmentsEl.textContent = 'Artwork unavailable.';
-        }
+        if (countEl) countEl.textContent = '—';
         console.warn('Meloday artwork failed to load.', error);
     }
 }
 
 function melodaySlotDisplayName(slotId) {
-    const slot = (melodayState.slots || []).find(candidate => candidate.id === String(slotId || '').toLowerCase());
-    return slot ? slot.name : String(slotId || '');
+    const normalized = String(slotId || '').trim().toLowerCase();
+    const stateSlot = melodayState.slots.find(candidate => candidate.id === normalized);
+    if (stateSlot) {
+        return stateSlot.name;
+    }
+    const canonical = melodayCanonicalSlots.find(entry => entry[0] === normalized);
+    return canonical ? canonical[1] : String(slotId || '');
 }
 
 async function uploadMelodayArtwork() {
@@ -742,62 +852,93 @@ async function uploadMelodayArtwork() {
         Array.from(input.files).forEach(file => form.append('files', file));
         const result = await melodayFetchJson('/api/meloday/artwork', { method: 'POST', body: form });
         input.value = '';
-        const message = `Added ${result?.added || 0} Meloday image(s); ${result?.count ?? 0} available.`;
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(message);
-        } else if (typeof showToast === 'function') {
-            showToast(message);
-        }
+        melodayNotify(`Added ${result?.added || 0} Meloday image(s); ${result?.count ?? 0} available.`);
         await loadMelodayArtwork();
     } catch (error) {
-        if (typeof notifyActivity === 'function') {
-            notifyActivity(`Failed to upload Meloday artwork: ${error.message}`, 'error');
-        } else if (typeof showToast === 'function') {
-            showToast(`Failed to upload Meloday artwork: ${error.message}`, true);
-        }
+        melodayNotify(`Failed to upload Meloday artwork: ${error.message}`, true);
         melodayLog('error', `Failed to upload Meloday artwork: ${error.message}`);
     } finally {
         add.disabled = false;
     }
 }
 
-function initializeMelodayCard() {
-    // Use the status pill as the presence check now that the text block is gone
-    if (document.getElementById('melodayStatusPill')) {
-        globalThis.DeezSpoTagMeloday = {
-            refresh: async () => {
-                await loadMelodayStatus();
-                await loadMelodaySettings();
-            }
-        };
-        loadMelodayStatus();
-        loadMelodaySettings();
-        const button = document.getElementById('runMeloday');
-        if (button) {
-            button.addEventListener('click', runMeloday);
-        }
-        const saveButton = document.getElementById('saveMelodaySettings');
-        if (saveButton) {
-            saveButton.addEventListener('click', saveMelodaySettings);
-        }
-        const enabledEl = document.getElementById('meloday-enabled');
-        if (enabledEl) {
-            enabledEl.addEventListener('change', async () => {
-                await saveMelodayEnabled(enabledEl.checked);
+/* ------------------------------------------------------------------ *
+ * Initialization
+ * ------------------------------------------------------------------ */
+function initializeMelodayPage() {
+    if (!document.getElementById('meloday-page')) {
+        return;
+    }
+
+    loadMelodayPageConfig().catch(error => {
+        console.warn('Meloday settings failed to load.', error);
+        melodayNotify(`Failed to load Meloday settings: ${error.message}`, true);
+    });
+    loadMelodayArtwork();
+
+    const saveButton = document.getElementById('saveMelodaySettings');
+    if (saveButton) {
+        saveButton.addEventListener('click', saveMelodaySettings);
+    }
+    const runButton = document.getElementById('runMeloday');
+    if (runButton) {
+        runButton.addEventListener('click', runMeloday);
+    }
+    const enabledEl = document.getElementById('meloday-enabled');
+    if (enabledEl) {
+        enabledEl.addEventListener('change', () => saveMelodayEnabled(enabledEl.checked));
+    }
+    const resetButton = document.getElementById('meloday-schedule-reset');
+    if (resetButton) {
+        resetButton.addEventListener('click', melodayResetScheduleToDefault);
+    }
+    const advancedToggle = document.getElementById('meloday-advanced-toggle');
+    const advancedPanel = document.getElementById('meloday-advanced-panel');
+    if (advancedToggle && advancedPanel) {
+        advancedToggle.addEventListener('click', () => {
+            const expanded = advancedToggle.getAttribute('aria-expanded') === 'true';
+            advancedToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            advancedPanel.hidden = expanded;
+        });
+    }
+    document.querySelectorAll('[data-meloday-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const view = String(button.getAttribute('data-meloday-view') || 'grid');
+            melodayState.view = view;
+            document.querySelectorAll('[data-meloday-view]').forEach(candidate => {
+                candidate.classList.toggle('is-active', candidate === button);
             });
-        }
-        const artworkAdd = document.getElementById('meloday-artwork-add');
-        const artworkUpload = document.getElementById('meloday-artwork-upload');
-        if (artworkAdd && artworkUpload) {
-            artworkAdd.addEventListener('click', () => artworkUpload.click());
-            artworkUpload.addEventListener('change', uploadMelodayArtwork);
-        }
-        loadMelodayArtwork();
+            const page = document.getElementById('meloday-page');
+            page?.classList.toggle('is-list', view === 'list');
+        });
+    });
+
+    const artworkAdd = document.getElementById('meloday-artwork-add');
+    const artworkUpload = document.getElementById('meloday-artwork-upload');
+    if (artworkAdd && artworkUpload) {
+        artworkAdd.addEventListener('click', () => artworkUpload.click());
+        artworkUpload.addEventListener('change', uploadMelodayArtwork);
     }
 }
 
+function initializeMelodayStatusCard() {
+    if (!document.getElementById('melodayStatusPill')) {
+        return;
+    }
+    globalThis.DeezSpoTagMeloday = {
+        refresh: async () => {
+            await loadMelodayStatus();
+        }
+    };
+    loadMelodayStatus();
+}
+
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeMelodayCard);
+    document.addEventListener('DOMContentLoaded', () => {
+        initializeMelodayPage();
+        initializeMelodayStatusCard();
+    });
 } else {
-    initializeMelodayCard();
+    initializeMelodayPage();
+    initializeMelodayStatusCard();
 }
