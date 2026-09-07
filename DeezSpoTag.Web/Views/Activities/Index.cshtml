@@ -7591,6 +7591,9 @@ function applyLatestAnalysis(latest, addToRecent = true) {
     const lastfmEl = document.getElementById('analysisLastfmTags');
     if (moodTagsEl) moodTagsEl.textContent = formatList(analysis?.moodTags);
     if (essentiaEl) essentiaEl.textContent = formatList(analysis?.essentiaGenres);
+    const formatEngineTagPartial = (engine) => (value) =>
+        `${value} · ${engine}`;
+
     if (lastfmEl) {
         // Show each resolved tag with the engine/platform that decided it,
         // straight from the persisted semantic evidence.
@@ -7626,9 +7629,19 @@ function applyLatestAnalysis(latest, addToRecent = true) {
             ...(Array.isArray(analysis?.resolvedMoods) ? analysis.resolvedMoods : [])
         ].map(formatEngineTag);
 
-        lastfmEl.textContent = resolvedTags.length > 0
-            ? formatList(resolvedTags)
-            : formatList(analysis?.lastfmTags);
+        if (resolvedTags.length > 0) {
+            lastfmEl.textContent = formatList(resolvedTags);
+        } else {
+            // Legacy rows: no persisted evidence — derive engines from what the
+            // analyzer recorded (genreModel / valence+arousal sources / lastfm).
+            const legacyEngine = analysis?.genreModel === 'discogs519-maest-30s-pw-519l'
+                ? 'Discogs519'
+                : (analysis?.genreModel ? 'Essentia' : 'Last.fm');
+            const legacyTags = (Array.isArray(analysis?.essentiaGenres) && analysis.essentiaGenres.length > 0)
+                ? analysis.essentiaGenres.map(formatEngineTagPartial(legacyEngine))
+                : (Array.isArray(analysis?.lastfmTags) ? analysis.lastfmTags.map(formatEngineTagPartial('Last.fm')) : []);
+            lastfmEl.textContent = formatList(legacyTags);
+        }
     }
 
     const keyText = analysis?.key
