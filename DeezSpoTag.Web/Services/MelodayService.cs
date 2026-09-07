@@ -138,6 +138,9 @@ public sealed class MelodayService
     private readonly ILogger<MelodayService> _logger;
     private readonly MelodaySettingsStore _settingsStore;
     private readonly MelodayRunStateStore _runStateStore;
+    private readonly MelodayArtworkPool _artworkPool;
+    private readonly MelodayArtworkAssignments _artworkAssignments;
+    private readonly MelodayCoverComposer _coverComposer;
     private readonly Random _random = new();
     private readonly string _webRoot;
     private DateTimeOffset? _lastRunUtc;
@@ -191,7 +194,10 @@ public sealed class MelodayService
         IWebHostEnvironment env,
         ILogger<MelodayService> logger,
         MelodaySettingsStore settingsStore,
-        MelodayRunStateStore runStateStore)
+        MelodayRunStateStore runStateStore,
+        MelodayArtworkPool artworkPool,
+        MelodayArtworkAssignments artworkAssignments,
+        MelodayCoverComposer coverComposer)
     {
         _options = options.Value;
         _plexApiClient = collaborators.PlexApiClient;
@@ -205,6 +211,9 @@ public sealed class MelodayService
         _logger = logger;
         _settingsStore = settingsStore;
         _runStateStore = runStateStore;
+        _artworkPool = artworkPool;
+        _artworkAssignments = artworkAssignments;
+        _coverComposer = coverComposer;
     }
 
     private Task<MelodayOptions> GetEffectiveOptionsAsync()
@@ -630,7 +639,7 @@ public sealed class MelodayService
         var optionsForTitle = CloneOptionsWithPlaylistPrefix(
             context.SimilarContext.Options,
             $"{playlistPrefix} {context.Library.Name} {context.SlotName} {GetModeLabel(mode)} —");
-        var (title, description) = BuildTitleAndDescription(new PlaylistDescriptionContext(
+        var playlistText = BuildTitleAndDescription(new PlaylistDescriptionContext(
             optionsForTitle,
             context.SlotId,
             context.SlotName,
@@ -642,6 +651,8 @@ public sealed class MelodayService
             trackAnalyses,
             context.Username,
             DateTimeOffset.Now));
+        var title = playlistText.Title;
+        var description = playlistText.Description;
 
         var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
             new LibraryRepository.MixCacheUpsertInput(
@@ -659,9 +670,11 @@ public sealed class MelodayService
 
         var cover = await TryGenerateCoverAsync(
             optionsForTitle,
+            context.SlotName,
             context.SlotId,
             context.Library.Id,
             mode,
+            playlistText.CoverTagline,
             cancellationToken);
         var mixTracks = await _libraryRepository.GetMixTracksAsync(mixCacheId, cancellationToken);
         var syncResult = await _playlistSyncService.SyncGeneratedLocalPlaylistAsync(
@@ -1956,7 +1969,7 @@ public sealed class MelodayService
         return MultiWhitespaceRegex.Replace(normalized, " ").Trim();
     }
 
-    private (string Title, string Description) BuildTitleAndDescription(PlaylistDescriptionContext context)
+    private MelodayPlaylistText BuildTitleAndDescription(PlaylistDescriptionContext context)
     {
         var genres = new List<string>();
         var moods = new List<string>();
@@ -2015,7 +2028,8 @@ public sealed class MelodayService
         var nextUpdate = GetNextUpdateTime(context.Now, context.SlotGenerateAt);
         description += $"\n\nMade for {displayUser} • Next update at {nextUpdate}.";
 
-        return (title, description);
+        var coverTagline = $"{ToDisplayLabel(mostCommonMood)} · {ToDisplayLabel(mostCommonGenre)}";
+        return new MelodayPlaylistText(title, description, coverTagline);
     }
 
     private static string NormalizeVibeGenre(string genre)
@@ -2181,9 +2195,11 @@ public sealed class MelodayService
 
     private async Task<GeneratedMelodayCover?> TryGenerateCoverAsync(
         MelodayOptions options,
+        string slotName,
         string slotId,
         long libraryId,
         string mode,
+        string coverTagline,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_webRoot))
@@ -2191,104 +2207,27 @@ public sealed class MelodayService
             return null;
         }
 
-        var staticPosterPath = TryResolveStaticCoverPath(slotId, libraryId, mode);
-        if (!string.IsNullOrWhiteSpace(staticPosterPath))
+        var imageId = await _artworkAssignments.AssignAsync(libraryId, slotId, mode, cancellationToken);
+        if (imageId is null)
         {
-            return new GeneratedMelodayCover(
-                TryResolveStaticCoverUrl(options, slotId, libraryId, mode),
-                staticPosterPath,
-                ResolveContentType(staticPosterPath));
+            _logger.LogWarning("Meloday artwork pool is empty at {Path}.", _artworkPool.SourceDirectory);
+            return null;
         }
 
-        _logger.LogWarning("Meloday artwork source missing at {Path}", Path.Join(_webRoot, "images", "meloday"));
-        return null;
-    }
-
-    private string? TryResolveStaticCoverPath(string slotId, long libraryId, string mode)
-    {
-        var staticDir = Path.Join(_webRoot, "images", "meloday");
-        if (!Directory.Exists(staticDir))
+        var composed = _coverComposer.Compose(
+            _artworkPool.ResolveSourcePath(imageId),
+            slotName,
+            coverTagline,
+            libraryId,
+            slotId,
+            mode,
+            options.BaseUrl);
+        if (composed is null)
         {
             return null;
         }
 
-        var candidates = Directory.EnumerateFiles(staticDir)
-            .Where(path =>
-            {
-                var ext = Path.GetExtension(path);
-                return ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".webp", StringComparison.OrdinalIgnoreCase);
-            })
-            .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        var index = GetArtworkIndex(slotId, libraryId, mode, candidates.Count);
-        return candidates[index];
-    }
-
-    private string? TryResolveStaticCoverUrl(MelodayOptions options, string slotId, long libraryId, string mode)
-    {
-        var staticDir = Path.Join(_webRoot, "images", "meloday");
-        if (!Directory.Exists(staticDir))
-        {
-            return null;
-        }
-
-        var baseUrl = options.BaseUrl?.TrimEnd('/');
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            return null;
-        }
-
-        var candidates = Directory.EnumerateFiles(staticDir)
-            .Select(Path.GetFileName)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name!)
-            .Where(name =>
-            {
-                var ext = Path.GetExtension(name);
-                return ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
-                    || ext.Equals(".webp", StringComparison.OrdinalIgnoreCase);
-            })
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        var index = GetArtworkIndex(slotId, libraryId, mode, candidates.Count);
-        var selected = candidates[index];
-        return $"{baseUrl}/images/meloday/{Uri.EscapeDataString(selected)}";
-    }
-
-    private static int GetArtworkIndex(string slotId, long libraryId, string mode, int candidateCount)
-    {
-        if (candidateCount <= 1) return 0;
-        var modeOffset = string.Equals(mode, MelodayModes.Sonic, StringComparison.OrdinalIgnoreCase) ? 11 : 0;
-        var value = (long)MelodayScheduleSlots.SlotOrder(slotId) + (libraryId * 7L) + modeOffset;
-        return (int)(Math.Abs(value) % candidateCount);
-    }
-
-    private static string ResolveContentType(string value)
-    {
-        return Path.GetExtension(value).ToLowerInvariant() switch
-        {
-            ".png" => "image/png",
-            ".webp" => "image/webp",
-            ".gif" => "image/gif",
-            _ => "image/jpeg"
-        };
+        return new GeneratedMelodayCover(composed.Url, composed.FilePath, "image/jpeg");
     }
 
     private sealed record SimilarTrackContext(
@@ -2314,6 +2253,8 @@ public sealed class MelodayService
     }
 
     private sealed record GeneratedMelodayCover(string? Url, string? FilePath, string ContentType);
+
+    private sealed record MelodayPlaylistText(string Title, string Description, string CoverTagline);
 
     private sealed record PlaylistDescriptionContext(
         MelodayOptions Options,

@@ -246,13 +246,23 @@ public sealed class MelodayGuardrailTests
     }
 
     [Fact]
-    public void Meloday_Artwork_Can_Be_Uploaded_From_Local_File_When_BaseUrl_Is_Not_Configured()
+    public void Meloday_Artwork_Comes_From_A_Persistent_User_Image_Pool()
     {
         var source = ReadMelodayService();
+        var pool = ReadMelodayArtworkPool();
+        var composer = ReadMelodayCoverComposer();
+        var artworkController = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "MelodayArtworkApiController.cs");
         var playlistSync = ReadPlaylistSyncService();
 
         Assert.Contains("GeneratedMelodayCover", source, StringComparison.Ordinal);
-        Assert.Contains("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
+        Assert.Contains("_artworkAssignments.AssignAsync(libraryId, slotId, mode, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("_coverComposer.Compose(", source, StringComparison.Ordinal);
+        Assert.Contains("\"images\", \"meloday\", \"source\"", pool, StringComparison.Ordinal);
+        Assert.Contains("images\", \"meloday\", \"generated\"", composer, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetArtworkIndex", source, StringComparison.Ordinal);
+        Assert.Contains("[HttpPost]", artworkController, StringComparison.Ordinal);
+        Assert.Contains("artworkUpload.click()", ReadMelodayScript(), StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedNavidromeArtworkAsync", playlistSync, StringComparison.Ordinal);
@@ -260,23 +270,28 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("var artworkSynced = await SyncGeneratedPlexArtworkAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("var artworkSynced = await SyncGeneratedJellyfinArtworkAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("var artworkSynced = await SyncGeneratedNavidromeArtworkAsync", playlistSync, StringComparison.Ordinal);
-        Assert.Contains("images\", \"meloday", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (string.IsNullOrWhiteSpace(options.BaseUrl))\n        {\n            return null;\n        }", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RenderCoverAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CoversPath", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Meloday_Artwork_Is_Deterministic_Per_Library_Slot_And_Mode()
+    public void Meloday_Artwork_Assignments_Are_Stable_Content_Addressed_And_Library_Unique()
     {
-        var source = ReadMelodayService();
+        var pool = ReadMelodayArtworkPool();
+        var composer = ReadMelodayCoverComposer();
+        var tracklistView = ReadTracklistView();
+        var autoPlaylists = ReadAutoPlaylistsScript();
 
-        Assert.Contains("GetArtworkIndex(slotId, libraryId, mode", source, StringComparison.Ordinal);
-        Assert.Contains("context.Library.Id", source, StringComparison.Ordinal);
-        Assert.Contains("libraryId * 7L", source, StringComparison.Ordinal);
-        Assert.Contains("MelodayModes.Sonic", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetPeriodIndex", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("ResolveStaticCoverFile", source, StringComparison.Ordinal);
+        Assert.Contains("internal static IReadOnlyList<string> BuildDeck", pool, StringComparison.Ordinal);
+        Assert.Contains("MelodayArtworkAllocator.Allocate(deck, assignments, libraryId, slotId, mode)", pool, StringComparison.Ordinal);
+        Assert.Contains("unusedGlobal.Count > 0", pool, StringComparison.Ordinal);
+        Assert.Contains("unusedWithinLibrary.Count > 0", pool, StringComparison.Ordinal);
+        Assert.Contains("RemoveAll(assignment => !deck.Contains(assignment.ImageId", pool, StringComparison.Ordinal);
+        Assert.Contains("ResolveOutputFileName", composer, StringComparison.Ordinal);
+        Assert.Contains("PruneStaleGenerations", composer, StringComparison.Ordinal);
+        Assert.DoesNotContain("% 18", tracklistView, StringComparison.Ordinal);
+        Assert.DoesNotContain("MELODAY_COVER_COUNT", autoPlaylists, StringComparison.Ordinal);
+        Assert.DoesNotContain("/images/meloday/${", tracklistView, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -353,6 +368,18 @@ public sealed class MelodayGuardrailTests
     {
         var repoRoot = ResolveRepoRoot();
         return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodaySchedule.cs"));
+    }
+
+    private static string ReadMelodayArtworkPool()
+    {
+        var repoRoot = ResolveRepoRoot();
+        return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodayArtworkPool.cs"));
+    }
+
+    private static string ReadMelodayCoverComposer()
+    {
+        var repoRoot = ResolveRepoRoot();
+        return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodayCoverComposer.cs"));
     }
 
     private static string ReadMelodayHostedService()

@@ -563,6 +563,7 @@ async function loadMelodaySettings() {
         if (grace) grace.value = settings.missedRunGraceMinutes ?? 60;
         renderMelodayScheduleSlots();
         renderMelodayLibrarySchedules();
+        await loadMelodayArtwork();
     } catch (error) {
         console.warn('Meloday settings failed to load.', error);
     }
@@ -685,6 +686,81 @@ async function runMeloday() {
     }
 }
 
+async function loadMelodayArtwork() {
+    const countEl = document.getElementById('meloday-artwork-count');
+    const assignmentsEl = document.getElementById('meloday-artwork-assignments');
+    if (!countEl && !assignmentsEl) {
+        return;
+    }
+    try {
+        const artwork = await melodayFetchJson('/api/meloday/artwork');
+        if (countEl) {
+            const count = Number(artwork?.count || 0);
+            countEl.textContent = `${count} image${count === 1 ? '' : 's'} available`;
+        }
+        if (assignmentsEl) {
+            const assignments = Array.isArray(artwork?.assignments) ? artwork.assignments : [];
+            const libraryNames = new Map(melodayState.libraries.map(library => [Number(library.libraryId), library.name]));
+            assignmentsEl.innerHTML = '';
+            if (assignments.length === 0) {
+                assignmentsEl.textContent = 'No playlists own artwork yet.';
+                return;
+            }
+            assignments.forEach((assignment) => {
+                const row = document.createElement('div');
+                row.className = 'meloday-artwork-assignment';
+                const libraryName = libraryNames.get(Number(assignment.libraryId)) || `Library ${assignment.libraryId}`;
+                row.textContent = `${libraryName} — ${melodaySlotDisplayName(assignment.slotId)} (${melodayFormatMode(assignment.mode)}) → ${assignment.imageId}`;
+                assignmentsEl.appendChild(row);
+            });
+        }
+    } catch (error) {
+        if (countEl) {
+            countEl.textContent = '—';
+        }
+        if (assignmentsEl) {
+            assignmentsEl.textContent = 'Artwork unavailable.';
+        }
+        console.warn('Meloday artwork failed to load.', error);
+    }
+}
+
+function melodaySlotDisplayName(slotId) {
+    const slot = (melodayState.slots || []).find(candidate => candidate.id === String(slotId || '').toLowerCase());
+    return slot ? slot.name : String(slotId || '');
+}
+
+async function uploadMelodayArtwork() {
+    const input = document.getElementById('meloday-artwork-upload');
+    const add = document.getElementById('meloday-artwork-add');
+    if (!input || !add || input.files.length === 0) {
+        return;
+    }
+    add.disabled = true;
+    try {
+        const form = new FormData();
+        Array.from(input.files).forEach(file => form.append('files', file));
+        const result = await melodayFetchJson('/api/meloday/artwork', { method: 'POST', body: form });
+        input.value = '';
+        const message = `Added ${result?.added || 0} Meloday image(s); ${result?.count ?? 0} available.`;
+        if (typeof notifyActivity === 'function') {
+            notifyActivity(message);
+        } else if (typeof showToast === 'function') {
+            showToast(message);
+        }
+        await loadMelodayArtwork();
+    } catch (error) {
+        if (typeof notifyActivity === 'function') {
+            notifyActivity(`Failed to upload Meloday artwork: ${error.message}`, 'error');
+        } else if (typeof showToast === 'function') {
+            showToast(`Failed to upload Meloday artwork: ${error.message}`, true);
+        }
+        melodayLog('error', `Failed to upload Meloday artwork: ${error.message}`);
+    } finally {
+        add.disabled = false;
+    }
+}
+
 function initializeMelodayCard() {
     // Use the status pill as the presence check now that the text block is gone
     if (document.getElementById('melodayStatusPill')) {
@@ -710,6 +786,13 @@ function initializeMelodayCard() {
                 await saveMelodayEnabled(enabledEl.checked);
             });
         }
+        const artworkAdd = document.getElementById('meloday-artwork-add');
+        const artworkUpload = document.getElementById('meloday-artwork-upload');
+        if (artworkAdd && artworkUpload) {
+            artworkAdd.addEventListener('click', () => artworkUpload.click());
+            artworkUpload.addEventListener('change', uploadMelodayArtwork);
+        }
+        loadMelodayArtwork();
     }
 }
 

@@ -16,26 +16,10 @@
     }
 
     const formatCount = (count) => `${count} playlist${count === 1 ? "" : "s"}`;
-    const MELODAY_COVER_COUNT = 18;
-
-    const stableHash = (value) => {
-        const text = String(value || "");
-        let hash = 0;
-        for (let index = 0; index < text.length; index += 1) {
-            hash = ((hash << 5) - hash) + text.codePointAt(index);
-            hash = Math.trunc(hash);
-        }
-        return Math.abs(hash);
-    };
 
     const resolveMelodayCoverUrl = (playlist) => {
         const covers = Array.isArray(playlist?.coverUrls) ? playlist.coverUrls.filter(Boolean) : [];
-        if (covers.length > 0) {
-            return covers[0];
-        }
-
-        const coverIndex = (stableHash(`${playlist?.id || ""}|${playlist?.name || ""}`) % MELODAY_COVER_COUNT) + 1;
-        return `/images/meloday/${coverIndex}.jpg`;
+        return covers.length > 0 ? covers[0] : "";
     };
 
     const formatUpdated = (value) => {

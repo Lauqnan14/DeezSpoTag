@@ -1858,6 +1858,9 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodaySettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayRunStateStore>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MelodayArtworkPool>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MelodayArtworkAssignments>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MelodayCoverComposer>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayHostedService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.MelodayHostedService>(
             services,

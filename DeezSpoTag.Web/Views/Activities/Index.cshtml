@@ -1931,6 +1931,29 @@ span.badge.badge-artwork-animated {
     font-weight: 700;
 }
 
+.media-operations-tab .meloday-artwork-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.media-operations-tab .meloday-artwork-count {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.media-operations-tab .meloday-artwork-assignments {
+    display: grid;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.media-operations-tab .meloday-artwork-assignment {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .media-operations-tab .vibe-analysis-settings .form-control {
     min-width: 180px;
     background: var(--bg-secondary);
@@ -3369,6 +3392,17 @@ span.badge.badge-artwork-animated {
                                         <div class="section-label section-label-sub">Libraries</div>
                                         <p class="meloday-section-hint">Each library picks its scheduled slots. "Both" counts as two playlists against the library maximum.</p>
                                         <div id="meloday-library-schedules" class="meloday-library-schedules"></div>
+                                    </div>
+                                    <div class="section-divider"></div>
+                                    <div class="settings-section">
+                                        <div class="section-label section-label-sub">Meloday artwork</div>
+                                        <p class="meloday-section-hint">Covers stay unique across playlists until every image has been used, and each playlist keeps its cover across regenerations.</p>
+                                        <div class="meloday-artwork-row">
+                                            <span id="meloday-artwork-count" class="meloday-artwork-count">—</span>
+                                            <input id="meloday-artwork-upload" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
+                                            <button id="meloday-artwork-add" class="action-btn action-btn-sm" type="button">Add Images</button>
+                                        </div>
+                                        <div id="meloday-artwork-assignments" class="meloday-artwork-assignments"></div>
                                     </div>
                                     <div class="section-divider"></div>
                                     <div class="settings-section">
