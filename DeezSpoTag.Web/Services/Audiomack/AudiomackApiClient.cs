@@ -41,6 +41,9 @@ public sealed record AudiomackSongCandidate(
     /// <summary>Creator-set moods; empty when the payload omits them.</summary>
     public IReadOnlyList<string> Moods { get; init; } = Array.Empty<string>();
 
+    /// <summary>Alternate typed-tags container: (name, audiomack-declared type). Null unless the payload uses it.</summary>
+    public IReadOnlyList<(string Name, string? Type)>? TypedTags { get; init; }
+
     public bool HasIdentity => !string.IsNullOrWhiteSpace(Id) || !string.IsNullOrWhiteSpace(Url);
 
     /// <summary>
@@ -91,8 +94,37 @@ public sealed record AudiomackSongCandidate(
             AlbumId: GetStringOrNull(element, "album_id"))
         {
             Subgenres = GetStringArrayOrNull(element, "subgenres"),
-            Moods = GetStringArrayOrNull(element, "moods")
+            Moods = GetStringArrayOrNull(element, "moods"),
+            TypedTags = GetTypedTagsOrNull(element)
         };
+    }
+
+    private static IReadOnlyList<(string Name, string? Type)>? GetTypedTagsOrNull(JsonElement element)
+    {
+        if (!element.TryGetProperty("tags", out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var output = new List<(string Name, string? Type)>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var name = GetStringOrNull(item, "name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var type = GetStringOrNull(item, "type");
+            output.Add((name, type));
+        }
+
+        return output.Count > 0 ? output : null;
     }
 
     private static IReadOnlyList<string> GetStringArrayOrNull(JsonElement element, string propertyName)

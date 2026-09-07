@@ -1811,6 +1811,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.VibeAnalysisSettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackVibeMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.IAudiomackVibeMetadataService>(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Audiomack.AudiomackVibeMetadataService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Vibe.EmbeddedVibeMetadataReader>();
         services.AddSingleton<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>(
             services,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using DeezSpoTag.Core.Utils;
 using JsonException = System.Text.Json.JsonException;
 
@@ -50,12 +51,14 @@ public sealed class AudiomackVibeMetadataService : IAudiomackVibeMetadataService
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
 
     private readonly AudiomackApiClient _apiClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly double _minimumMatchConfidence;
     private readonly ConcurrentDictionary<string, (DateTimeOffset StoredAt, AudiomackVibeMetadata? Metadata)> _cache = new();
 
-    public AudiomackVibeMetadataService(AudiomackApiClient apiClient, double? minimumMatchConfidence = null)
+    public AudiomackVibeMetadataService(AudiomackApiClient apiClient, IHttpClientFactory httpClientFactory, double? minimumMatchConfidence = null)
     {
         _apiClient = apiClient;
+        _httpClientFactory = httpClientFactory;
         _minimumMatchConfidence = minimumMatchConfidence ?? DefaultMinimumMatchConfidence;
     }
 
@@ -119,7 +122,8 @@ public sealed class AudiomackVibeMetadataService : IAudiomackVibeMetadataService
             return null;
         }
 
-        return MapCandidate(best, Math.Round(bestScore, 3));
+        var mapped = MapCandidate(best, Math.Round(bestScore, 3));
+        return await EnrichFromNextDataAsync(mapped, best, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -208,5 +212,116 @@ public sealed class AudiomackVibeMetadataService : IAudiomackVibeMetadataService
         }
 
         return trimmed;
+    }
+
+    /// <summary>
+    /// Public page enrichment: Audiomack's Next.js v13 payload carries the creator
+    /// metadata anonymously. Only invoked when the signed candidate itself lacked
+    /// subgenres/moods. Failure is always non-fatal.
+    /// </summary>
+    private async Task<AudiomackVibeMetadata?> EnrichFromNextDataAsync(
+        AudiomackVibeMetadata mapped,
+        AudiomackSongCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        if (mapped.Subgenres.Count > 0 && mapped.Moods.Count > 0)
+        {
+            return mapped;
+        }
+
+        var artistSlug = candidate.ArtistSlug ?? string.Empty;
+        var songSlug = candidate.UrlSlug ?? string.Empty;
+        if (artistSlug.Length == 0 || songSlug.Length == 0)
+        {
+            return mapped;
+        }
+
+        try
+        {
+            var debugPath = Environment.GetEnvironmentVariable("AUDIOMACK_DEBUG_PAYLOAD") == "1"
+                ? "/tmp/deezspotag-audiomack-nextdata.json"
+                : null;
+            var song = await AudiomackNextDataExtractor.FetchSongObjectAsync(
+                _httpClientFactory, artistSlug, songSlug, debugPath, cancellationToken).ConfigureAwait(false);
+            if (song is null)
+            {
+                return mapped;
+            }
+
+            var subgenres = mapped.Subgenres.Count > 0
+                ? mapped.Subgenres
+                : ParseStringArray(song.Value, "subgenres");
+            var typedTags = ParseTypedTags(song.Value);
+            var moods = mapped.Moods.Count > 0
+                ? mapped.Moods
+                : typedTags is not null
+                    ? typedTags.Where(tag => string.Equals(tag.Type, "mood", StringComparison.OrdinalIgnoreCase))
+                        .Select(tag => tag.Name).ToList()
+                    : ParseStringArray(song.Value, "moods");
+            subgenres = subgenres.Count > 0 || typedTags is null
+                ? subgenres
+                : typedTags.Where(tag => string.Equals(tag.Type, "subgenre", StringComparison.OrdinalIgnoreCase))
+                    .Select(tag => tag.Name).ToList();
+
+            var parserVersion = "audiomack-nextjs-v13";
+            return mapped with
+            {
+                Subgenres = subgenres,
+                Moods = moods,
+                RawTags = mapped.RawTags.Concat(ParseStringArray(song.Value, "tags"))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                TrackId = mapped.TrackId ?? $"nextjs:{parserVersion}"
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return mapped;
+        }
+    }
+
+    private static List<string> ParseStringArray(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return new List<string>();
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+            .Select(item => item.GetString()!.Trim())
+            .Where(item => item.Length > 0)
+            .ToList();
+    }
+
+    private static List<(string Name, string? Type)>? ParseTypedTags(JsonElement element)
+    {
+        if (!element.TryGetProperty("tags", out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var output = new List<(string Name, string? Type)>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var name = item.TryGetProperty("name", out var nameValue) && nameValue.ValueKind == JsonValueKind.String
+                ? nameValue.GetString()!.Trim()
+                : null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var type = item.TryGetProperty("type", out var typeValue) && typeValue.ValueKind == JsonValueKind.String
+                ? typeValue.GetString()
+                : null;
+            output.Add((name, type));
+        }
+
+        return output.Count > 0 ? output : null;
     }
 }
