@@ -17,17 +17,20 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     private readonly IAudiomackVibeMetadataService _audiomackVibeMetadataService;
     private readonly LastFmTagService _lastFmTagService;
     private readonly VibeAnalysisSettingsStore _vibeAnalysisSettingsStore;
+    private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
 
     public LibraryAnalysisStatusApiController(
         LibraryRepository repository,
         TrackAnalysisBackgroundService analysisService,
         IAudiomackVibeMetadataService audiomackVibeMetadataService,
         LastFmTagService lastFmTagService,
-        VibeAnalysisSettingsStore vibeAnalysisSettingsStore)
+        VibeAnalysisSettingsStore vibeAnalysisSettingsStore,
+        DeezSpoTag.Services.Settings.DeezSpoTagSettingsService settingsService)
     {
         _audiomackVibeMetadataService = audiomackVibeMetadataService;
         _lastFmTagService = lastFmTagService;
         _vibeAnalysisSettingsStore = vibeAnalysisSettingsStore;
+        _settingsService = settingsService;
         _repository = repository;
         _analysisService = analysisService;
     }
@@ -59,6 +62,22 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
             return Ok(new { platform = (string?)null, tags = Array.Empty<string>() });
         }
 
+        var settings = _settingsService.LoadSettings();
+        var aliasMap = settings.NormalizeGenreTags
+            ? DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        var blockList = DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
+
+        List<string> ApplyGenrePreferences(IEnumerable<string> values)
+        {
+            var normalized = DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.DedupeValues(
+                DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.NormalizeAndExpandValues(values, aliasMap, settings.NormalizeGenreTags),
+                blockList);
+            // Capitalization is casing-preserving (R&B, HipHop, EDM survive) and
+            // matches the user's capitalizeGenres behavior in AutoTag.
+            return normalized.Select(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.CapitalizeGenre).ToList();
+        }
+
         try
         {
             var audiomack = await _audiomackVibeMetadataService
@@ -66,10 +85,8 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
                 .ConfigureAwait(false);
             if (audiomack is not null)
             {
-                var audiomackTags = audiomack.Subgenres
-                    .Concat(audiomack.Moods)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                var audiomackTags = ApplyGenrePreferences(
+                    audiomack.Subgenres.Concat(audiomack.Moods));
                 if (audiomackTags.Count > 0)
                 {
                     return Ok(new { platform = "audiomack", tags = audiomackTags });
@@ -84,7 +101,7 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
         var lastfmTags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, cancellationToken);
         if (lastfmTags is { Count: > 0 })
         {
-            return Ok(new { platform = "lastfm", tags = lastfmTags });
+            return Ok(new { platform = "lastfm", tags = ApplyGenrePreferences(lastfmTags) });
         }
 
         return Ok(new { platform = (string?)null, tags = Array.Empty<string>() });
