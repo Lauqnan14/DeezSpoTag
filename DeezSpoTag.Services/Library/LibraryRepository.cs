@@ -5749,12 +5749,12 @@ ON CONFLICT(track_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<AnalysisStatusDto> GetAnalysisStatusAsync(long? libraryId = null, CancellationToken cancellationToken = default)
+    public async Task<AnalysisStatusDto> GetAnalysisStatusAsync(IReadOnlyList<long>? libraryIds = null, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        // libraryId arrives from the API as a long, so inlining is injection-safe.
-        var libraryFilterSql = libraryId.HasValue
-            ? $"{Environment.NewLine}  AND f.library_id = {libraryId.Value}"
+        // libraryIds come from the vibe settings as longs, so inlining is injection-safe.
+        var libraryFilterSql = libraryIds is { Count: > 0 }
+            ? $"{Environment.NewLine}  AND f.library_id IN ({string.Join(", ", libraryIds)})"
             : string.Empty;
         var totalSql = $@"
 SELECT COUNT(DISTINCT t.id)
