@@ -301,7 +301,9 @@
 
 .checkbox-group {
     display: flex;
-    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: stretch;
     margin-bottom: 12px;
 }
 
@@ -1135,8 +1137,8 @@
                     <div class="form-group" id="multiQualityGroup">
                         <div class="form-label">Multi-quality downloads</div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="multiQualityEnabled">
-                            <label for="multiQualityEnabled">Enable dual-profile downloads (Atmos + Stereo)</label>
+                            <div class="checkbox-item"><input type="checkbox" id="multiQualityEnabled">
+                            <label for="multiQualityEnabled">Enable dual-profile downloads (Atmos + Stereo)</label></div>
                         </div>
                         <div class="warning-text">Queues both Atmos and Stereo and uses separate destination folders to avoid overwrites; best paired with automation (watchlists/playlist monitor).</div>
                     </div>
@@ -1214,12 +1216,12 @@
                                     <input type="hidden" id="multiQualityAtmosEngine" value="apple">
                                 </div>
                                 <div class="checkbox-group" style="margin-top: 12px;">
-                                    <input type="checkbox" id="multiQualityAtmosSearchFallback">
-                                    <label for="multiQualityAtmosSearchFallback">Enable Atmos search fallback</label>
+                                    <div class="checkbox-item"><input type="checkbox" id="multiQualityAtmosSearchFallback">
+                                    <label for="multiQualityAtmosSearchFallback">Enable Atmos search fallback</label></div>
                                 </div>
                                 <div class="checkbox-group">
-                                    <input type="checkbox" id="multiQualityAtmosDownloadFallback">
-                                    <label for="multiQualityAtmosDownloadFallback">Enable Atmos download fallback</label>
+                                    <div class="checkbox-item"><input type="checkbox" id="multiQualityAtmosDownloadFallback">
+                                    <label for="multiQualityAtmosDownloadFallback">Enable Atmos download fallback</label></div>
                                 </div>
                                 <div class="warning-text">Atmos search/download fallback tries the other enabled Atmos providers when the selected provider cannot supply that variant.</div>
                             </div>
@@ -1261,39 +1263,39 @@
                 <div class="form-row-3">
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="fallbackBitrate">
-                            <label for="fallbackBitrate">Fallback Quality</label>
+                            <div class="checkbox-item"><input type="checkbox" id="fallbackBitrate">
+                            <label for="fallbackBitrate">Fallback Quality</label></div>
                         </div>
                         <div class="warning-text">Allows lower quality if the requested quality is unavailable for the same engine.</div>
                     </div>
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="fallbackSearch">
-                            <label for="fallbackSearch">Fallback Search</label>
+                            <div class="checkbox-item"><input type="checkbox" id="fallbackSearch">
+                            <label for="fallbackSearch">Fallback Search</label></div>
                         </div>
                         <div class="warning-text">Uses title/artist search when an exact match fails. Can result in a different version.</div>
                     </div>
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="strictSpotifyDeezerMode">
-                            <label for="strictSpotifyDeezerMode">Strict Spotify->Deezer Mode</label>
+                            <div class="checkbox-item"><input type="checkbox" id="strictSpotifyDeezerMode">
+                            <label for="strictSpotifyDeezerMode">Strict Spotify->Deezer Mode</label></div>
                         </div>
                         <div class="warning-text">Enforces ISRC-only Spotify->Deezer matching for mapping and downloads. No Song.link or metadata fallback.</div>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="preferAlbumLayoutForPlaylists">
-                        <label for="preferAlbumLayoutForPlaylists">Prefer album/artist layout for playlist downloads</label>
+                        <div class="checkbox-item"><input type="checkbox" id="preferAlbumLayoutForPlaylists">
+                        <label for="preferAlbumLayoutForPlaylists">Prefer album/artist layout for playlist downloads</label></div>
                     </div>
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="autoMaxBitrate">
-                            <label for="autoMaxBitrate">Auto-select max bitrate on login</label>
+                            <div class="checkbox-item"><input type="checkbox" id="autoMaxBitrate">
+                            <label for="autoMaxBitrate">Auto-select max bitrate on login</label></div>
                         </div>
                         <div class="warning-text">Deezer only: on successful Deezer login, Max Bitrate is automatically set to your account's highest supported quality.</div>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="logErrors">
-                        <label for="logErrors">Log Errors</label>
+                        <div class="checkbox-item"><input type="checkbox" id="logErrors">
+                        <label for="logErrors">Log Errors</label></div>
                     </div>
                 </div>
 
@@ -1309,15 +1311,15 @@
                 <div class="form-row">
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="spotifyHomeFeedCacheEnabled">
-                            <label for="spotifyHomeFeedCacheEnabled">Cache Spotify home feed</label>
+                            <div class="checkbox-item"><input type="checkbox" id="spotifyHomeFeedCacheEnabled">
+                            <label for="spotifyHomeFeedCacheEnabled">Cache Spotify home feed</label></div>
                         </div>
                         <div class="warning-text">Keeps the trending/Spotify feed cached to speed up home load.</div>
                     </div>
                     <div class="form-group">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="spotifyHomeFeedAutoRefreshEnabled">
-                            <label for="spotifyHomeFeedAutoRefreshEnabled">Auto-refresh home feed</label>
+                            <div class="checkbox-item"><input type="checkbox" id="spotifyHomeFeedAutoRefreshEnabled">
+                            <label for="spotifyHomeFeedAutoRefreshEnabled">Auto-refresh home feed</label></div>
                         </div>
                         <div class="warning-text">Refreshes the Spotify home feed in the background.</div>
                     </div>
@@ -1435,8 +1437,8 @@
                     </div>
                 </div>
                 <div class="checkbox-group">
-                    <input type="checkbox" id="getM3u8FromDevice" checked>
-                    <label for="getM3u8FromDevice">Get M3U8 from device</label>
+                    <div class="checkbox-item"><input type="checkbox" id="getM3u8FromDevice" checked>
+                    <label for="getM3u8FromDevice">Get M3U8 from device</label></div>
                 </div>
                 <div class="warning-text">Enable if your wrapper/device must fetch manifests; disable only if direct manifests work for your setup.</div>
                 <div class="form-row">
@@ -1460,12 +1462,12 @@
             </div>
             <div class="settings-content">
                 <div class="checkbox-group">
-                    <input type="checkbox" id="shazamEnabled">
-                    <label for="shazamEnabled">Enable logo-triggered Shazam capture</label>
+                    <div class="checkbox-item"><input type="checkbox" id="shazamEnabled">
+                    <label for="shazamEnabled">Enable logo-triggered Shazam capture</label></div>
                 </div>
                 <div class="checkbox-group">
-                    <input type="checkbox" id="shazamUseCenteredOverlay">
-                    <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label>
+                    <div class="checkbox-item"><input type="checkbox" id="shazamUseCenteredOverlay">
+                    <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label></div>
                 </div>
                 <div class="form-group">
                     <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
@@ -1473,12 +1475,12 @@
                     <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
                 </div>
                 <div class="checkbox-group">
-                    <input type="checkbox" id="shazamAllowHttpFileFallback">
-                    <label for="shazamAllowHttpFileFallback">Allow HTTP fallback via audio file capture/upload when live microphone API is unavailable</label>
+                    <div class="checkbox-item"><input type="checkbox" id="shazamAllowHttpFileFallback">
+                    <label for="shazamAllowHttpFileFallback">Allow HTTP fallback via audio file capture/upload when live microphone API is unavailable</label></div>
                 </div>
                 <div class="checkbox-group">
-                    <input type="checkbox" id="shazamRemoteMemoryOnly">
-                    <label for="shazamRemoteMemoryOnly">When not on local network, keep capture payload in memory only</label>
+                    <div class="checkbox-item"><input type="checkbox" id="shazamRemoteMemoryOnly">
+                    <label for="shazamRemoteMemoryOnly">When not on local network, keep capture payload in memory only</label></div>
                 </div>
             </div>
         </div>
@@ -1527,8 +1529,8 @@
                     </div>
                 </div>
                 <div class="checkbox-group">
-                    <input type="checkbox" id="watchUseSnapshotIdChecking">
-                    <label for="watchUseSnapshotIdChecking">Use Snapshot ID Checking</label>
+                    <div class="checkbox-item"><input type="checkbox" id="watchUseSnapshotIdChecking">
+                    <label for="watchUseSnapshotIdChecking">Use Snapshot ID Checking</label></div>
                 </div>
             </div>
         </div>
@@ -1635,30 +1637,30 @@
             <div class="settings-content">
                 <div class="form-row">
                     <div class="checkbox-group">
-                        <input type="checkbox" id="convertAfterDownload">
-                        <label for="convertAfterDownload">Convert after download</label>
+                        <div class="checkbox-item"><input type="checkbox" id="convertAfterDownload">
+                        <label for="convertAfterDownload">Convert after download</label></div>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="convertKeepOriginal">
-                        <label for="convertKeepOriginal">Keep original after conversion</label>
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="convertSkipIfSourceMatches">
-                        <label for="convertSkipIfSourceMatches">Skip if source matches format</label>
-                    </div>
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="convertWarnLossyToLossless">
-                        <label for="convertWarnLossyToLossless">Warn on lossy to lossless</label>
+                        <div class="checkbox-item"><input type="checkbox" id="convertKeepOriginal">
+                        <label for="convertKeepOriginal">Keep original after conversion</label></div>
                     </div>
                 </div>
 
                 <div class="form-row">
                     <div class="checkbox-group">
-                        <input type="checkbox" id="convertSkipLossyToLossless">
-                        <label for="convertSkipLossyToLossless">Skip lossy to lossless</label>
+                        <div class="checkbox-item"><input type="checkbox" id="convertSkipIfSourceMatches">
+                        <label for="convertSkipIfSourceMatches">Skip if source matches format</label></div>
+                    </div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="convertWarnLossyToLossless">
+                        <label for="convertWarnLossyToLossless">Warn on lossy to lossless</label></div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="convertSkipLossyToLossless">
+                        <label for="convertSkipLossyToLossless">Skip lossy to lossless</label></div>
                     </div>
                     <div class="form-group">
                         <label for="convertExtraArgs">FFmpeg extra args</label>
@@ -1675,8 +1677,8 @@
             </div>
             <div class="settings-content">
                 <div class="checkbox-group">
-                    <input type="checkbox" id="normalizeGenreTags">
-                    <label for="normalizeGenreTags">Normalize genre tags with alias list</label>
+                    <div class="checkbox-item"><input type="checkbox" id="normalizeGenreTags">
+                    <label for="normalizeGenreTags">Normalize genre tags with alias list</label></div>
                 </div>
                 <div class="warning-text">Aliases normalize equivalent names such as Afro-Pop and Afropop before tags are written.</div>
 
@@ -1764,15 +1766,15 @@
                 <div class="form-row">
                     <div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="livePreviewIngest" class="form-checkbox">
-                            <label for="livePreviewIngest" class="checkbox-label">Live preview ingest during scan</label>
+                            <div class="checkbox-item"><input type="checkbox" id="livePreviewIngest" class="form-checkbox">
+                            <label for="livePreviewIngest" class="checkbox-label">Live preview ingest during scan</label></div>
                         </div>
                         <div class="warning-text" data-tooltip-target="livePreviewIngest">Continuously writes partial scan results to SQLite while scanning. Slower, but updates library contents during the scan.</div>
                     </div>
                     <div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="enableSignalAnalysis" class="form-checkbox">
-                            <label for="enableSignalAnalysis" class="checkbox-label">Enable signal analysis during scan</label>
+                            <div class="checkbox-item"><input type="checkbox" id="enableSignalAnalysis" class="form-checkbox">
+                            <label for="enableSignalAnalysis" class="checkbox-label">Enable signal analysis during scan</label></div>
                         </div>
                         <div class="warning-text">Runs deeper ffmpeg/ffprobe audio-content analysis during the baseline library scan. Much slower on NAS storage.</div>
                     </div>
@@ -1846,8 +1848,8 @@
                 <div class="form-row">
                     <div class="other-pad-column">
                         <div class="checkbox-group">
-                            <input type="checkbox" id="padTracks">
-                            <label for="padTracks">Pad Tracks</label>
+                            <div class="checkbox-item"><input type="checkbox" id="padTracks">
+                            <label for="padTracks">Pad Tracks</label></div>
                         </div>
                         <div class="form-group" style="margin-bottom: 0;">
                             <label for="paddingSize">Padding Size</label>
@@ -3085,8 +3087,8 @@ function renderDownloadEngineOrder(config) {
             <div class="engine-quality-list">
                 ${engine.qualities.map(quality => `
                     <div class="checkbox-group" data-quality="${escapeHtml(quality.quality)}">
-                        <input type="checkbox" class="engine-quality-enabled" ${quality.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)} ${escapeHtml(quality.label)}">
-                        <label>${escapeHtml(quality.label)}</label>
+                        <div class="checkbox-item"><input type="checkbox" class="engine-quality-enabled" ${quality.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)} ${escapeHtml(quality.label)}">
+                        <label>${escapeHtml(quality.label)}</label></div>
                     </div>
                 `).join('')}
             </div>
