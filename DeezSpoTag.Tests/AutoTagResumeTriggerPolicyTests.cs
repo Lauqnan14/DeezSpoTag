@@ -51,6 +51,29 @@ public sealed class AutoTagResumeTriggerPolicyTests
     }
 
     [Theory]
+    [InlineData("manual", "manual")]
+    [InlineData("schedule", "schedule")]
+    [InlineData("automation", "automation")]
+    [InlineData("recovery", "recovery")]
+    [InlineData("RECOVERY", "recovery")]
+    [InlineData("bogus", "invalid")]
+    [InlineData("", "manual")]
+    public void NormalizeRunTrigger_PreservesTheRecoveryTriggerForResumes(string? trigger, string expected)
+    {
+        // StartJob normalizes the trigger BEFORE the enhancement trigger policy runs.
+        // Normalizing "recovery" to "invalid" made every enhancement resume land as a
+        // blocked successor with zero logs, so the resume never actually ran.
+        var method = typeof(AutoTagService).GetMethod(
+            "NormalizeRunTrigger",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AutoTagService.NormalizeRunTrigger not found.");
+
+        var result = Assert.IsType<string>(method.Invoke(null, new object?[] { trigger }));
+
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
     [InlineData("blocked", true)]
     [InlineData("BLOCKED", true)]
     [InlineData("skipped", true)]
@@ -72,6 +95,25 @@ public sealed class AutoTagResumeTriggerPolicyTests
     public void IsBlockedResumeSuccessor_NullSuccessorIsNotBlocked()
     {
         Assert.False(InvokeIsBlockedResumeSuccessor(null));
+    }
+
+    [Fact]
+    public void StopRequest_CancelsPausedOrInterruptedRunsOutright()
+    {
+        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+
+        var stopStart = service.IndexOf(
+            "private async Task<StopJobOutcome> StopJobInternalAsync",
+            StringComparison.Ordinal);
+        Assert.True(stopStart >= 0, "Missing StopJobInternalAsync.");
+        var stopBody = service[stopStart..(stopStart + 3200)];
+
+        // Paused/interrupted runs load from disk and cancel outright — the resume
+        // affordance in the Runs list must be able to retire them.
+        Assert.Contains("IsPausedOrInterruptedRunStatus(loaded.Status)", stopBody, StringComparison.Ordinal);
+        Assert.Contains("IsPausedOrInterruptedRunStatus(job.Status)", stopBody, StringComparison.Ordinal);
+        var cancelIndex = stopBody.IndexOf("AutoTagLiterals.CanceledStatus", StringComparison.Ordinal);
+        Assert.True(cancelIndex >= 0, "Paused/interrupted stop must apply the canceled status.");
     }
 
     [Fact]

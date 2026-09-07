@@ -79,7 +79,10 @@ public partial class AutoTagService
                 : EnhancementTargetReasons.ExplicitTarget)
             : EnhancementTargetReasons.FolderEnumeration;
 
-        if (ShouldPrepareMissingCoreMetadataTargets(enhancementRoot) && existingTargets.Count == 0)
+        // Only a dedicated missing-core-metadata scan narrows the run's targets.
+        // Any broader selection keeps the full library scope: the audited files
+        // ride the priority wave inside the normal 40-file batches instead.
+        if (IsMissingCoreMetadataOnlyScan(root, enhancementRoot) && existingTargets.Count == 0)
         {
             var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
             var scopedFolders = ResolveEnhancementJobFolders(
@@ -185,6 +188,42 @@ public partial class AutoTagService
         return enhancementRoot["qualityChecks"] is JsonObject qualityChecks
             && ReadBool(qualityChecks, EnabledField) == true
             && ReadBool(qualityChecks, "flagMissingTags") == true;
+    }
+
+    /// <summary>
+    /// True only when the run's sole selected work is the missing-core-metadata
+    /// scan: quality checks enabled with flagMissingTags, and no other enhancement
+    /// section or quality-check option selected. A dedicated scan narrows the run's
+    /// targets to the audited files. Any broader selection keeps the full library
+    /// scope — the audited files ride the priority wave inside the normal 40-file
+    /// batches instead of defining the run's scope.
+    /// </summary>
+    internal static bool IsMissingCoreMetadataOnlyScan(JsonObject configRoot, JsonObject enhancementRoot)
+    {
+        if (!ShouldPrepareMissingCoreMetadataTargets(enhancementRoot))
+        {
+            return false;
+        }
+
+        if (EnhancementWorkflowSelection.IsGapFillRunnable(configRoot)
+            || EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot)
+            || EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot))
+        {
+            return false;
+        }
+
+        if (enhancementRoot["coverMaintenance"] is JsonObject coverMaintenance
+            && ReadBool(coverMaintenance, EnabledField) == true
+            && EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot))
+        {
+            return false;
+        }
+
+        var qualityChecks = (JsonObject)enhancementRoot["qualityChecks"]!;
+        return ReadBool(qualityChecks, "flagDuplicates") != true
+            && ReadBool(qualityChecks, "flagMismatchedMetadata") != true
+            && ReadBool(qualityChecks, "queueAtmosAlternatives") != true
+            && ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") != true;
     }
 
     private async Task<EnhancementRunManifest> BuildEnhancementRunManifestAsync(

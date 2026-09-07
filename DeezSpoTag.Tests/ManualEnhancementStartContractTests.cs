@@ -231,12 +231,60 @@ public sealed class ManualEnhancementStartContractTests
         var poll = ExtractFunction(script, "async function pollJob");
 
         Assert.Contains("~/js/enhancement-resume.js", view, StringComparison.Ordinal);
-        Assert.Contains("/api/autotag/jobs/\" + encodeURIComponent(jobId) + \"/resume", resumeModule, StringComparison.Ordinal);
+        Assert.Contains("encodeURIComponent(id) + \"/resume\"", resumeModule, StringComparison.Ordinal);
         Assert.Contains("window.EnhancementResume?.offerResume", poll, StringComparison.Ordinal);
         Assert.Contains("window.EnhancementResume?.offerResume", sections, StringComparison.Ordinal);
         // Interrupted scope stops the section loop instead of silently continuing.
         Assert.Contains("break;", sections, StringComparison.Ordinal);
         Assert.Contains("group(s) not run.", sections, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementResumeActions_RenderInlineBesideTheRunJobId()
+    {
+        var repoRoot = FindRepoRoot();
+        var resumeModule = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "enhancement-resume.js"));
+        var statusScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
+        var activitiesView = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
+
+        // The "Runs on" list renders Resume/Cancel inline for paused/interrupted runs.
+        Assert.Contains("data-run-action=\"resume\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("data-run-action=\"cancel\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("\"paused\", \"interrupted\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("window.EnhancementResume?.resumeJob(jobId)", statusScript, StringComparison.Ordinal);
+        Assert.Contains("window.EnhancementResume?.cancelJob(jobId)", statusScript, StringComparison.Ordinal);
+
+        // The buttons sit ON the job-id line, inside the run entry itself: the entry
+        // is a role=button div (a native <button> cannot contain buttons), the flex
+        // job-id line renders the id span first and then interpolates the action
+        // buttons — one button pair per run, never a detached row between entries.
+        Assert.Contains("<div role=\"button\" tabindex=\"0\" class=\"autotag-run-item\"", statusScript, StringComparison.Ordinal);
+        var runListStart = statusScript.IndexOf("list.innerHTML = runsForDisplay.map", StringComparison.Ordinal);
+        Assert.True(runListStart >= 0, "Missing run list template.");
+        var runListEnd = statusScript.IndexOf("highlightSelectedRun();", runListStart, StringComparison.Ordinal);
+        var template = statusScript[runListStart..runListEnd];
+
+        var jobIdIndex = template.IndexOf("job ${run.id}", StringComparison.Ordinal);
+        var actionsOnJobIdLine = template.IndexOf("</span>${actionButtons}", StringComparison.Ordinal);
+        Assert.True(jobIdIndex >= 0 && actionsOnJobIdLine > jobIdIndex,
+            "The action buttons must interpolate on the job-id line, directly after the job id.");
+
+        var resumeIndex = template.IndexOf("data-run-action=\"resume\"", StringComparison.Ordinal);
+        var cancelIndex = template.IndexOf("data-run-action=\"cancel\"", StringComparison.Ordinal);
+        Assert.True(resumeIndex >= 0 && cancelIndex > resumeIndex, "Resume must precede Cancel in the action pair.");
+
+        // The resume module is the single action path and mounts no banner anywhere.
+        Assert.Contains("resumeJob: resumeJob", resumeModule, StringComparison.Ordinal);
+        Assert.Contains("cancelJob: cancelJob", resumeModule, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement-resume-banner", resumeModule, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement-resume-slot", resumeModule, StringComparison.Ordinal);
+        Assert.DoesNotContain("document.body.insertBefore", resumeModule, StringComparison.Ordinal);
+        Assert.DoesNotContain("document.getElementById(\"content\")", resumeModule, StringComparison.Ordinal);
+        Assert.DoesNotContain("mainContent", resumeModule, StringComparison.Ordinal);
+
+        // The Activities view is untouched: no reserved slot, script reference intact.
+        Assert.DoesNotContain("enhancement-resume-slot", activitiesView, StringComparison.Ordinal);
+        Assert.Contains("~/js/enhancement-resume.js", activitiesView, StringComparison.Ordinal);
     }
 
     [Fact]

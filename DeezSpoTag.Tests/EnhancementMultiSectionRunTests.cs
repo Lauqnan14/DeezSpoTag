@@ -126,6 +126,131 @@ public sealed class EnhancementMultiSectionRunTests
     }
 
     [Fact]
+    public void MissingCoreMetadataNarrowing_IsGatedOnDedicatedScansInTheRunPreparation()
+    {
+        var source = ReadWorkflows();
+
+        Assert.Contains(
+            "if (IsMissingCoreMetadataOnlyScan(root, enhancementRoot) && existingTargets.Count == 0)",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "if (ShouldPrepareMissingCoreMetadataTargets(enhancementRoot) && existingTargets.Count == 0)",
+            source,
+            StringComparison.Ordinal);
+        // Full-scope runs keep the priority wave: audited files ride the normal
+        // ≤40-file batches instead of defining the run's scope.
+        Assert.Contains(
+            "WriteStringList(root, AutoTagLiterals.PriorityTargetFilesKey, priorityPaths);",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingCoreMetadataScanOnly_QualifiesForTargetNarrowing()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.True(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenOtherQualityOptionsAreSelected()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true, flagDuplicates: true);
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenGapFillIsSelected()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+        enhancement["gapFilling"] = new JsonObject { ["enabled"] = true };
+        var root = new JsonObject
+        {
+            ["enhancement"] = enhancement,
+            ["gapFillTags"] = new JsonArray("title")
+        };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenSidecarsAreSelected()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+        enhancement["sidecars"] = new JsonObject { ["enabled"] = true, ["queueLyricsRefresh"] = true };
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenFolderUniformityIsSelected()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+        enhancement["folderUniformity"] = new JsonObject { ["enabled"] = true, ["enforceFolderStructure"] = true };
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenCoverMaintenanceIsSelected()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+        enhancement["coverMaintenance"] = new JsonObject { ["enabled"] = true, ["replaceMissingEmbeddedCovers"] = true };
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void MissingCoreMetadataNarrowing_RejectedWhenTheScanIsDisabled()
+    {
+        var enhancement = BuildEnhancementRoot(flagMissingTags: false);
+        var root = new JsonObject { ["enhancement"] = enhancement };
+
+        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+    }
+
+    [Fact]
+    public void PriorityTargetsFeedTheSharedBatchOrderingNotSeparateBatches()
+    {
+        var runner = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+
+        // The two-wave order consumes the audited priority paths...
+        Assert.Contains("BuildNormalizedPathSet(config.PriorityTargetFiles)", runner, StringComparison.Ordinal);
+        // ...then plan.Files (wave 1 ++ wave 2) is cut into ≤40-file ranges, so
+        // priority files occupy slots inside the normal batches — never extra batches.
+        Assert.Contains("plan.Files.Clear();", runner, StringComparison.Ordinal);
+        Assert.Contains(
+            "BuildLibraryWideEnhancementBatchRanges(plan.Files, passFileCount, batchSize)",
+            runner,
+            StringComparison.Ordinal);
+        // Batches stay capped at 40 except when finishing the active album.
+        Assert.Contains("end - start < resolvedBatchSize", runner, StringComparison.Ordinal);
+        Assert.Contains("SameAlbumDirectory(files[end - 1], files[end])", runner, StringComparison.Ordinal);
+    }
+
+    private static JsonObject BuildEnhancementRoot(
+        bool flagMissingTags,
+        bool flagDuplicates = false)
+        => new JsonObject
+        {
+            ["qualityChecks"] = new JsonObject
+            {
+                ["enabled"] = true,
+                ["flagMissingTags"] = flagMissingTags,
+                ["flagDuplicates"] = flagDuplicates
+            }
+        };
+
+    [Fact]
     public void EnhancementEngine_RunsEverySelectedSectionInOneJob()
     {
         var source = ReadWorkflows();

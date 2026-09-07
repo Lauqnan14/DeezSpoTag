@@ -1006,7 +1006,12 @@
             const liveBadge = hasActiveLiveRun() && normalizeRunId(run?.id) === normalizeRunId(state.liveJobSummary?.id)
                 ? '<span class="badge bg-info text-dark">Live</span>'
                 : "";
-            return `<button type="button" class="autotag-run-item" data-run-id="${escapeHtml(run.id)}">
+            const resumable = ["paused", "interrupted"].includes(String(run?.status || "").trim().toLowerCase());
+            const actionButtons = resumable
+                ? `<button type="button" class="btn btn-sm btn-primary" data-run-action="resume" data-run-id="${escapeHtml(run.id)}">Resume</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-run-action="cancel" data-run-id="${escapeHtml(run.id)}">Cancel</button>`
+                : "";
+            return `<div role="button" tabindex="0" class="autotag-run-item" data-run-id="${escapeHtml(run.id)}">
                 <strong>${escapeHtml(started)} · ${escapeHtml(run.status || "--")} ${liveBadge}</strong>
                 <div class="autotag-run-item-meta">
                     <span>${escapeHtml(duration)}</span>
@@ -1014,9 +1019,11 @@
                     <span>${escapeHtml(operation)}</span>
                     <span>${escapeHtml(`logs ${run.logCount ?? 0}`)}</span>
                 </div>
-                <div class="autotag-run-item-path" title="${escapeHtml(run.id)}">${escapeHtml(`job ${run.id}`)}</div>
+                <div class="autotag-run-item-path" style="display:flex;align-items:center;gap:8px;">
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(run.id)}">${escapeHtml(`job ${run.id}`)}</span>${actionButtons}
+                </div>
                 <div class="autotag-run-item-path">${escapeHtml(path)}</div>
-            </button>`;
+            </div>`;
         }).join("");
 
         highlightSelectedRun();
@@ -1599,11 +1606,46 @@
         });
 
         el("autotag-history-run-list")?.addEventListener("click", async (event) => {
+            const actionButton = event.target.closest("[data-run-action]");
+            if (actionButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                const jobId = actionButton.dataset.runId;
+                const action = actionButton.dataset.runAction;
+                if (!jobId || (action !== "resume" && action !== "cancel")) {
+                    return;
+                }
+
+                actionButton.disabled = true;
+                const outcome = action === "resume"
+                    ? await window.EnhancementResume?.resumeJob(jobId)
+                    : await window.EnhancementResume?.cancelJob(jobId);
+                actionButton.disabled = false;
+                if (outcome?.ok) {
+                    // Re-render the list so the entry reflects resumed/canceled state.
+                    await loadRunsForDate(state.selectedDate, { preserveSelection: true });
+                }
+                return;
+            }
+
             const button = event.target.closest(".autotag-run-item[data-run-id]");
             if (!button) {
                 return;
             }
 
+            state.manualHistorySelection = true;
+            await loadRunDetails(button.dataset.runId);
+        });
+
+        el("autotag-history-run-list")?.addEventListener("keydown", async (event) => {
+            if (event.key !== "Enter" && event.key !== " ") {
+                return;
+            }
+            const button = event.target.closest(".autotag-run-item[data-run-id]");
+            if (!button || event.target.closest("[data-run-action]")) {
+                return;
+            }
+            event.preventDefault();
             state.manualHistorySelection = true;
             await loadRunDetails(button.dataset.runId);
         });

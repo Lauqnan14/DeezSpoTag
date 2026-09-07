@@ -6892,9 +6892,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.EnabledTags.Contains(GenreTag) && context.EffectiveTagSettings.Genre && genres.Count > 0)
         {
+            var existingGenres = ReadExistingGenre(context.FilePath);
             if (context.Config.MergeGenres)
             {
-                var existing = SanitizeGenres(ReadExistingGenre(context.FilePath), context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
+                var existing = SanitizeGenres(existingGenres, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
                 var genreSet = new HashSet<string>(genres, StringComparer.OrdinalIgnoreCase);
                 genres.AddRange(existing.Where(genreSet.Add));
             }
@@ -6906,7 +6907,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
             genres = GenreTagAliasNormalizer.DedupeValues(genres, context.GenreBlockList);
 
-            SetField(tagWriteContext, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), genres);
+            // Strict no-op: when the merge (after alias/split/capitalize) produced the
+            // exact set already on the file — same values, same casing, any order —
+            // the genre write is skipped entirely instead of touching the tag block.
+            if (!GenreWriteAddsNothing(genres, existingGenres))
+            {
+                SetField(tagWriteContext, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), genres);
+            }
         }
 
         if (!context.EnabledTags.Contains(StyleTag) || styles.Count == 0)
@@ -6930,6 +6937,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ? styleTagName
             : ResolveFieldRawName(SupportedTag.Style, ResolveFormatName(context.Extension), context.Config);
         SetRaw(tagWriteContext, rawName, SupportedTag.Style, styleValues);
+    }
+
+    /// <summary>
+    /// True when the final genre list equals the file's current genres exactly
+    /// (same values, same casing, order-insensitive). Casing-only changes such as
+    /// R&b → R&B are real repairs and must be written.
+    /// </summary>
+    private static bool GenreWriteAddsNothing(List<string> genres, List<string> existingGenres)
+    {
+        if (genres.Count != existingGenres.Count)
+        {
+            return false;
+        }
+
+        return genres
+            .Select(value => value?.Trim() ?? string.Empty)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .SequenceEqual(
+                existingGenres.Select(value => value?.Trim() ?? string.Empty).OrderBy(value => value, StringComparer.Ordinal),
+                StringComparer.Ordinal);
     }
 
     private static List<string> NormalizeStyleValues(IEnumerable<string> values, string separator)
@@ -9156,6 +9183,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (binding.Tag == SupportedTag.Genre)
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
+            values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
         }
 
         if (values.Count == 0)
@@ -9192,6 +9220,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
+            values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
             if (values.Count == 0)
             {
                 return;
@@ -10030,7 +10059,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static string CapitalizeGenre(string input)
+    internal static string CapitalizeGenre(string input)
     {
         if (string.IsNullOrWhiteSpace(input))
         {
@@ -10040,11 +10069,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var words = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (var i = 0; i < words.Length; i++)
         {
-            var word = words[i];
-            words[i] = word.Length > 1
-                ? char.ToUpperInvariant(word[0]) + word[1..].ToLowerInvariant()
-                : word.ToUpperInvariant();
+            var chars = words[i].ToCharArray();
+            if (chars.Length == 0)
+            {
+                continue;
+            }
+
+            // Capitalize word starts without flattening the remaining casing:
+            // R&B, HipHop and EDM must survive capitalization untouched.
+            chars[0] = char.ToUpperInvariant(chars[0]);
+            for (var c = 1; c < chars.Length; c++)
+            {
+                if (chars[c - 1] == '&' && char.IsLetter(chars[c]))
+                {
+                    chars[c] = char.ToUpperInvariant(chars[c]);
+                }
+            }
+
+            words[i] = new string(chars);
         }
+
         return string.Join(' ', words);
     }
 
@@ -10073,6 +10117,55 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             genreAliasMap,
             splitComposite,
             genreBlockList ?? BlockedGenres);
+    }
+
+    /// <summary>
+    /// Keeps the file's existing genre order when the sanitized values are the same
+    /// set (case-insensitive) as the tags already on the file. Platform payloads
+    /// reorder genres between runs, and with genre in overwriteTags every run rewrote
+    /// them in that platform's order — producing order-only diffs (HipHop, Rap →
+    /// Rap, HipHop) with no content change. The returned list keeps the file's order
+    /// while adopting the sanitized values' casing; any real set change keeps the
+    /// platform order.
+    /// </summary>
+    internal static List<string> PreserveGenreOrderWhenSetEqual(List<string> values, IEnumerable<string?>? existingGenres)
+    {
+        if (values.Count == 0 || existingGenres == null)
+        {
+            return values;
+        }
+
+        var existingList = existingGenres
+            .Select(value => value?.Trim() ?? string.Empty)
+            .Where(value => value.Length > 0)
+            .ToList();
+        if (existingList.Count != values.Count)
+        {
+            return values;
+        }
+
+        var sanitizedByNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            var key = value?.Trim() ?? string.Empty;
+            if (key.Length == 0 || !sanitizedByNormalized.TryAdd(key, value ?? string.Empty))
+            {
+                return values;
+            }
+        }
+
+        var ordered = new List<string>(values.Count);
+        foreach (var existing in existingList)
+        {
+            if (!sanitizedByNormalized.TryGetValue(existing, out var sanitized))
+            {
+                return values;
+            }
+
+            ordered.Add(sanitized);
+        }
+
+        return ordered;
     }
 
     private static string ToCamelot(string key)

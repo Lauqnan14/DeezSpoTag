@@ -2182,12 +2182,24 @@ public partial class AutoTagService
                 return new StopJobOutcome(false, null);
             }
             NormalizeLoadedJobState(loaded);
-            if (!IsActiveJobStatus(loaded.Status))
+            if (!IsActiveJobStatus(loaded.Status) && !IsPausedOrInterruptedRunStatus(loaded.Status))
             {
                 return new StopJobOutcome(false, null);
             }
             job = loaded;
             _jobs[id] = job;
+        }
+
+        // A paused/interrupted run holds no live execution: a stop request cancels it
+        // outright. Re-applying the resumable-pause status here would leave the run
+        // stuck as "paused" and report the cancel as a miss to clients.
+        if (IsPausedOrInterruptedRunStatus(job.Status))
+        {
+            job.Status = AutoTagLiterals.CanceledStatus;
+            job.Error = "Canceled by user.";
+            SaveJob(job);
+            AppendActivityLog(job.Id, "autotag canceled: resumable run canceled by user");
+            return new StopJobOutcome(true, AutoTagLiterals.CanceledStatus);
         }
 
         var normalizedStopReason = NormalizeStopReason(stopReason);
@@ -2505,6 +2517,10 @@ public partial class AutoTagService
         => string.Equals(status, AutoTagLiterals.QueuedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.TaggingStatus, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPausedOrInterruptedRunStatus(string? status)
+        => string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase);
 
     private static AutoTagJob CreateCompactTerminalJob(AutoTagJob source)
     {
@@ -4920,6 +4936,11 @@ public partial class AutoTagService
             AutoTagLiterals.ManualTrigger => AutoTagLiterals.ManualTrigger,
             AutoTagLiterals.AutomationTrigger => AutoTagLiterals.AutomationTrigger,
             AutoTagLiterals.ScheduleTrigger => AutoTagLiterals.ScheduleTrigger,
+
+            // Resume successors are admitted with the recovery trigger; coercing it to
+            // "invalid" here made every enhancement resume fail the trigger policy and
+            // land as a blocked job with zero logs.
+            AutoTagLiterals.RecoveryTrigger => AutoTagLiterals.RecoveryTrigger,
             _ => AutoTagLiterals.InvalidTrigger
         };
     }
