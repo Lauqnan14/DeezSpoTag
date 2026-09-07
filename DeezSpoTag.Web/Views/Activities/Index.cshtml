@@ -7592,11 +7592,40 @@ function applyLatestAnalysis(latest, addToRecent = true) {
     if (moodTagsEl) moodTagsEl.textContent = formatList(analysis?.moodTags);
     if (essentiaEl) essentiaEl.textContent = formatList(analysis?.essentiaGenres);
     if (lastfmEl) {
+        // Show each resolved tag with the engine/platform that decided it,
+        // straight from the persisted semantic evidence.
+        const engines = {
+            embedded: 'Embedded',
+            audiomack: 'Audiomack',
+            lastfm: 'Last.fm',
+            'essentia-discogs519': 'Discogs519',
+            'essentia-mood': 'Essentia'
+        };
+        const winner = {};
+        try {
+            const arr = JSON.parse(analysis?.semanticEvidenceJson || '[]');
+            for (const item of arr) {
+                const key = String(item.canonicalValue || '').toLowerCase();
+                if (!key) continue;
+                if (!winner[key] || (item.finalWeight ?? 0) > (winner[key].finalWeight ?? 0)) {
+                    winner[key] = item;
+                }
+            }
+        } catch { /* legacy rows have no evidence */ }
+
+        const formatEngineTag = (value) => {
+            const item = winner[String(value).toLowerCase()];
+            if (!item) return value;
+            const engine = engines[item.source] || item.source;
+            return `${value} · ${engine}`;
+        };
+
         const resolvedTags = [
             ...(Array.isArray(analysis?.resolvedGenres) ? analysis.resolvedGenres : []),
             ...(Array.isArray(analysis?.resolvedStyles) ? analysis.resolvedStyles : []),
             ...(Array.isArray(analysis?.resolvedMoods) ? analysis.resolvedMoods : [])
-        ];
+        ].map(formatEngineTag);
+
         lastfmEl.textContent = resolvedTags.length > 0
             ? formatList(resolvedTags)
             : formatList(analysis?.lastfmTags);
