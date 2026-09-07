@@ -2928,7 +2928,7 @@ async function loadAnalysisStatus() {
             lastRunEl.textContent = formatTimestamp(lastRunValue);
         }
     } catch (error) {
-        statusEl.textContent = 'Status unavailable';
+        statusEl.textContent = 'Status unavailable: ' + String(error).slice(0, 120);
         if (lastRunEl) {
             lastRunEl.textContent = 'Unknown';
         }
