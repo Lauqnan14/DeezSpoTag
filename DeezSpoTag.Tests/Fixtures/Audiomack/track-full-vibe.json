@@ -1,0 +1,21 @@
+{
+  "id": "8526341",
+  "url": "https://audiomack.com/piano-pusha/song/amapiano-nights",
+  "urlSlug": "amapiano-nights",
+  "artistSlug": "piano-pusha",
+  "title": "Amapiano Nights",
+  "artist": "Piano Pusha",
+  "artists": ["Piano Pusha", "Guest Vocalist"],
+  "album": "Piano Season",
+  "albumId": "771002",
+  "genre": "afrosounds",
+  "subgenres": ["amapiano", "afrobeats"],
+  "moods": ["happy", "party"],
+  "mood": "happy",
+  "isrc": "ZAAPA2600001",
+  "label": "Piano Season Label",
+  "durationSeconds": 372,
+  "artworkUrl": "https://i.audiomack.com/piano-pusha/cover.webp",
+  "releasedDate": "2026-08-14",
+  "uploaderName": "Piano Pusha"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "8527004",
+  "url": "https://audiomack.com/sunday-voices/song/sunday-glory",
+  "urlSlug": "sunday-glory",
+  "artistSlug": "sunday-voices",
+  "title": "Sunday Glory",
+  "artist": "Sunday Voices",
+  "artists": ["Sunday Voices", "The Choir"],
+  "album": "Glory Hours",
+  "albumId": "771300",
+  "genre": "gospel",
+  "subgenres": ["contemporary gospel"],
+  "moods": ["uplifting", "reflective"],
+  "mood": "uplifting",
+  "isrc": "ZAAPA2600002",
+  "label": "Glory Hours Label",
+  "durationSeconds": 411,
+  "artworkUrl": "https://i.audiomack.com/sunday-voices/cover.webp",
+  "releasedDate": "2026-09-01",
+  "uploaderName": "Sunday Voices"
+}
