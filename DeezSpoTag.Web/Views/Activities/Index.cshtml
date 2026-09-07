@@ -7620,7 +7620,7 @@ function applyLatestAnalysis(latest, addToRecent = true) {
 
         const ordered = [...tags.values()]
             .sort((a, b) => b.finalWeight - a.finalWeight)
-            .map((tag) => `${tag.value} · ${platforms[tag.source] || tag.source}`);
+            .map((tag) => tag.value);
 
         lastfmEl.textContent = ordered.length > 0 ? formatList(ordered) : 'None';
     }
