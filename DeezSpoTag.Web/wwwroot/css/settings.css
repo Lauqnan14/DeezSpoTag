@@ -532,15 +532,7 @@
     border-color: var(--border-accent);
 }
 
-.checkbox-item:has(input[type="checkbox"]:checked) {
-    border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-secondary));
-    background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-tertiary));
-}
 
-.checkbox-item:has(input[type="checkbox"]:checked) .checkbox-label,
-.checkbox-item:has(input[type="checkbox"]:checked) label {
-    color: var(--primary-color);
-}
 
 .form-checkbox {
     width: 18px;
