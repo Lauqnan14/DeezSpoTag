@@ -35,6 +35,12 @@ public sealed record AudiomackSongCandidate(
     string? UploaderName,
     string? AlbumId)
 {
+    /// <summary>Creator-set subgenres; empty when the payload omits them.</summary>
+    public IReadOnlyList<string> Subgenres { get; init; } = Array.Empty<string>();
+
+    /// <summary>Creator-set moods; empty when the payload omits them.</summary>
+    public IReadOnlyList<string> Moods { get; init; } = Array.Empty<string>();
+
     public bool HasIdentity => !string.IsNullOrWhiteSpace(Id) || !string.IsNullOrWhiteSpace(Url);
 
     /// <summary>
@@ -82,7 +88,31 @@ public sealed record AudiomackSongCandidate(
             UrlSlug: GetStringOrNull(element, "url_slug"),
             ArtistSlug: GetStringOrNull(element, "artist_slug") ?? uploaderUrlSlug,
             UploaderName: uploaderName,
-            AlbumId: GetStringOrNull(element, "album_id"));
+            AlbumId: GetStringOrNull(element, "album_id"))
+        {
+            Subgenres = GetStringArrayOrNull(element, "subgenres"),
+            Moods = GetStringArrayOrNull(element, "moods")
+        };
+    }
+
+    private static IReadOnlyList<string> GetStringArrayOrNull(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        var output = new List<string>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(item.GetString()))
+            {
+                output.Add(item.GetString()!.Trim());
+            }
+        }
+
+        return output;
     }
 
     private static string? GetStringOrNull(JsonElement element, string propertyName)
