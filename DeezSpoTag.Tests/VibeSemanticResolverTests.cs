@@ -43,6 +43,7 @@ public sealed class VibeSemanticResolverTests
     public void Audiomack_IsTheResolvedAuthority_NotTheAcousticModel()
     {
         var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
             AmapianoTrack, LastFmTrack, null, AcousticGenres, null);
 
         Assert.Equal(new[] { "Afrosounds" }, resolution.ResolvedGenres);
@@ -57,6 +58,7 @@ public sealed class VibeSemanticResolverTests
     public void CorroboratingLastFm_RaisesStyleConfidence()
     {
         var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
             AmapianoTrack, LastFmTrack, null, AcousticGenres, null);
 
         var amapiano = resolution.SemanticEvidence
@@ -73,6 +75,7 @@ public sealed class VibeSemanticResolverTests
     public void Evidence_RetainsAllIndependentSources()
     {
         var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
             AmapianoTrack, LastFmTrack, null, AcousticGenres,
             new[] { new VibeSemanticResolver.AcousticMoodEvidence("Happy", 0.79) });
 
@@ -87,6 +90,7 @@ public sealed class VibeSemanticResolverTests
     public void AudiomackUnavailable_FallsBackToLastFmThenAcoustic()
     {
         var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
             null, LastFmTrack, null, AcousticGenres, null);
 
         // Last.fm community tags resolve as styles; acoustic broad genres win genres.
@@ -100,6 +104,7 @@ public sealed class VibeSemanticResolverTests
     {
         var audiomack = AmapianoTrack with { Subgenres = new[] { "Afro-Fusion" } };
         var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
             audiomack, LastFmTrack, null, AcousticGenres, null);
 
         Assert.Contains("Afro-Fusion", resolution.ResolvedStyles);
@@ -110,7 +115,7 @@ public sealed class VibeSemanticResolverTests
     [Fact]
     public void EverythingUnavailable_ResolvesEmptyButSucceeds()
     {
-        var resolution = VibeSemanticResolver.Resolve(null, null, null, null, null);
+        var resolution = VibeSemanticResolver.Resolve(null, null, null, null, null, null);
         Assert.Empty(resolution.ResolvedGenres);
         Assert.Empty(resolution.ResolvedStyles);
         Assert.Empty(resolution.ResolvedMoods);

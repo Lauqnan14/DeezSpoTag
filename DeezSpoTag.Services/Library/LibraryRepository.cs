@@ -5652,9 +5652,9 @@ ON CONFLICT(track_id) DO UPDATE SET
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO track_analysis
-    (track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml)
+    (track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml, metadata_json)
 VALUES
-    (@trackId, @libraryId, @status, @energy, @rms, @zeroCrossing, @spectralCentroid, @bpm, @beatsCount, @key, @keyScale, @keyStrength, @loudness, @dynamicRange, @danceability, @instrumentalness, @acousticness, @speechiness, @danceabilityMl, @valence, @arousal, @analyzedAtUtc, @error, @analysisMode, @analysisVersion, @moodTags, @moodHappy, @moodSad, @moodRelaxed, @moodAggressive, @moodParty, @moodAcoustic, @moodElectronic, @essentiaGenres, @lastfmTags, @approachability, @engagement, @voiceInstrumental, @tonalAtonal, @valenceMl, @arousalMl, @dynamicComplexity, @loudnessMl)
+    (@trackId, @libraryId, @status, @energy, @rms, @zeroCrossing, @spectralCentroid, @bpm, @beatsCount, @key, @keyScale, @keyStrength, @loudness, @dynamicRange, @danceability, @instrumentalness, @acousticness, @speechiness, @danceabilityMl, @valence, @arousal, @analyzedAtUtc, @error, @analysisMode, @analysisVersion, @moodTags, @moodHappy, @moodSad, @moodRelaxed, @moodAggressive, @moodParty, @moodAcoustic, @moodElectronic, @essentiaGenres, @lastfmTags, @approachability, @engagement, @voiceInstrumental, @tonalAtonal, @valenceMl, @arousalMl, @dynamicComplexity, @loudnessMl, @vibeMetadataJson)
 ON CONFLICT(track_id) DO UPDATE SET
     library_id = excluded.library_id,
     status = excluded.status,
@@ -5697,7 +5697,8 @@ ON CONFLICT(track_id) DO UPDATE SET
     valence_ml = excluded.valence_ml,
     arousal_ml = excluded.arousal_ml,
     dynamic_complexity = excluded.dynamic_complexity,
-    loudness_ml = excluded.loudness_ml;";
+    loudness_ml = excluded.loudness_ml,
+    metadata_json = excluded.metadata_json;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(TrackIdField, result.TrackId);
         command.Parameters.AddWithValue(LibraryIdField, (object?)result.LibraryId ?? DBNull.Value);
@@ -5743,6 +5744,8 @@ ON CONFLICT(track_id) DO UPDATE SET
         command.Parameters.AddWithValue("arousalMl", (object?)result.ArousalMl ?? DBNull.Value);
         command.Parameters.AddWithValue("dynamicComplexity", (object?)result.DynamicComplexity ?? DBNull.Value);
         command.Parameters.AddWithValue("loudnessMl", (object?)result.LoudnessMl ?? DBNull.Value);
+        var vibeMetadataJson = BuildVibeMetadataJson(result);
+        command.Parameters.AddWithValue("vibeMetadataJson", string.IsNullOrWhiteSpace(vibeMetadataJson) ? (object)DBNull.Value : vibeMetadataJson);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -5860,10 +5863,10 @@ WHERE f.enabled = 1
         bool includeVibeMetrics = false)
     {
         var moodTags = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 25, cancellationToken));
-        var (resolvedGenres, resolvedStyles, resolvedMoods, semanticEvidenceJson, genreModel, valenceSource, arousalSource) =
+        var (resolvedGenres, resolvedStyles, resolvedMoods, semanticEvidenceJson, genreModel, valenceSource, arousalSource, embeddedFingerprint) =
             includeVibeMetrics
                 ? ReadVibeMetadataBlob(reader, offset + 43, cancellationToken)
-                : (null, null, null, null, null, null, null);
+                : (null, null, null, null, null, null, null, null);
         var essentiaGenres = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 33, cancellationToken));
         var lastfmTags = DeserializeStringListOrNull(await ReadNullableStringAsync(reader, offset + 34, cancellationToken));
         var analyzedAtText = await ReadNullableStringAsync(reader, offset + 21, cancellationToken);
@@ -5919,15 +5922,51 @@ WHERE f.enabled = 1
             semanticEvidenceJson,
             genreModel,
             valenceSource,
-            arousalSource);
+            arousalSource,
+            embeddedFingerprint);
     }
 
-    private static (List<string>? Genres, List<string>? Styles, List<string>? Moods, string? EvidenceJson, string? GenreModel, string? ValenceSource, string? ArousalSource) ReadVibeMetadataBlob(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    private static string? BuildVibeMetadataJson(TrackAnalysisResultDto result)
+    {
+        if (result.ResolvedGenres is null && result.ResolvedStyles is null && result.ResolvedMoods is null
+            && string.IsNullOrWhiteSpace(result.SemanticEvidenceJson)
+            && string.IsNullOrWhiteSpace(result.EmbeddedSemanticFingerprint))
+        {
+            return null;
+        }
+
+        object? evidence = null;
+        if (!string.IsNullOrWhiteSpace(result.SemanticEvidenceJson))
+        {
+            try
+            {
+                evidence = JsonSerializer.Deserialize<object>(result.SemanticEvidenceJson);
+            }
+            catch (JsonException)
+            {
+                evidence = null;
+            }
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            resolvedGenres = result.ResolvedGenres,
+            resolvedStyles = result.ResolvedStyles,
+            resolvedMoods = result.ResolvedMoods,
+            semanticEvidence = evidence,
+            genreModel = result.GenreModel,
+            valenceSource = result.ValenceSource,
+            arousalSource = result.ArousalSource,
+            embeddedSemanticFingerprint = result.EmbeddedSemanticFingerprint
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
+    }
+
+    private static (List<string>? Genres, List<string>? Styles, List<string>? Moods, string? EvidenceJson, string? GenreModel, string? ValenceSource, string? ArousalSource, string? EmbeddedFingerprint) ReadVibeMetadataBlob(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
     {
         var json = reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
         if (string.IsNullOrWhiteSpace(json))
         {
-            return (null, null, null, null, null, null, null);
+            return (null, null, null, null, null, null, null, null);
         }
 
         try
@@ -5955,11 +5994,11 @@ WHERE f.enabled = 1
                 evidence = semantic.GetRawText();
             }
 
-            return (ParseArray("resolvedGenres"), ParseArray("resolvedStyles"), ParseArray("resolvedMoods"), evidence, PlainString("genreModel"), PlainString("valenceSource"), PlainString("arousalSource"));
+            return (ParseArray("resolvedGenres"), ParseArray("resolvedStyles"), ParseArray("resolvedMoods"), evidence, PlainString("genreModel"), PlainString("valenceSource"), PlainString("arousalSource"), PlainString("embeddedSemanticFingerprint"));
         }
         catch (JsonException)
         {
-            return (null, null, null, null, null, null, null);
+            return (null, null, null, null, null, null, null, null);
         }
     }
 

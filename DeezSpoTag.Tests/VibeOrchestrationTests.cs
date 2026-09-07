@@ -53,7 +53,9 @@ public sealed class VibeOrchestrationTests
     public void FullSourceCase_ResolvesAudiomackAuthority_WithAllFourSources()
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), AfrosoundsTrack, TrackTags, artistTags: null);
+            Output(),
+            null, // embedded
+            AfrosoundsTrack, TrackTags, artistTags: null);
 
         Assert.Equal(new[] { "Afrosounds" }, vibe.ResolvedGenres);
         Assert.Equal(new[] { "Amapiano", "Afrobeats" }, vibe.ResolvedStyles);
@@ -72,7 +74,9 @@ public sealed class VibeOrchestrationTests
     public void AudiomackUnavailable_AnalysisSucceedsWithRetainedEvidence()
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), null, TrackTags, null);
+            Output(),
+            null, // embedded
+            null, TrackTags, null);
 
         Assert.Contains("Amapiano", vibe.ResolvedStyles);
         Assert.Contains("Electronic", vibe.ResolvedGenres);
@@ -87,7 +91,9 @@ public sealed class VibeOrchestrationTests
     public void LastFmUnavailable_AudiomackAndAcousticStillComplete()
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), AfrosoundsTrack, null, null);
+            Output(),
+            null, // embedded
+            AfrosoundsTrack, null, null);
 
         Assert.Equal(new[] { "Afrosounds" }, vibe.ResolvedGenres);
         Assert.Equal(new[] { "Amapiano", "Afrobeats" }, vibe.ResolvedStyles);
@@ -99,7 +105,7 @@ public sealed class VibeOrchestrationTests
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
             Output(valenceSource: "deam-msd-musicnn-2", arousalSource: "deam-msd-musicnn-2"),
-            null, null, null);
+            null, null, null, null);
 
         Assert.NotEmpty(vibe.ResolvedGenres);
         Assert.Equal("discogs519-maest-30s-pw-519l", vibe.GenreModel);
@@ -112,7 +118,9 @@ public sealed class VibeOrchestrationTests
     {
         // A below-gate match never reaches the resolver: FindTrackAsync returns null.
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), null, TrackTags, null);
+            Output(),
+            null, // embedded
+            null, TrackTags, null);
 
         Assert.DoesNotContain("audiomack", ParseSources(vibe.SemanticEvidenceJson));
     }
@@ -121,7 +129,9 @@ public sealed class VibeOrchestrationTests
     public void SameTierValues_AllRetainWithinOneEntry()
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), AfrosoundsTrack, null, null);
+            Output(),
+            null, // embedded
+            AfrosoundsTrack, null, null);
 
         // Both audiomack styles and both audiomack moods survive — the winning tier
         // retains all of its values, never just the single highest.
@@ -135,7 +145,9 @@ public sealed class VibeOrchestrationTests
         var track = new TrackAnalysisInputDto(1, 1, "/music/x.flac", 1000);
         var metrics = new TrackAnalysisBackgroundService.TrackSignalMetrics(0.5, 0.1, 0.2, 120, 480, 5, "C", 0.8, -8, 6, 0.5);
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), AfrosoundsTrack, TrackTags, null);
+            Output(),
+            null, // embedded
+            AfrosoundsTrack, TrackTags, null);
 
         var result = TrackAnalysisBackgroundService.CreateCompletedAnalysisResult(
             track, metrics, Output(), null, vibe);
@@ -156,7 +168,9 @@ public sealed class VibeOrchestrationTests
     public void SemanticEvidenceJson_UsesTheDirectiveShape()
     {
         var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
-            Output(), AfrosoundsTrack, TrackTags, null);
+            Output(),
+            null, // embedded
+            AfrosoundsTrack, TrackTags, null);
 
         using var document = JsonDocument.Parse(vibe.SemanticEvidenceJson!);
         var first = document.RootElement.EnumerateArray().First();
@@ -164,6 +178,56 @@ public sealed class VibeOrchestrationTests
         {
             Assert.True(first.TryGetProperty(name, out _), $"missing {name}");
         }
+    }
+
+
+    [Fact]
+    public void EmbeddedTags_HardAnchorResolution_OverOnlineAndAcoustic()
+    {
+        var embedded = new EmbeddedVibeMetadata(
+            new[] { "Afrosounds" },
+            new[] { "Amapiano", "Afrobeats" },
+            new[] { "Happy", "Party" });
+
+        var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
+            Output(), embedded, AfrosoundsTrack, TrackTags, null);
+
+        // Embedded wins every dimension even when the acoustic model disagrees.
+        Assert.Equal(new[] { "Afrosounds" }, vibe.ResolvedGenres);
+        Assert.Equal(new[] { "Amapiano", "Afrobeats" }, vibe.ResolvedStyles);
+        Assert.Equal(new[] { "Happy", "Party" }, vibe.ResolvedMoods);
+        // Lower tiers remain evidence.
+        Assert.Contains("essentia-discogs519", ParseSources(vibe.SemanticEvidenceJson));
+        Assert.Contains("source\":\"embedded", vibe.SemanticEvidenceJson);
+        Assert.Contains("finalWeight\":1", vibe.SemanticEvidenceJson);
+    }
+
+    [Fact]
+    public void EmbeddedFingerprint_IsDeterministic_AndChangesWithValues()
+    {
+        var one = new EmbeddedVibeMetadata(new[] { "Afrosounds" }, new[] { "Amapiano" }, new[] { "Happy" });
+        var same = new EmbeddedVibeMetadata(new[] { "afrosounds" }, new[] { "amapiano" }, new[] { "happy" });
+        var different = new EmbeddedVibeMetadata(new[] { "House" }, new[] { "Amapiano" }, new[] { "Happy" });
+
+        Assert.Equal(one.ComputeFingerprint(), same.ComputeFingerprint());
+        Assert.NotEqual(one.ComputeFingerprint(), different.ComputeFingerprint());
+    }
+
+    [Fact]
+    public void MissingEmbeddedDimension_FallsThroughIndependently()
+    {
+        var embedded = new EmbeddedVibeMetadata(
+            new[] { "Afrosounds" },
+            Array.Empty<string>(),
+            new[] { "Happy", "Party" });
+
+        var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
+            Output(), embedded, AfrosoundsTrack, TrackTags, null);
+
+        // Genre anchored by embedded; style falls through to the winning lower tier.
+        Assert.Equal(new[] { "Afrosounds" }, vibe.ResolvedGenres);
+        Assert.Contains("Amapiano", vibe.ResolvedStyles);
+        Assert.Equal(new[] { "Happy", "Party" }, vibe.ResolvedMoods);
     }
 
     private static string[] ParseSources(string? evidenceJson)

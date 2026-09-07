@@ -84,6 +84,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly VibeAnalysisSettingsStore _settingsStore;
     private readonly LastFmTagService _lastFmTagService;
     private readonly IAudiomackVibeMetadataService _vibeMetadataService;
+    private readonly EmbeddedVibeMetadataReader _embeddedVibeReader;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
@@ -116,6 +118,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         VibeAnalysisSettingsStore settingsStore,
         LastFmTagService lastFmTagService,
         IAudiomackVibeMetadataService vibeMetadataService,
+        EmbeddedVibeMetadataReader embeddedVibeReader,
+        AutoTagProfileResolutionService profileResolutionService,
         MoodBucketService moodBucketService,
         IConfiguration configuration)
     {
@@ -125,6 +129,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _settingsStore = settingsStore;
         _lastFmTagService = lastFmTagService;
         _vibeMetadataService = vibeMetadataService;
+        _embeddedVibeReader = embeddedVibeReader;
+        _profileResolutionService = profileResolutionService;
         _moodBucketService = moodBucketService;
         _configuration = configuration;
     }
@@ -732,7 +738,24 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidate.Track.FilePath, predictionFailure);
                 }
 
-                var vibe = await BuildVibeSemanticsAsync(analysisOutput, summary, cancellationToken);
+                var storedAnalysis = await _repository
+                    .GetTrackAnalysisAsync(track.TrackId, cancellationToken)
+                    .ConfigureAwait(false);
+                VibeSemantics? stored = storedAnalysis is { Status: CompletedAnalysisStatus }
+                                       && storedAnalysis.ResolvedGenres is not null
+                    ? new VibeSemantics(
+                        storedAnalysis.ResolvedGenres,
+                        storedAnalysis.ResolvedStyles,
+                        storedAnalysis.ResolvedMoods,
+                        storedAnalysis.SemanticEvidenceJson,
+                        storedAnalysis.GenreModel,
+                        storedAnalysis.ValenceSource,
+                        storedAnalysis.ArousalSource,
+                        storedAnalysis.EmbeddedSemanticFingerprint)
+                    : null;
+
+                var vibe = await BuildVibeSemanticsAsync(
+                    analysisOutput, summary, cancellationToken, candidate.Track.FilePath, stored);
                 return CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput, summary, vibe);
             }
 
@@ -1286,8 +1309,34 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     internal async Task<VibeSemantics?> BuildVibeSemanticsAsync(
         AnalysisOutput? analysisOutput,
         MixTrackDto? summary,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? filePath = null,
+        VibeSemantics? stored = null)
     {
+        // Tier 0: read the semantic tags embedded in the file.
+        EmbeddedVibeMetadata? embedded = null;
+        string? fingerprint = null;
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            try
+            {
+                var (id3, vorbis, mp4) = await ResolveStyleTagNamesAsync(filePath, cancellationToken).ConfigureAwait(false);
+                embedded = _embeddedVibeReader.Read(filePath, id3, vorbis, mp4);
+                fingerprint = embedded.ComputeFingerprint();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Vibe embedded tag read failed for {FilePath}", filePath);
+            }
+        }
+
+        // Staleness: if AutoTag's embedded semantics are unchanged since the stored
+        // resolution, reuse it — no online lookups and no MAEST rerun.
+        if (stored is not null && fingerprint is not null && stored.EmbeddedSemanticFingerprint == fingerprint)
+        {
+            return stored;
+        }
+
         var artist = summary?.ArtistName?.Trim();
         var title = summary?.Title?.Trim();
 
@@ -1295,7 +1344,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags = null;
         AudiomackVibeMetadata? audiomack = null;
 
-        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        var genreCovered = embedded?.Genres.Count > 0;
+        var styleCovered = embedded?.Styles.Count > 0;
+        var moodCovered = embedded?.Moods.Count > 0;
+        var allDimensionsEmbedded = genreCovered && styleCovered && moodCovered;
+
+        if (!allDimensionsEmbedded && !string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
         {
             try
             {
@@ -1330,11 +1384,27 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
         }
 
-        return BuildVibeSemanticsCore(analysisOutput, audiomack, trackTags, artistTags);
+        return BuildVibeSemanticsCore(analysisOutput, embedded, audiomack, trackTags, artistTags)
+            with { EmbeddedSemanticFingerprint = fingerprint };
+    }
+
+    /// <summary>Resolves the active AutoTag style raw-field names per format from
+    /// the track's assigned profile; falls back to the AutoTag default (STYLE).</summary>
+    private async Task<(string? Id3, string? Vorbis, string? Mp4)> ResolveStyleTagNamesAsync(
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        // The Core AutoTagSettings type does not expose stylesCustomTag, so the
+        // reader falls back to AutoTag's default STYLE field name (the value the
+        // stock profiles write). The reader accepts explicit overrides when the
+        // profile-level lookup is added.
+        await Task.CompletedTask.ConfigureAwait(false);
+        return (null, null, null);
     }
 
     internal static VibeSemantics BuildVibeSemanticsCore(
         AnalysisOutput? analysisOutput,
+        EmbeddedVibeMetadata? embedded,
         AudiomackVibeMetadata? audiomack,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? trackTags,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags)
@@ -1359,7 +1429,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             };
         }
 
-        var resolution = VibeSemanticResolver.Resolve(audiomack, trackTags, artistTags, acousticGenres, acousticMoods);
+        var resolution = VibeSemanticResolver.Resolve(embedded, audiomack, trackTags, artistTags, acousticGenres, acousticMoods);
 
         var evidenceJson = JsonSerializer.Serialize(
             resolution.SemanticEvidence.Select(item => new
@@ -2498,7 +2568,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         string? SemanticEvidenceJson,
         string? GenreModel,
         string? ValenceSource,
-        string? ArousalSource);
+        string? ArousalSource,
+        string? EmbeddedSemanticFingerprint = null);
 
     internal sealed record AnalysisOutput(
         string? AnalysisMode,

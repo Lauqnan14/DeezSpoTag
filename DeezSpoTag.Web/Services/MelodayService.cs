@@ -1892,9 +1892,11 @@ public sealed class MelodayService
 
     private static IReadOnlyList<string> ResolveAnalysisGenres(TrackAnalysisResultDto analysis)
     {
-        var genres = analysis.EssentiaGenres is { Count: > 0 }
-            ? analysis.EssentiaGenres
-            : analysis.LastfmTags ?? Array.Empty<string>();
+        var genres = analysis.ResolvedGenres is { Count: > 0 }
+            ? analysis.ResolvedGenres
+            : analysis.EssentiaGenres is { Count: > 0 }
+                ? analysis.EssentiaGenres
+                : analysis.LastfmTags ?? Array.Empty<string>();
         return genres
             .Where(static genre => !string.IsNullOrWhiteSpace(genre))
             .Select(NormalizeVibeGenre)

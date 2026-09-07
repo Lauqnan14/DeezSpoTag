@@ -284,7 +284,8 @@ public sealed record TrackAnalysisResultDto(
     string? SemanticEvidenceJson = null,
     string? GenreModel = null,
     string? ValenceSource = null,
-    string? ArousalSource = null);
+    string? ArousalSource = null,
+    string? EmbeddedSemanticFingerprint = null);
 
 public sealed record PlayHistoryEntryDto(
     long TrackId,

@@ -24,6 +24,7 @@ public static class VibeSemanticResolver
         IReadOnlyList<VibeSemanticEvidence> SemanticEvidence);
 
     public static VibeResolution Resolve(
+        EmbeddedVibeMetadata? embedded,
         AudiomackVibeMetadata? audiomack,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? lastFmTrackTags,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? lastFmArtistTags,
@@ -31,6 +32,27 @@ public static class VibeSemanticResolver
         IReadOnlyList<AcousticMoodEvidence>? acousticMoods)
     {
         var evidence = new List<VibeSemanticEvidence>();
+
+        // Embedded file tags: Tier 0. They represent the metadata actually stored in
+        // the user's music file, so the winning tier below hard-anchors resolution —
+        // lower tiers stay evidence only.
+        if (embedded is not null)
+        {
+            foreach (var genre in embedded.Genres)
+            {
+                evidence.Add(Build("embedded", VibeSemanticKind.Genre, VibeEvidenceScope.Track, genre, 1d));
+            }
+
+            foreach (var style in embedded.Styles)
+            {
+                evidence.Add(Build("embedded", VibeSemanticKind.Style, VibeEvidenceScope.Track, style, 1d));
+            }
+
+            foreach (var mood in embedded.Moods)
+            {
+                evidence.Add(Build("embedded", VibeSemanticKind.Mood, VibeEvidenceScope.Track, mood, 1d));
+            }
+        }
 
         // Audiomack: creator-declared, typed by field.
         if (audiomack is not null)
@@ -189,6 +211,7 @@ public static class VibeSemanticResolver
     private static int RankSource(VibeSemanticEvidence evidence)
         => evidence.Source switch
         {
+            "embedded" => 4,
             "audiomack" => 3,
             "lastfm" => evidence.Scope == VibeEvidenceScope.Track ? 2 : 0,
             _ => 1

@@ -167,9 +167,16 @@ internal static class VibeSimilarityScorer
         TrackAnalysisResultDto candidate)
     {
         var sourceTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Resolved Vibe semantics are canonical; legacy fields remain as fallback.
+        AddTags(sourceTags, source.ResolvedGenres);
+        AddTags(sourceTags, source.ResolvedStyles);
+        AddTags(sourceTags, source.ResolvedMoods);
         AddTags(sourceTags, source.LastfmTags);
         AddTags(sourceTags, source.EssentiaGenres);
         var candidateTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddTags(candidateTags, candidate.ResolvedGenres);
+        AddTags(candidateTags, candidate.ResolvedStyles);
+        AddTags(candidateTags, candidate.ResolvedMoods);
         AddTags(candidateTags, candidate.LastfmTags);
         AddTags(candidateTags, candidate.EssentiaGenres);
         if (sourceTags.Count == 0 || candidateTags.Count == 0)
