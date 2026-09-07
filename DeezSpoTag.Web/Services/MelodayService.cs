@@ -24,6 +24,9 @@ public sealed class MelodayOptions
     public double SonicSimilarityDistance { get; set; } = 0.35;
     public int UpdateIntervalMinutes { get; set; } = 30;
     public string Mode { get; set; } = MelodayModes.Sonic;
+    public List<MelodayScheduleSlot> Slots { get; set; } = MelodayScheduleSlots.Normalize(null);
+    public List<MelodayLibrarySchedule> Libraries { get; set; } = new();
+    public int MissedRunGraceMinutes { get; set; } = 60;
     public string MoodMapPath { get; set; } = "Resources/meloday/assets/moodmap.json";
     public List<string> TargetServers { get; set; } = new() { MelodayTargetServers.Plex, MelodayTargetServers.Jellyfin, MelodayTargetServers.Navidrome };
     public List<long> TargetLibraryIds { get; set; } = new();
@@ -37,13 +40,13 @@ public sealed record MelodayRunResult(
     IReadOnlyList<MelodayHistoryImportResult>? HistorySources = null);
 public sealed record MelodayStatusDto(
     bool Enabled,
-    string CurrentPeriod,
+    string? NextSlot,
     DateTimeOffset? LastRunUtc,
     string? LastMessage,
     int MaxTracks,
     int HistoryLookbackDays,
     int ExcludePlayedDays,
-    string Mode,
+    int MissedRunGraceMinutes,
     IReadOnlyList<MelodayHistoryImportResult> HistorySources);
 
 public static class MelodayModes
@@ -122,13 +125,6 @@ public sealed class MelodayCollaborators
 
 public sealed class MelodayService
 {
-    private const string DawnPeriodName = "Dawn";
-    private const string EarlyMorningPeriodName = "Early Morning";
-    private const string MorningPeriodName = "Morning";
-    private const string AfternoonPeriodName = "Afternoon";
-    private const string EveningPeriodName = "Evening";
-    private const string NightPeriodName = "Night";
-    private const string LateNightPeriodName = "Late Night";
     private const string MelodayAppUserName = "Meloday";
     private const string MelodayAppUserId = "deezspotag:meloday";
     private readonly MelodayOptions _options;
@@ -141,6 +137,7 @@ public sealed class MelodayService
     private readonly NavidromeHistoryImportService _navidromeHistoryImportService;
     private readonly ILogger<MelodayService> _logger;
     private readonly MelodaySettingsStore _settingsStore;
+    private readonly MelodayRunStateStore _runStateStore;
     private readonly Random _random = new();
     private readonly string _webRoot;
     private DateTimeOffset? _lastRunUtc;
@@ -157,8 +154,10 @@ public sealed class MelodayService
         IReadOnlyList<long> HistoryTrackIds,
         IReadOnlyList<long> BalancedHistorical,
         SimilarTrackContext SimilarContext,
-        string PeriodName,
-        MelodayPeriod Period,
+        string SlotId,
+        string SlotName,
+        string SlotGenerateAt,
+        MelodayDaypart Daypart,
         string? Username,
         long MixUserId,
         PlexAuth? SonicPlex);
@@ -179,32 +178,20 @@ public sealed class MelodayService
         "mix cut", "cut", "dj mix"
     };
 
-    private static readonly int[] DawnHours = [3, 4, 5];
-    private static readonly int[] EarlyMorningHours = [6, 7, 8];
-    private static readonly int[] MorningHours = [9, 10, 11];
-    private static readonly int[] AfternoonHours = [12, 13, 14, 15];
-    private static readonly int[] EveningHours = [16, 17, 18];
-    private static readonly int[] NightHours = [19, 20, 21];
-    private static readonly int[] LateNightHours = [22, 23, 0, 1, 2];
     private static readonly int[] AllDayHours = Enumerable.Range(0, 24).ToArray();
 
-    private static readonly Dictionary<string, MelodayPeriod> DefaultPeriods = new Dictionary<string, MelodayPeriod>
-    {
-        [DawnPeriodName] = new MelodayPeriod(DawnHours, "at dawn"),
-        [EarlyMorningPeriodName] = new MelodayPeriod(EarlyMorningHours, "in the early morning"),
-        [MorningPeriodName] = new MelodayPeriod(MorningHours, "in the morning"),
-        [AfternoonPeriodName] = new MelodayPeriod(AfternoonHours, "during the afternoon"),
-        [EveningPeriodName] = new MelodayPeriod(EveningHours, "in the evening"),
-        [NightPeriodName] = new MelodayPeriod(NightHours, "at night"),
-        [LateNightPeriodName] = new MelodayPeriod(LateNightHours, "late at night")
-    };
+    private sealed record MelodayPlaylistInstance(
+        MelodayLibrarySchedule Library,
+        MelodayScheduleSlot Slot,
+        string Mode);
 
     public MelodayService(
         IOptions<MelodayOptions> options,
         MelodayCollaborators collaborators,
         IWebHostEnvironment env,
         ILogger<MelodayService> logger,
-        MelodaySettingsStore settingsStore)
+        MelodaySettingsStore settingsStore,
+        MelodayRunStateStore runStateStore)
     {
         _options = options.Value;
         _plexApiClient = collaborators.PlexApiClient;
@@ -217,6 +204,7 @@ public sealed class MelodayService
         _webRoot = env.WebRootPath;
         _logger = logger;
         _settingsStore = settingsStore;
+        _runStateStore = runStateStore;
     }
 
     private Task<MelodayOptions> GetEffectiveOptionsAsync()
@@ -224,13 +212,7 @@ public sealed class MelodayService
         return _settingsStore.LoadAsync(_options);
     }
 
-    public static string GetCurrentPeriodName(DateTimeOffset? now = null)
-    {
-        var hour = (now ?? DateTimeOffset.Now).Hour;
-        var match = DefaultPeriods.FirstOrDefault(entry => entry.Value.Hours.Contains(hour));
-        return string.IsNullOrWhiteSpace(match.Key) ? LateNightPeriodName : match.Key;
-    }
-
+    /// <summary>Manual run: generate every playlist instance the current schedule asks for, today.</summary>
     public async Task<MelodayRunResult> RunAsync(bool refreshHistory, CancellationToken cancellationToken = default)
     {
         var effective = await GetEffectiveOptionsAsync();
@@ -241,6 +223,82 @@ public sealed class MelodayService
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
+        var instances = ResolvePlaylistInstances(effective);
+        if (instances.Count == 0)
+        {
+            _lastMessage = "No Meloday schedule slots are enabled for any library.";
+            return new MelodayRunResult(false, _lastMessage, null);
+        }
+
+        return await RunInstancesAsync(effective, instances, refreshHistory, DateTimeOffset.Now, cancellationToken);
+    }
+
+    /// <summary>Scheduled run: generate exactly one (library, slot, mode) instance.</summary>
+    public async Task<MelodayRunResult> RunSlotAsync(
+        long libraryId,
+        string slotId,
+        string mode,
+        CancellationToken cancellationToken = default)
+    {
+        var effective = await GetEffectiveOptionsAsync();
+        effective.Mode = MelodayModes.Normalize(effective.Mode);
+        if (!effective.Enabled)
+        {
+            _lastMessage = "Meloday disabled.";
+            return new MelodayRunResult(false, _lastMessage, null);
+        }
+
+        var instance = ResolvePlaylistInstances(effective).FirstOrDefault(candidate =>
+            candidate.Library.LibraryId == libraryId
+            && string.Equals(candidate.Slot.Id, MelodayScheduleSlots.NormalizeSlotId(slotId), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(candidate.Mode, MelodayModes.Normalize(mode), StringComparison.OrdinalIgnoreCase));
+        if (instance is null)
+        {
+            _lastMessage = $"Meloday playlist {MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode)} is no longer scheduled.";
+            return new MelodayRunResult(false, _lastMessage, null);
+        }
+
+        return await RunInstancesAsync(effective, new[] { instance }, refreshHistory: true, DateTimeOffset.Now, cancellationToken);
+    }
+
+    private static List<MelodayPlaylistInstance> ResolvePlaylistInstances(MelodayOptions effective)
+    {
+        var instances = new List<MelodayPlaylistInstance>();
+        foreach (var library in effective.Libraries)
+        {
+            if (!library.Enabled)
+            {
+                continue;
+            }
+
+            foreach (var assignment in library.Slots)
+            {
+                var slot = effective.Slots.FirstOrDefault(candidate => string.Equals(
+                    candidate.Id,
+                    assignment.SlotId,
+                    StringComparison.OrdinalIgnoreCase));
+                if (slot is null || !slot.Enabled)
+                {
+                    continue;
+                }
+
+                foreach (var mode in ResolveRunModes(assignment.Mode))
+                {
+                    instances.Add(new MelodayPlaylistInstance(library, slot, mode));
+                }
+            }
+        }
+
+        return instances;
+    }
+
+    private async Task<MelodayRunResult> RunInstancesAsync(
+        MelodayOptions effective,
+        IReadOnlyList<MelodayPlaylistInstance> instances,
+        bool refreshHistory,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         var selectedServers = MelodayTargetServers.Normalize(effective.TargetServers, defaultToAll: true);
         var auth = await _authService.LoadAsync();
         var targets = ResolveTargetServers(auth, selectedServers);
@@ -278,21 +336,30 @@ public sealed class MelodayService
         await _libraryRepository.BackfillPlayHistoryLibraryIdsAsync(cancellationToken);
         await _libraryRepository.DeleteLegacyMelodayMixesAsync(cancellationToken);
 
+        var scheduledLibraryIds = instances.Select(static instance => instance.Library.LibraryId).ToHashSet();
         var configuredFolders = new List<FolderDto>();
         foreach (var folder in await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
         {
+            if (!folder.LibraryId.HasValue || !scheduledLibraryIds.Contains(folder.LibraryId.Value))
+            {
+                continue;
+            }
+
             var tracks = await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
-                folder.LibraryId!.Value, folder.Id, cancellationToken);
+                folder.LibraryId.Value, folder.Id, cancellationToken);
             if (tracks.Count > 0)
             {
                 configuredFolders.Add(folder);
             }
         }
-        var configuredLibraries = ResolveMelodayLibraries(configuredFolders);
-        var libraries = ResolveMelodayLibraries(configuredFolders, effective.TargetLibraryIds);
+
         await _libraryRepository.DeleteInactiveMelodayMixesAsync(
-            configuredLibraries.Select(static library => library.Id).ToList(), cancellationToken);
-        if (libraries.Count == 0)
+            instances.Select(static instance => MelodayScheduleSlots.SlotIdForMix(
+                instance.Library.LibraryId,
+                instance.Slot.Id,
+                instance.Mode)).ToList(),
+            cancellationToken);
+        if (configuredFolders.Count == 0)
         {
             _lastMessage = "No selected nonempty configured music libraries were found.";
             return new MelodayRunResult(false, _lastMessage, null);
@@ -311,112 +378,61 @@ public sealed class MelodayService
         var mixUserId = await EnsureMelodayAppUserAsync(cancellationToken);
         var username = ResolveMelodayDisplayUsername(targets);
 
-        var periodName = GetCurrentPeriodName();
-        var period = DefaultPeriods[periodName];
-        var now = DateTimeOffset.Now;
         var lookbackStart = now.AddDays(-effective.HistoryLookbackDays);
         var excludeStart = now.AddDays(-effective.ExcludePlayedDays);
 
         var sonicPlex = targets.FirstOrDefault(static target => target.IsPlex)?.Plex;
-        var requestedModes = ResolveRunModes(effective.Mode);
         var results = new List<MelodayRunResult>();
-        foreach (var library in libraries)
+        foreach (var libraryGroup in instances.GroupBy(static instance => instance.Library.LibraryId))
         {
+            var library = libraryGroup.First().Library;
             var libraryFolders = configuredFolders
-                .Where(folder => folder.LibraryId == library.Id)
+                .Where(folder => folder.LibraryId == library.LibraryId)
                 .ToList();
-            var history = new List<PlayHistoryEntryDto>();
             var excludedTrackIds = new HashSet<long>();
             foreach (var historyUserId in historyUserIds)
             {
                 foreach (var folder in libraryFolders)
                 {
-                    var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
-                        historyUserId, library.Id, lookbackStart, period.Hours, now,
-                        cancellationToken, folder.Id, now.Offset);
-                    history.AddRange(userHistory);
-
-                    var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
-                        historyUserId, library.Id, excludeStart, cancellationToken, folder.Id);
-                    excludedTrackIds.UnionWith(userExcluded);
+                    excludedTrackIds.UnionWith(await _libraryRepository.GetPlayedTrackIdsSinceAsync(
+                        historyUserId, library.LibraryId, excludeStart, cancellationToken, folder.Id));
                 }
             }
 
-            var historyTrackIds = history
-                .Select(entry => entry.TrackId)
-                .Where(id => !excludedTrackIds.Contains(id))
-                .Distinct()
-                .ToList();
-            if (historyTrackIds.Count == 0)
-            {
-                history.Clear();
-                foreach (var historyUserId in historyUserIds)
-                {
-                    foreach (var folder in libraryFolders)
-                    {
-                        var allDayHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
-                            historyUserId, library.Id, lookbackStart, AllDayHours, now,
-                            cancellationToken, folder.Id, now.Offset);
-                        history.AddRange(allDayHistory);
-                    }
-                }
-
-                historyTrackIds = history
-                    .Select(entry => entry.TrackId)
-                    .Where(id => !excludedTrackIds.Contains(id))
-                    .Distinct()
-                    .ToList();
-                _logger.LogInformation(
-                    "Meloday found no eligible {PeriodName} history for library {LibraryId}; exact-folder all-day fallback resolved {HistoryTrackCount} tracks.",
-                    periodName,
-                    library.Id,
-                    historyTrackIds.Count);
-            }
-            var ratingKeyByTrackId = new Dictionary<long, string>();
-            var liveMetadataByTrackId = new Dictionary<long, PlexTrackMetadata>();
             var allowedTrackIds = new HashSet<long>();
             foreach (var folder in libraryFolders)
             {
                 allowedTrackIds.UnionWith(await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
-                    library.Id, folder.Id, cancellationToken));
+                    library.LibraryId, folder.Id, cancellationToken));
             }
-            var historyAnalyses = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
-                historyTrackIds.Where(allowedTrackIds.Contains).ToList(),
-                cancellationToken);
-            var historyGenresByTrackId = historyAnalyses.Values
-                .Where(IsCompletedAnalysis)
-                .Select(analysis => (analysis.TrackId, Genres: ResolveAnalysisGenres(analysis)))
-                .Where(static entry => entry.Genres.Count > 0)
-                .ToDictionary(static entry => entry.TrackId, static entry => entry.Genres);
-            var balancedHistorical = BuildBalancedHistoricalSelection(
-                history,
-                excludedTrackIds,
-                historyGenresByTrackId,
-                effective.MaxTracks);
+
             var similarContext = new SimilarTrackContext(
-                ratingKeyByTrackId,
+                new Dictionary<long, string>(),
                 excludedTrackIds,
                 excludeStart,
                 sonicPlex,
                 effective,
-                liveMetadataByTrackId,
+                new Dictionary<long, PlexTrackMetadata>(),
                 allowedTrackIds,
                 cancellationToken);
-            var runModeContext = new RunModeContext(
-                targets,
-                library,
-                historyTrackIds,
-                balancedHistorical,
-                similarContext,
-                periodName,
-                period,
-                username,
-                mixUserId,
-                sonicPlex);
 
-            foreach (var mode in requestedModes)
+            foreach (var instance in libraryGroup)
             {
-                results.Add(await RunModeAsync(mode, runModeContext, cancellationToken));
+                results.Add(await RunInstanceAsync(
+                    instance,
+                    library,
+                    libraryFolders,
+                    historyUserIds,
+                    lookbackStart,
+                    excludeStart,
+                    now,
+                    effective,
+                    targets,
+                    username,
+                    mixUserId,
+                    sonicPlex,
+                    similarContext,
+                    cancellationToken));
             }
         }
 
@@ -428,7 +444,7 @@ public sealed class MelodayService
         }
 
         _lastRunUtc = DateTimeOffset.UtcNow;
-        _lastMessage = $"Generated {successful.Count} of {results.Count} Meloday playlists across {libraries.Count} {(libraries.Count == 1 ? "library" : "libraries")}.";
+        _lastMessage = $"Generated {successful.Count} of {results.Count} Meloday playlists across {libraryGroupCount(instances)} {(libraryGroupCount(instances) == 1 ? "library" : "libraries")}.";
         if (successful.Count < results.Count)
         {
             var failureMessages = results
@@ -466,7 +482,115 @@ public sealed class MelodayService
             firstPlaylistId,
             degraded ? "degraded" : "complete",
             _lastImportResults);
+
+        static int libraryGroupCount(IReadOnlyList<MelodayPlaylistInstance> list)
+            => list.Select(static instance => instance.Library.LibraryId).Distinct().Count();
     }
+
+    private async Task<MelodayRunResult> RunInstanceAsync(
+        MelodayPlaylistInstance instance,
+        MelodayLibrarySchedule librarySchedule,
+        List<FolderDto> libraryFolders,
+        IReadOnlyList<long> historyUserIds,
+        DateTimeOffset lookbackStart,
+        DateTimeOffset excludeStart,
+        DateTimeOffset now,
+        MelodayOptions effective,
+        IReadOnlyList<MediaServerTarget> targets,
+        string? username,
+        long mixUserId,
+        PlexAuth? sonicPlex,
+        SimilarTrackContext similarContext,
+        CancellationToken cancellationToken)
+    {
+        var libraryId = librarySchedule.LibraryId;
+        var daypartHours = MelodayScheduleMath.DaypartHours(effective.Slots, instance.Slot.Id);
+        var isFullDayWindow = daypartHours.Count == 24;
+        var history = new List<PlayHistoryEntryDto>();
+        foreach (var historyUserId in historyUserIds)
+        {
+            foreach (var folder in libraryFolders)
+            {
+                var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
+                    historyUserId, libraryId, lookbackStart, daypartHours, now,
+                    cancellationToken, folder.Id, now.Offset);
+                history.AddRange(userHistory);
+            }
+        }
+
+        var historyTrackIds = history
+            .Select(entry => entry.TrackId)
+            .Where(trackId => !similarContext.ExcludedTrackIds.Contains(trackId))
+            .Distinct()
+            .ToList();
+        if (historyTrackIds.Count == 0 && !isFullDayWindow)
+        {
+            history.Clear();
+            foreach (var historyUserId in historyUserIds)
+            {
+                foreach (var folder in libraryFolders)
+                {
+                    var allDayHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
+                        historyUserId, libraryId, lookbackStart, AllDayHours, now,
+                        cancellationToken, folder.Id, now.Offset);
+                    history.AddRange(allDayHistory);
+                }
+            }
+
+            historyTrackIds = history
+                .Select(entry => entry.TrackId)
+                .Where(trackId => !similarContext.ExcludedTrackIds.Contains(trackId))
+                .Distinct()
+                .ToList();
+            _logger.LogInformation(
+                "Meloday found no eligible {SlotName} history for library {LibraryId}; exact-folder all-day fallback resolved {HistoryTrackCount} tracks.",
+                instance.Slot.Name,
+                libraryId,
+                historyTrackIds.Count);
+        }
+
+        var historyAnalyses = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
+            historyTrackIds.Where(similarContext.AllowedTrackIds.Contains).ToList(),
+            cancellationToken);
+        var historyGenresByTrackId = historyAnalyses.Values
+            .Where(IsCompletedAnalysis)
+            .Select(analysis => (analysis.TrackId, Genres: ResolveAnalysisGenres(analysis)))
+            .Where(static entry => entry.Genres.Count > 0)
+            .ToDictionary(static entry => entry.TrackId, static entry => entry.Genres);
+        var balancedHistorical = BuildBalancedHistoricalSelection(
+            history,
+            similarContext.ExcludedTrackIds,
+            historyGenresByTrackId,
+            effective.MaxTracks);
+        var runModeContext = new RunModeContext(
+            targets,
+            new LibraryDto(libraryId, libraryFolders.Select(static folder => folder.LibraryName).FirstOrDefault(static name => !string.IsNullOrWhiteSpace(name)) ?? $"Library {libraryId}"),
+            historyTrackIds,
+            balancedHistorical,
+            similarContext,
+            instance.Slot.Id,
+            instance.Slot.Name,
+            instance.Slot.GenerateAt,
+            new MelodayDaypart(daypartHours, MelodayScheduleSlots.SlotPhrase(instance.Slot.Id)),
+            username,
+            mixUserId,
+            sonicPlex);
+
+        var result = await RunModeAsync(instance.Mode, runModeContext, cancellationToken);
+        if (result.Success)
+        {
+            await _runStateStore.SetAsync(
+                MelodayRunStateStore.Key(libraryId, instance.Slot.Id, instance.Mode),
+                new MelodayRunStateEntry(
+                    DateOnly.FromDateTime(DateTimeOffset.Now.DateTime).ToString("o"),
+                    DateTimeOffset.UtcNow,
+                    "complete"),
+                cancellationToken);
+        }
+
+        return result;
+    }
+
 
     private async Task<MelodayRunResult> RunModeAsync(
         string mode,
@@ -484,10 +608,10 @@ public sealed class MelodayService
 
         var selectedTrackIds = finalTracks.Take(context.SimilarContext.Options.MaxTracks).ToList();
         var orderedTrackIds = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase)
-            ? OrderTracksDirect(selectedTrackIds, context.Period, context.SimilarContext.LiveMetadataByTrackId)
+            ? OrderTracksDirect(selectedTrackIds, context.Daypart, context.SimilarContext.LiveMetadataByTrackId)
             : await OrderTracksSonicAsync(
                 selectedTrackIds,
-                context.Period,
+                context.Daypart,
                 context.SonicPlex,
                 context.SimilarContext.Options,
                 context.SimilarContext.RatingKeyByTrackId,
@@ -505,11 +629,13 @@ public sealed class MelodayService
             : context.SimilarContext.Options.PlaylistPrefix.Trim();
         var optionsForTitle = CloneOptionsWithPlaylistPrefix(
             context.SimilarContext.Options,
-            $"{playlistPrefix} {context.Library.Name} {GetModeLabel(mode)} —");
+            $"{playlistPrefix} {context.Library.Name} {context.SlotName} {GetModeLabel(mode)} —");
         var (title, description) = BuildTitleAndDescription(new PlaylistDescriptionContext(
             optionsForTitle,
-            context.PeriodName,
-            context.Period,
+            context.SlotId,
+            context.SlotName,
+            context.SlotGenerateAt,
+            context.Daypart,
             orderedTrackIds,
             context.SimilarContext.LiveMetadataByTrackId,
             persistedMetadata,
@@ -519,7 +645,7 @@ public sealed class MelodayService
 
         var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
             new LibraryRepository.MixCacheUpsertInput(
-                BuildMelodayMixId(mode, context.Library.Id),
+                BuildMelodayMixId(context.Library.Id, context.SlotId, mode),
                 context.MixUserId,
                 context.Library.Id,
                 title,
@@ -527,13 +653,13 @@ public sealed class MelodayService
                 Array.Empty<string>(),
                 orderedTrackIds.Count,
                 DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddMinutes(Math.Max(5, context.SimilarContext.Options.UpdateIntervalMinutes))),
+                ResolveNextOccurrenceUtc(context.SlotGenerateAt, DateTimeOffset.UtcNow)),
             cancellationToken);
         await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
 
         var cover = await TryGenerateCoverAsync(
             optionsForTitle,
-            context.PeriodName,
+            context.SlotId,
             context.Library.Id,
             mode,
             cancellationToken);
@@ -542,7 +668,7 @@ public sealed class MelodayService
             new PlaylistSyncService.GeneratedLocalPlaylistSyncRequest(
                 title,
                 description,
-                BuildStableMelodayPlaylistPrefix(optionsForTitle.PlaylistPrefix, context.Library.Name, mode),
+                BuildStableMelodayPlaylistPrefix(optionsForTitle.PlaylistPrefix, context.Library.Name, context.SlotName, mode),
                 mixTracks,
                 context.TargetServers.Select(static target => target.Service).ToList(),
                 cover?.FilePath,
@@ -551,10 +677,10 @@ public sealed class MelodayService
             cancellationToken);
         if (!syncResult.Success)
         {
-            return new MelodayRunResult(true, $"{context.Library.Name} Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server. {syncResult.Message}", null);
+            return new MelodayRunResult(true, $"{context.Library.Name} {context.SlotName} Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server. {syncResult.Message}", null);
         }
 
-        return new MelodayRunResult(true, $"{context.Library.Name} Meloday {GetModeLabel(mode)} playlist updated. {syncResult.Message}", syncResult.FirstPlaylistId);
+        return new MelodayRunResult(true, $"{context.Library.Name} {context.SlotName} Meloday {GetModeLabel(mode)} playlist updated. {syncResult.Message}", syncResult.FirstPlaylistId);
     }
 
     private static string[] ResolveRunModes(string mode)
@@ -572,14 +698,33 @@ public sealed class MelodayService
         return string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase) ? "Direct" : "Sonic";
     }
 
-    private static string BuildMelodayMixId(string mode, long libraryId)
-        => $"meloday-{MelodayModes.Normalize(mode)}-{libraryId}";
+    private static string BuildMelodayMixId(long libraryId, string slotId, string mode)
+        => MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode);
 
-    private static string BuildStableMelodayPlaylistPrefix(string playlistPrefix, string libraryName, string mode)
+    private static DateTimeOffset ResolveNextOccurrenceUtc(string generateAt, DateTimeOffset nowUtc)
+    {
+        var minutes = MelodayScheduleSlots.TryParseMinutes(generateAt);
+        if (minutes is null)
+        {
+            return nowUtc.AddDays(1);
+        }
+
+        var local = DateTimeOffset.Now;
+        var next = new DateTimeOffset(local.Year, local.Month, local.Day, minutes.Value / 60, minutes.Value % 60, 0, local.Offset);
+        if (next <= nowUtc)
+        {
+            next = next.AddDays(1);
+        }
+
+        return next.ToUniversalTime();
+    }
+
+    private static string BuildStableMelodayPlaylistPrefix(string playlistPrefix, string libraryName, string slotName, string mode)
     {
         var prefix = string.IsNullOrWhiteSpace(playlistPrefix) ? "Meloday for" : playlistPrefix.Trim();
         var library = string.IsNullOrWhiteSpace(libraryName) ? "Library" : libraryName.Trim();
-        return $"{prefix} {library} {GetModeLabel(mode)}";
+        var slot = string.IsNullOrWhiteSpace(slotName) ? "Meloday" : slotName.Trim();
+        return $"{prefix} {library} {slot} {GetModeLabel(mode)}";
     }
 
     private static MelodayOptions CloneOptionsWithPlaylistPrefix(MelodayOptions source, string playlistPrefix) => new()
@@ -699,20 +844,6 @@ public sealed class MelodayService
         plexUrl = plex.Url;
         plexToken = plex.Token;
         return true;
-    }
-
-    private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries(
-        IReadOnlyList<FolderDto> folders,
-        IReadOnlyCollection<long>? selectedLibraryIds = null)
-    {
-        var selected = NormalizeTargetLibraryIds(selectedLibraryIds).ToHashSet();
-        return folders
-            .Where(folder => folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName))
-            .Where(folder => selected.Count == 0 || selected.Contains(folder.LibraryId!.Value))
-            .GroupBy(folder => folder.LibraryId!.Value)
-            .Select(group => new LibraryDto(group.Key, group.First().LibraryName!))
-            .OrderBy(library => library.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
     }
 
     public static List<long> NormalizeTargetLibraryIds(IEnumerable<long>? values)
@@ -912,13 +1043,13 @@ public sealed class MelodayService
         var effective = await _settingsStore.LoadAsync(_options);
         return new MelodayStatusDto(
             effective.Enabled,
-            GetCurrentPeriodName(),
+            MelodayScheduleMath.DescribeNextSlot(effective.Slots, DateTimeOffset.Now),
             _lastRunUtc,
             _lastMessage,
             effective.MaxTracks,
             effective.HistoryLookbackDays,
             effective.ExcludePlayedDays,
-            MelodayModes.Normalize(effective.Mode),
+            effective.MissedRunGraceMinutes,
             _lastImportResults);
     }
 
@@ -1397,7 +1528,7 @@ public sealed class MelodayService
 
     private static List<long> OrderTracksDirect(
         List<long> trackIds,
-        MelodayPeriod period,
+        MelodayDaypart period,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
     {
         if (trackIds.Count <= 2)
@@ -1418,7 +1549,7 @@ public sealed class MelodayService
 
     private Task<IReadOnlyList<long>> OrderTracksSonicAsync(
         List<long> trackIds,
-        MelodayPeriod period,
+        MelodayDaypart period,
         PlexAuth? plex,
         MelodayOptions options,
         Dictionary<long, string> ratingKeyByTrackId,
@@ -1436,7 +1567,7 @@ public sealed class MelodayService
 
     private async Task<IReadOnlyList<long>> OrderTracksAsync(
         List<long> trackIds,
-        MelodayPeriod period,
+        MelodayDaypart period,
         PlexAuth? plex,
         MelodayOptions options,
         Dictionary<long, string> ratingKeyByTrackId,
@@ -1508,7 +1639,7 @@ public sealed class MelodayService
 
     private static (long? FirstTrackId, long? LastTrackId) ResolveOrderAnchors(
         List<long> sortedByLastViewed,
-        MelodayPeriod period,
+        MelodayDaypart period,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
     {
         if (sortedByLastViewed.Count == 0)
@@ -1531,7 +1662,7 @@ public sealed class MelodayService
 
     private static bool IsPeriodTrack(
         long? trackId,
-        MelodayPeriod period,
+        MelodayDaypart period,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
         => trackId.HasValue
            && liveMetadataByTrackId.TryGetValue(trackId.Value, out var metadata)
@@ -1871,17 +2002,17 @@ public sealed class MelodayService
         {
             title = "Meloday";
         }
-        title = $"{title} {ToDisplayLabel(mostCommonMood)} {descriptor} {ToDisplayLabel(mostCommonGenre)} {dayName} {context.PeriodName}";
+        title = $"{title} {ToDisplayLabel(mostCommonMood)} {descriptor} {ToDisplayLabel(mostCommonGenre)} {dayName} {context.SlotName}";
 
         var highlights = BuildHighlightStyles(sortedGenres, sortedMoods, mostCommonGenre, mostCommonMood);
         var highlightsText = FormatHighlightStyles(highlights);
 
         var description = secondCommonMood is not null
-            ? $"You listened to {ToDisplayLabel(mostCommonMood)} and {ToDisplayLabel(mostCommonGenre)} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well."
-            : $"You listened to {ToDisplayLabel(mostCommonGenre)} and {ToDisplayLabel(mostCommonMood)} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well.";
+            ? $"You listened to {ToDisplayLabel(mostCommonMood)} and {ToDisplayLabel(mostCommonGenre)} tracks on {dayName} {context.Daypart.Phrase}. Here's some {highlightsText} tracks as well."
+            : $"You listened to {ToDisplayLabel(mostCommonGenre)} and {ToDisplayLabel(mostCommonMood)} tracks on {dayName} {context.Daypart.Phrase}. Here's some {highlightsText} tracks as well.";
 
         var displayUser = ResolveDisplayUserName(context.Username);
-        var nextUpdate = GetNextUpdateTime(context.Now, context.Period.Hours);
+        var nextUpdate = GetNextUpdateTime(context.Now, context.SlotGenerateAt);
         description += $"\n\nMade for {displayUser} • Next update at {nextUpdate}.";
 
         return (title, description);
@@ -2008,21 +2139,21 @@ public sealed class MelodayService
         return string.IsNullOrWhiteSpace(first) ? username : first;
     }
 
-    private static string GetNextUpdateTime(DateTimeOffset now, IReadOnlyList<int> periodHours)
+    private static string GetNextUpdateTime(DateTimeOffset now, string generateAt)
     {
-        if (periodHours.Count == 0)
+        var minutes = MelodayScheduleSlots.TryParseMinutes(generateAt);
+        if (minutes is null)
         {
-            return now.AddHours(1).ToString("h:mm tt");
+            return now.AddDays(1).ToString("h:mm tt");
         }
 
-        var nextHour = (periodHours[^1] + 1) % 24;
-        var nextUpdate = new DateTimeOffset(now.Year, now.Month, now.Day, nextHour, 0, 0, now.Offset);
+        var nextUpdate = new DateTimeOffset(now.Year, now.Month, now.Day, minutes.Value / 60, minutes.Value % 60, 0, now.Offset);
         if (nextUpdate <= now)
         {
             nextUpdate = nextUpdate.AddDays(1);
         }
 
-        return nextUpdate.ToString("h:mm tt");
+        return nextUpdate.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private Dictionary<string, List<string>> LoadDescriptorMap(MelodayOptions options)
@@ -2050,7 +2181,7 @@ public sealed class MelodayService
 
     private async Task<GeneratedMelodayCover?> TryGenerateCoverAsync(
         MelodayOptions options,
-        string periodName,
+        string slotId,
         long libraryId,
         string mode,
         CancellationToken cancellationToken)
@@ -2060,11 +2191,11 @@ public sealed class MelodayService
             return null;
         }
 
-        var staticPosterPath = TryResolveStaticCoverPath(periodName, libraryId, mode);
+        var staticPosterPath = TryResolveStaticCoverPath(slotId, libraryId, mode);
         if (!string.IsNullOrWhiteSpace(staticPosterPath))
         {
             return new GeneratedMelodayCover(
-                TryResolveStaticCoverUrl(options, periodName, libraryId, mode),
+                TryResolveStaticCoverUrl(options, slotId, libraryId, mode),
                 staticPosterPath,
                 ResolveContentType(staticPosterPath));
         }
@@ -2073,7 +2204,7 @@ public sealed class MelodayService
         return null;
     }
 
-    private string? TryResolveStaticCoverPath(string periodName, long libraryId, string mode)
+    private string? TryResolveStaticCoverPath(string slotId, long libraryId, string mode)
     {
         var staticDir = Path.Join(_webRoot, "images", "meloday");
         if (!Directory.Exists(staticDir))
@@ -2098,11 +2229,11 @@ public sealed class MelodayService
             return null;
         }
 
-        var index = GetArtworkIndex(periodName, libraryId, mode, candidates.Count);
+        var index = GetArtworkIndex(slotId, libraryId, mode, candidates.Count);
         return candidates[index];
     }
 
-    private string? TryResolveStaticCoverUrl(MelodayOptions options, string periodName, long libraryId, string mode)
+    private string? TryResolveStaticCoverUrl(MelodayOptions options, string slotId, long libraryId, string mode)
     {
         var staticDir = Path.Join(_webRoot, "images", "meloday");
         if (!Directory.Exists(staticDir))
@@ -2136,32 +2267,17 @@ public sealed class MelodayService
             return null;
         }
 
-        var index = GetArtworkIndex(periodName, libraryId, mode, candidates.Count);
+        var index = GetArtworkIndex(slotId, libraryId, mode, candidates.Count);
         var selected = candidates[index];
         return $"{baseUrl}/images/meloday/{Uri.EscapeDataString(selected)}";
     }
 
-    private static int GetArtworkIndex(string periodName, long libraryId, string mode, int candidateCount)
+    private static int GetArtworkIndex(string slotId, long libraryId, string mode, int candidateCount)
     {
         if (candidateCount <= 1) return 0;
         var modeOffset = string.Equals(mode, MelodayModes.Sonic, StringComparison.OrdinalIgnoreCase) ? 11 : 0;
-        var value = ((long)GetPeriodIndex(periodName) * 31L) + (libraryId * 7L) + modeOffset;
+        var value = (long)MelodayScheduleSlots.SlotOrder(slotId) + (libraryId * 7L) + modeOffset;
         return (int)(Math.Abs(value) % candidateCount);
-    }
-
-    private static int GetPeriodIndex(string periodName)
-    {
-        return periodName switch
-        {
-            DawnPeriodName => 0,
-            EarlyMorningPeriodName => 1,
-            MorningPeriodName => 2,
-            AfternoonPeriodName => 3,
-            EveningPeriodName => 4,
-            NightPeriodName => 5,
-            LateNightPeriodName => 6,
-            _ => 0
-        };
     }
 
     private static string ResolveContentType(string value)
@@ -2201,8 +2317,10 @@ public sealed class MelodayService
 
     private sealed record PlaylistDescriptionContext(
         MelodayOptions Options,
-        string PeriodName,
-        MelodayPeriod Period,
+        string SlotId,
+        string SlotName,
+        string SlotGenerateAt,
+        MelodayDaypart Daypart,
         IReadOnlyList<long> TrackIds,
         Dictionary<long, PlexTrackMetadata> LiveMetadataByTrackId,
         Dictionary<long, PlexTrackMetadataDto> PersistedMetadataByTrackId,
@@ -2230,5 +2348,5 @@ public sealed class MelodayService
         public int ArtistLimit { get; }
     }
 
-    private sealed record MelodayPeriod(IReadOnlyList<int> Hours, string Phrase);
+    private sealed record MelodayDaypart(IReadOnlyList<int> Hours, string Phrase);
 }

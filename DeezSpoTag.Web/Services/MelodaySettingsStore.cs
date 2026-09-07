@@ -95,23 +95,55 @@ public sealed class MelodaySettingsStore
     public Task<bool> WaitForChangeAsync(TimeSpan timeout, CancellationToken cancellationToken)
         => _changed.WaitAsync(timeout, cancellationToken);
 
-    private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored) => new()
+    private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored)
     {
-        Enabled = stored.Enabled,
-        PlaylistPrefix = string.IsNullOrWhiteSpace(stored.PlaylistPrefix) ? defaults.PlaylistPrefix : stored.PlaylistPrefix,
-        BaseUrl = string.IsNullOrWhiteSpace(stored.BaseUrl) ? defaults.BaseUrl : stored.BaseUrl,
-        ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(stored.ExcludePlayedDays, defaults.ExcludePlayedDays, 0, 365),
-        HistoryLookbackDays = MelodayClamp.PositiveOrDefault(stored.HistoryLookbackDays, defaults.HistoryLookbackDays, 1, 365),
-        MaxTracks = MelodayClamp.PositiveOrDefault(stored.MaxTracks, defaults.MaxTracks, 10, 500),
-        HistoricalRatio = MelodayClamp.AllowZeroOrDefault(stored.HistoricalRatio, defaults.HistoricalRatio, 0d, 1d),
-        SonicSimilarLimit = MelodayClamp.PositiveOrDefault(stored.SonicSimilarLimit, defaults.SonicSimilarLimit, 1, 50),
-        SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(stored.SonicSimilarityDistance, defaults.SonicSimilarityDistance, 0.05d, 1d),
-        UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
-        Mode = MelodayModes.Normalize(string.IsNullOrWhiteSpace(stored.Mode) ? defaults.Mode : stored.Mode),
-        MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
-        TargetServers = MelodayTargetServers.Normalize(stored.TargetServers, defaultToAll: true),
-        TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds(stored.TargetLibraryIds)
-    };
+        var merged = new MelodayOptions
+        {
+            Enabled = stored.Enabled,
+            PlaylistPrefix = string.IsNullOrWhiteSpace(stored.PlaylistPrefix) ? defaults.PlaylistPrefix : stored.PlaylistPrefix,
+            BaseUrl = string.IsNullOrWhiteSpace(stored.BaseUrl) ? defaults.BaseUrl : stored.BaseUrl,
+            ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(stored.ExcludePlayedDays, defaults.ExcludePlayedDays, 0, 365),
+            HistoryLookbackDays = MelodayClamp.PositiveOrDefault(stored.HistoryLookbackDays, defaults.HistoryLookbackDays, 1, 365),
+            MaxTracks = MelodayClamp.PositiveOrDefault(stored.MaxTracks, defaults.MaxTracks, 10, 500),
+            HistoricalRatio = MelodayClamp.AllowZeroOrDefault(stored.HistoricalRatio, defaults.HistoricalRatio, 0d, 1d),
+            SonicSimilarLimit = MelodayClamp.PositiveOrDefault(stored.SonicSimilarLimit, defaults.SonicSimilarLimit, 1, 50),
+            SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(stored.SonicSimilarityDistance, defaults.SonicSimilarityDistance, 0.05d, 1d),
+            UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
+            Mode = MelodayModes.Normalize(string.IsNullOrWhiteSpace(stored.Mode) ? defaults.Mode : stored.Mode),
+            MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
+            Slots = MelodayScheduleSlots.Normalize(stored.Slots),
+            Libraries = MelodayScheduleSlots.NormalizeLibraries(stored.Libraries),
+            MissedRunGraceMinutes = MelodayClamp.PositiveOrDefault(stored.MissedRunGraceMinutes, defaults.MissedRunGraceMinutes, 0, 720),
+            TargetServers = MelodayTargetServers.Normalize(stored.TargetServers, defaultToAll: true),
+            TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds(stored.TargetLibraryIds)
+        };
+
+        MigrateLegacyLibraryTargets(merged);
+        return merged;
+    }
+
+    /// <summary>
+    /// One-time settings upgrade: files saved before scheduled slots carried only
+    /// TargetLibraryIds + a global mode. Those become per-library schedules with every
+    /// slot enabled at the previous global mode, bounded by the default playlist limit.
+    /// </summary>
+    private static void MigrateLegacyLibraryTargets(MelodayOptions merged)
+    {
+        if (merged.Libraries.Count > 0 || merged.TargetLibraryIds.Count == 0)
+        {
+            return;
+        }
+
+        merged.Libraries = merged.TargetLibraryIds
+            .Select(libraryId => new MelodayLibrarySchedule(
+                libraryId,
+                true,
+                MelodayScheduleSlots.DefaultMaxActivePlaylists,
+                MelodayScheduleSlots.Defaults
+                    .Select(slot => new MelodayLibrarySlotAssignment(slot.Id, merged.Mode))
+                    .ToList()))
+            .ToList();
+    }
 
     private static MelodayOptions Clone(MelodayOptions source) => new()
     {
@@ -126,6 +158,9 @@ public sealed class MelodaySettingsStore
         SonicSimilarityDistance = source.SonicSimilarityDistance,
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = MelodayModes.Normalize(source.Mode),
+        Slots = MelodayScheduleSlots.Normalize(source.Slots),
+        Libraries = MelodayScheduleSlots.NormalizeLibraries(source.Libraries),
+        MissedRunGraceMinutes = source.MissedRunGraceMinutes,
         MoodMapPath = source.MoodMapPath,
         TargetServers = MelodayTargetServers.Normalize(source.TargetServers, defaultToAll: true),
         TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds(source.TargetLibraryIds)

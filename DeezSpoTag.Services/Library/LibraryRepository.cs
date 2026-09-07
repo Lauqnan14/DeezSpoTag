@@ -3771,10 +3771,11 @@ WHERE ph.track_id IS NOT NULL
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        // Legacy identity was "meloday-{mode}-{libraryId}"; scheduled slots use
+        // "meloday-{libraryId}-{slotId}-{mode}" which always starts with the numeric library id.
         const string legacyPredicate = @"
 mix_id LIKE 'meloday-%'
-AND mix_id NOT GLOB 'meloday-direct-[0-9]*'
-AND mix_id NOT GLOB 'meloday-sonic-[0-9]*'";
+AND mix_id NOT GLOB 'meloday-[0-9]*-*'";
         await using (var items = new SqliteCommand(
             $"DELETE FROM mix_item WHERE mix_cache_id IN (SELECT id FROM mix_cache WHERE {legacyPredicate});",
             connection,
@@ -3789,27 +3790,25 @@ AND mix_id NOT GLOB 'meloday-sonic-[0-9]*'";
     }
 
     public async Task<int> DeleteInactiveMelodayMixesAsync(
-        IReadOnlyCollection<long> activeLibraryIds,
+        IReadOnlyCollection<string> activeMixIds,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        var activeJson = SerializeJsonArray(activeLibraryIds.Distinct().ToList());
-        const string predicate = @"
-mix_id GLOB 'meloday-direct-[0-9]*' OR mix_id GLOB 'meloday-sonic-[0-9]*'";
+        const string predicate = @"mix_id GLOB 'meloday-*'";
         const string inactive = @"
-library_id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@activeLibraryIdsJson))";
+mix_id NOT IN (SELECT value FROM json_each(@activeMixIdsJson))";
         await using (var items = new SqliteCommand(
             $"DELETE FROM mix_item WHERE mix_cache_id IN (SELECT id FROM mix_cache WHERE ({predicate}) AND {inactive});",
             connection,
             transaction))
         {
-            items.Parameters.AddWithValue("activeLibraryIdsJson", activeJson);
+            items.Parameters.AddWithValue("activeMixIdsJson", SerializeJsonArray(activeMixIds.ToList()));
             await items.ExecuteNonQueryAsync(cancellationToken);
         }
         await using var mixes = new SqliteCommand(
             $"DELETE FROM mix_cache WHERE ({predicate}) AND {inactive};", connection, transaction);
-        mixes.Parameters.AddWithValue("activeLibraryIdsJson", activeJson);
+        mixes.Parameters.AddWithValue("activeMixIdsJson", SerializeJsonArray(activeMixIds.ToList()));
         var deleted = await mixes.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return deleted;

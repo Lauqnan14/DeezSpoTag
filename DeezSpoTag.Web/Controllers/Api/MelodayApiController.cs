@@ -68,7 +68,7 @@ public class MelodayApiController : ControllerBase
         return Ok(new
         {
             status.Enabled,
-            status.CurrentPeriod,
+            status.NextSlot,
             status.LastRunUtc,
             status.LastMessage,
             sources = status.HistorySources.Select(static source => new
