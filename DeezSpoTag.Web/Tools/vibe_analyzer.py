@@ -85,6 +85,7 @@ def probe_capabilities() -> Tuple[List[str], List[str]]:
     ]
     optional = [
         "TensorflowPredictEffnetDiscogs",
+        "TensorflowPredictMAEST",
     ]
 
     missing_required = [name for name in required if (es is None or getattr(es, name, None) is None)]
@@ -114,6 +115,8 @@ if ESSENTIA_AVAILABLE and np is not None:
     ZeroCrossingRate = _required("ZeroCrossingRate")
 
     TensorflowPredictEffnetDiscogs = _optional("TensorflowPredictEffnetDiscogs")
+    TensorflowPredictMAEST = _optional("TensorflowPredictMAEST")
+    TensorflowPredict = _optional("TensorflowPredict")
 else:
     MonoLoader = None
     TensorflowPredictMusiCNN = None
@@ -130,6 +133,8 @@ else:
     FlatnessDB = None
     ZeroCrossingRate = None
     TensorflowPredictEffnetDiscogs = None
+    TensorflowPredictMAEST = None
+    TensorflowPredict = None
 
 
 REQUIRED_ENHANCED_MODELS = [
@@ -160,6 +165,11 @@ class AudioAnalyzer:
         self.musicnn_model = None
         self.prediction_models: Dict[str, Any] = {}
         self.effnet_extractor = None
+        self.maest_genre_extractor = None
+        self.genre519_predictor = None
+        self.genre519_labels = []
+        self.genre_model_name = None
+        self.deam_predictor = self._load_deam_model()
         self.genre_predictor = None
         self.genre_labels: List[str] = []
 
@@ -209,6 +219,88 @@ class AudioAnalyzer:
             return [str(label) for label in labels if isinstance(label, str) and label.strip()]
         except Exception:
             return []
+
+    def _extract_essentia_genre_evidence(self, audio_16k):
+        if self.maest_genre_extractor is not None and self.genre519_predictor is not None and np is not None:
+            try:
+                embeddings = self.maest_genre_extractor(audio_16k)
+                pool = Pool()
+                pool.set("embeddings", embeddings)
+                scores = np.array(self.genre519_predictor(pool)["PartitionedCall/Identity_1"])
+                average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
+                if average_scores.size == 0:
+                    return []
+                top_indices = np.argsort(average_scores)[::-1][:8]
+                evidence = []
+                for index in top_indices:
+                    if float(average_scores[index]) < 0.15:
+                        continue
+                    label = self.genre519_labels[index] if index < len(self.genre519_labels) else f"genre_{index}"
+                    evidence.append({
+                        "label": label,
+                        "score": round(float(average_scores[index]), 4),
+                        "model": self.genre_model_name or "discogs519-maest-30s-pw-519l",
+                    })
+                return evidence
+            except Exception:
+                return []
+
+        if self.effnet_extractor is None or self.genre_predictor is None or np is None:
+            return []
+
+        try:
+            effnet_embeddings = self.effnet_extractor(audio_16k)
+            scores = np.array(self.genre_predictor(effnet_embeddings))
+            average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
+            if average_scores.size == 0:
+                return []
+            top_indices = np.argsort(average_scores)[::-1][:8]
+            evidence = []
+            for index in top_indices:
+                if float(average_scores[index]) < 0.15:
+                    continue
+                label = self.genre_labels[index] if index < len(self.genre_labels) else f"genre_{index}"
+                evidence.append({
+                    "label": label,
+                    "score": round(float(average_scores[index]), 4),
+                    "model": "discogs400-discogs-effnet",
+                })
+            return evidence
+        except Exception:
+            return []
+
+
+    def _load_deam_model(self):
+        path = self._model_path("deam-msd-musicnn-2.pb")
+        if not os.path.exists(path) or TensorflowPredict2D is None:
+            return None
+        try:
+            return TensorflowPredict2D(
+                graphFilename=path,
+                input="serving_default_model_Placeholder",
+                output="model/Identity",
+            )
+        except Exception:
+            return None
+
+    def _predict_deam(self, audio_16k):
+        if self.deam_predictor is None or np is None:
+            return None
+        try:
+            predictions = np.array(self.deam_predictor(audio_16k), dtype=float)
+            frame_scores = predictions.mean(axis=0) if predictions.ndim == 2 else predictions.reshape(-1)
+            if frame_scores.size < 2:
+                return None
+            valence = float(np.clip((frame_scores[0] - 1.0) / 8.0, 0.0, 1.0))
+            arousal = float(np.clip((frame_scores[1] - 1.0) / 8.0, 0.0, 1.0))
+            return {
+                "valence": round(valence, 3),
+                "arousal": round(arousal, 3),
+                "valenceSource": "deam-msd-musicnn-2",
+                "arousalSource": "deam-msd-musicnn-2",
+            }
+        except Exception:
+            return None
 
     def _extract_essentia_genres(self, audio_16k) -> List[str]:
         if self.effnet_extractor is None or self.genre_predictor is None or np is None:
@@ -281,7 +373,51 @@ class AudioAnalyzer:
         if self.genre_predictor is not None:
             self.genre_labels = self._load_genre_labels()
 
+    def _load_discogs519_models(self):
+        genre_model = os.environ.get("VIBE_GENRE_MODEL", "discogs519").strip().lower()
+        if genre_model != "discogs519":
+            if genre_model == "discogs400":
+                self.genre_model_name = "discogs400-discogs-effnet"
+            return
+
+        if TensorflowPredictMAEST is None or TensorflowPredict is None:
+            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+            return
+
+        maest_path = self._model_path("discogs-maest-30s-pw-519l-2.pb")
+        genre519_path = self._model_path("genre_discogs519-discogs-maest-30s-pw-519l-1.pb")
+        labels_path = self._model_path("genre_discogs519-discogs-maest-30s-pw-519l-1.json")
+        if not (os.path.exists(maest_path) and os.path.exists(genre519_path)):
+            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+            return
+
+        try:
+            with open(labels_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            labels = payload.get("classes") if isinstance(payload, dict) else None
+            self.genre519_labels = [str(label) for label in labels or []]
+            if len(self.genre519_labels) != 519:
+                raise RuntimeError(
+                    f"Discogs519 expected 519 labels; found {len(self.genre519_labels)}")
+
+            self.maest_genre_extractor = TensorflowPredictMAEST(
+                graphFilename=maest_path,
+                output="PartitionedCall/Identity_12",
+            )
+            self.genre519_predictor = TensorflowPredict(
+                graphFilename=genre519_path,
+                inputs=["embeddings"],
+                outputs=["PartitionedCall/Identity_1"],
+            )
+            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+        except Exception:
+            self.maest_genre_extractor = None
+            self.genre519_predictor = None
+            self.genre519_labels = []
+            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+
     def _load_ml_models(self):
+        self._load_discogs519_models()
         if TensorflowPredictMusiCNN is None or TensorflowPredict2D is None:
             self.enhanced_mode = False
             return
@@ -402,6 +538,8 @@ class AudioAnalyzer:
             "danceability": None,
             "valence": None,
             "arousal": None,
+            "valenceSource": "heuristic-fallback",
+            "arousalSource": "heuristic-fallback",
             "instrumentalness": None,
             "acousticness": None,
             "speechiness": None,
@@ -486,7 +624,13 @@ class AudioAnalyzer:
             else:
                 self._apply_standard_estimates(result, scale, bpm)
 
-            result["essentiaGenres"] = self._extract_essentia_genres(audio_16k)
+            genre_evidence = self._extract_essentia_genre_evidence(audio_16k)
+
+            result["essentiaGenreEvidence"] = genre_evidence
+
+            result["genreModel"] = self.genre_model_name or ("discogs519-maest-30s-pw-519l" if self.maest_genre_extractor is not None else "discogs400-discogs-effnet")
+
+            result["essentiaGenres"] = [entry["label"] for entry in genre_evidence]
             result["moodTags"] = self._generate_mood_tags(result)
         except Exception as exc:
             result["_error"] = str(exc)
@@ -594,6 +738,12 @@ class AudioAnalyzer:
             result[mood_key] = value
 
         self._populate_ml_summary_scores(result)
+        deam = self._predict_deam(audio_16k)
+        if deam is not None:
+            result["valence"] = deam["valence"]
+            result["arousal"] = deam["arousal"]
+        result["valenceSource"] = deam["valenceSource"] if deam is not None else "heuristic-fallback"
+        result["arousalSource"] = deam["arousalSource"] if deam is not None else "heuristic-fallback"
         self._populate_optional_ml_scores(result, embeddings)
 
         return result

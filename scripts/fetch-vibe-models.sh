@@ -54,5 +54,16 @@ download "approachability_regression-discogs-effnet-1.pb" "https://essentia.upf.
 download "engagement_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb"
 download "genre_discogs400-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"
 download "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"
+# Discogs519/MAEST acoustic genre branch (default, VIBE_GENRE_MODEL=discogs519).
+download "discogs-maest-30s-pw-519l-2.pb" "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.pb"
+download "discogs-maest-30s-pw-519l-2.json" "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.json"
+download "genre_discogs519-discogs-maest-30s-pw-519l-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs519/genre_discogs519-discogs-maest-30s-pw-519l-1.pb"
+download "genre_discogs519-discogs-maest-30s-pw-519l-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs519/genre_discogs519-discogs-maest-30s-pw-519l-1.json"
 
 echo "Vibe model files are ready in $MODELS_DIR."
+
+# Default acoustic genre model for Vibe: discogs519 (MAEST embedding -> 519 head).
+# VIBE_GENRE_MODEL=discogs400 is retained temporarily for diagnostics only; there
+# is no silent fallback between them.
+: "${VIBE_GENRE_MODEL:=discogs519}"
+export VIBE_GENRE_MODEL
