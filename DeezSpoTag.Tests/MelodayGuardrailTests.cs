@@ -145,32 +145,38 @@ public sealed class MelodayGuardrailTests
     [Fact]
     public void Meloday_Settings_Render_Selected_Target_Server_And_Library_Controls_Without_Manual_Mappings()
     {
-        var view = ReadMelodayView();
         var activities = ReadActivitiesView();
         var script = ReadMelodayScript();
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "MelodaySettingsApiController.cs");
         var settingsStore = ReadSource("DeezSpoTag.Web", "Services", "MelodaySettingsStore.cs");
 
-        Assert.Contains("Meloday Playlists", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"meloday-schedule-slots\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"meloday-library-schedules\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"meloday-grace-minutes\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"meloday-schedule-reset\"", view, StringComparison.Ordinal);
-        Assert.Contains("data-meloday-view=\"grid\"", view, StringComparison.Ordinal);
-        Assert.Contains("data-meloday-view=\"list\"", view, StringComparison.Ordinal);
-        Assert.Contains("data-meloday-target-server=\"plex\"", view, StringComparison.Ordinal);
-        Assert.Contains("data-meloday-target-server=\"jellyfin\"", view, StringComparison.Ordinal);
-        Assert.Contains("data-meloday-target-server=\"navidrome\"", view, StringComparison.Ordinal);
-        Assert.Contains("Reset to default", view, StringComparison.Ordinal);
+        Assert.Contains("Meloday Playlists", activities, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-config\"", activities, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-schedule-slots\"", activities, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-library-schedules\"", activities, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-grace-minutes\"", activities, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-schedule-reset\"", activities, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-view=\"grid\"", activities, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-view=\"list\"", activities, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"plex\"", activities, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"jellyfin\"", activities, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"navidrome\"", activities, StringComparison.Ordinal);
+        Assert.Contains("Reset to default", activities, StringComparison.Ordinal);
         Assert.Contains("Names are generated automatically", script, StringComparison.Ordinal);
-        // The dedicated page is the single configuration surface; the Activities card only links to it.
-        Assert.Contains("Open Meloday settings", activities, StringComparison.Ordinal);
+        // The config lives inside the media operations tab; there is no standalone page.
+        Assert.DoesNotContain("Open Meloday settings", activities, StringComparison.Ordinal);
+        Assert.DoesNotContain("href=\"/Meloday\"", activities, StringComparison.Ordinal);
         Assert.DoesNotContain("meloday-playlist-prefix", activities, StringComparison.Ordinal);
-        Assert.DoesNotContain("meloday-target-library-grid", view, StringComparison.Ordinal);
-        Assert.DoesNotContain("meloday-update-minutes", view, StringComparison.Ordinal);
-        Assert.DoesNotContain("meloday-playlist-prefix", view, StringComparison.Ordinal);
-        Assert.Contains("repeat(auto-fill, minmax(148px, 1fr))", view, StringComparison.Ordinal);
-        Assert.Contains("meloday-target-option", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-target-library-grid", activities, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-update-minutes", activities, StringComparison.Ordinal);
+        // No hidden or expandable sections.
+        Assert.DoesNotContain("meloday-advanced-toggle", activities, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-advanced-panel", activities, StringComparison.Ordinal);
+        // Artwork management is not part of the UI.
+        Assert.DoesNotContain("meloday-artwork", activities, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-artwork", script, StringComparison.Ordinal);
+        Assert.Contains("repeat(auto-fill, minmax(148px, 1fr))", activities, StringComparison.Ordinal);
+        Assert.Contains("meloday-target-option", activities, StringComparison.Ordinal);
         Assert.Contains("melodayGetTargetServers", script, StringComparison.Ordinal);
         Assert.Contains("buildMelodayLibrariesFromDom", script, StringComparison.Ordinal);
         Assert.Contains("melodayCountPlaylists", script, StringComparison.Ordinal);
@@ -183,7 +189,7 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("of {library.MaxActivePlaylists} playlist slots selected", controller, StringComparison.Ordinal);
         Assert.Contains("TargetServers = MelodayTargetServers.Normalize", settingsStore, StringComparison.Ordinal);
         Assert.Contains("TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds", settingsStore, StringComparison.Ordinal);
-        Assert.DoesNotContain("meloday-library-name", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-library-name", activities, StringComparison.Ordinal);
         Assert.DoesNotContain("melodayGetSyncTargets", script, StringComparison.Ordinal);
         Assert.DoesNotContain("syncTargets:", script, StringComparison.Ordinal);
     }
@@ -266,7 +272,6 @@ public sealed class MelodayGuardrailTests
         Assert.DoesNotContain("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetArtworkIndex", source, StringComparison.Ordinal);
         Assert.Contains("[HttpPost]", artworkController, StringComparison.Ordinal);
-        Assert.Contains("artworkUpload.click()", ReadMelodayScript(), StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedNavidromeArtworkAsync", playlistSync, StringComparison.Ordinal);
@@ -372,12 +377,6 @@ public sealed class MelodayGuardrailTests
     {
         var repoRoot = ResolveRepoRoot();
         return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodaySchedule.cs"));
-    }
-
-    private static string ReadMelodayView()
-    {
-        var repoRoot = ResolveRepoRoot();
-        return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Meloday", "Index.cshtml"));
     }
 
     private static string ReadMelodayArtworkPool()

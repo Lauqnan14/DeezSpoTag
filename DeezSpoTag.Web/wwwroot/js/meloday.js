@@ -751,122 +751,8 @@ async function runMeloday() {
 /* ------------------------------------------------------------------ *
  * Artwork
  * ------------------------------------------------------------------ */
-async function loadMelodayArtwork() {
-    const countEl = document.getElementById('meloday-artwork-count');
-    const gridEl = document.getElementById('meloday-artwork-grid');
-    const assignmentsEl = document.getElementById('meloday-artwork-assignments');
-    if (!countEl && !gridEl) {
-        return;
-    }
-    try {
-        const artwork = await melodayFetchJson('/api/meloday/artwork');
-        if (countEl) {
-            const count = Number(artwork?.count || 0);
-            countEl.textContent = `${count} image${count === 1 ? '' : 's'} available`;
-        }
-
-        if (gridEl) {
-            const images = Array.isArray(artwork?.images) ? artwork.images : [];
-            const assignments = Array.isArray(artwork?.assignments) ? artwork.assignments : [];
-            const ownersByImage = new Map();
-            assignments.forEach((assignment) => {
-                const owners = ownersByImage.get(assignment.imageId) || [];
-                const library = melodayState.libraries.find(candidate => Number(candidate.libraryId) === Number(assignment.libraryId));
-                owners.push(`${library?.name || `Library ${assignment.libraryId}`} · ${melodaySlotDisplayName(assignment.slotId)} · ${melodayFormatMode(assignment.mode)}`);
-                ownersByImage.set(assignment.imageId, owners);
-            });
-
-            gridEl.innerHTML = '';
-            if (images.length === 0) {
-                assignmentsEl.innerHTML = '';
-                const empty = document.createElement('div');
-                empty.className = 'meloday-artwork-assignment';
-                empty.textContent = 'No artwork yet — add images to give every playlist a unique cover.';
-                assignmentsEl.appendChild(empty);
-                return;
-            }
-
-            images.forEach((imageId) => {
-                const thumb = document.createElement('div');
-                thumb.className = 'meloday-artwork-thumb';
-                const img = document.createElement('img');
-                img.src = `/images/meloday/source/${encodeURIComponent(imageId)}`;
-                img.alt = imageId;
-                img.loading = 'lazy';
-                const owners = ownersByImage.get(imageId);
-                if (owners && owners.length > 0) {
-                    const badge = document.createElement('span');
-                    badge.className = 'meloday-artwork-owners';
-                    badge.textContent = String(owners.length);
-                    badge.title = owners.join('\n');
-                    thumb.appendChild(badge);
-                }
-                thumb.title = owners && owners.length > 0 ? owners.join('\n') : 'Unassigned';
-                thumb.appendChild(img);
-                gridEl.appendChild(thumb);
-            });
-
-            if (assignmentsEl) {
-                assignmentsEl.innerHTML = '';
-                if (assignments.length === 0) {
-                    const none = document.createElement('div');
-                    none.className = 'meloday-artwork-assignment';
-                    none.textContent = 'No playlists own artwork yet.';
-                    assignmentsEl.appendChild(none);
-                    return;
-                }
-                assignments.forEach((assignment) => {
-                    const row = document.createElement('div');
-                    row.className = 'meloday-artwork-assignment';
-                    const library = melodayState.libraries.find(candidate => Number(candidate.libraryId) === Number(assignment.libraryId));
-                    row.textContent = `${library?.name || `Library ${assignment.libraryId}`} — ${melodaySlotDisplayName(assignment.slotId)} (${melodayFormatMode(assignment.mode)}) → ${assignment.imageId}`;
-                    assignmentsEl.appendChild(row);
-                });
-            }
-        }
-    } catch (error) {
-        if (countEl) countEl.textContent = '—';
-        console.warn('Meloday artwork failed to load.', error);
-    }
-}
-
-function melodaySlotDisplayName(slotId) {
-    const normalized = String(slotId || '').trim().toLowerCase();
-    const stateSlot = melodayState.slots.find(candidate => candidate.id === normalized);
-    if (stateSlot) {
-        return stateSlot.name;
-    }
-    const canonical = melodayCanonicalSlots.find(entry => entry[0] === normalized);
-    return canonical ? canonical[1] : String(slotId || '');
-}
-
-async function uploadMelodayArtwork() {
-    const input = document.getElementById('meloday-artwork-upload');
-    const add = document.getElementById('meloday-artwork-add');
-    if (!input || !add || input.files.length === 0) {
-        return;
-    }
-    add.disabled = true;
-    try {
-        const form = new FormData();
-        Array.from(input.files).forEach(file => form.append('files', file));
-        const result = await melodayFetchJson('/api/meloday/artwork', { method: 'POST', body: form });
-        input.value = '';
-        melodayNotify(`Added ${result?.added || 0} Meloday image(s); ${result?.count ?? 0} available.`);
-        await loadMelodayArtwork();
-    } catch (error) {
-        melodayNotify(`Failed to upload Meloday artwork: ${error.message}`, true);
-        melodayLog('error', `Failed to upload Meloday artwork: ${error.message}`);
-    } finally {
-        add.disabled = false;
-    }
-}
-
-/* ------------------------------------------------------------------ *
- * Initialization
- * ------------------------------------------------------------------ */
 function initializeMelodayPage() {
-    if (!document.getElementById('meloday-page')) {
+    if (!document.getElementById('meloday-config')) {
         return;
     }
 
@@ -874,7 +760,6 @@ function initializeMelodayPage() {
         console.warn('Meloday settings failed to load.', error);
         melodayNotify(`Failed to load Meloday settings: ${error.message}`, true);
     });
-    loadMelodayArtwork();
 
     const saveButton = document.getElementById('saveMelodaySettings');
     if (saveButton) {
@@ -908,17 +793,11 @@ function initializeMelodayPage() {
             document.querySelectorAll('[data-meloday-view]').forEach(candidate => {
                 candidate.classList.toggle('is-active', candidate === button);
             });
-            const page = document.getElementById('meloday-page');
-            page?.classList.toggle('is-list', view === 'list');
+            const config = document.getElementById('meloday-config');
+            config?.classList.toggle('is-list', view === 'list');
         });
     });
 
-    const artworkAdd = document.getElementById('meloday-artwork-add');
-    const artworkUpload = document.getElementById('meloday-artwork-upload');
-    if (artworkAdd && artworkUpload) {
-        artworkAdd.addEventListener('click', () => artworkUpload.click());
-        artworkUpload.addEventListener('change', uploadMelodayArtwork);
-    }
 }
 
 function initializeMelodayStatusCard() {

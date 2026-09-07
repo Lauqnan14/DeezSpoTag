@@ -1721,7 +1721,481 @@ span.badge.badge-artwork-animated {
 }
 
 .media-operations-tab #meloday-card {
-    grid-column: 1;
+    grid-column: 1 / -1;
+}
+
+.media-operations-tab .meloday-config {
+    display: grid;
+    gap: 16px;
+}
+
+.media-operations-tab .meloday-help-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 35%, var(--border-secondary));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--primary-color) 7%, var(--bg-secondary));
+    box-shadow: 0 0 20px color-mix(in srgb, var(--primary-color) 10%, transparent);
+}
+
+.media-operations-tab .meloday-help-card .material-icons {
+    color: var(--primary-color);
+    font-size: 20px;
+    margin-top: 2px;
+}
+
+.media-operations-tab .meloday-help-card strong {
+    display: block;
+    font-size: 13.5px;
+    margin-bottom: 2px;
+}
+
+.media-operations-tab .meloday-help-card p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+.media-operations-tab .meloday-section {
+    display: grid;
+    gap: 12px;
+}
+
+.media-operations-tab .meloday-section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.media-operations-tab .meloday-section-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.media-operations-tab .meloday-section-title > .material-icons {
+    color: var(--primary-color);
+    font-size: 20px;
+    margin-top: 2px;
+}
+
+.media-operations-tab .meloday-section-title h5 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.media-operations-tab .meloday-section-title p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 12.5px;
+}
+
+.media-operations-tab .meloday-slot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+}
+
+.media-operations-tab .meloday-time-slot {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 34%, var(--border-secondary));
+    border-radius: 14px;
+    background: var(--bg-secondary);
+    box-shadow: inset 0 0 18px color-mix(in srgb, var(--primary-color) 6%, transparent);
+}
+
+.media-operations-tab .meloday-time-slot-icon .material-icons {
+    color: var(--primary-color);
+    font-size: 22px;
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--primary-color) 45%, transparent));
+}
+
+.media-operations-tab .meloday-time-slot-name {
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.media-operations-tab .meloday-time-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--primary-color) 6%, var(--bg-secondary));
+    color: var(--text-muted);
+    width: fit-content;
+}
+
+.media-operations-tab .meloday-time-field .material-icons {
+    font-size: 15px;
+}
+
+.media-operations-tab .meloday-time-field input {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    width: 92px;
+    padding: 0;
+}
+
+.media-operations-tab .meloday-time-field input:focus {
+    outline: none;
+}
+
+.media-operations-tab .meloday-time-field input::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+}
+
+.media-operations-tab .meloday-view-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.media-operations-tab .meloday-view-toggle button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 13px;
+    cursor: pointer;
+}
+
+.media-operations-tab .meloday-view-toggle button .material-icons {
+    font-size: 16px;
+}
+
+.media-operations-tab .meloday-view-toggle button.is-active {
+    background: color-mix(in srgb, var(--primary-color) 16%, transparent);
+    color: var(--primary-color);
+}
+
+.media-operations-tab .meloday-library-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.media-operations-tab .meloday-config.is-list .meloday-library-grid {
+    grid-template-columns: 1fr;
+}
+
+.media-operations-tab .meloday-library-card {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+    background: var(--bg-primary, var(--bg-secondary));
+}
+
+.media-operations-tab .meloday-library-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.media-operations-tab .meloday-library-tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    flex: 0 0 auto;
+}
+
+.media-operations-tab .meloday-library-tile .material-icons {
+    font-size: 21px;
+    color: #fff;
+}
+
+.media-operations-tab .meloday-library-tile.accent-0 { background: #7c5cff; }
+.media-operations-tab .meloday-library-tile.accent-1 { background: #d9a514; }
+.media-operations-tab .meloday-library-tile.accent-2 { background: #14b8a6; }
+.media-operations-tab .meloday-library-tile.accent-3 { background: #3fae4d; }
+.media-operations-tab .meloday-library-tile.accent-4 { background: #e0567f; }
+.media-operations-tab .meloday-library-tile.accent-5 { background: #4f8ff7; }
+.media-operations-tab .meloday-library-tile.accent-6 { background: #f97316; }
+
+.media-operations-tab .meloday-library-id {
+    min-width: 0;
+    margin-right: auto;
+}
+
+.media-operations-tab .meloday-library-id h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-operations-tab .meloday-library-id p {
+    margin: 2px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.media-operations-tab .meloday-library-max,
+.media-operations-tab .meloday-library-mode {
+    display: grid;
+    gap: 4px;
+    justify-items: start;
+}
+
+.media-operations-tab .meloday-library-max label,
+.media-operations-tab .meloday-library-mode label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.media-operations-tab .meloday-library-max select {
+    border: 1px solid var(--border-secondary);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 10px;
+}
+
+.media-operations-tab .meloday-mode-segmented {
+    display: inline-flex;
+    border: 1px solid var(--border-secondary);
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.media-operations-tab .meloday-mode-segmented button {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    cursor: pointer;
+}
+
+.media-operations-tab .meloday-mode-segmented button.is-active {
+    background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+    color: var(--primary-color);
+}
+
+.media-operations-tab .meloday-library-chips {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 8px;
+}
+
+.media-operations-tab .meloday-slot-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    min-width: 0;
+}
+
+.media-operations-tab .meloday-slot-chip input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.media-operations-tab .meloday-slot-chip-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 5px;
+    border: 1px solid var(--border-secondary);
+    color: transparent;
+    flex: 0 0 auto;
+}
+
+.media-operations-tab .meloday-slot-chip-check .material-icons {
+    font-size: 13px;
+}
+
+.media-operations-tab .meloday-slot-chip-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-operations-tab .meloday-slot-chip-time {
+    margin-left: auto;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.media-operations-tab .meloday-slot-chip.is-selected {
+    border-color: color-mix(in srgb, var(--primary-color) 55%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-secondary));
+    box-shadow: 0 0 12px color-mix(in srgb, var(--primary-color) 14%, transparent);
+}
+
+.media-operations-tab .meloday-slot-chip.is-selected .meloday-slot-chip-check {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #04121a;
+}
+
+.media-operations-tab .meloday-slot-chip.is-selected .meloday-slot-chip-name,
+.media-operations-tab .meloday-slot-chip.is-selected .meloday-slot-chip-time {
+    color: var(--text-primary);
+}
+
+.media-operations-tab .meloday-library-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border-secondary);
+    padding-top: 10px;
+}
+
+.media-operations-tab .meloday-library-example {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.media-operations-tab .meloday-library-example-label {
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.media-operations-tab .meloday-library-example strong {
+    font-size: 12.5px;
+    color: var(--primary-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-operations-tab .meloday-library-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.media-operations-tab .meloday-library-counter {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-secondary);
+}
+
+.media-operations-tab .meloday-library-counter.is-over-limit {
+    color: var(--danger-color, #e5484d);
+}
+
+.media-operations-tab .meloday-library-note {
+    color: var(--text-muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+}
+
+.media-operations-tab .meloday-target-server-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    max-width: 520px;
+}
+
+.media-operations-tab .meloday-target-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.media-operations-tab .meloday-target-option input {
+    accent-color: var(--primary-color);
+    width: 15px;
+    height: 15px;
+}
+
+.media-operations-tab .meloday-advanced-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+}
+
+.media-operations-tab .meloday-advanced-grid .field-group {
+    display: grid;
+    gap: 6px;
+}
+
+.media-operations-tab .meloday-advanced-grid .field-label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.media-operations-tab .meloday-advanced-grid input {
+    width: 100%;
+    border: 1px solid var(--border-secondary);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 10px;
+}
+
+@@media (max-width: 900px) {
+    .media-operations-tab .meloday-library-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .media-operations-tab .meloday-target-server-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .media-operations-tab .ops-secondary {
@@ -3148,7 +3622,7 @@ span.badge.badge-artwork-animated {
                         <div class="tool-card" id="meloday-card">
                             <div class="tool-card-header">
                                 <div class="tool-card-heading">
-                                    <h4 class="tool-card-title mb-0">Meloday</h4>
+                                    <h4 class="tool-card-title mb-0">Meloday Playlists</h4>
                                     <span class="status-pill" id="melodayStatusPill">Inactive</span>
                                 </div>
                                 <button class="tool-help-button" type="button" data-tool="meloday">
@@ -3156,7 +3630,7 @@ span.badge.badge-artwork-animated {
                                     <span class="tool-help-tooltip">Learn more about this tool</span>
                                 </button>
                             </div>
-                            <p class="tool-card-info">Scheduled daypart playlists generated from your media-server history and synced to your servers.</p>
+                            <p class="tool-card-info">Automatically create time-based playlists from your libraries, synced to your media servers.</p>
                             <div class="tool-card-body">
                                 <div class="analysis-summary-grid analysis-summary-grid-main">
                                     <div class="analysis-summary-card">
@@ -3176,9 +3650,132 @@ span.badge.badge-artwork-animated {
                                         <span class="analysis-summary-value" id="melodayHistorySources">Not checked</span>
                                     </div>
                                 </div>
+                                <div class="meloday-config" id="meloday-config">
+                                    <div class="meloday-help-card">
+                                        <span class="material-icons">auto_awesome</span>
+                                        <div>
+                                            <strong>Meloday creates a playlist for each time slot you select</strong>
+                                            <p>Every selected slot becomes a playlist built from that library's tracks and listening history. Playlist names are generated automatically — no naming to configure.</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="meloday-section">
+                                        <div class="meloday-section-header">
+                                            <div class="meloday-section-title">
+                                                <span class="material-icons">schedule</span>
+                                                <div>
+                                                    <h5>Schedule</h5>
+                                                    <p>Set the daily time slots for your Meloday playlists. These times apply to all selected libraries.</p>
+                                                </div>
+                                            </div>
+                                            <button id="meloday-schedule-reset" class="action-btn action-btn-sm" type="button">
+                                                <span class="material-icons">restart_alt</span>
+                                                <span>Reset to default</span>
+                                            </button>
+                                        </div>
+                                        <div class="meloday-slot-grid" id="meloday-schedule-slots"></div>
+                                    </div>
+
+                                    <div class="meloday-section">
+                                        <div class="meloday-section-header">
+                                            <div class="meloday-section-title">
+                                                <span class="material-icons">layers</span>
+                                                <div>
+                                                    <h5>Target Libraries</h5>
+                                                    <p>Select which libraries to process and choose the time slots for each one. Maximum playlists per library is set on each card.</p>
+                                                </div>
+                                            </div>
+                                            <div class="meloday-view-toggle" role="group" aria-label="Library view">
+                                                <button type="button" data-meloday-view="grid" class="is-active">
+                                                    <span class="material-icons">grid_view</span>
+                                                    <span>Grid</span>
+                                                </button>
+                                                <button type="button" data-meloday-view="list">
+                                                    <span class="material-icons">view_list</span>
+                                                    <span>List</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div id="meloday-library-schedules" class="meloday-library-grid"></div>
+                                    </div>
+
+                                    <div class="meloday-section">
+                                        <div class="meloday-section-title">
+                                            <span class="material-icons">dns</span>
+                                            <div>
+                                                <h5>Sync targets</h5>
+                                                <p>Where Meloday playlists are published and listening history is imported from.</p>
+                                            </div>
+                                        </div>
+                                        <div class="meloday-target-server-grid" id="meloday-target-servers" role="group" aria-label="Meloday target servers">
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target-server="plex" />
+                                                <span>Plex</span>
+                                            </label>
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target-server="jellyfin" />
+                                                <span>Jellyfin</span>
+                                            </label>
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target-server="navidrome" />
+                                                <span>Navidrome</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="meloday-section">
+                                        <div class="meloday-section-title">
+                                            <span class="material-icons">tune</span>
+                                            <div>
+                                                <h5>Generation settings</h5>
+                                                <p>History window, track limits and the missed-run grace window.</p>
+                                            </div>
+                                        </div>
+                                        <div class="meloday-advanced-grid">
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-max-tracks">Max tracks</label>
+                                                <input id="meloday-max-tracks" type="number" min="10" max="500" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-lookback-days">History lookback</label>
+                                                <input id="meloday-lookback-days" type="number" min="1" max="365" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-exclude-days">Exclude played</label>
+                                                <input id="meloday-exclude-days" type="number" min="0" max="365" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-similarity-distance">Similarity distance</label>
+                                                <input id="meloday-similarity-distance" type="number" min="0.05" max="1" step="0.01" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-similar-limit">Similar limit</label>
+                                                <input id="meloday-similar-limit" type="number" min="1" max="50" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-historical-ratio">Historical ratio</label>
+                                                <input id="meloday-historical-ratio" type="number" min="0" max="1" step="0.05" />
+                                            </div>
+                                            <div class="field-group">
+                                                <label class="field-label" for="meloday-grace-minutes">Missed-run grace window (minutes)</label>
+                                                <input id="meloday-grace-minutes" type="number" min="0" max="720" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             <div class="tool-card-footer">
-                                <a class="action-btn action-btn-sm" href="@Url.Action("Index", "Meloday")">Open Meloday settings</a>
+                                <div class="toggle-row">
+                                    <label class="toggle-label" for="meloday-enabled">Enable Meloday</label>
+                                    <span class="switch">
+                                        <input id="meloday-enabled" type="checkbox" />
+                                        <span class="slider" aria-hidden="true"></span>
+                                    </span>
+                                </div>
+                                <div class="tool-card-action-group">
+                                    <button id="runMeloday" class="action-btn action-btn-sm" type="button">Run Meloday</button>
+                                    <button id="saveMelodaySettings" class="action-btn action-btn-sm" type="button">Save Settings</button>
+                                </div>
                             </div>
                         </div>
                         </div>
