@@ -2961,6 +2961,16 @@ span.badge.badge-artwork-animated {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.media-operations-tab #meloday-card .analysis-summary-grid-main {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@@media (max-width: 768px) {
+    .media-operations-tab #meloday-card .analysis-summary-grid-main {
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+}
+
 .media-operations-tab .analysis-summary-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-secondary);
