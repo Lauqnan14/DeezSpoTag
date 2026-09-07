@@ -1736,7 +1736,7 @@ span.badge.badge-artwork-animated {
 
 .media-operations-tab .meloday-section-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 14px;
     flex-wrap: wrap;
@@ -2240,15 +2240,15 @@ span.badge.badge-artwork-animated {
 }
 
 .media-operations-tab .ops-secondary {
-    grid-column: 2;
+    grid-column: 1 / -1;
     align-self: start;
     align-content: start;
 }
 
 .media-operations-tab .ops-secondary .mini-grid {
     display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: repeat(2, auto);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto;
     gap: 18px;
 }
 
@@ -2273,6 +2273,7 @@ span.badge.badge-artwork-animated {
     flex-direction: column;
     flex: 0 1 auto;
     min-height: 0;
+    gap: 16px;
 }
 
 .media-operations-tab #meloday-card .tool-card-footer {
