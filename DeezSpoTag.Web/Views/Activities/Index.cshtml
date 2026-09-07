@@ -7595,49 +7595,34 @@ function applyLatestAnalysis(latest, addToRecent = true) {
         `${value} · ${engine}`;
 
     if (lastfmEl) {
-        // Single path: gather every recorded tag with its engine and render it.
-        // Evidence from the resolver carries source per tag; the row's recorded
-        // columns carry theirs (essentiaGenres = Essentia, lastfmTags = Last.fm).
-        const engines = {
-            embedded: 'Embedded',
-            audiomack: 'Audiomack',
-            lastfm: 'Last.fm',
-            'essentia-discogs519': 'Discogs519',
-            'essentia-mood': 'Essentia'
-        };
+        // VIBE TAGS = online platform tags only: Audiomack primary, Last.fm
+        // fallback. Acoustic model output is NOT shown here (it has its own card).
+        const platforms = { audiomack: 'Audiomack', lastfm: 'Last.fm' };
         const tags = new Map();
-        const addTag = (value, source, weight) => {
-            const key = String(value || '').trim().toLowerCase();
-            if (!key) return;
-            const current = tags.get(key);
-            if (!current || (weight ?? 0) > current.finalWeight) {
-                tags.set(key, { value: String(value).trim(), source, finalWeight: weight ?? 0 });
-            }
-        };
 
         try {
             JSON.parse(analysis?.semanticEvidenceJson || '[]').forEach((item) => {
-                addTag(item.canonicalValue, item.source, item.finalWeight);
+                if (item.source !== 'audiomack' && item.source !== 'lastfm') {
+                    return; // embedded + acoustic evidence are not vibe tags
+                }
+                const key = String(item.canonicalValue || '').trim().toLowerCase();
+                if (!key) return;
+                const current = tags.get(key);
+                if (!current || (item.finalWeight ?? 0) > current.finalWeight) {
+                    tags.set(key, { value: item.canonicalValue, source: item.source, finalWeight: item.finalWeight ?? 0 });
+                }
             });
-        } catch { /* no evidence recorded for this row */ }
+        } catch { /* row analyzed before evidence existed */ }
 
-        (Array.isArray(analysis?.essentiaGenres) ? analysis.essentiaGenres : []).forEach((label) => {
-            const sep = label.indexOf('---');
-            const parts = sep > 0
-                ? [label.slice(0, sep).trim(), label.slice(sep + 3).trim()]
-                : [label.trim()];
-            parts.filter(Boolean).forEach((part, index) => addTag(part, 'essentia-mood', index === 0 ? 1 : 0.6));
-        });
-
-        (Array.isArray(analysis?.lastfmTags) ? analysis.lastfmTags : []).forEach((tag) => {
-            addTag(tag, 'lastfm', 0.75);
-        });
+        if (tags.size === 0 && Array.isArray(analysis?.lastfmTags)) {
+            analysis.lastfmTags.forEach((tag) => tags.set(String(tag).trim().toLowerCase(), { value: String(tag).trim(), source: 'lastfm', finalWeight: 0.75 }));
+        }
 
         const ordered = [...tags.values()]
             .sort((a, b) => b.finalWeight - a.finalWeight)
-            .map((tag) => `${tag.value} · ${engines[tag.source] || tag.source}`);
+            .map((tag) => `${tag.value} · ${platforms[tag.source] || tag.source}`);
 
-        lastfmEl.textContent = formatList(ordered);
+        lastfmEl.textContent = ordered.length > 0 ? formatList(ordered) : 'None';
     }
 
     const keyText = analysis?.key
