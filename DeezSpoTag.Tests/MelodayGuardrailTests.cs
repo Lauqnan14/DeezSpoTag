@@ -183,6 +183,7 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("/api/meloday/settings/libraries", script, StringComparison.Ordinal);
         Assert.Contains("targetServers", script, StringComparison.Ordinal);
         Assert.Contains("maxActivePlaylists", script, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-library-enabled", script, StringComparison.Ordinal);
         Assert.Contains("missedRunGraceMinutes", script, StringComparison.Ordinal);
         Assert.Contains("[HttpGet(\"libraries\")]", controller, StringComparison.Ordinal);
         Assert.Contains("TargetServers = targetServers", controller, StringComparison.Ordinal);

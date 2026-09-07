@@ -2051,6 +2051,77 @@ span.badge.badge-artwork-animated {
     color: var(--text-primary);
 }
 
+.media-operations-tab .meloday-library-toggle {
+    gap: 10px;
+}
+
+.media-operations-tab .meloday-library-toggle.is-on {
+    border-color: color-mix(in srgb, var(--primary-color) 40%, var(--border-secondary));
+}
+
+.media-operations-tab .meloday-library-toggle-state {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.media-operations-tab .meloday-library-toggle.is-on .meloday-library-toggle-state {
+    color: var(--text-primary);
+}
+
+.media-operations-tab .meloday-switch {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.media-operations-tab .meloday-switch input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.media-operations-tab .meloday-switch-slider {
+    position: relative;
+    display: inline-block;
+    width: 30px;
+    height: 17px;
+    border-radius: 999px;
+    background: var(--border-secondary);
+    transition: background 0.15s ease;
+}
+
+.media-operations-tab .meloday-switch-slider::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.media-operations-tab .meloday-switch input:checked + .meloday-switch-slider {
+    background: color-mix(in srgb, var(--primary-color) 45%, transparent);
+}
+
+.media-operations-tab .meloday-switch input:checked + .meloday-switch-slider::before {
+    transform: translateX(13px);
+    background: var(--primary-color);
+}
+
+.media-operations-tab .meloday-library-card.is-disabled .meloday-library-chips .meloday-slot-chip:not(.meloday-library-toggle) {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.media-operations-tab .meloday-library-card.is-disabled .meloday-library-foot {
+    opacity: 0.55;
+}
+
 .media-operations-tab .meloday-library-foot {
     display: flex;
     align-items: center;

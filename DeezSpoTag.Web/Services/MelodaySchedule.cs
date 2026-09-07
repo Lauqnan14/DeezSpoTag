@@ -14,17 +14,19 @@ public sealed record MelodayScheduleSlot(
     int Order);
 
 /// <summary>
-/// Per-library Meloday configuration: the library's playlist mode, how many slots it may
-/// select, and which scheduled slots it wants. A library is targeted when it has slots.
+/// Per-library Meloday configuration: whether the library participates, its playlist
+/// mode, how many slots it may select, and which scheduled slots it wants. A disabled
+/// library keeps its selections but generates nothing.
 /// </summary>
 public sealed record MelodayLibrarySchedule(
     long LibraryId,
+    bool Enabled,
     int MaxActivePlaylists,
     string Mode,
     List<string> SlotIds)
 {
     [JsonIgnore]
-    public bool IsTargeted => (SlotIds ?? new List<string>()).Count > 0;
+    public bool IsTargeted => Enabled && (SlotIds ?? new List<string>()).Count > 0;
 
     [JsonIgnore]
     public bool ProducesBothPlaylists => MelodayModes.Normalize(Mode) == MelodayModes.Both;
@@ -180,6 +182,7 @@ public static class MelodayScheduleSlots
 
             normalized.Add(new MelodayLibrarySchedule(
                 library.LibraryId,
+                library.Enabled,
                 MelodayClamp.PositiveOrDefault(library.MaxActivePlaylists, DefaultMaxActivePlaylists, 1, MaxAllowedPlaylistsPerLibrary),
                 MelodayModes.Normalize(string.IsNullOrWhiteSpace(library.Mode) ? MelodayModes.Sonic : library.Mode),
                 slotIds.OrderBy(SlotOrder).ToList()));

@@ -241,6 +241,7 @@ function melodayNormalizeLibraries(values, libraryCatalog) {
             libraryId: id,
             name: catalogLibrary?.name || `Library ${id}`,
             trackCount: Number(catalogLibrary?.trackCount || 0),
+            enabled: saved.enabled !== false,
             maxActivePlaylists: Math.max(1, Math.min(7, Number(saved.maxActivePlaylists) || melodayDefaults.maxActivePlaylists)),
             mode: melodayNormalizeMode(saved.mode),
             slotIds
@@ -394,7 +395,7 @@ function renderMelodayLibraryCards() {
 
 function buildMelodayLibraryCard(library) {
     const card = document.createElement('article');
-    card.className = 'meloday-library-card';
+    card.className = 'meloday-library-card' + (library.enabled !== false ? '' : ' is-disabled');
     card.setAttribute('data-meloday-library', String(library.libraryId));
 
     const head = document.createElement('header');
@@ -469,6 +470,7 @@ function buildMelodayLibraryCard(library) {
     melodayState.slots.forEach((slot) => {
         chips.appendChild(buildMelodaySlotChip(library, slot));
     });
+    chips.appendChild(buildMelodayLibraryToggle(library, card));
 
     const foot = document.createElement('footer');
     foot.className = 'meloday-library-foot';
@@ -489,6 +491,39 @@ function buildMelodayLibraryCard(library) {
     card.append(head, chips, foot);
     updateMelodayLibraryFooter(library);
     return card;
+}
+
+function buildMelodayLibraryToggle(library, card) {
+    const wrap = document.createElement('div');
+    wrap.className = 'meloday-slot-chip meloday-library-toggle' + (library.enabled !== false ? ' is-on' : ' is-off');
+
+    const label = document.createElement('label');
+    label.className = 'meloday-switch';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = library.enabled !== false;
+    input.setAttribute('data-meloday-library-enabled', String(library.libraryId));
+    input.setAttribute('aria-label', `Enable Meloday for ${library.name}`);
+    input.addEventListener('change', () => {
+        library.enabled = input.checked;
+        wrap.classList.toggle('is-on', library.enabled);
+        wrap.classList.toggle('is-off', !library.enabled);
+        const state = wrap.querySelector('.meloday-library-toggle-state');
+        if (state) {
+            state.textContent = library.enabled ? 'Enabled' : 'Disabled';
+        }
+        card.classList.toggle('is-disabled', !library.enabled);
+    });
+    const slider = document.createElement('span');
+    slider.className = 'meloday-switch-slider';
+    label.append(input, slider);
+
+    const state = document.createElement('span');
+    state.className = 'meloday-library-toggle-state';
+    state.textContent = library.enabled !== false ? 'Enabled' : 'Disabled';
+
+    wrap.append(label, state);
+    return wrap;
 }
 
 function buildMelodaySlotChip(library, slot) {
@@ -595,6 +630,7 @@ function melodaySlotOrder(slotId) {
 function buildMelodayLibrariesFromDom() {
     return melodayState.libraries.map(library => ({
         libraryId: library.libraryId,
+        enabled: library.enabled !== false,
         maxActivePlaylists: library.maxActivePlaylists,
         mode: melodayNormalizeMode(library.mode),
         slotIds: [...library.slotIds]
@@ -616,7 +652,7 @@ function buildMelodayPayload(enabledOverride) {
 
     const libraries = buildMelodayLibrariesFromDom();
     if (enabled) {
-        const targeted = libraries.filter(library => library.slotIds.length > 0);
+        const targeted = libraries.filter(library => library.enabled !== false && library.slotIds.length > 0);
         if (targeted.length === 0) {
             throw new Error('Select at least one time slot for at least one library.');
         }

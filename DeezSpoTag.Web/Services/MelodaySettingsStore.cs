@@ -176,9 +176,15 @@ public sealed class MelodaySettingsStore
             }
         }
 
+        var enabled = !library.TryGetPropertyValue("enabled", out var enabledNode)
+            || enabledNode is not JsonValue enabledValue
+            || !enabledValue.TryGetValue<bool>(out var parsedEnabled)
+            || parsedEnabled;
+
         return new JsonObject
         {
             ["libraryId"] = libraryId,
+            ["enabled"] = enabled,
             ["maxActivePlaylists"] = maxActivePlaylists,
             ["mode"] = mode,
             ["slotIds"] = new JsonArray(slotIds.Select(slotId => JsonValue.Create(slotId)).ToArray())
@@ -226,6 +232,7 @@ public sealed class MelodaySettingsStore
         merged.Libraries = merged.TargetLibraryIds
             .Select(libraryId => new MelodayLibrarySchedule(
                 libraryId,
+                true,
                 MelodayScheduleSlots.DefaultMaxActivePlaylists,
                 merged.Mode,
                 MelodayScheduleSlots.Defaults.Select(static slot => slot.Id).ToList()))

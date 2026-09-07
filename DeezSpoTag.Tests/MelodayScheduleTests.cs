@@ -107,10 +107,10 @@ public sealed class MelodayScheduleTests
     [Fact]
     public void CountPlaylists_Treats_Both_As_Two_Playlists_Per_Slot()
     {
-        var library = new MelodayLibrarySchedule(12, 4, "both", new List<string> { "morning", "evening", "late-evening" });
+        var library = new MelodayLibrarySchedule(12, true, 4, "both", new List<string> { "morning", "evening", "late-evening" });
 
         Assert.Equal(6, MelodayScheduleSlots.CountPlaylists(library));
-        Assert.Equal(2, MelodayScheduleSlots.CountPlaylists(new MelodayLibrarySchedule(12, 4, "sonic", new List<string> { "morning", "evening" })));
+        Assert.Equal(2, MelodayScheduleSlots.CountPlaylists(new MelodayLibrarySchedule(12, true, 4, "sonic", new List<string> { "morning", "evening" })));
     }
 
     [Fact]
@@ -118,8 +118,8 @@ public sealed class MelodayScheduleTests
     {
         var normalized = MelodayScheduleSlots.NormalizeLibraries(new[]
         {
-            new MelodayLibrarySchedule(12, 99, "sonic", new List<string>()),
-            new MelodayLibrarySchedule(13, 0, "sonic", new List<string>())
+            new MelodayLibrarySchedule(12, true, 99, "sonic", new List<string>()),
+            new MelodayLibrarySchedule(13, true, 0, "sonic", new List<string>())
         });
 
         Assert.Equal(7, normalized[0].MaxActivePlaylists);
@@ -131,7 +131,7 @@ public sealed class MelodayScheduleTests
     {
         var normalized = MelodayScheduleSlots.NormalizeLibraries(new[]
         {
-            new MelodayLibrarySchedule(12, 4, "sonic", new List<string> { "evening", "morning", "morning", "unknown-slot" })
+            new MelodayLibrarySchedule(12, true, 4, "sonic", new List<string> { "evening", "morning", "morning", "unknown-slot" })
         });
 
         Assert.Equal(new[] { "morning", "evening" }, normalized[0].SlotIds);
@@ -139,11 +139,26 @@ public sealed class MelodayScheduleTests
     }
 
     [Fact]
+    public void Disabled_Library_Keeps_Slots_But_Is_Not_Targeted()
+    {
+        var library = new MelodayLibrarySchedule(12, false, 4, "sonic", new List<string> { "morning", "evening" });
+
+        Assert.False(library.IsTargeted);
+        Assert.Equal(2, library.SlotIds.Count);
+        Assert.True(new MelodayLibrarySchedule(12, true, 4, "sonic", library.SlotIds).IsTargeted);
+        // Enabled defaults to true when a stored file omits it.
+        Assert.True(MelodayScheduleSlots.NormalizeLibraries(new[]
+        {
+            library with { Enabled = true }
+        })[0].Enabled);
+    }
+
+    [Fact]
     public void NormalizeLibraries_Defaults_Mode_To_Sonic()
     {
         var normalized = MelodayScheduleSlots.NormalizeLibraries(new[]
         {
-            new MelodayLibrarySchedule(12, 4, "", new List<string> { "morning" })
+            new MelodayLibrarySchedule(12, true, 4, "", new List<string> { "morning" })
         });
 
         Assert.Equal("sonic", normalized[0].Mode);
