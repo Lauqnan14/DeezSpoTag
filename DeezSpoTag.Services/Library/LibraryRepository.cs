@@ -5749,9 +5749,10 @@ ON CONFLICT(track_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<AnalysisStatusDto> GetAnalysisStatusAsync(CancellationToken cancellationToken = default)
+    public async Task<AnalysisStatusDto> GetAnalysisStatusAsync(long? libraryId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        var libraryFilter = libraryId.HasValue ? libraryId.Value : (object)DBNull.Value;
         const string totalSql = @"
 SELECT COUNT(DISTINCT t.id)
 FROM track t
@@ -5762,7 +5763,8 @@ WHERE f.enabled = 1
   AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
   AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
   AND coalesce(af.size, 0) > 0
-  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0);";
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
+  AND (@libraryId IS NULL OR f.library_id = @libraryId);";
         const string analyzedSql = @"
 SELECT COUNT(DISTINCT ta.track_id)
 FROM track_analysis ta
@@ -5775,7 +5777,8 @@ WHERE f.enabled = 1
   AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
   AND coalesce(af.size, 0) > 0
   AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
-  AND ta.status IN ('complete', 'completed');";
+  AND ta.status IN ('complete', 'completed')
+  AND (@libraryId IS NULL OR f.library_id = @libraryId);";
         const string errorSql = @"
 SELECT COUNT(DISTINCT ta.track_id)
 FROM track_analysis ta
@@ -5788,7 +5791,8 @@ WHERE f.enabled = 1
   AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
   AND coalesce(af.size, 0) > 0
   AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
-  AND ta.status IN ('error', 'failed');";
+  AND ta.status IN ('error', 'failed')
+  AND (@libraryId IS NULL OR f.library_id = @libraryId);";
         const string lastRunSql = @"
 SELECT MAX(ta.analyzed_at_utc)
 FROM track_analysis ta

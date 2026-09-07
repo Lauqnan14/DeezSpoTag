@@ -3099,7 +3099,7 @@ span.badge.badge-artwork-animated {
                                         <span class="analysis-summary-value" id="analysisEssentiaGenres">None</span>
                                     </div>
                                     <div class="analysis-summary-card">
-                                        <span class="analysis-summary-label">Last.fm tags</span>
+                                        <span class="analysis-summary-label">Vibe tags</span>
                                         <span class="analysis-summary-value" id="analysisLastfmTags">None</span>
                                     </div>
                                 </div>
@@ -7591,7 +7591,16 @@ function applyLatestAnalysis(latest, addToRecent = true) {
     const lastfmEl = document.getElementById('analysisLastfmTags');
     if (moodTagsEl) moodTagsEl.textContent = formatList(analysis?.moodTags);
     if (essentiaEl) essentiaEl.textContent = formatList(analysis?.essentiaGenres);
-    if (lastfmEl) lastfmEl.textContent = formatList(analysis?.lastfmTags);
+    if (lastfmEl) {
+        const resolvedTags = [
+            ...(Array.isArray(analysis?.resolvedGenres) ? analysis.resolvedGenres : []),
+            ...(Array.isArray(analysis?.resolvedStyles) ? analysis.resolvedStyles : []),
+            ...(Array.isArray(analysis?.resolvedMoods) ? analysis.resolvedMoods : [])
+        ];
+        lastfmEl.textContent = resolvedTags.length > 0
+            ? formatList(resolvedTags)
+            : formatList(analysis?.lastfmTags);
+    }
 
     const keyText = analysis?.key
         ? `${analysis.key}${analysis.keyScale ? ` ${analysis.keyScale}` : ''}`

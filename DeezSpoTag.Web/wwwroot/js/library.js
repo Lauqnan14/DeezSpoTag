@@ -2910,7 +2910,9 @@ async function loadAnalysisStatus() {
         return;
     }
     try {
-        const status = await fetchJson('/api/library/analysis/status');
+        const librarySelect = document.getElementById('metadata-library-folder');
+        const libraryId = librarySelect && librarySelect.value ? Number(librarySelect.value) : null;
+        const status = await fetchJson(`/api/library/analysis/status${libraryId ? `?libraryId=${libraryId}` : ''}`);
         const pending = status?.pendingTracks ?? 0;
         const analyzed = status?.analyzedTracks ?? 0;
         const total = status?.totalTracks ?? 0;

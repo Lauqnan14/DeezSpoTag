@@ -23,9 +23,9 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     }
 
     [HttpGet("status")]
-    public async Task<IActionResult> GetStatus(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetStatus([FromQuery] long? libraryId, CancellationToken cancellationToken)
     {
-        var status = await _repository.GetAnalysisStatusAsync(cancellationToken);
+        var status = await _repository.GetAnalysisStatusAsync(libraryId, cancellationToken);
         return Ok(status);
     }
 
