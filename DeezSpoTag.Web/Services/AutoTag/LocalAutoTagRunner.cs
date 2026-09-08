@@ -6106,8 +6106,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         EnsureReleaseCategory(track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
-        var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
         ApplyArtistAliasPreference(track);
+        var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
         NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
         var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
         string? tempCoverPath = null;
@@ -6435,21 +6435,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     /// <summary>
-    /// Rewrites the track's artist credits, album artists, and "feat." strings
-    /// inside track/album titles so every user-defined alias becomes its
-    /// preferred name before tags are written. Applies to every tagging run —
-    /// enrichment, enhancement, and merge-triggered runs alike.
+    /// Rewrites the track's artist credits, album artists, featured names, and
+    /// "feat." strings inside track/album titles so every user-defined alias
+    /// becomes its preferred name before tags are written. Applies to every
+    /// tagging run — enrichment, enhancement, and merge-triggered runs alike.
     /// </summary>
     private static void ApplyArtistAliasPreference(AutoTagTrack track)
     {
         try
         {
-            track.Artists = track.Artists
-                .Select(DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit)
-                .ToList();
-            track.AlbumArtists = track.AlbumArtists
-                .Select(DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit)
-                .ToList();
+            track.Artists = RewriteCreditList(track.Artists);
+            track.AlbumArtists = RewriteCreditList(track.AlbumArtists);
             if (!string.IsNullOrWhiteSpace(track.Title))
             {
                 track.Title = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Title);
@@ -6459,11 +6455,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 track.Album = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Album);
             }
+
+            foreach (var key in track.Other.Keys.ToList())
+            {
+                track.Other[key] = RewriteCreditList(track.Other[key]);
+            }
         }
         catch
         {
             // Alias resolution must never break tagging.
         }
+    }
+
+    private static List<string> RewriteCreditList(
+        IEnumerable<string>? credits,
+        Func<string?, string>? rewriteCredit = null)
+    {
+        rewriteCredit ??= static value => DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(value);
+        return (credits ?? Array.Empty<string>())
+            .Select(credit => rewriteCredit(credit) ?? string.Empty)
+            .Select(static credit => credit.Trim())
+            .Where(static credit => credit.Length > 0)
+            .ToList();
     }
 
     private static void NormalizeTrackArtistsForTagging(AutoTagTrack track, bool singleAlbumArtist)
@@ -10883,7 +10896,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        ApplyTitleLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Title, platformId);
+        var existingTitle = file.Tag.Title;
+        ApplyTitleLossyOverwriteGuard(effectiveTagSettings, sourceTrack, existingTitle, platformId);
 
         var existingArtistCredits = file.Tag.Performers?
             .Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value))
@@ -10897,15 +10911,145 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             .Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value))
             .ToList() ?? new List<string>();
 
-        ApplyPreferenceAwareArtistGuards(
+        var aliasOverwrite = ApplyPreferredArtistAliasToExistingCredits(
             effectiveTagSettings,
             sourceTrack,
-            runtimeSettings,
             existingArtistCredits,
             existingAlbumArtistCredits,
-            file.Tag.Title);
+            existingTitle);
+
+        if (!aliasOverwrite.ForcedArtist && !aliasOverwrite.ForcedAlbumArtist)
+        {
+            ApplyPreferenceAwareArtistGuards(
+                effectiveTagSettings,
+                sourceTrack,
+                runtimeSettings,
+                existingArtistCredits,
+                existingAlbumArtistCredits,
+                aliasOverwrite.RewrittenTitle ?? existingTitle);
+        }
+        else
+        {
+            PreserveRicherCreditsWithoutBlockingPreferredWrite(
+                sourceTrack,
+                existingArtistCredits,
+                existingAlbumArtistCredits);
+            if (!aliasOverwrite.ForcedTitle)
+            {
+                ApplyTitleFeaturedGuard(
+                    effectiveTagSettings,
+                    sourceTrack,
+                    runtimeSettings,
+                    SplitArtistCredits(existingArtistCredits),
+                    existingTitle);
+            }
+        }
+
         ApplyAlbumLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Album);
-        ApplyPlatformOverwriteGuards(effectiveTagSettings, sourceTrack, file, platformId);
+        ApplyPlatformOverwriteGuards(
+            effectiveTagSettings,
+            sourceTrack,
+            file,
+            platformId,
+            aliasOverwrite);
+    }
+
+    private readonly record struct ArtistAliasOverwriteDecision(
+        bool ForcedArtist,
+        bool ForcedAlbumArtist,
+        bool ForcedTitle,
+        string? RewrittenTitle)
+    {
+        public static ArtistAliasOverwriteDecision None { get; } = new(false, false, false, null);
+    }
+
+    /// <summary>
+    /// When on-disk artist / album artist / featured credits still use an alias,
+    /// force those tags to the user's preferred spelling and keep write enabled.
+    /// Richer-credit preservation must not keep the alias on disk: Navidrome
+    /// organizes from tags, so main artist, artist, and featured credits have
+    /// to use the same preferred name.
+    /// </summary>
+    private static ArtistAliasOverwriteDecision ApplyPreferredArtistAliasToExistingCredits(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        List<string> existingArtists,
+        List<string> existingAlbumArtists,
+        string? existingTitle,
+        Func<string?, string>? rewriteCredit = null)
+    {
+        rewriteCredit ??= static value => DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(value);
+        var originalArtists = existingArtists.ToList();
+        var originalAlbumArtists = existingAlbumArtists.ToList();
+        var rewrittenArtists = RewriteCreditList(originalArtists, rewriteCredit);
+        var rewrittenAlbumArtists = RewriteCreditList(originalAlbumArtists, rewriteCredit);
+        var rewrittenTitle = string.IsNullOrWhiteSpace(existingTitle)
+            ? existingTitle
+            : rewriteCredit(existingTitle)?.Trim();
+
+        var forcedArtist = rewrittenArtists.Count > 0
+            && !AreArtistCreditsEquivalent(originalArtists, rewrittenArtists);
+        var forcedAlbumArtist = rewrittenAlbumArtists.Count > 0
+            && !AreArtistCreditsEquivalent(originalAlbumArtists, rewrittenAlbumArtists);
+        var forcedTitle = !string.IsNullOrWhiteSpace(rewrittenTitle)
+            && !string.Equals(existingTitle?.Trim(), rewrittenTitle, StringComparison.Ordinal);
+
+        if (!forcedArtist && !forcedAlbumArtist && !forcedTitle)
+        {
+            return ArtistAliasOverwriteDecision.None;
+        }
+
+        if (forcedArtist)
+        {
+            existingArtists.Clear();
+            existingArtists.AddRange(rewrittenArtists);
+            sourceTrack.Artists = rewrittenArtists.ToList();
+            effectiveTagSettings.Artist = true;
+            effectiveTagSettings.Artists = true;
+        }
+
+        if (forcedAlbumArtist)
+        {
+            existingAlbumArtists.Clear();
+            existingAlbumArtists.AddRange(rewrittenAlbumArtists);
+            sourceTrack.AlbumArtists = rewrittenAlbumArtists.ToList();
+            effectiveTagSettings.AlbumArtist = true;
+        }
+        else if (forcedArtist && sourceTrack.AlbumArtists.Count == 0 && rewrittenArtists.Count > 0)
+        {
+            sourceTrack.AlbumArtists = new List<string> { rewrittenArtists[0] };
+            effectiveTagSettings.AlbumArtist = true;
+        }
+
+        if (forcedTitle && !string.IsNullOrWhiteSpace(rewrittenTitle))
+        {
+            sourceTrack.Title = rewrittenTitle;
+            effectiveTagSettings.Title = true;
+        }
+
+        return new ArtistAliasOverwriteDecision(forcedArtist, forcedAlbumArtist, forcedTitle, rewrittenTitle);
+    }
+
+    private static void PreserveRicherCreditsWithoutBlockingPreferredWrite(
+        AutoTagTrack sourceTrack,
+        List<string> existingArtists,
+        List<string> existingAlbumArtists)
+    {
+        var existing = SplitArtistCredits(existingArtists);
+        var incoming = SplitArtistCredits(sourceTrack.Artists);
+        if (existing.Count > 0
+            && ShouldPreferSourceArtistCredits(existing, incoming))
+        {
+            sourceTrack.Artists = existing.ToList();
+        }
+
+        var existingAlbum = SplitArtistCredits(existingAlbumArtists);
+        var incomingAlbum = SplitArtistCredits(sourceTrack.AlbumArtists);
+        if (existingAlbum.Count > 0
+            && ShouldPreferSourceArtistCredits(existingAlbum, incomingAlbum))
+        {
+            sourceTrack.AlbumArtists = existingAlbum.ToList();
+        }
     }
 
     private static void ApplyAlbumLossyOverwriteGuard(
@@ -10938,7 +11082,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         TagSettings effectiveTagSettings,
         AutoTagTrack sourceTrack,
         TagLib.File file,
-        string platformId)
+        string platformId,
+        ArtistAliasOverwriteDecision aliasOverwrite = default)
     {
         if (!string.Equals(platformId, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
         {
@@ -10947,6 +11092,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var existingTitle = file.Tag.Title?.Trim();
         if (effectiveTagSettings.Title
+            && !aliasOverwrite.ForcedTitle
             && !string.IsNullOrWhiteSpace(existingTitle)
             && !string.IsNullOrWhiteSpace(sourceTrack.Title))
         {
@@ -10965,6 +11111,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ?? new List<string>());
         var incomingArtists = SplitArtistCredits(sourceTrack.Artists);
         if (effectiveTagSettings.Artist
+            && !aliasOverwrite.ForcedArtist
             && existingArtists.Count > 0
             && incomingArtists.Count > 0
             && !AreArtistCreditsEquivalent(existingArtists, incomingArtists))
@@ -10977,6 +11124,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ?? new List<string>());
         var incomingAlbumArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
         if (effectiveTagSettings.AlbumArtist
+            && !aliasOverwrite.ForcedAlbumArtist
             && existingAlbumArtists.Count > 0
             && incomingAlbumArtists.Count > 0
             && !AreArtistCreditsEquivalent(existingAlbumArtists, incomingAlbumArtists))

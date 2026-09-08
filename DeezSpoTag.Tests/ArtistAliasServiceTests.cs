@@ -95,6 +95,11 @@ public class ArtistAliasServiceTests
 
             var credit = await service.ResolveCreditAsync("Calm Down (feat. Ayra Star)");
             Assert.Equal("Calm Down (feat. Ayra Starr)", credit);
+
+            // Sync resolution must work immediately after save so a follow-up
+            // enhancement run can rewrite on-disk aliases without waiting.
+            Assert.Equal("Ayra Starr", service.ResolvePreferred("Ayra Star"));
+            Assert.Equal("Calm Down (feat. Ayra Starr)", service.ResolveCredit("Calm Down (feat. Ayra Star)"));
         }
         finally
         {

@@ -53,6 +53,12 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyPreferenceAwareArtistGuards not found.");
 
+    private static readonly MethodInfo ApplyPreferredArtistAliasToExistingCreditsMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "ApplyPreferredArtistAliasToExistingCredits",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyPreferredArtistAliasToExistingCredits not found.");
+
     private static readonly MethodInfo ApplyFolderContextGuardsMethod =
         typeof(LocalAutoTagRunner).GetMethod(
             "ApplyFolderContextGuards",
@@ -1187,6 +1193,125 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
 
         Assert.True(effective.AlbumArtist);
         Assert.Equal("Incoming Album Artist", Assert.Single(incoming.AlbumArtists));
+    }
+
+    [Fact]
+    public void ApplyPreferredArtistAliasToExistingCredits_ForcesArtistAndAlbumArtistWrite_WhenOnDiskUsesAlias()
+    {
+        var effective = new TagSettings
+        {
+            Artist = false,
+            Artists = false,
+            AlbumArtist = false
+        };
+        var incoming = new AutoTagTrack
+        {
+            Artists = new List<string> { "Jason Derulo" },
+            AlbumArtists = new List<string> { "Jason Derulo" }
+        };
+        var existingArtists = new List<string> { "Jason Derülo" };
+        var existingAlbumArtists = new List<string> { "Jason Derülo" };
+        Func<string?, string> rewrite = value =>
+            string.Equals(value, "Jason Derülo", StringComparison.Ordinal)
+                ? "Jason Derulo"
+                : value ?? string.Empty;
+
+        var decision = ApplyPreferredArtistAliasToExistingCreditsMethod.Invoke(
+            null,
+            new object?[]
+            {
+                effective,
+                incoming,
+                existingArtists,
+                existingAlbumArtists,
+                "Marry Me",
+                rewrite
+            });
+
+        Assert.NotNull(decision);
+        Assert.True((bool)decision!.GetType().GetProperty("ForcedArtist")!.GetValue(decision)!);
+        Assert.True((bool)decision.GetType().GetProperty("ForcedAlbumArtist")!.GetValue(decision)!);
+        Assert.True(effective.Artist);
+        Assert.True(effective.Artists);
+        Assert.True(effective.AlbumArtist);
+        Assert.Equal(new[] { "Jason Derulo" }, incoming.Artists);
+        Assert.Equal(new[] { "Jason Derulo" }, incoming.AlbumArtists);
+        Assert.Equal(new[] { "Jason Derulo" }, existingArtists);
+        Assert.Equal(new[] { "Jason Derulo" }, existingAlbumArtists);
+    }
+
+    [Fact]
+    public void ApplyPreferredArtistAliasToExistingCredits_RewritesAliasInsideFeaturedCredits()
+    {
+        var effective = new TagSettings
+        {
+            Artist = true,
+            AlbumArtist = true
+        };
+        var incoming = new AutoTagTrack
+        {
+            Artists = new List<string> { "Jason Derulo" },
+            AlbumArtists = new List<string> { "Jason Derulo" }
+        };
+        var existingArtists = new List<string> { "Jason Derülo", "Snoop Dogg" };
+        var existingAlbumArtists = new List<string> { "Jason Derülo" };
+        Func<string?, string> rewrite = value =>
+            string.Equals(value, "Jason Derülo", StringComparison.Ordinal)
+                ? "Jason Derulo"
+                : value ?? string.Empty;
+
+        ApplyPreferredArtistAliasToExistingCreditsMethod.Invoke(
+            null,
+            new object?[]
+            {
+                effective,
+                incoming,
+                existingArtists,
+                existingAlbumArtists,
+                "Wiggle (feat. Snoop Dogg)",
+                rewrite
+            });
+
+        Assert.Equal(new[] { "Jason Derulo", "Snoop Dogg" }, incoming.Artists);
+        Assert.Equal(new[] { "Jason Derulo" }, incoming.AlbumArtists);
+        Assert.True(effective.Artist);
+        Assert.True(effective.AlbumArtist);
+    }
+
+    [Fact]
+    public void ApplyPreferredArtistAliasToExistingCredits_LeavesPreferredSpellingAlone()
+    {
+        var effective = new TagSettings
+        {
+            Artist = false,
+            AlbumArtist = false
+        };
+        var incoming = new AutoTagTrack
+        {
+            Artists = new List<string> { "Jason Derulo" },
+            AlbumArtists = new List<string> { "Jason Derulo" }
+        };
+        var existingArtists = new List<string> { "Jason Derulo" };
+        var existingAlbumArtists = new List<string> { "Jason Derulo" };
+        Func<string?, string> rewrite = value => value ?? string.Empty;
+
+        var decision = ApplyPreferredArtistAliasToExistingCreditsMethod.Invoke(
+            null,
+            new object?[]
+            {
+                effective,
+                incoming,
+                existingArtists,
+                existingAlbumArtists,
+                "Whatcha Say",
+                rewrite
+            });
+
+        Assert.NotNull(decision);
+        Assert.False((bool)decision!.GetType().GetProperty("ForcedArtist")!.GetValue(decision)!);
+        Assert.False((bool)decision.GetType().GetProperty("ForcedAlbumArtist")!.GetValue(decision)!);
+        Assert.False(effective.Artist);
+        Assert.False(effective.AlbumArtist);
     }
 
     [Fact]

@@ -330,6 +330,7 @@ VALUES ($group_id, $name, $normalized);";
         }
 
         InvalidateCache();
+        await GetAliasMapAsync(cancellationToken).ConfigureAwait(false);
         var saved = (await GetAllGroupsAsync(cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(group => group.Id == groupId);
         return saved ?? new ArtistAliasGroupDto(groupId, preferred, new List<string>(), string.Empty, string.Empty);
