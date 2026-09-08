@@ -10,6 +10,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
@@ -672,7 +673,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 biography),
             cancellationToken);
 
-        if (!pushed.Updated && !popularSongsSynced)
+        if ((!pushed.Updated && !popularSongsSynced) || pushed.HasFailures)
         {
             var warningText = pushed.Warnings.Count == 0
                 ? "No server metadata was updated."
@@ -826,17 +827,31 @@ public sealed partial class ArtistMetadataUpdaterService
             stem = "folder";
         }
 
-        var extension = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(avatarPath));
+        // The folder image must always be folder.jpg (media servers use it as the artist
+        // fallback), so non-JPEG avatars are transcoded instead of keeping their source
+        // extension and leaving a stale folder.jpg behind.
+        const string destinationExtension = ".jpg";
+        var sourceIsJpeg = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(avatarPath)) == ".jpg";
         foreach (var directory in directories)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var destination = Path.Join(directory, stem + extension);
-                await using (var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                await using (var destinationStream = File.Create(destination))
+                var destination = Path.Join(directory, stem + destinationExtension);
+                if (sourceIsJpeg)
                 {
+                    await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    await using var destinationStream = File.Create(destination);
                     await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+                }
+                else
+                {
+                    await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var image = await Image.LoadAsync(sourceStream, cancellationToken);
+                    await image.SaveAsJpegAsync(
+                        destination,
+                        new JpegEncoder { Quality = Math.Clamp(settings.JpegImageQuality, 1, 100) },
+                        cancellationToken);
                 }
 
                 DeleteArtistFolderImageVariants(directory, stem, destination);
@@ -1982,7 +1997,7 @@ public sealed partial class ArtistMetadataUpdaterService
             await PushToNavidromeAsync(request, updates, warnings, cancellationToken);
         }
 
-        return new PushOutcome(updates.HasAnyUpdate, warnings);
+        return new PushOutcome(updates.HasAnyUpdate, updates.HasFailures, warnings);
     }
 
     private async Task PushToNavidromeAsync(
@@ -2042,16 +2057,30 @@ public sealed partial class ArtistMetadataUpdaterService
 
             if (HasLocalFile(navidromeImagePath))
             {
+                var uploadFailures = 0;
                 foreach (var artistId in artistIds)
                 {
-                    updates.AvatarUpdated = await _navidromeClient.UpdateArtistImageFromFileAsync(
+                    var uploaded = await _navidromeClient.UpdateArtistImageFromFileAsync(
                         navidrome.Url,
                         navidrome.Username,
                         navidrome.Password,
                         artistId,
                         navidromeImagePath!,
                         null,
-                        cancellationToken) || updates.AvatarUpdated;
+                        cancellationToken);
+                    updates.AvatarUpdated = uploaded || updates.AvatarUpdated;
+                    if (!uploaded)
+                    {
+                        uploadFailures++;
+                    }
+                }
+
+                if (uploadFailures > 0)
+                {
+                    updates.HasFailures = true;
+                    warnings.Add(
+                        $"Navidrome artist image upload failed for {uploadFailures} of {artistIds.Count} matched artists. "
+                        + "Navidrome rejects artwork uploads unless the account is an admin or EnableArtworkUpload=true is set in navidrome.toml.");
                 }
             }
 
@@ -2932,7 +2961,7 @@ public sealed partial class ArtistMetadataUpdaterService
         public static ArtworkCandidate FromLocal(string path, string identity, string source, string? contentHash = null)
             => new(identity, source, path, contentHash);
     }
-    private sealed record PushOutcome(bool Updated, IReadOnlyList<string> Warnings);
+    private sealed record PushOutcome(bool Updated, bool HasFailures, IReadOnlyList<string> Warnings);
     private sealed record PushMetadataRequest(
         long LocalArtistId,
         PlatformAuthState Auth,
@@ -2960,6 +2989,7 @@ public sealed partial class ArtistMetadataUpdaterService
         public bool BackgroundUpdated { get; set; }
         public bool BioUpdated { get; set; }
         public bool NavidromeScanTriggered { get; set; }
+        public bool HasFailures { get; set; }
         public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated || BioUpdated || NavidromeScanTriggered;
     }
 }

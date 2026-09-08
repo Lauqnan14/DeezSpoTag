@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -17,10 +19,12 @@ public sealed class NavidromeApiClient
     private const string NativeAuthorizationHeader = "X-ND-Authorization";
     private const int DefaultHistoryPageSize = 500;
     private readonly HttpClient _httpClient;
+    private readonly ILogger<NavidromeApiClient> _logger;
 
-    public NavidromeApiClient(HttpClient httpClient)
+    public NavidromeApiClient(HttpClient httpClient, ILogger<NavidromeApiClient>? logger = null)
     {
         _httpClient = httpClient;
+        _logger = logger ?? NullLogger<NavidromeApiClient>.Instance;
     }
 
     public async Task<NavidromeSystemInfo?> PingAsync(
@@ -947,18 +951,31 @@ public sealed class NavidromeApiClient
             request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
-            return response.IsSuccessStatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogWarning(
+                "Navidrome image upload to {Path} failed with HTTP {Status}: {Body}",
+                path,
+                (int)response.StatusCode,
+                body.Length > 300 ? body[..300] : body);
+            return false;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return false;
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
+            _logger.LogWarning(ex, "Navidrome image upload to {Path} failed: network error.", path);
             return false;
         }
-        catch (IOException)
+        catch (IOException ex)
         {
+            _logger.LogWarning(ex, "Navidrome image upload to {Path} failed: could not read image.", path);
             return false;
         }
     }
