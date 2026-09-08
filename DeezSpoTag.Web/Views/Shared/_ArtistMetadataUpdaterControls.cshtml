@@ -1,19 +1,23 @@
 <p class="metadata-updater-description tool-card-info">Refresh provider metadata into DeezSpoTag's cache or independently push cached fields to selected media servers.</p>
-<div class="metadata-updater-select-row">
-    <select id="metadata-source-platform">
-        <option value="auto" selected>Auto source</option>
-        <option value="spotify">Spotify</option>
-        <option value="deezer">Deezer</option>
-        <option value="apple">Apple Music</option>
-        <option value="tidal">Tidal</option>
-        <option value="qobuz">Qobuz</option>
-        <option value="lastfm">Last.fm</option>
-    </select>
-    <select id="metadata-library-folder" aria-label="Artist metadata library folder">
-        <option value="">All music libraries</option>
-    </select>
-</div>
-<div class="metadata-updater-select-row">
+<div class="metadata-updater-select-row metadata-updater-select-row-5">
+    <label>
+        <span>Metadata source</span>
+        <select id="metadata-source-platform">
+            <option value="auto" selected>Auto source</option>
+            <option value="spotify">Spotify</option>
+            <option value="deezer">Deezer</option>
+            <option value="apple">Apple Music</option>
+            <option value="tidal">Tidal</option>
+            <option value="qobuz">Qobuz</option>
+            <option value="lastfm">Last.fm</option>
+        </select>
+    </label>
+    <label>
+        <span>Library</span>
+        <select id="metadata-library-folder" aria-label="Artist metadata library folder">
+            <option value="">All music libraries</option>
+        </select>
+    </label>
     <label>
         <span>Cache refresh schedule</span>
         <select id="metadata-cache-refresh-interval">
@@ -26,7 +30,7 @@
         </select>
     </label>
     <label>
-        <span>Target update schedule</span>
+        <span>Server Update Schedule</span>
         <select id="metadata-target-update-interval">
         <option value="180">6 months</option>
         <option value="90">3 months</option>

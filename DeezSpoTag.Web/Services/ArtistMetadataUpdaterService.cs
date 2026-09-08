@@ -273,6 +273,13 @@ public sealed partial class ArtistMetadataUpdaterService
             var state = runPreparation.State;
             var allCandidates = runPreparation.Candidates;
             var counters = new MetadataRunCounters(allCandidates.Count);
+            // Resumed runs keep the full target and start the progress at the artists
+            // already completed, so the bar continues where it stopped instead of
+            // restarting against only the remaining artists.
+            if (completedArtistIds is { Count: > 0 })
+            {
+                counters.ProcessedArtists = allCandidates.Count(candidate => completedArtistIds.Contains(candidate.ArtistId));
+            }
 
             foreach (var tracked in allCandidates)
             {

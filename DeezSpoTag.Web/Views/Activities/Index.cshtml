@@ -2851,6 +2851,22 @@ span.badge.badge-artwork-animated {
     width: 100%;
 }
 
+.media-operations-tab .metadata-updater-select-row.metadata-updater-select-row-5 {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+@@media (max-width: 1200px) {
+    .media-operations-tab .metadata-updater-select-row.metadata-updater-select-row-5 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@@media (max-width: 640px) {
+    .media-operations-tab .metadata-updater-select-row.metadata-updater-select-row-5 {
+        grid-template-columns: 1fr;
+    }
+}
+
 .media-operations-tab .metadata-updater-select-row > select,
 .media-operations-tab .metadata-updater-select-row > label {
     width: 100%;
