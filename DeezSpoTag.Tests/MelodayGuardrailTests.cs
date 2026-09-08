@@ -19,7 +19,7 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("auth.Navidrome", source, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedLocalPlaylistAsync", source, StringComparison.Ordinal);
         Assert.Contains("context.TargetServers.Select(static target => target.Service)", source, StringComparison.Ordinal);
-        Assert.Contains("var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode)", source, StringComparison.Ordinal);
+        Assert.Contains("var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode, context.WeekdayId)", source, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedLocalPlaylistToTargetAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedLocalPlaylistToPlexAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("SyncGeneratedLocalPlaylistToJellyfinAsync", playlistSync, StringComparison.Ordinal);
@@ -50,6 +50,9 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("Playlist artwork did not update.", generatedResultBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ReplacePlaylistWatchTargetMembershipAsync", generatedSyncBody, StringComparison.Ordinal);
         Assert.DoesNotContain("PersistTargetPlaylistBindingAsync", generatedSyncBody, StringComparison.Ordinal);
+        Assert.Contains("ExistingPlaylistId: ResolveExistingGeneratedPlaylistId(request, PlexService)", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("GetMixSyncPlaylistIdsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpsertMixSyncAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncMelodayToPlexAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncMelodayToJellyfinAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncMelodayToNavidromeAsync", source, StringComparison.Ordinal);
@@ -81,10 +84,11 @@ public sealed class MelodayGuardrailTests
 
         Assert.Contains("MelodayAppUserId", source, StringComparison.Ordinal);
         Assert.Contains("EnsureMelodayAppUserAsync", source, StringComparison.Ordinal);
-        Assert.Contains("BuildMelodayMixId(context.Library.Id, context.SlotId, mode)", source, StringComparison.Ordinal);
-        Assert.Contains("private static string BuildMelodayMixId(long libraryId, string slotId, string mode)", source, StringComparison.Ordinal);
-        Assert.Contains("=> MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode)", source, StringComparison.Ordinal);
-        Assert.Contains("$\"meloday-{libraryId}-{NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}\"", schedule, StringComparison.Ordinal);
+        Assert.Contains("BuildMelodayMixId(context.Library.Id, context.SlotId, mode, context.WeekdayId)", source, StringComparison.Ordinal);
+        Assert.Contains("private static string BuildMelodayMixId(long libraryId, string slotId, string mode, string weekdayId)", source, StringComparison.Ordinal);
+        Assert.Contains("public static string SlotIdForMix(long libraryId, string slotId, string mode, string? weekday = null)", schedule, StringComparison.Ordinal);
+        Assert.Contains("MixIdsForScheduledPlaylist", schedule, StringComparison.Ordinal);
+        Assert.Contains(".AddDays(7)", ReadMelodayService(), StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistPrefix", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistPrefix", schedule, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
@@ -163,6 +167,10 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("data-meloday-target-server=\"navidrome\"", activities, StringComparison.Ordinal);
         Assert.Contains("Reset to default", activities, StringComparison.Ordinal);
         Assert.Contains("Names are generated automatically", script, StringComparison.Ordinal);
+        Assert.Contains("melodayWeekdayName", script, StringComparison.Ordinal);
+        Assert.Contains("['noon', 'Noon', '12:00', 'flare']", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("['midday'", script, StringComparison.Ordinal);
+        Assert.Contains("melodayCanonicalSlotId", script, StringComparison.Ordinal);
         // The config lives inside the media operations tab; there is no standalone page.
         Assert.DoesNotContain("Open Meloday settings", activities, StringComparison.Ordinal);
         Assert.DoesNotContain("href=\"/Meloday\"", activities, StringComparison.Ordinal);
@@ -209,6 +217,10 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("DELETE FROM mix_item WHERE mix_cache_id", repository, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM mix_cache WHERE id", repository, StringComparison.Ordinal);
         Assert.Contains("className = \"meloday-playlist-delete\"", script, StringComparison.Ordinal);
+        Assert.Contains("DeezSpoTag.ui.confirm", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!confirm(", script, StringComparison.Ordinal);
+        Assert.Contains("TryResolveExistingCoverWebPath", controller, StringComparison.Ordinal);
+        Assert.Contains("AttachMelodayCover", controller, StringComparison.Ordinal);
         Assert.Contains("headers.set(\"X-CSRF-TOKEN\", csrfToken)", script, StringComparison.Ordinal);
         Assert.Contains("credentials: \"same-origin\"", script, StringComparison.Ordinal);
         Assert.Contains("method: \"DELETE\"", script, StringComparison.Ordinal);
@@ -234,8 +246,8 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("folder.Id", runBody, StringComparison.Ordinal);
         Assert.Contains("foreach (var libraryGroup in instances.GroupBy", runBody, StringComparison.Ordinal);
         Assert.Contains("foreach (var instance in libraryGroup)", runBody, StringComparison.Ordinal);
-        Assert.Contains("BuildMelodayMixId(context.Library.Id, context.SlotId, mode)", source, StringComparison.Ordinal);
-        Assert.Contains("var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildMelodayMixId(context.Library.Id, context.SlotId, mode, context.WeekdayId)", source, StringComparison.Ordinal);
+        Assert.Contains("var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode, context.WeekdayId)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SelectLibraryAsync", source, StringComparison.Ordinal);
     }
 
@@ -266,10 +278,12 @@ public sealed class MelodayGuardrailTests
         var playlistSync = ReadPlaylistSyncService();
 
         Assert.Contains("GeneratedMelodayCover", source, StringComparison.Ordinal);
-        Assert.Contains("_artworkAssignments.AssignAsync(libraryId, slotId, mode, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("_artworkAssignments.AssignAsync(libraryId, slotId, mode, weekdayId, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("_coverComposer.Compose(", source, StringComparison.Ordinal);
+        Assert.Contains("/images/meloday/generated/", source, StringComparison.Ordinal);
         Assert.Contains("\"images\", \"meloday\", \"source\"", pool, StringComparison.Ordinal);
         Assert.Contains("images\", \"meloday\", \"generated\"", composer, StringComparison.Ordinal);
+        Assert.Contains("PixelAlphaCompositionMode.SrcOver", composer, StringComparison.Ordinal);
         Assert.DoesNotContain("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetArtworkIndex", source, StringComparison.Ordinal);
         Assert.Contains("[HttpPost]", artworkController, StringComparison.Ordinal);
@@ -293,7 +307,7 @@ public sealed class MelodayGuardrailTests
         var autoPlaylists = ReadAutoPlaylistsScript();
 
         Assert.Contains("internal static IReadOnlyList<string> BuildDeck", pool, StringComparison.Ordinal);
-        Assert.Contains("MelodayArtworkAllocator.Allocate(deck, assignments, libraryId, slotId, mode)", pool, StringComparison.Ordinal);
+        Assert.Contains("MelodayArtworkAllocator.Allocate(deck, assignments, libraryId, slotId, mode, weekday)", pool, StringComparison.Ordinal);
         Assert.Contains("unusedGlobal.Count > 0", pool, StringComparison.Ordinal);
         Assert.Contains("unusedWithinLibrary.Count > 0", pool, StringComparison.Ordinal);
         Assert.Contains("RemoveAll(assignment => !deck.Contains(assignment.ImageId", pool, StringComparison.Ordinal);

@@ -16,15 +16,18 @@ public class MixesApiController : ControllerBase
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
     private readonly MixService _mixService;
+    private readonly MelodayCoverComposer _coverComposer;
 
     public MixesApiController(
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
-        MixService mixService)
+        MixService mixService,
+        MelodayCoverComposer coverComposer)
     {
         _authService = authService;
         _libraryRepository = libraryRepository;
         _mixService = mixService;
+        _coverComposer = coverComposer;
     }
 
     [HttpGet]
@@ -48,7 +51,7 @@ public class MixesApiController : ControllerBase
 
         return Ok(mixes
             .GroupBy(static mix => (mix.Id, mix.LibraryId))
-            .Select(static group => group.First())
+            .Select(group => AttachMelodayCover(group.First()))
             .OrderByDescending(static mix => mix.GeneratedAtUtc)
             .ToList());
     }
@@ -73,7 +76,7 @@ public class MixesApiController : ControllerBase
             return NotFound();
         }
 
-        return Ok(mix);
+        return Ok(mix with { Summary = AttachMelodayCover(mix.Summary) });
     }
 
     [HttpDelete("{id}")]
@@ -111,4 +114,18 @@ public class MixesApiController : ControllerBase
             "deezspotag",
             "meloday",
             cancellationToken);
+
+    private MixSummaryDto AttachMelodayCover(MixSummaryDto mix)
+    {
+        if (mix.CoverUrls.Count > 0
+            || !mix.Id.StartsWith(MelodayMixPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return mix;
+        }
+
+        var coverUrl = _coverComposer.TryResolveExistingCoverWebPath(mix.Id);
+        return string.IsNullOrWhiteSpace(coverUrl)
+            ? mix
+            : mix with { CoverUrls = new[] { coverUrl } };
+    }
 }

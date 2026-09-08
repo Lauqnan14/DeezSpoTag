@@ -18,7 +18,7 @@ public sealed class MelodayScheduleTests
         {
             ("early-morning", "Early Morning", "05:30"),
             ("morning", "Morning", "08:30"),
-            ("midday", "Midday", "11:00"),
+            ("noon", "Noon", "12:00"),
             ("afternoon", "Afternoon", "16:00"),
             ("evening", "Evening", "19:00"),
             ("late-evening", "Late Evening", "22:30")
@@ -29,24 +29,24 @@ public sealed class MelodayScheduleTests
     [Fact]
     public void Playlist_Naming_Follows_The_Mode_Rules()
     {
-        Assert.Equal("Evening Playlist for Music", MelodayScheduleSlots.PlaylistName("Music", "Evening", "direct"));
-        Assert.Equal("Evening Sonic Playlist for Music", MelodayScheduleSlots.PlaylistName("Music", "Evening", "sonic"));
-        Assert.Equal("Morning Sonic Playlist for Atmos", MelodayScheduleSlots.PlaylistName("Atmos", "Morning", "SONIC"));
+        Assert.Equal("Tuesday Evening Playlist for Music", MelodayScheduleSlots.PlaylistName("Music", "Evening", "direct", "tuesday"));
+        Assert.Equal("Tuesday Evening Sonic Playlist for Music", MelodayScheduleSlots.PlaylistName("Music", "Evening", "sonic", "tuesday"));
+        Assert.Equal("Friday Morning Sonic Playlist for Atmos", MelodayScheduleSlots.PlaylistName("Atmos", "Morning", "SONIC", "friday"));
 
         Assert.Equal(
-            new[] { "Afternoon Playlist for Downs", "Afternoon Sonic Playlist for Downs" },
-            MelodayScheduleSlots.PlaylistNamesForMode("Downs", "Afternoon", "both"));
+            new[] { "Wednesday Afternoon Playlist for Downs", "Wednesday Afternoon Sonic Playlist for Downs" },
+            MelodayScheduleSlots.PlaylistNamesForMode("Downs", "Afternoon", "both", "wednesday"));
         Assert.Equal(
-            new[] { "Evening Playlist for Gospel Music" },
-            MelodayScheduleSlots.PlaylistNamesForMode("Gospel Music", "Evening", "direct"));
+            new[] { "Sunday Evening Playlist for Gospel Music" },
+            MelodayScheduleSlots.PlaylistNamesForMode("Gospel Music", "Evening", "direct", "sunday"));
     }
 
     [Fact]
-    public void DaypartHours_With_Default_Times_Bound_Morning_Between_Morning_And_Midday()
+    public void DaypartHours_With_Default_Times_Bound_Morning_Between_Morning_And_Noon()
     {
         var hours = MelodayScheduleMath.DaypartHours(MelodayScheduleSlots.Defaults, "morning");
 
-        Assert.Equal(new[] { 8, 9, 10 }, hours);
+        Assert.Equal(new[] { 8, 9, 10, 11 }, hours);
     }
 
     [Fact]
@@ -130,10 +130,10 @@ public sealed class MelodayScheduleTests
     {
         var normalized = MelodayScheduleSlots.NormalizeLibraries(new[]
         {
-            new MelodayLibrarySchedule(12, true, 4, "sonic", new List<string> { "evening", "morning", "morning", "unknown-slot" })
+            new MelodayLibrarySchedule(12, true, 4, "sonic", new List<string> { "evening", "morning", "midday", "noon", "unknown-slot" })
         });
 
-        Assert.Equal(new[] { "morning", "evening" }, normalized[0].SlotIds);
+        Assert.Equal(new[] { "morning", "noon", "evening" }, normalized[0].SlotIds);
         Assert.Equal("sonic", normalized[0].Mode);
     }
 
@@ -188,7 +188,7 @@ public sealed class MelodayScheduleTests
         {
             new MelodayScheduleSlot("morning", "Morning", "08:30", 1),
             new MelodayScheduleSlot("evening", "Evening", "19:00", 5),
-            new MelodayScheduleSlot("midday", "Midday", "11:00", 2)
+            new MelodayScheduleSlot("noon", "Noon", "12:00", 2)
         };
         var now = new DateTimeOffset(2031, 4, 2, 12, 0, 0, TimeSpan.FromHours(3));
 
@@ -199,8 +199,28 @@ public sealed class MelodayScheduleTests
     [Fact]
     public void MixIdentity_Encodes_Library_Slot_And_Mode()
     {
-        Assert.Equal("meloday-12-morning-sonic", MelodayScheduleSlots.SlotIdForMix(12, "Morning", "sonic"));
-        Assert.Equal("meloday-12-evening-sonic", MelodayScheduleSlots.SlotIdForMix(12, "Evening", "SONIC"));
-        Assert.Equal("meloday-18-evening-sonic", MelodayScheduleSlots.SlotIdForMix(18, "evening", "sonic"));
+        Assert.Equal("meloday-12-morning-sonic-tuesday", MelodayScheduleSlots.SlotIdForMix(12, "Morning", "sonic", "tuesday"));
+        Assert.Equal("meloday-12-evening-sonic-friday", MelodayScheduleSlots.SlotIdForMix(12, "Evening", "SONIC", "friday"));
+        Assert.Equal("meloday-18-evening-sonic-sunday", MelodayScheduleSlots.SlotIdForMix(18, "evening", "sonic", "sunday"));
+        Assert.Equal("meloday-7-noon-sonic-tuesday", MelodayScheduleSlots.SlotIdForMix(7, "midday", "sonic", "tuesday"));
+        Assert.Equal("Noon", MelodayScheduleSlots.SlotName("midday"));
+        Assert.Equal(7, MelodayScheduleSlots.MixIdsForScheduledPlaylist(7, "noon", "sonic").Count);
+        Assert.Contains("meloday-7-noon-sonic-tuesday", MelodayScheduleSlots.MixIdsForScheduledPlaylist(7, "noon", "sonic"));
+        Assert.Contains("meloday-7-noon-sonic-friday", MelodayScheduleSlots.MixIdsForScheduledPlaylist(7, "noon", "sonic"));
+    }
+
+    [Fact]
+    public void NormalizeSlots_Merges_Midday_Into_Noon_At_Twelve()
+    {
+        var normalized = MelodayScheduleSlots.Normalize(new[]
+        {
+            new MelodayScheduleSlot("midday", "Midday", "11:00", 2),
+            new MelodayScheduleSlot("noon", "Noon", "13:00", 2)
+        });
+
+        var noon = Assert.Single(normalized, slot => slot.Id == "noon");
+        Assert.Equal("Noon", noon.Name);
+        Assert.Equal("12:00", noon.GenerateAt);
+        Assert.DoesNotContain(normalized, slot => slot.Id == "midday");
     }
 }

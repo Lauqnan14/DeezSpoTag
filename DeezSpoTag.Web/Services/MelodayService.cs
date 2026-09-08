@@ -159,6 +159,7 @@ public sealed class MelodayService
         string SlotId,
         string SlotName,
         string SlotGenerateAt,
+        string WeekdayId,
         MelodayDaypart Daypart,
         string? Username,
         long MixUserId,
@@ -262,7 +263,7 @@ public sealed class MelodayService
             && string.Equals(candidate.Mode, MelodayModes.Normalize(mode), StringComparison.OrdinalIgnoreCase));
         if (instance is null)
         {
-            _lastMessage = $"Meloday playlist {MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode)} is no longer scheduled.";
+            _lastMessage = $"Meloday playlist {MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode, MelodayScheduleSlots.WeekdayIdFromLocal(DateTimeOffset.Now))} is no longer scheduled.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
@@ -362,10 +363,13 @@ public sealed class MelodayService
         }
 
         await _libraryRepository.DeleteInactiveMelodayMixesAsync(
-            instances.Select(static instance => MelodayScheduleSlots.SlotIdForMix(
-                instance.Library.LibraryId,
-                instance.Slot.Id,
-                instance.Mode)).ToList(),
+            ResolvePlaylistInstances(effective)
+                .SelectMany(static instance => MelodayScheduleSlots.MixIdsForScheduledPlaylist(
+                    instance.Library.LibraryId,
+                    instance.Slot.Id,
+                    instance.Mode))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
             cancellationToken);
         if (configuredFolders.Count == 0)
         {
@@ -579,6 +583,7 @@ public sealed class MelodayService
             instance.Slot.Id,
             instance.Slot.Name,
             instance.Slot.GenerateAt,
+            MelodayScheduleSlots.WeekdayIdFromLocal(now),
             new MelodayDaypart(daypartHours, MelodayScheduleSlots.SlotPhrase(instance.Slot.Id)),
             username,
             mixUserId,
@@ -632,7 +637,7 @@ public sealed class MelodayService
             orderedTrackIds,
             cancellationToken);
 
-        var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode);
+        var title = MelodayScheduleSlots.PlaylistName(context.Library.Name, context.SlotName, mode, context.WeekdayId);
         var playlistText = BuildTitleAndDescription(new PlaylistDescriptionContext(
             context.SimilarContext.Options,
             context.SlotId,
@@ -647,29 +652,33 @@ public sealed class MelodayService
             DateTimeOffset.Now));
         var description = playlistText.Description;
 
-        var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
-            new LibraryRepository.MixCacheUpsertInput(
-                BuildMelodayMixId(context.Library.Id, context.SlotId, mode),
-                context.MixUserId,
-                context.Library.Id,
-                title,
-                description,
-                Array.Empty<string>(),
-                orderedTrackIds.Count,
-                DateTimeOffset.UtcNow,
-                ResolveNextOccurrenceUtc(context.SlotGenerateAt, DateTimeOffset.UtcNow)),
-            cancellationToken);
-        await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
-
         var cover = await TryGenerateCoverAsync(
             context.SimilarContext.Options,
             context.SlotName,
             context.SlotId,
             context.Library.Id,
             mode,
+            context.WeekdayId,
             playlistText.CoverTagline,
             cancellationToken);
+        var coverUrls = string.IsNullOrWhiteSpace(cover?.FilePath)
+            ? Array.Empty<string>()
+            : new[] { $"/images/meloday/generated/{Path.GetFileName(cover.FilePath)}" };
+        var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
+            new LibraryRepository.MixCacheUpsertInput(
+                BuildMelodayMixId(context.Library.Id, context.SlotId, mode, context.WeekdayId),
+                context.MixUserId,
+                context.Library.Id,
+                title,
+                description,
+                coverUrls,
+                orderedTrackIds.Count,
+                DateTimeOffset.UtcNow,
+                ResolveNextOccurrenceUtc(context.SlotGenerateAt, DateTimeOffset.UtcNow)),
+            cancellationToken);
+        await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
         var mixTracks = await _libraryRepository.GetMixTracksAsync(mixCacheId, cancellationToken);
+        var existingPlaylistIds = await _libraryRepository.GetMixSyncPlaylistIdsAsync(mixCacheId, cancellationToken);
         var syncResult = await _playlistSyncService.SyncGeneratedLocalPlaylistAsync(
             new PlaylistSyncService.GeneratedLocalPlaylistSyncRequest(
                 title,
@@ -679,14 +688,24 @@ public sealed class MelodayService
                 context.TargetServers.Select(static target => target.Service).ToList(),
                 cover?.FilePath,
                 cover?.ContentType,
-                cover?.Url),
+                cover?.Url,
+                ExistingPlaylistIds: existingPlaylistIds),
             cancellationToken);
+        foreach (var target in syncResult.Targets)
+        {
+            if (!target.Success || string.IsNullOrWhiteSpace(target.PlaylistId))
+            {
+                continue;
+            }
+
+            await _libraryRepository.UpsertMixSyncAsync(mixCacheId, target.Service, target.PlaylistId, cancellationToken);
+        }
         if (!syncResult.Success)
         {
-            return new MelodayRunResult(true, $"{context.Library.Name} {context.SlotName} Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server. {syncResult.Message}", null);
+            return new MelodayRunResult(true, $"{context.Library.Name} {MelodayScheduleSlots.WeekdayDisplayName(context.WeekdayId)} {context.SlotName} Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server. {syncResult.Message}", null);
         }
 
-        return new MelodayRunResult(true, $"{context.Library.Name} {context.SlotName} Meloday {GetModeLabel(mode)} playlist updated. {syncResult.Message}", syncResult.FirstPlaylistId);
+        return new MelodayRunResult(true, $"{context.Library.Name} {MelodayScheduleSlots.WeekdayDisplayName(context.WeekdayId)} {context.SlotName} Meloday {GetModeLabel(mode)} playlist updated. {syncResult.Message}", syncResult.FirstPlaylistId);
     }
 
     private static string[] ResolveRunModes(string mode)
@@ -704,24 +723,20 @@ public sealed class MelodayService
         return string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase) ? "Direct" : "Sonic";
     }
 
-    private static string BuildMelodayMixId(long libraryId, string slotId, string mode)
-        => MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode);
+    private static string BuildMelodayMixId(long libraryId, string slotId, string mode, string weekdayId)
+        => MelodayScheduleSlots.SlotIdForMix(libraryId, slotId, mode, weekdayId);
 
     private static DateTimeOffset ResolveNextOccurrenceUtc(string generateAt, DateTimeOffset nowUtc)
     {
         var minutes = MelodayScheduleSlots.TryParseMinutes(generateAt);
         if (minutes is null)
         {
-            return nowUtc.AddDays(1);
+            return nowUtc.AddDays(7);
         }
 
         var local = DateTimeOffset.Now;
-        var next = new DateTimeOffset(local.Year, local.Month, local.Day, minutes.Value / 60, minutes.Value % 60, 0, local.Offset);
-        if (next <= nowUtc)
-        {
-            next = next.AddDays(1);
-        }
-
+        var next = new DateTimeOffset(local.Year, local.Month, local.Day, minutes.Value / 60, minutes.Value % 60, 0, local.Offset)
+            .AddDays(7);
         return next.ToUniversalTime();
     }
 
@@ -2119,16 +2134,12 @@ public sealed class MelodayService
         var minutes = MelodayScheduleSlots.TryParseMinutes(generateAt);
         if (minutes is null)
         {
-            return now.AddDays(1).ToString("h:mm tt");
+            return now.AddDays(7).ToString("dddd h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        var nextUpdate = new DateTimeOffset(now.Year, now.Month, now.Day, minutes.Value / 60, minutes.Value % 60, 0, now.Offset);
-        if (nextUpdate <= now)
-        {
-            nextUpdate = nextUpdate.AddDays(1);
-        }
-
-        return nextUpdate.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
+        var nextUpdate = new DateTimeOffset(now.Year, now.Month, now.Day, minutes.Value / 60, minutes.Value % 60, 0, now.Offset)
+            .AddDays(7);
+        return nextUpdate.ToString("dddd h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private Dictionary<string, List<string>> LoadDescriptorMap(MelodayOptions options)
@@ -2160,6 +2171,7 @@ public sealed class MelodayService
         string slotId,
         long libraryId,
         string mode,
+        string weekdayId,
         string coverTagline,
         CancellationToken cancellationToken)
     {
@@ -2168,7 +2180,7 @@ public sealed class MelodayService
             return null;
         }
 
-        var imageId = await _artworkAssignments.AssignAsync(libraryId, slotId, mode, cancellationToken);
+        var imageId = await _artworkAssignments.AssignAsync(libraryId, slotId, mode, weekdayId, cancellationToken);
         if (imageId is null)
         {
             _logger.LogWarning("Meloday artwork pool is empty at {Path}.", _artworkPool.SourceDirectory);
@@ -2182,6 +2194,7 @@ public sealed class MelodayService
             libraryId,
             slotId,
             mode,
+            weekdayId,
             options.BaseUrl);
         if (composed is null)
         {

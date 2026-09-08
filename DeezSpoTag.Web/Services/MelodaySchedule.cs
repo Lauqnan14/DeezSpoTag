@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Serialization;
 
 namespace DeezSpoTag.Web.Services;
@@ -37,6 +38,7 @@ public static class MelodayScheduleSlots
 {
     public const string EarlyMorningId = "early-morning";
     public const string MorningId = "morning";
+    public const string NoonId = "noon";
     public const string MiddayId = "midday";
     public const string AfternoonId = "afternoon";
     public const string EveningId = "evening";
@@ -49,7 +51,7 @@ public static class MelodayScheduleSlots
     {
         new MelodayScheduleSlot(EarlyMorningId, "Early Morning", "05:30", 0),
         new MelodayScheduleSlot(MorningId, "Morning", "08:30", 1),
-        new MelodayScheduleSlot(MiddayId, "Midday", "11:00", 2),
+        new MelodayScheduleSlot(NoonId, "Noon", "12:00", 2),
         new MelodayScheduleSlot(AfternoonId, "Afternoon", "16:00", 3),
         new MelodayScheduleSlot(EveningId, "Evening", "19:00", 4),
         new MelodayScheduleSlot(LateEveningId, "Late Evening", "22:30", 5)
@@ -59,33 +61,42 @@ public static class MelodayScheduleSlots
     {
         [EarlyMorningId] = "in the early morning",
         [MorningId] = "in the morning",
-        [MiddayId] = "at midday",
+        [NoonId] = "at noon",
         [AfternoonId] = "during the afternoon",
         [EveningId] = "in the evening",
         [LateEveningId] = "late in the evening"
     };
 
     public static string SlotName(string? slotId)
-        => Defaults.FirstOrDefault(slot => string.Equals(slot.Id, slotId, StringComparison.OrdinalIgnoreCase))?.Name
+        => Defaults.FirstOrDefault(slot => string.Equals(slot.Id, NormalizeSlotId(slotId), StringComparison.OrdinalIgnoreCase))?.Name
            ?? (string.IsNullOrWhiteSpace(slotId) ? "Meloday" : slotId.Trim());
 
     public static string SlotPhrase(string? slotId)
-        => PhrasesById.TryGetValue(slotId?.Trim().ToLowerInvariant() ?? string.Empty, out var phrase)
+        => PhrasesById.TryGetValue(NormalizeSlotId(slotId), out var phrase)
             ? phrase
             : "today";
 
     public static int SlotOrder(string? slotId)
-        => Defaults.FirstOrDefault(slot => string.Equals(slot.Id, slotId, StringComparison.OrdinalIgnoreCase))?.Order
+        => Defaults.FirstOrDefault(slot => string.Equals(slot.Id, NormalizeSlotId(slotId), StringComparison.OrdinalIgnoreCase))?.Order
            ?? int.MaxValue;
 
     public static bool IsKnownSlot(string? slotId)
-        => !string.IsNullOrWhiteSpace(slotId)
-           && Defaults.Any(slot => string.Equals(slot.Id, slotId, StringComparison.OrdinalIgnoreCase));
+        => CanonicalizeSlotId(slotId).Length > 0;
 
     public static string NormalizeSlotId(string? slotId)
+        => CanonicalizeSlotId(slotId);
+
+    private static string CanonicalizeSlotId(string? slotId)
     {
         var normalized = (slotId ?? string.Empty).Trim().ToLowerInvariant().Replace(' ', '-');
-        return IsKnownSlot(normalized) ? normalized : string.Empty;
+        if (normalized is MiddayId or NoonId)
+        {
+            normalized = NoonId;
+        }
+
+        return Defaults.Any(slot => string.Equals(slot.Id, normalized, StringComparison.OrdinalIgnoreCase))
+            ? normalized
+            : string.Empty;
     }
 
     /// <summary>Parses "HH:mm" (24h) into minutes since local midnight; null when invalid.</summary>
@@ -111,27 +122,55 @@ public static class MelodayScheduleSlots
     public static string NormalizeTime(string? generateAt, string defaultTime)
         => TryParseMinutes(generateAt) is { } minutes ? FormatMinutes(minutes) : defaultTime;
 
+    public static readonly string[] WeekdayIds =
+    [
+        "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"
+    ];
+
+    public static string WeekdayIdFromLocal(DateTimeOffset now)
+        => now.ToString("dddd", CultureInfo.InvariantCulture).ToLowerInvariant();
+
+    public static string NormalizeWeekdayId(string? weekday)
+    {
+        var normalized = (weekday ?? string.Empty).Trim().ToLowerInvariant();
+        return WeekdayIds.Contains(normalized, StringComparer.OrdinalIgnoreCase)
+            ? normalized
+            : string.Empty;
+    }
+
+    public static string WeekdayDisplayName(string? weekday)
+    {
+        var id = NormalizeWeekdayId(weekday);
+        return id.Length == 0
+            ? string.Empty
+            : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(id);
+    }
+
     /// <summary>
     /// Rule-based playlist naming. Direct playlists drop the mode word; Sonic keeps it;
-    /// Both produces the Direct name and the Sonic name.
+    /// Both produces the Direct name and the Sonic name. Weekday is part of the identity
+    /// so Tuesday Afternoon and Wednesday Afternoon stay distinct, and next Tuesday
+    /// updates the same Tuesday playlist.
     /// </summary>
-    public static string PlaylistName(string libraryName, string slotName, string mode)
+    public static string PlaylistName(string libraryName, string slotName, string mode, string? weekday = null)
     {
         var library = string.IsNullOrWhiteSpace(libraryName) ? "Library" : libraryName.Trim();
         var slot = string.IsNullOrWhiteSpace(slotName) ? "Meloday" : slotName.Trim();
+        var day = WeekdayDisplayName(weekday);
+        var heading = day.Length == 0 ? slot : $"{day} {slot}";
         return MelodayModes.Normalize(mode) == MelodayModes.Sonic
-            ? $"{slot} Sonic Playlist for {library}"
-            : $"{slot} Playlist for {library}";
+            ? $"{heading} Sonic Playlist for {library}"
+            : $"{heading} Playlist for {library}";
     }
 
-    public static IReadOnlyList<string> PlaylistNamesForMode(string libraryName, string slotName, string mode)
+    public static IReadOnlyList<string> PlaylistNamesForMode(string libraryName, string slotName, string mode, string? weekday = null)
         => MelodayModes.Normalize(mode) == MelodayModes.Both
             ? new[]
             {
-                PlaylistName(libraryName, slotName, MelodayModes.Direct),
-                PlaylistName(libraryName, slotName, MelodayModes.Sonic)
+                PlaylistName(libraryName, slotName, MelodayModes.Direct, weekday),
+                PlaylistName(libraryName, slotName, MelodayModes.Sonic, weekday)
             }
-            : new[] { PlaylistName(libraryName, slotName, mode) };
+            : new[] { PlaylistName(libraryName, slotName, mode, weekday) };
 
     /// <summary>Normalized canonical slot list: every known slot present exactly once, in canonical order.</summary>
     public static List<MelodayScheduleSlot> Normalize(IEnumerable<MelodayScheduleSlot>? slots)
@@ -142,13 +181,21 @@ public static class MelodayScheduleSlots
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
 
         return Defaults
-            .Select(defaultSlot => stored.TryGetValue(defaultSlot.Id, out var storedSlot)
-                ? new MelodayScheduleSlot(
-                    defaultSlot.Id,
-                    defaultSlot.Name,
-                    NormalizeTime(storedSlot.GenerateAt, defaultSlot.GenerateAt),
-                    defaultSlot.Order)
-                : defaultSlot)
+            .Select(defaultSlot =>
+            {
+                if (!stored.TryGetValue(defaultSlot.Id, out var storedSlot))
+                {
+                    return defaultSlot;
+                }
+
+                var time = NormalizeTime(storedSlot.GenerateAt, defaultSlot.GenerateAt);
+                if (defaultSlot.Id == NoonId && time is "11:00" or "13:00")
+                {
+                    time = defaultSlot.GenerateAt;
+                }
+
+                return new MelodayScheduleSlot(defaultSlot.Id, defaultSlot.Name, time, defaultSlot.Order);
+            })
             .ToList();
     }
 
@@ -192,6 +239,13 @@ public static class MelodayScheduleSlots
     public static int CountPlaylists(MelodayLibrarySchedule library)
         => (library.SlotIds ?? new List<string>()).Count * (library.ProducesBothPlaylists ? 2 : 1);
 
-    public static string SlotIdForMix(long libraryId, string slotId, string mode)
-        => $"meloday-{libraryId}-{NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}";
+    public static string SlotIdForMix(long libraryId, string slotId, string mode, string? weekday = null)
+    {
+        var day = NormalizeWeekdayId(weekday);
+        var baseId = $"meloday-{libraryId}-{NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}";
+        return day.Length == 0 ? baseId : $"{baseId}-{day}";
+    }
+
+    public static IReadOnlyList<string> MixIdsForScheduledPlaylist(long libraryId, string slotId, string mode)
+        => WeekdayIds.Select(day => SlotIdForMix(libraryId, slotId, mode, day)).ToList();
 }

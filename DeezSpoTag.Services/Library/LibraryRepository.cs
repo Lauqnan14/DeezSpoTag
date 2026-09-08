@@ -6934,6 +6934,65 @@ RETURNING id;";
         return inserted is long insertedId ? insertedId : Convert.ToInt64(inserted);
     }
 
+    public async Task<IReadOnlyDictionary<string, string>> GetMixSyncPlaylistIdsAsync(
+        long mixCacheId,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT target, playlist_id
+FROM mix_sync
+WHERE mix_cache_id = @mixCacheId
+  AND playlist_id IS NOT NULL
+  AND TRIM(playlist_id) <> '';";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("mixCacheId", mixCacheId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var target = reader.GetString(0).Trim();
+            var playlistId = reader.GetString(1).Trim();
+            if (target.Length > 0 && playlistId.Length > 0)
+            {
+                ids[target] = playlistId;
+            }
+        }
+
+        return ids;
+    }
+
+    public async Task UpsertMixSyncAsync(
+        long mixCacheId,
+        string target,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTarget = (target ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedPlaylistId = (playlistId ?? string.Empty).Trim();
+        if (mixCacheId <= 0 || normalizedTarget.Length == 0 || normalizedPlaylistId.Length == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO mix_sync (mix_cache_id, target, playlist_id, last_synced_utc, status, message)
+VALUES (@mixCacheId, @target, @playlistId, @syncedAt, 'synced', NULL)
+ON CONFLICT(mix_cache_id, target)
+DO UPDATE SET
+    playlist_id = excluded.playlist_id,
+    last_synced_utc = excluded.last_synced_utc,
+    status = excluded.status,
+    message = excluded.message;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("mixCacheId", mixCacheId);
+        command.Parameters.AddWithValue("target", normalizedTarget);
+        command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        command.Parameters.AddWithValue("syncedAt", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task ReplaceMixItemsAsync(long mixCacheId, IReadOnlyList<long> trackIds, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);

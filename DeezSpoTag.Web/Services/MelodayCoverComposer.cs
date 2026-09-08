@@ -4,6 +4,7 @@ using SixLabors.Fonts;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
@@ -35,6 +36,35 @@ public sealed class MelodayCoverComposer
         _fontPath = Path.Join(env.WebRootPath, "fonts", "onetagger", "Dosis-Bold.ttf");
     }
 
+    public string? TryResolveExistingCoverWebPath(string? mixId)
+    {
+        var prefix = Path.GetFileName((mixId ?? string.Empty).Trim());
+        if (string.IsNullOrWhiteSpace(prefix)
+            || !prefix.StartsWith("meloday-", StringComparison.OrdinalIgnoreCase)
+            || !Directory.Exists(_generatedDirectory))
+        {
+            return null;
+        }
+
+        try
+        {
+            var match = Directory.EnumerateFiles(_generatedDirectory, $"{prefix}-*.jpg")
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(match))
+            {
+                return null;
+            }
+
+            return $"/images/meloday/generated/{Uri.EscapeDataString(Path.GetFileName(match))}";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to resolve existing Meloday cover for {MixId}.", mixId);
+            return null;
+        }
+    }
+
     public MelodayCoverResult? Compose(
         string sourcePath,
         string slotName,
@@ -42,6 +72,7 @@ public sealed class MelodayCoverComposer
         long libraryId,
         string slotId,
         string mode,
+        string weekday,
         string? baseUrl)
     {
         try
@@ -59,7 +90,8 @@ public sealed class MelodayCoverComposer
             }
 
             Directory.CreateDirectory(_generatedDirectory);
-            var (fileName, _) = ResolveOutputFileName(sourcePath, slotName, tagline, libraryId, slotId, mode);
+            var heading = CoverHeading(slotName, weekday);
+            var (fileName, _) = ResolveOutputFileName(sourcePath, heading, tagline, libraryId, slotId, mode, weekday);
             var outputPath = Path.Join(_generatedDirectory, fileName);
             var url = BuildUrl(baseUrl, fileName);
             if (File.Exists(outputPath))
@@ -67,23 +99,33 @@ public sealed class MelodayCoverComposer
                 return new MelodayCoverResult(outputPath, url);
             }
 
-            using (var image = Image.Load(sourcePath))
+            using (var image = Image.Load<Rgba32>(sourcePath))
             {
                 image.Mutate(context => context.Resize(new ResizeOptions
                 {
                     Size = new Size(CoverSize, CoverSize),
                     Mode = ResizeMode.Crop
                 }));
-                image.Mutate(context => context.Fill(BuildScrimBrush()));
+                using (var overlay = new Image<Rgba32>(CoverSize, CoverSize, Color.Transparent))
+                {
+                    overlay.Mutate(context => context.Fill(BuildScrimBrush()));
+                    image.Mutate(context => context.DrawImage(
+                        overlay,
+                        new GraphicsOptions
+                        {
+                            AlphaCompositionMode = PixelAlphaCompositionMode.SrcOver,
+                            ColorBlendingMode = PixelColorBlendingMode.Normal
+                        }));
+                }
 
                 var fontCollection = new FontCollection();
                 var family = fontCollection.Add(_fontPath);
                 var headerFont = family.CreateFont(38, FontStyle.Bold);
-                var slotFont = FitFont(family, slotName.ToUpperInvariant(), 96);
+                var slotFont = FitFont(family, heading.ToUpperInvariant(), 96);
                 var taglineFont = FitFont(family, tagline, 48);
 
                 DrawCentered(image, "M E L O D A Y", headerFont, HeaderBaseline);
-                DrawCentered(image, slotName.ToUpperInvariant(), slotFont, SlotBaseline);
+                DrawCentered(image, heading.ToUpperInvariant(), slotFont, SlotBaseline);
                 if (!string.IsNullOrWhiteSpace(tagline))
                 {
                     DrawCentered(image, tagline, taglineFont, TaglineBaseline);
@@ -92,7 +134,7 @@ public sealed class MelodayCoverComposer
                 image.SaveAsJpeg(outputPath, new JpegEncoder { Quality = 90 });
             }
 
-            PruneStaleGenerations(libraryId, slotId, mode, outputPath);
+            PruneStaleGenerations(libraryId, slotId, mode, weekday, outputPath);
             return new MelodayCoverResult(outputPath, url);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -102,18 +144,27 @@ public sealed class MelodayCoverComposer
         }
     }
 
+    private static string CoverHeading(string slotName, string weekday)
+    {
+        var day = MelodayScheduleSlots.WeekdayDisplayName(weekday);
+        var slot = string.IsNullOrWhiteSpace(slotName) ? "Meloday" : slotName.Trim();
+        return day.Length == 0 ? slot : $"{day} {slot}";
+    }
+
     private static (string FileName, string ContentHash) ResolveOutputFileName(
         string sourcePath,
-        string slotName,
+        string heading,
         string tagline,
         long libraryId,
         string slotId,
-        string mode)
+        string mode,
+        string weekday)
     {
         var sourceHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sourcePath)));
-        var content = $"{sourceHash}|MELODAY|{slotName}|{tagline}";
+        var content = $"{sourceHash}|MELODAY|{heading}|{tagline}|scrim-v2";
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
-        var fileName = $"meloday-{libraryId}-{MelodayScheduleSlots.NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}-{hash[..8].ToLowerInvariant()}.jpg";
+        var weekdayId = MelodayScheduleSlots.NormalizeWeekdayId(weekday);
+        var fileName = $"meloday-{libraryId}-{MelodayScheduleSlots.NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}-{weekdayId}-{hash[..8].ToLowerInvariant()}.jpg";
         return (fileName, hash);
     }
 
@@ -164,9 +215,9 @@ public sealed class MelodayCoverComposer
             : $"{trimmed}/images/meloday/generated/{Uri.EscapeDataString(fileName)}";
     }
 
-    private void PruneStaleGenerations(long libraryId, string slotId, string mode, string keepPath)
+    private void PruneStaleGenerations(long libraryId, string slotId, string mode, string weekday, string keepPath)
     {
-        var prefix = $"meloday-{libraryId}-{MelodayScheduleSlots.NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}-";
+        var prefix = $"meloday-{libraryId}-{MelodayScheduleSlots.NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}-{MelodayScheduleSlots.NormalizeWeekdayId(weekday)}-";
         try
         {
             foreach (var stale in Directory.EnumerateFiles(_generatedDirectory, $"{prefix}*.jpg"))

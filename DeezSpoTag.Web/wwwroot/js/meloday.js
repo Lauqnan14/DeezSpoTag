@@ -83,12 +83,16 @@ const melodayDefaults = {
 const melodayCanonicalSlots = [
     ['early-morning', 'Early Morning', '05:30', 'wb_twilight'],
     ['morning', 'Morning', '08:30', 'wb_sunny'],
-    ['midday', 'Midday', '11:00', 'light_mode'],
-    ['noon', 'Noon', '13:00', 'flare'],
+    ['noon', 'Noon', '12:00', 'flare'],
     ['afternoon', 'Afternoon', '16:00', 'wb_cloudy'],
     ['evening', 'Evening', '19:00', 'nights_stay'],
     ['late-evening', 'Late Evening', '22:30', 'bedtime']
 ];
+
+function melodayCanonicalSlotId(slotId) {
+    const normalized = String(slotId || '').trim().toLowerCase();
+    return normalized === 'midday' ? 'noon' : normalized;
+}
 
 const melodaySlotModes = ['direct', 'sonic', 'both'];
 
@@ -123,21 +127,30 @@ function melodayFormatMode(value) {
 /* ------------------------------------------------------------------ *
  * Rule-based playlist naming (mirrors MelodayScheduleSlots server side)
  * ------------------------------------------------------------------ */
-function melodayPlaylistName(libraryName, slotName, mode) {
-    const library = String(libraryName || 'Library').trim() || 'Library';
-    return melodayNormalizeMode(mode) === 'sonic'
-        ? `${slotName} Sonic Playlist for ${library}`
-        : `${slotName} Playlist for ${library}`;
+function melodayWeekdayName(value) {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return value.toLocaleDateString('en-US', { weekday: 'long' });
+    }
+    const raw = String(value || '').trim();
+    return raw || new Date().toLocaleDateString('en-US', { weekday: 'long' });
 }
 
-function melodayPlaylistNamesForMode(libraryName, slotName, mode) {
+function melodayPlaylistName(libraryName, slotName, mode, weekday) {
+    const library = String(libraryName || 'Library').trim() || 'Library';
+    const heading = `${melodayWeekdayName(weekday)} ${slotName}`.trim();
+    return melodayNormalizeMode(mode) === 'sonic'
+        ? `${heading} Sonic Playlist for ${library}`
+        : `${heading} Playlist for ${library}`;
+}
+
+function melodayPlaylistNamesForMode(libraryName, slotName, mode, weekday) {
     if (melodayNormalizeMode(mode) === 'both') {
         return [
-            melodayPlaylistName(libraryName, slotName, 'direct'),
-            melodayPlaylistName(libraryName, slotName, 'sonic')
+            melodayPlaylistName(libraryName, slotName, 'direct', weekday),
+            melodayPlaylistName(libraryName, slotName, 'sonic', weekday)
         ];
     }
-    return [melodayPlaylistName(libraryName, slotName, mode)];
+    return [melodayPlaylistName(libraryName, slotName, mode, weekday)];
 }
 
 function melodayCountPlaylists(library) {
@@ -203,16 +216,20 @@ async function loadMelodayStatus() {
 function melodayNormalizeSlots(values) {
     const stored = new Map();
     (Array.isArray(values) ? values : []).forEach((slot) => {
-        if (slot?.id) {
-            stored.set(String(slot.id), slot);
+        const id = melodayCanonicalSlotId(slot?.id);
+        if (id) {
+            stored.set(id, slot);
         }
     });
 
     return melodayCanonicalSlots.map(([id, name, defaultTime, icon]) => {
         const saved = stored.get(id) || {};
-        const time = typeof saved.generateAt === 'string' && /^\d{2}:\d{2}$/.test(saved.generateAt)
+        let time = typeof saved.generateAt === 'string' && /^\d{2}:\d{2}$/.test(saved.generateAt)
             ? saved.generateAt
             : defaultTime;
+        if (id === 'noon' && (time === '11:00' || time === '13:00')) {
+            time = defaultTime;
+        }
         return { id, name, generateAt: time, icon };
     });
 }
@@ -231,8 +248,8 @@ function melodayNormalizeLibraries(values, libraryCatalog) {
         const saved = stored.get(id) || {};
         const slotIds = [];
         (Array.isArray(saved.slotIds) ? saved.slotIds : []).forEach((slotId) => {
-            const normalized = String(slotId || '').trim().toLowerCase();
-            if (normalized && !slotIds.includes(normalized)) {
+            const normalized = melodayCanonicalSlotId(slotId);
+            if (normalized && melodayCanonicalSlots.some(entry => entry[0] === normalized) && !slotIds.includes(normalized)) {
                 slotIds.push(normalized);
             }
         });

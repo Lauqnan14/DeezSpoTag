@@ -55,7 +55,8 @@ public sealed class PlaylistSyncService
         string? ArtworkContentType = null,
         string? ArtworkUrl = null,
         string? AnimatedArtworkFilePath = null,
-        string? AnimatedArtworkContentType = null);
+        string? AnimatedArtworkContentType = null,
+        IReadOnlyDictionary<string, string>? ExistingPlaylistIds = null);
 
     public sealed record GeneratedLocalPlaylistTargetResult(
         string Service,
@@ -466,7 +467,8 @@ public sealed class PlaylistSyncService
             request.PlaylistName,
             matchSummary.TargetIds,
             options: new PlexApiClient.PlaylistUpsertOptions(
-                ExistingTitlePrefix: request.StableTitlePrefix),
+                ExistingTitlePrefix: request.StableTitlePrefix,
+                ExistingPlaylistId: ResolveExistingGeneratedPlaylistId(request, PlexService)),
             cancellationToken: cancellationToken);
         var playlistId = upsert.PlaylistId;
         if (string.IsNullOrWhiteSpace(playlistId) || !upsert.Complete)
@@ -595,20 +597,48 @@ public sealed class PlaylistSyncService
             artworkSynced);
     }
 
+    private static string? ResolveExistingGeneratedPlaylistId(
+        GeneratedLocalPlaylistSyncRequest request,
+        string service)
+    {
+        if (request.ExistingPlaylistIds is null || request.ExistingPlaylistIds.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var pair in request.ExistingPlaylistIds)
+        {
+            if (string.Equals(pair.Key, service, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                return pair.Value.Trim();
+            }
+        }
+
+        return null;
+    }
+
     private async Task<string?> FindGeneratedJellyfinPlaylistIdAsync(
         JellyfinConnection jellyfin,
         GeneratedLocalPlaylistSyncRequest request,
         CancellationToken cancellationToken)
     {
+        var playlists = await _jellyfinApiClient.GetPlaylistsAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            cancellationToken);
+        var storedId = ResolveExistingGeneratedPlaylistId(request, JellyfinService);
+        if (!string.IsNullOrWhiteSpace(storedId)
+            && playlists.Any(playlist => string.Equals(playlist.Id, storedId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return storedId;
+        }
+
         var stableTitlePrefix = request.StableTitlePrefix.Trim();
         if (!string.IsNullOrWhiteSpace(stableTitlePrefix))
         {
-            var existing = (await _jellyfinApiClient.GetPlaylistsAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    jellyfin.UserId,
-                    cancellationToken))
-                .FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+            var existing = playlists.FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
                     && !string.IsNullOrWhiteSpace(playlist.Name)
                     && playlist.Name.StartsWith(stableTitlePrefix, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(existing?.Id))
@@ -630,15 +660,22 @@ public sealed class PlaylistSyncService
         GeneratedLocalPlaylistSyncRequest request,
         CancellationToken cancellationToken)
     {
+        var playlists = await _navidromeApiClient.GetPlaylistsAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            cancellationToken);
+        var storedId = ResolveExistingGeneratedPlaylistId(request, NavidromeService);
+        if (!string.IsNullOrWhiteSpace(storedId)
+            && playlists.Any(playlist => string.Equals(playlist.Id, storedId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return storedId;
+        }
+
         var stableTitlePrefix = request.StableTitlePrefix.Trim();
         if (!string.IsNullOrWhiteSpace(stableTitlePrefix))
         {
-            var existing = (await _navidromeApiClient.GetPlaylistsAsync(
-                    navidrome.Url,
-                    navidrome.Username,
-                    navidrome.Password,
-                    cancellationToken))
-                .FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+            var existing = playlists.FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
                     && !string.IsNullOrWhiteSpace(playlist.Name)
                     && playlist.Name.StartsWith(stableTitlePrefix, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(existing?.Id))

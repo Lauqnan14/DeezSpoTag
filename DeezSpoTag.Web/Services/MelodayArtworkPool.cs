@@ -9,7 +9,8 @@ public sealed record MelodayArtworkAssignment(
     long LibraryId,
     string SlotId,
     string Mode,
-    string ImageId);
+    string ImageId,
+    string Weekday = "");
 
 /// <summary>
 /// Discovers every valid image in the Meloday source pool (no hard-coded limit) and
@@ -99,7 +100,8 @@ public static class MelodayArtworkAllocator
         IReadOnlyList<MelodayArtworkAssignment> assignments,
         long libraryId,
         string slotId,
-        string mode)
+        string mode,
+        string weekday)
     {
         if (deck.Count == 0)
         {
@@ -108,10 +110,12 @@ public static class MelodayArtworkAllocator
 
         var slotKey = MelodayScheduleSlots.NormalizeSlotId(slotId);
         var modeKey = MelodayModes.Normalize(mode);
+        var weekdayKey = MelodayScheduleSlots.NormalizeWeekdayId(weekday);
         var own = assignments.FirstOrDefault(assignment =>
             assignment.LibraryId == libraryId
             && string.Equals(assignment.SlotId, slotKey, StringComparison.OrdinalIgnoreCase)
             && string.Equals(assignment.Mode, modeKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(assignment.Weekday, weekdayKey, StringComparison.OrdinalIgnoreCase)
             && deck.Contains(assignment.ImageId, StringComparer.OrdinalIgnoreCase));
         if (own is not null)
         {
@@ -196,7 +200,7 @@ public sealed class MelodayArtworkAssignments
     }
 
     /// <summary>Returns the pool image assigned to this playlist instance, allocating and persisting one when needed.</summary>
-    public async Task<string?> AssignAsync(long libraryId, string slotId, string mode, CancellationToken cancellationToken = default)
+    public async Task<string?> AssignAsync(long libraryId, string slotId, string mode, string weekday, CancellationToken cancellationToken = default)
     {
         await _sync.WaitAsync(cancellationToken);
         try
@@ -211,17 +215,21 @@ public sealed class MelodayArtworkAssignments
             // Assignments pointing at deleted images are dropped; those playlists reallocate.
             assignments.RemoveAll(assignment => !deck.Contains(assignment.ImageId, StringComparer.OrdinalIgnoreCase));
 
-            var imageId = MelodayArtworkAllocator.Allocate(deck, assignments, libraryId, slotId, mode);
+            var imageId = MelodayArtworkAllocator.Allocate(deck, assignments, libraryId, slotId, mode, weekday);
             if (imageId is null)
             {
                 return null;
             }
 
+            var slotKey = MelodayScheduleSlots.NormalizeSlotId(slotId);
+            var modeKey = MelodayModes.Normalize(mode);
+            var weekdayKey = MelodayScheduleSlots.NormalizeWeekdayId(weekday);
             if (!assignments.Any(assignment => assignment.LibraryId == libraryId
-                && string.Equals(assignment.SlotId, MelodayScheduleSlots.NormalizeSlotId(slotId), StringComparison.OrdinalIgnoreCase)
-                && string.Equals(assignment.Mode, MelodayModes.Normalize(mode), StringComparison.OrdinalIgnoreCase)))
+                && string.Equals(assignment.SlotId, slotKey, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(assignment.Mode, modeKey, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(assignment.Weekday, weekdayKey, StringComparison.OrdinalIgnoreCase)))
             {
-                assignments.Add(new MelodayArtworkAssignment(libraryId, MelodayScheduleSlots.NormalizeSlotId(slotId), MelodayModes.Normalize(mode), imageId));
+                assignments.Add(new MelodayArtworkAssignment(libraryId, slotKey, modeKey, imageId, weekdayKey));
                 var json = JsonSerializer.Serialize(new AssignmentFile(assignments), _jsonOptions);
                 await File.WriteAllTextAsync(_storePath, json, cancellationToken);
             }
@@ -249,8 +257,20 @@ public sealed class MelodayArtworkAssignments
         try
         {
             var json = await File.ReadAllTextAsync(_storePath, cancellationToken);
-            return JsonSerializer.Deserialize<AssignmentFile>(json, _jsonOptions)?.Assignments
+            var assignments = JsonSerializer.Deserialize<AssignmentFile>(json, _jsonOptions)?.Assignments
                    ?? new List<MelodayArtworkAssignment>();
+            return assignments
+                .Select(assignment => assignment with
+                {
+                    SlotId = MelodayScheduleSlots.NormalizeSlotId(assignment.SlotId),
+                    Weekday = MelodayScheduleSlots.NormalizeWeekdayId(assignment.Weekday)
+                })
+                .Where(assignment => assignment.SlotId.Length > 0 && assignment.Weekday.Length > 0)
+                .GroupBy(
+                    assignment => $"{assignment.LibraryId}:{assignment.SlotId}:{assignment.Mode}:{assignment.Weekday}",
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.Last())
+                .ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

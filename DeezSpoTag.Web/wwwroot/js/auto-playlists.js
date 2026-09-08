@@ -22,6 +22,15 @@
         return covers.length > 0 ? covers[0] : "";
     };
 
+    const createCoverPlaceholder = () => {
+        const placeholder = document.createElement("div");
+        placeholder.className = "watchlist-card-art-placeholder";
+        const icon = document.createElement("i");
+        icon.className = "fa-solid fa-music";
+        placeholder.appendChild(icon);
+        return placeholder;
+    };
+
     const formatUpdated = (value) => {
         if (!value) {
             return "Recently updated";
@@ -80,12 +89,20 @@
         globalThis.location.href = `/Tracklist?${params.toString()}`;
     };
 
+    const confirmDeleteMix = async (playlist) => {
+        const message = `Delete ${playlist.name || "this Meloday playlist"} from DeezSpoTag?`;
+        if (globalThis.DeezSpoTag?.ui?.confirm) {
+            return globalThis.DeezSpoTag.ui.confirm(message, { title: "Delete playlist" });
+        }
+        return false;
+    };
+
     const deleteMix = async (playlist) => {
         if (!playlist?.id || !playlist?.libraryId) {
             return false;
         }
 
-        if (!confirm(`Delete ${playlist.name || "this Meloday playlist"} from DeezSpoTag?`)) {
+        if (!await confirmDeleteMix(playlist)) {
             return false;
         }
 
@@ -189,21 +206,21 @@
         artButton.type = "button";
         artButton.addEventListener("click", () => openTracklist(playlist.id, "mix", playlist.libraryId));
 
-        const img = document.createElement("img");
-        img.src = resolveMelodayCoverUrl(playlist);
-        img.alt = playlist.name || "Meloday playlist";
-        img.addEventListener("error", () => {
-            img.remove();
-            if (!artButton.querySelector(".watchlist-card-art-placeholder")) {
-                const placeholder = document.createElement("div");
-                placeholder.className = "watchlist-card-art-placeholder";
-                const icon = document.createElement("i");
-                icon.className = "fa-solid fa-music";
-                placeholder.appendChild(icon);
-                artButton.appendChild(placeholder);
-            }
-        });
-        artButton.appendChild(img);
+        const coverUrl = resolveMelodayCoverUrl(playlist);
+        if (coverUrl) {
+            const img = document.createElement("img");
+            img.src = coverUrl;
+            img.alt = playlist.name || "Meloday playlist";
+            img.addEventListener("error", () => {
+                img.remove();
+                if (!artButton.querySelector(".watchlist-card-art-placeholder")) {
+                    artButton.appendChild(createCoverPlaceholder());
+                }
+            });
+            artButton.appendChild(img);
+        } else {
+            artButton.appendChild(createCoverPlaceholder());
+        }
 
         const badge = document.createElement("span");
         badge.className = "playlist-watchlist-priority-badge meloday-playlist-badge";
