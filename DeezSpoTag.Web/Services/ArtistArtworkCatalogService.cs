@@ -117,11 +117,19 @@ public sealed partial class ArtistArtworkCatalogService
         // catalog row itself is no longer listed.
         var blockedKeys = catalogEntries
             .Where(item => item.UserBlocked || item.TextArtBlocked)
-            .SelectMany(item => new[]
+            .SelectMany(item =>
             {
-                item.ContentHash,
-                item.Identity,
-                string.IsNullOrWhiteSpace(item.LocalPath) ? null : Path.GetFileNameWithoutExtension(item.LocalPath)
+                var localPath = string.IsNullOrWhiteSpace(item.LocalPath)
+                    ? null
+                    : Path.GetFullPath(item.LocalPath);
+                return new[]
+                {
+                    item.ContentHash,
+                    item.Identity,
+                    string.IsNullOrWhiteSpace(item.LocalPath) ? null : Path.GetFileName(item.LocalPath),
+                    string.IsNullOrWhiteSpace(item.LocalPath) ? null : Path.GetFileNameWithoutExtension(item.LocalPath),
+                    localPath
+                };
             })
             .Where(key => !string.IsNullOrWhiteSpace(key))
             .Select(key => key!.Trim())
@@ -145,10 +153,13 @@ public sealed partial class ArtistArtworkCatalogService
             foreach (var file in Directory.EnumerateFiles(artistDir))
             {
                 var extension = Path.GetExtension(file);
+                var fullPath = Path.GetFullPath(file);
                 var fileName = Path.GetFileNameWithoutExtension(file);
                 if (!CachedImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
-                    || knownPaths.Contains(Path.GetFullPath(file))
-                    || blockedKeys.Contains(fileName))
+                    || knownPaths.Contains(fullPath)
+                    || blockedKeys.Contains(fileName)
+                    || blockedKeys.Contains(Path.GetFileName(file))
+                    || blockedKeys.Contains(fullPath))
                 {
                     continue;
                 }

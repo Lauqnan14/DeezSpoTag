@@ -114,7 +114,10 @@ public sealed class ArtistMetadataAutomationResilienceTests
         Assert.Contains("NoteArtistCompleted(value.CompletedArtistId)", coordinator, StringComparison.Ordinal);
         Assert.Contains("SaveCheckpointAfterAsync(_checkpointSave)", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("CheckpointSaveEvery", coordinator, StringComparison.Ordinal);
-        Assert.Contains("completedArtistIds is null || !completedArtistIds.Contains(artist.Id)", cache, StringComparison.Ordinal);
+        Assert.Contains("if (completed.Contains(artist.Id))", cache, StringComparison.Ordinal);
+        Assert.Contains("processed, artists.Count", cache, StringComparison.Ordinal);
+        Assert.Contains("var processed = artists.Count(artist => completed.Contains(artist.Id));", cache, StringComparison.Ordinal);
+        Assert.DoesNotContain("completedArtistIds is null || !completedArtistIds.Contains(artist.Id)", cache, StringComparison.Ordinal);
         Assert.Contains("completedArtistIds is not null && completedArtistIds.Contains(tracked.ArtistId)", updater, StringComparison.Ordinal);
     }
 

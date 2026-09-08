@@ -84,17 +84,23 @@ public sealed class ArtistMetadataCacheRefreshService
         var artists = (await _repository.GetArtistsAsync("all", request.FolderId, cancellationToken))
             .Where(artist => artist.Id > 0 && !string.IsNullOrWhiteSpace(artist.Name))
             .Where(artist => !request.ArtistId.HasValue || artist.Id == request.ArtistId.Value)
-            .Where(artist => completedArtistIds is null || !completedArtistIds.Contains(artist.Id))
             .ToList();
+        var completed = completedArtistIds ?? new HashSet<long>();
+        var processed = artists.Count(artist => completed.Contains(artist.Id));
         var succeeded = 0;
         var failed = 0;
         var gate = new ArtistMetadataProviderGate(_logger);
-        for (var index = 0; index < artists.Count; index++)
+        foreach (var artist in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var artist = artists[index];
+            if (completed.Contains(artist.Id))
+            {
+                continue;
+            }
+
+            processed++;
             progress?.Report(new ArtistMetadataOperationProgress(
-                index + 1, artists.Count, artist.Name, null, succeeded, failed));
+                processed, artists.Count, artist.Name, null, succeeded, failed));
             try
             {
                 await RefreshArtistAsync(
@@ -104,16 +110,17 @@ public sealed class ArtistMetadataCacheRefreshService
                     request.IncludePopularSongs,
                     cancellationToken,
                     gate,
-                    request.ForceProviderRefresh);
+                    request.ForceProviderRefresh,
+                    request.OcrTextArtBlockingEnabled);
                 succeeded++;
                 progress?.Report(new ArtistMetadataOperationProgress(
-                    index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
+                    processed, artists.Count, artist.Name, artist.Id, succeeded, failed));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failed++;
                 progress?.Report(new ArtistMetadataOperationProgress(
-                    index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
+                    processed, artists.Count, artist.Name, artist.Id, succeeded, failed));
                 _logger.LogWarning(ex, "Artist metadata cache refresh failed for artist {ArtistId}.", artist.Id);
             }
 
@@ -138,7 +145,8 @@ public sealed class ArtistMetadataCacheRefreshService
         bool includePopularSongs,
         CancellationToken cancellationToken,
         ArtistMetadataProviderGate? providerGate,
-        bool forceProviderRefresh = false)
+        bool forceProviderRefresh = false,
+        bool? ocrTextArtBlockingEnabled = null)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
         {
@@ -169,7 +177,7 @@ public sealed class ArtistMetadataCacheRefreshService
         await _visualSlots.ApplyCatalogVisualsToSlotsAsync(
             artistId,
             artistName,
-            preferences.MetadataUpdaterOcrTextArtBlocking,
+            ocrTextArtBlockingEnabled ?? preferences.MetadataUpdaterOcrTextArtBlocking,
             cancellationToken);
         IReadOnlyList<BiographyProvider> requestedProviders = selectedProvider.HasValue
             ? [selectedProvider.Value]
@@ -382,6 +390,7 @@ public sealed record ArtistMetadataCacheRefreshRequest(
     long? FolderId,
     string? Source,
     bool IncludePopularSongs = false,
-    bool ForceProviderRefresh = false);
+    bool ForceProviderRefresh = false,
+    bool? OcrTextArtBlockingEnabled = null);
 public sealed record ArtistMetadataCacheRefreshResult(int Total, int Succeeded, int Failed, string? Error);
 public sealed record ArtistMetadataOperationProgress(int Processed, int Total, string? CurrentArtist, long? CompletedArtistId = null, int Succeeded = 0, int Failed = 0);

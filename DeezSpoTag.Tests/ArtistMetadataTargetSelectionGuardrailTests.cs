@@ -69,6 +69,9 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("id=\"metadata-missing-artist-art-only\"", controls);
         Assert.Contains("metadata-updater-option-group", controls);
         Assert.Contains("metadata-updater-checkbox-grid", controls);
+        Assert.Contains(".media-operations-tab .metadata-updater-option {", activities);
+        Assert.Contains(".media-operations-tab .meloday-target-option {", activities);
+        Assert.Contains("accent-color: var(--primary-color);", activities);
         Assert.Contains("Missing artist art targets", controls);
         Assert.Contains("metadata-updater-tooltip-icon", controls);
         Assert.Contains("The selected update fields still apply.", controls);
@@ -406,6 +409,8 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("allowArtistPageScrape: false", cacheRefresh);
         Assert.Contains("forceRefresh: false", cacheRefresh);
         Assert.Contains("ApplyCatalogVisualsToSlotsAsync", cacheRefresh);
+        Assert.Contains("request.OcrTextArtBlockingEnabled", cacheRefresh);
+        Assert.Contains("FilterUsableArtworkCandidatesAsync", targetUpdate);
         Assert.Contains("SelectArtistBiographySourceAsync", cacheRefresh);
         Assert.Contains("GetUsedVisualHashesAsync", targetUpdate);
         Assert.Contains("RecordVisualUsageAsync", targetUpdate);

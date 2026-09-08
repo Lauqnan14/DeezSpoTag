@@ -645,7 +645,9 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             null,
             ParseFolderId(preferences.MetadataUpdaterFolderId),
             preferences.MetadataUpdaterSource,
-            preferences.MetadataUpdaterIncludePopularSongs);
+            preferences.MetadataUpdaterIncludePopularSongs,
+            ForceProviderRefresh: false,
+            OcrTextArtBlockingEnabled: preferences.MetadataUpdaterOcrTextArtBlocking);
 
     private static MetadataUpdaterRunRequest BuildTargetRequest(UserPreferencesDto preferences)
         => new()

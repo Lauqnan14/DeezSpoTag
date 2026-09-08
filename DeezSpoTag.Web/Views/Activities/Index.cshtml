@@ -2818,30 +2818,27 @@ span.badge.badge-artwork-animated {
     align-items: center;
     gap: 8px;
     border: 1px solid var(--border-secondary);
-    background: var(--bg-tertiary);
+    background: var(--bg-secondary);
     border-radius: 10px;
-    padding: 8px 10px;
-    min-height: 36px;
+    padding: 9px 12px;
     color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
     font-family: inherit;
-    overflow: hidden;
+    cursor: pointer;
 }
 
 .media-operations-tab .metadata-updater-option input {
-    width: 16px;
-    height: 16px;
-    min-width: 0;
+    accent-color: var(--primary-color);
+    width: 15px;
+    height: 15px;
+    min-width: 15px;
     padding: 0;
     flex: 0 0 auto;
 }
 
 .media-operations-tab .metadata-updater-option span:not(.metadata-updater-tooltip-icon) {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .media-operations-tab .metadata-updater-select-row {
@@ -2901,7 +2898,7 @@ span.badge.badge-artwork-animated {
 .media-operations-tab .metadata-updater-checkbox-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px 14px;
+    gap: 10px;
     width: 100%;
 }
 
@@ -3234,13 +3231,13 @@ span.badge.badge-artwork-animated {
     }
 
     .media-operations-tab .metadata-updater-option input {
-        width: 16px;
-        min-width: 16px;
+        width: 15px;
+        min-width: 15px;
     }
 
     .media-operations-tab .metadata-updater-checkbox-grid {
         grid-template-columns: 1fr;
-        gap: 8px;
+        gap: 10px;
     }
 
     .media-operations-tab .metadata-updater-select-row {
@@ -4843,7 +4840,8 @@ function initMetadataUpdater() {
                             artistId: null,
                             folderId: folderId > 0 ? folderId : null,
                             source: sourceSelect?.value || 'auto',
-                            includePopularSongs: popularSongsCheckbox?.checked === true
+                            includePopularSongs: popularSongsCheckbox?.checked === true,
+                            ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false
                         }),
                         keepalive: true
                     });

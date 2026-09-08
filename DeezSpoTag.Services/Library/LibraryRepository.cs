@@ -19665,6 +19665,67 @@ ON CONFLICT(artist_id, role, identity) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task MarkArtistArtworkTextBlockedAsync(
+        long artistId,
+        string? identity,
+        string? contentHash,
+        string? localPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0)
+        {
+            return;
+        }
+
+        var normalizedIdentity = string.IsNullOrWhiteSpace(identity) ? null : identity.Trim();
+        var normalizedHash = string.IsNullOrWhiteSpace(contentHash) ? null : contentHash.Trim();
+        var normalizedPath = string.IsNullOrWhiteSpace(localPath) ? null : Path.GetFullPath(localPath);
+        if (normalizedIdentity is null && normalizedHash is null && normalizedPath is null)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE artist_artwork_cache
+SET text_art_blocked = 1,
+    ocr_status = COALESCE(ocr_status, 'heuristic'),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE artist_id = @artistId
+  AND (
+        (@identity IS NOT NULL AND identity = @identity)
+     OR (@contentHash IS NOT NULL AND content_hash = @contentHash)
+     OR (@localPath IS NOT NULL AND local_path = @localPath)
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("identity", (object?)normalizedIdentity ?? DBNull.Value);
+        command.Parameters.AddWithValue("contentHash", (object?)normalizedHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("localPath", (object?)normalizedPath ?? DBNull.Value);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated > 0)
+        {
+            return;
+        }
+
+        await UpsertArtistArtworkCacheAsync(
+            new ArtistArtworkCacheUpsertInput(
+                artistId,
+                "rejected",
+                normalizedIdentity ?? normalizedPath ?? normalizedHash ?? "rejected",
+                null,
+                null,
+                normalizedPath,
+                normalizedHash,
+                null,
+                null,
+                "heuristic",
+                null,
+                true,
+                false),
+            cancellationToken);
+    }
+
     public async Task<ArtistArtworkProvenanceDto?> GetArtistArtworkProvenanceAsync(
         long artistId,
         string role,

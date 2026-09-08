@@ -1402,6 +1402,10 @@ public sealed partial class ArtistMetadataUpdaterService
             .ThenByDescending(item => (item.Width ?? 0) * (item.Height ?? 0))
             .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash))
             .ToList();
+        if (ocrTextArtBlockingEnabled)
+        {
+            candidates = await FilterUsableArtworkCandidatesAsync(artistId, candidates, cancellationToken);
+        }
         if (candidates.Count == 0)
         {
             return;
@@ -1439,6 +1443,13 @@ public sealed partial class ArtistMetadataUpdaterService
         Directory.CreateDirectory(managedRoot);
 
         var sourceCandidatesNormalized = NormalizeCandidates(sourceCandidates);
+        if (tracked.OcrTextArtBlockingEnabled)
+        {
+            sourceCandidatesNormalized = await FilterUsableArtworkCandidatesAsync(
+                tracked.ArtistId,
+                sourceCandidatesNormalized,
+                cancellationToken);
+        }
 
         var avatarSlot = ResolveSlotCandidate(managedRoot, AvatarSlot);
         var backgroundSlot = ResolveSlotCandidate(managedRoot, BackgroundSlot);
@@ -1689,6 +1700,33 @@ public sealed partial class ArtistMetadataUpdaterService
         return (null, null);
     }
 
+    private async Task<List<ArtworkCandidate>> FilterUsableArtworkCandidatesAsync(
+        long artistId,
+        IReadOnlyList<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        var usable = new List<ArtworkCandidate>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(candidate.LocalPath)
+                || !File.Exists(candidate.LocalPath))
+            {
+                continue;
+            }
+
+            if (await IsArtworkCandidateUsableAsync(candidate.LocalPath, cancellationToken))
+            {
+                usable.Add(candidate);
+                continue;
+            }
+
+            await PersistRejectedArtworkCandidateAsync(artistId, candidate, candidate.LocalPath, cancellationToken);
+        }
+
+        return usable;
+    }
+
     private async Task PersistRejectedArtworkCandidateAsync(
         string managedRoot,
         string slot,
@@ -1696,28 +1734,30 @@ public sealed partial class ArtistMetadataUpdaterService
         string? localPath,
         CancellationToken cancellationToken)
     {
-        if (_libraryRepository is null
-            || !long.TryParse(Path.GetFileName(managedRoot), out var artistId)
-            || artistId <= 0)
+        if (!long.TryParse(Path.GetFileName(managedRoot), out var artistId) || artistId <= 0)
         {
             return;
         }
 
-        await _libraryRepository.UpsertArtistArtworkCacheAsync(
-            new ArtistArtworkCacheUpsertInput(
-                artistId,
-                slot,
-                selected.Identity,
-                selected.Source,
-                null,
-                localPath,
-                ComputeFileHashOrNull(localPath),
-                null,
-                null,
-                "heuristic",
-                null,
-                true,
-                false),
+        await PersistRejectedArtworkCandidateAsync(artistId, selected, localPath, cancellationToken);
+    }
+
+    private async Task PersistRejectedArtworkCandidateAsync(
+        long artistId,
+        ArtworkCandidate selected,
+        string? localPath,
+        CancellationToken cancellationToken)
+    {
+        if (_libraryRepository is null || artistId <= 0)
+        {
+            return;
+        }
+
+        await _libraryRepository.MarkArtistArtworkTextBlockedAsync(
+            artistId,
+            selected.Identity,
+            selected.ContentHash ?? ComputeFileHashOrNull(localPath),
+            localPath,
             cancellationToken);
     }
 
