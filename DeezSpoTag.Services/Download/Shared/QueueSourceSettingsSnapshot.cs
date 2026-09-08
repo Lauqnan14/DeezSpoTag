@@ -228,8 +228,7 @@ public sealed class QueueSourceSettingsSnapshot
             PrimaryDestinationFolderId = settings.PrimaryDestinationFolderId,
             SecondaryDestinationFolderId = settings.SecondaryDestinationFolderId,
             AtmosEngine = settings.AtmosEngine,
-            AtmosSearchFallback = settings.AtmosSearchFallback,
-            AtmosDownloadFallback = settings.AtmosDownloadFallback
+            AtmosFallbackEnabled = settings.AtmosFallbackEnabled
         };
     }
 

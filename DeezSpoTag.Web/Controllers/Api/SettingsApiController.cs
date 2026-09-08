@@ -437,6 +437,59 @@ namespace DeezSpoTag.Web.Controllers.Api
                 tags["tagSyncedLyrics"] = tags["syncedLyrics"]?.DeepClone();
                 tags.Remove("syncedLyrics");
             }
+
+            var multiQuality = incomingNode["multiQuality"] as JsonObject
+                ?? incomingNode["MultiQuality"] as JsonObject;
+            if (multiQuality == null)
+            {
+                return;
+            }
+
+            if (!TryReadBooleanProperty(multiQuality, "atmosFallbackEnabled", out _))
+            {
+                var hasSearchFallback = TryReadBooleanProperty(
+                    multiQuality,
+                    "atmosSearchFallback",
+                    out var searchFallback);
+                var hasDownloadFallback = TryReadBooleanProperty(
+                    multiQuality,
+                    "atmosDownloadFallback",
+                    out var downloadFallback);
+                if (hasSearchFallback || hasDownloadFallback)
+                {
+                    multiQuality["atmosFallbackEnabled"] = searchFallback || downloadFallback;
+                }
+            }
+
+            RemovePropertyIgnoreCase(multiQuality, "atmosSearchFallback");
+            RemovePropertyIgnoreCase(multiQuality, "atmosDownloadFallback");
+        }
+
+        private static bool TryReadBooleanProperty(JsonObject source, string propertyName, out bool value)
+        {
+            foreach (var property in source)
+            {
+                if (string.Equals(property.Key, propertyName, StringComparison.OrdinalIgnoreCase)
+                    && property.Value is JsonValue jsonValue
+                    && jsonValue.TryGetValue<bool>(out value))
+                {
+                    return true;
+                }
+            }
+
+            value = false;
+            return false;
+        }
+
+        private static void RemovePropertyIgnoreCase(JsonObject source, string propertyName)
+        {
+            var key = source
+                .Select(property => property.Key)
+                .FirstOrDefault(candidate => string.Equals(candidate, propertyName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                source.Remove(key);
+            }
         }
 
         private static void MergeObjects(JsonObject target, JsonObject incoming)

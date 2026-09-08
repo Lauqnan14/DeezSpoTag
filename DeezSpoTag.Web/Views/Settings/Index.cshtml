@@ -313,6 +313,12 @@
     user-select: none;
 }
 
+.settings-section:not(#notification-settings) .checkbox-group,
+.settings-section:not(#notification-settings) .checkbox-item {
+    width: 100%;
+    box-sizing: border-box;
+}
+
 .engine-order-panel {
     border: 1px solid var(--border-secondary);
     border-radius: 8px;
@@ -1216,14 +1222,10 @@
                                     <input type="hidden" id="multiQualityAtmosEngine" value="apple">
                                 </div>
                                 <div class="checkbox-group" style="margin-top: 12px;">
-                                    <div class="checkbox-item"><input type="checkbox" id="multiQualityAtmosSearchFallback">
-                                    <label for="multiQualityAtmosSearchFallback">Enable Atmos search fallback</label></div>
+                                    <div class="checkbox-item"><input type="checkbox" id="multiQualityAtmosFallbackEnabled">
+                                    <label for="multiQualityAtmosFallbackEnabled">Enable Atmos fallback</label></div>
                                 </div>
-                                <div class="checkbox-group">
-                                    <div class="checkbox-item"><input type="checkbox" id="multiQualityAtmosDownloadFallback">
-                                    <label for="multiQualityAtmosDownloadFallback">Enable Atmos download fallback</label></div>
-                                </div>
-                                <div class="warning-text">Atmos search/download fallback tries the other enabled Atmos providers when the selected provider cannot supply that variant.</div>
+                                <div class="warning-text">Tries the other enabled Atmos providers in order; the provider that finds the Atmos variant downloads it.</div>
                             </div>
                             <div class="form-group">
                                 <label for="multiQualitySecondaryDestinationFolderId">Atmos destination folder id</label>
@@ -2857,16 +2859,14 @@ function syncAtmosSourceControls(value) {
 
     if (normalized === 'atmos:auto') {
         setFieldValue('multiQualityAtmosEngine', 'apple');
-        setCheckboxValue('multiQualityAtmosSearchFallback', true);
-        setCheckboxValue('multiQualityAtmosDownloadFallback', true);
+        setCheckboxValue('multiQualityAtmosFallbackEnabled', true);
         setFieldValue('applePreferredAudioProfile', 'atmos');
         return;
     }
 
     const engine = resolveAtmosEngineFromDownloadSource(normalized);
     setFieldValue('multiQualityAtmosEngine', engine);
-    setCheckboxValue('multiQualityAtmosSearchFallback', false);
-    setCheckboxValue('multiQualityAtmosDownloadFallback', false);
+    setCheckboxValue('multiQualityAtmosFallbackEnabled', false);
     if (engine === 'apple') {
         setFieldValue('applePreferredAudioProfile', 'atmos');
     }
@@ -4785,8 +4785,7 @@ function loadSettings(settings) {
     setFieldValue('multiQualityPrimaryDestinationFolderId', mq.primaryDestinationFolderId ?? '');
     setFieldValue('multiQualitySecondaryDestinationFolderId', mq.secondaryDestinationFolderId ?? '');
     setFieldValue('multiQualityAtmosEngine', mq.atmosEngine || 'apple');
-    setCheckboxValue('multiQualityAtmosSearchFallback', mq.atmosSearchFallback === true);
-    setCheckboxValue('multiQualityAtmosDownloadFallback', mq.atmosDownloadFallback === true);
+    setCheckboxValue('multiQualityAtmosFallbackEnabled', mq.atmosFallbackEnabled === true);
     updateSecondaryFolderRequirement();
 
     const video = settings.video || {};
@@ -5157,8 +5156,7 @@ function collectFormData() {
             primaryDestinationFolderId: getOptionalNumber('multiQualityPrimaryDestinationFolderId', baseSettings.multiQuality?.primaryDestinationFolderId ?? null),
             secondaryDestinationFolderId: getOptionalNumber('multiQualitySecondaryDestinationFolderId', baseSettings.multiQuality?.secondaryDestinationFolderId ?? null),
             atmosEngine: selectedAtmosSource ? selectedAtmosEngine : getValue('multiQualityAtmosEngine', baseSettings.multiQuality?.atmosEngine || 'apple'),
-            atmosSearchFallback: selectedAtmosSource ? selectedAtmosAuto : getChecked('multiQualityAtmosSearchFallback', baseSettings.multiQuality?.atmosSearchFallback ?? false),
-            atmosDownloadFallback: selectedAtmosSource ? selectedAtmosAuto : getChecked('multiQualityAtmosDownloadFallback', baseSettings.multiQuality?.atmosDownloadFallback ?? false)
+            atmosFallbackEnabled: selectedAtmosAuto || getChecked('multiQualityAtmosFallbackEnabled', baseSettings.multiQuality?.atmosFallbackEnabled ?? false)
         },
 
         video: {

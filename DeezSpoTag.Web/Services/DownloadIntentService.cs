@@ -5862,8 +5862,7 @@ public sealed class DownloadIntentService
         {
             return ResolveAtmosSources(
                 settings,
-                engine,
-                settings.MultiQuality?.AtmosDownloadFallback == true);
+                engine);
         }
 
         var useCrossEngineOrder = IsMusicIntent(intent)
@@ -6224,8 +6223,7 @@ public sealed class DownloadIntentService
             : null;
         var atmosSources = ResolveAtmosSources(
             request.Settings,
-            preferredAtmosEngine,
-            request.Settings.MultiQuality?.AtmosSearchFallback == true);
+            preferredAtmosEngine);
         foreach (var atmosSource in atmosSources)
         {
             var atmosEngine = DownloadSourceOrder.DecodeAutoSource(atmosSource).Source;
@@ -6300,15 +6298,14 @@ public sealed class DownloadIntentService
         payload.QualityBucket = AtmosQuality;
         var autoSources = ResolveAtmosSources(
             request.Settings,
-            ApplePlatform,
-            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+            ApplePlatform);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
             ApplePlatform,
             secondaryQuality,
             MusicIntent: IsMusicIntent(request.Intent),
-            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
             Availability: request.Availability));
@@ -6360,15 +6357,14 @@ public sealed class DownloadIntentService
 
         var autoSources = ResolveAtmosSources(
             request.Settings,
-            TidalPlatform,
-            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+            TidalPlatform);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
             TidalPlatform,
             secondaryQuality,
             MusicIntent: IsMusicIntent(request.Intent),
-            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
             Availability: request.Availability));
@@ -6430,15 +6426,14 @@ public sealed class DownloadIntentService
         var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
         var autoSources = ResolveAtmosSources(
             request.Settings,
-            AmazonPlatform,
-            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+            AmazonPlatform);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
             AmazonPlatform,
             secondaryQuality,
             MusicIntent: IsMusicIntent(request.Intent),
-            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
             Availability: request.Availability));
@@ -6479,13 +6474,12 @@ public sealed class DownloadIntentService
 
     private static List<string> ResolveAtmosSources(
         DeezSpoTagSettings settings,
-        string? preferredEngine,
-        bool includeFallbackEngines)
+        string? preferredEngine)
     {
         var primary = string.IsNullOrWhiteSpace(preferredEngine)
             ? NormalizeAtmosEngine(settings.MultiQuality?.AtmosEngine)
             : NormalizeAtmosEngine(preferredEngine);
-        return DownloadSourceOrder.ResolveAtmosSources(settings, primary, includeFallbackEngines);
+        return DownloadSourceOrder.ResolveAtmosSources(settings, primary);
     }
 
     private static string NormalizeAtmosEngine(string? engine)

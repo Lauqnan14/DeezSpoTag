@@ -127,8 +127,7 @@ public static class DownloadSourceOrder
 
     public static List<string> ResolveAtmosSources(
         DeezSpoTagSettings settings,
-        string? preferredEngine,
-        bool includeFallbackEngines)
+        string? preferredEngine)
     {
         var enabledProfiles = settings.DownloadEngineOrder?.Enabled == true
             ? ResolveConfiguredProfiles(settings)
@@ -140,7 +139,7 @@ public static class DownloadSourceOrder
         var preferred = enabledAtmosProfiles.FirstOrDefault(profile =>
             string.Equals(profile.Source, normalizedPreferred, StringComparison.OrdinalIgnoreCase));
 
-        if (!includeFallbackEngines)
+        if (settings.MultiQuality?.AtmosFallbackEnabled != true)
         {
             return preferred == null
                 ? new List<string>()

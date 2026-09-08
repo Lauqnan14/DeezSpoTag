@@ -1,7 +1,12 @@
 using System;
 using System.IO;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Web.Controllers.Api;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -11,15 +16,113 @@ public sealed class AtmosPipelineGuardrailTests
     private static readonly string RepoRoot = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void MultiQualitySettings_MigratesLegacyAtmosFallbackFlagsToCanonicalSetting(
+        bool searchFallback,
+        bool downloadFallback)
+    {
+        var json = $$"""
+            {
+              "atmosSearchFallback": {{searchFallback.ToString().ToLowerInvariant()}},
+              "atmosDownloadFallback": {{downloadFallback.ToString().ToLowerInvariant()}}
+            }
+            """;
+
+        var settings = JsonSerializer.Deserialize<MultiQualityDownloadSettings>(json);
+
+        Assert.NotNull(settings);
+        Assert.True(settings!.AtmosFallbackEnabled);
+
+        var serialized = JsonSerializer.Serialize(settings, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+        Assert.Contains("\"atmosFallbackEnabled\":true", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("atmosSearchFallback", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("atmosDownloadFallback", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SettingsApi_MigratesLegacyAtmosFallbackFlagsBeforeMerging()
+    {
+        var incoming = JsonNode.Parse("""
+            {
+              "multiQuality": {
+                "atmosSearchFallback": true,
+                "atmosDownloadFallback": false
+              }
+            }
+            """)!.AsObject();
+        var method = typeof(SettingsApiController).GetMethod(
+            "NormalizeIncomingAliases",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("NormalizeIncomingAliases was not found.");
+
+        method.Invoke(null, [incoming]);
+
+        var multiQuality = Assert.IsType<JsonObject>(incoming["multiQuality"]);
+        Assert.True(multiQuality["atmosFallbackEnabled"]!.GetValue<bool>());
+        Assert.False(multiQuality.ContainsKey("atmosSearchFallback"));
+        Assert.False(multiQuality.ContainsKey("atmosDownloadFallback"));
+    }
+
+    [Fact]
+    public void MultiQualitySettings_CanonicalJsonRoundTripPreservesEverySetting()
+    {
+        var expected = new MultiQualityDownloadSettings
+        {
+            Enabled = true,
+            SecondaryEnabled = true,
+            PrimaryDestinationFolderId = 12,
+            SecondaryDestinationFolderId = 34,
+            AtmosEngine = "tidal",
+            AtmosFallbackEnabled = true
+        };
+
+        var json = JsonSerializer.Serialize(expected);
+        var actual = JsonSerializer.Deserialize<MultiQualityDownloadSettings>(json);
+
+        Assert.NotNull(actual);
+        Assert.Equal(expected.Enabled, actual!.Enabled);
+        Assert.Equal(expected.SecondaryEnabled, actual.SecondaryEnabled);
+        Assert.Equal(expected.PrimaryDestinationFolderId, actual.PrimaryDestinationFolderId);
+        Assert.Equal(expected.SecondaryDestinationFolderId, actual.SecondaryDestinationFolderId);
+        Assert.Equal(expected.AtmosEngine, actual.AtmosEngine);
+        Assert.Equal(expected.AtmosFallbackEnabled, actual.AtmosFallbackEnabled);
+    }
+
+    [Fact]
+    public void QueueSettingsSnapshot_MigratesLegacyAtmosFallbackForPersistedDownloads()
+    {
+        var payload = JsonNode.Parse("""
+            {
+              "sourceSettingsSnapshot": {
+                "multiQuality": {
+                  "atmosDownloadFallback": true
+                }
+              }
+            }
+            """)!.AsObject();
+
+        var snapshot = QueueSourceSettingsSnapshot.ReadFromPayload(payload);
+
+        Assert.NotNull(snapshot?.MultiQuality);
+        Assert.True(snapshot!.MultiQuality!.AtmosFallbackEnabled);
+    }
+
     [Fact]
     public void AtmosProviderOrder_StartsWithSelectedProviderAndUsesOnlyAtmosQualities()
     {
-        var settings = new DeezSpoTagSettings();
+        var settings = new DeezSpoTagSettings
+        {
+            MultiQuality = new MultiQualityDownloadSettings { AtmosFallbackEnabled = true }
+        };
 
         var sources = DownloadSourceOrder.ResolveAtmosSources(
             settings,
-            preferredEngine: "tidal",
-            includeFallbackEngines: true);
+            preferredEngine: "tidal");
 
         Assert.Equal(
             ["tidal|DOLBY_ATMOS", "apple|ATMOS", "amazon|DOLBY_ATMOS"],
@@ -34,6 +137,7 @@ public sealed class AtmosPipelineGuardrailTests
             DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
         };
         settings.DownloadEngineOrder.Enabled = true;
+        settings.MultiQuality = new MultiQualityDownloadSettings { AtmosFallbackEnabled = true };
         foreach (var engine in settings.DownloadEngineOrder.Engines)
         {
             engine.Enabled = engine.Engine is "tidal" or "amazon";
@@ -45,8 +149,7 @@ public sealed class AtmosPipelineGuardrailTests
 
         var sources = DownloadSourceOrder.ResolveAtmosSources(
             settings,
-            preferredEngine: "amazon",
-            includeFallbackEngines: true);
+            preferredEngine: "amazon");
 
         Assert.Equal(["amazon|DOLBY_ATMOS", "tidal|DOLBY_ATMOS"], sources);
     }
@@ -54,12 +157,14 @@ public sealed class AtmosPipelineGuardrailTests
     [Fact]
     public void AtmosProviderOrder_DoesNotUseAnotherProviderWhenFallbackIsDisabled()
     {
-        var settings = new DeezSpoTagSettings();
+        var settings = new DeezSpoTagSettings
+        {
+            MultiQuality = new MultiQualityDownloadSettings { AtmosFallbackEnabled = false }
+        };
 
         var sources = DownloadSourceOrder.ResolveAtmosSources(
             settings,
-            preferredEngine: "amazon",
-            includeFallbackEngines: false);
+            preferredEngine: "amazon");
 
         Assert.Equal(["amazon|DOLBY_ATMOS"], sources);
     }
