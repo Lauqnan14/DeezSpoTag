@@ -3844,10 +3844,10 @@ span.badge.badge-artwork-animated {
                                     <p class="progress-details-label" id="metadata-progress-label">0 / 0 artists (0.0%)</p>
                                 </div>
                                 <div class="tool-card-footer">
-                                    <button id="metadata-update-button" class="action-btn action-btn-sm" type="button">Begin Update</button>
-                                    <button id="metadata-save-settings-button" class="action-btn action-btn-sm" type="button">Save Settings</button>
                                     <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
+                                    <button id="metadata-update-button" class="action-btn action-btn-sm" type="button">Update Server</button>
                                     <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button">Cancel</button>
+                                    <button id="metadata-save-settings-button" class="action-btn action-btn-sm" type="button">Save Settings</button>
                                 </div>
                             </div>
 
@@ -4380,13 +4380,13 @@ function initMediaOperationsHelp() {
             title: 'Artist Metadata Updater',
             content: `
                 <h4>What does this tool do?</h4>
-                <p>Refresh Cache fetches and stores provider metadata. Begin Update uses only that local cache when pushing selected fields to target servers.</p>
+                <p>Refresh Cache fetches and stores provider metadata. Update Server uses only that local cache when pushing selected fields to target servers.</p>
 
                 <h4>Schedules</h4>
                 <ul>
                     <li><strong>Cache refresh schedule:</strong> How often DeezSpoTag walks the library and refreshes provider metadata into the local cache. The clock starts when a sweep finishes walking the artist list, including runs that had some artist failures.</li>
                     <li><strong>Target update schedule:</strong> How often cached fields are pushed to the selected media servers. This clock is independent of cache refresh.</li>
-                    <li><strong>Manual only:</strong> Disables that automatic sweep. Use Refresh Cache or Begin Update to run immediately.</li>
+                    <li><strong>Manual only:</strong> Disables that automatic sweep. Use Refresh Cache or Update Server to run immediately.</li>
                     <li>Cancel stops the current sweep without treating it as a finished run, so the schedule stays due.</li>
                 </ul>
 
@@ -4404,7 +4404,7 @@ function initMediaOperationsHelp() {
                 <h4>Independent actions</h4>
                 <ul>
                     <li><strong>Refresh Cache:</strong> Fetches and validates multi-provider artwork and biographies without updating servers.</li>
-                    <li><strong>Begin Update:</strong> Pushes only already-cached artwork and biographies without contacting providers.</li>
+                    <li><strong>Update Server:</strong> Pushes only already-cached artwork and biographies without contacting providers.</li>
                     <li>When both automatic schedules are due together, cache refresh runs first, then target update, even if some cache artists failed.</li>
                 </ul>
 
