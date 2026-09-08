@@ -17,12 +17,12 @@ public sealed record TargetIdentityFetchResult(
 public sealed class MediaServerLibraryRefreshService
 {
     private const int PlexTrackPageSize = 500;
-    private const int RefreshAttemptCount = 3;
+    private const int RefreshAttemptCount = 5;
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
     private const string NavidromeService = "navidrome";
     private const string NoneService = "none";
-    private static readonly TimeSpan RefreshRetryDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan RefreshRetryDelay = TimeSpan.FromSeconds(2);
 
     private readonly PlatformAuthService _authService;
     private readonly PlexApiClient _plexApiClient;
@@ -681,7 +681,8 @@ public sealed class MediaServerLibraryRefreshService
         string service,
         long? folderId,
         bool resetFirst,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<long>? requestedTrackIds = null)
     {
         var normalizedService = (service ?? string.Empty).Trim().ToLowerInvariant();
         var deleted = 0;
@@ -706,7 +707,11 @@ public sealed class MediaServerLibraryRefreshService
             }
             else
             {
-                await UpdateTrackMetadataIndexAsync(normalizedService, folderId, cancellationToken);
+                await UpdateTrackMetadataIndexAsync(
+                    normalizedService,
+                    folderId,
+                    requestedTrackIds,
+                    cancellationToken);
             }
 
             var coverage = await _libraryRepository.GetTargetServerIdentityCoverageAsync(
@@ -747,6 +752,27 @@ public sealed class MediaServerLibraryRefreshService
             NavidromeService => await RefreshNavidromeAsync(state.Navidrome, updateTrackIndex: false, cancellationToken),
             _ => false
         };
+    }
+
+    public async Task<bool> IsLibraryScanRunningAsync(string service, CancellationToken cancellationToken)
+    {
+        var state = await _authService.LoadAsync();
+        var running = service.Trim().ToLowerInvariant() switch
+        {
+            PlexService when HasPlexConfiguration(state.Plex)
+                => await _plexApiClient.IsMusicLibraryRefreshingAsync(state.Plex!.Url!, state.Plex.Token!, cancellationToken),
+            JellyfinService when HasJellyfinConfiguration(state.Jellyfin)
+                => await _jellyfinApiClient.IsLibraryRefreshRunningAsync(state.Jellyfin!.Url!, state.Jellyfin.ApiKey!, cancellationToken),
+            NavidromeService when HasNavidromeConfiguration(state.Navidrome)
+                => await _navidromeApiClient.IsScanRunningAsync(
+                    state.Navidrome!.Url!,
+                    state.Navidrome.Username!,
+                    state.Navidrome.Password!,
+                    cancellationToken),
+            _ => (bool?)null
+        };
+
+        return running != false;
     }
 
     public async Task<MediaServerIdentityIngestSummary> IngestConfiguredTargetIdentitiesAsync(
@@ -1474,7 +1500,8 @@ public sealed class MediaServerLibraryRefreshService
 
             if (attempt < RefreshAttemptCount)
             {
-                await Task.Delay(RefreshRetryDelay, cancellationToken);
+                var delay = TimeSpan.FromSeconds(Math.Min(16, RefreshRetryDelay.TotalSeconds * (1 << (attempt - 1))));
+                await Task.Delay(delay, cancellationToken);
             }
         }
 

@@ -658,11 +658,15 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     lease_owner TEXT,
     lease_until_utc TEXT,
     last_error TEXT,
+    deadline_utc TEXT,
+    scan_submitted_utc TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (destination_folder_id, target_service)
 );", cancellationToken);
         await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "requested_track_ids_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "deadline_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "scan_submitted_utc", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_media_server_refresh_outbox_due", MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
         await MigrateAndDropWatchlistSharedIdentityAsync(connection, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);

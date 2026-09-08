@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -123,6 +124,7 @@ public sealed class KnownLibraryFileIngestionService
             await PublishLibraryUpdatedAsync(
                 ingestedFolderIds.Count == 1 ? ingestedFolderIds.Single() : null,
                 cancellationToken);
+            await EnqueueTargetIdentityRefreshAsync(pending, ingestedFolderIds, verified.IngestedFilePaths, cancellationToken);
         }
 
         return verified;
@@ -173,6 +175,34 @@ public sealed class KnownLibraryFileIngestionService
             existingAudioFiles.Count,
             ingestedPaths,
             missingPaths);
+    }
+
+    private async Task EnqueueTargetIdentityRefreshAsync(
+        IReadOnlyDictionary<long, List<string>> pendingByFolder,
+        IReadOnlySet<long> ingestedFolderIds,
+        IReadOnlyList<string> ingestedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        var ingested = ingestedFilePaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var outbox = _serviceProvider.GetRequiredService<MediaServerRefreshOutboxService>();
+        foreach (var (folderId, folderPaths) in pendingByFolder)
+        {
+            if (!ingestedFolderIds.Contains(folderId))
+            {
+                continue;
+            }
+
+            var queuedPaths = folderPaths
+                .Where(ingested.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (queuedPaths.Count == 0)
+            {
+                continue;
+            }
+
+            await outbox.EnqueueAsync(folderId, queuedPaths, cancellationToken);
+        }
     }
 
     private async Task PublishLibraryUpdatedAsync(long? folderId, CancellationToken cancellationToken)

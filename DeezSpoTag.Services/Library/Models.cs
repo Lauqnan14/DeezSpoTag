@@ -1026,6 +1026,11 @@ public sealed record WatchlistFinalizationOutboxDto(
     string? LastError,
     DateTimeOffset UpdatedAt);
 
+public sealed record MediaServerRefreshOutboxSummary(
+    long FolderId,
+    string Service,
+    string Status);
+
 public sealed record MediaServerRefreshOutboxDto(
     long Id,
     long DestinationFolderId,
@@ -1038,7 +1043,9 @@ public sealed record MediaServerRefreshOutboxDto(
     string? LeaseOwner,
     DateTimeOffset? LeaseUntilUtc,
     string? LastError,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? DeadlineUtc = null,
+    DateTimeOffset? ScanSubmittedUtc = null);
 
 public sealed record MediaServerIdentityRefreshFile(
     long TrackId,

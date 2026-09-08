@@ -564,7 +564,52 @@ public sealed class NavidromeApiClient
             "startScan",
             Array.Empty<KeyValuePair<string, string?>>(),
             cancellationToken);
-        return response?.SubsonicResponse?.Status is "ok";
+        if (response?.SubsonicResponse?.Status is "ok")
+        {
+            return true;
+        }
+
+        var status = await SendAsync<NavidromeScanStatusResponse>(
+            serverUrl,
+            username,
+            password,
+            "getScanStatus",
+            Array.Empty<KeyValuePair<string, string?>>(),
+            cancellationToken);
+        if (status?.SubsonicResponse?.ScanStatus?.Scanning == true)
+        {
+            return true;
+        }
+
+        var error = response?.SubsonicResponse?.Error?.Message
+                    ?? status?.SubsonicResponse?.Error?.Message;
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            _logger.LogWarning("Navidrome startScan failed: {Error}", error);
+        }
+
+        return false;
+    }
+
+    public async Task<bool?> IsScanRunningAsync(
+        string serverUrl,
+        string username,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        var status = await SendAsync<NavidromeScanStatusResponse>(
+            serverUrl,
+            username,
+            password,
+            "getScanStatus",
+            Array.Empty<KeyValuePair<string, string?>>(),
+            cancellationToken);
+        if (status?.SubsonicResponse is null)
+        {
+            return null;
+        }
+
+        return status.SubsonicResponse.ScanStatus?.Scanning == true;
     }
 
     public async Task<string?> FindPlaylistIdByNameAsync(
@@ -1472,6 +1517,24 @@ file sealed class NavidromePingResponse
 {
     [JsonPropertyName("subsonic-response")]
     public NavidromeBaseResponse? SubsonicResponse { get; set; }
+}
+
+file sealed class NavidromeScanStatusResponse
+{
+    [JsonPropertyName("subsonic-response")]
+    public NavidromeScanStatusSubsonicResponse? SubsonicResponse { get; set; }
+}
+
+file sealed class NavidromeScanStatusSubsonicResponse : NavidromeBaseResponse
+{
+    [JsonPropertyName("scanStatus")]
+    public NavidromeScanStatus? ScanStatus { get; set; }
+}
+
+file sealed class NavidromeScanStatus
+{
+    [JsonPropertyName("scanning")]
+    public bool Scanning { get; set; }
 }
 
 file sealed class NavidromeMusicFoldersResponse

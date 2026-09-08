@@ -636,7 +636,6 @@ public partial class AutoTagService
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
-        var context = BuildEnhancementBatchContext(currentFiles, currentFiles, enabledFolders);
         if (!EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))
         {
             return;
@@ -657,7 +656,6 @@ public partial class AutoTagService
                 currentFiles),
             cancellationToken);
 
-        await EnqueueMediaRefreshForBatchAsync(job, context, cancellationToken);
         SaveJob(job);
     }
 
@@ -800,25 +798,6 @@ public partial class AutoTagService
         }
 
         return covers ?? sidecars;
-    }
-
-    private async Task EnqueueMediaRefreshForBatchAsync(
-        AutoTagJob job,
-        EnhancementBatchContext context,
-        CancellationToken cancellationToken)
-    {
-        if (context.FilesByFolder.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var (folderId, files) in context.FilesByFolder)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _mediaServerRefreshOutboxService.EnqueueAsync(folderId, files, cancellationToken);
-        }
-
-        AppendLog(job, $"enhancement batch media refresh queued for {context.FilesByFolder.Count} folder scope(s).");
     }
 
     private bool ShouldRunIntegratedEnhancementWorkflows(AutoTagJob job, string configPath)

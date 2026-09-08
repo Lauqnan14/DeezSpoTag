@@ -13266,8 +13266,14 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        string? existingStatus = null;
+        var existingAttemptCount = 0;
+        DateTimeOffset? existingLeaseUntil = null;
+        DateTimeOffset? existingNextAttempt = null;
+        DateTimeOffset? existingDeadline = null;
+        DateTimeOffset? existingScanSubmitted = null;
         await using (var read = new SqliteCommand(@"
-SELECT changed_file_paths_json,requested_track_ids_json
+SELECT changed_file_paths_json,requested_track_ids_json,status,attempt_count,lease_until_utc,next_attempt_utc,deadline_utc,scan_submitted_utc
 FROM media_server_refresh_outbox
 WHERE destination_folder_id=@destinationFolderId AND target_service=@targetService;", connection, transaction))
         {
@@ -13287,33 +13293,138 @@ WHERE destination_folder_id=@destinationFolderId AND target_service=@targetServi
                 {
                     // Replace malformed persisted path data with the current verified paths.
                 }
+
+                existingStatus = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+                existingAttemptCount = await reader.IsDBNullAsync(3, cancellationToken) ? 0 : reader.GetInt32(3);
+                existingLeaseUntil = await reader.IsDBNullAsync(4, cancellationToken)
+                    ? null
+                    : ParseDateTimeOffsetInvariant(reader.GetString(4));
+                existingNextAttempt = await reader.IsDBNullAsync(5, cancellationToken)
+                    ? null
+                    : ParseDateTimeOffsetInvariant(reader.GetString(5));
+                existingDeadline = await reader.IsDBNullAsync(6, cancellationToken)
+                    ? null
+                    : ParseDateTimeOffsetInvariant(reader.GetString(6));
+                existingScanSubmitted = await reader.IsDBNullAsync(7, cancellationToken)
+                    ? null
+                    : ParseDateTimeOffsetInvariant(reader.GetString(7));
             }
         }
 
+        var now = DateTimeOffset.UtcNow;
+        var coalescedNextAttempt = now.Add(coalescingDelay ?? TimeSpan.FromSeconds(5));
+        var normalizedStatus = (existingStatus ?? string.Empty).Trim().ToLowerInvariant();
+        var leaseAlive = string.Equals(normalizedStatus, "processing", StringComparison.Ordinal)
+                         && existingLeaseUntil.HasValue
+                         && existingLeaseUntil.Value > now;
+        var scanAlreadySubmitted = existingAttemptCount > 0
+                                   && normalizedStatus is "pending" or "retry" or "processing";
+        var restartJob = normalizedStatus is "completed" or "failed" or "";
+        var status = leaseAlive
+            ? "processing"
+            : scanAlreadySubmitted || !restartJob
+                ? (string.Equals(normalizedStatus, "retry", StringComparison.Ordinal) ? "retry" : "pending")
+                : "pending";
+        var attemptCount = leaseAlive || scanAlreadySubmitted ? existingAttemptCount : 0;
+        var nextAttemptUtc = leaseAlive
+            ? existingNextAttempt ?? coalescedNextAttempt
+            : scanAlreadySubmitted
+                ? existingNextAttempt.HasValue && existingNextAttempt.Value > now
+                    ? existingNextAttempt.Value
+                    : coalescedNextAttempt
+                : coalescedNextAttempt;
+        var deadlineUtc = restartJob || existingDeadline is null
+            ? now.Add(TimeSpan.FromMinutes(10))
+            : existingDeadline.Value;
+        DateTimeOffset? scanSubmittedUtc = restartJob ? null : existingScanSubmitted;
+
         await using var command = new SqliteCommand(@"
 INSERT INTO media_server_refresh_outbox
-    (destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,next_attempt_utc)
-VALUES (@destinationFolderId,@targetService,@paths,@trackIds,'pending',0,@nextAttemptUtc)
+    (destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,next_attempt_utc,deadline_utc,scan_submitted_utc)
+VALUES (@destinationFolderId,@targetService,@paths,@trackIds,@status,@attemptCount,@nextAttemptUtc,@deadlineUtc,@scanSubmittedUtc)
 ON CONFLICT(destination_folder_id,target_service) DO UPDATE SET
     changed_file_paths_json=excluded.changed_file_paths_json,
     requested_track_ids_json=excluded.requested_track_ids_json,
-    status='pending',
-    attempt_count=0,
+    status=excluded.status,
+    attempt_count=excluded.attempt_count,
     next_attempt_utc=excluded.next_attempt_utc,
-    lease_owner=NULL,
-    lease_until_utc=NULL,
-    last_error=NULL,
+    deadline_utc=excluded.deadline_utc,
+    scan_submitted_utc=excluded.scan_submitted_utc,
+    lease_owner=CASE WHEN excluded.status='processing' THEN media_server_refresh_outbox.lease_owner ELSE NULL END,
+    lease_until_utc=CASE WHEN excluded.status='processing' THEN media_server_refresh_outbox.lease_until_utc ELSE NULL END,
+    last_error=CASE WHEN excluded.attempt_count=0 THEN NULL ELSE media_server_refresh_outbox.last_error END,
     updated_at=CURRENT_TIMESTAMP;", connection, transaction);
         command.Parameters.AddWithValue("destinationFolderId", destinationFolderId);
         command.Parameters.AddWithValue("targetService", service);
         command.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
         command.Parameters.AddWithValue("trackIds", JsonSerializer.Serialize(trackIds));
-        command.Parameters.AddWithValue(
-            "nextAttemptUtc",
-            DateTimeOffset.UtcNow.Add(coalescingDelay ?? TimeSpan.FromSeconds(5)).ToString("O"));
+        command.Parameters.AddWithValue("status", status);
+        command.Parameters.AddWithValue("attemptCount", attemptCount);
+        command.Parameters.AddWithValue("nextAttemptUtc", nextAttemptUtc.ToString("O"));
+        command.Parameters.AddWithValue("deadlineUtc", deadlineUtc.ToString("O"));
+        command.Parameters.AddWithValue("scanSubmittedUtc", (object?)scanSubmittedUtc?.ToString("O") ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
+
+    public async Task<MediaServerRefreshOutboxDto?> GetMediaServerRefreshOutboxAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        if (id <= 0)
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT id,destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,
+       next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at,deadline_utc,scan_submitted_utc
+FROM media_server_refresh_outbox
+WHERE id=@id;", connection);
+        command.Parameters.AddWithValue("id", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return ReadMediaServerRefreshOutbox(reader);
+    }
+
+    public async Task<bool> MarkMediaServerRefreshScanSubmittedAsync(
+        long id,
+        string leaseOwner,
+        DateTimeOffset submittedUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE media_server_refresh_outbox
+SET scan_submitted_utc=@submittedUtc,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner);
+        command.Parameters.AddWithValue("submittedUtc", submittedUtc.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    private static MediaServerRefreshOutboxDto ReadMediaServerRefreshOutbox(SqliteDataReader reader)
+        => new(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetString(2),
+            JsonSerializer.Deserialize<List<string>>(reader.GetString(3)) ?? [],
+            JsonSerializer.Deserialize<List<long>>(reader.GetString(4)) ?? [],
+            reader.GetString(5),
+            reader.GetInt32(6),
+            ParseDateTimeOffsetInvariant(reader.GetString(7)),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.IsDBNull(9) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            ParseDateTimeOffsetInvariant(reader.GetString(11)),
+            reader.FieldCount > 12 && !reader.IsDBNull(12) ? ParseDateTimeOffsetInvariant(reader.GetString(12)) : null,
+            reader.FieldCount > 13 && !reader.IsDBNull(13) ? ParseDateTimeOffsetInvariant(reader.GetString(13)) : null);
 
     public async Task<IReadOnlyList<MediaServerRefreshOutboxDto>> ClaimDueMediaServerRefreshesAsync(
         int limit,
@@ -13334,7 +13445,7 @@ WHERE id IN (
     ORDER BY next_attempt_utc,id LIMIT @limit
 )
 RETURNING id,destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,
-          next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at;", connection, transaction);
+          next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at,deadline_utc,scan_submitted_utc;", connection, transaction);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 25));
@@ -13342,19 +13453,7 @@ RETURNING id,destination_folder_id,target_service,changed_file_paths_json,reques
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            rows.Add(new MediaServerRefreshOutboxDto(
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetString(2),
-                JsonSerializer.Deserialize<List<string>>(reader.GetString(3)) ?? [],
-                JsonSerializer.Deserialize<List<long>>(reader.GetString(4)) ?? [],
-                reader.GetString(5),
-                reader.GetInt32(6),
-                ParseDateTimeOffsetInvariant(reader.GetString(7)),
-                reader.IsDBNull(8) ? null : reader.GetString(8),
-                reader.IsDBNull(9) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
-                reader.IsDBNull(10) ? null : reader.GetString(10),
-                ParseDateTimeOffsetInvariant(reader.GetString(11))));
+            rows.Add(ReadMediaServerRefreshOutbox(reader));
         }
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
@@ -13449,6 +13548,26 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+
+    public async Task<IReadOnlyList<MediaServerRefreshOutboxSummary>> GetMediaServerRefreshOutboxSummariesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT destination_folder_id, lower(target_service), lower(status)
+FROM media_server_refresh_outbox;", connection);
+        var rows = new List<MediaServerRefreshOutboxSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new MediaServerRefreshOutboxSummary(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+
+        return rows;
+    }
 
     public async Task<(int Pending, int Processing, int Retry)> GetMediaServerRefreshOutboxCountsAsync(
         CancellationToken cancellationToken = default)

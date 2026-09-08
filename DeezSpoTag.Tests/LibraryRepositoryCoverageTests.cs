@@ -316,6 +316,34 @@ ORDER BY service;";
     }
 
     [Fact]
+    public async Task MediaServerRefreshOutbox_DoesNotResetScanProgressWhenMoreTracksArrive()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(41, "plex", ["/music/a.flac"], [1], TimeSpan.Zero);
+        var claimed = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "scan-worker"));
+        Assert.True(await _repository.RetryMediaServerRefreshAsync(
+            claimed.Id,
+            "scan-worker",
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "Plex scan submitted; waiting for requested track IDs."));
+
+        await _repository.EnqueueMediaServerRefreshAsync(41, "plex", ["/music/b.flac"], [2], TimeSpan.Zero);
+
+        var stored = await _repository.GetMediaServerRefreshOutboxAsync(claimed.Id);
+        Assert.NotNull(stored);
+        Assert.Equal(1, stored!.AttemptCount);
+        Assert.Equal("retry", stored.Status);
+        Assert.NotNull(stored.DeadlineUtc);
+        Assert.Contains("/music/a.flac", stored.ChangedFilePaths);
+        Assert.Contains("/music/b.flac", stored.ChangedFilePaths);
+        Assert.Contains(1L, stored.RequestedTrackIds);
+        Assert.Contains(2L, stored.RequestedTrackIds);
+    }
+
+    [Fact]
     public async Task MediaServerRefreshOutbox_IsDurableAndServerFailuresAreIndependent()
     {
         await _repository.EnqueueMediaServerRefreshAsync(25, "plex", ["/music/song.flac"], [1], TimeSpan.Zero);

@@ -10,7 +10,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         ".aac", ".mp3", ".wma", ".ogg", ".opus", ".oga", ".ape", ".wv", ".dsf", ".dff"
     };
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(10);
-    private const int MaxVerificationAttempts = 40;
+    internal static readonly TimeSpan IdentityImportDeadline = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan IdentityImportPollInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(5);
     private readonly LibraryRepository _repository;
     private readonly MediaServerLibraryRefreshService _refreshService;
@@ -131,6 +132,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             return;
         }
 
+        await QueueMissingFolderIdentitiesAsync(cancellationToken);
         while (!cancellationToken.IsCancellationRequested)
         {
             var jobs = await _repository.ClaimDueMediaServerRefreshesAsync(
@@ -144,6 +146,76 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             }
 
             await Task.WhenAll(jobs.Select(job => ProcessJobAsync(job, cancellationToken)));
+        }
+    }
+
+    private async Task QueueMissingFolderIdentitiesAsync(CancellationToken cancellationToken)
+    {
+        var services = await _refreshService.GetConfiguredServicesAsync();
+        if (services.Count == 0)
+        {
+            return;
+        }
+
+        var folders = await _repository.GetFoldersAsync(cancellationToken);
+        var existing = await _repository.GetMediaServerRefreshOutboxSummariesAsync(cancellationToken);
+        var busy = existing
+            .Where(static row => row.Status is "pending" or "retry" or "processing")
+            .Select(static row => $"{row.FolderId}:{row.Service}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var failed = existing
+            .Where(static row => row.Status == "failed")
+            .Select(static row => $"{row.FolderId}:{row.Service}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var folder in folders.Where(static folder => folder.Enabled && folder.Id > 0))
+        {
+            foreach (var service in services)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var key = $"{folder.Id}:{service}";
+                if (busy.Contains(key) || failed.Contains(key))
+                {
+                    continue;
+                }
+
+                var coverage = (await _repository.GetTargetServerIdentityCoverageAsync(
+                    [service],
+                    folder.Id,
+                    cancellationToken)).FirstOrDefault();
+                if (coverage is null || coverage.MissingTracks <= 0)
+                {
+                    continue;
+                }
+
+                var tracks = await _repository.GetTargetServerIdentityLocalTracksAsync(
+                    service,
+                    folder.Id,
+                    cancellationToken);
+                var missingIds = tracks
+                    .Where(static track => string.IsNullOrWhiteSpace(track.TargetItemId))
+                    .Select(static track => track.TrackId)
+                    .ToList();
+                if (missingIds.Count == 0)
+                {
+                    continue;
+                }
+
+                var refreshFiles = await _repository.GetMediaServerIdentityRefreshFilesAsync(
+                    missingIds,
+                    service,
+                    cancellationToken);
+                var paths = refreshFiles
+                    .Select(static item => item.FilePath)
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))
+                    .ToList();
+                if (paths.Count == 0)
+                {
+                    continue;
+                }
+
+                await EnqueueTargetAsync(folder.Id, service, paths, cancellationToken);
+            }
         }
     }
 
@@ -170,22 +242,20 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 return;
             }
 
-            if (job.AttemptCount >= MaxVerificationAttempts)
+            job = await _repository.GetMediaServerRefreshOutboxAsync(job.Id, cancellationToken) ?? job;
+            var now = DateTimeOffset.UtcNow;
+            var deadlineUtc = job.DeadlineUtc ?? now.Add(IdentityImportDeadline);
+            if (now >= deadlineUtc)
             {
-                _logger.LogWarning(
-                    "Media-server refresh job {JobId} for {Service} exceeded {MaxAttempts} attempts; failing.",
-                    job.Id,
-                    job.TargetService,
-                    MaxVerificationAttempts);
                 await _repository.FailMediaServerRefreshAsync(
                     job.Id,
                     _leaseOwner,
-                    job.LastError ?? "Exceeded the maximum number of identity verification attempts.",
+                    $"{job.TargetService} did not expose the requested track IDs within {IdentityImportDeadline.TotalMinutes:0} minutes.",
                     cancellationToken);
                 return;
             }
 
-            if (job.AttemptCount == 0)
+            if (job.ScanSubmittedUtc is null)
             {
                 var submitted = await _refreshService.RequestLibraryRefreshAsync(
                     job.TargetService,
@@ -199,9 +269,25 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                     return;
                 }
 
+                await _repository.MarkMediaServerRefreshScanSubmittedAsync(
+                    job.Id,
+                    _leaseOwner,
+                    now,
+                    cancellationToken);
                 await RetryAsync(
                     job,
-                    $"{job.TargetService} scan submitted; waiting for requested track IDs.",
+                    $"{job.TargetService} scan submitted; waiting for the server to finish indexing.",
+                    job.ChangedFilePaths,
+                    job.RequestedTrackIds,
+                    cancellationToken);
+                return;
+            }
+
+            if (await _refreshService.IsLibraryScanRunningAsync(job.TargetService, cancellationToken))
+            {
+                await RetryAsync(
+                    job,
+                    $"Waiting for the {job.TargetService} scan to finish indexing.",
                     job.ChangedFilePaths,
                     job.RequestedTrackIds,
                     cancellationToken);
@@ -216,6 +302,21 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
 
             if (verification.IsComplete)
             {
+                var coverage = (await _repository.GetTargetServerIdentityCoverageAsync(
+                    [job.TargetService],
+                    job.DestinationFolderId,
+                    cancellationToken)).FirstOrDefault();
+                if (coverage is { MissingTracks: > 0 })
+                {
+                    await RetryAsync(
+                        job,
+                        $"{job.TargetService} still missing {coverage.MissingTracks} library track IDs.",
+                        job.ChangedFilePaths,
+                        job.RequestedTrackIds,
+                        cancellationToken);
+                    return;
+                }
+
                 await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
                 return;
             }
@@ -227,8 +328,26 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 verification.RemainingTrackIds,
                 cancellationToken);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
+            _logger.LogWarning(
+                "Media-server refresh job {JobId} for {Service} was interrupted; it will resume.",
+                job.Id,
+                job.TargetService);
+            try
+            {
+                await RetryAsync(
+                    job,
+                    "Interrupted; will resume waiting for the server index.",
+                    job.ChangedFilePaths,
+                    job.RequestedTrackIds,
+                    CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to persist interruption for media-server refresh job {JobId}.", job.Id);
+            }
+
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -238,7 +357,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 "Media-server refresh failed independently for {Service}, destination folder {DestinationFolderId}.",
                 job.TargetService,
                 job.DestinationFolderId);
-            if (job.AttemptCount == 0)
+            if (job.ScanSubmittedUtc is null)
             {
                 await RetryScanSubmissionAsync(job, ex.Message, cancellationToken);
             }
@@ -283,11 +402,11 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 job.TargetService,
                 unresolvedPaths.Count);
             return new IdentityVerificationResult(
-                IsComplete: true,
+                IsComplete: false,
                 NewMappings: 0,
-                RemainingPaths: [],
+                RemainingPaths: job.ChangedFilePaths,
                 RemainingTrackIds: [],
-                Error: string.Empty);
+                Error: $"{job.TargetService} could not resolve local track IDs for the queued library paths.");
         }
 
         var before = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
@@ -298,7 +417,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             job.TargetService,
             job.DestinationFolderId,
             resetFirst: false,
-            cancellationToken);
+            cancellationToken,
+            requestedTrackIds: trackIds.ToList());
         if (!fetch.Success)
         {
             return new IdentityVerificationResult(
@@ -334,7 +454,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         }
 
         return new IdentityVerificationResult(
-            IsComplete: remainingTrackIds.Count == 0,
+            IsComplete: remainingTrackIds.Count == 0 && unresolvedPaths.Count == 0,
             NewMappings: Math.Max(0, mapped.Count - before.Count),
             RemainingPaths: remainingPaths,
             RemainingTrackIds: remainingTrackIds,
@@ -349,11 +469,17 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         CancellationToken cancellationToken)
     {
         var attempt = job.AttemptCount + 1;
+        var nextAttemptUtc = DateTimeOffset.UtcNow.Add(ResolveIdentityImportRetryDelay(attempt));
+        if (job.DeadlineUtc is { } deadline && nextAttemptUtc > deadline)
+        {
+            nextAttemptUtc = deadline;
+        }
+
         await _repository.RetryMediaServerRefreshAsync(
             job.Id,
             _leaseOwner,
             attempt,
-            DateTimeOffset.UtcNow.Add(ResolveIdentityImportRetryDelay(attempt)),
+            nextAttemptUtc,
             error,
             remainingPaths,
             remainingTrackIds,
@@ -369,7 +495,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             job.Id,
             _leaseOwner,
             attemptCount: 0,
-            DateTimeOffset.UtcNow.Add(TimeSpan.FromMinutes(2)),
+            DateTimeOffset.UtcNow.Add(IdentityImportPollInterval),
             error,
             job.ChangedFilePaths,
             job.RequestedTrackIds,
@@ -377,24 +503,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
     }
 
     internal static TimeSpan ResolveIdentityImportRetryDelay(int attempt)
-    {
-        if (attempt <= 1)
-        {
-            return TimeSpan.FromSeconds(60);
-        }
-
-        if (attempt == 2)
-        {
-            return TimeSpan.FromMinutes(2);
-        }
-
-        if (attempt == 3)
-        {
-            return TimeSpan.FromMinutes(3);
-        }
-
-        return TimeSpan.FromMinutes(5);
-    }
+        => IdentityImportPollInterval;
 
     private sealed record IdentityVerificationResult(
         bool IsComplete,

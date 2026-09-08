@@ -47,15 +47,15 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void DownloadOrchestration_QueuesMediaRefreshWithoutBlockingOnTargetServers()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var ingest = ReadSource("DeezSpoTag.Web", "Services", "KnownLibraryFileIngestionService.cs");
         var ingestionIndex = source.IndexOf(
             "IngestMovedFilesBeforeWatchlistFinalizationAsync(group, summary.ChangedFilePaths",
             StringComparison.Ordinal);
-        var refreshOutboxIndex = source.IndexOf(
-            "await _mediaServerRefreshOutboxService.EnqueueAsync(",
-            StringComparison.Ordinal);
 
         Assert.True(ingestionIndex >= 0);
-        Assert.True(refreshOutboxIndex > ingestionIndex);
+        Assert.DoesNotContain("await _mediaServerRefreshOutboxService.EnqueueAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueTargetIdentityRefreshAsync(", ingest, StringComparison.Ordinal);
+        Assert.Contains("outbox.EnqueueAsync(folderId, queuedPaths, cancellationToken)", ingest, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshConfiguredMediaServersForNonWatchlistMoveAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
     }
@@ -64,17 +64,33 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void ManualEnrichmentAutoMove_QueuesTargetIdentityRefreshForMovedFiles()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var ingest = ReadSource("DeezSpoTag.Web", "Services", "KnownLibraryFileIngestionService.cs");
         var ingestionIndex = source.IndexOf(
             "await _knownFileIngestionService.IngestAndVerifyAsync(",
             StringComparison.Ordinal);
-        var refreshOutboxIndex = source.IndexOf(
-            "await EnqueueTargetIdentityRefreshForAutoMoveAsync(",
-            StringComparison.Ordinal);
 
         Assert.True(ingestionIndex >= 0);
-        Assert.True(refreshOutboxIndex > ingestionIndex);
-        Assert.Contains("_mediaServerRefreshOutboxService.EnqueueAsync(folderId, files, cancellationToken)", source, StringComparison.Ordinal);
-        Assert.Contains("Manual enrichment", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueTargetIdentityRefreshForAutoMoveAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueTargetIdentityRefreshAsync(", ingest, StringComparison.Ordinal);
+        Assert.Contains("outbox.EnqueueAsync(folderId, queuedPaths, cancellationToken)", ingest, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MediaServerScanRequests_UseForcedPlexRefreshAndHonorAnInProgressNavidromeScan()
+    {
+        var plex = ReadSource("DeezSpoTag.Integrations", "Plex", "PlexApiClient.cs");
+        var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
+        var refresh = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
+
+        Assert.Contains("refresh?force=1&X-Plex-Token=", plex, StringComparison.Ordinal);
+        Assert.Contains("Uri.EscapeDataString(token)", plex, StringComparison.Ordinal);
+        Assert.Contains("Uri.EscapeDataString(libraryKey.Trim())", plex, StringComparison.Ordinal);
+        Assert.Contains("getScanStatus", navidrome, StringComparison.Ordinal);
+        Assert.Contains("ScanStatus?.Scanning == true", navidrome, StringComparison.Ordinal);
+        Assert.Contains("IsMusicLibraryRefreshingAsync", plex, StringComparison.Ordinal);
+        Assert.Contains("IsLibraryRefreshRunningAsync", ReadSource("DeezSpoTag.Integrations", "Jellyfin", "JellyfinApiClient.cs"), StringComparison.Ordinal);
+        Assert.Contains("IsLibraryScanRunningAsync", refresh, StringComparison.Ordinal);
+        Assert.Contains("private const int RefreshAttemptCount = 5", refresh, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -140,7 +156,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
 
         Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
-        Assert.Contains("UpdateTrackMetadataIndexAsync(normalizedService, folderId", service, StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexAsync(\n                    normalizedService,\n                    folderId,\n                    requestedTrackIds,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
         Assert.Contains("RebuildTrackMetadataIndexAsync(normalizedService, folderId", service, StringComparison.Ordinal);
         Assert.Contains("Task.WhenAll(resultTasks)", controller, StringComparison.Ordinal);
         Assert.Contains("GetTargetServerIdentityLocalTracksAsync", repository, StringComparison.Ordinal);
@@ -485,32 +501,38 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("job.DestinationFolderId", outbox, StringComparison.Ordinal);
         Assert.Contains("job.RequestedTrackIds", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("if (unresolvedPaths.Count > 0 || trackIds.Count == 0)", outbox, StringComparison.Ordinal);
-        Assert.Contains("job.AttemptCount == 0", outbox, StringComparison.Ordinal);
-        Assert.Contains("scan submitted; waiting for requested track IDs", outbox, StringComparison.Ordinal);
+        Assert.Contains("QueueMissingFolderIdentitiesAsync", outbox, StringComparison.Ordinal);
+        Assert.Contains("still missing {coverage.MissingTracks} library track IDs", outbox, StringComparison.Ordinal);
+        Assert.Contains("job.ScanSubmittedUtc is null", outbox, StringComparison.Ordinal);
+        Assert.Contains("waiting for the server to finish indexing", outbox, StringComparison.Ordinal);
+        Assert.Contains("IsLibraryScanRunningAsync", outbox, StringComparison.Ordinal);
+        Assert.Contains("Interrupted; will resume waiting for the server index.", outbox, StringComparison.Ordinal);
+        Assert.Contains("IdentityImportDeadline", outbox, StringComparison.Ordinal);
         Assert.Contains("FetchTargetIdentitiesAsync", outbox, StringComparison.Ordinal);
+        Assert.Contains("requestedTrackIds: trackIds.ToList()", outbox, StringComparison.Ordinal);
+        Assert.Contains("could not resolve local track IDs", outbox, StringComparison.Ordinal);
+        Assert.Contains("IsComplete: false", outbox, StringComparison.Ordinal);
         Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
         Assert.Contains("public async Task<TargetIdentityFetchResult> FetchTargetIdentitiesAsync", refresh, StringComparison.Ordinal);
+        Assert.Contains("requestedTrackIds", refresh, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateTrackMetadataIndexAsync(\n            job.TargetService", outbox.Replace("\r\n", "\n"), StringComparison.Ordinal);
         Assert.Contains("ResolveIdentityImportRetryDelay", outbox, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromSeconds(60)", outbox, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromMinutes(2)", outbox, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromMinutes(3)", outbox, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromMinutes(5)", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(10)", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromSeconds(20)", outbox, StringComparison.Ordinal);
         Assert.Contains("WatchlistWakeReason.TargetSync", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("AddMinutes(delayMinutes)", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("attempt == 1 ? 5 : Math.Min(30, attempt * 5)", outbox, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(1, 60)]
-    [InlineData(2, 120)]
-    [InlineData(3, 180)]
-    [InlineData(4, 300)]
-    public void MediaServerRefreshOutbox_UsesPostScanIdentityImportSchedule(int attempt, int expectedSeconds)
+    [InlineData(1)]
+    [InlineData(4)]
+    public void MediaServerRefreshOutbox_UsesPostScanIdentityImportSchedule(int attempt)
     {
         Assert.Equal(
-            TimeSpan.FromSeconds(expectedSeconds),
+            TimeSpan.FromSeconds(20),
             MediaServerRefreshOutboxService.ResolveIdentityImportRetryDelay(attempt));
+        Assert.Equal(TimeSpan.FromMinutes(10), MediaServerRefreshOutboxService.IdentityImportDeadline);
     }
 
     [Fact]

@@ -235,11 +235,19 @@ public class PlexApiClient
                 return false;
             }
 
-            var url = $"{serverUrl.TrimEnd('/')}/library/sections/{libraryKey}/refresh?X-Plex-Token={token}";
+            var encodedSection = Uri.EscapeDataString(libraryKey.Trim());
+            var encodedToken = Uri.EscapeDataString(token);
+            var url = $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/refresh?force=1&X-Plex-Token={encodedToken}";
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to refresh Plex library {LibraryKey}: {StatusCode}", libraryKey, response.StatusCode);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning(
+                    "Failed to refresh Plex library {LibraryKey}: {StatusCode} {Reason} {Body}",
+                    libraryKey,
+                    (int)response.StatusCode,
+                    response.ReasonPhrase,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(body));
                 return false;
             }
 
@@ -1185,11 +1193,14 @@ public class PlexApiClient
                     continue;
                 }
 
+                var refreshing = directory.Attribute("refreshing")?.Value;
                 sections.Add(new PlexLibrarySection
                 {
                     Key = key,
                     Title = directory.Attribute(TitleAttributeName)?.Value ?? string.Empty,
-                    Type = directory.Attribute("type")?.Value ?? string.Empty
+                    Type = directory.Attribute("type")?.Value ?? string.Empty,
+                    Refreshing = string.Equals(refreshing, "1", StringComparison.Ordinal)
+                                 || string.Equals(refreshing, "true", StringComparison.OrdinalIgnoreCase)
                 });
             }
 
@@ -1199,6 +1210,58 @@ public class PlexApiClient
         {
             _logger.LogError(ex, "Error retrieving Plex library sections");
             return new List<PlexLibrarySection>();
+        }
+    }
+
+    public async Task<bool?> IsMusicLibraryRefreshingAsync(
+        string serverUrl,
+        string token,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token))
+            {
+                return null;
+            }
+
+            var encodedToken = Uri.EscapeDataString(token);
+            var url = $"{serverUrl.TrimEnd('/')}/library/sections?X-Plex-Token={encodedToken}";
+            var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to read Plex scan status: {StatusCode}", response.StatusCode);
+                return null;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(content);
+            var sawMusicSection = false;
+            foreach (var directory in doc.Descendants(DirectoryElementName))
+            {
+                var type = directory.Attribute("type")?.Value ?? string.Empty;
+                var title = directory.Attribute(TitleAttributeName)?.Value ?? string.Empty;
+                if (!string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase)
+                    || title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                sawMusicSection = true;
+                var refreshing = directory.Attribute("refreshing")?.Value;
+                if (string.Equals(refreshing, "1", StringComparison.Ordinal)
+                    || string.Equals(refreshing, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return sawMusicSection ? false : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Error reading Plex scan status");
+            return null;
         }
     }
 
@@ -3014,6 +3077,7 @@ public class PlexLibrarySection
     public string Key { get; set; } = "";
     public string Title { get; set; } = "";
     public string Type { get; set; } = "";
+    public bool Refreshing { get; set; }
 }
 
 public sealed record PlexMetadataParentKeys(string? AlbumRatingKey, string? ArtistRatingKey)

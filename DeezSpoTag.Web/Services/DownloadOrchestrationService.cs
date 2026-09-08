@@ -208,7 +208,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly KnownLibraryFileIngestionService _knownFileIngestionService;
-    private readonly MediaServerRefreshOutboxService _mediaServerRefreshOutboxService;
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
@@ -272,7 +271,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
         _profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         _knownFileIngestionService = serviceProvider.GetRequiredService<KnownLibraryFileIngestionService>();
-        _mediaServerRefreshOutboxService = serviceProvider.GetRequiredService<MediaServerRefreshOutboxService>();
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
@@ -1545,10 +1543,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
                 await PersistWatchlistFinalizationOutboxAsync(
                     group,
-                    summary.ChangedFilePaths,
-                    cancellationToken);
-                await _mediaServerRefreshOutboxService.EnqueueAsync(
-                    group.DestinationFolderId,
                     summary.ChangedFilePaths,
                     cancellationToken);
             }

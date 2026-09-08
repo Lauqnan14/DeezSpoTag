@@ -795,7 +795,9 @@ public sealed class EnhancementMultiSectionRunTests
         var workflows = ReadEnhancementWorkflows();
 
         Assert.DoesNotContain("EnqueueBatchMediaServerRefreshAsync", workflows, StringComparison.Ordinal);
-        Assert.Contains("EnqueueMediaRefreshForBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueMediaRefreshForBatchAsync", workflows, StringComparison.Ordinal);
+        var ingest = File.ReadAllText(Path.Join(FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "KnownLibraryFileIngestionService.cs"));
+        Assert.Contains("EnqueueTargetIdentityRefreshAsync(", ingest, StringComparison.Ordinal);
         var service = File.ReadAllText(Path.Join(FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
         Assert.Contains("TriggerConfiguredMediaServerRefreshAfterEnhancementAsync", service, StringComparison.Ordinal);
     }

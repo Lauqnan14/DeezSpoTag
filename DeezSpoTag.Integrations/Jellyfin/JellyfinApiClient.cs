@@ -149,6 +149,50 @@ public class JellyfinApiClient
         return response.IsSuccessStatusCode;
     }
 
+    public async Task<bool?> IsLibraryRefreshRunningAsync(
+        string serverUrl,
+        string apiKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/ScheduledTasks"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var task in document.RootElement.EnumerateArray())
+        {
+            var key = task.TryGetProperty("Key", out var keyProperty) ? keyProperty.GetString() ?? string.Empty : string.Empty;
+            var name = task.TryGetProperty("Name", out var nameProperty) ? nameProperty.GetString() ?? string.Empty : string.Empty;
+            var state = task.TryGetProperty("State", out var stateProperty) ? stateProperty.GetString() ?? string.Empty : string.Empty;
+            var isLibraryRefresh = key.Contains("RefreshLibrary", StringComparison.OrdinalIgnoreCase)
+                                   || name.Contains("Scan media library", StringComparison.OrdinalIgnoreCase)
+                                   || name.Contains("library scan", StringComparison.OrdinalIgnoreCase);
+            if (isLibraryRefresh
+                && (string.Equals(state, "Running", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(state, "Cancelling", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public async Task<List<JellyfinLibrarySection>> GetLibrariesAsync(
         string serverUrl,
         string apiKey,

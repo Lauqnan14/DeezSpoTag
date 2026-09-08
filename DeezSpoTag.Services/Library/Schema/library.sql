@@ -810,6 +810,8 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     lease_owner TEXT,
     lease_until_utc TEXT,
     last_error TEXT,
+    deadline_utc TEXT,
+    scan_submitted_utc TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (destination_folder_id, target_service)
