@@ -19353,6 +19353,20 @@ WHERE artist_id = @artistId;";
             DeserializeArtistMetadataTargetList(targetsJson));
     }
 
+    public async Task<IReadOnlyCollection<long>> GetExistingArtistIdsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand("SELECT id FROM artist;", connection);
+        var result = new List<long>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(Convert.ToInt64(reader.GetValue(0)));
+        }
+
+        return result;
+    }
+
     public async Task SetArtistMetadataSyncBlockedAsync(
         long artistId,
         bool blocked,
@@ -19361,7 +19375,8 @@ WHERE artist_id = @artistId;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO artist_metadata_policy (artist_id, sync_blocked, updated_at)
-VALUES (@artistId, @blocked, CURRENT_TIMESTAMP)
+SELECT @artistId, @blocked, CURRENT_TIMESTAMP
+WHERE EXISTS (SELECT 1 FROM artist WHERE id = @artistId)
 ON CONFLICT(artist_id) DO UPDATE SET
     sync_blocked = excluded.sync_blocked,
     updated_at = CURRENT_TIMESTAMP;";
@@ -19379,7 +19394,8 @@ ON CONFLICT(artist_id) DO UPDATE SET
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO artist_metadata_policy (artist_id, ocr_text_art_blocking_enabled, updated_at)
-VALUES (@artistId, @enabled, CURRENT_TIMESTAMP)
+SELECT @artistId, @enabled, CURRENT_TIMESTAMP
+WHERE EXISTS (SELECT 1 FROM artist WHERE id = @artistId)
 ON CONFLICT(artist_id) DO UPDATE SET
     ocr_text_art_blocking_enabled = excluded.ocr_text_art_blocking_enabled,
     updated_at = CURRENT_TIMESTAMP;";

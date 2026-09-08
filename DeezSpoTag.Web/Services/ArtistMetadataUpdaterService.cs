@@ -374,6 +374,21 @@ public sealed partial class ArtistMetadataUpdaterService
         return false;
     }
 
+    private async Task<bool> PruneMissingTrackedArtistsAsync(
+        MetadataUpdaterState state,
+        CancellationToken cancellationToken)
+    {
+        if (state.Artists.Count == 0)
+        {
+            return false;
+        }
+
+        var existingIds = (await _libraryRepository.GetExistingArtistIdsAsync(cancellationToken)).ToHashSet();
+        var before = state.Artists.Count;
+        state.Artists.RemoveAll(tracked => !existingIds.Contains(tracked.ArtistId));
+        return state.Artists.Count != before;
+    }
+
     private async Task<PreparedRunState?> PrepareRunAsync(
         MetadataUpdaterRunRequest request,
         PlatformAuthState auth,
@@ -387,6 +402,13 @@ public sealed partial class ArtistMetadataUpdaterService
             && (request.IncludeAllArtists == true || state.Artists.Count == 0))
         {
             await SeedArtistsFromLibraryAsync(state, request, cancellationToken);
+            await SaveStateAsync(state, cancellationToken);
+        }
+
+        // Tracked artists whose library rows are gone can never be updated; drop them so a
+        // stale id cannot abort the run (the policy write enforces artist(id) as a FK).
+        if (await PruneMissingTrackedArtistsAsync(state, cancellationToken))
+        {
             await SaveStateAsync(state, cancellationToken);
         }
 
