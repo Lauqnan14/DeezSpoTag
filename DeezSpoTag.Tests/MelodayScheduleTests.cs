@@ -13,18 +13,17 @@ public sealed class MelodayScheduleTests
     {
         var defaults = MelodayScheduleSlots.Defaults;
 
-        Assert.Equal(7, defaults.Count);
+        Assert.Equal(6, defaults.Count);
         Assert.Equal(new[]
         {
             ("early-morning", "Early Morning", "05:30"),
             ("morning", "Morning", "08:30"),
             ("midday", "Midday", "11:00"),
-            ("noon", "Noon", "13:00"),
             ("afternoon", "Afternoon", "16:00"),
             ("evening", "Evening", "19:00"),
             ("late-evening", "Late Evening", "22:30")
         }, defaults.Select(slot => (slot.Id, slot.Name, slot.GenerateAt)).ToArray());
-        Assert.Equal(Enumerable.Range(0, 7), defaults.Select(slot => slot.Order));
+        Assert.Equal(Enumerable.Range(0, 6), defaults.Select(slot => slot.Order));
     }
 
     [Fact]
@@ -173,7 +172,7 @@ public sealed class MelodayScheduleTests
             new MelodayScheduleSlot("made-up", "Ghost", "10:00", 100)
         });
 
-        Assert.Equal(7, normalized.Count);
+        Assert.Equal(6, normalized.Count);
         var morning = normalized.Single(slot => slot.Id == "morning");
         Assert.Equal("Morning", morning.Name);
         Assert.Equal("08:30", morning.GenerateAt);

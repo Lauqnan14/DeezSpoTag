@@ -406,18 +406,19 @@ public sealed partial class ArtistMetadataUpdaterService
         var missingArtistIds = request.MissingArtistArtworkOnly == true
             ? await SeedMissingArtistArtworkCandidatesAsync(state, request, auth, cancellationToken)
             : null;
-        if (request.MissingArtistArtworkOnly != true
-            && (request.IncludeAllArtists == true || state.Artists.Count == 0))
+        if (request.MissingArtistArtworkOnly != true)
         {
+            // Always re-sync tracking with the current library so the run target is the
+            // true artist count for the selected scope: new artists join, and the set
+            // never shrinks below the library as rescans reassign ids.
             await SeedArtistsFromLibraryAsync(state, request, cancellationToken);
-            await SaveStateAsync(state, cancellationToken);
-        }
 
-        // Tracked artists whose library rows are gone can never be updated; drop them so a
-        // stale id cannot abort the run (the policy write enforces artist(id) as a FK).
-        if (await PruneMissingTrackedArtistsAsync(state, cancellationToken))
-        {
-            await SaveStateAsync(state, cancellationToken);
+            // Tracked artists whose library rows are gone can never be updated; drop them so a
+            // stale id cannot abort the run (the policy write enforces artist(id) as a FK).
+            if (await PruneMissingTrackedArtistsAsync(state, cancellationToken))
+            {
+                await SaveStateAsync(state, cancellationToken);
+            }
         }
 
         var allCandidates = BuildRunCandidates(state.Artists, request, missingArtistIds);

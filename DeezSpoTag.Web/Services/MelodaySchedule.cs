@@ -38,7 +38,6 @@ public static class MelodayScheduleSlots
     public const string EarlyMorningId = "early-morning";
     public const string MorningId = "morning";
     public const string MiddayId = "midday";
-    public const string NoonId = "noon";
     public const string AfternoonId = "afternoon";
     public const string EveningId = "evening";
     public const string LateEveningId = "late-evening";
@@ -51,10 +50,9 @@ public static class MelodayScheduleSlots
         new MelodayScheduleSlot(EarlyMorningId, "Early Morning", "05:30", 0),
         new MelodayScheduleSlot(MorningId, "Morning", "08:30", 1),
         new MelodayScheduleSlot(MiddayId, "Midday", "11:00", 2),
-        new MelodayScheduleSlot(NoonId, "Noon", "13:00", 3),
-        new MelodayScheduleSlot(AfternoonId, "Afternoon", "16:00", 4),
-        new MelodayScheduleSlot(EveningId, "Evening", "19:00", 5),
-        new MelodayScheduleSlot(LateEveningId, "Late Evening", "22:30", 6)
+        new MelodayScheduleSlot(AfternoonId, "Afternoon", "16:00", 3),
+        new MelodayScheduleSlot(EveningId, "Evening", "19:00", 4),
+        new MelodayScheduleSlot(LateEveningId, "Late Evening", "22:30", 5)
     };
 
     private static readonly Dictionary<string, string> PhrasesById = new(StringComparer.OrdinalIgnoreCase)
@@ -62,7 +60,6 @@ public static class MelodayScheduleSlots
         [EarlyMorningId] = "in the early morning",
         [MorningId] = "in the morning",
         [MiddayId] = "at midday",
-        [NoonId] = "around noon",
         [AfternoonId] = "during the afternoon",
         [EveningId] = "in the evening",
         [LateEveningId] = "late in the evening"
