@@ -2613,9 +2613,10 @@ async function loadPlatformAuthState() {
             document.getElementById('jellyfinUrl').value = data.jellyfin.url || '';
             document.getElementById('jellyfinApiKey').value = data.jellyfin.apiKey || '';
             document.getElementById('jellyfinUsername').value = data.jellyfin.username || '';
-            setStatus('jellyfinStatus', data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username));
+            const jellyfinConnected = Boolean(data.jellyfin.url && data.jellyfin.apiKeySaved === true);
+            setStatus('jellyfinStatus', jellyfinConnected);
             renderJellyfinInfo(data.jellyfin);
-            togglePlatformLoginState('jellyfin', Boolean(data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username)));
+            togglePlatformLoginState('jellyfin', jellyfinConnected);
         }
         if (data.navidrome) {
             document.getElementById('navidromeUrl').value = data.navidrome.url || '';

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DeezSpoTag.Services.Security;
+using DeezSpoTag.Services.Utils;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
@@ -754,6 +755,19 @@ public class PlatformAuthService
     }
 
     private void TryDeletePlatformSectionNoLock(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        var copies = string.IsNullOrWhiteSpace(fileName)
+            ? new[] { path }
+            : AppDataPathResolver.GetLegacyAuthSectionCopies(_dataRoot, _contentRoot, fileName);
+
+        foreach (var copy in copies.Prepend(path).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            TryDeleteAuthFileNoLock(copy);
+        }
+    }
+
+    private void TryDeleteAuthFileNoLock(string path)
     {
         try
         {

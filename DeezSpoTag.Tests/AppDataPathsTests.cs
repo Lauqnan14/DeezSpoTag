@@ -34,6 +34,59 @@ public sealed class AppDataPathsTests
         }
     }
 
+    [Fact]
+    public void CopyLegacyWorkersData_DoesNotRestoreDeletedAutotagCredentials()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-auth-migrate-" + Path.GetRandomFileName());
+        var source = Path.Join(root, "legacy");
+        var target = Path.Join(root, "canonical");
+        try
+        {
+            Directory.CreateDirectory(Path.Join(source, "autotag"));
+            Directory.CreateDirectory(Path.Join(target, "autotag"));
+            File.WriteAllText(Path.Join(source, "autotag", "jellyfin.json"), """{"url":"http://nas:8096"}""");
+            File.WriteAllText(Path.Join(source, "autotag", "plex.json"), """{"url":"http://nas:32400"}""");
+            File.WriteAllText(Path.Join(target, "autotag", "plex.json"), """{"url":"http://local:32400"}""");
+
+            AppDataPathResolver.CopyLegacyWorkersData(source, target);
+
+            Assert.False(File.Exists(Path.Join(target, "autotag", "jellyfin.json")));
+            Assert.Equal("""{"url":"http://local:32400"}""", File.ReadAllText(Path.Join(target, "autotag", "plex.json")));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CopyLegacyWorkersData_CopiesAutotagCredentialsOnFirstMigration()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-auth-first-migrate-" + Path.GetRandomFileName());
+        var source = Path.Join(root, "legacy");
+        var target = Path.Join(root, "canonical");
+        try
+        {
+            Directory.CreateDirectory(Path.Join(source, "autotag"));
+            File.WriteAllText(Path.Join(source, "autotag", "jellyfin.json"), """{"url":"http://nas:8096"}""");
+
+            AppDataPathResolver.CopyLegacyWorkersData(source, target);
+
+            Assert.True(File.Exists(Path.Join(target, "autotag", "jellyfin.json")));
+            Assert.Equal("""{"url":"http://nas:8096"}""", File.ReadAllText(Path.Join(target, "autotag", "jellyfin.json")));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private sealed class OverrideWebHostEnvironment(string rootPath) : IWebHostEnvironment, IAppDataRootOverride
     {
         public string EnvironmentName { get; set; } = Environments.Development;

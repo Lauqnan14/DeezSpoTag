@@ -1891,7 +1891,7 @@ globalThis.DeezSpoTag = {
             'plex',
             'credentials');
         this.applySimpleCredentialState(
-            authData.jellyfin?.url && (authData.jellyfin?.apiKey || authData.jellyfin?.username),
+            authData.jellyfin?.url && authData.jellyfin?.apiKeySaved === true,
             connected,
             platformStates,
             'jellyfin',

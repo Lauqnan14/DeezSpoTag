@@ -3926,7 +3926,7 @@
             return Boolean(auth.plex?.url && auth.plex?.tokenSaved === true);
         }
         if (key === "jellyfin") {
-            return Boolean(auth.jellyfin?.url && (auth.jellyfin?.apiKey || auth.jellyfin?.username));
+            return Boolean(auth.jellyfin?.url && auth.jellyfin?.apiKeySaved === true);
         }
         if (key === "beatport") {
             return auth.beatport?.connected === true;

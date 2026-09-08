@@ -26,6 +26,18 @@ public sealed class LoginViewPresentationTests
         Assert.DoesNotContain("Optional Qobuz user auth token", loginSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void JellyfinLoginTab_TreatsSavedApiKeyAsConnected()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var loginSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Login", "Index.cshtml"));
+        var siteSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "site.js"));
+
+        Assert.Contains("const jellyfinConnected = Boolean(data.jellyfin.url && data.jellyfin.apiKeySaved === true);", loginSource, StringComparison.Ordinal);
+        Assert.Contains("authData.jellyfin?.url && authData.jellyfin?.apiKeySaved === true", siteSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("data.jellyfin.apiKey || data.jellyfin.username", loginSource, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

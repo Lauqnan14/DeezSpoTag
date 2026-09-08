@@ -15,6 +15,7 @@ public static class AppDataPathResolver
     private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
     private const string WebProjectDirectoryName = "DeezSpoTag.Web";
     private const string StableWorkersDataSuffix = "Data";
+    private const string AutotagDirectoryName = "autotag";
     private static readonly string[] DebugWorkersDataSuffixes =
     [
         "bin/Debug/net10.0/Data",
@@ -115,13 +116,62 @@ public static class AppDataPathResolver
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetPath);
-            CopyDirectoryRecursive(sourcePath, targetPath);
+            CopyLegacyWorkersData(sourcePath, targetPath);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort migration; fallback selection continues if migration fails.
         }
+    }
+
+    public static void CopyLegacyWorkersData(string sourcePath, string targetPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+        if (!Directory.Exists(sourcePath))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetPath);
+        CopyDirectoryRecursive(sourcePath, targetPath);
+    }
+
+    public static IReadOnlyList<string> GetLegacyAuthSectionCopies(string dataRoot, string? contentRoot, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(dataRoot) || string.IsNullOrWhiteSpace(fileName))
+        {
+            return Array.Empty<string>();
+        }
+
+        var copies = new List<string>
+        {
+            Path.GetFullPath(Path.Join(dataRoot, AutotagDirectoryName, fileName))
+        };
+
+        if (!string.IsNullOrWhiteSpace(contentRoot))
+        {
+            copies.Add(Path.GetFullPath(Path.Join(contentRoot, "Data", AutotagDirectoryName, fileName)));
+        }
+
+        copies.Add(Path.GetFullPath(Path.Join(dataRoot, "deezspotag", AutotagDirectoryName, fileName)));
+
+        var normalizedDataRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot));
+        if (string.Equals(Path.GetFileName(normalizedDataRoot), StableWorkersDataSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            var workersRoot = Directory.GetParent(normalizedDataRoot)?.FullName;
+            if (!string.IsNullOrWhiteSpace(workersRoot))
+            {
+                foreach (var suffix in DebugWorkersDataSuffixes)
+                {
+                    copies.Add(Path.GetFullPath(Path.Join(workersRoot, suffix, AutotagDirectoryName, fileName)));
+                }
+            }
+        }
+
+        return copies
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static void EnsureWritableDirectoryOrThrow(string path, string source)
@@ -183,7 +233,16 @@ public static class AppDataPathResolver
 
     private static void CopyDirectoryRecursive(string sourcePath, string targetPath)
     {
+        var targetExisted = Directory.Exists(targetPath);
         Directory.CreateDirectory(targetPath);
+
+        // Logout deletes the live credential copy. Startup migration used to copy any
+        // missing autotag credential back from bin/Debug, which restored the session.
+        var preserveExistingAutotag = targetExisted
+            && string.Equals(
+                Path.GetFileName(Path.TrimEndingDirectorySeparator(targetPath)),
+                AutotagDirectoryName,
+                StringComparison.OrdinalIgnoreCase);
 
         foreach (var filePath in Directory.GetFiles(sourcePath))
         {
@@ -194,10 +253,12 @@ public static class AppDataPathResolver
             }
 
             var destinationPath = Path.Join(targetPath, fileName);
-            if (!File.Exists(destinationPath))
+            if (preserveExistingAutotag || File.Exists(destinationPath))
             {
-                File.Copy(filePath, destinationPath);
+                continue;
             }
+
+            File.Copy(filePath, destinationPath);
         }
 
         foreach (var directoryPath in Directory.GetDirectories(sourcePath))
