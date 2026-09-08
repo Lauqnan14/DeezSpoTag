@@ -235,6 +235,29 @@ public sealed class WatchlistQueueAdmissionService
     internal static bool ShouldAdmitBeforeRunEnd(int eligibleRows, int remainingQuota)
         => remainingQuota > 0 && eligibleRows >= remainingQuota;
 
+    /// <summary>
+    /// Extends the active run budget so a selected album can finish instead of being
+    /// cut off at the quota boundary. No-op when no run is active.
+    /// </summary>
+    public void AllowQuotaOverflow(int additionalTracks)
+    {
+        if (additionalTracks <= 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!IsActiveRunLocked())
+            {
+                return;
+            }
+
+            _limit += additionalTracks;
+            _remaining += additionalTracks;
+        }
+    }
+
     public async Task<WatchlistQueueAdmissionDecision> EvaluateDownloadGateAsync(
         DownloadOrchestrationService orchestrationService,
         CancellationToken cancellationToken)

@@ -117,7 +117,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_AdmitsWhenQuotaIsReachedAndRetainsFinalUnderQuotaAdmission()
+    public void HostedCycle_AdmitsWhenQuotaIsReachedAndDefersUnderQuotaUntilAllItemsAreVisited()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
@@ -151,6 +151,9 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("AdmitDueMissingTracksWhenQuotaReadyAsync", loopBody, StringComparison.Ordinal);
         Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", cycleCoreBody, StringComparison.Ordinal);
         Assert.DoesNotContain("AdmitDueMissingTracksFromLedgerAsync", loopBody, StringComparison.Ordinal);
+        Assert.Contains("SelectAdmissionBatch(", engineSource, StringComparison.Ordinal);
+        Assert.Contains("allowBelowQuota: false", engineSource, StringComparison.Ordinal);
+        Assert.Contains("allowBelowQuota: true", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AdmitCached" + "MissingTracksAsync", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", loopBody, StringComparison.Ordinal);
         Assert.Contains("repository.GetPlaylistWatchlistAsync", hostedSource, StringComparison.Ordinal);
@@ -376,23 +379,33 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void ActiveWatchCycle_ProcessesArtistLedgerAdmissionAfterPlaylistWork()
     {
-        // Artists are a separate domain but must never jump ahead of playlists: discovery and
-        // ledger admission both run after the playlist reconciliation and playlist admission
-        // steps inside the same cycle.
+        // Artists are a separate domain but must never jump ahead of playlists: discovery
+        // runs after playlist reconciliation, and the single end-of-run ledger admission
+        // waits until both domains have written missing rows so a below-quota remainder is
+        // judged against the full watchlist.
         var coordinator = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
-        var playlistAdmission = coordinator.IndexOf(
+        var cycleCoreStart = coordinator.IndexOf(
+            "private async Task<PlaylistRunResult> RunWatchCycleCoreAsync(",
+            StringComparison.Ordinal);
+        var cycleCoreEnd = coordinator.IndexOf(
+            "private void ThrowIfWatchlistStopped(",
+            cycleCoreStart + 1,
+            StringComparison.Ordinal);
+        var cycleCore = coordinator[cycleCoreStart..cycleCoreEnd];
+        var playlistProcess = cycleCore.IndexOf("await ProcessPlaylistWatchItemsAsync(", StringComparison.Ordinal);
+        var artistDiscovery = cycleCore.IndexOf("await ProcessArtistWatchItemsAsync(", StringComparison.Ordinal);
+        var finalAdmission = cycleCore.IndexOf(
             "await reconciler.AdmitDueMissingTracksFromLedgerAsync(",
             StringComparison.Ordinal);
-        var artistDiscovery = coordinator.IndexOf(
-            "await ProcessArtistWatchItemsAsync(",
-            StringComparison.Ordinal);
-        var artistAdmission = coordinator.IndexOf(
-            "await artistReconciler.AdmitArtistWatchMissingTracksFromLedgerAsync(",
-            StringComparison.Ordinal);
 
-        Assert.True(playlistAdmission > 0);
-        Assert.True(artistDiscovery > playlistAdmission);
-        Assert.True(artistAdmission > artistDiscovery);
+        Assert.True(playlistProcess >= 0);
+        Assert.True(artistDiscovery > playlistProcess);
+        Assert.True(finalAdmission > artistDiscovery);
+        Assert.DoesNotContain("AdmitArtistWatchMissingTracksFromLedgerAsync(", cycleCore, StringComparison.Ordinal);
+        Assert.Contains(
+            "await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(",
+            coordinator,
+            StringComparison.Ordinal);
     }
 
     [Fact]

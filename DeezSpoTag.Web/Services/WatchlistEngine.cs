@@ -836,7 +836,8 @@ internal sealed class WatchlistEngine
         IReadOnlyList<PlaylistWatchlistDto> playlists,
         CancellationToken cancellationToken)
     {
-        if (playlists.Count == 0 || _queueAdmission.GetRemaining() <= 0)
+        var remainingQuota = _queueAdmission.GetRemaining();
+        if (remainingQuota <= 0)
         {
             return [];
         }
@@ -848,7 +849,45 @@ internal sealed class WatchlistEngine
             return [];
         }
 
-        return await AdmitDueMissingTrackRowsAsync(playlists, dueRows, cancellationToken);
+        var artistsById = await LoadArtistWatchByIdAsync(cancellationToken);
+        var destinationKeys = await CollectAdmissionDestinationKeysAsync(
+            dueRows,
+            artistsById,
+            cancellationToken);
+        var eligibleRows = SelectEarlyAdmissionEligibleRows(
+            dueRows,
+            destinationKeys,
+            _queueAdmission.HasAnyAdmittedIdentity);
+        // End-of-run: every monitored playlist and artist has already written to the ledger.
+        // Fill the quota when possible; if the whole watchlist is still short, queue it anyway.
+        var selectedRows = SelectAdmissionBatch(
+            eligibleRows,
+            remainingQuota,
+            allowBelowQuota: true);
+        if (selectedRows.Count == 0)
+        {
+            return [];
+        }
+
+        GrantAdmissionOverflow(selectedRows.Count);
+        var playlistRows = selectedRows
+            .Where(static row => !IsArtistWatchContainerKey(row.SourceId))
+            .ToList();
+        var artistRows = selectedRows
+            .Where(static row => IsArtistWatchContainerKey(row.SourceId))
+            .ToList();
+        var results = new List<PlaylistReconciliationResult>();
+        if (playlistRows.Count > 0 && playlists.Count > 0)
+        {
+            results.AddRange(await AdmitDueMissingTrackRowsAsync(playlists, playlistRows, cancellationToken));
+        }
+
+        if (artistRows.Count > 0)
+        {
+            results.AddRange(await AdmitArtistWatchMissingTrackRowsAsync(artistRows, artistsById, cancellationToken));
+        }
+
+        return results;
     }
 
     private DateTimeOffset _lastLedgerOwnershipReconcileUtc = DateTimeOffset.MinValue;
@@ -955,7 +994,17 @@ internal sealed class WatchlistEngine
             return [];
         }
 
-        return await AdmitDueMissingTrackRowsAsync(playlists, eligibleRows, cancellationToken);
+        var selectedRows = SelectAdmissionBatch(
+            eligibleRows,
+            remainingQuota,
+            allowBelowQuota: false);
+        if (selectedRows.Count == 0)
+        {
+            return [];
+        }
+
+        GrantAdmissionOverflow(selectedRows.Count);
+        return await AdmitDueMissingTrackRowsAsync(playlists, selectedRows, cancellationToken);
     }
 
     /// <summary>
@@ -974,19 +1023,39 @@ internal sealed class WatchlistEngine
 
         await ReconcileLedgerOwnershipWithLiveQueueAsync(cancellationToken);
         var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
-        var artistRows = dueRows
-            .Where(row => IsArtistWatchContainerKey(row.SourceId))
+        var artistById = await LoadArtistWatchByIdAsync(cancellationToken);
+        var destinationKeys = await CollectAdmissionDestinationKeysAsync(
+            dueRows,
+            artistById,
+            cancellationToken);
+        var artistRows = SelectEarlyAdmissionEligibleRows(
+                dueRows,
+                destinationKeys,
+                _queueAdmission.HasAnyAdmittedIdentity)
+            .Where(static row => IsArtistWatchContainerKey(row.SourceId))
             .ToList();
-        if (artistRows.Count == 0)
+        var selectedRows = SelectAdmissionBatch(
+            artistRows,
+            _queueAdmission.GetRemaining(),
+            allowBelowQuota: true);
+        if (selectedRows.Count == 0)
         {
             return [];
         }
 
-        var artists = await _libraryRepository.GetWatchlistAsync(cancellationToken);
-        var artistById = artists
-            .Where(static artist => artist != null)
-            .GroupBy(static artist => artist.ArtistId)
-            .ToDictionary(static group => group.Key, static group => group.First());
+        GrantAdmissionOverflow(selectedRows.Count);
+        return await AdmitArtistWatchMissingTrackRowsAsync(selectedRows, artistById, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitArtistWatchMissingTrackRowsAsync(
+        IReadOnlyList<PlaylistWatchMissingTrackDto> artistRows,
+        IReadOnlyDictionary<long, WatchlistArtistDto> artistById,
+        CancellationToken cancellationToken)
+    {
+        if (artistRows.Count == 0)
+        {
+            return [];
+        }
 
         var results = new List<PlaylistReconciliationResult>();
         foreach (var group in artistRows.GroupBy(
@@ -1102,6 +1171,144 @@ internal sealed class WatchlistEngine
         }
 
         return eligibleRows;
+    }
+
+    /// <summary>
+    /// Builds the ordered admission batch. The missing table must reach <paramref name="remainingQuota"/>
+    /// before anything is queued, except:
+    /// 1. an album already being taken is finished even if that overflows the quota;
+    /// 2. when <paramref name="allowBelowQuota"/> is true (the full watchlist has been visited)
+    ///    and every monitored item still cannot fill the quota, the remaining tracks are queued.
+    /// </summary>
+    internal static IReadOnlyList<PlaylistWatchMissingTrackDto> SelectAdmissionBatch(
+        IReadOnlyList<PlaylistWatchMissingTrackDto> orderedRows,
+        int remainingQuota,
+        bool allowBelowQuota)
+    {
+        if (orderedRows.Count == 0 || remainingQuota <= 0)
+        {
+            return [];
+        }
+
+        if (orderedRows.Count < remainingQuota)
+        {
+            return allowBelowQuota ? orderedRows : [];
+        }
+
+        var selected = new List<PlaylistWatchMissingTrackDto>(remainingQuota);
+        foreach (var group in GroupConsecutiveAlbumRows(orderedRows))
+        {
+            if (selected.Count >= remainingQuota)
+            {
+                break;
+            }
+
+            selected.AddRange(group);
+        }
+
+        return selected;
+    }
+
+    internal static string BuildAdmissionAlbumGroupKey(PlaylistWatchMissingTrackDto row)
+    {
+        var source = NormalizeWatchSource(row.Source);
+        var sourceId = (row.SourceId ?? string.Empty).Trim();
+        if (IsArtistWatchContainerKey(sourceId) && row.SourcePosition is int position)
+        {
+            var releaseIndex = Math.Max(0, position) / ArtistReleasePositionStride;
+            return $"{source}:{sourceId}:release:{releaseIndex}";
+        }
+
+        var album = (row.Album ?? string.Empty).Trim();
+        if (album.Length > 0)
+        {
+            return $"{source}:{sourceId}:album:{album}";
+        }
+
+        return $"{source}:{sourceId}:track:{row.Id}";
+    }
+
+    private static IEnumerable<IReadOnlyList<PlaylistWatchMissingTrackDto>> GroupConsecutiveAlbumRows(
+        IReadOnlyList<PlaylistWatchMissingTrackDto> orderedRows)
+    {
+        var current = new List<PlaylistWatchMissingTrackDto>();
+        string? currentKey = null;
+        foreach (var row in orderedRows)
+        {
+            var key = BuildAdmissionAlbumGroupKey(row);
+            if (current.Count > 0 && !string.Equals(currentKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return current;
+                current = [];
+            }
+
+            currentKey = key;
+            current.Add(row);
+        }
+
+        if (current.Count > 0)
+        {
+            yield return current;
+        }
+    }
+
+    private void GrantAdmissionOverflow(int selectedCount)
+    {
+        var overflow = selectedCount - _queueAdmission.GetRemaining();
+        if (overflow > 0)
+        {
+            _queueAdmission.AllowQuotaOverflow(overflow);
+        }
+    }
+
+    private async Task<Dictionary<long, WatchlistArtistDto>> LoadArtistWatchByIdAsync(
+        CancellationToken cancellationToken)
+    {
+        var artists = await _libraryRepository.GetWatchlistAsync(cancellationToken);
+        return artists
+            .Where(static artist => artist != null)
+            .GroupBy(static artist => artist.ArtistId)
+            .ToDictionary(static group => group.Key, static group => group.First());
+    }
+
+    private async Task<HashSet<string>> CollectAdmissionDestinationKeysAsync(
+        IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
+        IReadOnlyDictionary<long, WatchlistArtistDto> artistsById,
+        CancellationToken cancellationToken)
+    {
+        var destinationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var inspectedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in dueRows)
+        {
+            var key = BuildPlaylistWatchKey(row.Source, row.SourceId ?? string.Empty);
+            if (!inspectedKeys.Add(key))
+            {
+                continue;
+            }
+
+            if (IsArtistWatchContainerKey(row.SourceId))
+            {
+                if (TryParseArtistWatchContainerId(row.SourceId, out var artistId)
+                    && artistsById.TryGetValue(artistId, out var artist)
+                    && artist.DestinationFolderId.HasValue)
+                {
+                    destinationKeys.Add(key);
+                }
+
+                continue;
+            }
+
+            var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                NormalizeWatchSource(row.Source),
+                (row.SourceId ?? string.Empty).Trim(),
+                cancellationToken);
+            if (HasDownloadDestination(preference))
+            {
+                destinationKeys.Add(key);
+            }
+        }
+
+        return destinationKeys;
     }
 
     private async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTrackRowsAsync(

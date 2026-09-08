@@ -1002,6 +1002,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return playlistRunResult;
         }
 
+        ThrowIfWatchlistStopped(stoppingToken);
+        var processedArtistIds = await ProcessArtistWatchItemsAsync(
+            artistItems,
+            settings,
+            serviceProvider,
+            stoppingToken);
         if (queueAdmissionAllowed)
         {
             ThrowIfWatchlistStopped(stoppingToken);
@@ -1012,21 +1018,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 .Where(static playlist => playlist is not null)
                 .Select(static playlist => playlist!)
                 .ToList();
+            // Admission waits for the missing table to fill the run quota, except when every
+            // monitored playlist and artist has already been visited and still cannot fill it.
+            // Playlist and artist rows share this pass so a below-quota remainder is judged
+            // against the full ledger, not dumped after playlists and before artist discovery.
             await reconciler.AdmitDueMissingTracksFromLedgerAsync(playlists, stoppingToken);
-        }
-
-        ThrowIfWatchlistStopped(stoppingToken);
-        var processedArtistIds = await ProcessArtistWatchItemsAsync(
-            artistItems,
-            settings,
-            serviceProvider,
-            stoppingToken);
-        if (queueAdmissionAllowed)
-        {
-            // Artist discovery wrote missing-ledger rows; give them the remaining run quota now
-            // so the same ordered, budgeted admission that serves playlists serves artists.
-            var artistReconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-            await artistReconciler.AdmitArtistWatchMissingTracksFromLedgerAsync(stoppingToken);
         }
         var completedRequests = reconciliationRequests.Where(request =>
                 request.Kind == "all"

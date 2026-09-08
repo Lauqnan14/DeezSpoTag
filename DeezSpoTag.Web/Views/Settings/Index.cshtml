@@ -1507,7 +1507,7 @@
                     <div class="form-group">
                         <label for="watchMaxItemsPerRun">Max Missing Tracks Queued Per Run</label>
                         <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
-                        <div class="warning-text">Limits how many missing tracks Watchlist can add to the download queue in one run.</div>
+                        <div class="warning-text">Watchlist waits until the missing table reaches this quota before queueing, then admits tracks in playlist order. An album already in that batch is never cut off mid-album, so the queue can go slightly over. If every monitored playlist and artist still cannot fill the quota, the available tracks are queued anyway.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>

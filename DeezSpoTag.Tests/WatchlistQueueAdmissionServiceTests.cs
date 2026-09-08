@@ -1,11 +1,13 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -28,6 +30,112 @@ public sealed class WatchlistQueueAdmissionServiceTests
         Assert.Equal(
             expected,
             WatchlistQueueAdmissionService.ShouldAdmitBeforeRunEnd(eligibleRows, remainingQuota));
+    }
+
+    [Fact]
+    public void SelectAdmissionBatch_WaitsUntilQuotaIsFilled()
+    {
+        var rows = CreateMissingRows(
+            ("playlist-a", "a-1", 1, "One"),
+            ("playlist-a", "a-2", 2, "Two"),
+            ("playlist-a", "a-3", 3, "Three"));
+
+        Assert.Empty(WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 5, allowBelowQuota: false));
+        Assert.Equal(
+            ["a-1", "a-2", "a-3"],
+            WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 5, allowBelowQuota: true)
+                .Select(static row => row.TrackSourceId));
+    }
+
+    [Fact]
+    public void SelectAdmissionBatch_CompletesArtistAlbumPastQuota()
+    {
+        var rows = CreateMissingRows(
+            ("artist:7", "r1-t1", ArtistWatchQueueOptions.ReleasePositionStride + 1, "Release One"),
+            ("artist:7", "r1-t2", ArtistWatchQueueOptions.ReleasePositionStride + 2, "Release One"),
+            ("artist:7", "r1-t3", ArtistWatchQueueOptions.ReleasePositionStride + 3, "Release One"),
+            ("artist:7", "r2-t1", (2 * ArtistWatchQueueOptions.ReleasePositionStride) + 1, "Release Two"));
+
+        var selected = WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 2, allowBelowQuota: false);
+
+        Assert.Equal(["r1-t1", "r1-t2", "r1-t3"], selected.Select(static row => row.TrackSourceId));
+        Assert.DoesNotContain(selected, static row => row.TrackSourceId == "r2-t1");
+    }
+
+    [Fact]
+    public void SelectAdmissionBatch_CompletesPlaylistAlbumPastQuota()
+    {
+        var rows = CreateMissingRows(
+            ("playlist-a", "t1", 1, "Same Album"),
+            ("playlist-a", "t2", 2, "Same Album"),
+            ("playlist-a", "t3", 3, "Same Album"),
+            ("playlist-a", "other", 4, "Other Album"));
+
+        var selected = WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 2, allowBelowQuota: false);
+
+        Assert.Equal(["t1", "t2", "t3"], selected.Select(static row => row.TrackSourceId));
+        Assert.DoesNotContain(selected, static row => row.TrackSourceId == "other");
+    }
+
+    [Fact]
+    public void SelectAdmissionBatch_DoesNotStartNextAlbumAfterQuotaIsFilled()
+    {
+        var rows = CreateMissingRows(
+            ("playlist-a", "first-1", 1, "First"),
+            ("playlist-a", "first-2", 2, "First"),
+            ("playlist-a", "second-1", 3, "Second"));
+
+        var selected = WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 2, allowBelowQuota: false);
+
+        Assert.Equal(["first-1", "first-2"], selected.Select(static row => row.TrackSourceId));
+    }
+
+    [Fact]
+    public void AllowQuotaOverflow_LetsAlbumRemainderReserveBeyondTheOriginalBudget()
+    {
+        var service = new WatchlistQueueAdmissionService();
+        _ = service.BeginRun(2);
+
+        Assert.True(service.TryReserve(2));
+        Assert.Equal(0, service.GetRemaining());
+        Assert.False(service.TryReserve(1));
+
+        service.AllowQuotaOverflow(3);
+        Assert.Equal(3, service.GetRemaining());
+        Assert.True(service.TryReserve(3));
+        Assert.Equal(0, service.GetRemaining());
+    }
+
+    private static List<PlaylistWatchMissingTrackDto> CreateMissingRows(
+        params (string SourceId, string TrackId, int Position, string Album)[] rows)
+    {
+        var result = new List<PlaylistWatchMissingTrackDto>(rows.Length);
+        for (var index = 0; index < rows.Length; index++)
+        {
+            var row = rows[index];
+            result.Add(new PlaylistWatchMissingTrackDto(
+                Id: index + 1,
+                Source: "spotify",
+                SourceId: row.SourceId,
+                TrackSourceId: row.TrackId,
+                Isrc: null,
+                SourcePosition: row.Position,
+                Title: row.TrackId,
+                Artist: "Artist",
+                Album: row.Album,
+                DurationMs: 180000,
+                CoverUrl: null,
+                DeezerId: null,
+                MappingStatus: null,
+                Status: "missing",
+                SnapshotId: null,
+                CandidateRevision: null,
+                ProviderReadinessRevision: null,
+                QueueUuid: null,
+                UpdatedAt: DateTimeOffset.UtcNow));
+        }
+
+        return result;
     }
 
     [Fact]
