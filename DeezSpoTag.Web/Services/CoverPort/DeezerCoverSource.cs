@@ -62,9 +62,21 @@ public sealed class DeezerCoverSource : ICoverSource
 
             return candidates;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Internal timeouts (the shared HttpClient's limit, provider budgets) also
+            // surface as OperationCanceledException. Only a real stop request may
+            // propagate; otherwise this source was simply unavailable for this query.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Cover source request timed out");
+            }
+
+            return Array.Empty<CoverCandidate>();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -113,9 +125,21 @@ public sealed class DeezerCoverSource : ICoverSource
             AddArtworkCandidates(candidates, context, artworkOptions, rank: 0);
             return candidates;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Internal timeouts (the shared HttpClient's limit, provider budgets) also
+            // surface as OperationCanceledException. Only a real stop request may
+            // propagate; otherwise this source was simply unavailable for this query.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Cover source request timed out");
+            }
+
+            return Array.Empty<CoverCandidate>();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
