@@ -5996,6 +5996,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        // Shape contract on intake: a value from another platform's id family must not
+        // enter the album identity (previously-corrupted tags would otherwise re-seed
+        // the identity and re-propagate the foreign id on every platform pass).
+        var platformId = rawName.Trim().EndsWith("_RELEASE_ID", StringComparison.OrdinalIgnoreCase)
+            ? rawName.Trim()[..^"_RELEASE_ID".Length]
+            : rawName.Trim();
+        if (!IsPlatformReleaseIdShapeValid(platformId, value))
+        {
+            return;
+        }
+
         target.TryAdd(rawName.Trim().ToUpperInvariant(), value.Trim());
     }
 
@@ -6014,10 +6025,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (!string.IsNullOrWhiteSpace(identity.AlbumId))
         {
             track.AlbumId = identity.AlbumId;
-            track.ReleaseId = identity.AlbumId;
-            SetOtherValue(track, AlbumIdRawTag, identity.AlbumId);
-            SetOtherValue(track, "MUSICBRAINZ_ALBUMID", identity.AlbumId);
-            SetOtherValue(track, "MUSICBRAINZ_RELEASE_ID", identity.AlbumId);
+            // The shared AlbumId slot is platform-agnostic (the folder's majority id);
+            // ReleaseId is platform-scoped and is set from the identity's own
+            // per-platform entry below. Stamping the establishing platform's album id
+            // into ReleaseId made every platform write that foreign id into its own
+            // <PLATFORM>_RELEASE_ID tag (e.g. an Audiomack numeric id inside
+            // SPOTIFY_RELEASE_ID).
+            var musicBrainzAlbumId = ToMusicBrainzShapedId(identity.AlbumId);
+            if (!string.IsNullOrWhiteSpace(musicBrainzAlbumId))
+            {
+                SetOtherValue(track, AlbumIdRawTag, musicBrainzAlbumId);
+                SetOtherValue(track, "MUSICBRAINZ_ALBUMID", musicBrainzAlbumId);
+                SetOtherValue(track, "MUSICBRAINZ_RELEASE_ID", musicBrainzAlbumId);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(identity.ReleaseGroupId))
@@ -7319,11 +7339,42 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        var releaseId = context.SourceTrack.ReleaseId.Trim();
+        // Namespace guard: a value from another platform's id family (e.g. an Audiomack
+        // numeric album id) must never be written into this platform's release-id tag.
+        if (!IsPlatformReleaseIdShapeValid(context.PlatformId, releaseId))
+        {
+            return;
+        }
+
         SetRaw(
             tagWriteContext,
             $"{context.PlatformId.ToUpperInvariant()}_RELEASE_ID",
             SupportedTag.ReleaseId,
-            new List<string> { context.SourceTrack.ReleaseId });
+            new List<string> { releaseId });
+    }
+
+    /// <summary>
+    /// Per-platform release-id shape contract: MusicBrainz ids are GUIDs, Spotify ids
+    /// are 22-character base62 strings, and the known numeric catalog platforms
+    /// (Deezer, Apple/iTunes, Audiomack, Shazam, Boomplay, Amazon, Discogs) use digit
+    /// strings. Unknown platforms are not restricted.
+    /// </summary>
+    internal static bool IsPlatformReleaseIdShapeValid(string? platformId, string value)
+    {
+        if (string.IsNullOrWhiteSpace(platformId) || string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalizedValue = value.Trim();
+        return platformId.Trim().ToLowerInvariant() switch
+        {
+            "musicbrainz" => Guid.TryParse(normalizedValue, out _),
+            "spotify" => normalizedValue.Length == 22 && normalizedValue.All(char.IsLetterOrDigit),
+            "deezer" or "apple" or "itunes" or "audiomack" or "shazam" or "boomplay" or "amazon" or "discogs" => normalizedValue.All(char.IsDigit),
+            _ => true
+        };
     }
 
     private static void WriteSourceIdentityTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
