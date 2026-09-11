@@ -32,7 +32,7 @@ using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProvider
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
-public sealed partial class LocalAutoTagRunner
+public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
     private static void HandleRejectedManualRelease(
