@@ -121,3 +121,7 @@ src.code-workspace
 CLAUDE.md
 AGENTS.md
 docs/watchlist-smooth-sync-integration.md
+
+# Ignore untracked markdown (session plans/transcripts). Already-tracked
+# markdown files are unaffected: gitignore never applies to tracked files.
+*.md

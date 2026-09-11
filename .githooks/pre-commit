@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Policy: no markdown files are ever committed. Reject any staged .md file.
-staged_md="$(git diff --cached --name-only --diff-filter=ACMR -- '*.md' || true)"
-if [ -n "$staged_md" ]; then
-  echo "Commit blocked: no .md files may be committed." >&2
-  echo "Staged markdown files:" >&2
-  printf '  %s\n' $staged_md >&2
+# Policy: no NEW markdown files may be committed. Markdown files that are already
+# tracked (published) remain committable, including edits to them — only newly
+# added .md files are rejected here. A blanket `*.md` gitignore rule covers the
+# untracked case; this hook is the backstop.
+staged_new_md="$(git diff --cached --name-only --diff-filter=A -- '*.md' || true)"
+if [ -n "$staged_new_md" ]; then
+  echo "Commit blocked: no new .md files may be committed." >&2
+  echo "Newly staged markdown files:" >&2
+  printf '  %s\n' $staged_new_md >&2
   echo "Unstage them (git restore --staged <file>) or bypass with --no-verify if truly required." >&2
   exit 1
 fi
