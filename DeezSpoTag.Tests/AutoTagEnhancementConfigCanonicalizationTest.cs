@@ -11,7 +11,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class AutoTagEnhancementConfigCanonicalizationTests
+public sealed class AutoTagEnhancementConfigCanonicalizationTest
 {
     private static readonly int[] DuplicateQualityFolderIds = { 9, 9, 10 };
 
@@ -305,7 +305,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var folderController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryFoldersApiController.cs"));
         var profileResolution = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagProfileResolutionService.cs"));
         var organizerOverlay = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagOrganizerProfileOverlay.cs"));
-        var autoTagService = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var autoTagService = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("ResolveRequiredMusicProfileIdAsync", folderController, StringComparison.Ordinal);
         Assert.Contains("Music folders must always have an AutoTag profile.", folderController, StringComparison.Ordinal);
@@ -406,7 +406,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
-        var autoTagServiceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var autoTagServiceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var prepareRunBody = ExtractMethodBody(workflowSource, "private async Task PrepareEnhancementRunAsync");
 
         Assert.DoesNotContain("GetMissingCoreMetadataFilesAsync", controllerSource, StringComparison.Ordinal);
@@ -434,7 +434,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var repoRoot = ResolveRepoRoot();
         var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
         var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
-        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var serviceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
         var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
@@ -474,7 +474,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var repoRoot = ResolveRepoRoot();
         var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
         var autoTagViewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
-        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var serviceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
 
@@ -505,7 +505,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     public void AutoTagStuckWatchdog_UsesLastActivityHeartbeatForNonTaggingEnhancementPhases()
     {
         var repoRoot = ResolveRepoRoot();
-        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var serviceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var progressTimestampBody = ExtractMethodBody(serviceSource, "private static DateTimeOffset GetLastProgressTimestamp");
 
         Assert.Contains("if (job.LastActivityAt > timestamp)", progressTimestampBody, StringComparison.Ordinal);

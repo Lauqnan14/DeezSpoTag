@@ -8,7 +8,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class AutoTagStatusRefreshGuardrailTests
+public sealed class AutoTagStatusRefreshGuardrailTest
 {
     [Fact]
     public void GetJob_DisablesResponseCaching()
@@ -191,10 +191,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_MaintainsCompactRunIndexForHistoryLists()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("run-index.json", source, StringComparison.Ordinal);
         Assert.Contains("LoadRunIndexSummaries", source, StringComparison.Ordinal);
         Assert.Contains("UpdateRunIndex", source, StringComparison.Ordinal);
@@ -204,10 +204,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_ReusesRootJobIdForAllResumeIntents()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.DoesNotContain("isEnhancementResume", source, StringComparison.Ordinal);
         Assert.Contains("var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString(\"N\");", source, StringComparison.Ordinal);
         Assert.Contains("ResumeFromJobId = null", source, StringComparison.Ordinal);
@@ -218,10 +218,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_SeedsEnrichmentResumeCheckpointBeforeRunnerStarts()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("EnsureInitialEnrichmentResumeCheckpoint(job, stage);", source, StringComparison.Ordinal);
         Assert.Contains("!string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage", source, StringComparison.Ordinal);
         Assert.Contains("PlatformIndex = 0", source, StringComparison.Ordinal);
@@ -239,10 +239,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_CollapsesResumeChainsInRunIndex()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains(".GroupBy(GetRunIndexGroupKey, StringComparer.OrdinalIgnoreCase)", source, StringComparison.Ordinal);
         Assert.Contains("ResolveResumeRootJobId(summary.Id, summary.ResumeFromJobId)", source, StringComparison.Ordinal);
         Assert.Contains("TryReadJobResumeFromJobId(summary.Id)", source, StringComparison.Ordinal);
@@ -252,12 +252,12 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagHistory_UsesLocalRunDateForCalendarAndRealtimeEvents()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var realtimePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "ActivitiesRealtimeService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
         Assert.True(File.Exists(realtimePath), $"Missing realtime service source: {realtimePath}");
 
-        var serviceSource = File.ReadAllText(servicePath);
+        var serviceSource = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         var realtimeSource = File.ReadAllText(realtimePath);
         Assert.Contains("TimeZoneInfo.ConvertTime(timestamp, TimeZoneInfo.Local)", serviceSource, StringComparison.Ordinal);
         Assert.Contains(".GroupBy(summary => GetRunDateToken(GetRunHistoryTimestamp(summary)))", serviceSource, StringComparison.Ordinal);
@@ -271,10 +271,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_MovesEnhancementAndManualEnrichmentRunsAcrossHistoryDays()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("public DateTimeOffset? HistoryDate { get; set; }", source, StringComparison.Ordinal);
         Assert.Contains("HistoryDate = ResolveRunHistoryDate(job)", source, StringComparison.Ordinal);
         Assert.Contains("if (!IsEnhancementRunIntent(job.RunIntent)", source, StringComparison.Ordinal);
@@ -360,10 +360,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_ReadsEachRunHistoryAsOneLockedSnapshot()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         var methodStart = source.IndexOf("public AutoTagRunArchive? GetArchivedRun(string id)", StringComparison.Ordinal);
         var methodEnd = source.IndexOf("\n    public AutoTagTagDiff? GetTagDiff", methodStart, StringComparison.Ordinal);
         Assert.True(methodStart >= 0 && methodEnd > methodStart);
@@ -378,10 +378,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_ReadsBestAvailableArchivedStatusAndLogsAcrossHistoryRoots()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("EnumerateRunFileCandidates(jobId, \"autotag.log\")", source, StringComparison.Ordinal);
         Assert.Contains("EnumerateRunFileCandidates(jobId, \"status-history.ndjson\")", source, StringComparison.Ordinal);
         Assert.Contains("if (candidateEntries.Count > entries.Count)", source, StringComparison.Ordinal);
@@ -391,10 +391,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagService_PrunesArchivedRunsUsingConfiguredRetention()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("ResolveArchivedRunRetentionPeriod()", source, StringComparison.Ordinal);
         Assert.Contains("PruneExpiredArchivedRuns(force: true)", source, StringComparison.Ordinal);
         Assert.Contains("GetRunHistoryTimestamp(summary).ToUniversalTime() < cutoffUtc", source, StringComparison.Ordinal);
@@ -411,10 +411,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void LocalAutoTagRunner_BoundsProviderMatchingAndOptionalPostProcessing()
     {
         var repoRoot = ResolveRepoRoot();
-        var runnerPath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         Assert.True(File.Exists(runnerPath), $"Missing AutoTag runner source: {runnerPath}");
 
-        var source = File.ReadAllText(runnerPath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
         Assert.Contains("private static readonly TimeSpan PlatformMatchTimeout = TimeSpan.FromSeconds(45)", source, StringComparison.Ordinal);
         Assert.Contains("RunPlatformMatchWithTimeoutAsync", source, StringComparison.Ordinal);
         Assert.Contains("matchTask.WaitAsync(PlatformMatchTimeout, context.Token)", source, StringComparison.Ordinal);
@@ -435,7 +435,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.True(File.Exists(servicePath), $"Missing stuck recovery service source: {servicePath}");
         Assert.True(File.Exists(settingsPath), $"Missing appsettings source: {settingsPath}");
 
-        var serviceSource = File.ReadAllText(servicePath);
+        var serviceSource = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         var settingsSource = File.ReadAllText(settingsPath);
         Assert.Contains("PollInterval = TimeSpan.FromMinutes(1)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("DefaultStaleWindow = TimeSpan.FromMinutes(10)", serviceSource, StringComparison.Ordinal);
@@ -449,10 +449,10 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     public void AutoTagStart_ReturnsRunningJobBeforeRuntimeConfigHydration()
     {
         var repoRoot = ResolveRepoRoot();
-        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         var startMethod = ExtractMethod(source, "public async Task<AutoTagJob?> StartJob");
         Assert.Contains("_jobs[job.Id] = job;", startMethod, StringComparison.Ordinal);
         Assert.Contains("_activeJobIds.TryAdd(job.Id, 0);", startMethod, StringComparison.Ordinal);

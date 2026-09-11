@@ -15,7 +15,7 @@ namespace DeezSpoTag.Tests;
 /// for enhancement runs: batches of at most 40 files, exceeded only by the album that
 /// is currently being processed.
 /// </summary>
-public sealed class AutoTagVariantTitleGuardTests
+public sealed class AutoTagVariantTitleGuardTest
 {
     // --- remaster is a variant intent for drift purposes -----------------------------
 
@@ -263,7 +263,7 @@ public sealed class AutoTagVariantTitleGuardTests
     [Fact]
     public void AlbumConsensus_IsFolderKeyedAndAdoptsEstablishedWording()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         // The consensus keys on the album folder so every platform pass for the same
         // folder adopts one established identity.
@@ -284,7 +284,7 @@ public sealed class AutoTagVariantTitleGuardTests
     [Fact]
     public void AlbumConsensus_UsesCompleteIdentityAndMajoritySiblingSeed()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         var consensusBody = ExtractMethodBody(runner, "private void ApplyAlbumIdentityConsensus(");
         Assert.Contains("BuildAlbumIdentityCandidate(track, context.Platform)", consensusBody, StringComparison.Ordinal);
@@ -302,7 +302,7 @@ public sealed class AutoTagVariantTitleGuardTests
     [Fact]
     public void AlbumConsensus_AppliesCompleteFolderIdentityBeforeTagging()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         var applyBody = ExtractMethodBody(runner, "private static void ApplyEstablishedAlbumIdentity(");
         Assert.Contains("track.ReleaseGroupId = identity.ReleaseGroupId", applyBody, StringComparison.Ordinal);
@@ -317,7 +317,7 @@ public sealed class AutoTagVariantTitleGuardTests
     [Fact]
     public void AlbumConsensus_RemainsSharedByEnhancementAndEnrichmentRuns()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         var consensusIndex = runner.IndexOf("ApplyAlbumIdentityConsensus(context, validationBasis, match.Track)", StringComparison.Ordinal);
         var tagIndex = runner.IndexOf("TagFileAsync(", consensusIndex < 0 ? 0 : consensusIndex, StringComparison.Ordinal);
@@ -333,8 +333,8 @@ public sealed class AutoTagVariantTitleGuardTests
     [Fact]
     public void BatchDisplay_RunnerReportsActualAlbumBatchPosition()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         // The batched loop stamps the true range position on every file context.
         var batchBody = ExtractMethodBody(runner, "private async Task ExecuteLibraryWideEnhancementBatchesAsync");

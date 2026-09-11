@@ -5,7 +5,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class ManualQueueDuringEnrichmentGuardrailTests
+public sealed class ManualQueueDuringEnrichmentGuardrailTest
 {
     [Fact]
     public void ManualQueuePaths_UseManualQueueGate()
@@ -138,7 +138,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     [Fact]
     public void AutoTagCompletion_ClearsActiveRegistrationBeforePublishingCompletion()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var notifyStart = source.IndexOf("private void NotifyCompleted(AutoTagJob job)", StringComparison.Ordinal);
         var notifyEnd = source.IndexOf("private static AutoTagOrganizerOptions", notifyStart, StringComparison.Ordinal);
         var notifySource = source[notifyStart..notifyEnd];

@@ -12,7 +12,7 @@ namespace DeezSpoTag.Tests;
 /// - the text markers that remain (log lines, organizer report entries) are declared
 ///   once in AutoTagProtocol and referenced by both emitters and parsers.
 /// </summary>
-public sealed class AutoTagProtocolContractTests
+public sealed class AutoTagProtocolContractTest
 {
     [Theory]
     [InlineData(AutoTagRunOutcome.Completed, true)]
@@ -48,7 +48,7 @@ public sealed class AutoTagProtocolContractTests
     [Fact]
     public void Runner_EmitsTypedOutcomesNotStringPrefixes()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("AutoTagRunResult.Completed()", runner, StringComparison.Ordinal);
         Assert.Contains("AutoTagRunResult.Stopped()", runner, StringComparison.Ordinal);
@@ -60,7 +60,7 @@ public sealed class AutoTagProtocolContractTests
     [Fact]
     public void Service_SwitchesOnOutcomeInsteadOfErrorStrings()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var stageBody = ExtractMethodBody(service, "private async Task<StageExecutionResult> ExecuteSingleStageAsync");
         Assert.Contains("result.Outcome == AutoTagRunOutcome.Stopped", stageBody, StringComparison.Ordinal);
@@ -72,8 +72,8 @@ public sealed class AutoTagProtocolContractTests
     [Fact]
     public void PlatformStartMarker_IsDeclaredOnceAndSharedByEmitterAndParser()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var protocol = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "AutoTagProtocol.cs");
 
         // Declared once.

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class ResourceLifetimeRegressionTests
+public sealed class ResourceLifetimeRegressionTest
 {
     [Fact]
     public void AutoTagPersistenceSnapshot_DoesNotDuplicateTagDiffGraph()
@@ -78,7 +78,7 @@ public sealed class ResourceLifetimeRegressionTests
     public void AutoTag_UsesPathfinderMatcherWithoutEagerLibrespotTokenSeeding()
     {
         var repoRoot = FindRepoRoot();
-        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var matcher = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "SpotifyMatcher.cs"));
 
         Assert.DoesNotContain("TrySeedSpotifyTokenCacheAsync", service, StringComparison.Ordinal);
@@ -90,7 +90,7 @@ public sealed class ResourceLifetimeRegressionTests
     public void AutoTag_OptionalPostMatchStepsAreIndependentlyBounded()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("RunBoundedOptionalStepAsync", source, StringComparison.Ordinal);
         Assert.Contains("ArtworkFallbackTimeout", source, StringComparison.Ordinal);
@@ -105,7 +105,7 @@ public sealed class ResourceLifetimeRegressionTests
     public void AutoTagStartup_DoesNotLeaveCheckpointedOrphansRunning()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var normalizeStart = source.IndexOf("private void NormalizeLoadedJobState", StringComparison.Ordinal);
         var normalizeEnd = source.IndexOf("private static DateTimeOffset ResolveLastActivityTimestamp", normalizeStart, StringComparison.Ordinal);
         var normalize = source[normalizeStart..normalizeEnd];
@@ -201,7 +201,7 @@ public sealed class ResourceLifetimeRegressionTests
         var shazamDiscovery = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "ShazamDiscoveryService.cs"));
         var lastFmTags = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "LastFmTagService.cs"));
         var spotifyPathfinder = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs"));
-        var localAutoTagRunner = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var localAutoTagRunner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var spotifyMetadata = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs"));
         var spotifyArtwork = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyArtworkResolver.cs"));
         var spotifyTracklist = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyTracklistService.cs"));
@@ -227,7 +227,7 @@ public sealed class ResourceLifetimeRegressionTests
     public void AutoTagTerminalCleanup_RemovesAllPerJobRuntimeState()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("_lastActivityLines.TryRemove(job.Id, out _);", source, StringComparison.Ordinal);
         Assert.Contains("_archiveLocks.TryRemove(job.Id, out _);", source, StringComparison.Ordinal);

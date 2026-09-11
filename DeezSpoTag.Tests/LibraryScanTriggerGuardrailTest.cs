@@ -8,7 +8,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class LibraryScanTriggerGuardrailTests
+public sealed class LibraryScanTriggerGuardrailTest
 {
     private static readonly long[] ExpectedChangedFolderIds = [5L];
 
@@ -63,7 +63,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     [Fact]
     public void ManualEnrichmentAutoMove_QueuesTargetIdentityRefreshForMovedFiles()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var ingest = ReadSource("DeezSpoTag.Web", "Services", "KnownLibraryFileIngestionService.cs");
         var ingestionIndex = source.IndexOf(
             "await _knownFileIngestionService.IngestAndVerifyAsync(",
@@ -232,7 +232,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void DownloadOrchestration_GroupsPostDownloadWorkByDestinationProfile()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
-        var autoTagSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var autoTagSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("private sealed record PipelineWorkGroup", source, StringComparison.Ordinal);
         Assert.Contains("BuildPipelineWorkGroups(profileContext, pendingItems, downloadRootPath)", source, StringComparison.Ordinal);
@@ -252,7 +252,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     [Fact]
     public void AutoTagStaleRecovery_DoesNotOwnFileMovement()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.DoesNotContain("RunStaleRecoveryCleanupAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldAutoMoveAfterEnrichmentStage", source, StringComparison.Ordinal);
@@ -347,7 +347,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     [Fact]
     public void AutoTagPostMove_UsesDirectKnownFileIngestionWhenPathsAreKnown()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var methodBody = ExtractMethodBody(source, "private async Task IngestKnownFilesAfterAutoMoveAsync");
 
         Assert.Contains("ResolveChangedLibraryFolderIdsAsync", source);
@@ -383,7 +383,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     [Fact]
     public void AutoTagDownloadEnrichment_DoesNotOwnFinalMoveOrFailWhenNoStagesBuild()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("No runnable download enrichment stage was configured.", source, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.SkippedStatus", source, StringComparison.Ordinal);
@@ -394,7 +394,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     [Fact]
     public void AutoTagEnhancementRefresh_UsesSingleConfiguredServerCompletionPathWithoutLibraryReindex()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var workflowSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
 
         Assert.Contains("public List<string> EnhancedFilePaths", source, StringComparison.Ordinal);

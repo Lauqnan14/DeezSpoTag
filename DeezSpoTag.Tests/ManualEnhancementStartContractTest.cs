@@ -6,7 +6,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class ManualEnhancementStartContractTests
+public sealed class ManualEnhancementStartContractTest
 {
     private static readonly MethodInfo NormalizeRunTriggerMethod =
         typeof(AutoTagService).GetMethod(
@@ -85,7 +85,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagStopReason_LabelsAutomationEnhancementStopsAsPaused()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("StopJobAsync(string id, string? stopReason = null)", source, StringComparison.Ordinal);
         Assert.Contains("Paused by automation. Resume is available after download finalization.", source, StringComparison.Ordinal);
@@ -97,7 +97,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagStopReason_LabelsUserEnhancementStopsAsResumablePause()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         // Invariant: enhancement runs are never cancelled outright — a user stop is a
         // resumable pause so POST /jobs/{id}/resume can continue it.
@@ -114,7 +114,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagStopReason_DoesNotRewriteArchivedEnhancementStops()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         // Guardrail: the legacy rewriter must stay removed. It reclassified
         // restart-interrupted manual enhancement runs as "Stopped by user." and destroyed
@@ -129,7 +129,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagStart_DoesNotResumeCanceledEnhancementRuns()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var resumeCandidate = ExtractSourceSpan(
             source,
             "private bool IsResumeCandidate",
@@ -150,7 +150,7 @@ public sealed class ManualEnhancementStartContractTests
     {
         var repoRoot = FindRepoRoot();
         var controller = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
-        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("jobs/{id}/resume", controller, StringComparison.Ordinal);
         Assert.Contains("ResumeJobAsync(id, cancellationToken)", controller, StringComparison.Ordinal);
@@ -171,7 +171,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagCheckpoint_FallsBackWhenNextIndexesMissing()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var update = ExtractSourceSpan(
             source,
             "private static bool TryUpdateResumeCheckpoint",
@@ -294,7 +294,7 @@ public sealed class ManualEnhancementStartContractTests
     public void AutoTagStart_BlocksIncompatibleConcurrentJobs()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("TryCreateBlockedJobForActiveJobPolicy", source, StringComparison.Ordinal);
         Assert.Contains("another AutoTag job is already running", source, StringComparison.Ordinal);
@@ -331,7 +331,7 @@ public sealed class ManualEnhancementStartContractTests
     {
         var repoRoot = FindRepoRoot();
         var controller = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
-        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("Manual enrichment requires exactly one enabled music library destination.", controller, StringComparison.Ordinal);
         Assert.Contains("GetPipelineOwnedPayloadPathsAsync", controller, StringComparison.Ordinal);
