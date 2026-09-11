@@ -247,7 +247,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         var repoRoot = FindRepoRoot();
         var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
         var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
-        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.DoesNotContain("folderUniformityArtworkPolicy", view, StringComparison.Ordinal);
         Assert.DoesNotContain("folderUniformityLyricsPolicy", view, StringComparison.Ordinal);

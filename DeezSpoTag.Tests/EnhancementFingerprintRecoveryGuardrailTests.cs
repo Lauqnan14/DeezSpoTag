@@ -9,7 +9,7 @@ public sealed class EnhancementFingerprintRecoveryGuardrailTests
     [Fact]
     public void EnhancementStage_KeepsFingerprintIntentAndBootstrapsShazam()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var stages = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnrichmentStages.cs");
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs");
         var workflows = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
@@ -25,7 +25,7 @@ public sealed class EnhancementFingerprintRecoveryGuardrailTests
     [Fact]
     public void UntrustedFiles_SkipIdFirstAndOriginalTagValidation()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var matcher = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "ShazamMatcher.cs");
 
         Assert.Contains("if (shazamConfig.IdFirst && identityIsTrusted)", runner, StringComparison.Ordinal);

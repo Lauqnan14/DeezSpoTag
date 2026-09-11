@@ -77,7 +77,7 @@ public sealed class AutoTagGenreOrderPreservationTests
     [Fact]
     public void BothGenreWritePaths_PreserveOrderWhenSetEqual()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         // Standard bindings (SetField) and raw-tag writes (SetRaw) both keep the
         // file's genre order when the sanitized set is unchanged — otherwise every
@@ -110,7 +110,7 @@ public sealed class AutoTagGenreOrderPreservationTests
     [Fact]
     public void CapitalizeGenre_NeverFlattensExistingCasing()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         var capitalizeStart = runnerSource.IndexOf(
             "internal static string CapitalizeGenre(",
@@ -126,7 +126,7 @@ public sealed class AutoTagGenreOrderPreservationTests
     }
 
     private static string ReadSource(params string[] pathParts)
-        => File.ReadAllText(Path.Join(ResolveRepoRoot(), Path.Combine(pathParts)));
+        => PartialSourceReader.ReadTypeSource(pathParts);
 
     private static string ResolveRepoRoot()
     {

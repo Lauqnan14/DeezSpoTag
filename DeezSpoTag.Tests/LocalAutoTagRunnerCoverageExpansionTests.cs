@@ -284,7 +284,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void OtherTagsPersistenceFailure_DoesNotFailTheFile()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("ShouldPersistOtherRawKey(pair.Key)", source, StringComparison.Ordinal);
         Assert.Contains("expectedRawTags.Count == 0", source, StringComparison.Ordinal);
@@ -326,7 +326,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void LyricsLookupEntryPoints_FollowRequestedLyricsTags()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (ShouldRequestAnyLyrics(context.Plan.Config, context.Plan.Settings))", source, StringComparison.Ordinal);
         Assert.Contains("var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);", source, StringComparison.Ordinal);
@@ -553,12 +553,12 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void Runner_AllowsOtherPlatformsAfterForcedShazamNoMatch()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))", source, StringComparison.Ordinal);
         Assert.Contains("ApplyShazamRecognition(info, recognized, preferShazamCore, shazamConfig)", source, StringComparison.Ordinal);
         Assert.Contains("WantsArtworkFromSettings", source, StringComparison.Ordinal);
-        Assert.Contains("plan.ShazamConflictResolution || !plan.Config.ParseFilename", ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"), StringComparison.Ordinal);
+        Assert.Contains("plan.ShazamConflictResolution || !plan.Config.ParseFilename", PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"), StringComparison.Ordinal);
         Assert.Contains("ShazamFailureKind.Infrastructure", source, StringComparison.Ordinal);
         Assert.Contains("ShazamFailureKind.NoMatch", source, StringComparison.Ordinal);
         Assert.Contains("new ShazamEnrichmentResult(false, \"shazam could not identify track\", false, ShazamFailureKind.NoMatch)", source, StringComparison.Ordinal);
@@ -571,7 +571,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void ShazamFingerprintMatching_UsesOriginalFileIdentityForValidation()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var matcherSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "ShazamMatcher.cs");
 
         Assert.Contains("var validationInfo = firstManualPass", runnerSource, StringComparison.Ordinal);
@@ -597,7 +597,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void OptionalEnrichmentFailures_DoNotFailResolvedProviderMetadata()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("catch (Exception ex) when (ex is not OperationCanceledException)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("optional {stepName} failed; continuing with provider metadata", runnerSource, StringComparison.Ordinal);
@@ -606,7 +606,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void ArtworkPersistenceFailure_DoesNotDiscardPersistedProviderMetadata()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("persistenceFailures.Remove(SupportedTag.AlbumArt)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("returnedTags.Remove(SupportedTag.AlbumArt)", runnerSource, StringComparison.Ordinal);
@@ -635,7 +635,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void Mp4NonCoreFields_FallThroughToRawTagWriter()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (Mp4TagHelper.TrySetMp4Field(", source, StringComparison.Ordinal);
         Assert.Contains("SetRaw(context, binding.Mp4Field, binding.Tag, values);", source, StringComparison.Ordinal);
@@ -645,7 +645,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void AutomaticEnrichment_DoesNotApplyManualReleasePreference()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("PreferredReleaseType = IsManualEnrichment(config)", source, StringComparison.Ordinal);
         Assert.Contains("? config.ManualReleasePreference\n                : null", source, StringComparison.Ordinal);
@@ -673,7 +673,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void GenreWrite_PerformsFinalCanonicalDedupeAfterFormatting()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains(
             "genres = GenreTagAliasNormalizer.DedupeValues(genres, context.GenreBlockList);",
@@ -684,7 +684,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void EnhancementArtistSeparator_UsesVorbisSeparatorForNonMp3NonMp4Files()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var body = ExtractMethodBody(source, "private static string ResolveArtistSeparator");
 
         Assert.Contains("return config.Separators.Vorbis ?? \"\";", body, StringComparison.Ordinal);
@@ -698,7 +698,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void AutomaticEnrichment_AttemptsAppleExtrasOnlyOncePerFile()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (context.Plan.AttemptedAppleExtras.Add(context.FileIndex))", source, StringComparison.Ordinal);
         Assert.DoesNotContain("if (!isManualEnrichment || context.Plan.AttemptedAppleExtras.Add(context.FileIndex))", source, StringComparison.Ordinal);
@@ -707,8 +707,8 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Fact]
     public void LibraryWideEnhancement_UsesFortyFileBatchesWithoutTargetFilePath()
     {
-        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
-        var autoTagSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var autoTagSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var workflowSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
         var organizerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs");
         var executeBody = ExtractMethodBody(runnerSource, "private async Task ExecutePlatformPassesAsync");

@@ -100,7 +100,7 @@ public sealed class AutoTagResumeTriggerPolicyTests
     [Fact]
     public void StopRequest_CancelsPausedOrInterruptedRunsOutright()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var stopStart = service.IndexOf(
             "private async Task<StopJobOutcome> StopJobInternalAsync",
@@ -119,7 +119,7 @@ public sealed class AutoTagResumeTriggerPolicyTests
     [Fact]
     public void ResumeJobAsync_UsesTheBlockedSuccessorGuard()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var resumeStart = service.IndexOf(
             "public async Task<ResumeJobOutcome?> ResumeJobAsync",
@@ -136,7 +136,7 @@ public sealed class AutoTagResumeTriggerPolicyTests
     {
         // Locks the intent of the recovery allowance next to the decision so a future
         // cleanup cannot silently remove it and reintroduce the silent no-op resume.
-        var service = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var policyStart = service.IndexOf(
             "private static bool IsAllowedEnhancementTrigger",
             StringComparison.Ordinal);

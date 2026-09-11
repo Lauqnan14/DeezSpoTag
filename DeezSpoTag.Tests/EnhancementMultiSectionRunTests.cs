@@ -220,8 +220,7 @@ public sealed class EnhancementMultiSectionRunTests
     [Fact]
     public void PriorityTargetsFeedTheSharedBatchOrderingNotSeparateBatches()
     {
-        var runner = File.ReadAllText(Path.Join(
-            FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         // The two-wave order consumes the audited priority paths...
         Assert.Contains("BuildNormalizedPathSet(config.PriorityTargetFiles)", runner, StringComparison.Ordinal);
@@ -642,11 +641,11 @@ public sealed class EnhancementMultiSectionRunTests
     public void GapFillJobDoesNotStartASeparateLyricsRefreshPath()
     {
         var workflows = ReadEnhancementWorkflows();
-        var service = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
-        var runner = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var statusScript = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
 
-        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs")), StringComparison.Ordinal);
+        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs"), StringComparison.Ordinal);
         var applyBatch = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", StringComparison.Ordinal);
         Assert.True(applyBatch > 0);
         var applyBody = workflows[applyBatch..(applyBatch + 2500)];
@@ -747,10 +746,8 @@ public sealed class EnhancementMultiSectionRunTests
     [Fact]
     public void AutoTagStatusCarriesAnimatedArtworkBadges()
     {
-        var statusSource = File.ReadAllText(Path.Join(
-            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
-        var runnerSource = File.ReadAllText(Path.Join(
-            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var statusSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runnerSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var historySource = File.ReadAllText(Path.Join(
             FindEnhancementRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
 
@@ -779,8 +776,7 @@ public sealed class EnhancementMultiSectionRunTests
         var workflows = ReadEnhancementWorkflows();
         var coverService = File.ReadAllText(Path.Join(
             FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "CoverPort", "CoverLibraryMaintenanceService.cs"));
-        var autoTagService = File.ReadAllText(Path.Join(
-            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var autoTagService = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("job.ProcessedItems = Math.Max(job.ProcessedItems, Math.Max(0, processed));", workflows, StringComparison.Ordinal);
         Assert.Contains("job.TotalItems = job.TargetUsable > 0", workflows, StringComparison.Ordinal);
@@ -810,7 +806,7 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.DoesNotContain("EnqueueMediaRefreshForBatchAsync", workflows, StringComparison.Ordinal);
         var ingest = File.ReadAllText(Path.Join(FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "KnownLibraryFileIngestionService.cs"));
         Assert.Contains("EnqueueTargetIdentityRefreshAsync(", ingest, StringComparison.Ordinal);
-        var service = File.ReadAllText(Path.Join(FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.Contains("TriggerConfiguredMediaServerRefreshAfterEnhancementAsync", service, StringComparison.Ordinal);
     }
 

@@ -44,7 +44,7 @@ public sealed class StartupBackgroundWorkGuardrailTests
     {
         var root = ResolveRepoRoot();
         var servicePath = Path.Join(root, "DeezSpoTag.Web", "Services", "StartupLoginService.cs");
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
 
         Assert.Contains(": BackgroundService", source, StringComparison.Ordinal);
         Assert.Contains("IHostApplicationLifetime", source, StringComparison.Ordinal);
@@ -76,7 +76,7 @@ public sealed class StartupBackgroundWorkGuardrailTests
     {
         var root = ResolveRepoRoot();
         var servicePath = Path.Join(root, "DeezSpoTag.Web", "Services", "DeferredHostedService.cs");
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
 
         Assert.Contains("await startTask.WaitAsync(cancellationToken);", source, StringComparison.Ordinal);
         Assert.Contains("service = _service;", source, StringComparison.Ordinal);

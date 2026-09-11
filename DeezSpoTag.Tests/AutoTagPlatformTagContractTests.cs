@@ -41,7 +41,7 @@ public sealed class AutoTagPlatformTagContractTests
     public void EnrichmentAndEnhancement_KeepTheSameWriterPlatformsAfterFingerprint()
     {
         var enrichment = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.EnrichmentStages.cs"));
-        var enhancement = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var enhancement = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("AutoTagPlatformTagContract.ResolveRequestedTags(baseRoot)", enrichment, StringComparison.Ordinal);
         Assert.Contains("ResolveEnhancementRequestedTags(baseRoot)", enhancement, StringComparison.Ordinal);
@@ -59,7 +59,7 @@ public sealed class AutoTagPlatformTagContractTests
         var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.EnrichmentStages.cs"));
         Assert.Contains("Platforms = plan.Platforms.ToList()", source, StringComparison.Ordinal);
         Assert.Contains("ConfigureShazamFingerprintBootstrap(stageRoot)", source, StringComparison.Ordinal);
-        var enhancement = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var enhancement = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.Contains("ConfigureShazamFingerprintBootstrap(stageRoot)", enhancement, StringComparison.Ordinal);
         Assert.DoesNotContain("enrichmentPlatforms.Add(ShazamPlatformId)", source, StringComparison.Ordinal);
     }

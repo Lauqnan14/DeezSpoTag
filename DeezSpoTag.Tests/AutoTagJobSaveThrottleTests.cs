@@ -65,7 +65,7 @@ public sealed class AutoTagJobSaveThrottleTests
     [Fact]
     public void RoutineProgressSaves_GoThroughTheThrottle()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var appendLog = ExtractMethodBody(source, "private void AppendLog(AutoTagJob job, string? line)");
         Assert.Contains("SaveJobThrottled(job);", appendLog, StringComparison.Ordinal);
@@ -75,7 +75,7 @@ public sealed class AutoTagJobSaveThrottleTests
     [Fact]
     public void CheckpointUpdates_ForceAnImmediateSave()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var updateStatus = ExtractMethodBody(source, "private void UpdateStatus(");
         Assert.Contains("SaveJobThrottled(job, force: checkpointChanged)", updateStatus, StringComparison.Ordinal);
@@ -84,7 +84,7 @@ public sealed class AutoTagJobSaveThrottleTests
     [Fact]
     public void TerminalAndStopPaths_SaveDirectly()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         foreach (var methodName in new[]
                  {
@@ -100,7 +100,7 @@ public sealed class AutoTagJobSaveThrottleTests
     [Fact]
     public void ArchivedCounts_AreIncrementalNotReCounted()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         var logCount = ExtractMethodBody(source, "private int GetArchivedLogCount(string jobId, int fallback)");
         var statusCount = ExtractMethodBody(source, "private int GetArchivedStatusCount(string jobId, int fallback)");

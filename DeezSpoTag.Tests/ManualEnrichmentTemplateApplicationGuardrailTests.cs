@@ -10,7 +10,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
     public void ManualStart_PassesActiveProfileFolderStructureToRuntimeConfig()
     {
         var controllerSource = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs");
-        var serviceSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var serviceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.True(
             controllerSource.Contains("selectedProfileResult.Profile?.FolderStructure", StringComparison.Ordinal)
@@ -25,7 +25,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
     public void ManualEnrichmentStages_EnableTemplateMaterializationButDownloadEnrichmentDoesNot()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnrichmentStages.cs");
-        var serviceSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var serviceSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("OrganizeSidecarsIntoTemplateFolders: true", source, StringComparison.Ordinal);
         Assert.Contains("MaterializeToTemplatePath: true", source, StringComparison.Ordinal);
@@ -69,7 +69,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
     [Fact]
     public void Runner_AppliesProfileFolderStructureAndWritesLyricsSidecarsToTemplatePath()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("ApplyFolderStructureOverrides(settings, config.FolderStructure)", source, StringComparison.Ordinal);
         Assert.Contains("settings.ArtistNameTemplate = folderStructure.ArtistNameTemplate.Trim()", source, StringComparison.Ordinal);
@@ -83,7 +83,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
     [Fact]
     public void Runner_MaterializesManualFileBeforeWritingSidecarsAndTags()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var applyMethod = ExtractMethod(source, "private async Task ApplyResolvedMatchAsync");
 
         Assert.Contains("public bool? MaterializeToTemplatePath { get; set; }", source, StringComparison.Ordinal);

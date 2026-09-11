@@ -721,12 +721,7 @@ public sealed class AutoTagProviderCapabilityContractTests
     [Fact]
     public void PlatformLyricsResolution_IsRestrictedToTheCurrentProvider()
     {
-        var source = File.ReadAllText(Path.Combine(
-            ResolveRepoRoot(),
-            "DeezSpoTag.Web",
-            "Services",
-            "AutoTag",
-            "LocalAutoTagRunner.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("lookupSettings.LyricsFallbackOrder = provider;", source, StringComparison.Ordinal);
         Assert.Contains("RestrictLyricsRequestToProvider", source, StringComparison.Ordinal);
@@ -846,12 +841,7 @@ public sealed class AutoTagProviderCapabilityContractTests
     }
 
     private static string ReadLocalAutoTagRunnerSource()
-        => File.ReadAllText(Path.Combine(
-            ResolveRepoRoot(),
-            "DeezSpoTag.Web",
-            "Services",
-            "AutoTag",
-            "LocalAutoTagRunner.cs"));
+        => PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
     private static AutoTagTrack InvokeMapper<TMatcher, TInput>(TInput input)
     {

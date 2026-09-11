@@ -34,10 +34,10 @@ public sealed class SonarGuardrailParityTests
     public void Enrichment_Mp4PublishDate_IsSupported()
     {
         var root = FindRepoRoot();
-        var runnerPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
-        var source = File.ReadAllText(runnerPath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
         Assert.Contains(
             "SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, \"ORIGINALDATE\")",
             source,
@@ -52,10 +52,10 @@ public sealed class SonarGuardrailParityTests
     public void Enrichment_Mp4ReleaseDate_RecognizesDateAndDay()
     {
         var root = FindRepoRoot();
-        var runnerPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
-        var source = File.ReadAllText(runnerPath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
         Assert.Contains(
             "SupportedTag.ReleaseDate =>",
             source,
@@ -74,10 +74,10 @@ public sealed class SonarGuardrailParityTests
     public void Enrichment_Duration_UsesMilliseconds()
     {
         var root = FindRepoRoot();
-        var runnerPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
-        var source = File.ReadAllText(runnerPath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
         Assert.Contains("TotalMilliseconds", source, StringComparison.Ordinal);
     }
 
@@ -86,12 +86,12 @@ public sealed class SonarGuardrailParityTests
     {
         var root = FindRepoRoot();
         var taggerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
-        var runnerPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         Assert.True(File.Exists(taggerPath), $"File not found: {taggerPath}");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
         var tagger = File.ReadAllText(taggerPath);
-        var runner = File.ReadAllText(runnerPath);
+        var runner = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
 
         var oneTwoPattern = new Regex(@"\?\s*""1""\s*:\s*""2""", RegexOptions.CultureInvariant, RegexTimeout);
         Assert.DoesNotMatch(oneTwoPattern, tagger);
@@ -136,7 +136,7 @@ public sealed class SonarGuardrailParityTests
         var runnerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
-        var source = File.ReadAllText(runnerPath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
         Assert.Contains("SetAtlAdditionalField(file, \"ARTIST\", artistValue);", source, StringComparison.Ordinal);
         Assert.Contains("SetAtlAdditionalField(file, \"TPE1\", artistValue);", source, StringComparison.Ordinal);
         Assert.Contains("SetAtlAdditionalField(file, \"ALBUMARTIST\", albumArtist);", source, StringComparison.Ordinal);
@@ -178,10 +178,10 @@ public sealed class SonarGuardrailParityTests
     public void AutoTagService_FinalDiffRetainedSources_CanReportMergedPlatformContributors()
     {
         var root = FindRepoRoot();
-        var servicePath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("ResolveMergedValueSources(", source, StringComparison.Ordinal);
         Assert.Contains("introducedContribution", source, StringComparison.Ordinal);
         Assert.Contains("return sources.Count > 1 ? string.Join(\", \", sources) : null;", source, StringComparison.Ordinal);
@@ -191,10 +191,10 @@ public sealed class SonarGuardrailParityTests
     public void AutoTagService_PlatformDiffUsesOriginalBaselineAndCumulativeStages()
     {
         var root = FindRepoRoot();
-        var servicePath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
 
-        var source = File.ReadAllText(servicePath);
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
         Assert.Contains("var baseSnapshot = stored.Before ?? completed[0].Before ?? target.Before;", source, StringComparison.Ordinal);
         Assert.Contains(".Take(targetIndex + 1)", source, StringComparison.Ordinal);
         Assert.Contains("BasePlatform = \"original\"", source, StringComparison.Ordinal);
