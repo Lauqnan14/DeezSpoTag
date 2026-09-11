@@ -1,0 +1,2605 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Library;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
+
+namespace DeezSpoTag.Tests;
+
+public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
+{
+    private static readonly string[] SoundtrackGenres = ["Soundtrack"];
+    private static readonly string[] SpotifyTrackSourceIds = ["sp-song-1", "sp-song-2", "sp-missing"];
+    private static readonly string[] PlexMetadataGenres = ["Score"];
+    private static readonly string[] PlexMetadataMoods = ["Epic"];
+    private static readonly string[] PlexRatingKeys = ["rk-1"];
+    private static readonly string[] HappyMoodTags = ["happy"];
+    private static readonly string[] MixCoverUrls = ["https://example.com/mix.jpg"];
+    private static readonly string[] EssentiaGenreTags = ["soundtrack"];
+    private static readonly string[] LastfmGenreTags = ["score"];
+    private static readonly string[] SharedQueueUuids = ["queue-shared-1"];
+    private static readonly string[] UppercaseSpotifyTrackSourceIds = ["SP-SONG-1"];
+
+    private sealed record SeededLibrary(
+        long LibraryId,
+        FolderDto Folder,
+        long ArtistId,
+        long AlbumId,
+        IReadOnlyDictionary<string, long> TrackIdsByTitle,
+        IReadOnlyDictionary<string, string> TrackPathsByTitle);
+
+    private string _tempRoot = string.Empty;
+    private string _dbPath = string.Empty;
+    private IConfiguration _configuration = default!;
+    private LibraryRepository _repository = default!;
+
+    public async Task InitializeAsync()
+    {
+        _tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-library-tests-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(_tempRoot);
+
+        _dbPath = Path.Join(_tempRoot, "library.db");
+        _configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={_dbPath}"
+            })
+            .Build();
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        _repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+    }
+
+    public Task DisposeAsync()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_tempRoot) && Directory.Exists(_tempRoot))
+            {
+                Directory.Delete(_tempRoot, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best effort cleanup.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task PlexMetadataRepair_UsesOnlySharedMediaServerIdentityTable()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+PRAGMA foreign_keys=OFF;
+INSERT INTO media_server_track_metadata (track_id,service,target_item_id,updated_at_utc)
+VALUES (7001,'plex','plex-item','2026-08-01T00:00:00Z'),
+       (7001,'jellyfin','jellyfin-item','2026-08-01T00:00:00Z');
+INSERT INTO track_plex_metadata (track_id,plex_rating_key,updated_at_utc)
+VALUES (7001,'plex-item','2026-08-01T00:00:00Z');";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        await _repository.DeleteConfirmedMissingPlexTrackMetadataAsync([7001]);
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT service FROM media_server_track_metadata
+WHERE track_id=7001
+UNION ALL
+SELECT 'legacy:' || plex_rating_key FROM track_plex_metadata
+WHERE track_id=7001
+ORDER BY service;";
+        await using var reader = await verify.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("jellyfin", reader.GetString(0));
+        Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
+    public async Task TargetIdentityUpsert_ReassignsServerItemFromObsoleteTrackRow()
+    {
+        var seeded = await SeedLibraryAsync(("Current Song", "dz-current", "sp-current", "ap-current"));
+        var currentTrackId = seeded.TrackIdsByTitle["Current Song"];
+        const long obsoleteTrackId = 7001;
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+INSERT INTO media_server_track_metadata
+    (track_id,service,target_item_id,file_path,updated_at_utc)
+VALUES
+    (@obsoleteTrackId,'plex','plex-current','/old/path.flac','2026-08-01T00:00:00Z');
+INSERT INTO media_server_track_variant_metadata
+    (track_id,service,audio_variant,target_item_id,file_path,updated_at_utc)
+VALUES
+    (@obsoleteTrackId,'plex','stereo','plex-current','/old/path.flac','2026-08-01T00:00:00Z');";
+            seed.Parameters.AddWithValue("obsoleteTrackId", obsoleteTrackId);
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                currentTrackId,
+                "plex",
+                "plex-current",
+                seeded.TrackPathsByTitle["Current Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT track_id FROM media_server_track_metadata
+WHERE service='plex' AND target_item_id='plex-current'
+UNION ALL
+SELECT track_id FROM media_server_track_variant_metadata
+WHERE service='plex' AND target_item_id='plex-current';";
+        await using var reader = await verify.ExecuteReaderAsync();
+        var trackIds = new List<long>();
+        while (await reader.ReadAsync())
+        {
+            trackIds.Add(reader.GetInt64(0));
+        }
+
+        Assert.Equal(2, trackIds.Count);
+        Assert.All(trackIds, trackId => Assert.Equal(currentTrackId, trackId));
+    }
+
+    [Fact]
+    public async Task TargetIdentityRefreshCleanup_RemovesOnlyOrphanedRowsForSelectedServer()
+    {
+        var seeded = await SeedLibraryAsync(("Current Song", "dz-current", "sp-current", "ap-current"));
+        var currentTrackId = seeded.TrackIdsByTitle["Current Song"];
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                currentTrackId,
+                "plex",
+                "plex-current",
+                seeded.TrackPathsByTitle["Current Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+INSERT INTO media_server_track_metadata
+    (track_id,service,target_item_id,updated_at_utc)
+VALUES
+    (7001,'plex','plex-orphan','2026-08-01T00:00:00Z'),
+    (7002,'jellyfin','jellyfin-orphan','2026-08-01T00:00:00Z');";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var deleted = await _repository.DeleteOrphanedMediaServerTrackMetadataAsync("plex");
+
+        Assert.Equal(1, deleted);
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT service || ':' || target_item_id
+FROM media_server_track_metadata
+WHERE target_item_id IN ('plex-current','plex-orphan','jellyfin-orphan')
+ORDER BY service;";
+        await using var reader = await verify.ExecuteReaderAsync();
+        var rows = new List<string>();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        Assert.Equal(["jellyfin:jellyfin-orphan", "plex:plex-current"], rows);
+    }
+
+    [Fact]
+    public async Task TargetIdentityRefreshFiles_ReturnsOnlyTracksMissingTheSelectedServerIdentity()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Mapped Song", "dz-mapped", "sp-mapped", "ap-mapped"),
+            ("Missing Song", "dz-missing", "sp-missing", "ap-missing"));
+        var mappedTrackId = seeded.TrackIdsByTitle["Mapped Song"];
+        var missingTrackId = seeded.TrackIdsByTitle["Missing Song"];
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                mappedTrackId,
+                "plex",
+                "plex-mapped",
+                seeded.TrackPathsByTitle["Mapped Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        var files = await _repository.GetMediaServerIdentityRefreshFilesAsync(
+            [mappedTrackId, missingTrackId],
+            "plex");
+
+        var file = Assert.Single(files);
+        Assert.Equal(missingTrackId, file.TrackId);
+        Assert.Equal(seeded.TrackPathsByTitle["Missing Song"], file.FilePath);
+    }
+
+    [Fact]
+    public async Task ScanInfo_Settings_And_AutomationState_RoundTrip()
+    {
+        var initialScan = await _repository.GetScanInfoAsync();
+        Assert.Null(initialScan.LastRunUtc);
+        Assert.Equal(0, initialScan.ArtistCount);
+        Assert.Equal(0, initialScan.AlbumCount);
+        Assert.Equal(0, initialScan.TrackCount);
+
+        var scanWrite = new LibraryScanInfo(DateTimeOffset.UtcNow, 14, 31, 220);
+        await _repository.SaveScanInfoAsync(scanWrite);
+
+        var scanRead = await _repository.GetScanInfoAsync();
+        Assert.NotNull(scanRead.LastRunUtc);
+        Assert.Equal(14, scanRead.ArtistCount);
+        Assert.Equal(31, scanRead.AlbumCount);
+        Assert.Equal(220, scanRead.TrackCount);
+
+        var defaultSettings = await _repository.GetSettingsAsync();
+        Assert.False(defaultSettings.LivePreviewIngest);
+        Assert.False(defaultSettings.EnableSignalAnalysis);
+
+        var updatedSettings = await _repository.UpdateSettingsAsync(new LibrarySettingsDto(
+            LivePreviewIngest: true,
+            EnableSignalAnalysis: true));
+        Assert.True(updatedSettings.LivePreviewIngest);
+        Assert.True(updatedSettings.EnableSignalAnalysis);
+
+        var automationDefault = await _repository.GetQualityScannerAutomationSettingsAsync();
+        Assert.False(automationDefault.Enabled);
+        Assert.Equal("watchlist", automationDefault.Scope);
+
+        var automationUpdated = await _repository.UpdateQualityScannerAutomationSettingsAsync(
+            new QualityScannerAutomationSettingsDto(
+                Enabled: true,
+                IntervalMinutes: 120,
+                Scope: "all",
+                FolderId: null,
+                QueueAtmosAlternatives: true,
+                CooldownMinutes: 240,
+                LastStartedUtc: null,
+                LastFinishedUtc: null));
+        Assert.True(automationUpdated.Enabled);
+        Assert.Equal("all", automationUpdated.Scope);
+        Assert.Equal(120, automationUpdated.IntervalMinutes);
+        Assert.Equal(240, automationUpdated.CooldownMinutes);
+
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-3);
+        var finishedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _repository.MarkQualityScannerAutomationStartedAsync(startedAt);
+        await _repository.MarkQualityScannerAutomationFinishedAsync(finishedAt);
+
+        var automationFinal = await _repository.GetQualityScannerAutomationSettingsAsync();
+        Assert.NotNull(automationFinal.LastStartedUtc);
+        Assert.NotNull(automationFinal.LastFinishedUtc);
+    }
+
+    [Fact]
+    public async Task MediaServerRefreshOutbox_CoalescesPathsPerLibraryAndServer()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/a.flac"], [1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/b.flac", "/music/a.flac"], [2, 1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "jellyfin", ["/music/a.flac"], [1], TimeSpan.Zero);
+
+        var claimed = await _repository.ClaimDueMediaServerRefreshesAsync(
+            10,
+            TimeSpan.FromMinutes(5),
+            "test-worker");
+
+        Assert.Equal(2, claimed.Count);
+        var plex = Assert.Single(claimed, row => row.TargetService == "plex");
+        Assert.Equal(["/music/b.flac", "/music/a.flac"], plex.ChangedFilePaths.OrderDescending());
+        Assert.Equal([1L, 2L], plex.RequestedTrackIds.Order());
+        Assert.Single(claimed, row => row.TargetService == "jellyfin");
+    }
+
+    [Fact]
+    public async Task MediaServerRefreshOutbox_DoesNotResetScanProgressWhenMoreTracksArrive()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(41, "plex", ["/music/a.flac"], [1], TimeSpan.Zero);
+        var claimed = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "scan-worker"));
+        Assert.True(await _repository.RetryMediaServerRefreshAsync(
+            claimed.Id,
+            "scan-worker",
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "Plex scan submitted; waiting for requested track IDs."));
+
+        await _repository.EnqueueMediaServerRefreshAsync(41, "plex", ["/music/b.flac"], [2], TimeSpan.Zero);
+
+        var stored = await _repository.GetMediaServerRefreshOutboxAsync(claimed.Id);
+        Assert.NotNull(stored);
+        Assert.Equal(1, stored!.AttemptCount);
+        Assert.Equal("retry", stored.Status);
+        Assert.NotNull(stored.DeadlineUtc);
+        Assert.Contains("/music/a.flac", stored.ChangedFilePaths);
+        Assert.Contains("/music/b.flac", stored.ChangedFilePaths);
+        Assert.Contains(1L, stored.RequestedTrackIds);
+        Assert.Contains(2L, stored.RequestedTrackIds);
+    }
+
+    [Fact]
+    public async Task MediaServerRefreshOutbox_IsDurableAndServerFailuresAreIndependent()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(25, "plex", ["/music/song.flac"], [1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(25, "navidrome", ["/music/song.flac"], [1], TimeSpan.Zero);
+
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        var claimed = await restartedRepository.ClaimDueMediaServerRefreshesAsync(
+            10,
+            TimeSpan.FromMinutes(5),
+            "restarted-worker");
+        var plex = Assert.Single(claimed, row => row.TargetService == "plex");
+        var navidrome = Assert.Single(claimed, row => row.TargetService == "navidrome");
+
+        Assert.True(await restartedRepository.CompleteMediaServerRefreshAsync(
+            navidrome.Id,
+            "restarted-worker"));
+        Assert.True(await restartedRepository.RetryMediaServerRefreshAsync(
+            plex.Id,
+            "restarted-worker",
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            "Plex unavailable"));
+
+        var status = await restartedRepository.GetMediaServerRefreshOutboxCountsAsync();
+        Assert.Equal(0, status.Pending);
+        Assert.Equal(0, status.Processing);
+        Assert.Equal(1, status.Retry);
+    }
+
+    [Fact]
+    public async Task MediaServerRefreshOutbox_RetryPersistsOnlyRemainingIdentityWork()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(
+            31,
+            "plex",
+            ["/music/resolved.flac", "/music/missing.flac"],
+            [101, 102],
+            TimeSpan.Zero);
+        var claimed = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "retry-worker"));
+
+        Assert.True(await _repository.RetryMediaServerRefreshAsync(
+            claimed.Id,
+            "retry-worker",
+            2,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            "One requested identity remains unresolved.",
+            ["/music/missing.flac"],
+            [102]));
+
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        var retried = Assert.Single(await restartedRepository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "restarted-retry-worker"));
+        Assert.Equal(["/music/missing.flac"], retried.ChangedFilePaths);
+        Assert.Equal([102L], retried.RequestedTrackIds);
+        Assert.Equal(2, retried.AttemptCount);
+    }
+
+    [Fact]
+    public async Task Logs_And_QualityScannerRun_Workflow_Completes()
+    {
+        await _repository.AddLogAsync(new LibraryLogEntry(DateTimeOffset.UtcNow.AddMinutes(-2), "info", "first"));
+        await _repository.AddLogAsync(new LibraryLogEntry(DateTimeOffset.UtcNow.AddMinutes(-1), "warn", "second"));
+
+        var allLogs = await _repository.GetLogsAsync();
+        Assert.True(allLogs.Count >= 2);
+
+        var latestLog = await _repository.GetLogsAsync(limit: 1);
+        Assert.Single(latestLog);
+
+        await _repository.ClearLogsAsync();
+        var afterClear = await _repository.GetLogsAsync();
+        Assert.Empty(afterClear);
+
+        var runId = await _repository.StartQualityScannerRunAsync(
+            trigger: "manual",
+            scope: "watchlist",
+            folderId: null,
+            queueAtmosAlternatives: true);
+        Assert.True(runId > 0);
+
+        await _repository.UpdateQualityScannerRunProgressAsync(
+            runId,
+            new QualityScannerRunProgressDto(
+                TotalTracks: 50,
+                ProcessedTracks: 12,
+                QualityMet: 5,
+                LowQuality: 7,
+                UpgradesQueued: 2,
+                AtmosQueued: 1,
+                DuplicateSkipped: 3,
+                MatchMissed: 4),
+            phase: "scan");
+
+        await _repository.CompleteQualityScannerRunAsync(runId, "finished", null);
+    }
+
+    [Fact]
+    public async Task FolderLifecycle_And_AliasLifecycle_Work()
+    {
+        var added = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/library-a",
+                DisplayName: "Library A",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "27",
+                ConvertEnabled: true,
+                ConvertFormat: "flac",
+                ConvertBitrate: "320",
+                AutoTagProfileId: "profile-default"));
+
+        Assert.True(added.Id > 0);
+        Assert.Equal("Library A", added.DisplayName);
+        Assert.Equal("Music", added.LibraryName);
+        Assert.True(added.ConvertEnabled);
+        Assert.Equal("flac", added.ConvertFormat);
+        Assert.Equal("320", added.ConvertBitrate);
+        Assert.Equal("profile-default", added.AutoTagProfileId);
+        Assert.True(added.AutoTagEnabled);
+
+        var libraries = await _repository.GetLibrariesAsync();
+        Assert.Contains(libraries, lib => lib.Name == "Music");
+
+        var folders = await _repository.GetFoldersAsync();
+        Assert.Contains(folders, folder => folder.Id == added.Id);
+
+        var updated = await _repository.UpdateFolderAsync(
+            added.Id,
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/library-a-renamed",
+                DisplayName: "Library A+",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "atmos",
+                ConvertEnabled: true,
+                ConvertFormat: "ALAC",
+                ConvertBitrate: "AUTO"));
+        Assert.NotNull(updated);
+        Assert.Equal("Library A+", updated!.DisplayName);
+        Assert.Equal("atmos", updated.DesiredQuality);
+        Assert.Equal("alac", updated.ConvertFormat);
+        Assert.Equal("AUTO", updated.ConvertBitrate);
+        Assert.Equal("profile-default", updated.AutoTagProfileId);
+
+        var withProfile = await _repository.UpdateFolderProfileAsync(added.Id, "profile-1");
+        Assert.NotNull(withProfile);
+        Assert.Equal("profile-1", withProfile!.AutoTagProfileId);
+
+        var withAutoTagDisabled = await _repository.UpdateFolderAutoTagEnabledAsync(added.Id, false);
+        Assert.NotNull(withAutoTagDisabled);
+        Assert.False(withAutoTagDisabled!.AutoTagEnabled);
+
+        var resolved = await _repository.ResolveFolderForPathAsync("/music/library-a-renamed/Artist/Album/track.flac");
+        Assert.NotNull(resolved);
+        Assert.Equal(added.Id, resolved!.Id);
+
+        var alias = await _repository.AddFolderAliasAsync(added.Id, "Alias A");
+        Assert.True(alias.Id > 0);
+
+        var aliases = await _repository.GetFolderAliasesAsync(added.Id);
+        Assert.Contains(aliases, entry => entry.Id == alias.Id && entry.AliasName == "Alias A");
+
+        var aliasDeleted = await _repository.DeleteFolderAliasAsync(alias.Id);
+        Assert.True(aliasDeleted);
+
+        await _repository.DisableFolderAsync(added.Id);
+        var folderDeleted = await _repository.DeleteFolderAsync(added.Id);
+        Assert.True(folderDeleted);
+    }
+
+    [Fact]
+    public async Task Stats_And_Cleanup_OnEmptyDatabase_AreStable()
+    {
+        var hasLocalData = await _repository.HasLocalLibraryDataAsync();
+        Assert.False(hasLocalData);
+
+        var missingCleaned = await _repository.CleanupMissingFilesAsync();
+        Assert.Equal(0, missingCleaned);
+
+        var stats = await _repository.GetLibraryStatsAsync();
+        Assert.Equal(0, stats.TotalArtists);
+        Assert.Equal(0, stats.TotalAlbums);
+        Assert.Equal(0, stats.TotalTracks);
+
+        var clearResult = await _repository.ClearLibraryDataAsync();
+        Assert.Equal(0, clearResult.ArtistsRemoved);
+        Assert.Equal(0, clearResult.AlbumsRemoved);
+        Assert.Equal(0, clearResult.TracksRemoved);
+    }
+
+    [Fact]
+    public async Task LocalScanIngest_PopulatesSearch_Links_AndLookups()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+
+        var stats = await _repository.GetLibraryStatsAsync();
+        Assert.Equal(1, stats.TotalArtists);
+        Assert.Equal(1, stats.TotalAlbums);
+        Assert.Equal(1, stats.TotalTracks);
+
+        var hasLocalData = await _repository.HasLocalLibraryDataAsync();
+        Assert.True(hasLocalData);
+
+        var trackId = seeded.TrackIdsByTitle["Song One"];
+        var filePath = seeded.TrackPathsByTitle["Song One"];
+        var resolvedTrackId = await _repository.GetTrackIdForFilePathAsync(filePath);
+        Assert.Equal(trackId, resolvedTrackId);
+
+        var primaryPath = await _repository.GetTrackPrimaryFilePathAsync(trackId);
+        Assert.Equal(filePath, primaryPath);
+
+        var trackLinks = await _repository.GetTrackSourceLinksAsync(trackId);
+        Assert.NotNull(trackLinks);
+        Assert.Equal("dz-song-1", trackLinks!.DeezerTrackId);
+        Assert.Equal("sp-song-1", trackLinks.SpotifyTrackId);
+        Assert.Equal("am-song-1", trackLinks.AppleTrackId);
+
+        var albumTracks = await _repository.GetAlbumTracksAsync(seeded.AlbumId);
+        Assert.Single(albumTracks);
+        Assert.Equal(trackId, albumTracks[0].Id);
+
+        var albumTrackLinks = await _repository.GetAlbumTrackSourceLinksAsync(seeded.AlbumId);
+        Assert.True(albumTrackLinks.TryGetValue(trackId, out var albumTrackLink));
+        Assert.Equal("dz-song-1", albumTrackLink.DeezerTrackId);
+
+        var offlineTracks = await _repository.SearchTracksAsync("%song%");
+        Assert.Contains(offlineTracks, item => item.DeezerId == "dz-song-1");
+
+        var trackResults = await _repository.SearchTracksWithIdsAsync("%song%");
+        Assert.Contains(trackResults, item => item.TrackId == trackId);
+
+        var albums = await _repository.SearchAlbumsAsync("%album%");
+        Assert.Contains(albums, item => item.Title == "Album One" && item.ArtistName == "Artist One");
+
+        var artists = await _repository.SearchArtistsAsync("%artist%");
+        Assert.Contains(artists, item => item.Name == "Artist One");
+
+        var trackAudioInfo = await _repository.GetTrackAudioInfoAsync(trackId);
+        Assert.NotNull(trackAudioInfo);
+        Assert.Equal("Song One", trackAudioInfo!.Title);
+        Assert.Equal(seeded.Folder.Id, trackAudioInfo.DestinationFolderId);
+
+        var existsTrackSource = await _repository.ExistsTrackSourceAsync("deezer", "dz-song-1");
+        Assert.True(existsTrackSource);
+
+        var libraryTrackIds = await _repository.GetTrackIdsForLibraryAsync(seeded.LibraryId);
+        Assert.Contains(trackId, libraryTrackIds);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchlist_And_Blocklist_RoundTrip_Works()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+
+        var added = await _repository.AddPlaylistWatchlistAsync(
+            source: "  SpOtIfY  ",
+            sourceId: "  pl-123  ",
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix",
+                "https://example.com/cover.jpg",
+                "Playlist description",
+                24,
+                OwnerName: "Playlist Curator"));
+        Assert.NotNull(added);
+        Assert.Equal("spotify", added!.Source);
+        Assert.Equal("pl-123", added.SourceId);
+        Assert.Equal("Playlist Curator", added.OwnerName);
+
+        var renamed = await _repository.AddPlaylistWatchlistAsync(
+            source: "spotify",
+            sourceId: "pl-123",
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix Renamed",
+                "https://example.com/new-cover.jpg",
+                "Renamed description",
+                25));
+        Assert.NotNull(renamed);
+        Assert.Equal(added.Id, renamed!.Id);
+        Assert.Equal("Road Mix Renamed", renamed.Name);
+
+        var watchlisted = await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123");
+        Assert.True(watchlisted);
+        Assert.True(await _repository.IsPlaylistWatchlistedAsync(" SPOTIFY ", "  pl-123 "));
+
+        await _repository.UpdatePlaylistWatchlistMetadataAsync(
+            source: " SPOTIFY ",
+            sourceId: " pl-123 ",
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix Updated",
+                null,
+                "Updated description",
+                25));
+        var watchlist = await _repository.GetPlaylistWatchlistAsync();
+        Assert.Contains(
+            watchlist,
+            item => item.Source == "spotify"
+                    && item.SourceId == "pl-123"
+                    && item.Name == "Road Mix Updated"
+                    && item.OwnerName == "Playlist Curator");
+
+        var pref = await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "  SPOTIFY ",
+                SourceId: " pl-123  ",
+                DestinationFolderId: seeded.Folder.Id,
+                Service: "plex",
+                SyncTargets: ["plex", "jellyfin"],
+                PreferredEngine: "native",
+                DownloadEngineOrder: null,
+                DownloadVariantMode: "default",
+                SyncMode: "mirror",
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false,
+                RoutingRules: new List<PlaylistTrackRoutingRule>
+                {
+                    new("artist", "contains", "Artist One", seeded.Folder.Id, 1)
+                },
+                IgnoreRules: new List<PlaylistTrackBlockRule>
+                {
+                    new("title", "contains", "Live", 1)
+                }));
+        Assert.NotNull(pref);
+        Assert.Equal("mirror", pref.SyncMode);
+        Assert.Single(pref.RoutingRules!);
+        Assert.Single(pref.IgnoreRules!);
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "pl-123", "plex", "plex-playlist-1");
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "pl-123", "jellyfin", "jellyfin-playlist-1");
+        var boundPref = await _repository.GetPlaylistWatchPreferenceAsync("spotify", "pl-123");
+        Assert.Equal("plex-playlist-1", boundPref?.PlexPlaylistId);
+        Assert.Equal("jellyfin-playlist-1", boundPref?.JellyfinPlaylistId);
+        Assert.Equal("spotify", pref.Source);
+        Assert.Equal("pl-123", pref.SourceId);
+
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                Source: "Spotify ",
+                SourceId: " pl-123",
+                SnapshotId: "snap-1",
+                TrackCount: 25,
+                BatchNextOffset: 10,
+                BatchProcessingSnapshotId: "snap-proc-1",
+                LastCheckedUtc: DateTimeOffset.UtcNow));
+        var watchState = await _repository.GetPlaylistWatchStateAsync("spotify", "pl-123");
+        Assert.NotNull(watchState);
+        Assert.Equal("snap-1", watchState!.SnapshotId);
+
+        await _repository.UpdatePlaylistWatchPresentationSummaryAsync(
+            "spotify",
+            "pl-123",
+            ignoredBlockedTrackCount: 2,
+            reroutedTrackCount: 3);
+        var summarizedWatchlist = await _repository.GetPlaylistWatchlistAsync();
+        var summarizedPlaylist = Assert.Single(summarizedWatchlist, item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, summarizedPlaylist.SyncedTrackCount);
+        Assert.Equal(23, summarizedPlaylist.IncompleteTrackCount);
+        Assert.Equal(2, summarizedPlaylist.IgnoredBlockedTrackCount);
+        Assert.Equal(3, summarizedPlaylist.ReroutedTrackCount);
+
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                Source: "spotify",
+                SourceId: "pl-123",
+                SnapshotId: "snap-2",
+                TrackCount: 25,
+                BatchNextOffset: null,
+                BatchProcessingSnapshotId: null,
+                LastCheckedUtc: DateTimeOffset.UtcNow));
+        var preservedSummary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, preservedSummary.SyncedTrackCount);
+
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync(
+            source: " Spotify ",
+            sourceId: " pl-123 ",
+            snapshotId: "snap-1",
+            candidatesJson: "[{\"id\":\"dz-song-1\"}]",
+            schemaVersion: 4,
+            identityRevision: "identity",
+            providerReadinessRevision: "provider",
+            isComplete: true);
+        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123");
+        Assert.NotNull(cache);
+        Assert.Equal("snap-1", cache!.SnapshotId);
+        Assert.True(await _repository.DeletePlaylistTrackCandidateCacheAsync(" spotify ", " pl-123 "));
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123"));
+
+        await _repository.AddPlaylistWatchTracksAsync(
+            " spotify ",
+            " pl-123 ",
+            new List<PlaylistWatchTrackInsert>
+            {
+                new("dz-song-1", "ISRC00000001"),
+                new("dz-song-2", "ISRC00000002")
+            });
+        await _repository.UpdatePlaylistWatchTrackStatusAsync(" Spotify ", " pl-123 ", "dz-song-1", "completed");
+        var localTrackId = seeded.TrackIdsByTitle.Values.First();
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "pl-123",
+            new PlaylistWatchTrackVerification(
+                "dz-song-1",
+                localTrackId,
+                "identity_verified",
+                "Test identity verified."));
+        await _repository.UpdatePlaylistWatchTrackStatusAsync(
+            "spotify",
+            "pl-123",
+            "dz-song-1",
+            "failed");
+        var recoveredLocalStatus = Assert.Single(
+            await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123"),
+            status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("library", recoveredLocalStatus.SyncStatus);
+        var localOnlySummary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, localOnlySummary.SyncedTrackCount);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "plex",
+            "plex-playlist-1",
+            [
+                new PlaylistWatchTargetMembership(
+                    "dz-song-1",
+                    localTrackId,
+                    "plex-track-1")
+            ]);
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        // Local identity alone is not playlist completion. Every configured target must confirm
+        // playlist membership before the track contributes to the synced count.
+        var summaryAfterRestart = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(23, summaryAfterRestart.IncompleteTrackCount);
+        var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("library", plexOnlyTrack.SyncStatus);
+        Assert.Equal("plex", plexOnlyTrack.TargetService);
+        Assert.Equal("plex-track-1", plexOnlyTrack.TargetItemId);
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(localTrackId, "plex", "plex-track-1", FilePath: null, DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(localTrackId, "jellyfin", "jellyfin-track-1", FilePath: null, DateTimeOffset.UtcNow)
+        ]);
+        var identityResolvedSummary = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, identityResolvedSummary.SyncedTrackCount);
+        Assert.Equal(23, identityResolvedSummary.IncompleteTrackCount);
+        var identityResolvedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var identityResolvedTrack = Assert.Single(identityResolvedStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("library", identityResolvedTrack.SyncStatus);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "jellyfin",
+            "jellyfin-playlist-1",
+            [new PlaylistWatchTargetMembership("dz-song-1", localTrackId, "jellyfin-track-1")]);
+        // Now both configured targets (plex + jellyfin) have confirmed membership, so the track
+        // counts as fully synced.
+        summaryAfterRestart = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
+        var fullySyncedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var fullySyncedTrack = Assert.Single(fullySyncedStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("playlist_synced", fullySyncedTrack.SyncStatus);
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            (fullySyncedTrack.TargetService ?? string.Empty)
+                .Split(", ")
+                .OrderBy(value => value, StringComparer.Ordinal));
+        Assert.Equal(2, summaryAfterRestart.IgnoredBlockedTrackCount);
+        Assert.Equal(3, summaryAfterRestart.ReroutedTrackCount);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "pl-123",
+            new PlaylistWatchTrackVerification(
+                "dz-song-2",
+                localTrackId,
+                "review",
+                "Identity mismatch."));
+        // Upsert keeps other rows for this target. Adding dz-song-2 must not wipe dz-song-1.
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "plex",
+            "plex-playlist-1",
+            [new PlaylistWatchTargetMembership("dz-song-2", localTrackId, "plex-track-2")]);
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("pl-123", "dz-song-1", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("pl-123", "dz-song-2", "plex"));
+        var reviewStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var reviewStatus = Assert.Single(reviewStatuses, status => status.TrackSourceId == "dz-song-2");
+        Assert.Equal("review", reviewStatus.IdentityStatus);
+        Assert.Equal("review", reviewStatus.SyncStatus);
+        var summaryWithReview = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(1, summaryWithReview.SyncedTrackCount);
+
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
+            " SPOTIFY ",
+            " pl-123 ",
+            "dz-song-2",
+            SharedQueueUuids,
+            seeded.Folder.Id);
+        var claims = await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1");
+        var claim = Assert.Single(claims);
+        Assert.Equal("spotify", claim.Source);
+        Assert.Equal("pl-123", claim.SourceId);
+        Assert.Equal("dz-song-2", claim.TrackSourceId);
+        Assert.Equal(seeded.Folder.Id, claim.DestinationFolderId);
+        Assert.Equal("pending", claim.Status);
+        Assert.Single(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
+        var playlistPendingClaims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(" SPOTIFY ", " pl-123 ", status: "pending");
+        Assert.Single(playlistPendingClaims);
+        Assert.Equal("queue-shared-1", playlistPendingClaims.Single().QueueUuid);
+
+        var claimUpdates = await _repository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+            "queue-shared-1",
+            "spotify",
+            "pl-123",
+            "dz-song-2",
+            "completed");
+        Assert.Equal(1, claimUpdates);
+        Assert.Equal("completed", (await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1")).Single().Status);
+        Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
+
+        await _repository.AddPlaylistWatchIgnoredTracksAsync(
+            " SPOTIFY ",
+            " pl-123 ",
+            new List<PlaylistWatchIgnoreInsert> { new("dz-song-ignore", "ISRC00009999") });
+        var ignoredForPlaylist = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync("spotify", "pl-123");
+        Assert.Contains("dz-song-ignore", ignoredForPlaylist);
+
+        var ignoredBySource = await _repository.GetPlaylistWatchIgnoredTrackIdsBySourceAsync(" SpOtIfY ");
+        Assert.Contains("dz-song-ignore", ignoredBySource);
+
+        var removedIgnore = await _repository.RemovePlaylistWatchIgnoredTrackAsync(" spotify ", " pl-123 ", "dz-song-ignore");
+        Assert.True(removedIgnore);
+
+        var blockTrack = await _repository.UpsertDownloadBlocklistEntryAsync("track", " Song One ", enabled: true);
+        Assert.NotNull(blockTrack);
+        var blockArtist = await _repository.UpsertDownloadBlocklistEntryAsync("artist", "Artist One", enabled: true);
+        Assert.NotNull(blockArtist);
+
+        var entries = await _repository.GetDownloadBlocklistEntriesAsync();
+        Assert.True(entries.Count >= 2);
+
+        var match = await _repository.FindMatchingDownloadBlocklistAsync("Song One", "Other Artist", "Other Album");
+        Assert.NotNull(match);
+        Assert.Equal("track", match!.Field);
+
+        var removedBlock = await _repository.RemoveDownloadBlocklistEntryAsync(blockArtist!.Id);
+        Assert.True(removedBlock);
+
+        await _repository.AddPlaylistWatchIgnoredTracksAsync(
+            "spotify",
+            "pl-123",
+            new List<PlaylistWatchIgnoreInsert> { new("dz-song-orphan-check", null) });
+        var targetJobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "pl-123",
+            "snapshot-1");
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            targetJobs.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(targetJobs, static job => Assert.Equal("playlist", job.TrackId));
+
+        var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
+        Assert.True(removedWatchlist);
+        Assert.False(await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123"));
+        Assert.Empty(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync("spotify", "pl-123"));
+        Assert.DoesNotContain(
+            await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "test-owner"),
+            job => job.Source == "spotify" && job.PlaylistId == "pl-123");
+    }
+
+    [Fact]
+    public void PlaylistWatchlistPresentation_AppendsBreakdownOrdinalsAfterSourceStorefront()
+    {
+        var repository = File.ReadAllText(FindSourceFile("DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var selectStart = repository.IndexOf("public async Task<IReadOnlyList<PlaylistWatchlistDto>> GetPlaylistWatchlistAsync", StringComparison.Ordinal);
+        Assert.True(selectStart > 0);
+        var selectEnd = repository.IndexOf("public async Task<bool> IsPlaylistWatchlistedAsync", selectStart, StringComparison.Ordinal);
+        Assert.True(selectEnd > selectStart);
+        var select = repository[selectStart..selectEnd];
+
+        Assert.Contains("pw.source_storefront", select, StringComparison.Ordinal);
+        Assert.Contains("IsDBNullAsync(23", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(24)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(25)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(26)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(27)", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("waiting_for_target_count", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("waiting_for_identity_count", select, StringComparison.Ordinal);
+        Assert.Contains("MissingTrackCount: await reader.IsDBNullAsync(24", select, StringComparison.Ordinal);
+        Assert.Contains("MappingRetryCount: await reader.IsDBNullAsync(25", select, StringComparison.Ordinal);
+        Assert.Contains("BlockedTrackCount: await reader.IsDBNullAsync(26", select, StringComparison.Ordinal);
+        Assert.Contains("FailedTrackCount: await reader.IsDBNullAsync(27", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(6)", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(16)", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(15)", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("identity_status = 'mapping_retry'", select, StringComparison.Ordinal);
+
+        var statusesStart = repository.IndexOf("public async Task<IReadOnlyList<PlaylistWatchTrackStatusDto>> GetPlaylistWatchTrackStatusesAsync", StringComparison.Ordinal);
+        Assert.True(statusesStart > 0);
+        var statusesEnd = repository.IndexOf("public async Task UpdatePlaylistWatchTrackVerificationAsync", statusesStart, StringComparison.Ordinal);
+        Assert.True(statusesEnd > statusesStart);
+        var statuses = repository[statusesStart..statusesEnd];
+        Assert.Contains("LEFT JOIN playlist_watch_track_presentation_status presentation", statuses, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(presentation.presentation_status, playlist_watch_track.status) AS sync_status", statuses, StringComparison.Ordinal);
+        Assert.DoesNotContain("WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'", statuses, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchTrackMappingStatus_IsPersistedSeparatelyAndCountedInPresentation()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "boomplay",
+            "mapping-list",
+            new PlaylistWatchlistMetadataInput("Mapping Split", null, null, 4));
+        await _repository.UpdatePlaylistWatchPresentationSummaryAsync(
+            "boomplay",
+            "mapping-list",
+            ignoredBlockedTrackCount: 1,
+            reroutedTrackCount: 0);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "boomplay",
+            "mapping-list",
+            [
+                new PlaylistWatchTrackInsert("boom-retry", null, MappingStatus: "mapping_retry"),
+                new PlaylistWatchTrackInsert("boom-blocked", null, MappingStatus: "matched"),
+                new PlaylistWatchTrackInsert("boom-failed", null, MappingStatus: "matched"),
+                new PlaylistWatchTrackInsert("boom-missing", null, MappingStatus: "matched")
+            ]);
+        await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-blocked", "blocked");
+        await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-failed", "failed");
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "boomplay",
+            "mapping-list",
+            [
+                new PlaylistWatchMissingTrackUpsert(
+                    "boom-missing",
+                    null,
+                    SourcePosition: null,
+                    Title: "Missing",
+                    Artist: "Artist",
+                    Album: "Album",
+                    DurationMs: null,
+                    CoverUrl: null,
+                    DeezerId: "dz-missing",
+                    MappingStatus: "matched",
+                    SnapshotId: null,
+                    CandidateRevision: null,
+                    ProviderReadinessRevision: null)
+            ]);
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = new SqliteCommand(
+                @"SELECT mapping_status, identity_status
+                  FROM playlist_watch_track
+                  WHERE source='boomplay' AND source_id='mapping-list' AND track_source_id='boom-retry';",
+                connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("mapping_retry", reader.GetString(0));
+            Assert.True(reader.IsDBNull(1));
+        }
+
+        var statuses = await _repository.GetPlaylistWatchTrackStatusesAsync("boomplay", "mapping-list");
+        Assert.Equal("mapping_retry", Assert.Single(statuses, status => status.TrackSourceId == "boom-retry").SyncStatus);
+        Assert.Equal("blocked", Assert.Single(statuses, status => status.TrackSourceId == "boom-blocked").SyncStatus);
+        Assert.Equal("failed", Assert.Single(statuses, status => status.TrackSourceId == "boom-failed").SyncStatus);
+        Assert.Equal("missing", Assert.Single(statuses, status => status.TrackSourceId == "boom-missing").SyncStatus);
+
+        var summary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "boomplay" && item.SourceId == "mapping-list");
+        Assert.Equal(1, summary.MappingRetryCount);
+        Assert.Equal(1, summary.BlockedTrackCount);
+        Assert.Equal(1, summary.FailedTrackCount);
+        Assert.Equal(1, summary.MissingTrackCount);
+        Assert.Equal(3, summary.IncompleteTrackCount);
+        Assert.Equal(0, summary.SyncedTrackCount);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchMissingLedger_ReconcilesLibraryMatchesAcrossPlaylistsBeforeAdmission()
+    {
+        var seeded = await SeedLibraryAsync(("Shared File", "dz-shared", "sp-shared", "ap-shared"));
+        var localTrackId = seeded.TrackIdsByTitle["Shared File"];
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "playlist-a",
+            new PlaylistWatchlistMetadataInput("Playlist A", null, null, 1));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "playlist-b",
+            new PlaylistWatchlistMetadataInput("Playlist B", null, null, 1));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "playlist-a",
+            [new PlaylistWatchTrackInsert("sp-shared", "ISRC00000001", SourcePosition: 1, Title: "Shared File", Artist: "Artist One", Album: "Album One")]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "playlist-b",
+            [new PlaylistWatchTrackInsert("sp-shared", "ISRC00000001", SourcePosition: 1, Title: "Shared File", Artist: "Artist One", Album: "Album One")]);
+        var missing = new PlaylistWatchMissingTrackUpsert(
+            "sp-shared",
+            "ISRC00000001",
+            SourcePosition: 1,
+            Title: "Shared File",
+            Artist: "Artist One",
+            Album: "Album One",
+            DurationMs: 180000,
+            CoverUrl: null,
+            DeezerId: "dz-shared",
+            MappingStatus: "matched",
+            SnapshotId: null,
+            CandidateRevision: null,
+            ProviderReadinessRevision: null);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "playlist-a", [missing]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "playlist-b", [missing]);
+
+        Assert.Equal(2, (await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync()).Count);
+
+        var resolved = await _repository.ReconcilePlaylistWatchMissingTracksWithLibraryAsync();
+
+        Assert.Equal(2, resolved);
+        Assert.Empty(await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync());
+        foreach (var playlistId in new[] { "playlist-a", "playlist-b" })
+        {
+            var status = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", playlistId));
+            Assert.Equal(localTrackId, status.LocalTrackId);
+            Assert.Equal("completed", status.Status);
+            Assert.Equal("identity_verified", status.IdentityStatus);
+        }
+    }
+
+    [Fact]
+    public async Task PlayHistory_Queries_ReturnExpectedTrackOrdering()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"),
+            ("Song Two", "dz-song-2", "sp-song-2", "am-song-2"),
+            ("Song Three", "dz-song-3", "sp-song-3", "am-song-3"));
+
+        var plexUserId = await _repository.EnsurePlexUserAsync(
+            username: "plex-user",
+            plexUserId: "plex-uid-1",
+            serverUrl: "http://plex.local:32400",
+            machineId: "machine-1");
+        Assert.True(plexUserId > 0);
+
+        var trackOne = seeded.TrackIdsByTitle["Song One"];
+        var trackTwo = seeded.TrackIdsByTitle["Song Two"];
+        var trackThree = seeded.TrackIdsByTitle["Song Three"];
+
+        var now = DateTimeOffset.UtcNow;
+        await _repository.AddPlayHistoryAsync(new LibraryRepository.PlayHistoryWriteInput(
+            PlexUserId: plexUserId,
+            LibraryId: seeded.LibraryId,
+            TrackId: trackOne,
+            PlexTrackKey: "key-1",
+            PlexRatingKey: "rating-1",
+            PlayedAtUtc: now.AddMinutes(-4),
+            DurationMs: 180000,
+            MetadataJson: "{}"));
+        await _repository.AddPlayHistoryAsync(new LibraryRepository.PlayHistoryWriteInput(
+            PlexUserId: plexUserId,
+            LibraryId: seeded.LibraryId,
+            TrackId: trackOne,
+            PlexTrackKey: "key-1",
+            PlexRatingKey: "rating-1",
+            PlayedAtUtc: now.AddMinutes(-3),
+            DurationMs: 180000,
+            MetadataJson: "{}"));
+        await _repository.AddPlayHistoryAsync(new LibraryRepository.PlayHistoryWriteInput(
+            PlexUserId: plexUserId,
+            LibraryId: seeded.LibraryId,
+            TrackId: trackTwo,
+            PlexTrackKey: "key-2",
+            PlexRatingKey: "rating-2",
+            PlayedAtUtc: now.AddMinutes(-2),
+            DurationMs: 190000,
+            MetadataJson: "{}"));
+
+        Assert.Equal(
+            now.AddMinutes(-2),
+            await _repository.GetLatestPlayHistoryUtcAsync(plexUserId, "plex"));
+
+        var topTrackIds = await _repository.GetTopTrackIdsAsync(plexUserId, seeded.LibraryId, 3);
+        Assert.Equal(trackOne, topTrackIds[0]);
+
+        var mostPlayed = await _repository.GetMostPlayedTrackIdsAsync(plexUserId, seeded.LibraryId, 3);
+        Assert.Equal(trackOne, mostPlayed[0]);
+
+        var unplayed = await _repository.GetUnplayedTrackIdsAsync(plexUserId, seeded.LibraryId, 10);
+        Assert.Contains(trackThree, unplayed);
+
+        var rediscover = await _repository.GetRediscoverTrackIdsAsync(plexUserId, seeded.LibraryId, 10);
+        Assert.Contains(trackThree, rediscover);
+    }
+
+    [Fact]
+    public async Task SourceResolution_And_ExistenceChecks_WorkAcrossLibraryAndFolder()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"),
+            ("Song Two", "dz-song-2", "sp-song-2", "am-song-2"));
+
+        var scopeTrackIds = await _repository.GetTrackIdsForLibraryScopeAsync(seeded.LibraryId, seeded.Folder.Id);
+        Assert.Equal(2, scopeTrackIds.Count);
+
+        var trackIdsBySpotify = await _repository.GetTrackIdsBySourceIdsAsync(
+            "spotify",
+            SpotifyTrackSourceIds);
+        Assert.Equal(2, trackIdsBySpotify.Count);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], trackIdsBySpotify["sp-song-1"]);
+
+        var trackIdsByMixedCaseSpotify = await _repository.GetTrackIdsBySourceIdsAsync(
+            "SPOTIFY",
+            UppercaseSpotifyTrackSourceIds);
+        Assert.Single(trackIdsByMixedCaseSpotify);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], trackIdsByMixedCaseSpotify["SP-SONG-1"]);
+
+        var albumFromTrackSource = await _repository.GetLocalAlbumIdByTrackSourceIdAsync("spotify", "sp-song-1");
+        Assert.Equal(seeded.AlbumId, albumFromTrackSource);
+
+        var albumFromAlbumSource = await _repository.GetLocalAlbumIdByAlbumSourceIdAsync("spotify", "sp-album-1");
+        Assert.Equal(seeded.AlbumId, albumFromAlbumSource);
+
+        var albumFromMetadata = await _repository.GetLocalAlbumIdByTrackMetadataAsync("Artist One", "Song One", 180000);
+        Assert.Equal(seeded.AlbumId, albumFromMetadata);
+
+        var existsTrackSource = await _repository.ExistsTrackSourceAsync("spotify", "sp-song-1");
+        Assert.True(existsTrackSource);
+        Assert.True(await _repository.ExistsTrackSourceAsync("spotify", "sp-song-1", "stereo"));
+        Assert.False(await _repository.ExistsTrackSourceAsync("spotify", "sp-song-1", "atmos"));
+
+        Assert.True(await _repository.ExistsTrackSourceInFolderAsync("spotify", "sp-song-1", seeded.Folder.Id));
+        Assert.False(await _repository.ExistsTrackSourceInFolderAsync("spotify", "sp-song-1", seeded.Folder.Id + 999));
+
+        Assert.True(await _repository.ExistsArtistSourceAsync("spotify", "sp-artist-1"));
+        Assert.True(await _repository.ExistsAlbumSourceAsync("spotify", "sp-album-1"));
+
+        Assert.True(await _repository.ExistsTrackByAlbumSourceAsync(
+            "spotify",
+            "sp-album-1",
+            "Song One",
+            "sp-artist-1"));
+        Assert.True(await _repository.ExistsTrackByAlbumSourceInFolderAsync(
+            "spotify",
+            "sp-album-1",
+            "Song Two",
+            "sp-artist-1",
+            seeded.Folder.Id));
+        Assert.False(await _repository.ExistsTrackByAlbumSourceInFolderAsync(
+            "spotify",
+            "sp-album-1",
+            "Song Two",
+            "sp-artist-1",
+            seeded.Folder.Id,
+            "atmos"));
+
+        var existenceResults = await _repository.ExistsInLibraryAsync(
+            new[]
+            {
+                new LibraryRepository.LibraryExistenceInput("ISRC00000001", null, null, null),
+                new LibraryRepository.LibraryExistenceInput(null, "Song One", "Artist One", 180000),
+                new LibraryRepository.LibraryExistenceInput(null, "Missing Song", "Missing Artist", null)
+            });
+        Assert.Equal(3, existenceResults.Count);
+        Assert.True(existenceResults[0]);
+        Assert.True(existenceResults[1]);
+        Assert.False(existenceResults[2]);
+
+        var sourceIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Wrong display title",
+                "Wrong display artist",
+                null,
+                "spotify",
+                "sp-song-1"));
+        Assert.Equal("source_id", sourceIdentity.MatchType);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], sourceIdentity.LocalTrackId);
+
+        var metadataIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Song One",
+                "Artist One",
+                187000,
+                AlbumTitle: "Album One"));
+        Assert.Equal("metadata_exact", metadataIdentity.MatchType);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], metadataIdentity.LocalTrackId);
+
+        var batchInputs = new[]
+        {
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Wrong display title",
+                "Wrong display artist",
+                null,
+                "spotify",
+                "sp-song-1"),
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Song One",
+                "Artist One",
+                187000,
+                AlbumTitle: "Album One"),
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Missing Song",
+                "Missing Artist",
+                null)
+        };
+        var singleIdentities = new List<LibraryRepository.LocalTrackIdentityResult>(batchInputs.Length);
+        foreach (var input in batchInputs)
+        {
+            singleIdentities.Add(await _repository.ResolveLocalTrackIdentityAsync(input));
+        }
+
+        var batchIdentities = await _repository.ResolveLocalTrackIdentitiesAsync(batchInputs);
+        Assert.Equal(singleIdentities.Count, batchIdentities.Count);
+        for (var index = 0; index < singleIdentities.Count; index++)
+        {
+            Assert.Equal(singleIdentities[index].LocalTrackId, batchIdentities[index].LocalTrackId);
+            Assert.Equal(singleIdentities[index].MatchType, batchIdentities[index].MatchType);
+            Assert.Equal(singleIdentities[index].CandidateTrackIds, batchIdentities[index].CandidateTrackIds);
+        }
+    }
+
+    [Fact]
+    public async Task LocalIdentityRanking_UsesQualityThenMetadataRichnessAndKeepsOnlyCompleteTiesInReview()
+    {
+        var seeded = await SeedLibraryAsync(("Ranked Song", "dz-ranked", "sp-ranked", "ap-ranked"));
+        var originalId = seeded.TrackIdsByTitle["Ranked Song"];
+        var lowerQualityRichId = await InsertIdentityCandidateAsync(
+            seeded, "ranked-lower.flac", 3, "sp-ranked;lower", 20);
+        var input = new LibraryRepository.LibraryExistenceInput(
+            "ISRC00000001", "Ranked Song", "Artist One", 180000, AlbumTitle: "Album One");
+
+        var qualityWinner = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.Equal(originalId, qualityWinner.LocalTrackId);
+        Assert.False(qualityWinner.IsAmbiguous);
+
+        await SetAudioPropertiesWithoutQualityRankAsync(lowerQualityRichId, bitsPerSample: 24, sampleRateHz: 96000);
+        var richnessWinner = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.Equal(lowerQualityRichId, richnessWinner.LocalTrackId);
+        Assert.False(richnessWinner.IsAmbiguous);
+        var sourceWinner = await _repository.ResolveLocalTrackIdentityAsync(
+            input with { Isrc = null, Source = "spotify", SourceId = "sp-ranked" });
+        Assert.Equal(lowerQualityRichId, sourceWinner.LocalTrackId);
+
+        var equalId = await InsertIdentityCandidateAsync(
+            seeded, "ranked-equal.flac", 4, "sp-ranked;equal", 20);
+        var tied = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.True(tied.IsAmbiguous);
+        Assert.Equal(new[] { lowerQualityRichId, equalId }.Order(), tied.CandidateTrackIds.Order());
+        var resolutionCandidates = await _repository.GetLocalTrackResolutionCandidatesAsync(tied.CandidateTrackIds);
+        Assert.Equal(2, resolutionCandidates.Count);
+        Assert.All(resolutionCandidates, candidate =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(candidate.FilePath));
+            Assert.False(string.IsNullOrWhiteSpace(candidate.RootPath));
+            Assert.True(candidate.FolderId > 0);
+            Assert.Equal(4, candidate.QualityRank);
+            Assert.True(candidate.MetadataRichness > 0);
+            Assert.Equal("ISRC00000001", candidate.Isrc);
+        });
+
+        var batch = await _repository.ResolveLocalTrackIdentitiesAsync([
+            input,
+            input with { Isrc = null, Source = "spotify", SourceId = "sp-ranked" },
+            input with { Isrc = null, Source = null, SourceId = null }
+        ]);
+        Assert.Equal(3, batch.Count);
+        Assert.All(batch, result =>
+        {
+            Assert.True(result.IsAmbiguous);
+            Assert.Equal(tied.CandidateTrackIds.Order(), result.CandidateTrackIds.Order());
+            Assert.Equal(tied.BestQualityRank, result.BestQualityRank);
+        });
+
+        var dedupe = new DownloadDedupeService(
+            new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance),
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
+        var equalQualityDecision = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Ranked Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 4
+        });
+        var upgradeDecision = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Ranked Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 5
+        });
+        Assert.False(equalQualityDecision.Allowed);
+        Assert.Equal("library_quality_not_higher", equalQualityDecision.ReasonCode);
+        Assert.False(upgradeDecision.Allowed);
+        Assert.Equal("library_quality_not_higher", upgradeDecision.ReasonCode);
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "review-list", new PlaylistWatchlistMetadataInput("Review", null, null, 1));
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify", "review-list", new PlaylistWatchTrackVerification("sp-ranked", null, "review", tied.Reason));
+        Assert.Equal("review", Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "review-list")).IdentityStatus);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify", "review-list", new PlaylistWatchTrackVerification("sp-ranked", lowerQualityRichId, "identity_verified", "Ranked winner selected."));
+        var resolvedStatus = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "review-list"));
+        Assert.Equal("identity_verified", resolvedStatus.IdentityStatus);
+        Assert.Equal("completed", resolvedStatus.Status);
+        Assert.Equal(lowerQualityRichId, resolvedStatus.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task LibraryDedupe_AllowsLosslessOnlyWhenExistingFileIsLossy()
+    {
+        var seeded = await SeedLibraryAsync(("Lossy Song", "dz-lossy", "sp-lossy", "ap-lossy"));
+        var trackId = seeded.TrackIdsByTitle["Lossy Song"];
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+UPDATE audio_file
+SET quality_rank=2, codec='mp3', extension='.mp3'
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+            command.Parameters.AddWithValue("trackId", trackId);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dedupe = new DownloadDedupeService(
+            new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance),
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
+        var losslessUpgrade = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Lossy Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 3
+        });
+        var lossyRepeat = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Lossy Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 2
+        });
+
+        Assert.True(losslessUpgrade.Allowed);
+        Assert.False(lossyRepeat.Allowed);
+        Assert.Equal("library_quality_not_higher", lossyRepeat.ReasonCode);
+        Assert.Equal(trackId, lossyRepeat.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task BatchLocalIdentityResolver_PrefersStereoAndUsesAtmosOnlyWhenStereoIsAbsent()
+    {
+        var seeded = await SeedLibraryAsync(("Ranked Song", "dz-ranked", "sp-ranked", "ap-ranked"));
+        var stereoTrackId = seeded.TrackIdsByTitle["Ranked Song"];
+        var atmosTrackId = await InsertIdentityCandidateAsync(
+            seeded,
+            "ranked-atmos.ec3",
+            qualityRank: 5,
+            sourceId: "sp-ranked;atmos",
+            extraTagCount: 30);
+        await SetAudioVariantAsync(atmosTrackId, "atmos", channels: 6, codec: "ec-3");
+        var input = new LibraryRepository.LibraryExistenceInput(
+            "ISRC00000001",
+            "Ranked Song",
+            "Artist One",
+            180000,
+            AlbumTitle: "Album One");
+
+        var withStereo = Assert.Single(await _repository.ResolveLocalTrackIdentitiesAsync(
+            [input],
+            audioVariant: "stereo_preferred"));
+        Assert.Equal(stereoTrackId, withStereo.LocalTrackId);
+
+        await SetAudioVariantAsync(stereoTrackId, "atmos", channels: 6, codec: "ec-3");
+        var atmosOnly = Assert.Single(await _repository.ResolveLocalTrackIdentitiesAsync(
+            [input],
+            audioVariant: "stereo_preferred"));
+        Assert.Equal(atmosTrackId, atmosOnly.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchTargetMembership_UpsertsUnresolvedAndDeletesSnapshotRemovedOnly()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Keep Song", "dz-keep", "sp-keep", "ap-keep"),
+            ("Gap Song", "dz-gap", "sp-gap", "ap-gap"),
+            ("Gone Song", "dz-gone", "sp-gone", "ap-gone"));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "membership-upsert",
+            new PlaylistWatchlistMetadataInput("Membership", null, null, 3));
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "membership-upsert",
+                DestinationFolderId: seeded.Folder.Id,
+                Service: "plex",
+                SyncTargets: ["plex", "jellyfin"],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "membership-upsert",
+            [
+                new PlaylistWatchTrackInsert("dz-keep", "ISRCKEEP00001"),
+                new PlaylistWatchTrackInsert("dz-gap", "ISRCGAP00002"),
+                new PlaylistWatchTrackInsert("dz-gone", "ISRCGONE0003")
+            ]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "plex",
+            "plex-pl",
+            [
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-keep",
+                    seeded.TrackIdsByTitle["Keep Song"],
+                    "plex-keep",
+                    "playlist_synced"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gap",
+                    seeded.TrackIdsByTitle["Gap Song"],
+                    null,
+                    "waiting_for_identity"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gone",
+                    seeded.TrackIdsByTitle["Gone Song"],
+                    "plex-gone",
+                    "playlist_synced")
+            ]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "jellyfin",
+            "jf-pl",
+            [new PlaylistWatchTargetMembership("dz-keep", seeded.TrackIdsByTitle["Keep Song"], "jf-keep")]);
+
+        Assert.Equal("waiting_for_identity", await ReadMembershipStatusAsync("membership-upsert", "dz-gap", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("membership-upsert", "dz-keep", "jellyfin"));
+
+        await _repository.RemovePlaylistWatchTracksNotInAsync("spotify", "membership-upsert", ["dz-keep", "dz-gap"]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "plex",
+            "plex-pl",
+            [
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-keep",
+                    seeded.TrackIdsByTitle["Keep Song"],
+                    "plex-keep",
+                    "playlist_synced"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gap",
+                    seeded.TrackIdsByTitle["Gap Song"],
+                    null,
+                    "waiting_for_identity")
+            ]);
+
+        Assert.Equal("waiting_for_identity", await ReadMembershipStatusAsync("membership-upsert", "dz-gap", "plex"));
+        Assert.Null(await ReadMembershipStatusAsync("membership-upsert", "dz-gone", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("membership-upsert", "dz-keep", "jellyfin"));
+    }
+
+    [Fact]
+    public async Task GetTrackIdsByFilePaths_MapsTargetServerPathByRelativeSuffix()
+    {
+        var seeded = await SeedLibraryAsync(("Shared File", "dz-shared", "sp-shared", "ap-shared"));
+        var trackId = seeded.TrackIdsByTitle["Shared File"];
+        var localPath = seeded.TrackPathsByTitle["Shared File"];
+        var relative = Path.GetRelativePath(seeded.Folder.RootPath, localPath).Replace('\\', '/');
+        var serverPath = "/data/media/music/" + relative;
+        var plexFileUri = "file://" + serverPath;
+        var parentAndFile = "/plex-mount/" + Path.GetFileName(Path.GetDirectoryName(localPath)) + "/" + Path.GetFileName(localPath);
+
+        var mapped = await _repository.GetTrackIdsByFilePathsAsync([serverPath, plexFileUri, parentAndFile]);
+
+        Assert.Equal(trackId, mapped[serverPath]);
+        Assert.Equal(trackId, mapped[plexFileUri]);
+        Assert.Equal(trackId, mapped[parentAndFile]);
+    }
+
+    [Fact]
+    public async Task GetTrackIdsByFilePaths_MapsNumberedServerFileToArtistTitleLocalFile()
+    {
+        var seeded = await SeedLibraryAsync(("Purple Pills", "dz-pills", "sp-pills", "ap-pills"));
+        var trackId = seeded.TrackIdsByTitle["Purple Pills"];
+        var localPath = seeded.TrackPathsByTitle["Purple Pills"];
+        var album = Path.GetFileName(Path.GetDirectoryName(localPath));
+        var artist = Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(localPath)));
+        var serverPath = $"/media/Music/{artist}/{album}/10 - Purple Pills.flac";
+        var taggedPath = $"/library/Music/{artist}/{album}/{artist} - Purple Pills.flac";
+
+        var mapped = await _repository.GetTrackIdsByFilePathsAsync([serverPath, taggedPath]);
+
+        Assert.Equal(trackId, mapped[serverPath]);
+        Assert.Equal(trackId, mapped[taggedPath]);
+    }
+
+    [Fact]
+    public async Task MediaServerMappings_PreserveVariantsAndPreferStereo()
+    {
+        var seeded = await SeedLibraryAsync(("Variant Mapping", "dz-map", "sp-map", "ap-map"));
+        var trackId = seeded.TrackIdsByTitle["Variant Mapping"];
+        var now = DateTimeOffset.UtcNow;
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                trackId,
+                "jellyfin",
+                "atmos-item",
+                FilePath: null,
+                UpdatedAtUtc: now,
+                AudioVariant: "atmos"),
+            new MediaServerTrackMetadataUpsertDto(
+                trackId,
+                "jellyfin",
+                "stereo-item",
+                FilePath: null,
+                UpdatedAtUtc: now.AddSeconds(1),
+                AudioVariant: "stereo")
+        ]);
+
+        var mapping = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
+            "jellyfin",
+            [trackId]);
+        Assert.Equal("stereo-item", mapping[trackId]);
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            "SELECT COUNT(*) FROM media_server_track_variant_metadata WHERE track_id=@trackId AND service='jellyfin';",
+            connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        Assert.Equal(2L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+    }
+
+    [Fact]
+    public async Task TargetServerIdentityCoverageAndReset_AreScopedToLibraryFolder()
+    {
+        var seeded = await SeedLibraryAsync(("Scoped Identity", "dz-scoped", "sp-scoped", "ap-scoped"));
+        var trackId = seeded.TrackIdsByTitle["Scoped Identity"];
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(trackId, "plex", "plex-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(trackId, "jellyfin", "jellyfin-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(trackId, "navidrome", "navidrome-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow)
+        ]);
+
+        var targetIds = await _repository.GetAlbumTrackTargetServerIdsAsync(seeded.AlbumId);
+        Assert.Equal("plex-scoped", targetIds[trackId].PlexTrackId);
+        Assert.Equal("jellyfin-scoped", targetIds[trackId].JellyfinTrackId);
+        Assert.Equal("navidrome-scoped", targetIds[trackId].NavidromeTrackId);
+
+        var coverage = await _repository.GetTargetServerIdentityCoverageAsync(
+            ["plex", "jellyfin", "navidrome"],
+            seeded.Folder.Id);
+        Assert.All(coverage, item =>
+        {
+            Assert.Equal(1, item.TotalTracks);
+            Assert.Equal(1, item.MappedTracks);
+            Assert.Equal(0, item.MissingTracks);
+        });
+
+        var deleted = await _repository.DeleteMediaServerTrackMetadataForScopeAsync("plex", seeded.Folder.Id);
+        Assert.True(deleted > 0);
+
+        var afterReset = await _repository.GetAlbumTrackTargetServerIdsAsync(seeded.AlbumId);
+        Assert.Null(afterReset[trackId].PlexTrackId);
+        Assert.Equal("jellyfin-scoped", afterReset[trackId].JellyfinTrackId);
+        Assert.Equal("navidrome-scoped", afterReset[trackId].NavidromeTrackId);
+    }
+
+    [Fact]
+    public async Task LocalScanFileStates_RoundTrip_And_UnchangedIngestPreservesAudioTimestamp()
+    {
+        var root = Path.Join(_tempRoot, "music-library");
+        var albumDir = Path.Join(root, "Artist One", "Album One");
+        Directory.CreateDirectory(albumDir);
+        var filePath = Path.Join(albumDir, "01 - Cached Song.flac");
+        await File.WriteAllTextAsync(filePath, "audio placeholder");
+
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: root,
+                DisplayName: "Music Library",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
+
+        var artists = new List<LocalArtistScanDto> { new("Artist One", null) };
+        var albums = new List<LocalAlbumScanDto>
+        {
+            new("Artist One", "Album One", null, new[] { folder.DisplayName })
+        };
+        var track = CreateTrackScan(
+            title: "Cached Song",
+            filePath: filePath,
+            deezerTrackId: "dz-cached",
+            spotifyTrackId: "sp-cached",
+            appleTrackId: "ap-cached");
+
+        await _repository.IngestLocalScanAsync(
+            await _repository.GetFoldersAsync(),
+            artists,
+            albums,
+            new[] { track },
+            pruneMissingArtists: false);
+
+        var states = await _repository.GetLocalScanFileStatesAsync(folder.Id);
+        var state = Assert.Single(states.Values);
+        Assert.Equal(new FileInfo(filePath).Length, state.Size);
+        Assert.Equal("Cached Song", state.Scan.Title);
+        Assert.Equal("sp-cached", state.Scan.SpotifyTrackId);
+        Assert.Contains("Soundtrack", state.Scan.TagGenres);
+
+        var updatedAt = await ReadAudioFileUpdatedAtAsync(filePath);
+        await Task.Delay(1100);
+
+        await _repository.IngestLocalScanAsync(
+            await _repository.GetFoldersAsync(),
+            artists,
+            albums,
+            new[] { track with { IsUnchanged = true } },
+            pruneMissingArtists: false);
+
+        Assert.Equal(updatedAt, await ReadAudioFileUpdatedAtAsync(filePath));
+    }
+
+    [Fact]
+    public async Task ExistsInLibrary_ScopedToLibrary_DoesNotLeakAcrossOtherLibraries()
+    {
+        var primary = await SeedLibraryAsync(
+            ("Primary Song", "sp-song-primary", "sp-song-primary", "ap-song-primary"));
+
+        var otherFolder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/library-b",
+                DisplayName: "Library B",
+                Enabled: true,
+                LibraryName: "Secondary Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
+
+        var allFolders = await _repository.GetFoldersAsync();
+        var artists = new List<LocalArtistScanDto>
+        {
+            new("Other Artist", "/covers/other-artist.jpg")
+        };
+        var albums = new List<LocalAlbumScanDto>
+        {
+            new(
+                ArtistName: "Other Artist",
+                Title: "Other Album",
+                PreferredCoverPath: "/covers/other-album.jpg",
+                LocalFolders: new[] { otherFolder.DisplayName },
+                HasAnimatedArtwork: false)
+        };
+        var tracks = new[]
+        {
+            CreateTrackScan(
+                title: "Other Song",
+                filePath: "/music/library-b/Other Artist/Other Album/01 - Other Song.flac",
+                deezerTrackId: "sp-other-song",
+                spotifyTrackId: "sp-other-song",
+                appleTrackId: "ap-other-song")
+        };
+
+        await _repository.IngestLocalScanAsync(
+            allFolders,
+            artists,
+            albums,
+            tracks,
+            pruneMissingArtists: true);
+
+        var existenceResults = await _repository.ExistsInLibraryAsync(
+            primary.LibraryId,
+            null,
+            new[]
+            {
+                new LibraryRepository.LibraryExistenceInput(null, "Other Song", "Other Artist", 180000)
+            });
+
+        Assert.Single(existenceResults);
+        Assert.False(existenceResults[0]);
+    }
+
+    [Fact]
+    public async Task ArtistsPaging_ReturnsStableSlices_And_TotalCount()
+    {
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/paging-library",
+                DisplayName: "Paging Library",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
+
+        var allFolders = await _repository.GetFoldersAsync();
+        var artists = Enumerable.Range(1, 25)
+            .Select(index => new LocalArtistScanDto($"Artist {index:00}", $"/covers/artist-{index:00}.jpg"))
+            .ToList();
+        var albums = Enumerable.Range(1, 25)
+            .Select(index => new LocalAlbumScanDto(
+                ArtistName: $"Artist {index:00}",
+                Title: $"Album {index:00}",
+                PreferredCoverPath: $"/covers/album-{index:00}.jpg",
+                LocalFolders: new[] { folder.DisplayName },
+                HasAnimatedArtwork: false))
+            .ToList();
+
+        var tracks = Enumerable.Range(1, 25)
+            .Select(index =>
+            {
+                var artistName = $"Artist {index:00}";
+                var albumName = $"Album {index:00}";
+                var title = $"Song {index:00}";
+                return CreateTrackScan(
+                    title: title,
+                    filePath: $"/music/paging-library/{artistName}/{albumName}/01 - {title}.flac",
+                    deezerTrackId: $"dz-paging-{index:00}",
+                    spotifyTrackId: $"sp-paging-{index:00}",
+                    appleTrackId: $"am-paging-{index:00}") with
+                {
+                    ArtistName = artistName,
+                    AlbumTitle = albumName,
+                    TagArtist = artistName,
+                    TagAlbumArtist = artistName,
+                    TagAlbum = albumName,
+                    TrackNo = 1,
+                    TagTrackNo = 1,
+                    SourceId = $"sp-paging-{index:00}"
+                };
+            })
+            .ToList();
+
+        await _repository.IngestLocalScanAsync(
+            allFolders,
+            artists,
+            albums,
+            tracks,
+            pruneMissingArtists: true);
+
+        var page1 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 10);
+        Assert.Equal(25, page1.TotalCount);
+        Assert.Equal(10, page1.Items.Count);
+        Assert.Equal(1, page1.Page);
+        Assert.Equal(10, page1.PageSize);
+        Assert.Equal("Artist 01", page1.Items[0].Name);
+        Assert.Equal("Artist 10", page1.Items[^1].Name);
+
+        var page2 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 2, pageSize: 10);
+        Assert.Equal(25, page2.TotalCount);
+        Assert.Equal(10, page2.Items.Count);
+        Assert.Equal("Artist 11", page2.Items[0].Name);
+        Assert.Equal("Artist 20", page2.Items[^1].Name);
+
+        var page3 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 3, pageSize: 10);
+        Assert.Equal(25, page3.TotalCount);
+        Assert.Equal(5, page3.Items.Count);
+        Assert.Equal("Artist 21", page3.Items[0].Name);
+        Assert.Equal("Artist 25", page3.Items[^1].Name);
+
+        var clamped = await _repository.GetArtistsPageAsync("local", folder.Id, page: 0, pageSize: 5000);
+        Assert.Equal(1, clamped.Page);
+        Assert.Equal(1000, clamped.PageSize);
+        Assert.Equal(25, clamped.Items.Count);
+
+        var searched = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 20, search: "Artist 2", sort: "name-asc");
+        Assert.Equal(6, searched.TotalCount);
+        Assert.Equal("Artist 20", searched.Items[0].Name);
+        Assert.Equal("Artist 25", searched.Items[^1].Name);
+
+        var descending = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 5, search: null, sort: "name-desc");
+        Assert.Equal(25, descending.TotalCount);
+        Assert.Equal("Artist 25", descending.Items[0].Name);
+        Assert.Equal("Artist 21", descending.Items[^1].Name);
+
+        var allArtists = await _repository.GetArtistsAsync("local", folder.Id);
+        Assert.Equal(25, allArtists.Count);
+        Assert.Equal("Artist 01", allArtists[0].Name);
+        Assert.Equal("Artist 25", allArtists[^1].Name);
+    }
+
+    [Fact]
+    public async Task ShazamCache_And_PlexMetadata_RoundTrip_Works()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+        var trackId = seeded.TrackIdsByTitle["Song One"];
+
+        var initialCache = await _repository.GetShazamTrackCacheByTrackIdForLibraryAsync(seeded.LibraryId);
+        Assert.True(initialCache.TryGetValue(trackId, out var initialEntry));
+        Assert.Equal("pending", initialEntry!.Status);
+
+        var staleBefore = DateTimeOffset.UtcNow;
+        var initialRefreshCandidates = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
+            seeded.LibraryId,
+            staleBefore,
+            seeded.Folder.Id,
+            limit: 10);
+        Assert.Contains(trackId, initialRefreshCandidates);
+
+        var scannedAt = DateTimeOffset.UtcNow;
+        await _repository.UpsertTrackShazamCacheAsync(
+            new LibraryRepository.TrackShazamCacheUpsertInput(
+                TrackId: trackId,
+                Status: "matched",
+                ShazamTrackId: "shz-1",
+                Title: "Song One",
+                Artist: "Artist One",
+                Isrc: "ISRC00000001",
+                RelatedTracks:
+                [
+                    CreateRecommendationTrack("rel-1", "Related Song")
+                ],
+                ScannedAtUtc: scannedAt,
+                Error: null,
+                FilePath: seeded.TrackPathsByTitle["Song One"],
+                FileSize: 12345,
+                FileModifiedUtc: scannedAt.AddMinutes(-2),
+                SpotifyId: "spotify-resolved-1",
+                AppleId: "apple-resolved-1",
+                DeezerId: "deezer-resolved-1",
+                Album: "Album One",
+                ReleaseDate: "2026-01-01",
+                Explicit: true));
+
+        var updatedCache = await _repository.GetShazamTrackCacheByTrackIdForLibraryAsync(seeded.LibraryId);
+        Assert.True(updatedCache.TryGetValue(trackId, out var updatedEntry));
+        Assert.Equal("matched", updatedEntry!.Status);
+        Assert.Equal("shz-1", updatedEntry.ShazamTrackId);
+        Assert.Single(updatedEntry.RelatedTracks);
+        Assert.Equal(seeded.TrackPathsByTitle["Song One"], updatedEntry.FilePath);
+        Assert.Equal(12345, updatedEntry.FileSize);
+        Assert.Equal("spotify-resolved-1", updatedEntry.SpotifyId);
+        Assert.Equal("apple-resolved-1", updatedEntry.AppleId);
+        Assert.Equal("deezer-resolved-1", updatedEntry.DeezerId);
+        Assert.Equal("Album One", updatedEntry.Album);
+        Assert.Equal("2026-01-01", updatedEntry.ReleaseDate);
+        Assert.True(updatedEntry.Explicit);
+
+        await _repository.AddLocalDuplicateResolutionEventAsync(
+            trackId,
+            trackId + 1,
+            seeded.TrackPathsByTitle["Song One"],
+            Path.Join(_tempRoot, "%duplicates%", "Song One.flac"),
+            "moved",
+            null);
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT status, source_path, destination_path FROM local_duplicate_resolution_event WHERE winner_track_id=@trackId;";
+            command.Parameters.AddWithValue("trackId", trackId);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("moved", reader.GetString(0));
+            Assert.Equal(seeded.TrackPathsByTitle["Song One"], reader.GetString(1));
+            Assert.Contains("%duplicates%", reader.GetString(2), StringComparison.Ordinal);
+        }
+
+        var refreshedCandidates = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
+            seeded.LibraryId,
+            scannedAt.AddMinutes(-1),
+            seeded.Folder.Id,
+            limit: 10);
+        Assert.DoesNotContain(trackId, refreshedCandidates);
+
+        await _repository.UpsertPlexTrackMetadataAsync(
+            new PlexTrackMetadataDto(
+                TrackId: trackId,
+                PlexRatingKey: "rk-1",
+                UserRating: 9,
+                Genres: PlexMetadataGenres,
+                Moods: PlexMetadataMoods,
+                UpdatedAtUtc: DateTimeOffset.UtcNow));
+
+        var metadata = await _repository.GetPlexTrackMetadataAsync(new[] { trackId });
+        var metadataEntry = Assert.Single(metadata);
+        Assert.Equal("rk-1", metadataEntry.PlexRatingKey);
+        Assert.Single(metadataEntry.Genres);
+        Assert.Single(metadataEntry.Moods);
+
+        var plexUserId = await _repository.EnsurePlexUserAsync(
+            username: "plex-user",
+            plexUserId: "plex-uid-1",
+            serverUrl: "http://plex.local:32400",
+            machineId: "machine-1");
+        await _repository.AddPlayHistoryAsync(
+            new LibraryRepository.PlayHistoryWriteInput(
+                PlexUserId: plexUserId,
+                LibraryId: seeded.LibraryId,
+                TrackId: trackId,
+                PlexTrackKey: "track-key-1",
+                PlexRatingKey: "rk-1",
+                PlayedAtUtc: DateTimeOffset.UtcNow,
+                DurationMs: 180000,
+                MetadataJson: "{}"));
+
+        var ratingKeys = await _repository.GetPlexRatingKeysAsync(new[] { trackId });
+        Assert.Contains("rk-1", ratingKeys);
+
+        var ratingKeysByTrack = await _repository.GetPlexRatingKeysByTrackIdsAsync(new[] { trackId });
+        Assert.Equal("rk-1", ratingKeysByTrack[trackId]);
+
+        var trackIdsByRatingKey = await _repository.GetTrackIdsByPlexRatingKeysAsync(PlexRatingKeys);
+        Assert.Equal(trackId, trackIdsByRatingKey["rk-1"]);
+    }
+
+    [Fact]
+    public async Task Existing_ShazamCache_schema_is_upgraded_additively()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+DROP TABLE track_shazam_cache;
+CREATE TABLE track_shazam_cache (
+    track_id BIGINT PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    shazam_track_id TEXT,
+    title TEXT,
+    artist TEXT,
+    isrc TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    related_tracks_json TEXT,
+    scanned_at_utc TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var verified = new SqliteConnection($"Data Source={_dbPath}");
+        await verified.OpenAsync();
+        await using var columns = verified.CreateCommand();
+        columns.CommandText = "PRAGMA table_info(track_shazam_cache);";
+        await using var reader = await columns.ExecuteReaderAsync();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(1));
+        }
+
+        Assert.Contains("file_path", names);
+        Assert.Contains("file_size", names);
+        Assert.Contains("file_modified_utc", names);
+        Assert.Contains("spotify_id", names);
+        Assert.Contains("apple_id", names);
+        Assert.Contains("deezer_id", names);
+        Assert.Contains("album", names);
+        Assert.Contains("release_date", names);
+        Assert.Contains("explicit", names);
+    }
+
+    [Fact]
+    public async Task RecommendationRejection_RoundTrip_Works()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+        var stationId = $"library:{seeded.LibraryId}:folder:{seeded.Folder.Id}";
+
+        await _repository.AddRecommendationRejectionAsync(
+            new RecommendationRejectionUpsertInput(
+                seeded.LibraryId,
+                null,
+                stationId,
+                " 12345 ",
+                "ISRC00000001",
+                "Recommended Song",
+                "Recommended Artist"));
+
+        var rejectedIds = await _repository.GetRecommendationRejectedTrackIdsAsync(
+            seeded.LibraryId,
+            seeded.Folder.Id,
+            stationId);
+
+        Assert.Contains("12345", rejectedIds);
+    }
+
+    [Fact]
+    public async Task GetTracksForAnalysis_CanRetryCompletedStandardAnalysis_WhenRequested()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+        var trackId = seeded.TrackIdsByTitle["Song One"];
+        var analyzedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(
+            trackId,
+            seeded.LibraryId,
+            analyzedAtUtc,
+            ["happy"],
+            analysisMode: "standard"));
+
+        var defaultCandidates = await _repository.GetTracksForAnalysisAsync(10);
+        Assert.DoesNotContain(defaultCandidates, item => item.TrackId == trackId);
+
+        var retryCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true);
+        Assert.Contains(retryCandidates, item => item.TrackId == trackId);
+
+        var throttledRetryCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true,
+            completedStandardRetryBeforeUtc: DateTimeOffset.UtcNow.AddMinutes(-30));
+        Assert.DoesNotContain(throttledRetryCandidates, item => item.TrackId == trackId);
+
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(
+            trackId,
+            seeded.LibraryId,
+            analyzedAtUtc.AddMinutes(1),
+            ["happy"],
+            analysisMode: "enhanced"));
+
+        var enhancedCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true);
+        Assert.DoesNotContain(enhancedCandidates, item => item.TrackId == trackId);
+    }
+
+    [Fact]
+    public async Task TrackAnalysis_And_MixCache_Workflow_RoundTrip_Works()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"),
+            ("Song Two", "dz-song-2", "sp-song-2", "am-song-2"));
+        var trackOne = seeded.TrackIdsByTitle["Song One"];
+        var trackTwo = seeded.TrackIdsByTitle["Song Two"];
+
+        var tracksForAnalysis = await _repository.GetTracksForAnalysisAsync(10);
+        Assert.True(tracksForAnalysis.Count >= 2);
+        Assert.Contains(tracksForAnalysis, item => item.TrackId == trackOne);
+
+        var explicitTrack = await _repository.GetTrackForAnalysisAsync(trackOne);
+        Assert.NotNull(explicitTrack);
+
+        await _repository.MarkTrackAnalysisProcessingAsync(trackOne, seeded.LibraryId);
+        await _repository.ResetProcessingTrackAnalysisAsync();
+        var resetAnalysis = await _repository.GetTrackAnalysisAsync(trackOne);
+        Assert.NotNull(resetAnalysis);
+        Assert.Equal("pending", resetAnalysis!.Status);
+
+        var baseTime = DateTimeOffset.UtcNow.AddMinutes(-2);
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(trackOne, seeded.LibraryId, baseTime, ["happy"]));
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(trackTwo, seeded.LibraryId, baseTime.AddMinutes(1), ["epic"]));
+
+        var analysisOne = await _repository.GetTrackAnalysisAsync(trackOne);
+        Assert.NotNull(analysisOne);
+        Assert.Equal("complete", analysisOne!.Status);
+        Assert.Equal("C#m", analysisOne.Key);
+
+        var latest = await _repository.GetLatestTrackAnalysisAsync();
+        Assert.NotNull(latest);
+        Assert.Equal(trackTwo, latest!.Track.TrackId);
+
+        var analysisByTrack = await _repository.GetTrackAnalysisByTrackIdsAsync(new[] { trackOne, trackTwo });
+        Assert.Equal(2, analysisByTrack.Count);
+        Assert.Equal(0.4, analysisByTrack[trackOne].Approachability);
+        Assert.Equal(0.6, analysisByTrack[trackOne].Engagement);
+        Assert.Equal(0.65, analysisByTrack[trackOne].ValenceMl);
+        Assert.Equal(0.55, analysisByTrack[trackOne].ArousalMl);
+
+        var candidates = await _repository.GetTrackAnalysisCandidatesAsync(seeded.LibraryId, trackOne, limit: 10);
+        var candidate = Assert.Single(candidates, item => item.TrackId == trackTwo);
+        Assert.Equal(0.2, candidate.VoiceInstrumental);
+        Assert.Equal(0.8, candidate.TonalAtonal);
+        Assert.Equal(0.5, candidate.DynamicComplexity);
+        Assert.Equal(-9.0, candidate.LoudnessMl);
+
+        var moodMatches = await _repository.GetTrackIdsByMoodTagsAsync(seeded.LibraryId, HappyMoodTags, 10);
+        Assert.Contains(trackOne, moodMatches);
+
+        var status = await _repository.GetAnalysisStatusAsync();
+        Assert.True(status.AnalyzedTracks >= 2);
+
+        var plexUserId = await _repository.EnsurePlexUserAsync(
+            username: "plex-user",
+            plexUserId: "plex-uid-1",
+            serverUrl: "http://plex.local:32400",
+            machineId: "machine-1");
+
+        var mixCacheId = await _repository.UpsertMixCacheAsync(
+            new LibraryRepository.MixCacheUpsertInput(
+                MixId: "mix-happy",
+                PlexUserId: plexUserId,
+                LibraryId: seeded.LibraryId,
+                Name: "Happy Mix",
+                Description: "Auto generated",
+                CoverUrls: MixCoverUrls,
+                TrackCount: 2,
+                GeneratedAtUtc: DateTimeOffset.UtcNow,
+                ExpiresAtUtc: DateTimeOffset.UtcNow.AddHours(2)));
+
+        await _repository.ReplaceMixItemsAsync(mixCacheId, new[] { trackTwo, trackOne });
+
+        var mixIdLookup = await _repository.GetMixCacheIdAsync("mix-happy", plexUserId, seeded.LibraryId);
+        Assert.Equal(mixCacheId, mixIdLookup);
+
+        var mixSummary = await _repository.GetMixCacheAsync("mix-happy", plexUserId, seeded.LibraryId);
+        Assert.NotNull(mixSummary);
+        Assert.Equal(2, mixSummary!.TrackCount);
+        Assert.Single(mixSummary.CoverUrls);
+
+        var mixTracks = await _repository.GetMixTracksAsync(mixCacheId);
+        Assert.Equal(2, mixTracks.Count);
+        Assert.Equal(trackTwo, mixTracks[0].TrackId);
+
+        var coverPaths = await _repository.GetCoverPathsAsync(new[] { trackOne, trackTwo }, limit: 1);
+        Assert.Single(coverPaths);
+    }
+
+    [Fact]
+    public async Task ArtistArtworkProvenance_RoundTripsProviderUrlPathAndDimensions()
+    {
+        var seeded = await SeedLibraryAsync(("Provenance Song", "dz-prov", "sp-prov", "ap-prov"));
+        var localPath = Path.Join(_tempRoot, "artist.jpg");
+
+        await _repository.UpsertArtistArtworkCacheAsync(
+            new ArtistArtworkCacheUpsertInput(
+                seeded.ArtistId,
+                "avatar",
+                "spotify:artist-1",
+                "spotify",
+                "https://i.scdn.co/image/square",
+                localPath,
+                "hash",
+                640,
+                640,
+                "not_scanned",
+                null,
+                false,
+                false));
+
+        var result = await _repository.GetArtistArtworkProvenanceAsync(
+            seeded.ArtistId,
+            "avatar",
+            localPath);
+
+        Assert.NotNull(result);
+        Assert.Equal("spotify", result!.Source);
+        Assert.Equal("https://i.scdn.co/image/square", result.OriginalUrl);
+        Assert.Equal(localPath, result.LocalPath);
+        Assert.Equal(640, result.Width);
+        Assert.Equal(640, result.Height);
+    }
+
+    private async Task<SeededLibrary> SeedLibraryAsync(params (string Title, string DeezerTrackId, string SpotifyTrackId, string AppleTrackId)[] tracks)
+    {
+        Assert.NotEmpty(tracks);
+
+        var libraryRoot = Path.Join(_tempRoot, "music", "library-a");
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: libraryRoot,
+                DisplayName: "Library A",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
+
+        var allFolders = await _repository.GetFoldersAsync();
+        var artists = new List<LocalArtistScanDto>
+        {
+            new("Artist One", "/covers/artist-one.jpg")
+        };
+        var albums = new List<LocalAlbumScanDto>
+        {
+            new(
+                ArtistName: "Artist One",
+                Title: "Album One",
+                PreferredCoverPath: "/covers/album-one.jpg",
+                LocalFolders: new[] { folder.DisplayName },
+                HasAnimatedArtwork: false)
+        };
+
+        var trackDtos = new List<LocalTrackScanDto>();
+        var pathByTitle = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < tracks.Length; i++)
+        {
+            var item = tracks[i];
+            var filePath = Path.Join(libraryRoot, "Artist One", "Album One", $"{i + 1:00} - {item.Title}.flac");
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            await File.WriteAllTextAsync(filePath, "audio placeholder");
+            pathByTitle[item.Title] = filePath;
+            trackDtos.Add(CreateTrackScan(
+                title: item.Title,
+                filePath: filePath,
+                deezerTrackId: item.DeezerTrackId,
+                spotifyTrackId: item.SpotifyTrackId,
+                appleTrackId: item.AppleTrackId));
+        }
+
+        await _repository.IngestLocalScanAsync(
+            allFolders,
+            artists,
+            albums,
+            trackDtos,
+            pruneMissingArtists: true);
+
+        var libraries = await _repository.GetLibrariesAsync();
+        var library = Assert.Single(libraries.Where(item => item.Name == "Music"));
+
+        var artist = Assert.Single(await _repository.GetArtistsAsync((string?)null));
+        var album = Assert.Single(await _repository.GetArtistAlbumsAsync(artist.Id));
+
+        var trackIdsByTitle = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in tracks)
+        {
+            var path = pathByTitle[item.Title];
+            var trackId = await _repository.GetTrackIdForFilePathAsync(path);
+            Assert.NotNull(trackId);
+            trackIdsByTitle[item.Title] = trackId!.Value;
+        }
+
+        return new SeededLibrary(
+            library.Id,
+            folder,
+            artist.Id,
+            album.Id,
+            trackIdsByTitle,
+            pathByTitle);
+    }
+
+    private static LocalTrackScanDto CreateTrackScan(
+        string title,
+        string filePath,
+        string deezerTrackId,
+        string spotifyTrackId,
+        string appleTrackId)
+    {
+        return new LocalTrackScanDto(
+            ArtistName: "Artist One",
+            AlbumTitle: "Album One",
+            Title: title,
+            FilePath: filePath,
+            TagTitle: title,
+            TagArtist: "Artist One",
+            TagAlbum: "Album One",
+            TagAlbumArtist: "Artist One",
+            TagVersion: null,
+            TagLabel: "Label One",
+            TagCatalogNumber: "CAT-001",
+            TagBpm: 120,
+            TagKey: "C#m",
+            TagTrackTotal: 1,
+            TagDurationMs: 180000,
+            TagYear: 2025,
+            TagTrackNo: 1,
+            TagDisc: 1,
+            TagGenre: "Soundtrack",
+            TagIsrc: "ISRC00000001",
+            TagReleaseDate: "2025-01-01",
+            TagPublishDate: "2025-01-01",
+            TagUrl: null,
+            TagReleaseId: null,
+            TagTrackId: null,
+            TagMetaTaggedDate: null,
+            LyricsUnsynced: null,
+            LyricsSynced: null,
+            TagGenres: SoundtrackGenres,
+            TagStyles: Array.Empty<string>(),
+            TagMoods: Array.Empty<string>(),
+            TagRemixers: Array.Empty<string>(),
+            TagOtherTags: Array.Empty<LocalTrackOtherTag>(),
+            TrackNo: 1,
+            Disc: 1,
+            DurationMs: 180000,
+            LyricsStatus: null,
+            LyricsType: null,
+            Codec: "flac",
+            BitrateKbps: 1000,
+            SampleRateHz: 48000,
+            BitsPerSample: 24,
+            Channels: 2,
+            QualityRank: 4,
+            AudioVariant: "stereo",
+            DeezerTrackId: deezerTrackId,
+            Isrc: "ISRC00000001",
+            DeezerAlbumId: "dz-album-1",
+            DeezerArtistId: "dz-artist-1",
+            SpotifyTrackId: spotifyTrackId,
+            SpotifyAlbumId: "sp-album-1",
+            SpotifyArtistId: "sp-artist-1",
+            AppleTrackId: appleTrackId,
+            AppleAlbumId: "am-album-1",
+            AppleArtistId: "am-artist-1",
+            Source: "spotify",
+            SourceId: spotifyTrackId);
+    }
+
+    private async Task<long> InsertIdentityCandidateAsync(
+        SeededLibrary seeded,
+        string fileName,
+        int qualityRank,
+        string sourceId,
+        int extraTagCount)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        await using var insertTrack = connection.CreateCommand();
+        insertTrack.Transaction = transaction;
+        insertTrack.CommandText = @"
+INSERT INTO track(album_id,title,duration_ms,tag_title,tag_artist,tag_album,tag_album_artist,tag_duration_ms,tag_isrc)
+VALUES(@albumId,'Ranked Song',180000,'Ranked Song','Artist One','Album One','Artist One',180000,'ISRC00000001');
+SELECT last_insert_rowid();";
+        insertTrack.Parameters.AddWithValue("albumId", seeded.AlbumId);
+        var trackId = Convert.ToInt64(await insertTrack.ExecuteScalarAsync());
+
+        await using var insertFile = connection.CreateCommand();
+        insertFile.Transaction = transaction;
+        insertFile.CommandText = @"
+INSERT INTO audio_file(path,relative_path,folder_id,duration_ms,codec,bitrate_kbps,extension,sample_rate_hz,bits_per_sample,channels,quality_rank,audio_variant)
+VALUES(@path,@relativePath,@folderId,180000,'flac',1000,'.flac',48000,16,2,@qualityRank,'stereo');
+INSERT INTO track_local(track_id,audio_file_id) VALUES(@trackId,last_insert_rowid());
+INSERT INTO track_source(track_id,source,source_id) VALUES(@trackId,'spotify',@sourceId);";
+        insertFile.Parameters.AddWithValue("path", Path.Join(seeded.Folder.RootPath, fileName));
+        insertFile.Parameters.AddWithValue("relativePath", fileName);
+        insertFile.Parameters.AddWithValue("folderId", seeded.Folder.Id);
+        insertFile.Parameters.AddWithValue("qualityRank", qualityRank);
+        insertFile.Parameters.AddWithValue("trackId", trackId);
+        insertFile.Parameters.AddWithValue("sourceId", sourceId);
+        await insertFile.ExecuteNonQueryAsync();
+
+        for (var index = 0; index < extraTagCount; index++)
+        {
+            await using var insertTag = connection.CreateCommand();
+            insertTag.Transaction = transaction;
+            insertTag.CommandText = "INSERT INTO track_other_tag(track_id,tag_key,tag_value) VALUES(@trackId,@key,@value);";
+            insertTag.Parameters.AddWithValue("trackId", trackId);
+            insertTag.Parameters.AddWithValue("key", $"RICH_{index}");
+            insertTag.Parameters.AddWithValue("value", $"value-{index}");
+            await insertTag.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return trackId;
+    }
+
+    private async Task SetAudioPropertiesWithoutQualityRankAsync(long trackId, int bitsPerSample, int sampleRateHz)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE audio_file
+SET quality_rank=NULL,
+    bits_per_sample=@bitsPerSample,
+    sample_rate_hz=@sampleRateHz
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+        command.Parameters.AddWithValue("bitsPerSample", bitsPerSample);
+        command.Parameters.AddWithValue("sampleRateHz", sampleRateHz);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task SetAudioVariantAsync(long trackId, string audioVariant, int channels, string codec)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE audio_file
+SET audio_variant=@audioVariant,
+    channels=@channels,
+    codec=@codec
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+        command.Parameters.AddWithValue("audioVariant", audioVariant);
+        command.Parameters.AddWithValue("channels", channels);
+        command.Parameters.AddWithValue("codec", codec);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<string?> ReadMembershipStatusAsync(string sourceId, string trackSourceId, string targetService)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            @"SELECT sync_status
+              FROM playlist_watch_target_membership
+              WHERE source='spotify' AND source_id=@sourceId
+                AND track_source_id=@trackSourceId AND target_service=@targetService
+              LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("sourceId", sourceId);
+        command.Parameters.AddWithValue("trackSourceId", trackSourceId);
+        command.Parameters.AddWithValue("targetService", targetService);
+        var result = await command.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToString(result);
+    }
+
+    private async Task<string> ReadAudioFileUpdatedAtAsync(string filePath)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            "SELECT updated_at FROM audio_file WHERE path = @path LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("path", filePath);
+        var result = await command.ExecuteScalarAsync();
+        return Assert.IsType<string>(result);
+    }
+
+    private static string FindSourceFile(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(new[] { directory.FullName }.Concat(pathParts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException($"Unable to locate {Path.Combine(pathParts)}.");
+    }
+
+    private static RecommendationTrackDto CreateRecommendationTrack(string id, string title)
+    {
+        return new RecommendationTrackDto(
+            Id: id,
+            Title: title,
+            Duration: 180,
+            Isrc: "ISRC00000001",
+            TrackPosition: 1,
+            Artist: new RecommendationArtistDto("artist-1", "Artist One"),
+            Album: new RecommendationAlbumDto("album-1", "Album One", "https://example.com/cover.jpg"));
+    }
+
+    private static TrackAnalysisResultDto CreateAnalysisResult(
+        long trackId,
+        long libraryId,
+        DateTimeOffset analyzedAtUtc,
+        IReadOnlyList<string> moodTags,
+        string analysisMode = "signal")
+    {
+        return new TrackAnalysisResultDto(
+            TrackId: trackId,
+            LibraryId: libraryId,
+            Status: "complete",
+            Energy: 0.80,
+            Rms: 0.25,
+            ZeroCrossing: 0.10,
+            SpectralCentroid: 1500.0,
+            Bpm: 120.0,
+            AnalyzedAtUtc: analyzedAtUtc,
+            Error: null,
+            AnalysisMode: analysisMode,
+            AnalysisVersion: "v1",
+            MoodTags: moodTags,
+            MoodHappy: 0.8,
+            MoodSad: 0.1,
+            MoodRelaxed: 0.3,
+            MoodAggressive: 0.2,
+            MoodParty: 0.6,
+            MoodAcoustic: 0.1,
+            MoodElectronic: 0.5,
+            Valence: 0.7,
+            Arousal: 0.6,
+            BeatsCount: 350,
+            Key: "C#m",
+            KeyScale: "minor",
+            KeyStrength: 0.9,
+            Loudness: -8.0,
+            DynamicRange: 9.0,
+            Danceability: 0.75,
+            Instrumentalness: 0.2,
+            Acousticness: 0.1,
+            Speechiness: 0.05,
+            DanceabilityMl: 0.7,
+            EssentiaGenres: EssentiaGenreTags,
+            LastfmTags: LastfmGenreTags,
+            Approachability: 0.4,
+            Engagement: 0.6,
+            VoiceInstrumental: 0.2,
+            TonalAtonal: 0.8,
+            ValenceMl: 0.65,
+            ArousalMl: 0.55,
+            DynamicComplexity: 0.5,
+            LoudnessMl: -9.0);
+    }
+}

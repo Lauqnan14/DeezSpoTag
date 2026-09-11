@@ -1,0 +1,297 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using DeezSpoTag.Web.Services;
+using Xunit;
+
+namespace DeezSpoTag.Tests;
+
+public sealed class SonarGuardrailParityTest
+{
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
+    [Fact]
+    public void TaggingProfiles_FileTemplates_AreCanonicalized()
+    {
+        var data = new Dictionary<string, JsonElement>
+        {
+            ["tracknameTemplate"] = JsonSerializer.SerializeToElement("%artist% - %title%"),
+            ["albumTracknameTemplate"] = JsonSerializer.SerializeToElement("%tracknumber% - %title%"),
+            ["playlistTracknameTemplate"] = JsonSerializer.SerializeToElement("%playlist_position% - %title%")
+        };
+
+        var changed = TaggingProfileCanonicalizer.CanonicalizeTemplateKeys(data);
+
+        Assert.True(changed);
+        Assert.True(data.ContainsKey("tracknameTemplate"));
+        Assert.False(data.ContainsKey("albumTracknameTemplate"));
+        Assert.False(data.ContainsKey("playlistTracknameTemplate"));
+    }
+
+    [Fact]
+    public void Enrichment_Mp4PublishDate_IsSupported()
+    {
+        var root = FindRepoRoot();
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
+        Assert.Contains(
+            "SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, \"ORIGINALDATE\")",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "TrySetAppleDashBox(apple, \"ORIGINALDATE\", new[] { dateString });",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Enrichment_Mp4ReleaseDate_RecognizesDateAndDay()
+    {
+        var root = FindRepoRoot();
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
+        Assert.Contains(
+            "SupportedTag.ReleaseDate =>",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Mp4TagHelper.HasRaw(file, \"DATE\")",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "TrySetAppleDashBox(appleRelease, \"DATE\", new[] { dateString });",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Enrichment_Duration_UsesMilliseconds()
+    {
+        var root = FindRepoRoot();
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
+        Assert.Contains("TotalMilliseconds", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tagging_ExplicitValues_UseOneZero_NotOneTwo()
+    {
+        var root = FindRepoRoot();
+        var taggerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
+        var runnerPath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        Assert.True(File.Exists(taggerPath), $"File not found: {taggerPath}");
+        Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
+
+        var tagger = File.ReadAllText(taggerPath);
+        var runner = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
+
+        var oneTwoPattern = new Regex(@"\?\s*""1""\s*:\s*""2""", RegexOptions.CultureInvariant, RegexTimeout);
+        Assert.DoesNotMatch(oneTwoPattern, tagger);
+        Assert.DoesNotMatch(oneTwoPattern, runner);
+    }
+
+    [Fact]
+    public void Tagging_Mp3Rating_IsWritten()
+    {
+        var root = FindRepoRoot();
+        var taggerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
+        Assert.True(File.Exists(taggerPath), $"File not found: {taggerPath}");
+
+        var source = File.ReadAllText(taggerPath);
+        Assert.Contains(
+            "ApplyMp3RatingMetadata(tag, track, save);",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SetCustomFrame(tag, \"TXXX\", \"RATING\", rank.ToString(CultureInfo.InvariantCulture), save);",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QuickTag_Mp4Snapshot_EnumeratesAtlAdditionalFields()
+    {
+        var root = FindRepoRoot();
+        var quickTagPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "QuickTagService.cs");
+        Assert.True(File.Exists(quickTagPath), $"File not found: {quickTagPath}");
+
+        var source = File.ReadAllText(quickTagPath);
+        Assert.Contains("ReadMp4AtlAdditionalTags(tags, file.Name, separators);", source, StringComparison.Ordinal);
+        Assert.Contains("track.AdditionalFields", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeMp4AtlAdditionalDisplayKey", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Enrichment_Mp4CompatibilityAliases_AreSynchronizedWithNativeFields()
+    {
+        var root = FindRepoRoot();
+        var runnerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
+        Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(runnerPath);
+        Assert.Contains("SetAtlAdditionalField(file, \"ARTIST\", artistValue);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"TPE1\", artistValue);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"ALBUMARTIST\", albumArtist);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"TPE2\", albumArtist);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QuickTag_CloneToVorbis_RestoresFullDateAfterYearWrite()
+    {
+        var root = FindRepoRoot();
+        var quickTagPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "QuickTagService.cs");
+        Assert.True(File.Exists(quickTagPath), $"File not found: {quickTagPath}");
+
+        var source = File.ReadAllText(quickTagPath);
+        Assert.Contains("RestoreVorbisCloneDate(destinationFile, destinationExtension, snapshot.RawTags);", source, StringComparison.Ordinal);
+        Assert.Contains("SetVorbisRaw(vorbis, \"DATE\", new List<string> { date }, string.Empty);", source, StringComparison.Ordinal);
+        Assert.Contains("foreach (var key in new[] { \"DATE\", \"TDRC\", \"TDOR\", \"ORIGINALDATE\", \"©day\", \"iTunes:DATE\" })", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatus_DiffButton_RequestsPlatformDiff()
+    {
+        var root = FindRepoRoot();
+        var statusScriptPath = Path.Combine(root, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(statusScriptPath), $"File not found: {statusScriptPath}");
+
+        var source = File.ReadAllText(statusScriptPath);
+        Assert.Contains("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
+        Assert.Contains("data-platform=\"${encodedPlatform}\"", source, StringComparison.Ordinal);
+        Assert.Contains("showTagDiff(decodeURIComponent(encodedPath), decodeURIComponent(encodedPlatform));", source, StringComparison.Ordinal);
+        Assert.Contains("resultNormalized === STATUS_TAGGED || resultNormalized === STATUS_OK || resultNormalized === STATUS_REVIEW", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("resultNormalized === STATUS_SKIPPED", source, StringComparison.Ordinal);
+        Assert.Contains("Cumulative comparison:", source, StringComparison.Ordinal);
+        Assert.Contains("Final cumulative comparison:", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("showTagDiff(decodeURIComponent(encodedPath), null);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_FinalDiffRetainedSources_CanReportMergedPlatformContributors()
+    {
+        var root = FindRepoRoot();
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
+        Assert.Contains("ResolveMergedValueSources(", source, StringComparison.Ordinal);
+        Assert.Contains("introducedContribution", source, StringComparison.Ordinal);
+        Assert.Contains("return sources.Count > 1 ? string.Join(\", \", sources) : null;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_PlatformDiffUsesOriginalBaselineAndCumulativeStages()
+    {
+        var root = FindRepoRoot();
+        var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
+
+        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
+        Assert.Contains("var baseSnapshot = stored.Before ?? completed[0].Before ?? target.Before;", source, StringComparison.Ordinal);
+        Assert.Contains(".Take(targetIndex + 1)", source, StringComparison.Ordinal);
+        Assert.Contains("BasePlatform = \"original\"", source, StringComparison.Ordinal);
+        Assert.Contains("Before = baseSnapshot", source, StringComparison.Ordinal);
+        Assert.Contains("After = target.After", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("completed[targetIndex - 1].After", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadQueue_UsesOriginalBadgeDesignWithoutFallbackChain()
+    {
+        var root = FindRepoRoot();
+        var activitiesPath = Path.Combine(root, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
+        Assert.True(File.Exists(activitiesPath), $"File not found: {activitiesPath}");
+
+        var source = File.ReadAllText(activitiesPath);
+        Assert.DoesNotContain("renderFallbackPlanBadges", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("task-fallback-chain", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("badge-fallback-step", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallbackPlan: item.fallbackPlan", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallbackHistory: item.fallbackHistory", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("autoIndex: Number(item.autoIndex", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Download_DeezerMetadataResolver_PreservesFeaturedArtistsForCrossEngineTemplates()
+    {
+        var root = FindRepoRoot();
+        var resolverPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "DeezerMetadataResolver.cs");
+        Assert.True(File.Exists(resolverPath), $"File not found: {resolverPath}");
+
+        var source = File.ReadAllText(resolverPath);
+        Assert.Contains("ApplyContributorFields(track, deezerTrack.Contributors);", source, StringComparison.Ordinal);
+        Assert.Contains("track.GenerateMainFeatStrings();", source, StringComparison.Ordinal);
+        Assert.Contains("ExtractDeezerImageMd5(deezerArtist.PictureSmall)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppleAtmosArtworkPrefetch_UsesSharedArtworkPreferenceFallbackAndDoesNotSkipArtistOnCoverFailure()
+    {
+        var root = FindRepoRoot();
+        var helperPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+        Assert.True(File.Exists(helperPath), $"File not found: {helperPath}");
+
+        var source = File.ReadAllText(helperPath);
+        Assert.Contains("DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("RunArtworkPrefetchAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("TrySavePrimaryArtworkAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("TrySaveArtistArtworkAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("return new PrefetchArtworkResult(false, \"Album artwork download failed.\");", source, StringComparison.Ordinal);
+        Assert.Contains("new PrefetchArtworkResult(false, \"Artist artwork download failed.\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveCoverUrlWithFallbackAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SonarScan_ProtectsConfiguredExclusionsFromAccidentalOverride()
+    {
+        var root = FindRepoRoot();
+        var scanPath = Path.Combine(root, "scripts", "scan.sh");
+        Assert.True(File.Exists(scanPath), $"File not found: {scanPath}");
+
+        var source = File.ReadAllText(scanPath);
+        Assert.Contains("SONAR_ALLOW_EXCLUSION_OVERRIDE", source, StringComparison.Ordinal);
+        Assert.Contains("Refusing to override configured Sonar exclusion list", source, StringComparison.Ordinal);
+        Assert.Contains("Configured Sonar exclusions are authoritative", source, StringComparison.Ordinal);
+        Assert.Contains("**/.venv/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/lib/python*/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/lib64/python*/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/build/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/Data/apple-wrapper/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/*_pb2.py", source, StringComparison.Ordinal);
+        Assert.Contains("**/*_pb2.pyi", source, StringComparison.Ordinal);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current != null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "scripts", "scan.sh"))
+                && Directory.Exists(Path.Combine(current.FullName, "DeezSpoTag.Services")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new InvalidOperationException("Unable to locate repository root.");
+    }
+
+    private static string ExtractJsonString(string json, string propertyName)
+    {
+        var pattern = $@"""{Regex.Escape(propertyName)}""\s*:\s*""(?<value>(?:[^""\\]|\\.)*)""";
+        var match = Regex.Match(json, pattern, RegexOptions.CultureInvariant, RegexTimeout);
+        Assert.True(match.Success, $"Missing JSON property: {propertyName}");
+        return Regex.Unescape(match.Groups["value"].Value);
+    }
+}
