@@ -74,6 +74,49 @@ public static class PartialSourceReader
         return string.Join("\n", parts);
     }
 
+    /// <summary>
+    /// Returns the source of a single member, located by the start of its declaration.
+    /// </summary>
+    /// <remarks>
+    /// A guardrail that asserts on the internals of one method must not depend on which partial
+    /// file that method landed in, nor on what happens to follow it. This locates the member by
+    /// declaration text and returns exactly its body, ending at the matching closing brace.
+    /// </remarks>
+    public static string ReadMemberSourceFromFile(string primaryPath, string declarationStart)
+    {
+        var source = ReadTypeSourceFromFile(primaryPath);
+        var start = source.IndexOf(declarationStart, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            throw new InvalidOperationException($"Member not found: {declarationStart}");
+        }
+
+        var open = source.IndexOf('{', start);
+        if (open < 0)
+        {
+            throw new InvalidOperationException($"Member has no body: {declarationStart}");
+        }
+
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            if (source[i] == '{')
+            {
+                depth++;
+            }
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(start, i - start + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Member body is unbalanced: {declarationStart}");
+    }
+
     private static string ResolveRepositoryRoot()
     {
         var directory = Directory.GetCurrentDirectory();

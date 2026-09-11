@@ -25,6 +25,315 @@ namespace DeezSpoTag.Web.Services;
 public partial class AutoTagService
 {
 
+    private async Task PrepareRuntimeConfigAndRunJobAsync(
+        AutoTagJob job,
+        string normalizedPath,
+        string configJson,
+        StartJobOptions options)
+    {
+        try
+        {
+            AppendLog(job, "runtime config preparing");
+            var runtimeConfigJson = SanitizeConfigJson(configJson);
+            runtimeConfigJson = await InjectPlatformDefaultsAsync(runtimeConfigJson);
+            runtimeConfigJson = await InjectPlatformAuthAsync(runtimeConfigJson);
+            runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, job.Trigger);
+            runtimeConfigJson = InjectProfileRuntimeSettings(
+                runtimeConfigJson,
+                options.TechnicalOverride,
+                options.FolderStructureOverride,
+                job.ProfileId,
+                job.ProfileName);
+            var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
+            var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
+            TrySaveLastConfig(persistedConfigJson);
+            // Persist the redacted config on the job so POST /jobs/{id}/resume can restart
+            // this exact scope even if runtime-config files were cleaned up meanwhile.
+            if (!string.Equals(job.ResumeConfigJson, persistedConfigJson, StringComparison.Ordinal))
+            {
+                job.ResumeConfigJson = persistedConfigJson;
+                SaveJob(job);
+            }
+            AppendLog(job, "runtime config ready");
+
+            await RunJobAsync(job, normalizedPath, runtimeConfigPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "AutoTag runtime config preparation failed for job {JobId}.", job.Id);
+            job.Status = AutoTagLiterals.FailedStatus;
+            job.Error = $"Runtime config preparation failed: {ex.Message}";
+            job.ExitCode = 1;
+            job.FinishedAt = DateTimeOffset.UtcNow;
+            AppendLog(job, job.Error);
+            SaveJob(job);
+            AppendActivityLog(job.Id, "autotag failed: runtime config preparation");
+            NotifyCompleted(job);
+            _activeJobStages.TryRemove(job.Id, out _);
+            _activeJobIds.TryRemove(job.Id, out _);
+            Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(job));
+            _jobs.TryRemove(job.Id, out _);
+            _lastActivityLines.TryRemove(job.Id, out _);
+            _archiveLocks.TryRemove(job.Id, out _);
+            _lastRunIndexUpdateUtc.TryRemove(job.Id, out _);
+        }
+    }
+
+    private static string NormalizePathForJob(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return path.Trim();
+        }
+    }
+
+    private static string? NormalizeRootPath(string rootPath)
+    {
+        var normalizedRoot = NormalizePathForJob(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(normalizedRoot) || !Directory.Exists(normalizedRoot))
+        {
+            return null;
+        }
+
+        return normalizedRoot;
+    }
+
+    private static bool TryParseAutoTagConfig(string configJson, out JsonObject root)
+    {
+        root = new JsonObject();
+        try
+        {
+            root = JsonNode.Parse(configJson) as JsonObject ?? new JsonObject();
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeCompareValue(object? value)
+    {
+        if (value == null)
+        {
+            return string.Empty;
+        }
+
+        if (value is string text)
+        {
+            return text.Trim().ToLowerInvariant();
+        }
+
+        if (value is IEnumerable<string> stringValues)
+        {
+            return string.Join(
+                "|",
+                stringValues
+                    .Select(item => item?.Trim() ?? string.Empty)
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item.ToLowerInvariant()));
+        }
+
+        if (value is bool boolean)
+        {
+            return boolean ? "true" : "false";
+        }
+
+        return value.ToString()?.Trim().ToLowerInvariant() ?? string.Empty;
+    }
+
+    private static HashSet<string> NormalizeCompareParts(object? value)
+    {
+        if (value is IEnumerable<string> stringValues)
+        {
+            return stringValues
+                .Select(item => item?.Trim() ?? string.Empty)
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.ToLowerInvariant())
+                .ToHashSet(StringComparer.Ordinal);
+        }
+
+        var normalized = NormalizeCompareValue(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : new HashSet<string>(new[] { normalized }, StringComparer.Ordinal);
+    }
+
+    public string? TryGetLastConfigJson()
+    {
+        try
+        {
+            if (!File.Exists(_lastConfigPath))
+            {
+                return null;
+            }
+
+            var json = File.ReadAllText(_lastConfigPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return RedactSensitiveConfigJson(SanitizeConfigJson(json));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to load last AutoTag config.");
+            return null;
+        }
+    }
+
+    private static HashSet<string> InitializeRuntimeConfigPaths(string configPath)
+    {
+        var runtimeConfigPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            runtimeConfigPaths.Add(configPath);
+        }
+
+        return runtimeConfigPaths;
+    }
+
+    private JsonObject? LoadConfigRoot(string configPath)
+    {
+        try
+        {
+            if (!File.Exists(configPath))
+            {
+                return null;
+            }
+
+            var json = File.ReadAllText(configPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return JsonNode.Parse(json) as JsonObject;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag config could not be read.");
+            return null;
+        }
+    }
+
+    private static string ComputeConfigHash(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return string.Empty;
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(configJson);
+        var hash = SHA256.HashData(bytes);
+        return Convert.ToHexString(hash);
+    }
+
+    private static List<string> FilterSupportedTags(
+        IEnumerable<string> requested,
+        IEnumerable<string> platforms,
+        Dictionary<string, PlatformTagCapabilities> platformCaps)
+    {
+        var supported = AutoTagPlatformTagContract.ToSupportedTagMap(
+            platformCaps,
+            static caps => caps.SupportedTags);
+        return AutoTagPlatformTagContract.FilterOfferedTags(
+            requested,
+            platforms,
+            supported,
+            NormalizeSupportedTagKey);
+    }
+
+    private static string NormalizeDownloadTagSource(string? downloadTagSource)
+    {
+        return DownloadTagSourceHelper.NormalizeStoredSource(downloadTagSource, AutoTagLiterals.DeezerSource);
+    }
+
+    private static string? NormalizeSupportedTagKey(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        var normalized = tag.Trim();
+        return SupportedTagKeyMap.TryGetValue(normalized, out var mapped) ? mapped : null;
+    }
+
+    private async Task TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
+        AutoTagJob job,
+        bool includesEnhancementStage,
+        CancellationToken cancellationToken)
+    {
+        if (!includesEnhancementStage
+            || (!ShouldRunEnhancementForIntent(job.RunIntent)
+                && !IsManualEnrichmentRunIntent(job.RunIntent)))
+        {
+            return;
+        }
+
+        try
+        {
+            AppendLog(job, "media server metadata refresh starting after enhancement (request only; not waiting for a full library reindex).");
+            using var refreshTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            refreshTimeout.CancelAfter(TimeSpan.FromSeconds(45));
+            var refresh = await _mediaServerRefreshService.RefreshConfiguredServersAsync(
+                refreshTimeout.Token,
+                updateTrackIndex: false);
+            AppendLog(
+                job,
+                $"media server metadata refresh requested after enhancement: configured={refresh.ConfiguredServerCount}, refreshed={refresh.RefreshedServerCount}, failed=[{string.Join(", ", refresh.FailedServers)}]");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            AppendLog(job, "media server metadata refresh after enhancement timed out; enhancement run will finish without waiting.");
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog(job, "media server metadata refresh after enhancement was canceled");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: configured media server refresh after enhancement failed.", job.Id);
+            AppendLog(job, $"media server metadata refresh after enhancement failed: {ex.Message}");
+        }
+    }
+
+    private async Task<PlexAuth?> LoadConfiguredPlexForScanAsync(AutoTagJob job)
+    {
+        try
+        {
+            var authState = await _platformAuthService.LoadAsync();
+            var plex = authState.Plex;
+            if (!IsPlexAuthenticated(plex))
+            {
+                return null;
+            }
+
+            return plex;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: failed loading Plex auth state for scan.", job.Id);
+            return null;
+        }
+    }
+
     private static string SanitizeConfigJson(string configJson)
     {
         if (string.IsNullOrWhiteSpace(configJson))
@@ -216,37 +525,6 @@ public partial class AutoTagService
         section.Remove("folderId");
     }
 
-    private static bool TryParseLegacyFolderId(JsonNode? folderIdNode, out long folderId)
-    {
-        folderId = 0;
-        if (folderIdNode is not JsonValue value)
-        {
-            return false;
-        }
-
-        if (value.TryGetValue<long>(out var longValue) && longValue > 0)
-        {
-            folderId = longValue;
-            return true;
-        }
-
-        if (value.TryGetValue<int>(out var intValue) && intValue > 0)
-        {
-            folderId = intValue;
-            return true;
-        }
-
-        if (value.TryGetValue<string>(out var stringValue)
-            && long.TryParse(stringValue, out var parsedValue)
-            && parsedValue > 0)
-        {
-            folderId = parsedValue;
-            return true;
-        }
-
-        return false;
-    }
-
     private static void EnsureLegacyFolderUniformityStructureMirrorsRemoved(JsonNode node)
     {
         if (node is not JsonObject root
@@ -337,38 +615,6 @@ public partial class AutoTagService
         }
     }
 
-    private static void RedactSensitiveNode(JsonNode node)
-    {
-        switch (node)
-        {
-            case JsonObject obj:
-                {
-                    foreach (var key in obj.Select(pair => pair.Key).ToList())
-                    {
-                        if (ShouldRedactConfigKey(key))
-                        {
-                            obj.Remove(key);
-                            continue;
-                        }
-
-                        if (obj[key] is { } child)
-                        {
-                            RedactSensitiveNode(child);
-                        }
-                    }
-                    break;
-                }
-            case JsonArray array:
-                {
-                    foreach (var item in array.Where(static item => item != null))
-                    {
-                        RedactSensitiveNode(item!);
-                    }
-                    break;
-                }
-        }
-    }
-
     private static bool ShouldRedactConfigKey(string key)
     {
         if (string.IsNullOrWhiteSpace(key))
@@ -454,127 +700,6 @@ public partial class AutoTagService
         return fullPath.StartsWith(fullRuntimeRoot, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void TrySaveLastJobId(string jobId)
-    {
-        try
-        {
-            var payload = new JsonObject { ["jobId"] = jobId };
-            File.WriteAllText(_lastJobPath, payload.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            }), new UTF8Encoding(false));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to persist last AutoTag job id.");
-        }
-    }
-
-    private async Task<string> InjectPlatformDefaultsAsync(string configJson)
-    {
-        try
-        {
-            var platformsJson = await _metadataService.GetPlatformsJsonAsync();
-            if (string.IsNullOrWhiteSpace(platformsJson))
-            {
-                return configJson;
-            }
-
-            var platformDoc = JsonNode.Parse(platformsJson) as JsonArray;
-            if (platformDoc == null)
-            {
-                return configJson;
-            }
-
-            var node = JsonNode.Parse(configJson) as JsonObject;
-            if (node == null)
-            {
-                return configJson;
-            }
-
-            var custom = GetOrCreateCustomNode(node);
-
-            foreach (var entry in platformDoc)
-            {
-                if (entry is not JsonObject platform || !TryGetPlatformOptionDefaults(platform, out var platformId, out var customOptions))
-                {
-                    continue;
-                }
-
-                var platformCustom = GetOrCreatePlatformCustomNode(custom, platformId);
-
-                foreach (var optionNode in customOptions)
-                {
-                    TryApplyPlatformOptionDefault(platformCustom, optionNode);
-                }
-            }
-
-            return node.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return configJson;
-        }
-    }
-
-    private static bool TryGetPlatformOptionDefaults(
-        JsonObject platform,
-        out string platformId,
-        out JsonArray customOptions)
-    {
-        var platformInfo = platform[AutoTagLiterals.PlatformKey] as JsonObject ?? platform;
-        platformId = platform["id"]?.GetValue<string>() ?? platformInfo["id"]?.GetValue<string>() ?? string.Empty;
-        customOptions = platformInfo["customOptions"]?["options"] as JsonArray ?? new JsonArray();
-        return !string.IsNullOrWhiteSpace(platformId) && customOptions.Count > 0;
-    }
-
-    private static JsonObject GetOrCreateCustomNode(JsonObject node)
-    {
-        if (node[AutoTagLiterals.CustomKey] is JsonObject custom)
-        {
-            return custom;
-        }
-
-        custom = new JsonObject();
-        node[AutoTagLiterals.CustomKey] = custom;
-        return custom;
-    }
-
-    private static JsonObject GetOrCreatePlatformCustomNode(JsonObject custom, string platformId)
-    {
-        if (custom[platformId] is JsonObject platformCustom)
-        {
-            return platformCustom;
-        }
-
-        platformCustom = new JsonObject();
-        custom[platformId] = platformCustom;
-        return platformCustom;
-    }
-
-    private static void TryApplyPlatformOptionDefault(JsonObject platformCustom, JsonNode? optionNode)
-    {
-        if (optionNode is not JsonObject option)
-        {
-            return;
-        }
-
-        var optionId = option["id"]?.GetValue<string>();
-        if (string.IsNullOrWhiteSpace(optionId) || platformCustom[optionId] != null)
-        {
-            return;
-        }
-
-        var value = option["value"]?["value"];
-        if (value != null)
-        {
-            platformCustom[optionId] = value.DeepClone();
-        }
-    }
-
     private static string NormalizeRunTrigger(string? trigger)
     {
         if (string.IsNullOrWhiteSpace(trigger))
@@ -634,184 +759,6 @@ public partial class AutoTagService
         };
     }
 
-    private static bool IsEnhancementRunIntent(string? runIntent)
-    {
-        return NormalizeRunIntent(runIntent) switch
-        {
-            AutoTagLiterals.RunIntentEnhancementOnly => true,
-            AutoTagLiterals.RunIntentEnhancementRecentDownloads => true,
-            AutoTagLiterals.RunIntentAliasMerge => true,
-            _ => false
-        };
-    }
-
-    private static bool IsManualEnrichmentRunIntent(string? runIntent)
-        => string.Equals(
-            NormalizeRunIntent(runIntent),
-            AutoTagLiterals.RunIntentManualEnrichment,
-            StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsAllowedEnhancementTrigger(string? trigger)
-    {
-        if (string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        // The recovery trigger is only ever produced by resume paths (explicit resume
-        // endpoint and stuck-job recovery). Without it, explicitly resuming an
-        // enhancement job would be admitted as a blocked successor while the source
-        // job was stamped resumed - reporting "running" while nothing runs.
-        if (string.Equals(trigger, AutoTagLiterals.RecoveryTrigger, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool ShouldRunEnrichmentForIntent(string? runIntent)
-    {
-        return !IsEnhancementRunIntent(runIntent);
-    }
-
-    private static bool ShouldRunEnhancementForIntent(string? runIntent)
-    {
-        var normalized = NormalizeRunIntent(runIntent);
-        return !string.Equals(normalized, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(normalized, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// The integrated enhancement workflows (sidecar lookup, quality checks, folder
-    /// uniformity) run for enhancement intents and for manual enrichment — manual
-    /// enrichment's just-moved files get the sidecar lookup with their library track
-    /// identity. Download enrichment is excluded: its sidecars are produced by the
-    /// download prefetch and no sidecar lookup runs there.
-    /// The gap-fill STAGE keeps using <see cref="ShouldRunEnhancementForIntent"/>,
-    /// which also excludes manual enrichment (manual runs tag via the enrichment stage).
-    /// </summary>
-    private static bool ShouldRunIntegratedWorkflowsForIntent(string? runIntent)
-    {
-        var normalized = NormalizeRunIntent(runIntent);
-        return !string.Equals(normalized, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string InjectRunTrigger(string configJson, string trigger)
-    {
-        try
-        {
-            var node = JsonNode.Parse(configJson) as JsonObject;
-            if (node == null)
-            {
-                return configJson;
-            }
-
-            node["runTrigger"] = NormalizeRunTrigger(trigger);
-            return node.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return configJson;
-        }
-    }
-
-    private string InjectProfileRuntimeSettings(
-        string configJson,
-        TechnicalTagSettings? technical,
-        FolderStructureSettings? folderStructure,
-        string? profileId,
-        string? profileName)
-    {
-        if (technical == null
-            && folderStructure == null
-            && string.IsNullOrWhiteSpace(profileId)
-            && string.IsNullOrWhiteSpace(profileName))
-        {
-            return configJson;
-        }
-
-        if (string.IsNullOrWhiteSpace(configJson))
-        {
-            return configJson;
-        }
-
-        try
-        {
-            if (JsonNode.Parse(configJson) is not JsonObject root)
-            {
-                return configJson;
-            }
-
-            if (technical != null)
-            {
-                root["technical"] = JsonSerializer.SerializeToNode(technical, _jsonOptions);
-            }
-
-            if (folderStructure != null)
-            {
-                root["folderStructure"] = JsonSerializer.SerializeToNode(folderStructure, _jsonOptions);
-            }
-
-            if (!string.IsNullOrWhiteSpace(profileId))
-            {
-                root["profileId"] = profileId.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(profileName))
-            {
-                root["profileName"] = profileName.Trim();
-            }
-
-            return root.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to inject profile runtime settings into AutoTag config.");
-            return configJson;
-        }
-    }
-
-    private async Task<string> InjectPlatformAuthAsync(string configJson)
-    {
-        try
-        {
-            var state = await _platformAuthService.LoadAsync();
-            if (state == null)
-            {
-                return configJson;
-            }
-
-            var node = JsonNode.Parse(configJson) as JsonObject;
-            if (node == null)
-            {
-                return configJson;
-            }
-
-            var custom = GetOrCreateCustomNode(node);
-            ApplyDiscogsAuthDefaults(custom, state.Discogs);
-            ApplyLastFmAuthDefaults(custom, state.LastFm);
-            ApplyBpmSupremeAuthDefaults(custom, state.BpmSupreme);
-
-            return node.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return configJson;
-        }
-    }
-
     private static void ApplyDiscogsAuthDefaults(JsonObject custom, DiscogsAuth? discogsAuth)
     {
         if (string.IsNullOrWhiteSpace(discogsAuth?.Token))
@@ -847,51 +794,6 @@ public partial class AutoTagService
         SetIfEmpty(bpm, "library", bpmAuth.Library);
     }
 
-    private static void SetIfEmpty(JsonObject target, string key, string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        if (target.TryGetPropertyValue(key, out var existingNode)
-            && existingNode is JsonValue existingValue
-            && existingValue.TryGetValue<string>(out var existingText)
-            && !string.IsNullOrWhiteSpace(existingText))
-        {
-            return;
-        }
-
-        target[key] = value.Trim();
-    }
-
-
-    private static void RemoveNulls(JsonNode node)
-    {
-        if (node is JsonObject obj)
-        {
-            foreach (var key in obj.Select(kvp => kvp.Key).ToList())
-            {
-                var value = obj[key];
-                if (value is null || value.GetValueKind() == JsonValueKind.Null)
-                {
-                    obj.Remove(key);
-                }
-                else
-                {
-                    RemoveNulls(value);
-                }
-            }
-        }
-        else if (node is JsonArray array)
-        {
-            foreach (var child in array.Where(static child => child != null))
-            {
-                RemoveNulls(child!);
-            }
-        }
-    }
-
     private static void EnsureSpotifySecret(JsonNode node)
     {
         if (node is not JsonObject root)
@@ -912,6 +814,75 @@ public partial class AutoTagService
         if (secret is null || secret.GetValueKind() == JsonValueKind.Null)
         {
             spotify["clientSecret"] = "";
+        }
+    }
+
+    private List<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
+    {
+        return summaries
+            .Where(static summary => !string.IsNullOrWhiteSpace(summary.Id))
+            .GroupBy(GetRunIndexGroupKey, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.OrderByDescending(summary => summary.StartedAt).First())
+            .OrderByDescending(static summary => summary.StartedAt)
+            .ToList();
+    }
+
+    private void NormalizeLoadedJobState(AutoTagJob job)
+    {
+        job.Trigger = NormalizeRunTrigger(job.Trigger);
+        job.RunIntent = NormalizeRunIntent(job.RunIntent);
+        if (job.LastActivityAt <= DateTimeOffset.MinValue)
+        {
+            job.LastActivityAt = ResolveLastActivityTimestamp(job);
+        }
+
+        if (!string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (_activeJobIds.ContainsKey(job.Id))
+        {
+            return;
+        }
+
+        job.Status = AutoTagLiterals.InterruptedStatus;
+        job.ExitCode = 1;
+        job.FinishedAt ??= DateTimeOffset.UtcNow;
+        job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
+        SaveJob(job);
+        // Archived summaries and job records are immutable history beyond this point:
+        // restart-interrupted enhancement runs are queued for resume, never rewritten.
+        if (IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent))
+        {
+            AppendLog(job, "stale recovery: job interrupted by application restart; resume queued for enhancement.");
+            JobRecovered?.Invoke(job);
+        }
+    }
+
+    private string? TryFindRuntimeConfigPath(string jobId, string stage)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(stage) || !Directory.Exists(_runtimeConfigDir))
+            {
+                return null;
+            }
+
+            var stageToken = NormalizeConfigKeyForRedaction(stage);
+            var pattern = $"autotag-{jobId}-{stageToken}-*.json";
+            return Directory
+                .EnumerateFiles(_runtimeConfigDir, pattern, SearchOption.TopDirectoryOnly)
+                .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
+                .FirstOrDefault();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to locate runtime config for stale recovery job {JobId}.", jobId);
+            }
+            return null;
         }
     }
 }

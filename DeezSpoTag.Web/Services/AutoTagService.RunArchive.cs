@@ -25,6 +25,90 @@ namespace DeezSpoTag.Web.Services;
 public partial class AutoTagService
 {
 
+    public IReadOnlyList<AutoTagRunDaySummary> GetArchivedRunCalendar(int year, int month)
+    {
+        var summaries = GetArchivedRunSummaries()
+            .Where(summary => GetRunDate(GetRunHistoryTimestamp(summary)).Year == year
+                && GetRunDate(GetRunHistoryTimestamp(summary)).Month == month)
+            .OrderBy(summary => summary.StartedAt)
+            .ToList();
+
+        return summaries
+            .GroupBy(summary => GetRunDateToken(GetRunHistoryTimestamp(summary)))
+            .Select(group => new AutoTagRunDaySummary
+            {
+                Date = group.Key,
+                RunCount = group.Count(),
+                Runs = group.OrderByDescending(run => run.StartedAt).ToList()
+            })
+            .OrderBy(day => day.Date, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public IReadOnlyList<AutoTagRunSummary> GetArchivedRunsByDate(DateOnly date)
+    {
+        var token = date.ToString("yyyy-MM-dd");
+        return GetArchivedRunSummaries()
+            .Where(summary => string.Equals(GetRunDateToken(GetRunHistoryTimestamp(summary)), token, StringComparison.Ordinal))
+            .OrderByDescending(summary => summary.StartedAt)
+            .ToList();
+    }
+
+    public AutoTagRunArchive? GetArchivedRun(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var archiveLock = _archiveLocks.GetOrAdd(id, static _ => new object());
+        lock (archiveLock)
+        {
+            var summary = LoadRunSummary(id);
+            if (summary == null)
+            {
+                return null;
+            }
+            if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))
+            {
+                DeleteArchivedRunFiles(summary.Id);
+                PruneExpiredArchivedRuns(force: true);
+                return null;
+            }
+
+            var logs = ReadRunLogLines(id);
+            var statusHistory = ReadRunStatusHistory(id);
+            var job = (logs.Count == 0 || statusHistory.Count == 0)
+                ? GetJob(id) ?? LoadJob(id)
+                : null;
+            if (logs.Count == 0 && summary.LogCount > 0 && job?.Logs.Count > 0)
+            {
+                logs = job.Logs
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .ToList();
+                if (logs.Count > 0)
+                {
+                    _ = TryRepairArchivedLogsFromJob(id, GetRunLogPath(id));
+                }
+            }
+            if (statusHistory.Count == 0 && summary.StatusEntryCount > 0 && job?.StatusHistory.Count > 0)
+            {
+                statusHistory = job.StatusHistory.ToList();
+                if (statusHistory.Count > 0)
+                {
+                    _ = TryRepairArchivedStatusFromJob(id, GetRunStatusHistoryPath(id));
+                }
+            }
+
+            return new AutoTagRunArchive
+            {
+                Summary = summary,
+                Logs = logs,
+                StatusHistory = statusHistory
+            };
+        }
+    }
+
     private void InitializeRunArchive(AutoTagJob job)
     {
         try
@@ -67,148 +151,6 @@ public partial class AutoTagService
             _archivedRunSummariesCache = summaries;
             _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.UtcNow.Add(ArchivedRunSummariesCacheTtl);
             return summaries;
-        }
-    }
-
-    private IReadOnlyList<AutoTagRunSummary> LoadRunIndexSummaries()
-    {
-        lock (_runIndexLock)
-        {
-            var indexed = TryLoadRunIndex();
-            if (indexed.Count > 0 || (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0))
-            {
-                return indexed;
-            }
-
-            var summaries = LoadArchivedRunSummaries();
-            PersistRunIndex(summaries);
-            return summaries;
-        }
-    }
-
-    public void WarmRunIndexIfMissing()
-    {
-        PruneExpiredArchivedRuns();
-        if (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0)
-        {
-            return;
-        }
-
-        try
-        {
-            lock (_runIndexLock)
-            {
-                if (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0)
-                {
-                    return;
-                }
-
-                PersistRunIndex(LoadArchivedRunSummaries());
-            }
-            PruneExpiredArchivedRuns(force: true);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to warm AutoTag run index.");
-        }
-    }
-
-    private IReadOnlyList<AutoTagRunSummary> TryLoadRunIndex()
-    {
-        try
-        {
-            if (!File.Exists(_runIndexPath))
-            {
-                return Array.Empty<AutoTagRunSummary>();
-            }
-
-            var json = File.ReadAllText(_runIndexPath, Encoding.UTF8);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                return Array.Empty<AutoTagRunSummary>();
-            }
-
-            var document = JsonSerializer.Deserialize<AutoTagRunIndexDocument>(json, _jsonOptions);
-            return NormalizeRunIndexSummaries(document?.Runs ?? new List<AutoTagRunSummary>());
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to load AutoTag run index.");
-            var summaries = LoadArchivedRunSummaries();
-            PersistRunIndex(summaries);
-            return summaries;
-        }
-    }
-
-    private void UpdateRunIndex(AutoTagRunSummary summary, bool force = false)
-    {
-        if (!force && !ShouldUpdateRunIndex(summary))
-        {
-            return;
-        }
-
-        lock (_runIndexLock)
-        {
-            var summaries = TryLoadRunIndex()
-                .Where(run => !string.Equals(run.Id, summary.Id, StringComparison.OrdinalIgnoreCase))
-                .Append(summary)
-                .ToList();
-            PersistRunIndex(summaries);
-        }
-
-        InvalidateArchivedRunSummariesCache();
-        _activitiesRealtime.PublishAutoTagRunChanged(summary);
-        PruneExpiredArchivedRuns();
-    }
-
-    private bool ShouldUpdateRunIndex(AutoTagRunSummary summary)
-    {
-        if (IsTerminalRunStatus(summary.Status))
-        {
-            _lastRunIndexUpdateUtc[summary.Id] = DateTimeOffset.UtcNow;
-            return true;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var lastUpdate = _lastRunIndexUpdateUtc.GetOrAdd(summary.Id, now);
-        if (lastUpdate == now || now - lastUpdate < RunIndexUpdateInterval)
-        {
-            return lastUpdate == now;
-        }
-
-        _lastRunIndexUpdateUtc[summary.Id] = now;
-        return true;
-    }
-
-    private static bool IsTerminalRunStatus(string? status)
-    {
-        return string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.ResumedStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void PersistRunIndex(IReadOnlyCollection<AutoTagRunSummary> summaries)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(_runIndexPath) ?? _historyDir);
-            var document = new AutoTagRunIndexDocument
-            {
-                UpdatedAt = DateTimeOffset.UtcNow,
-                Runs = NormalizeRunIndexSummaries(summaries).ToList()
-            };
-            File.WriteAllText(
-                _runIndexPath,
-                JsonSerializer.Serialize(document, _jsonOptions),
-                new UTF8Encoding(false));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to persist AutoTag run index.");
         }
     }
 
@@ -349,172 +291,6 @@ public partial class AutoTagService
         PruneOrphanedJobSnapshots(retainedIds, cutoffUtc);
     }
 
-    private void PruneOrphanedHistoryDirectories(string root, HashSet<string> retainedIds, DateTimeOffset cutoffUtc)
-    {
-        try
-        {
-            if (!Directory.Exists(root))
-            {
-                return;
-            }
-
-            foreach (var directory in Directory.EnumerateDirectories(root))
-            {
-                var jobId = Path.GetFileName(directory);
-                if (string.IsNullOrWhiteSpace(jobId)
-                    || _activeJobIds.ContainsKey(jobId)
-                    || retainedIds.Contains(jobId))
-                {
-                    continue;
-                }
-
-                if (GetFileSystemTimestampUtc(directory) < cutoffUtc)
-                {
-                    DeleteArchivedRunFiles(jobId);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to prune orphaned AutoTag history directories from {Root}.", root);
-            }
-        }
-    }
-
-    private void PruneOrphanedJobSnapshots(HashSet<string> retainedIds, DateTimeOffset cutoffUtc)
-    {
-        try
-        {
-            if (!Directory.Exists(_jobsDir))
-            {
-                return;
-            }
-
-            foreach (var jobPath in Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern))
-            {
-                var jobId = Path.GetFileNameWithoutExtension(jobPath);
-                if (string.IsNullOrWhiteSpace(jobId)
-                    || _activeJobIds.ContainsKey(jobId)
-                    || retainedIds.Contains(jobId))
-                {
-                    continue;
-                }
-
-                if (GetFileSystemTimestampUtc(jobPath) < cutoffUtc)
-                {
-                    TryDeleteFile(jobPath);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to prune orphaned AutoTag job snapshots.");
-            }
-        }
-    }
-
-    private static DateTimeOffset GetFileSystemTimestampUtc(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                return Directory.GetLastWriteTimeUtc(path);
-            }
-
-            if (File.Exists(path))
-            {
-                return File.GetLastWriteTimeUtc(path);
-            }
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            // Use a current timestamp when the filesystem cannot provide one so pruning stays conservative.
-        }
-
-        return DateTimeOffset.UtcNow;
-    }
-
-    private void TryDeleteDirectory(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to delete expired AutoTag history directory {Path}.", path);
-            }
-        }
-    }
-
-    private void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to delete expired AutoTag history file {Path}.", path);
-            }
-        }
-    }
-
-    private List<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
-    {
-        return summaries
-            .Where(static summary => !string.IsNullOrWhiteSpace(summary.Id))
-            .GroupBy(GetRunIndexGroupKey, StringComparer.OrdinalIgnoreCase)
-            .Select(static group => group.OrderByDescending(summary => summary.StartedAt).First())
-            .OrderByDescending(static summary => summary.StartedAt)
-            .ToList();
-    }
-
-    private string GetRunIndexGroupKey(AutoTagRunSummary summary)
-    {
-        if (string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
-        {
-            return summary.Id;
-        }
-
-        var rootId = ResolveResumeRootJobId(summary.Id, summary.ResumeFromJobId);
-        return string.IsNullOrWhiteSpace(rootId) ? summary.Id : rootId;
-    }
-
-    private string? ResolveResumeRootJobId(string jobId, string? resumeFromJobId)
-    {
-        var currentId = jobId;
-        var parentId = resumeFromJobId;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { jobId };
-        for (var depth = 0; depth < 20; depth += 1)
-        {
-            if (string.IsNullOrWhiteSpace(parentId) || !seen.Add(parentId))
-            {
-                return currentId;
-            }
-
-            currentId = parentId;
-            parentId = TryReadJobResumeFromJobId(currentId);
-        }
-
-        return currentId;
-    }
-
     private IReadOnlyList<AutoTagRunSummary> LoadArchivedRunSummaries()
     {
         try
@@ -614,246 +390,6 @@ public partial class AutoTagService
             {
                 _logger.LogDebug(ex, "Failed to append archived AutoTag status for {JobId}", jobId);
             }
-        }
-    }
-
-    private void SaveRunSummary(AutoTagJob job)
-    {
-        try
-        {
-            var archiveLock = _archiveLocks.GetOrAdd(job.Id, static _ => new object());
-            lock (archiveLock)
-            {
-                Directory.CreateDirectory(GetRunHistoryDirectory(job.Id));
-                var summary = BuildRunSummary(job);
-                File.WriteAllText(
-                    GetRunSummaryPath(job.Id),
-                    JsonSerializer.Serialize(summary, _jsonOptions),
-                    new UTF8Encoding(false));
-                UpdateRunIndex(summary);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to save AutoTag run summary for {JobId}", job.Id);
-            }
-        }
-    }
-
-    private AutoTagRunSummary BuildRunSummary(AutoTagJob job)
-    {
-        return new AutoTagRunSummary
-        {
-            Id = job.Id,
-            Status = job.Status,
-            StartedAt = job.StartedAt,
-            FinishedAt = job.FinishedAt,
-            ExitCode = job.ExitCode,
-            Error = job.Error,
-            Progress = job.Progress,
-            OkCount = job.OkCount,
-            ErrorCount = job.ErrorCount,
-            ReviewCount = job.ReviewCount,
-            SkippedCount = job.SkippedCount,
-            RootPath = job.RootPath,
-            Trigger = string.IsNullOrWhiteSpace(job.Trigger) ? AutoTagLiterals.ManualTrigger : job.Trigger,
-            RunIntent = NormalizeRunIntent(job.RunIntent),
-            ProfileId = job.ProfileId,
-            ProfileName = job.ProfileName,
-            EnhancementFeature = job.EnhancementFeature,
-            EnhancementGroupId = job.EnhancementGroupId,
-            CurrentPhase = job.CurrentPhase,
-            CurrentBatch = job.CurrentBatch,
-            BatchCount = job.BatchCount,
-            BatchProcessed = job.BatchProcessed,
-            BatchSize = job.BatchSize,
-            ProcessedItems = job.ProcessedItems,
-            TotalItems = job.TotalItems,
-            TargetReason = job.TargetReason,
-            TargetRequested = job.TargetRequested,
-            TargetUsable = job.TargetUsable,
-            EnhancementManifestPath = job.EnhancementManifestPath,
-            AutoMoveSummary = job.AutoMoveSummary?.Clone(),
-            ResumeFromJobId = string.IsNullOrWhiteSpace(job.ResumeFromJobId) ? null : job.ResumeFromJobId,
-            HistoryDate = ResolveRunHistoryDate(job),
-            LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
-            StatusEntryCount = GetArchivedStatusCount(job.Id, job.StatusHistory.Count)
-        };
-    }
-
-    private static DateTimeOffset? ResolveRunHistoryDate(AutoTagJob job)
-    {
-        if (!IsEnhancementRunIntent(job.RunIntent)
-            && !IsManualEnrichmentRunIntent(job.RunIntent))
-        {
-            return null;
-        }
-
-        return ResolveLastActivityTimestamp(job);
-    }
-
-    private AutoTagRunSummary? LoadRunSummary(string jobId)
-    {
-        try
-        {
-            var path = ResolveRunFilePath(jobId, "summary.json");
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return null;
-            }
-            return LoadRunSummaryFromPath(path);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to load AutoTag run summary for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
-            }
-            return null;
-        }
-    }
-
-    private AutoTagRunSummary? LoadRunSummaryFromPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            return null;
-        }
-
-        var json = File.ReadAllText(path, Encoding.UTF8);
-        var summary = JsonSerializer.Deserialize<AutoTagRunSummary>(json, _jsonOptions);
-        if (summary == null)
-        {
-            return null;
-        }
-
-        // Archived run summaries are immutable history: statuses/errors are never rewritten on load.
-        if (string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
-        {
-            summary.ResumeFromJobId = TryReadJobResumeFromJobId(summary.Id);
-        }
-
-        return summary;
-    }
-
-    private string? TryReadJobResumeFromJobId(string jobId)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(jobId))
-            {
-                return null;
-            }
-
-            var path = Path.Join(_jobsDir, $"{jobId}.json");
-            if (!File.Exists(path))
-            {
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
-            return document.RootElement.TryGetProperty(nameof(AutoTagJob.ResumeFromJobId), out var value)
-                && value.ValueKind == JsonValueKind.String
-                ? value.GetString()
-                : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read AutoTag resume source for {JobId}.", jobId);
-            }
-            return null;
-        }
-    }
-
-    private List<string> ReadRunLogLines(string jobId)
-    {
-        try
-        {
-            var candidatePaths = EnumerateRunFileCandidates(jobId, "autotag.log").ToList();
-            if (candidatePaths.Count == 0)
-            {
-                var fallbackPath = GetRunLogPath(jobId);
-                var repairedMissingArchive = TryRepairArchivedLogsFromJob(jobId, fallbackPath);
-                return repairedMissingArchive.Count > 0 ? repairedMissingArchive : new List<string>();
-            }
-
-            var archived = candidatePaths
-                .Select(path => File.ReadAllLines(path, Encoding.UTF8)
-                    .Where(line => !string.IsNullOrWhiteSpace(line))
-                    .ToList())
-                .OrderByDescending(lines => lines.Count)
-                .FirstOrDefault() ?? new List<string>();
-            if (archived.Count > 0)
-            {
-                return archived;
-            }
-
-            var repaired = TryRepairArchivedLogsFromJob(jobId, GetRunLogPath(jobId));
-            return repaired.Count > 0 ? repaired : archived;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag logs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
-            }
-            return new List<string>();
-        }
-    }
-
-    private List<TaggingStatusSnapshot> ReadRunStatusHistory(string jobId)
-    {
-        try
-        {
-            var candidatePaths = EnumerateRunFileCandidates(jobId, "status-history.ndjson").ToList();
-            if (candidatePaths.Count == 0)
-            {
-                var fallbackPath = GetRunStatusHistoryPath(jobId);
-                var repairedMissingArchive = TryRepairArchivedStatusFromJob(jobId, fallbackPath);
-                return repairedMissingArchive.Count > 0 ? repairedMissingArchive : new List<TaggingStatusSnapshot>();
-            }
-
-            List<TaggingStatusSnapshot> entries = new();
-            var skippedMalformed = 0;
-            foreach (var path in candidatePaths)
-            {
-                var (candidateEntries, candidateSkippedMalformed) = ParseStatusHistoryEntries(path);
-                if (candidateEntries.Count > entries.Count)
-                {
-                    entries = candidateEntries;
-                    skippedMalformed = candidateSkippedMalformed;
-                }
-            }
-            if (entries.Count == 0)
-            {
-                var repaired = TryRepairArchivedStatusFromJob(jobId, GetRunStatusHistoryPath(jobId));
-                if (repaired.Count > 0)
-                {
-                    return repaired;
-                }
-            }
-
-            if (skippedMalformed > 0)
-            {
-                _logger.LogWarning(
-                    "Skipped {SkippedMalformed} malformed AutoTag status entries for {JobId} while reading archive history.",
-                    skippedMalformed,
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
-            }
-
-            return entries;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag status history for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
-            }
-            return new List<TaggingStatusSnapshot>();
         }
     }
 
@@ -977,43 +513,6 @@ public partial class AutoTagService
         return File.ReadLines(path, Encoding.UTF8).Count();
     }
 
-    private string GetRunHistoryDirectory(string jobId) => Path.Join(_historyDir, jobId);
-
-    private string GetRunSummaryPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "summary.json");
-
-    private string GetRunLogPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "autotag.log");
-
-    private string GetRunStatusHistoryPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "status-history.ndjson");
-
-    private string GetRunTagDiffsPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "tag-diffs.json");
-
-    private string GetRunTagDiffCheckpointDirectory(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "tag-diff-checkpoints");
-
-    private void SaveTagDiffCheckpoint(string jobId, string normalizedPath, AutoTagTagDiff diff)
-    {
-        try
-        {
-            var directory = GetRunTagDiffCheckpointDirectory(jobId);
-            Directory.CreateDirectory(directory);
-            var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath))).ToLowerInvariant();
-            var path = Path.Join(directory, keyHash + ".json");
-            var tempPath = path + ".tmp";
-            var payload = new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase)
-            {
-                [normalizedPath] = diff
-            };
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(payload, _jsonOptions), new UTF8Encoding(false));
-            File.Move(tempPath, path, overwrite: true);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to persist AutoTag tag-diff checkpoint for {JobId}", jobId);
-            }
-        }
-    }
-
     private void SaveArchivedTagDiffs(string jobId, Dictionary<string, AutoTagTagDiff>? tagDiffs)
     {
         if (string.IsNullOrWhiteSpace(jobId))
@@ -1039,89 +538,6 @@ public partial class AutoTagService
             {
                 _logger.LogDebug(ex, "Failed to persist archived AutoTag tag diffs for {JobId}", jobId);
             }
-        }
-    }
-
-    private Dictionary<string, AutoTagTagDiff> LoadPersistedTagDiffs(string jobId)
-    {
-        var resolved = new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            var path = ResolveRunFilePath(jobId, "tag-diffs.json");
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                var parsed = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
-                    File.ReadAllText(path, Encoding.UTF8),
-                    _jsonOptions);
-                if (parsed != null)
-                {
-                    foreach (var (pathKey, diff) in parsed)
-                    {
-                        resolved[pathKey] = diff;
-                    }
-                }
-            }
-
-            var checkpointDirectory = GetRunTagDiffCheckpointDirectory(jobId);
-            if (Directory.Exists(checkpointDirectory))
-            {
-                foreach (var checkpointPath in Directory.EnumerateFiles(checkpointDirectory, "*.json"))
-                {
-                    var checkpoint = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
-                        File.ReadAllText(checkpointPath, Encoding.UTF8),
-                        _jsonOptions);
-                    if (checkpoint == null)
-                    {
-                        continue;
-                    }
-                    foreach (var (pathKey, diff) in checkpoint)
-                    {
-                        resolved[pathKey] = diff;
-                    }
-                }
-            }
-            return resolved;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to load persisted AutoTag tag diffs for {JobId}", jobId);
-            }
-            return resolved;
-        }
-    }
-
-    private Dictionary<string, AutoTagTagDiff> ReadRunTagDiffs(string jobId)
-    {
-        try
-        {
-            var path = ResolveRunFilePath(jobId, "tag-diffs.json");
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
-            }
-
-            var json = File.ReadAllText(path, Encoding.UTF8);
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(json, _jsonOptions);
-            var resolved = parsed != null
-                ? new Dictionary<string, AutoTagTagDiff>(parsed, StringComparer.OrdinalIgnoreCase)
-                : new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
-            if (resolved.Count > 0)
-            {
-                return resolved;
-            }
-
-            var repaired = TryRepairArchivedTagDiffsFromJob(jobId, path);
-            return repaired.Count > 0 ? repaired : resolved;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag tag diffs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
-            }
-            return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -1159,36 +575,201 @@ public partial class AutoTagService
         }
     }
 
-    private (List<TaggingStatusSnapshot> Entries, int SkippedMalformed) ParseStatusHistoryEntries(string path)
+    private HashSet<string> EnumerateHistoryRoots()
     {
-        var entries = new List<TaggingStatusSnapshot>();
-        var skippedMalformed = 0;
-        foreach (var line in File.ReadLines(path, Encoding.UTF8)
-            .Select(static rawLine => rawLine?.Trim())
-            .Where(static line => !string.IsNullOrWhiteSpace(line)))
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddRoot(string? root)
         {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                return;
+            }
+
             try
             {
-                var entry = JsonSerializer.Deserialize<TaggingStatusSnapshot>(line!, _jsonOptions);
-                if (entry != null)
-                {
-                    entries.Add(entry);
-                }
-                else
-                {
-                    skippedMalformed += 1;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
+                var normalized = Path.GetFullPath(root);
+                roots.Add(normalized);
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                RecordMalformedHistoryEntry(ref skippedMalformed);
+                // Ignore invalid paths.
             }
         }
 
-        return (entries, skippedMalformed);
+        AddRoot(_historyDir);
+        AddRoot(_workersHistoryDir);
+
+        var configuredDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        if (!string.IsNullOrWhiteSpace(configuredDataRoot))
+        {
+            AddRoot(Path.Join(configuredDataRoot, AutoTagFolderName, HistoryFolderName));
+        }
+
+        var configuredConfigRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
+        if (!string.IsNullOrWhiteSpace(configuredConfigRoot))
+        {
+            AddRoot(Path.Join(configuredConfigRoot, AutoTagFolderName, HistoryFolderName));
+        }
+
+        return roots;
+    }
+
+    private IEnumerable<string> EnumerateRunFileCandidates(string jobId, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(fileName))
+        {
+            yield break;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var normalized in EnumerateHistoryRoots()
+            .Select(root => Path.Join(root, jobId, fileName))
+            .Where(File.Exists)
+            .Select(Path.GetFullPath)
+            .Where(seen.Add))
+        {
+            yield return normalized;
+        }
+    }
+
+    private void BackfillArchivedRuns()
+    {
+        try
+        {
+            if (!Directory.Exists(_jobsDir))
+            {
+                return;
+            }
+
+            foreach (var jobId in Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern)
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(jobId => !string.IsNullOrWhiteSpace(jobId)))
+            {
+                var currentJobId = jobId!;
+                var archiveComplete = IsRunArchiveComplete(currentJobId);
+                var needsRepair = archiveComplete && ShouldRepairRunArchive(currentJobId);
+                if (archiveComplete && !needsRepair)
+                {
+                    continue;
+                }
+
+                var job = LoadJob(currentJobId);
+                if (job == null)
+                {
+                    continue;
+                }
+
+                MaterializeRunArchive(job);
+                if (needsRepair && _logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Repaired stale AutoTag archive for {JobId}.", jobId);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to backfill archived AutoTag runs.");
+        }
+    }
+
+    private static bool ShouldBackfillArchivedRunsOnStartup(IConfiguration configuration)
+    {
+        var configured = Environment.GetEnvironmentVariable("DEEZSPOTAG_AUTOTAG_BACKFILL_ON_STARTUP");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return string.Equals(configured, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(configured, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(configured, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return configuration.GetValue("AutoTag:ArchiveBackfillOnStartup", false);
+    }
+
+    private bool ShouldRepairRunArchive(string jobId)
+    {
+        try
+        {
+            var summary = LoadRunSummary(jobId);
+            if (summary == null)
+            {
+                return false;
+            }
+
+            var logPath = GetRunLogPath(jobId);
+            if (summary.LogCount > 0 && File.Exists(logPath) && new FileInfo(logPath).Length == 0)
+            {
+                return true;
+            }
+
+            var statusPath = GetRunStatusHistoryPath(jobId);
+            if (summary.StatusEntryCount > 0 && File.Exists(statusPath) && new FileInfo(statusPath).Length == 0)
+            {
+                return true;
+            }
+
+            var tagDiffsPath = GetRunTagDiffsPath(jobId);
+            if (File.Exists(tagDiffsPath))
+            {
+                var content = File.ReadAllText(tagDiffsPath, Encoding.UTF8).Trim();
+                if (string.IsNullOrEmpty(content) || string.Equals(content, "{}", StringComparison.Ordinal))
+                {
+                    var job = LoadJob(jobId);
+                    if (job?.TagDiffs != null && job.TagDiffs.Count > 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
+    }
+
+    private bool IsRunArchiveComplete(string jobId)
+    {
+        return File.Exists(GetRunSummaryPath(jobId))
+            && File.Exists(GetRunLogPath(jobId))
+            && File.Exists(GetRunStatusHistoryPath(jobId));
+    }
+
+    private void MaterializeRunArchive(AutoTagJob job)
+    {
+        try
+        {
+            var archiveLock = _archiveLocks.GetOrAdd(job.Id, static _ => new object());
+            lock (archiveLock)
+            {
+                Directory.CreateDirectory(GetRunHistoryDirectory(job.Id));
+                var summary = BuildRunSummary(job);
+                File.WriteAllText(
+                    GetRunSummaryPath(job.Id),
+                    JsonSerializer.Serialize(summary, _jsonOptions),
+                    new UTF8Encoding(false));
+
+                File.WriteAllLines(
+                    GetRunLogPath(job.Id),
+                    (job.Logs ?? new List<string>()).Where(line => !string.IsNullOrWhiteSpace(line)),
+                    new UTF8Encoding(false));
+
+                var statusLines = (job.StatusHistory ?? new List<TaggingStatusSnapshot>())
+                    .Select(entry => JsonSerializer.Serialize(entry, _jsonOptions))
+                    .ToList();
+                File.WriteAllLines(GetRunStatusHistoryPath(job.Id), statusLines, new UTF8Encoding(false));
+                SaveArchivedTagDiffs(job.Id, job.TagDiffs);
+                UpdateRunIndex(summary, force: true);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to materialize AutoTag run archive for {JobId}", job.Id);
+            }
+        }
     }
 }
