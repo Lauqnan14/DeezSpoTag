@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Policy: no markdown files are ever committed. Reject any staged .md file.
+staged_md="$(git diff --cached --name-only --diff-filter=ACMR -- '*.md' || true)"
+if [ -n "$staged_md" ]; then
+  echo "Commit blocked: no .md files may be committed." >&2
+  echo "Staged markdown files:" >&2
+  printf '  %s\n' $staged_md >&2
+  echo "Unstage them (git restore --staged <file>) or bypass with --no-verify if truly required." >&2
+  exit 1
+fi
+
+exit 0
