@@ -33,8 +33,7 @@ using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProvider
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
-{
-    private static readonly TimeSpan ArtworkFallbackTimeout = TimeSpan.FromSeconds(20);
+{    private static readonly TimeSpan ArtworkFallbackTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan LyricsResolutionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan AppleExtrasTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PlatformMatchTimeout = TimeSpan.FromSeconds(45);
@@ -411,1034 +410,129 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         "other",
         "others"
     };
-    /* IsMp4Family moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _jobTokens moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _jobMatchCaches moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _logger moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _httpClientFactory moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _musicBrainzMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _beatportMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _discogsMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _traxsourceMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _bandcampMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _bpmSupremeMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _itunesMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _spotifyMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _deezerMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _lastFmMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _boomplayMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _audiomackMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _shazamMatcher moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _shazamRecognitionService moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _appleLyricsService moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _appleMusicCatalogService moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _downloadLyricsService moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _settingsService moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _serviceScopeFactory moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _trackIdentityResolver moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _platformRegistry moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* _jsonOptions moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* .ctor#1 moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* RunAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* PrepareAutoTagRunPlanAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* LogShazamAvailability moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ExecutePlatformPassesAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ExecutePlainPlatformPassAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* EnhancementPickupScheduler moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ExecuteLibraryWideEnhancementBatchesAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ResolveResumeStartIndices moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* IsLibraryWideEnhancementBatchingEnabled moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* IsManualEnrichment moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* WantsArtworkFromSettings moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* BuildNormalizedPathSet moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* NormalizeOrderPath moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ArtistSortMeta moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ReadArtistSortMeta moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* OrderFilesForEnhancementRun moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* GetAlbumSortKey moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* SameAlbumDirectory moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* BuildLibraryWideEnhancementBatchRanges moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* BuildLibraryWideEnhancementBatchRanges moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* GetResumeCheckpointMismatchReason moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* BuildProviderTagPlan moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* CapturePresentTags moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ResolveReturnedEligibleTags moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* VerifyPersistedTags moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* VerifyOtherTagsPersisted moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ToTagKey moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ProcessPlatformFileAsync moved to LocalAutoTagRunner.RunEntry.cs */
-
-    /* ApplyCentralIdentityForManualEnrichmentAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* AddResolvedIdentity moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* HasValue moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* IsLastPlatform moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* WasTaggedByAnyPlatform moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* TryHandlePreSkippedFile moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* ResolvePlatformMatchAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* RunPlatformMatchWithTimeoutAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* IsProviderNotConfigured moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* ApplyResolvedMatchAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* EnsureManualArtistArtworkAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* HandleRejectedManualRelease moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* AlbumsReferToSameRelease moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* RunBoundedOptionalStepAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* ObserveBackgroundTask moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* EvaluateGlobalMismatchGuard moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* EvaluateGlobalMismatchGuard moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* IsAuthoritativeIdMatch moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* EvaluateBoomplayReliabilityGuard moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* AreArtistIdentitiesCompatibleForOverwrite moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* HasDottedInitialArtistCollapse moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* IsDottedInitialArtist moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* NormalizeArtistIdentity moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* CreateCatalogLookupInfo moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* CreateCatalogLookupInfo moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* PreserveAtmosFileIsrc moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* PreserveAtmosFileIsrc moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* HasMatchingIsrc moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* HasDurationMismatch moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* EnsureArtworkFallbackAsync moved to LocalAutoTagRunner.IdentityAndArtwork.cs */
-
-    /* LogArtworkFallbackMatchFailure moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ResolveArtworkFallbackPlatform moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitSkippedStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitErrorStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitReviewStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitTaggingStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitTaggedStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* EmitStatus moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ResolveRecognitionStrategy moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ApplyPostLoopFallbackAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ComputeOverallProgress moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ComputeBatchOverallProgress moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ComputeNextPlatformIndex moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ComputeNextFileIndex moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* GetOrCreateMatchCache moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* PruneExpiredMatchCaches moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* TryGetCachedMatch moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* StoreCachedMatch moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* IsPlatformUnavailable moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* MarkPlatformUnavailable moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* StopAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* LoadRuntimeSettings moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ApplyTechnicalOverrides moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ApplyRuntimeConfigOverrides moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ApplyFolderStructureOverrides moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* NormalizeLocalArtworkFormat moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* PopulateAppleExtrasAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* PopulateAppleCatalogMetadataAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ApplyAppleCatalogMetadata moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* IsLocalAtmosFile moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* TryGetJsonString moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* TryPopulateAppleAnimatedArtworkAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* PopulatePlatformLyricsAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* RestrictLyricsRequestToProvider moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* ResolveAppleIdentityForExtrasAsync moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* BuildAlbumArtworkBaseFileName moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* BuildLyricsLookupTrack moved to LocalAutoTagRunner.ArtworkAndLyrics.cs */
-
-    /* NormalizeLyricsLookupSource moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* TryGetFirstOtherValue moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* AddLookupUrl moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildLyricsLookupSettings moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildLyricsProviderOptions moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildLyricsPopulationRequest moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ApplyResolvedLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ApplySyncedLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ApplyUnsyncedLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ApplyTtmlLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* SetLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ApplyLyricsPreferenceGate moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* LyricsSidecarsSatisfyPreference moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ReadFileOrEmpty moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveLyricsTimingBadges moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveAnimatedArtworkBadges moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveLyricsRowCoverUrl moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ShouldRequestAnyLyrics moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ParseLyricsTypeSelection moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* NormalizeLyricsFormat moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ParseLyricsFormatSelection moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* NormalizeLyricsFormatToken moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* EnumerateAudioFiles moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveTargetFiles moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* NormalizeScopePath moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* IsPathWithinScope moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildEffectivePlatforms moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveLyricsProviderOrder moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* IsLyricsOnlyPlatform moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildPlatformSupportedTags moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* PlatformMatchContext moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* MatchPlatformAsync moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* MatchLyricsProviderAsync moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildLyricsOnlyAutoTagTrack moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* MatchShazamAsync moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* TryMatchShazamByIdsAsync moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ResolveDeezerMatchConfig moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildShazamIdFirstInfo moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* CloneAudioInfo moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* FirstNonEmpty moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* HasUsableMatchIdentity moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* PrepareShazamIdFirstMatch moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* HasTagValue moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* ExtractSpotifyTrackIdFromTags moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* IsSpotifyTrackId moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* CanUseMatchCache moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* BuildMatchCacheKey moved to LocalAutoTagRunner.LyricsLookup.cs */
-
-    /* NormalizeCacheToken moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ComputeCacheHash moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* HasAnyTags moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* BuildConfiguredTagSet moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeConfiguredTagKey moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* LoadConfig moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* TryApplyShazam moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ShouldAttemptShazam moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsRawCoreMetadata moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsLikelyNoisyCoreMetadata moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsTrustedSourceIdentity moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ResolveShazamEnrichmentBehavior moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsShazamRecognitionAvailable moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsShazamConflictResolution moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsShazamPlatformEnabled moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeConfig moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeManualReleasePreference moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* RecognizeWithShazamAttempt moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamRecognition moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ResolveShazamArtists moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamCoreValues moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamDurationAndTrackNumber moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamBaseTags moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamOptionalScalarTags moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyShazamCollectionTags moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* SetShazamTag moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* SetShazamTagValues moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* BuildAudioInfo moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* BuildAudioInfoDraft moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* PopulateAudioInfoTagMap moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeSpotifyTrackUrls moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeSpotifyTrackUrl moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyDraftTagFallbacks moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyTracknameTemplateFallbacks moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* EnsureArtistFallbacks moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ResolveTitleWithFallback moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ApplyTitleRegexFilter moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* CreateAudioInfoFromDraft moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* BuildAudioInfoFallback moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* AudioInfoDraft moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* InferArtistFromPath moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* InferAlbumFromPath moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsSpecificFolderArtist moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsWeakMetadataValue moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* IsVariousArtistsValue moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* InferTitleFromFilename moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* NormalizeDurationSeconds moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ResolveDurationSecondsFromTags moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* ResolveDurationSecondsWithFfprobe moved to LocalAutoTagRunner.MatchCacheAndDuration.cs */
-
-    /* TryKillProcess moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* SplitArtistCredits moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ReadFirstTagValue moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ParsePositiveInt moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* EnsureCoreTagsFromPathAsync moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TrySetMissingTitle moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TrySetMissingPerformers moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TrySetMissingAlbumArtists moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TrySetMissingAlbum moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TryParseFilename moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AddTagIfAny moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ReadRawTagValuesAny moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* HasExistingTags moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildTagSettings moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AlbumIdentitySeedExtensions moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AlbumIdentityDateRawNames moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AlbumIdentityAlbumIdRawNames moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AlbumIdentityAlbumArtistIdRawNames moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AlbumIdentityReleaseGroupIdRawNames moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* PlatformReleaseIdRawNames moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* _albumIdentityStore moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* _albumIdentityStorePath moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* LoadPersistedAlbumIdentities moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* SeedPlanAlbumIdentities moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* PersistAlbumIdentities moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* FolderAlbumIdentity moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ApplyAlbumIdentityConsensus moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ApplyFolderAlbumIdentity moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildAlbumIdentityCandidate moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildPlatformReleaseIds moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* AddPlatformReleaseId moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* PlatformReleaseIdRawName moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ApplyEstablishedAlbumIdentity moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* SetOtherValue moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ResolveAlbumFolderKey moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TryResolveProspectiveAlbumDirectory moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TryReadAlbumIdentityFromSiblings moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* EnumerateAlbumIdentitySeedDirectories moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ReadAlbumIdentityFromDirectory moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildMajorityAlbumIdentity moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildMajorityPlatformReleaseIds moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* SelectMajority moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* ReadPlatformReleaseIds moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* TagFileAsync moved to LocalAutoTagRunner.AlbumIdentityAndTagging.cs */
-
-    /* BuildCoreTrack moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* PreserveAlbumEditionIdentity moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* AlbumIdAlbumTagNames moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* AlbumArtistIdAlbumTagNames moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ReadFirstRawTagValue moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* PreserveSourceTitleWording moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* PreserveRicherArtistCreditsFromSource moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ApplyFolderContextGuards moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ShouldPreferSourceArtistCredits moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ApplyArtistAliasPreference moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* RewriteCreditList moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* NormalizeTrackArtistsForTagging moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteTagsOnetaggerStyleAsync moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* BuildAtlDashFieldName moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* BuildTagWriteExecutionContext moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* PrepareId3Version moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* RemoveId3v1TagIfDisabled moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ApplyPrimaryTagWrites moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ResolveArtistValues moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ResolveAlbumArtistValues moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteTitleTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteVersionTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteArtistTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteArtistsTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteAlbumArtistTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteAlbumTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteKeyTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteBpmTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteLabelTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ApplyAudioFeatureTagWrites moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* WriteAudioFeatureTag moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* ApplyGenreAndStyleTagWrites moved to LocalAutoTagRunner.TagWrites.cs */
-
-    /* GenreWriteAddsNothing moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* NormalizeStyleValues moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ApplyStylesOptions moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ApplyReleaseAndMetadataTagWrites moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteReleaseDateTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WritePublishDateTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteUrlTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteTrackIdTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteReleaseIdTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* IsPlatformReleaseIdShapeValid moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteSourceIdentityTags moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ToMusicBrainzShapedId moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteSingleRawTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteCatalogNumberTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteDurationTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteRemixerTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteIsrcTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteMoodTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteActivityTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ApplyTrackAndLyricsTagWrites moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteDiscNumberTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteDiscTotalTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteTrackNumberTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteBarcodeTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteReplayGainTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteCopyrightTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteComposerTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteLyricistTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteInvolvedPeopleTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WritePublisherTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteDescriptionTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteSourceTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteRatingTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteLanguageTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteSyncedLyrics moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteUnsyncedLyrics moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteExplicitTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteOtherTags moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* WriteMetaTag moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ShouldWriteSyncedLyrics moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ShouldWriteUnsyncedLyrics moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ApplyAlbumArtTagWrite moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* MarkAttemptedIfPresent moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* BuildTemplatePathInfo moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* MaterializeFileToTemplatePath moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ResolveTemplateMaterializationDestination moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ShouldOverwriteMaterializedFile moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* MoveAdjacentSidecars moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* PathsReferToSameFile moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* PersistManualMaterializedTargetPath moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ReplaceTargetPathInRuntimeConfig moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ShouldWriteArtworkSidecar moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ShouldPrepareTemplateArtworkSidecar moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* TryResolveExistingCoverSidecar moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* EnsureTemplateFoldersAndArtworkSidecarAsync moved to LocalAutoTagRunner.ArtworkSidecars.cs */
-
-    /* ResolveLocalArtworkFormats moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* WriteLyricsSidecarsAsync moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ShouldUpgradeTtmlSidecarToWordTiming moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ShouldUpgradeLrcSidecarToWordTiming moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* BuildLyricsSidecarPath moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* CleanupUpgradedTxtSidecar moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ShouldAllowLyricsOtherTagKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* IsLyricsPayloadKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* GetLyricsSidecarState moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasTimedTtmlSidecar moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* TrackHasEmbeddedArtwork moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* TryResolveFolderArtworkPath moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* DownloadCoverAsync moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ApplyCustomTagsAsync moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ResolveStylesTagName moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* SupportedTagMap moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* CreateSupportedTagMap moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ShouldOverwriteTag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ResolveSeparatorForFormat moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* CollectAutoTagTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddAutoTagMetadataTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddAutoTagFeatureTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddAutoTagNumericAndDateTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddAutoTagOtherMappedTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddAutoTagLyricsAndOtherTags moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasOtherKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasAnyOtherKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasNonLyricsOtherTag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasOtherTagValues moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* IsFirstClassOtherRawKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* IsRuntimeMatchMetadataKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* IsNonPersistedOtherRawKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ShouldPersistOtherRawKey moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasReleaseTypeTagEnabled moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* EnsureReleaseCategory moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ApplySeparator moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* FormatAudioFeature moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasTag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasId3Tag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasVorbisTag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasMp4Tag moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* HasTimestampedLyricsPayload moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ContainsTimestampedLyrics moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* ReadExistingGenre moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* BuildCustomTagWrites moved to LocalAutoTagRunner.ArtworkSidecarsAndLyrics.cs */
-
-    /* AddSingleValueCustomTagWrite moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* AddOtherTagWrites moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* AddMetaTagWrite moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveFieldRawName moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TagWriteRequest moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TagWriteExecutionContext moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TagFileWriteResult moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* LocalAutoTagRunnerCollaborators moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TagWriteContext moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TagFieldBinding moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* DateWritePayload moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* LyricsSidecarWriteResult moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* OverwriteRuleContext moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* CustomTagWrite moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveFormatName moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* SetField moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* SetRaw moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* HasRawTag moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteDate moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteId3Date moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ShouldSkipId3ReleaseDate moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteVorbisDate moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteMp4Date moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* IsYearOnlyDateFormat moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* SetTrackNumber moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteId3TrackNumber moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* SetDiscTotal moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteVorbisTrackNumber moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteMp4TrackNumber moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteLyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TryResolveLyricsLines moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteId3Lyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteId3SyncedLyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* BuildSyncedLyricsItems moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteId3UnsyncedLyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteVorbisLyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* WriteGenericLyrics moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* TryParseLrcLine moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveLrcSidecarLines moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* HasLrcSidecarSourceFormat moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveExistingLrcSidecar moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveLyricsPayloadLines moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ResolveTtmlSidecarPayload moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* NormalizeLyricsLines moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ComposeTtmlPayload moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* ApplyAlbumArt moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* Mp4TagHelper moved to LocalAutoTagRunner.TagWritesAdvanced.cs */
-
-    /* CapitalizeGenre moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* IsGenreRawTag moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* SanitizeGenres moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* PreserveGenreOrderWhenSetEqual moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ToCamelot moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* CamelotNotes moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* SetId3Raw moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* SetVorbisRaw moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ReadExistingRawTag moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ReadRawTagValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ReadRawTagValuesCore moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ReadMp4AtlRawValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* AddMp4AtlNativeRawValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* AddMp4AtlDateValue moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* AddMp4AtlPositiveNumberValue moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* AddMp4AtlLyricsValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveAtlAdditionalValue moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* AddIfPresent moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyId3CustomTags moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyVorbisCustomTags moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyAppleCustomTags moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyOverwriteRules moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* CloneTagSettings moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* SetRawIfAllowed moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* WriteRawTagValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* RemoveRawTagValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ShouldOverwriteRawTag moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveOtherValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveFirstClassOrOtherValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* SplitCompositeRawValues moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveFirstPositiveInt moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveComposerRawName moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ResolveLyricistRawName moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyOverwriteRule moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyReleaseDateOverwriteRule moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyTrackNumberOverwriteRule moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyTrackTotalOverwriteRule moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ApplyPreferenceAwareOverwriteGuards moved to LocalAutoTagRunner.OverwriteGuards.cs */
-
-    /* ArtistAliasOverwriteDecision moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyPreferredArtistAliasToExistingCredits moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* PreserveRicherCreditsWithoutBlockingPreferredWrite moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyAlbumLossyOverwriteGuard moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyPlatformOverwriteGuards moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyPreferenceAwareArtistGuards moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyAlbumArtistGuards moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplySingleAlbumArtistGuard moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyTitleFeaturedGuard moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ApplyTitleLossyOverwriteGuard moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ShouldKeepExistingTitle moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* HasDetailedTitleMarkers moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* IsNearMissAlternativeTitle moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* NormalizeLooseTitle moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AreArtistCreditsEquivalent moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AreArtistPrimaryCompatible moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* HasFeaturedMarker moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ResolveArtistSeparator moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ReadAppleDashBox moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* TrySetAppleDashBox moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagRunPlan moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ManualReleaseIdentity moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagFileRunContext moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* JobMatchCacheState moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* MatchCacheEntry moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ProviderTagPlan moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* LyricsPopulationRequest moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* LyricsRequestFlags moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* SanitizeLogValue moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagRunnerConfig moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ShazamEnrichmentResult moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* ShazamFailureKind moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagReviewMetadata moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagSeparators moved to LocalAutoTagRunner.RunMetadata.cs */
-
-    /* AutoTagStylesCustomTag moved to LocalAutoTagRunner.RunMetadata.cs */
-
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobTokens = new();
+    private readonly ConcurrentDictionary<string, JobMatchCacheState> _jobMatchCaches = new();
+    private readonly ILogger<LocalAutoTagRunner> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly MusicBrainzMatcher _musicBrainzMatcher;
+    private readonly BeatportMatcher _beatportMatcher;
+    private readonly DiscogsMatcher _discogsMatcher;
+    private readonly TraxsourceMatcher _traxsourceMatcher;
+    private readonly BandcampMatcher _bandcampMatcher;
+    private readonly BpmSupremeMatcher _bpmSupremeMatcher;
+    private readonly ItunesMatcher _itunesMatcher;
+    private readonly SpotifyMatcher _spotifyMatcher;
+    private readonly DeezerMatcher _deezerMatcher;
+    private readonly LastFmMatcher _lastFmMatcher;
+    private readonly BoomplayMatcher _boomplayMatcher;
+    private readonly AudiomackMatcher _audiomackMatcher;
+    private readonly ShazamMatcher _shazamMatcher;
+    private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly AppleLyricsService _appleLyricsService;
+    private readonly AppleMusicCatalogService _appleMusicCatalogService;
+    private readonly DownloadLyricsService _downloadLyricsService;
+    private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
+    private readonly PortedPlatformRegistry? _platformRegistry;
+    private readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters =
+        {
+            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
+            new MultipleMatchesSortConverter()
+        }
+    };
+
+    public LocalAutoTagRunner(LocalAutoTagRunnerCollaborators collaborators)
+    {
+        _logger = collaborators.Logger;
+        _albumIdentityStorePath = collaborators.AlbumIdentityStorePath;
+        _httpClientFactory = collaborators.HttpClientFactory;
+        _musicBrainzMatcher = collaborators.MusicBrainzMatcher;
+        _beatportMatcher = collaborators.BeatportMatcher;
+        _discogsMatcher = collaborators.DiscogsMatcher;
+        _traxsourceMatcher = collaborators.TraxsourceMatcher;
+        _bandcampMatcher = collaborators.BandcampMatcher;
+        _bpmSupremeMatcher = collaborators.BpmSupremeMatcher;
+        _itunesMatcher = collaborators.ItunesMatcher;
+        _spotifyMatcher = collaborators.SpotifyMatcher;
+        _deezerMatcher = collaborators.DeezerMatcher;
+        _lastFmMatcher = collaborators.LastFmMatcher;
+        _boomplayMatcher = collaborators.BoomplayMatcher;
+        _audiomackMatcher = collaborators.AudiomackMatcher;
+        _shazamMatcher = collaborators.ShazamMatcher;
+        _shazamRecognitionService = collaborators.ShazamRecognitionService;
+        _appleLyricsService = collaborators.AppleLyricsService;
+        _appleMusicCatalogService = collaborators.AppleMusicCatalogService;
+        _downloadLyricsService = collaborators.DownloadLyricsService;
+        _settingsService = collaborators.SettingsService;
+        _serviceScopeFactory = collaborators.ServiceScopeFactory;
+        _trackIdentityResolver = collaborators.TrackIdentityResolver;
+        _platformRegistry = collaborators.PlatformRegistry;
+    }
+
+    private static readonly string[] AlbumIdentitySeedExtensions =
+        [".flac", ".mp3", ".m4a", ".mp4", ".aac", ".alac", ".ogg", ".opus", ".wav"];
+
+    private static readonly string[] AlbumIdentityDateRawNames = ["DATE", "TDRC", "TDRL", "TYER"];
+    private static readonly string[] AlbumIdentityAlbumIdRawNames =
+        [AlbumIdRawTag, "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "MUSICBRAINZ_RELEASE_ID"];
+    private static readonly string[] AlbumIdentityAlbumArtistIdRawNames =
+        [AlbumArtistIdRawTag, "MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID"];
+    private static readonly string[] AlbumIdentityReleaseGroupIdRawNames =
+        [ReleaseGroupIdRawTag, "MUSICBRAINZ_RELEASEGROUPID", "MUSICBRAINZ_RELEASE_GROUP_ID"];
+    private static readonly string[] PlatformReleaseIdRawNames =
+        ["DEEZER_RELEASE_ID", "SPOTIFY_RELEASE_ID", "ITUNES_RELEASE_ID", "APPLE_RELEASE_ID", "APPLE_ALBUM_ID"];
+
+    private AlbumIdentityStore? _albumIdentityStore;
+    private readonly string? _albumIdentityStorePath;
+
+    private static readonly string[] AlbumIdAlbumTagNames =
+        ["MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID"];
+    private static readonly string[] AlbumArtistIdAlbumTagNames =
+        ["MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID", "ALBUMARTISTID", "MB_ALBUM_ARTIST_ID"];
+
+    private static readonly Dictionary<string, SupportedTag> SupportedTagMap = CreateSupportedTagMap();
+
+    private static readonly (string Original, string Camelot)[] CamelotNotes =
+    {
+        ("Abm", "1A"),
+        ("G#m", "1A"),
+        ("B", "1B"),
+        ("D#m", "2A"),
+        ("Ebm", "2A"),
+        ("Gb", "2B"),
+        ("F#", "2B"),
+        ("A#m", "3A"),
+        ("Bbm", "3A"),
+        ("C#", "3B"),
+        ("Db", "3B"),
+        ("Dd", "3B"),
+        ("Fm", "4A"),
+        ("G#", "4B"),
+        ("Ab", "4B"),
+        ("Cm", "5A"),
+        ("D#", "5B"),
+        ("Eb", "5B"),
+        ("Gm", "6A"),
+        ("A#", "6B"),
+        ("Bb", "6B"),
+        ("Dm", "7A"),
+        ("F", "7B"),
+        ("Am", "8A"),
+        ("C", "8B"),
+        ("Em", "9A"),
+        ("G", "9B"),
+        ("Bm", "10A"),
+        ("D", "10B"),
+        ("Gbm", "11A"),
+        ("F#m", "11A"),
+        ("A", "11B"),
+        ("C#m", "12A"),
+        ("Dbm", "12A"),
+        ("E", "12B")
+    };
 }

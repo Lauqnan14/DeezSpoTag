@@ -32,268 +32,207 @@ using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProvider
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
-public partial class LocalAutoTagRunner
+public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
-    private static Track BuildCoreTrack(
-        AutoTagTrack track,
-        string? separator,
-        bool singleAlbumArtist,
-        DeezSpoTagSettings settings)
+    private static ProviderTagPlan BuildProviderTagPlan(AutoTagFileRunContext context)
     {
-        var artists = track.Artists.Count == 0 ? new List<string> { UnknownArtist } : track.Artists;
-        var albumArtists = track.AlbumArtists.Count == 0 ? artists : track.AlbumArtists;
-        var album = new Album(track.Album ?? "")
-        {
-            TrackTotal = track.TrackTotal ?? 0,
-            DiscTotal = null,
-            Genre = track.Genres.ToList(),
-            Label = track.Label,
-            ReleaseDate = track.ReleaseDate
-        };
+        var configured = context.Plan.Config.Tags
+            .Select(tag => tag?.Trim())
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => SupportedTagMap.TryGetValue(tag!, out var mapped) ? (SupportedTag?)mapped : null)
+            .Where(tag => tag.HasValue)
+            .Select(tag => tag!.Value)
+            .ToHashSet();
 
-        var primaryAlbumArtist = albumArtists
-            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
-            ?.Trim();
-        if (string.IsNullOrWhiteSpace(primaryAlbumArtist))
+        if (context.Plan.PlatformSupportedTags.TryGetValue(context.Platform, out var supported))
         {
-            primaryAlbumArtist = artists[0];
+            configured.IntersectWith(supported);
         }
 
-        var albumMainArtists = singleAlbumArtist
-            ? new List<string> { primaryAlbumArtist }
-            : albumArtists.ToList();
-
-        album.MainArtist = new DeezSpoTag.Core.Models.Artist(primaryAlbumArtist);
-        album.Artists = albumMainArtists.ToList();
-        album.Artist["Main"] = albumMainArtists.ToList();
-
-        var coreTrack = new Track
+        var retained = new HashSet<SupportedTag>();
+        var eligible = new HashSet<SupportedTag>();
+        try
         {
-            Title = track.Title,
-            Artists = artists.ToList(),
-            MainArtist = new DeezSpoTag.Core.Models.Artist(artists[0]),
-            Album = album,
-            TrackNumber = track.TrackNumber ?? 0,
-            DiscNumber = track.DiscNumber ?? 0,
-            Bpm = track.Bpm ?? 0,
-            Explicit = track.Explicit ?? false,
-            ISRC = track.Isrc ?? "",
-            Duration = (int?)track.Duration?.TotalSeconds ?? 0
-        };
-
-        if (singleAlbumArtist && artists.Count > 1)
-        {
-            coreTrack.Artist["Main"] = new List<string> { artists[0] };
-            coreTrack.Artist["Featured"] = artists.Skip(1).ToList();
-            coreTrack.MainArtist = new DeezSpoTag.Core.Models.Artist(artists[0]);
-        }
-        else
-        {
-            coreTrack.Artist["Main"] = artists.ToList();
-        }
-
-        coreTrack.GenerateMainFeatStrings();
-        coreTrack.ArtistString = coreTrack.MainArtist?.Name ?? artists[0];
-        coreTrack.ArtistsString = string.IsNullOrWhiteSpace(separator) ? string.Join(", ", artists) : string.Join(separator, artists);
-
-        if (track.ReleaseDate.HasValue)
-        {
-            coreTrack.Date = CustomDate.FromDateTime(track.ReleaseDate.Value);
-            coreTrack.DateString = coreTrack.Date.Format("ymd");
-        }
-
-        settings.Tags ??= new TagSettings();
-        coreTrack.ApplySettings(settings);
-
-        return coreTrack;
-    }
-
-    /// <summary>
-    /// Keeps the file's own title wording when the provider returned the same work
-    /// with the same variant intent but different variant text ("Song (Live)" vs
-    /// "Song (Live at Wembley)", "Song (Remastered)" vs "Song (2011 Remaster)").
-    /// Providers must enrich missing tags, not rename tracks the user already titled.
-    /// </summary>
-    /// <summary>
-    /// Keeps the file's own album identity (title, album id, album-artist id) when
-    /// the provider matched a different edition of the same album. Returns true when
-    /// an edition conflict was detected and preserved.
-    /// </summary>
-    private static bool PreserveAlbumEditionIdentity(AutoTagAudioInfo sourceInfo, AutoTagTrack track)
-    {
-        if (track == null || string.IsNullOrWhiteSpace(sourceInfo?.Album))
-        {
-            return false;
-        }
-
-        if (!AlbumTitleNormalizer.IsEditionConflict(sourceInfo.Album, track.Album))
-        {
-            return false;
-        }
-
-        track.Album = sourceInfo.Album.Trim();
-        var sourceAlbumId = ReadFirstRawTagValue(sourceInfo, AlbumIdAlbumTagNames);
-        if (!string.IsNullOrWhiteSpace(sourceAlbumId))
-        {
-            track.AlbumId = sourceAlbumId;
-            track.ReleaseId = sourceAlbumId;
-        }
-
-        var sourceAlbumArtistId = ReadFirstRawTagValue(sourceInfo, AlbumArtistIdAlbumTagNames);
-        if (!string.IsNullOrWhiteSpace(sourceAlbumArtistId))
-        {
-            track.AlbumArtistId = sourceAlbumArtistId;
-        }
-
-        return true;
-    }
-
-    private static readonly string[] AlbumIdAlbumTagNames =
-        ["MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID"];
-    private static readonly string[] AlbumArtistIdAlbumTagNames =
-        ["MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID", "ALBUMARTISTID", "MB_ALBUM_ARTIST_ID"];
-
-    private static string? ReadFirstRawTagValue(AutoTagAudioInfo info, string[] tagNames)
-    {
-        foreach (var tagName in tagNames)
-        {
-            if (info.Tags.TryGetValue(tagName, out var values) && values is { Count: > 0 })
+            using var file = TagLib.File.Create(context.File);
+            var extension = Path.GetExtension(context.File);
+            foreach (var tag in configured)
             {
-                var value = values.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
-                if (!string.IsNullOrWhiteSpace(value))
+                if (!ShouldOverwriteTag(context.Plan.Config, tag)
+                    && HasTag(file, extension, tag, context.Plan.Config, context.Platform))
                 {
-                    return value.Trim();
+                    retained.Add(tag);
+                }
+                else
+                {
+                    eligible.Add(tag);
                 }
             }
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            eligible.UnionWith(configured);
+        }
 
-        return null;
+        return new ProviderTagPlan(configured, eligible, retained);
     }
 
-    private static void PreserveSourceTitleWording(AutoTagAudioInfo sourceInfo, AutoTagTrack track)
+    private static void ApplyTechnicalOverrides(DeezSpoTagSettings settings, TechnicalTagSettings? technical)
     {
-        if (track == null || string.IsNullOrWhiteSpace(sourceInfo?.Title))
+        if (technical == null)
         {
             return;
         }
 
-        var incomingFullTitle = OneTaggerMatching.FullTitle(track.Title, track.Version);
-        if (!TrackTitleMatcher.ShouldPreserveSourceTitleWording(sourceInfo.Title, incomingFullTitle))
-        {
-            return;
-        }
+        TechnicalLyricsSettingsApplier.Apply(settings, technical);
+        settings.Tags ??= new TagSettings();
 
-        // The source title already carries its own variant wording, so the incoming
-        // version fragment must be dropped — WriteTitleTag re-appends Version in
-        // parentheses when ShortTitle is off, which would duplicate the variant.
-        track.Title = sourceInfo.Title.Trim();
-        track.Version = null;
+        settings.DateFormat = technical.DateFormat;
+        settings.AlbumVariousArtists = technical.AlbumVariousArtists;
+        settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+        settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
+        settings.FeaturedToTitle = technical.FeaturedToTitle;
+        settings.TitleCasing = technical.TitleCasing;
+        settings.ArtistCasing = technical.ArtistCasing;
+
+        settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
+        settings.Tags.UseNullSeparator = technical.UseNullSeparator;
+        settings.Tags.SaveID3v1 = technical.SaveID3v1;
+        settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator;
+        settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
+        settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
     }
 
-    private static void PreserveRicherArtistCreditsFromSource(
-        AutoTagAudioInfo sourceInfo,
+    private static void ApplyFolderStructureOverrides(DeezSpoTagSettings settings, FolderStructureSettings? folderStructure)
+    {
+        if (folderStructure == null)
+        {
+            return;
+        }
+
+        settings.CreateArtistFolder = folderStructure.CreateArtistFolder;
+        settings.CreateAlbumFolder = folderStructure.CreateAlbumFolder;
+        settings.CreateCDFolder = folderStructure.CreateCDFolder;
+        settings.CreateStructurePlaylist = folderStructure.CreateStructurePlaylist;
+        settings.CreateSingleFolder = folderStructure.CreateSingleFolder;
+        settings.CreatePlaylistFolder = folderStructure.CreatePlaylistFolder;
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.ArtistNameTemplate))
+        {
+            settings.ArtistNameTemplate = folderStructure.ArtistNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.AlbumNameTemplate))
+        {
+            settings.AlbumNameTemplate = folderStructure.AlbumNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.PlaylistNameTemplate))
+        {
+            settings.PlaylistNameTemplate = folderStructure.PlaylistNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.IllegalCharacterReplacer))
+        {
+            settings.IllegalCharacterReplacer = folderStructure.IllegalCharacterReplacer.Trim();
+        }
+    }
+
+    private static string? NormalizeManualReleasePreference(string? value)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            AutoTagReleaseCategory.Album => AutoTagReleaseCategory.Album,
+            AutoTagReleaseCategory.Single => AutoTagReleaseCategory.Single,
+            _ => null
+        };
+
+    private static int? ParsePositiveInt(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var trimmed = raw.Trim();
+        return int.TryParse(trimmed, out var value) && value > 0 ? value : null;
+    }
+
+    private async Task<TagFileWriteResult> TagFileAsync(
+        string filePath,
         AutoTagTrack track,
-        DeezSpoTagSettings settings)
+        TagSettings tagSettings,
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
+        string platformId,
+        CancellationToken token)
     {
-        IEnumerable<string> sourceArtistValues = sourceInfo.Artists.Count > 0
-            ? sourceInfo.Artists
-            : Array.Empty<string>();
-        if (sourceInfo.Artists.Count == 0 && !string.IsNullOrWhiteSpace(sourceInfo.Artist))
+        EnsureReleaseCategory(track);
+        var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
+        ApplyArtistAliasPreference(track);
+        var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
+        NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
+        var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
+        string? tempCoverPath = null;
+        var shouldPrepareTemplateArtworkSidecar = ShouldPrepareTemplateArtworkSidecar(config);
+
+        if ((effectiveTagSettings.Cover || shouldPrepareTemplateArtworkSidecar) && !string.IsNullOrWhiteSpace(track.Art))
         {
-            sourceArtistValues = new[] { sourceInfo.Artist };
+            tempCoverPath = TryResolveExistingCoverSidecar(filePath, track, coreTrack, config, settings)
+                ?? await DownloadCoverAsync(track.Art, token);
         }
 
-        var sourceArtists = SplitArtistCredits(sourceArtistValues);
-        var matchedArtists = SplitArtistCredits(track.Artists);
-
-        if (ShouldPreferSourceArtistCredits(sourceArtists, matchedArtists))
+        if (effectiveTagSettings.Cover &&
+            string.IsNullOrWhiteSpace(tempCoverPath) &&
+            !TrackHasEmbeddedArtwork(filePath, config, platformId))
         {
-            track.Artists = sourceArtists;
-        }
-        else if (matchedArtists.Count > 0)
-        {
-            track.Artists = matchedArtists;
+            tempCoverPath = TryResolveFolderArtworkPath(filePath);
         }
 
-        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
-        if (normalizedAlbumArtists.Count == 0 && track.Artists.Count > 0)
+        var writeResult = await WriteTagsOnetaggerStyleAsync(
+            new TagWriteRequest
+            {
+                FilePath = filePath,
+                SourceTrack = track,
+                CoreTrack = coreTrack,
+                EffectiveTagSettings = effectiveTagSettings,
+                Config = config,
+                Settings = settings,
+                PlatformId = platformId,
+                Separator = separator,
+                TempCoverPath = tempCoverPath
+            },
+            token);
+        await EnsureTemplateFoldersAndArtworkSidecarAsync(
+            track,
+            coreTrack,
+            config,
+            settings,
+            filePath,
+            tempCoverPath,
+            token);
+        if (!IsMp4Family(Path.GetExtension(filePath)))
         {
-            normalizedAlbumArtists = track.Artists.ToList();
+            writeResult.AttemptedTags.UnionWith(await ApplyCustomTagsAsync(
+                filePath,
+                track,
+                config,
+                platformId,
+                effectiveTagSettings.UseNullSeparator));
         }
 
-        var singleAlbumArtist = settings.Tags?.SingleAlbumArtist ?? true;
-        if (singleAlbumArtist && normalizedAlbumArtists.Count > 1)
+        if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
         {
-            normalizedAlbumArtists = new List<string> { normalizedAlbumArtists[0] };
+            try
+            {
+                IOFile.Delete(tempCoverPath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // best effort
+            }
         }
 
-        track.AlbumArtists = normalizedAlbumArtists;
-    }
-
-    private static void ApplyFolderContextGuards(string filePath, string rootPath, AutoTagTrack track)
-    {
-        var folderArtist = InferArtistFromPath(filePath, rootPath);
-        var folderAlbum = InferAlbumFromPath(filePath);
-        var hasSpecificFolderArtist = IsSpecificFolderArtist(folderArtist);
-        if (!string.IsNullOrWhiteSpace(folderAlbum) && IsWeakMetadataValue(track.Album))
-        {
-            track.Album = folderAlbum;
-        }
-
-        if (!hasSpecificFolderArtist)
-        {
-            return;
-        }
-
-        var normalizedArtists = SplitArtistCredits(track.Artists);
-        if (normalizedArtists.Count == 0
-            || normalizedArtists.All(IsWeakMetadataValue)
-            || normalizedArtists.All(IsVariousArtistsValue))
-        {
-            track.Artists = new List<string> { folderArtist };
-        }
-
-        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
-        if (normalizedAlbumArtists.Count == 0
-            || normalizedAlbumArtists.All(IsWeakMetadataValue)
-            || normalizedAlbumArtists.All(IsVariousArtistsValue))
-        {
-            track.AlbumArtists = new List<string> { folderArtist };
-        }
-    }
-
-    private static bool ShouldPreferSourceArtistCredits(List<string> sourceArtists, List<string> matchedArtists)
-    {
-        if (sourceArtists.Count == 0)
-        {
-            return false;
-        }
-
-        if (matchedArtists.Count == 0)
-        {
-            return true;
-        }
-
-        if (sourceArtists.Count <= matchedArtists.Count)
-        {
-            return false;
-        }
-
-        var sourcePrimary = sourceArtists[0];
-        var matchedPrimary = matchedArtists[0];
-        if (string.IsNullOrWhiteSpace(sourcePrimary) || string.IsNullOrWhiteSpace(matchedPrimary))
-        {
-            return true;
-        }
-
-        if (string.Equals(sourcePrimary, matchedPrimary, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return sourcePrimary.Contains(matchedPrimary, StringComparison.OrdinalIgnoreCase)
-            || matchedPrimary.Contains(sourcePrimary, StringComparison.OrdinalIgnoreCase);
+        return writeResult;
     }
 
     /// <summary>
@@ -327,56 +266,6 @@ public partial class LocalAutoTagRunner
         {
             // Alias resolution must never break tagging.
         }
-    }
-
-    private static List<string> RewriteCreditList(
-        IEnumerable<string>? credits,
-        Func<string?, string>? rewriteCredit = null)
-    {
-        rewriteCredit ??= static value => DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(value);
-        return (credits ?? Array.Empty<string>())
-            .Select(credit => rewriteCredit(credit) ?? string.Empty)
-            .Select(static credit => credit.Trim())
-            .Where(static credit => credit.Length > 0)
-            .ToList();
-    }
-
-    private static void NormalizeTrackArtistsForTagging(AutoTagTrack track, bool singleAlbumArtist)
-    {
-        var normalizedArtists = SplitArtistCredits(track.Artists);
-        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
-        if (normalizedArtists.Count > 0 && normalizedArtists.All(IsWeakMetadataValue))
-        {
-            normalizedArtists.Clear();
-        }
-
-        if (normalizedAlbumArtists.Count > 0 && normalizedAlbumArtists.All(IsWeakMetadataValue))
-        {
-            normalizedAlbumArtists.Clear();
-        }
-
-        if (normalizedArtists.Count == 0)
-        {
-            normalizedArtists = normalizedAlbumArtists.ToList();
-        }
-
-        if (normalizedArtists.Count == 0)
-        {
-            normalizedArtists.Add(UnknownArtist);
-        }
-
-        if (normalizedAlbumArtists.Count == 0)
-        {
-            normalizedAlbumArtists = normalizedArtists.ToList();
-        }
-
-        if (singleAlbumArtist && normalizedAlbumArtists.Count > 1)
-        {
-            normalizedAlbumArtists = new List<string> { normalizedAlbumArtists[0] };
-        }
-
-        track.Artists = normalizedArtists;
-        track.AlbumArtists = normalizedAlbumArtists;
     }
 
     private async Task<TagFileWriteResult> WriteTagsOnetaggerStyleAsync(
@@ -420,13 +309,6 @@ public partial class LocalAutoTagRunner
         }
 
         return new TagFileWriteResult(context.AttemptedTags);
-    }
-
-    private static string BuildAtlDashFieldName(string name)
-    {
-        return string.IsNullOrWhiteSpace(name)
-            ? string.Empty
-            : $"----:com.apple.iTunes:{name.Trim()}";
     }
 
     private static TagWriteExecutionContext BuildTagWriteExecutionContext(TagWriteRequest request)
@@ -478,29 +360,6 @@ public partial class LocalAutoTagRunner
         };
     }
 
-    private static void PrepareId3Version(TagLib.File file, TagWriteExecutionContext context)
-    {
-        if (!context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
-        id3.Version = context.Config.Id3v24 ? (byte)4 : (byte)3;
-    }
-
-    private static void RemoveId3v1TagIfDisabled(TagLib.File file, TagWriteExecutionContext context)
-    {
-        if (!context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
-            || context.EffectiveTagSettings.SaveID3v1)
-        {
-            return;
-        }
-
-        file.RemoveTags(TagTypes.Id3v1);
-        file.Save();
-    }
-
     private static void ApplyPrimaryTagWrites(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
         WriteTitleTag(tagWriteContext, context);
@@ -512,210 +371,6 @@ public partial class LocalAutoTagRunner
         WriteKeyTag(tagWriteContext, context);
         WriteBpmTag(tagWriteContext, context);
         WriteLabelTag(tagWriteContext, context);
-    }
-
-    private static List<string> ResolveArtistValues(Track coreTrack, TagSettings tagSettings)
-    {
-        var artists = coreTrack.Artists
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (artists.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        if (tagSettings.SingleAlbumArtist)
-        {
-            var primary = coreTrack.MainArtist?.Name;
-            return string.IsNullOrWhiteSpace(primary)
-                ? new List<string> { artists[0] }
-                : new List<string> { primary.Trim() };
-        }
-
-        if (string.Equals(tagSettings.MultiArtistSeparator, MultiArtistSeparatorDefault, StringComparison.OrdinalIgnoreCase))
-        {
-            return artists;
-        }
-
-        if (string.Equals(tagSettings.MultiArtistSeparator, MultiArtistSeparatorNothing, StringComparison.OrdinalIgnoreCase))
-        {
-            var primary = coreTrack.MainArtist?.Name;
-            return string.IsNullOrWhiteSpace(primary)
-                ? new List<string> { artists[0] }
-                : new List<string> { primary.Trim() };
-        }
-
-        var joined = string.IsNullOrWhiteSpace(coreTrack.ArtistsString)
-            ? string.Join(", ", artists)
-            : coreTrack.ArtistsString;
-        return new List<string> { joined };
-    }
-
-    private static List<string> ResolveAlbumArtistValues(Track coreTrack)
-    {
-        var primary = coreTrack.Album?.MainArtist?.Name?.Trim();
-        if (!string.IsNullOrWhiteSpace(primary))
-        {
-            return new List<string> { primary };
-        }
-
-        var mainArtists = coreTrack.Artist.GetValueOrDefault("Main", new List<string>())
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (mainArtists.Count > 0)
-        {
-            return new List<string> { mainArtists[0] };
-        }
-
-        var artists = coreTrack.Artists
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (artists.Count > 0)
-        {
-            return new List<string> { artists[0] };
-        }
-
-        return new List<string> { UnknownArtist };
-    }
-
-    private static void WriteTitleTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(TitleTag) || !context.EffectiveTagSettings.Title)
-        {
-            return;
-        }
-
-        var titleValue = context.CoreTrack.Title;
-        if (!context.Config.ShortTitle
-            && !string.IsNullOrWhiteSpace(context.SourceTrack.Version)
-            && !titleValue.Contains(context.SourceTrack.Version, StringComparison.OrdinalIgnoreCase))
-        {
-            titleValue = $"{titleValue} ({context.SourceTrack.Version})";
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TIT2", TitleUpperTag, "©nam", SupportedTag.Title), new List<string> { titleValue });
-    }
-
-    private static void WriteVersionTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(VersionTag) || string.IsNullOrWhiteSpace(context.SourceTrack.Version))
-        {
-            return;
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TIT3", "SUBTITLE", "desc", SupportedTag.Version), new List<string> { context.SourceTrack.Version });
-    }
-
-    private static void WriteArtistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(ArtistTag) || !context.EffectiveTagSettings.Artist)
-        {
-            return;
-        }
-
-        var artistValues = ResolveArtistValues(context.CoreTrack, context.EffectiveTagSettings);
-        if (artistValues.Count == 0)
-        {
-            return;
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TPE1", ArtistUpperTag, "©ART", SupportedTag.Artist), artistValues);
-    }
-
-    private static void WriteArtistsTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(ArtistsTag) || !context.EffectiveTagSettings.Artists)
-        {
-            return;
-        }
-
-        if (string.Equals(
-                context.EffectiveTagSettings.MultiArtistSeparator,
-                MultiArtistSeparatorDefault,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var artists = context.CoreTrack.Artists
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (artists.Count == 0)
-        {
-            return;
-        }
-
-        var value = context.EffectiveTagSettings.MultiArtistSeparator switch
-        {
-            MultiArtistSeparatorNothing => context.CoreTrack.MainArtist?.Name ?? artists[0],
-            MultiArtistSeparatorDefault => string.Join(", ", artists),
-            _ when !string.IsNullOrWhiteSpace(context.CoreTrack.ArtistsString) => context.CoreTrack.ArtistsString,
-            _ => string.Join(", ", artists)
-        };
-        SetRawIfAllowed(tagWriteContext, ArtistsTag, "ARTISTS", new List<string> { value });
-    }
-
-    private static void WriteAlbumArtistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(AlbumArtistTag) || !context.EffectiveTagSettings.AlbumArtist)
-        {
-            return;
-        }
-
-        var albumArtistValues = ResolveAlbumArtistValues(context.CoreTrack);
-        SetField(
-            tagWriteContext,
-            new TagFieldBinding("TPE2", AlbumArtistUpperTag, "aART", SupportedTag.AlbumArtist),
-            albumArtistValues);
-    }
-
-    private static void WriteAlbumTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(AlbumTag) || !context.EffectiveTagSettings.Album || context.CoreTrack.Album == null)
-        {
-            return;
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TALB", AlbumUpperTag, "©alb", SupportedTag.Album), new List<string> { context.CoreTrack.Album.Title });
-    }
-
-    private static void WriteKeyTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains("key") || string.IsNullOrWhiteSpace(context.SourceTrack.Key))
-        {
-            return;
-        }
-
-        var keyValue = context.Config.Camelot ? ToCamelot(context.SourceTrack.Key) : context.SourceTrack.Key;
-        SetField(tagWriteContext, new TagFieldBinding("TKEY", "INITIALKEY", InitialKeyRawTag, SupportedTag.Key), new List<string> { keyValue });
-    }
-
-    private static void WriteBpmTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains("bpm") || !context.SourceTrack.Bpm.HasValue)
-        {
-            return;
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TBPM", "BPM", "tmpo", SupportedTag.BPM), new List<string> { context.SourceTrack.Bpm.Value.ToString() });
-    }
-
-    private static void WriteLabelTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(LabelTag) || string.IsNullOrWhiteSpace(context.SourceTrack.Label))
-        {
-            return;
-        }
-
-        SetField(tagWriteContext, new TagFieldBinding("TPUB", LabelUpperTag, LabelUpperTag, SupportedTag.Label), new List<string> { context.SourceTrack.Label });
     }
 
     private static void ApplyAudioFeatureTagWrites(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -738,22 +393,6 @@ public partial class LocalAutoTagRunner
                 SupportedTag.TimeSignature,
                 new List<string> { context.SourceTrack.TimeSignature.Value.ToString(CultureInfo.InvariantCulture) });
         }
-    }
-
-    private static void WriteAudioFeatureTag(
-        TagWriteContext tagWriteContext,
-        TagWriteExecutionContext context,
-        string enabledTag,
-        string rawTag,
-        SupportedTag supportedTag,
-        double? value)
-    {
-        if (!context.EnabledTags.Contains(enabledTag) || !value.HasValue)
-        {
-            return;
-        }
-
-        SetRaw(tagWriteContext, rawTag, supportedTag, new List<string> { FormatAudioFeature(value.Value) });
     }
 
     private static void ApplyGenreAndStyleTagWrites(
@@ -812,5 +451,287 @@ public partial class LocalAutoTagRunner
             ? styleTagName
             : ResolveFieldRawName(SupportedTag.Style, ResolveFormatName(context.Extension), context.Config);
         SetRaw(tagWriteContext, rawName, SupportedTag.Style, styleValues);
+    }
+
+    private static (List<string> Genres, List<string> Styles) ApplyStylesOptions(
+        List<string> genres,
+        List<string> styles,
+        string stylesOption)
+    {
+        switch (stylesOption.ToLowerInvariant())
+        {
+            case "onlygenres":
+                styles = new List<string>();
+                break;
+            case "onlystyles":
+                genres = new List<string>();
+                break;
+            case "mergetogenres":
+                var genreSet = new HashSet<string>(genres, StringComparer.OrdinalIgnoreCase);
+                genres.AddRange(styles.Where(genreSet.Add));
+                break;
+            case "mergetostyles":
+                var styleSet = new HashSet<string>(styles, StringComparer.OrdinalIgnoreCase);
+                styles.AddRange(genres.Where(styleSet.Add));
+                break;
+            case "stylestogenre":
+                genres = styles.ToList();
+                break;
+            case "genrestostyle":
+                styles = genres.ToList();
+                break;
+        }
+
+        return (genres, styles);
+    }
+
+    private static void ApplyReleaseAndMetadataTagWrites(
+        TagLib.File file,
+        TagWriteContext tagWriteContext,
+        TagWriteExecutionContext context)
+    {
+        WriteReleaseDateTag(file, context);
+        WritePublishDateTag(file, context);
+        WriteUrlTag(tagWriteContext, context);
+        WriteTrackIdTag(tagWriteContext, context);
+        WriteReleaseIdTag(tagWriteContext, context);
+        WriteSourceIdentityTags(tagWriteContext, context);
+        WriteCatalogNumberTag(tagWriteContext, context);
+        WriteDurationTag(tagWriteContext, context);
+        WriteRemixerTag(tagWriteContext, context);
+        WriteIsrcTag(tagWriteContext, context);
+        WriteMoodTag(tagWriteContext, context);
+        WriteActivityTag(tagWriteContext, context);
+    }
+
+    private static void MarkAttemptedIfPresent(TagWriteExecutionContext context, TagLib.File file, SupportedTag tag)
+    {
+        if (HasTag(file, context.Extension, tag, context.Config, context.PlatformId))
+        {
+            context.AttemptedTags.Add(tag);
+        }
+    }
+
+    private Task<HashSet<SupportedTag>> ApplyCustomTagsAsync(
+        string filePath,
+        AutoTagTrack track,
+        AutoTagRunnerConfig config,
+        string platformId,
+        bool useNullSeparator)
+    {
+        if (config.Tags.Count == 0)
+        {
+            return Task.FromResult(new HashSet<SupportedTag>());
+        }
+
+        var attemptedTags = new HashSet<SupportedTag>();
+        try
+        {
+            var extension = Path.GetExtension(filePath);
+            var chapterSnapshot = AtlTagHelper.CaptureChapters(filePath, extension, _logger);
+            using var file = TagLib.File.Create(filePath);
+            var enabledTags = BuildConfiguredTagSet(config.Tags);
+            var separator = ResolveArtistSeparator(config, filePath);
+            var writes = BuildCustomTagWrites(track, config, platformId, extension, file);
+
+            if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
+                ApplyId3CustomTags(id3, writes, config, separator, useNullSeparator, enabledTags, attemptedTags);
+            }
+            else if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
+                ApplyVorbisCustomTags(vorbis, writes, config, separator, enabledTags, attemptedTags);
+            }
+            else if (IsMp4Family(extension))
+            {
+                var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
+                ApplyAppleCustomTags(apple, writes, config, separator, enabledTags, attemptedTags);
+            }
+
+            file.Save();
+            AtlTagHelper.RestoreChapters(filePath, chapterSnapshot, _logger);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed applying custom tags for {File}", SanitizeLogValue(filePath));
+        }
+
+        return Task.FromResult(attemptedTags);
+    }
+
+    private static string[] ApplySeparator(List<string> values, string separator, bool useNullSeparator = false)
+    {
+        if (values.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (useNullSeparator)
+        {
+            return values.ToArray();
+        }
+
+        if (string.IsNullOrEmpty(separator))
+        {
+            return values.ToArray();
+        }
+
+        return new[] { string.Join(separator, values) };
+    }
+
+    private static List<CustomTagWrite> BuildCustomTagWrites(AutoTagTrack track, AutoTagRunnerConfig config, string platformId, string extension, TagLib.File file)
+    {
+        var writes = new List<CustomTagWrite>();
+        var styleTagName = ResolveStylesTagName(config, extension);
+        var format = ResolveFormatName(extension);
+
+        if (track.Styles.Count > 0)
+        {
+            var separator = ResolveSeparatorForFormat(config, extension);
+            var styleValues = NormalizeStyleValues(track.Styles, separator);
+            if (config.MergeGenres)
+            {
+                var existing = NormalizeStyleValues(
+                    ReadExistingRawTag(file, extension, styleTagName),
+                    separator);
+                var existingStyleSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+                existing.AddRange(styleValues.Where(existingStyleSet.Add));
+                styleValues = existing;
+            }
+
+            var styleRaw = config.StylesOptions.Equals("customTag", StringComparison.OrdinalIgnoreCase)
+                ? styleTagName
+                : ResolveFieldRawName(SupportedTag.Style, format, config);
+
+            writes.Add(new CustomTagWrite(StyleTag, SupportedTag.Style, styleRaw, styleValues));
+        }
+
+        AddSingleValueCustomTagWrite(
+            writes,
+            "mood",
+            SupportedTag.Mood,
+            ResolveFieldRawName(SupportedTag.Mood, format, config),
+            track.Mood);
+        AddSingleValueCustomTagWrite(
+            writes,
+            "key",
+            SupportedTag.Key,
+            ResolveFieldRawName(SupportedTag.Key, format, config),
+            track.Key);
+        AddSingleValueCustomTagWrite(
+            writes,
+            VersionTag,
+            SupportedTag.Version,
+            ResolveFieldRawName(SupportedTag.Version, format, config),
+            track.Version);
+
+        if (track.Remixers.Count > 0)
+        {
+            writes.Add(new CustomTagWrite(RemixerTag, SupportedTag.Remixer, ResolveFieldRawName(SupportedTag.Remixer, format, config), track.Remixers.ToList()));
+        }
+
+        AddSingleValueCustomTagWrite(writes, "url", SupportedTag.URL, WwwAudioFileTag, track.Url);
+        AddSingleValueCustomTagWrite(
+            writes,
+            CatalogNumberTag,
+            SupportedTag.CatalogNumber,
+            ResolveFieldRawName(SupportedTag.CatalogNumber, format, config),
+            track.CatalogNumber);
+        var platformKey = platformId.ToUpperInvariant();
+        AddSingleValueCustomTagWrite(
+            writes,
+            TrackIdTag,
+            SupportedTag.TrackId,
+            $"{platformKey}_TRACK_ID",
+            track.TrackId);
+        AddSingleValueCustomTagWrite(
+            writes,
+            ReleaseIdTag,
+            SupportedTag.ReleaseId,
+            $"{platformKey}_RELEASE_ID",
+            track.ReleaseId);
+        AddSingleValueCustomTagWrite(writes, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, track.RecordingId);
+        AddSingleValueCustomTagWrite(writes, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, track.ArtistId);
+        AddSingleValueCustomTagWrite(writes, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, track.AlbumArtistId);
+        AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);
+        AddSingleValueCustomTagWrite(writes, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, track.AlbumId);
+        AddSingleValueCustomTagWrite(writes, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, track.ReleaseStatus);
+        AddSingleValueCustomTagWrite(writes, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, track.ReleaseCountry);
+        AddSingleValueCustomTagWrite(writes, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, track.Barcode);
+        AddSingleValueCustomTagWrite(writes, LyricistTag, SupportedTag.Lyricist, ResolveFieldRawName(SupportedTag.Lyricist, format, config), track.Lyricist);
+        AddSingleValueCustomTagWrite(writes, PublisherTag, SupportedTag.Publisher, ResolveFieldRawName(SupportedTag.Publisher, format, config), track.Publisher);
+        AddSingleValueCustomTagWrite(writes, DescriptionTag, SupportedTag.Description, ResolveFieldRawName(SupportedTag.Description, format, config), track.Description);
+        if (track.Media.Count > 0)
+        {
+            writes.Add(new CustomTagWrite(MediaTag, SupportedTag.Media, MediaRawTag, track.Media.ToList()));
+        }
+        AddOtherTagWrites(writes, track.Other);
+        AddMetaTagWrite(writes, config);
+
+        return writes;
+    }
+
+    private static void AddSingleValueCustomTagWrite(
+        List<CustomTagWrite> writes,
+        string tagKey,
+        SupportedTag supportedTag,
+        string rawTagName,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        writes.Add(new CustomTagWrite(tagKey, supportedTag, rawTagName, new List<string> { value }));
+    }
+
+    private static void ApplyId3CustomTags(
+        TagLib.Id3v2.Tag tag,
+        List<CustomTagWrite> writes,
+        AutoTagRunnerConfig config,
+        string separator,
+        bool useNullSeparator,
+        HashSet<string> enabledTags,
+        HashSet<SupportedTag> attemptedTags)
+    {
+        foreach (var write in writes)
+        {
+            if (!enabledTags.Contains(write.TagKey) || write.Values.Count == 0)
+            {
+                continue;
+            }
+
+            if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasId3Raw(tag, write.RawTagName))
+            {
+                attemptedTags.Add(write.SupportedTag);
+                continue;
+            }
+
+            SetId3Raw(tag, write.RawTagName, write.Values, separator, useNullSeparator);
+            attemptedTags.Add(write.SupportedTag);
+        }
+    }
+
+    private static void ApplyVorbisCustomTags(TagLib.Ogg.XiphComment tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags, HashSet<SupportedTag> attemptedTags)
+    {
+        foreach (var write in writes)
+        {
+            if (!enabledTags.Contains(write.TagKey) || write.Values.Count == 0)
+            {
+                continue;
+            }
+
+            if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasVorbisRaw(tag, write.RawTagName))
+            {
+                attemptedTags.Add(write.SupportedTag);
+                continue;
+            }
+
+            SetVorbisRaw(tag, write.RawTagName, write.Values, separator);
+            attemptedTags.Add(write.SupportedTag);
+        }
     }
 }

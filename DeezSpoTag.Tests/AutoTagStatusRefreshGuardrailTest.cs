@@ -363,11 +363,8 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
-        var source = PartialSourceReader.ReadTypeSourceFromFile(servicePath);
-        var methodStart = source.IndexOf("public AutoTagRunArchive? GetArchivedRun(string id)", StringComparison.Ordinal);
-        var methodEnd = source.IndexOf("\n    public AutoTagTagDiff? GetTagDiff", methodStart, StringComparison.Ordinal);
-        Assert.True(methodStart >= 0 && methodEnd > methodStart);
-        var method = source.Substring(methodStart, methodEnd - methodStart);
+        var method = PartialSourceReader.ReadMemberSourceFromFile(
+            servicePath, "public AutoTagRunArchive? GetArchivedRun(string id)");
         Assert.Contains("_archiveLocks.GetOrAdd(id", method, StringComparison.Ordinal);
         Assert.Contains("lock (archiveLock)", method, StringComparison.Ordinal);
         Assert.True(method.IndexOf("lock (archiveLock)", StringComparison.Ordinal) < method.IndexOf("LoadRunSummary(id)", StringComparison.Ordinal));

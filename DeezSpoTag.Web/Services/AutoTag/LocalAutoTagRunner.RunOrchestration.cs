@@ -32,76 +32,8 @@ using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProvider
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
-public partial class LocalAutoTagRunner
+public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
-
-    private static bool IsMp4Family(string extension)
-    {
-        return AtlTagHelper.IsMp4Family(extension);
-    }
-    private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobTokens = new();
-    private readonly ConcurrentDictionary<string, JobMatchCacheState> _jobMatchCaches = new();
-    private readonly ILogger<LocalAutoTagRunner> _logger;
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly MusicBrainzMatcher _musicBrainzMatcher;
-    private readonly BeatportMatcher _beatportMatcher;
-    private readonly DiscogsMatcher _discogsMatcher;
-    private readonly TraxsourceMatcher _traxsourceMatcher;
-    private readonly BandcampMatcher _bandcampMatcher;
-    private readonly BpmSupremeMatcher _bpmSupremeMatcher;
-    private readonly ItunesMatcher _itunesMatcher;
-    private readonly SpotifyMatcher _spotifyMatcher;
-    private readonly DeezerMatcher _deezerMatcher;
-    private readonly LastFmMatcher _lastFmMatcher;
-    private readonly BoomplayMatcher _boomplayMatcher;
-    private readonly AudiomackMatcher _audiomackMatcher;
-    private readonly ShazamMatcher _shazamMatcher;
-    private readonly ShazamRecognitionService _shazamRecognitionService;
-    private readonly AppleLyricsService _appleLyricsService;
-    private readonly AppleMusicCatalogService _appleMusicCatalogService;
-    private readonly DownloadLyricsService _downloadLyricsService;
-    private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly IServiceScopeFactory _serviceScopeFactory;
-    private readonly ITrackIdentityResolver _trackIdentityResolver;
-    private readonly PortedPlatformRegistry? _platformRegistry;
-    private readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters =
-        {
-            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
-            new MultipleMatchesSortConverter()
-        }
-    };
-
-    public LocalAutoTagRunner(LocalAutoTagRunnerCollaborators collaborators)
-    {
-        _logger = collaborators.Logger;
-        _albumIdentityStorePath = collaborators.AlbumIdentityStorePath;
-        _httpClientFactory = collaborators.HttpClientFactory;
-        _musicBrainzMatcher = collaborators.MusicBrainzMatcher;
-        _beatportMatcher = collaborators.BeatportMatcher;
-        _discogsMatcher = collaborators.DiscogsMatcher;
-        _traxsourceMatcher = collaborators.TraxsourceMatcher;
-        _bandcampMatcher = collaborators.BandcampMatcher;
-        _bpmSupremeMatcher = collaborators.BpmSupremeMatcher;
-        _itunesMatcher = collaborators.ItunesMatcher;
-        _spotifyMatcher = collaborators.SpotifyMatcher;
-        _deezerMatcher = collaborators.DeezerMatcher;
-        _lastFmMatcher = collaborators.LastFmMatcher;
-        _boomplayMatcher = collaborators.BoomplayMatcher;
-        _audiomackMatcher = collaborators.AudiomackMatcher;
-        _shazamMatcher = collaborators.ShazamMatcher;
-        _shazamRecognitionService = collaborators.ShazamRecognitionService;
-        _appleLyricsService = collaborators.AppleLyricsService;
-        _appleMusicCatalogService = collaborators.AppleMusicCatalogService;
-        _downloadLyricsService = collaborators.DownloadLyricsService;
-        _settingsService = collaborators.SettingsService;
-        _serviceScopeFactory = collaborators.ServiceScopeFactory;
-        _trackIdentityResolver = collaborators.TrackIdentityResolver;
-        _platformRegistry = collaborators.PlatformRegistry;
-    }
 
     public async Task<AutoTagRunResult> RunAsync(
         string jobId,
@@ -243,19 +175,6 @@ public partial class LocalAutoTagRunner
         return (plan, null);
     }
 
-    private void LogShazamAvailability(AutoTagRunPlan plan, Action<string> logCallback)
-    {
-        var shazamRecognitionAvailable = IsShazamRecognitionAvailable();
-        if ((plan.EnableShazamFallback
-             || plan.ForceShazamMatch
-             || plan.ShazamConflictResolution
-             || plan.EffectivePlatforms.Contains(ShazamPlatform, StringComparer.OrdinalIgnoreCase))
-            && !shazamRecognitionAvailable)
-        {
-            logCallback("onetagger_autotag: shazam unavailable");
-        }
-    }
-
     private async Task ExecutePlatformPassesAsync(
         AutoTagRunPlan plan,
         JobMatchCacheState jobMatchCache,
@@ -370,121 +289,6 @@ public partial class LocalAutoTagRunner
         }
     }
 
-    /// <summary>
-    /// Harvests files that appeared after the run started. Files whose artist sorts
-    /// after the runner's current position join the run (appended before the deferred
-    /// wave); files at or before the current position are deferred to the very end so
-    /// a new file never jumps ahead of the alphabetical flow.
-    /// </summary>
-    private sealed class EnhancementPickupScheduler
-    {
-        private const int PickupScanIntervalSeconds = 30;
-
-        private readonly AutoTagRunPlan _plan;
-        private readonly Action<string> _log;
-        private readonly bool _enabled;
-        private readonly HashSet<string> _knownFiles;
-        private readonly List<string> _included = new();
-        private readonly List<string> _deferred = new();
-        private DateTimeOffset _lastScanUtc = DateTimeOffset.MinValue;
-
-        public EnhancementPickupScheduler(AutoTagRunPlan plan, Action<string> log)
-        {
-            _plan = plan;
-            _log = log;
-            // Pickups apply to library-wide runs only; scoped target-file runs keep
-            // their explicit scope.
-            _enabled = plan.Config.TargetFiles is null or { Count: 0 };
-            _knownFiles = new HashSet<string>(plan.Files, StringComparer.OrdinalIgnoreCase);
-        }
-
-        public void ScanIfDue(int currentFileIndex, CancellationToken token)
-        {
-            if (!_enabled || currentFileIndex < 0)
-            {
-                return;
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            if (now - _lastScanUtc < TimeSpan.FromSeconds(PickupScanIntervalSeconds))
-            {
-                return;
-            }
-
-            _lastScanUtc = now;
-            var currentKey = ArtistKeyAt(currentFileIndex);
-            var discovered = 0;
-            foreach (var file in EnumerateAudioFiles(_plan.TargetPath, _plan.Config.IncludeSubfolders))
-            {
-                token.ThrowIfCancellationRequested();
-                if (!_knownFiles.Add(file))
-                {
-                    continue;
-                }
-
-                discovered++;
-                if (_plan.Config.SkipTagged && HasExistingTags(file))
-                {
-                    continue;
-                }
-
-                var meta = ReadArtistSortMeta(file);
-                _plan.ArtistSortMeta[file] = meta;
-                if (string.Compare(meta.ArtistKey, currentKey, StringComparison.Ordinal) <= 0)
-                {
-                    _deferred.Add(file);
-                }
-                else
-                {
-                    _included.Add(file);
-                }
-            }
-
-            if (discovered > 0)
-            {
-                _log($"onetagger_autotag: {discovered} new file(s) detected mid-run "
-                     + $"({_included.Count} join the run, {_deferred.Count} deferred to the end wave).");
-            }
-        }
-
-        public bool BeginNextPass(AutoTagRunPlan plan, Action<string> log)
-        {
-            var source = _included.Count > 0 ? _included : _deferred;
-            if (source.Count == 0)
-            {
-                return false;
-            }
-
-            var ordered = source
-                .Select(file => (File: file, Meta: PlanMeta(plan, file)))
-                .OrderBy(item => item.Meta.ArtistKey, StringComparer.Ordinal)
-                .ThenBy(item => item.Meta.AlbumKey, StringComparer.Ordinal)
-                .ThenBy(item => item.Meta.TrackNumber ?? int.MaxValue)
-                .ThenBy(item => item.File, StringComparer.OrdinalIgnoreCase)
-                .Select(item => item.File)
-                .ToList();
-            var kind = ReferenceEquals(source, _included) ? "current-run" : "deferred";
-            log($"onetagger_autotag: running {ordered.Count} mid-run pickup file(s) ({kind} wave).");
-            source.Clear();
-            plan.Files.AddRange(ordered);
-            return true;
-        }
-
-        private string ArtistKeyAt(int fileIndex)
-        {
-            var index = Math.Clamp(fileIndex, 0, _plan.FileCount - 1);
-            var file = _plan.Files[index];
-            return _plan.ArtistSortMeta.TryGetValue(file, out var meta)
-                ? meta.ArtistKey
-                : string.Empty;
-        }
-
-        private static ArtistSortMeta PlanMeta(AutoTagRunPlan plan, string file) =>
-            plan.ArtistSortMeta.TryGetValue(file, out var meta)
-                ? meta
-                : new ArtistSortMeta(string.Empty, string.Empty, null, true);
-    }
-
     private async Task ExecuteLibraryWideEnhancementBatchesAsync(
         AutoTagRunPlan plan,
         JobMatchCacheState jobMatchCache,
@@ -591,117 +395,8 @@ public partial class LocalAutoTagRunner
         }
     }
 
-    private static (int PlatformIndex, int FileIndex) ResolveResumeStartIndices(
-        AutoTagRunPlan plan,
-        AutoTagResumeCursor? resumeCursor,
-        bool preferPathAnchor = false)
-    {
-        if (plan.PlatformCount == 0 || plan.FileCount == 0 || resumeCursor == null)
-        {
-            return (0, 0);
-        }
-
-        var platformIndex = Math.Clamp(resumeCursor.PlatformIndex, 0, plan.PlatformCount - 1);
-        var fileIndex = Math.Clamp(resumeCursor.FileIndex, 0, plan.FileCount);
-        if (preferPathAnchor
-            && !string.IsNullOrWhiteSpace(resumeCursor.LastPath))
-        {
-            var anchoredFileIndex = plan.Files.FindIndex(file =>
-                string.Equals(file, resumeCursor.LastPath, StringComparison.OrdinalIgnoreCase));
-            if (anchoredFileIndex >= 0)
-            {
-                fileIndex = anchoredFileIndex + 1;
-            }
-        }
-
-        if (fileIndex >= plan.FileCount)
-        {
-            fileIndex = 0;
-            platformIndex += 1;
-        }
-
-        if (platformIndex >= plan.PlatformCount)
-        {
-            return (plan.PlatformCount, 0);
-        }
-
-        return (platformIndex, fileIndex);
-    }
-
     private static bool IsLibraryWideEnhancementBatchingEnabled(AutoTagRunnerConfig config)
         => (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
-
-    private static bool IsManualEnrichment(AutoTagRunnerConfig config)
-        => !string.IsNullOrWhiteSpace(config.ManualReleasePreference)
-           && config.ManualDestinationFolderId is > 0;
-
-    private static bool WantsArtworkFromSettings(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
-        => HasAnyTags(config, AlbumArtTag)
-           || settings.SaveArtwork
-           || settings.EmbedMaxQualityCover;
-
-    private static HashSet<string> BuildNormalizedPathSet(IEnumerable<string>? paths)
-        => paths?
-            .Select(NormalizeOrderPath)
-            .Where(path => path.Length > 0)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase)
-           ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-    private static string NormalizeOrderPath(string path)
-    {
-        try
-        {
-            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return path.Trim();
-        }
-    }
-
-    private sealed record ArtistSortMeta(string ArtistKey, string AlbumKey, int? TrackNumber, bool WeakIdentity);
-
-    /// <summary>
-    /// Reads the ordering metadata for one file: the alphabetically-first main artist
-    /// (multi-artist credits sort under their first artist), the album title, and the
-    /// track number. Files that cannot be read sort as unknown-identity material.
-    /// </summary>
-    private static ArtistSortMeta ReadArtistSortMeta(string path)
-    {
-        try
-        {
-            using var file = TagLib.File.Create(path);
-            var tag = file.Tag;
-            var artists = (tag.Performers ?? Array.Empty<string>())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToList();
-            var albumArtist = !string.IsNullOrWhiteSpace(tag.FirstAlbumArtist)
-                ? tag.FirstAlbumArtist
-                : tag.FirstAlbumArtistSort ?? tag.JoinedAlbumArtists;
-            if (artists.Count == 0 && !string.IsNullOrWhiteSpace(tag.FirstPerformer))
-            {
-                artists.Add(tag.FirstPerformer);
-            }
-
-            // Sort by album/main artist so featured credits do not pull a track
-            // under another name. Fall back to track artists when album artist is empty.
-            var artistKey = ArtistOrderKey.ResolveMainArtistKey(
-                string.IsNullOrWhiteSpace(albumArtist) ? artists : new[] { albumArtist },
-                artists.FirstOrDefault());
-            var album = string.IsNullOrWhiteSpace(tag.Album) ? null : tag.Album;
-            var weakIdentity = TrackIdentityTrust.IsWeakMetadataValue(artists.FirstOrDefault() ?? albumArtist)
-                || TrackIdentityTrust.IsWeakMetadataValue(album);
-            return new ArtistSortMeta(
-                artistKey,
-                AlbumTitleNormalizer.CoreTitle(album),
-                tag.Track > 0 ? (int)tag.Track : null,
-                weakIdentity);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return new ArtistSortMeta(string.Empty, string.Empty, null, WeakIdentity: true);
-        }
-    }
 
     /// <summary>
     /// Two-wave enhancement order: wave 1 = files flagged missing core metadata by the
@@ -734,26 +429,6 @@ public partial class LocalAutoTagRunner
 
         return Ordered(wave1).Concat(Ordered(wave2)).ToList();
     }
-
-    private static string GetAlbumSortKey(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            return Path.GetDirectoryName(Path.GetFullPath(path)) ?? string.Empty;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return string.Empty;
-        }
-    }
-
-    private static bool SameAlbumDirectory(string? left, string? right)
-        => string.Equals(GetAlbumSortKey(left), GetAlbumSortKey(right), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Contiguous batch ranges of at most <paramref name="batchSize"/> files, extended
@@ -797,163 +472,6 @@ public partial class LocalAutoTagRunner
         }
 
         return ranges;
-    }
-
-    private static string? GetResumeCheckpointMismatchReason(AutoTagRunPlan plan, AutoTagResumeCursor? resumeCursor)
-    {
-        if (resumeCursor == null)
-        {
-            return null;
-        }
-
-        if (resumeCursor.PlatformCount is > 0 and var checkpointPlatformCount
-            && checkpointPlatformCount != plan.PlatformCount)
-        {
-            return $"platform count changed (checkpoint={checkpointPlatformCount}, current={plan.PlatformCount})";
-        }
-
-        if (resumeCursor.FileCount is > 0 and var checkpointFileCount
-            && checkpointFileCount != plan.FileCount)
-        {
-            return $"file count changed (checkpoint={checkpointFileCount}, current={plan.FileCount})";
-        }
-
-        return null;
-    }
-
-    private static ProviderTagPlan BuildProviderTagPlan(AutoTagFileRunContext context)
-    {
-        var configured = context.Plan.Config.Tags
-            .Select(tag => tag?.Trim())
-            .Where(tag => !string.IsNullOrWhiteSpace(tag))
-            .Select(tag => SupportedTagMap.TryGetValue(tag!, out var mapped) ? (SupportedTag?)mapped : null)
-            .Where(tag => tag.HasValue)
-            .Select(tag => tag!.Value)
-            .ToHashSet();
-
-        if (context.Plan.PlatformSupportedTags.TryGetValue(context.Platform, out var supported))
-        {
-            configured.IntersectWith(supported);
-        }
-
-        var retained = new HashSet<SupportedTag>();
-        var eligible = new HashSet<SupportedTag>();
-        try
-        {
-            using var file = TagLib.File.Create(context.File);
-            var extension = Path.GetExtension(context.File);
-            foreach (var tag in configured)
-            {
-                if (!ShouldOverwriteTag(context.Plan.Config, tag)
-                    && HasTag(file, extension, tag, context.Plan.Config, context.Platform))
-                {
-                    retained.Add(tag);
-                }
-                else
-                {
-                    eligible.Add(tag);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            eligible.UnionWith(configured);
-        }
-
-        return new ProviderTagPlan(configured, eligible, retained);
-    }
-
-    private static HashSet<SupportedTag> CapturePresentTags(
-        string filePath,
-        AutoTagRunnerConfig config,
-        string platformId,
-        IEnumerable<SupportedTag> tags)
-    {
-        var present = new HashSet<SupportedTag>();
-        using var file = TagLib.File.Create(filePath);
-        var extension = Path.GetExtension(filePath);
-        foreach (var tag in tags)
-        {
-            if (HasTag(file, extension, tag, config, platformId))
-            {
-                present.Add(tag);
-            }
-        }
-
-        return present;
-    }
-
-    private static HashSet<SupportedTag> ResolveReturnedEligibleTags(AutoTagTrack track, ProviderTagPlan plan)
-    {
-        return CollectAutoTagTags(track)
-            .Select(tag => SupportedTagMap.TryGetValue(tag, out var mapped) ? (SupportedTag?)mapped : null)
-            .Where(tag => tag.HasValue && plan.Eligible.Contains(tag.Value))
-            .Select(tag => tag!.Value)
-            .ToHashSet();
-    }
-
-    private static HashSet<SupportedTag> VerifyPersistedTags(
-        string filePath,
-        AutoTagRunnerConfig config,
-        string platformId,
-        AutoTagTrack track,
-        IEnumerable<SupportedTag> expectedTags)
-    {
-        var missing = new HashSet<SupportedTag>();
-        var expected = expectedTags.ToHashSet();
-        using var file = TagLib.File.Create(filePath);
-        var extension = Path.GetExtension(filePath);
-        if (expected.Contains(SupportedTag.Artist)
-            && BuildConfiguredTagSet(config.Tags).Contains(ArtistsTag)
-            && !string.Equals(
-                config.Technical?.MultiArtistSeparator ?? MultiArtistSeparatorDefault,
-                MultiArtistSeparatorDefault,
-                StringComparison.OrdinalIgnoreCase)
-            && track.Artists.Count > 0
-            && !HasRawTag(file, extension, "ARTISTS"))
-        {
-            missing.Add(SupportedTag.Artist);
-        }
-
-        foreach (var tag in expected)
-        {
-            var persisted = tag switch
-            {
-                SupportedTag.OtherTags => VerifyOtherTagsPersisted(file, extension, track),
-                SupportedTag.TtmlLyrics => IOFile.Exists(Path.ChangeExtension(filePath, TtmlExtension)),
-                _ => HasTag(file, extension, tag, config, platformId)
-            };
-            if (!persisted)
-            {
-                missing.Add(tag);
-            }
-        }
-
-        return missing;
-    }
-
-    private static bool VerifyOtherTagsPersisted(TagLib.File file, string extension, AutoTagTrack track)
-    {
-        var expectedRawTags = track.Other
-            .Where(pair => pair.Value.Count > 0)
-            .Where(pair => ShouldPersistOtherRawKey(pair.Key))
-            .Select(pair => pair.Key)
-            .ToList();
-        return expectedRawTags.Count == 0
-            || expectedRawTags.All(rawTag => HasRawTag(file, extension, rawTag));
-    }
-
-    private static string ToTagKey(SupportedTag tag)
-    {
-        return tag switch
-        {
-            SupportedTag.AlbumArt => AlbumArtTag,
-            SupportedTag.BPM => BpmTag,
-            SupportedTag.ISRC => IsrcTag,
-            SupportedTag.URL => UrlTag,
-            SupportedTag.TtmlLyrics => TtmlLyricsTag,
-            _ => char.ToLowerInvariant(tag.ToString()[0]) + tag.ToString()[1..]
-        };
     }
 
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
@@ -1085,5 +603,288 @@ public partial class LocalAutoTagRunner
         }
 
         await ApplyResolvedMatchAsync(context, info, validationInfo, match, usedShazamForStatus, tagPlan);
+    }
+
+    private static bool IsLastPlatform(AutoTagFileRunContext context)
+        => context.PlatformIndex == context.Plan.PlatformCount - 1;
+
+    private static bool WasTaggedByAnyPlatform(AutoTagFileRunContext context)
+        => context.Plan.TaggedFileIndices.Contains(context.FileIndex);
+
+    private static string? EvaluateBoomplayReliabilityGuard(
+        AutoTagAudioInfo info,
+        AutoTagMatchResult match,
+        AutoTagMatchingConfig matchingConfig)
+    {
+        if (match.Track == null)
+        {
+            return "match rejected by Boomplay guard (missing track payload)";
+        }
+
+        List<string> sourceArtists;
+        if (info.Artists.Count > 0)
+        {
+            sourceArtists = info.Artists;
+        }
+        else if (string.IsNullOrWhiteSpace(info.Artist))
+        {
+            sourceArtists = [];
+        }
+        else
+        {
+            sourceArtists = [info.Artist];
+        }
+
+        var incomingArtists = match.Track.Artists ?? new List<string>();
+        var artistStrictness = Math.Clamp(matchingConfig.Strictness + 0.12d, 0.80d, 0.98d);
+        var artistCompatible = sourceArtists.Count > 0
+            && incomingArtists.Count > 0
+            && AreArtistIdentitiesCompatibleForOverwrite(sourceArtists, incomingArtists, artistStrictness);
+        if (!artistCompatible)
+        {
+            return "match rejected by Boomplay guard (artist mismatch)";
+        }
+
+        var hasMatchingIsrc = HasMatchingIsrc(info.Isrc, match.Track.Isrc);
+        var minAccuracy = Math.Clamp(matchingConfig.Strictness + 0.10d, 0.80d, 0.99d);
+        if (!hasMatchingIsrc && match.Accuracy < minAccuracy)
+        {
+            return $"match rejected by Boomplay guard (accuracy {match.Accuracy:0.000} < {minAccuracy:0.000})";
+        }
+
+        var incomingFullTitle = OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version);
+        if (TrackTitleMatcher.HasVersionDrift(info.Title, incomingFullTitle))
+        {
+            return "match rejected by Boomplay guard (version drift)";
+        }
+
+        if (!hasMatchingIsrc && !TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, incomingFullTitle))
+        {
+            return "match rejected by Boomplay guard (title identity)";
+        }
+
+        var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
+        var incomingTitle = AutoTagSimilarity.NormalizeText(
+            OneTaggerMatching.CleanTitleMatching(incomingFullTitle));
+        if (string.IsNullOrWhiteSpace(sourceTitle) || string.IsNullOrWhiteSpace(incomingTitle))
+        {
+            return hasMatchingIsrc ? null : "match rejected by Boomplay guard (insufficient title evidence)";
+        }
+
+        var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
+        var minTitleSimilarity = Math.Clamp(matchingConfig.Strictness + 0.10d, 0.82d, 0.98d);
+        if (titleSimilarity < minTitleSimilarity)
+        {
+            return $"match rejected by Boomplay guard (title similarity {titleSimilarity:0.000} < {minTitleSimilarity:0.000})";
+        }
+
+        if (HasDurationMismatch(info.DurationSeconds, match.Track.Duration, matchingConfig.MaxDurationDifferenceSeconds))
+        {
+            return "match rejected by Boomplay guard (duration mismatch)";
+        }
+
+        return null;
+    }
+
+    private static async Task ApplyPostLoopFallbackAsync(AutoTagRunPlan plan, CancellationToken token)
+    {
+        if (plan.ShazamConflictResolution || !plan.Config.ParseFilename)
+        {
+            return;
+        }
+
+        foreach (var file in plan.Files.Where(file => !plan.PreSkippedFiles.Contains(file) && !plan.TaggedByAnyPlatform.Contains(file)))
+        {
+            await EnsureCoreTagsFromPathAsync(
+                file,
+                plan.TargetPath,
+                plan.Settings.Tags?.SingleAlbumArtist ?? true,
+                token);
+        }
+    }
+
+    private static double ComputeOverallProgress(int platformIndex, int fileIndex, int platformCount, int fileCount)
+    {
+        var fileProgress = fileCount == 0
+            ? 1.0
+            : (fileIndex + 1) / (double)fileCount;
+
+        return platformCount == 0
+            ? 1.0
+            : (platformIndex / (double)platformCount) + (fileProgress / platformCount);
+    }
+
+    private static double ComputeBatchOverallProgress(
+        int batchStart,
+        int batchEnd,
+        int platformIndex,
+        int fileIndex,
+        int platformCount,
+        int fileCount)
+    {
+        if (platformCount == 0 || fileCount == 0)
+        {
+            return 1.0;
+        }
+
+        var completedFilesBeforeBatch = batchStart;
+        var batchFileCount = Math.Max(1, batchEnd - batchStart);
+        var batchProgress = (platformIndex / (double)platformCount)
+            + (((fileIndex - batchStart) + 1) / (double)batchFileCount / platformCount);
+        return Math.Min(1.0, (completedFilesBeforeBatch + (batchProgress * batchFileCount)) / fileCount);
+    }
+
+    private static int ComputeNextPlatformIndex(int platformIndex, int fileIndex, int platformCount, int fileCount)
+    {
+        var nextFileIndex = fileIndex + 1;
+        return nextFileIndex >= fileCount ? platformIndex + 1 : platformIndex;
+    }
+
+    private static int ComputeNextFileIndex(int fileIndex, int fileCount)
+    {
+        var nextFileIndex = fileIndex + 1;
+        return nextFileIndex >= fileCount ? 0 : nextFileIndex;
+    }
+
+    private static List<string> BuildEffectivePlatforms(AutoTagRunnerConfig config, DeezSpoTagSettings? settings = null)
+    {
+        var platforms = config.Platforms
+            .Select(platform => platform?.Trim())
+            .Where(platform => !string.IsNullOrWhiteSpace(platform))
+            .Select(platform => platform!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var tagPlatforms = platforms.Where(platform => !IsLyricsOnlyPlatform(platform)).ToList();
+        if (platforms.Any(IsLyricsOnlyPlatform) && ShouldRequestAnyLyrics(config, settings ?? new DeezSpoTagSettings()))
+        {
+            tagPlatforms.Add(LyricsPlatform);
+        }
+
+        return tagPlatforms;
+    }
+
+    private void SeedPlanAlbumIdentities(AutoTagRunPlan plan)
+    {
+        if (_albumIdentityStore == null)
+        {
+            return;
+        }
+
+        foreach (var (key, identity, updatedAt) in _albumIdentityStore.Entries)
+        {
+            plan.AlbumIdentities.Seed(key, identity, updatedAt);
+        }
+    }
+
+    private static Track BuildCoreTrack(
+        AutoTagTrack track,
+        string? separator,
+        bool singleAlbumArtist,
+        DeezSpoTagSettings settings)
+    {
+        var artists = track.Artists.Count == 0 ? new List<string> { UnknownArtist } : track.Artists;
+        var albumArtists = track.AlbumArtists.Count == 0 ? artists : track.AlbumArtists;
+        var album = new Album(track.Album ?? "")
+        {
+            TrackTotal = track.TrackTotal ?? 0,
+            DiscTotal = null,
+            Genre = track.Genres.ToList(),
+            Label = track.Label,
+            ReleaseDate = track.ReleaseDate
+        };
+
+        var primaryAlbumArtist = albumArtists
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+            ?.Trim();
+        if (string.IsNullOrWhiteSpace(primaryAlbumArtist))
+        {
+            primaryAlbumArtist = artists[0];
+        }
+
+        var albumMainArtists = singleAlbumArtist
+            ? new List<string> { primaryAlbumArtist }
+            : albumArtists.ToList();
+
+        album.MainArtist = new DeezSpoTag.Core.Models.Artist(primaryAlbumArtist);
+        album.Artists = albumMainArtists.ToList();
+        album.Artist["Main"] = albumMainArtists.ToList();
+
+        var coreTrack = new Track
+        {
+            Title = track.Title,
+            Artists = artists.ToList(),
+            MainArtist = new DeezSpoTag.Core.Models.Artist(artists[0]),
+            Album = album,
+            TrackNumber = track.TrackNumber ?? 0,
+            DiscNumber = track.DiscNumber ?? 0,
+            Bpm = track.Bpm ?? 0,
+            Explicit = track.Explicit ?? false,
+            ISRC = track.Isrc ?? "",
+            Duration = (int?)track.Duration?.TotalSeconds ?? 0
+        };
+
+        if (singleAlbumArtist && artists.Count > 1)
+        {
+            coreTrack.Artist["Main"] = new List<string> { artists[0] };
+            coreTrack.Artist["Featured"] = artists.Skip(1).ToList();
+            coreTrack.MainArtist = new DeezSpoTag.Core.Models.Artist(artists[0]);
+        }
+        else
+        {
+            coreTrack.Artist["Main"] = artists.ToList();
+        }
+
+        coreTrack.GenerateMainFeatStrings();
+        coreTrack.ArtistString = coreTrack.MainArtist?.Name ?? artists[0];
+        coreTrack.ArtistsString = string.IsNullOrWhiteSpace(separator) ? string.Join(", ", artists) : string.Join(separator, artists);
+
+        if (track.ReleaseDate.HasValue)
+        {
+            coreTrack.Date = CustomDate.FromDateTime(track.ReleaseDate.Value);
+            coreTrack.DateString = coreTrack.Date.Format("ymd");
+        }
+
+        settings.Tags ??= new TagSettings();
+        coreTrack.ApplySettings(settings);
+
+        return coreTrack;
+    }
+
+    private static void ReplaceTargetPathInRuntimeConfig(
+        string configPath,
+        string previousPath,
+        string materializedPath)
+    {
+        try
+        {
+            var root = JsonNode.Parse(IOFile.ReadAllText(configPath)) as JsonObject;
+            if (root?["targetFiles"] is not JsonArray targets)
+            {
+                return;
+            }
+
+            var changed = false;
+            for (var index = 0; index < targets.Count; index++)
+            {
+                var existing = targets[index]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(existing) || !PathsReferToSameFile(existing, previousPath))
+                {
+                    continue;
+                }
+
+                targets[index] = materializedPath;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                IOFile.WriteAllText(configPath, root.ToJsonString(CaseInsensitiveJsonOptions), new UTF8Encoding(false));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+        {
+            throw new IOException($"Failed to persist manual enrichment staging path '{materializedPath}'.", ex);
+        }
     }
 }
