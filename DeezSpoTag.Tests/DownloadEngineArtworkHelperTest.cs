@@ -87,9 +87,22 @@ public sealed class DownloadEngineArtworkHelperTest
             "Download",
             "Shared",
             "EngineAudioPostDownloadHelper.cs"));
+        // The prefetch wording was extracted into SidecarFetchActivity when the sidecar lookup
+        // was made shared across engines; the helper now delegates to it. Assert against the
+        // file that owns the wording, and pin the delegation that keeps the engines covered.
+        var sidecarActivitySource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "SidecarFetchActivity.cs"));
 
-        Assert.Contains("parts.Add(\"animated artwork\")", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("parts.Add(\"animated artwork\")", sidecarActivitySource, StringComparison.Ordinal);
         Assert.Contains("DescribePrefetchWork", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "SidecarFetchActivity.Describe(new SidecarFetchWork(",
+            postDownloadSource,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("\"Fetching artwork and lyrics\"", postDownloadSource, StringComparison.Ordinal);
     }
 
