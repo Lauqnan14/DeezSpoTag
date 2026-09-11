@@ -32,464 +32,371 @@ using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProvider
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
-public partial class LocalAutoTagRunner
+public sealed partial class LocalAutoTagRunner
 {
 
-    internal static string CapitalizeGenre(string input)
+    private static HashSet<SupportedTag> CapturePresentTags(
+        string filePath,
+        AutoTagRunnerConfig config,
+        string platformId,
+        IEnumerable<SupportedTag> tags)
     {
-        if (string.IsNullOrWhiteSpace(input))
+        var present = new HashSet<SupportedTag>();
+        using var file = TagLib.File.Create(filePath);
+        var extension = Path.GetExtension(filePath);
+        foreach (var tag in tags)
         {
-            return input;
-        }
-
-        var words = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < words.Length; i++)
-        {
-            var chars = words[i].ToCharArray();
-            if (chars.Length == 0)
+            if (HasTag(file, extension, tag, config, platformId))
             {
-                continue;
-            }
-
-            // Capitalize word starts without flattening the remaining casing:
-            // R&B, HipHop and EDM must survive capitalization untouched.
-            chars[0] = char.ToUpperInvariant(chars[0]);
-            for (var c = 1; c < chars.Length; c++)
-            {
-                if (chars[c - 1] == '&' && char.IsLetter(chars[c]))
-                {
-                    chars[c] = char.ToUpperInvariant(chars[c]);
-                }
-            }
-
-            words[i] = new string(chars);
-        }
-
-        return string.Join(' ', words);
-    }
-
-    private static bool IsGenreRawTag(string rawName)
-    {
-        var normalized = rawName.Trim();
-        var mp4Normalized = Mp4RawTagNameNormalizer.Normalize(normalized);
-        return normalized.Equals("TCON", StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals(Mp4GenreTag, StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals("©gen", StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals($"----:com.apple.iTunes:{Mp4GenreTag}", StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals($"iTunes:{Mp4GenreTag}", StringComparison.OrdinalIgnoreCase)
-            || normalized.Equals($"com.apple.iTunes:{Mp4GenreTag}", StringComparison.OrdinalIgnoreCase)
-            || mp4Normalized.Equals(Mp4GenreTag, StringComparison.OrdinalIgnoreCase)
-            || mp4Normalized.Equals("©gen", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static List<string> SanitizeGenres(
-        IEnumerable<string> values,
-        IReadOnlyDictionary<string, string>? genreAliasMap = null,
-        IEnumerable<string>? genreBlockList = null,
-        bool splitComposite = false)
-    {
-        return GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
-            values,
-            genreAliasMap,
-            splitComposite,
-            genreBlockList ?? BlockedGenres);
-    }
-
-    /// <summary>
-    /// Keeps the file's existing genre order when the sanitized values are the same
-    /// set (case-insensitive) as the tags already on the file. Platform payloads
-    /// reorder genres between runs, and with genre in overwriteTags every run rewrote
-    /// them in that platform's order — producing order-only diffs (HipHop, Rap →
-    /// Rap, HipHop) with no content change. The returned list keeps the file's order
-    /// while adopting the sanitized values' casing; any real set change keeps the
-    /// platform order.
-    /// </summary>
-    internal static List<string> PreserveGenreOrderWhenSetEqual(List<string> values, IEnumerable<string?>? existingGenres)
-    {
-        if (values.Count == 0 || existingGenres == null)
-        {
-            return values;
-        }
-
-        var existingList = existingGenres
-            .Select(value => value?.Trim() ?? string.Empty)
-            .Where(value => value.Length > 0)
-            .ToList();
-        if (existingList.Count != values.Count)
-        {
-            return values;
-        }
-
-        var sanitizedByNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var value in values)
-        {
-            var key = value?.Trim() ?? string.Empty;
-            if (key.Length == 0 || !sanitizedByNormalized.TryAdd(key, value ?? string.Empty))
-            {
-                return values;
+                present.Add(tag);
             }
         }
 
-        var ordered = new List<string>(values.Count);
-        foreach (var existing in existingList)
+        return present;
+    }
+
+    private static bool HasTagValue(AutoTagAudioInfo info, params string[] keys)
+    {
+        return !string.IsNullOrWhiteSpace(ReadFirstTagValue(info.Tags, keys));
+    }
+
+    private static bool HasAnyTags(AutoTagRunnerConfig config, params string[] tags)
+    {
+        if (config.Tags == null || config.Tags.Count == 0)
         {
-            if (!sanitizedByNormalized.TryGetValue(existing, out var sanitized))
+            return false;
+        }
+
+        var configured = BuildConfiguredTagSet(config.Tags);
+        return tags.Any(configured.Contains);
+    }
+
+    private static bool HasExistingTags(string filePath)
+    {
+        try
+        {
+            using var file = TagLib.File.Create(filePath);
+            var extension = Path.GetExtension(filePath);
+            if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             {
-                return values;
+                var id3 = (TagLib.Id3v2.Tag?)file.GetTag(TagTypes.Id3v2, false);
+                if (id3 == null) return false;
+                return TagRawProbe.HasId3Raw(id3, TaggedDateTag);
             }
 
-            ordered.Add(sanitized);
-        }
-
-        return ordered;
-    }
-
-    private static string ToCamelot(string key)
-    {
-        if (string.IsNullOrWhiteSpace(key))
-        {
-            return key;
-        }
-
-        foreach (var (original, camelot) in CamelotNotes)
-        {
-            if (string.Equals(original, key, StringComparison.OrdinalIgnoreCase))
+            if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
             {
-                return camelot;
+                var vorbis = (TagLib.Ogg.XiphComment?)file.GetTag(TagTypes.Xiph, false);
+                return vorbis != null && TagRawProbe.HasVorbisRaw(vorbis, TaggedDateTag);
             }
-        }
-        return key;
-    }
 
-    private static readonly (string Original, string Camelot)[] CamelotNotes =
-    {
-        ("Abm", "1A"),
-        ("G#m", "1A"),
-        ("B", "1B"),
-        ("D#m", "2A"),
-        ("Ebm", "2A"),
-        ("Gb", "2B"),
-        ("F#", "2B"),
-        ("A#m", "3A"),
-        ("Bbm", "3A"),
-        ("C#", "3B"),
-        ("Db", "3B"),
-        ("Dd", "3B"),
-        ("Fm", "4A"),
-        ("G#", "4B"),
-        ("Ab", "4B"),
-        ("Cm", "5A"),
-        ("D#", "5B"),
-        ("Eb", "5B"),
-        ("Gm", "6A"),
-        ("A#", "6B"),
-        ("Bb", "6B"),
-        ("Dm", "7A"),
-        ("F", "7B"),
-        ("Am", "8A"),
-        ("C", "8B"),
-        ("Em", "9A"),
-        ("G", "9B"),
-        ("Bm", "10A"),
-        ("D", "10B"),
-        ("Gbm", "11A"),
-        ("F#m", "11A"),
-        ("A", "11B"),
-        ("C#m", "12A"),
-        ("Dbm", "12A"),
-        ("E", "12B")
-    };
-
-    private static void SetId3Raw(TagLib.Id3v2.Tag tag, string name, List<string> values, string separator, bool useNullSeparator = false)
-    {
-        var output = ApplySeparator(values, separator, useNullSeparator);
-        if (name.Length == 4)
-        {
-            var frame = TagLib.Id3v2.TextInformationFrame.Get(tag, name, true);
-            if (useNullSeparator)
+            if (IsMp4Family(extension))
             {
-                frame.TextEncoding = TagLib.StringType.UTF16;
+                return Mp4TagHelper.HasRaw(file, TaggedDateTag);
             }
-            frame.Text = output;
-            return;
-        }
 
-        var user = TagLib.Id3v2.UserTextInformationFrame.Get(tag, name, true);
-        if (useNullSeparator)
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            user.TextEncoding = TagLib.StringType.UTF16;
+            return false;
         }
-        user.Text = output;
     }
 
-    private static void SetVorbisRaw(TagLib.Ogg.XiphComment tag, string name, List<string> values, string separator)
+    private static bool ShouldOverwriteMaterializedFile(DeezSpoTagSettings settings)
+        => string.Equals(settings.OverwriteFile, "y", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(settings.OverwriteFile, "overwrite", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ShouldOverwriteTag(AutoTagRunnerConfig config, SupportedTag tag)
     {
-        var output = ApplySeparator(values, separator);
-        tag.SetField(name, output);
+        if (config.Overwrite)
+        {
+            return true;
+        }
+
+        return config.OverwriteTags.Any(t => SupportedTagMap.TryGetValue(t.Trim(), out var mapped) && mapped == tag);
     }
 
-    private static List<string> ReadExistingRawTag(TagLib.File file, string extension, string name)
-    {
-        return ReadRawTagValuesCore(
-            file,
-            extension,
-            name,
-            static (apple, rawName) => TagRawProbe.HasAppleDashBox(apple, rawName)
-                ? new List<string> { rawName }
-                : new List<string>());
-    }
+    private static bool HasReleaseTypeTagEnabled(HashSet<string> enabledTags)
+        => enabledTags.Contains(ReleaseTypeTag) || enabledTags.Contains(OtherTagsTag);
 
-    private static List<string> ReadRawTagValues(TagLib.File file, string extension, string name)
-    {
-        return ReadRawTagValuesCore(file, extension, name, ReadAppleDashBox);
-    }
-
-    private static List<string> ReadRawTagValuesCore(
-        TagLib.File file,
-        string extension,
-        string name,
-        Func<TagLib.Mpeg4.AppleTag, string, List<string>> readAppleValues)
+    private static bool HasTag(TagLib.File file, string extension, SupportedTag tag, AutoTagRunnerConfig config, string platformId)
     {
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
             var id3 = (TagLib.Id3v2.Tag?)file.GetTag(TagTypes.Id3v2, false);
-            if (id3 == null) return new List<string>();
-            if (name.Length == 4)
-            {
-                var frame = TagLib.Id3v2.TextInformationFrame.Get(id3, name, false);
-                return frame?.Text?.ToList() ?? new List<string>();
-            }
-
-            var user = TagLib.Id3v2.UserTextInformationFrame.Get(id3, name, false);
-            return user?.Text?.ToList() ?? new List<string>();
+            if (id3 == null) return false;
+            return HasId3Tag(id3, tag, config, platformId);
         }
 
         if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
             var vorbis = (TagLib.Ogg.XiphComment?)file.GetTag(TagTypes.Xiph, false);
-            return vorbis?.GetField(name).ToList() ?? new List<string>();
+            if (vorbis == null) return false;
+            return HasVorbisTag(vorbis, tag, config, platformId);
         }
 
         if (IsMp4Family(extension))
         {
-            var apple = (TagLib.Mpeg4.AppleTag?)file.GetTag(TagTypes.Apple, false);
-            var normalizedName = Mp4RawTagNameNormalizer.Normalize(name);
-            if (apple != null)
-            {
-                var dashValues = readAppleValues(apple, normalizedName);
-                if (dashValues.Count > 0)
-                {
-                    return dashValues;
-                }
-            }
-
-            return ReadMp4AtlRawValues(file.Name, normalizedName);
+            return HasMp4Tag(file, tag, config, platformId);
         }
 
-        return new List<string>();
+        return false;
     }
 
-    private static List<string> ReadMp4AtlRawValues(string filePath, string rawName)
+    private static bool HasId3Tag(TagLib.Id3v2.Tag tag, SupportedTag supportedTag, AutoTagRunnerConfig config, string platformId)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !IOFile.Exists(filePath))
+        return supportedTag switch
         {
-            return new List<string>();
-        }
-
-        try
-        {
-            var atlTrack = new ATL.Track(filePath);
-            var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
-            var values = new List<string>();
-
-            AddMp4AtlNativeRawValues(values, atlTrack, normalized);
-
-            if (atlTrack.AdditionalFields != null)
-            {
-                var additional = new Dictionary<string, string>(atlTrack.AdditionalFields, StringComparer.OrdinalIgnoreCase);
-                AddIfPresent(values, ResolveAtlAdditionalValue(additional, normalized));
-                AddIfPresent(values, ResolveAtlAdditionalValue(additional, BuildAtlDashFieldName(normalized)));
-            }
-
-            return values
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return new List<string>();
-        }
+            SupportedTag.Title => !string.IsNullOrWhiteSpace(tag.Title),
+            SupportedTag.Artist => tag.Performers?.Length > 0,
+            SupportedTag.AlbumArtist => tag.AlbumArtists?.Length > 0,
+            SupportedTag.Album => !string.IsNullOrWhiteSpace(tag.Album),
+            SupportedTag.Key => TagRawProbe.HasId3Raw(tag, "TKEY"),
+            SupportedTag.BPM => TagRawProbe.HasId3Raw(tag, "TBPM"),
+            SupportedTag.Danceability => TagRawProbe.HasId3Raw(tag, DanceabilityTag),
+            SupportedTag.Energy => TagRawProbe.HasId3Raw(tag, EnergyTag),
+            SupportedTag.Valence => TagRawProbe.HasId3Raw(tag, ValenceTag),
+            SupportedTag.Acousticness => TagRawProbe.HasId3Raw(tag, AcousticnessTag),
+            SupportedTag.Instrumentalness => TagRawProbe.HasId3Raw(tag, InstrumentalnessTag),
+            SupportedTag.Speechiness => TagRawProbe.HasId3Raw(tag, SpeechinessTag),
+            SupportedTag.Loudness => TagRawProbe.HasId3Raw(tag, LoudnessTag),
+            SupportedTag.Tempo => TagRawProbe.HasId3Raw(tag, TempoTag),
+            SupportedTag.TimeSignature => TagRawProbe.HasId3Raw(tag, TimeSignatureTag),
+            SupportedTag.Liveness => TagRawProbe.HasId3Raw(tag, LivenessTag),
+            SupportedTag.Genre => tag.Genres?.Length > 0,
+            SupportedTag.Style => TagRawProbe.HasId3Raw(tag, ResolveStylesTagName(config, ".mp3")),
+            SupportedTag.Label => TagRawProbe.HasId3Raw(tag, "TPUB"),
+            SupportedTag.Copyright => TagRawProbe.HasId3Raw(tag, CopyrightRawTag),
+            SupportedTag.Composer => TagRawProbe.HasId3Raw(tag, "TCOM"),
+            SupportedTag.Lyricist => TagRawProbe.HasId3Raw(tag, "TEXT") || TagRawProbe.HasId3Raw(tag, LyricistRawTag),
+            SupportedTag.InvolvedPeople => TagRawProbe.HasId3Raw(tag, InvolvedPeopleRawTag),
+            SupportedTag.Publisher => TagRawProbe.HasId3Raw(tag, PublisherRawTag),
+            SupportedTag.Description => TagRawProbe.HasId3Raw(tag, DescriptionRawTag) || TagRawProbe.HasId3Raw(tag, CommentRawTag) || !string.IsNullOrWhiteSpace(tag.Comment),
+            SupportedTag.ReplayGain => TagRawProbe.HasId3Raw(tag, ReplayGainRawTag),
+            SupportedTag.Source => TagRawProbe.HasId3Raw(tag, SourceRawTag),
+            SupportedTag.Rating => TagRawProbe.HasId3Raw(tag, RatingRawTag),
+            SupportedTag.Language => TagRawProbe.HasId3Raw(tag, LanguageRawTag),
+            SupportedTag.ISRC => TagRawProbe.HasId3Raw(tag, "TSRC"),
+            SupportedTag.CatalogNumber => TagRawProbe.HasId3Raw(tag, CatalogNumberUpperTag),
+            SupportedTag.Version => TagRawProbe.HasId3Raw(tag, "TIT3"),
+            SupportedTag.TrackNumber => tag.Track > 0,
+            SupportedTag.TrackTotal => tag.TrackCount > 0,
+            SupportedTag.ReleaseType => TagRawProbe.HasId3Raw(tag, ReleaseTypeRawTag),
+            SupportedTag.DiscNumber => tag.Disc > 0,
+            SupportedTag.DiscTotal => tag.DiscCount > 0,
+            SupportedTag.Duration => TagRawProbe.HasId3Raw(tag, "TLEN"),
+            SupportedTag.Remixer => TagRawProbe.HasId3Raw(tag, "TPE4"),
+            SupportedTag.Mood => TagRawProbe.HasId3Raw(tag, "TMOO"),
+            SupportedTag.Activity => TagRawProbe.HasId3Raw(tag, "ACTIVITY"),
+            SupportedTag.ReleaseDate => TagRawProbe.HasId3Raw(tag, config.Id3v24 ? "TDRC" : "TYER"),
+            SupportedTag.PublishDate => TagRawProbe.HasId3Raw(tag, "TDRL"),
+            SupportedTag.URL => TagRawProbe.HasId3Raw(tag, WwwAudioFileTag),
+            SupportedTag.TrackId => TagRawProbe.HasId3Raw(tag, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
+            SupportedTag.ReleaseId => TagRawProbe.HasId3Raw(tag, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
+            SupportedTag.RecordingId => TagRawProbe.HasId3Raw(tag, RecordingIdRawTag),
+            SupportedTag.ArtistId => TagRawProbe.HasId3Raw(tag, ArtistIdRawTag),
+            SupportedTag.AlbumArtistId => TagRawProbe.HasId3Raw(tag, AlbumArtistIdRawTag),
+            SupportedTag.ReleaseGroupId => TagRawProbe.HasId3Raw(tag, ReleaseGroupIdRawTag),
+            SupportedTag.AlbumId => TagRawProbe.HasId3Raw(tag, AlbumIdRawTag),
+            SupportedTag.ReleaseStatus => TagRawProbe.HasId3Raw(tag, ReleaseStatusRawTag),
+            SupportedTag.ReleaseCountry => TagRawProbe.HasId3Raw(tag, ReleaseCountryRawTag),
+            SupportedTag.Barcode => TagRawProbe.HasId3Raw(tag, BarcodeRawTag),
+            SupportedTag.Media => TagRawProbe.HasId3Raw(tag, MediaRawTag),
+            SupportedTag.OtherTags => false,
+            SupportedTag.MetaTags => TagRawProbe.HasId3Raw(tag, TaggedDateTag),
+            SupportedTag.SyncedLyrics => tag.GetFrames<TagLib.Id3v2.SynchronisedLyricsFrame>("SYLT").Any(),
+            SupportedTag.UnsyncedLyrics => !string.IsNullOrWhiteSpace(tag.Lyrics),
+            SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
+            SupportedTag.Explicit => TagRawProbe.HasId3Raw(tag, ItunesAdvisoryTag),
+            _ => false
+        };
     }
 
-    private static void AddMp4AtlNativeRawValues(List<string> values, ATL.Track atlTrack, string normalized)
+    private static bool HasVorbisTag(TagLib.Ogg.XiphComment tag, SupportedTag supportedTag, AutoTagRunnerConfig config, string platformId)
     {
-        switch (normalized.ToUpperInvariant())
+        return supportedTag switch
         {
-            case "©NAM":
-            case TitleUpperTag:
-                AddIfPresent(values, atlTrack.Title);
-                break;
-            case "©ART":
-            case ArtistUpperTag:
-            case "ARTISTS":
-                AddIfPresent(values, atlTrack.Artist);
-                break;
-            case "©ALB":
-            case AlbumUpperTag:
-                AddIfPresent(values, atlTrack.Album);
-                break;
-            case "AART":
-            case AlbumArtistUpperTag:
-            case "ALBUM ARTIST":
-                AddIfPresent(values, atlTrack.AlbumArtist);
-                break;
-            case "©WRT":
-            case ComposerUpperTag:
-                AddIfPresent(values, atlTrack.Composer);
-                break;
-            case "©GEN":
-            case Mp4GenreTag:
-                AddIfPresent(values, atlTrack.Genre);
-                break;
-            case "ISRC":
-                AddIfPresent(values, atlTrack.ISRC);
-                break;
-            case "DATE":
-            case "YEAR":
-            case "©DAY":
-                AddMp4AtlDateValue(values, atlTrack);
-                break;
-            case "BPM":
-            case "TMPO":
-                AddMp4AtlPositiveNumberValue(values, atlTrack.BPM);
-                break;
-            case "TRACK":
-            case "TRKN":
-                AddMp4AtlPositiveNumberValue(values, atlTrack.TrackNumber);
-                break;
-            case "DISC":
-            case "DISK":
-                AddMp4AtlPositiveNumberValue(values, atlTrack.DiscNumber);
-                break;
-            case "LYRICS":
-            case "©LYR":
-                AddMp4AtlLyricsValues(values, atlTrack);
-                break;
-        }
+            SupportedTag.Title => tag.GetField(TitleUpperTag).Length > 0,
+            SupportedTag.Artist => tag.GetField(ArtistUpperTag).Length > 0,
+            SupportedTag.AlbumArtist => tag.GetField(AlbumArtistUpperTag).Length > 0,
+            SupportedTag.Album => tag.GetField(AlbumUpperTag).Length > 0,
+            SupportedTag.Key => tag.GetField("INITIALKEY").Length > 0,
+            SupportedTag.BPM => tag.GetField("BPM").Length > 0,
+            SupportedTag.Danceability => TagRawProbe.HasVorbisRaw(tag, DanceabilityTag),
+            SupportedTag.Energy => TagRawProbe.HasVorbisRaw(tag, EnergyTag),
+            SupportedTag.Valence => TagRawProbe.HasVorbisRaw(tag, ValenceTag),
+            SupportedTag.Acousticness => TagRawProbe.HasVorbisRaw(tag, AcousticnessTag),
+            SupportedTag.Instrumentalness => TagRawProbe.HasVorbisRaw(tag, InstrumentalnessTag),
+            SupportedTag.Speechiness => TagRawProbe.HasVorbisRaw(tag, SpeechinessTag),
+            SupportedTag.Loudness => TagRawProbe.HasVorbisRaw(tag, LoudnessTag),
+            SupportedTag.Tempo => TagRawProbe.HasVorbisRaw(tag, TempoTag),
+            SupportedTag.TimeSignature => TagRawProbe.HasVorbisRaw(tag, TimeSignatureTag),
+            SupportedTag.Liveness => TagRawProbe.HasVorbisRaw(tag, LivenessTag),
+            SupportedTag.Genre => tag.GetField(Mp4GenreTag).Length > 0,
+            SupportedTag.Style => tag.GetField(ResolveStylesTagName(config, FlacExtension)).Length > 0,
+            SupportedTag.Label => tag.GetField(LabelUpperTag).Length > 0,
+            SupportedTag.Copyright => tag.GetField(CopyrightRawTag).Length > 0,
+            SupportedTag.Composer => tag.GetField(ComposerUpperTag).Length > 0,
+            SupportedTag.Lyricist => tag.GetField(LyricistRawTag).Length > 0,
+            SupportedTag.InvolvedPeople => tag.GetField(InvolvedPeopleRawTag).Length > 0,
+            SupportedTag.Publisher => tag.GetField(PublisherRawTag).Length > 0,
+            SupportedTag.Description => tag.GetField(DescriptionRawTag).Length > 0 || tag.GetField(CommentRawTag).Length > 0,
+            SupportedTag.ReplayGain => tag.GetField(ReplayGainRawTag).Length > 0,
+            SupportedTag.Source => tag.GetField(SourceRawTag).Length > 0,
+            SupportedTag.Rating => tag.GetField(RatingRawTag).Length > 0,
+            SupportedTag.Language => tag.GetField(LanguageRawTag).Length > 0,
+            SupportedTag.ISRC => tag.GetField("ISRC").Length > 0,
+            SupportedTag.CatalogNumber => tag.GetField(CatalogNumberUpperTag).Length > 0,
+            SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
+            SupportedTag.TrackNumber => tag.GetField(TrackNumberUpperTag).Length > 0,
+            SupportedTag.TrackTotal => tag.GetField(TrackTotalRawTag).Length > 0,
+            SupportedTag.ReleaseType => tag.GetField(ReleaseTypeRawTag).Length > 0,
+            SupportedTag.DiscNumber => tag.GetField("DISCNUMBER").Length > 0,
+            SupportedTag.DiscTotal => tag.GetField(DiscTotalRawTag).Length > 0,
+            SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
+            SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
+            SupportedTag.Mood => tag.GetField("MOOD").Length > 0,
+            SupportedTag.Activity => tag.GetField("ACTIVITY").Length > 0,
+            SupportedTag.ReleaseDate => tag.GetField("DATE").Length > 0,
+            SupportedTag.PublishDate => tag.GetField(OriginalDateUpperTag).Length > 0,
+            SupportedTag.URL => tag.GetField(WwwAudioFileTag).Length > 0,
+            SupportedTag.TrackId => tag.GetField($"{platformId.ToUpperInvariant()}_TRACK_ID").Length > 0,
+            SupportedTag.ReleaseId => tag.GetField($"{platformId.ToUpperInvariant()}_RELEASE_ID").Length > 0,
+            SupportedTag.RecordingId => tag.GetField(RecordingIdRawTag).Length > 0,
+            SupportedTag.ArtistId => tag.GetField(ArtistIdRawTag).Length > 0,
+            SupportedTag.AlbumArtistId => tag.GetField(AlbumArtistIdRawTag).Length > 0,
+            SupportedTag.ReleaseGroupId => tag.GetField(ReleaseGroupIdRawTag).Length > 0,
+            SupportedTag.AlbumId => tag.GetField(AlbumIdRawTag).Length > 0,
+            SupportedTag.ReleaseStatus => tag.GetField(ReleaseStatusRawTag).Length > 0,
+            SupportedTag.ReleaseCountry => tag.GetField(ReleaseCountryRawTag).Length > 0,
+            SupportedTag.Barcode => tag.GetField(BarcodeRawTag).Length > 0,
+            SupportedTag.Media => tag.GetField(MediaRawTag).Length > 0,
+            SupportedTag.MetaTags => tag.GetField(TaggedDateTag).Length > 0,
+            SupportedTag.UnsyncedLyrics => tag.GetField(LyricsUpperTag).Any(value => !string.IsNullOrWhiteSpace(value)),
+            SupportedTag.SyncedLyrics =>
+                tag.GetField(LyricsSyncedTag).Any(value => !string.IsNullOrWhiteSpace(value))
+                || HasTimestampedLyricsPayload(tag.GetField(LyricsUpperTag)),
+            SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
+            SupportedTag.Explicit => tag.GetField(ItunesAdvisoryTag).Length > 0
+                || tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
+            _ => false
+        };
     }
 
-    private static void AddMp4AtlDateValue(List<string> values, ATL.Track atlTrack)
+    private static bool HasMp4Tag(TagLib.File file, SupportedTag supportedTag, AutoTagRunnerConfig config, string platformId)
     {
-        if (atlTrack.Date.HasValue)
+        return supportedTag switch
         {
-            AddIfPresent(values, atlTrack.Date.Value.ToString(IsoDateFormat));
-        }
+            SupportedTag.Title => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.Artist => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.AlbumArtist => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.Album => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.BPM => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.Genre => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.Style => Mp4TagHelper.HasRaw(file, ResolveStylesTagName(config, ".mp4")),
+            SupportedTag.Danceability => Mp4TagHelper.HasRaw(file, DanceabilityTag),
+            SupportedTag.Energy => Mp4TagHelper.HasRaw(file, EnergyTag),
+            SupportedTag.Valence => Mp4TagHelper.HasRaw(file, ValenceTag),
+            SupportedTag.Acousticness => Mp4TagHelper.HasRaw(file, AcousticnessTag),
+            SupportedTag.Instrumentalness => Mp4TagHelper.HasRaw(file, InstrumentalnessTag),
+            SupportedTag.Speechiness => Mp4TagHelper.HasRaw(file, SpeechinessTag),
+            SupportedTag.Loudness => Mp4TagHelper.HasRaw(file, LoudnessTag),
+            SupportedTag.Tempo => Mp4TagHelper.HasRaw(file, TempoTag),
+            SupportedTag.TimeSignature => Mp4TagHelper.HasRaw(file, TimeSignatureTag),
+            SupportedTag.Liveness => Mp4TagHelper.HasRaw(file, LivenessTag),
+            SupportedTag.Label => Mp4TagHelper.HasRaw(file, LabelUpperTag),
+            SupportedTag.Copyright => Mp4TagHelper.HasRaw(file, CopyrightRawTag),
+            SupportedTag.Composer => Mp4TagHelper.HasRaw(file, "©wrt"),
+            SupportedTag.Lyricist => Mp4TagHelper.HasRaw(file, LyricistRawTag),
+            SupportedTag.InvolvedPeople => Mp4TagHelper.HasRaw(file, InvolvedPeopleRawTag),
+            SupportedTag.Publisher => Mp4TagHelper.HasRaw(file, PublisherRawTag),
+            SupportedTag.Description => Mp4TagHelper.HasRaw(file, "ldes") || Mp4TagHelper.HasRaw(file, DescriptionRawTag),
+            SupportedTag.ReplayGain => Mp4TagHelper.HasRaw(file, ReplayGainRawTag),
+            SupportedTag.Source => Mp4TagHelper.HasRaw(file, SourceRawTag),
+            SupportedTag.Rating => Mp4TagHelper.HasRaw(file, RatingRawTag),
+            SupportedTag.Language => Mp4TagHelper.HasRaw(file, LanguageRawTag),
+            SupportedTag.ISRC => Mp4TagHelper.HasRaw(file, "ISRC"),
+            SupportedTag.CatalogNumber => Mp4TagHelper.HasRaw(file, CatalogNumberUpperTag),
+            SupportedTag.Version => Mp4TagHelper.HasRaw(file, "desc"),
+            SupportedTag.TrackNumber => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.TrackTotal => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.ReleaseType => Mp4TagHelper.HasRaw(file, ReleaseTypeRawTag),
+            SupportedTag.DiscNumber => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.DiscTotal => file.Tag.DiscCount > 0,
+            SupportedTag.Duration => Mp4TagHelper.HasRaw(file, LengthUpperTag),
+            SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
+            SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
+            SupportedTag.Activity => Mp4TagHelper.HasRaw(file, "ACTIVITY"),
+            SupportedTag.Key => Mp4TagHelper.HasRaw(file, InitialKeyRawTag),
+            SupportedTag.ReleaseDate =>
+                Mp4TagHelper.HasRaw(file, "©day")
+                || Mp4TagHelper.HasRaw(file, "DATE"),
+            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, "ORIGINALDATE"),
+            SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
+            SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
+            SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
+            SupportedTag.RecordingId => Mp4TagHelper.HasRaw(file, RecordingIdRawTag),
+            SupportedTag.ArtistId => Mp4TagHelper.HasRaw(file, ArtistIdRawTag),
+            SupportedTag.AlbumArtistId => Mp4TagHelper.HasRaw(file, AlbumArtistIdRawTag),
+            SupportedTag.ReleaseGroupId => Mp4TagHelper.HasRaw(file, ReleaseGroupIdRawTag),
+            SupportedTag.AlbumId => Mp4TagHelper.HasRaw(file, AlbumIdRawTag),
+            SupportedTag.ReleaseStatus => Mp4TagHelper.HasRaw(file, ReleaseStatusRawTag),
+            SupportedTag.ReleaseCountry => Mp4TagHelper.HasRaw(file, ReleaseCountryRawTag),
+            SupportedTag.Barcode => Mp4TagHelper.HasRaw(file, BarcodeRawTag),
+            SupportedTag.Media => Mp4TagHelper.HasRaw(file, MediaRawTag),
+            SupportedTag.MetaTags => Mp4TagHelper.HasRaw(file, TaggedDateTag),
+            SupportedTag.UnsyncedLyrics => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.SyncedLyrics =>
+                Mp4TagHelper.HasRaw(file, LyricsSyncedTag)
+                || ContainsTimestampedLyrics(file.Tag.Lyrics),
+            SupportedTag.AlbumArt => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.Explicit => Mp4TagHelper.HasRaw(file, ItunesAdvisoryTag),
+            _ => false
+        };
     }
 
-    private static void AddMp4AtlPositiveNumberValue(List<string> values, double? value)
+    private static bool HasRawTag(TagLib.File file, string extension, string rawName)
     {
-        if (value is > 0)
+        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            AddIfPresent(values, value.Value.ToString(CultureInfo.InvariantCulture));
-        }
-    }
-
-    private static void AddMp4AtlLyricsValues(List<string> values, ATL.Track atlTrack)
-    {
-        if (atlTrack.Lyrics == null || atlTrack.Lyrics.Count == 0)
-        {
-            return;
+            var id3 = (TagLib.Id3v2.Tag?)file.GetTag(TagTypes.Id3v2, false);
+            return id3 != null && TagRawProbe.HasId3Raw(id3, rawName);
         }
 
-        foreach (var line in atlTrack.Lyrics)
+        if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            AddIfPresent(values, line?.UnsynchronizedLyrics);
+            var vorbis = (TagLib.Ogg.XiphComment?)file.GetTag(TagTypes.Xiph, false);
+            return vorbis != null && TagRawProbe.HasVorbisRaw(vorbis, rawName);
         }
-    }
 
-    private static string ResolveAtlAdditionalValue(Dictionary<string, string> additional, string key)
-    {
-        return additional.TryGetValue(key, out var value)
-            ? value
-            : string.Empty;
-    }
-
-    private static void AddIfPresent(List<string> values, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
+        if (IsMp4Family(extension))
         {
-            values.Add(value);
+            return Mp4TagHelper.HasRaw(file, rawName);
         }
+
+        return false;
     }
 
-    private static void ApplyId3CustomTags(
-        TagLib.Id3v2.Tag tag,
-        List<CustomTagWrite> writes,
+    private static bool ShouldSkipId3ReleaseDate(
         AutoTagRunnerConfig config,
-        string separator,
-        bool useNullSeparator,
-        HashSet<string> enabledTags,
-        HashSet<SupportedTag> attemptedTags)
+        SupportedTag tag,
+        TagLib.Id3v2.Tag id3,
+        bool useYearOnly)
     {
-        foreach (var write in writes)
+        if (ShouldOverwriteTag(config, tag))
         {
-            if (!enabledTags.Contains(write.TagKey) || write.Values.Count == 0)
-            {
-                continue;
-            }
-
-            if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasId3Raw(tag, write.RawTagName))
-            {
-                attemptedTags.Add(write.SupportedTag);
-                continue;
-            }
-
-            SetId3Raw(tag, write.RawTagName, write.Values, separator, useNullSeparator);
-            attemptedTags.Add(write.SupportedTag);
+            return false;
         }
-    }
 
-    private static void ApplyVorbisCustomTags(TagLib.Ogg.XiphComment tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags, HashSet<SupportedTag> attemptedTags)
-    {
-        foreach (var write in writes)
+        if (config.Id3v24 && TagRawProbe.HasId3Raw(id3, "TDRC"))
         {
-            if (!enabledTags.Contains(write.TagKey) || write.Values.Count == 0)
-            {
-                continue;
-            }
-
-            if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasVorbisRaw(tag, write.RawTagName))
-            {
-                attemptedTags.Add(write.SupportedTag);
-                continue;
-            }
-
-            SetVorbisRaw(tag, write.RawTagName, write.Values, separator);
-            attemptedTags.Add(write.SupportedTag);
+            return true;
         }
-    }
 
-    private static void ApplyAppleCustomTags(TagLib.Mpeg4.AppleTag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags, HashSet<SupportedTag> attemptedTags)
-    {
-        foreach (var write in writes)
-        {
-            if (!enabledTags.Contains(write.TagKey) || write.Values.Count == 0)
-            {
-                continue;
-            }
-
-            var rawName = Mp4RawTagNameNormalizer.Normalize(write.RawTagName);
-            if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasAppleDashBox(tag, rawName))
-            {
-                attemptedTags.Add(write.SupportedTag);
-                continue;
-            }
-
-            TrySetAppleDashBox(tag, rawName, ApplySeparator(write.Values, separator));
-            attemptedTags.Add(write.SupportedTag);
-        }
+        return !config.Id3v24
+            && (TagRawProbe.HasId3Raw(id3, "TYER")
+                || (!useYearOnly && TagRawProbe.HasId3Raw(id3, "TDAT")));
     }
 
     private static TagSettings ApplyOverwriteRules(
@@ -583,100 +490,6 @@ public partial class LocalAutoTagRunner
         };
     }
 
-    private static void SetRawIfAllowed(
-        TagWriteContext context,
-        string configTagKey,
-        string rawName,
-        List<string> values)
-    {
-        if (values.Count == 0)
-        {
-            return;
-        }
-
-        if (!ShouldOverwriteRawTag(context.File, context.Extension, context.Config, configTagKey, rawName))
-        {
-            if (SupportedTagMap.TryGetValue(configTagKey, out var retainedTag))
-            {
-                context.AttemptedTags.Add(retainedTag);
-            }
-            return;
-        }
-
-        WriteRawTagValues(context, rawName, values);
-        if (SupportedTagMap.TryGetValue(configTagKey, out var supportedTag))
-        {
-            context.AttemptedTags.Add(supportedTag);
-        }
-    }
-
-    private static void WriteRawTagValues(TagWriteContext context, string rawName, List<string> values)
-    {
-        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            var id3 = (TagLib.Id3v2.Tag)context.File.GetTag(TagTypes.Id3v2, true);
-            SetId3Raw(id3, rawName, values, context.Separator, context.UseNullSeparator);
-            return;
-        }
-
-        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            var vorbis = (TagLib.Ogg.XiphComment)context.File.GetTag(TagTypes.Xiph, true);
-            SetVorbisRaw(vorbis, rawName, values, context.Separator);
-            return;
-        }
-
-        if (IsMp4Family(context.Extension))
-        {
-            Mp4TagHelper.SetMp4Raw(
-                context.File,
-                rawName,
-                ApplySeparator(values, context.Separator),
-                context.GenreAliasMap,
-                context.GenreBlockList,
-                context.SplitCompositeGenres);
-        }
-    }
-
-    private static void RemoveRawTagValues(TagWriteContext context, string rawName)
-    {
-        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            var id3 = (TagLib.Id3v2.Tag?)context.File.GetTag(TagTypes.Id3v2, false);
-            if (id3 == null)
-            {
-                return;
-            }
-
-            if (rawName.Length == 4)
-            {
-                id3.RemoveFrames(rawName);
-                return;
-            }
-
-            foreach (var frame in id3.GetFrames<TagLib.Id3v2.UserTextInformationFrame>("TXXX")
-                         .Where(frame => string.Equals(frame.Description, rawName, StringComparison.OrdinalIgnoreCase))
-                         .ToList())
-            {
-                id3.RemoveFrame(frame);
-            }
-            return;
-        }
-
-        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            var vorbis = (TagLib.Ogg.XiphComment?)context.File.GetTag(TagTypes.Xiph, false);
-            vorbis?.RemoveField(rawName);
-            return;
-        }
-
-        if (IsMp4Family(context.Extension))
-        {
-            var apple = (TagLib.Mpeg4.AppleTag?)context.File.GetTag(TagTypes.Apple, false);
-            AppleDashBoxReflectionHelper.TryClearValues(apple, Mp4RawTagNameNormalizer.Normalize(rawName));
-        }
-    }
-
     private static bool ShouldOverwriteRawTag(
         TagLib.File file,
         string extension,
@@ -690,84 +503,6 @@ public partial class LocalAutoTagRunner
         }
 
         return !HasRawTag(file, extension, rawName);
-    }
-
-    private static List<string> ResolveOtherValues(AutoTagTrack track, params string[] keys)
-    {
-        var values = new List<string>();
-        foreach (var key in keys)
-        {
-            if (string.IsNullOrWhiteSpace(key) || !track.Other.TryGetValue(key, out var keyValues))
-            {
-                continue;
-            }
-
-            values = values
-                .Concat(keyValues.SelectMany(SplitCompositeRawValues))
-                .Where(static value => !string.IsNullOrWhiteSpace(value))
-                .Select(static value => value.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        return values;
-    }
-
-    private static List<string> ResolveFirstClassOrOtherValues(string? firstClassValue, AutoTagTrack track, params string[] keys)
-    {
-        var values = ResolveOtherValues(track, keys);
-        if (!string.IsNullOrWhiteSpace(firstClassValue))
-        {
-            values.Insert(0, firstClassValue.Trim());
-        }
-
-        return values
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Select(static value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static IEnumerable<string> SplitCompositeRawValues(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return Array.Empty<string>();
-        }
-
-        return raw.Split([';', '\0'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    }
-
-    private static int? ResolveFirstPositiveInt(AutoTagTrack track, params string[] keys)
-    {
-        return ResolveOtherValues(track, keys)
-            .Select(raw => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : (int?)null)
-            .FirstOrDefault(parsed => parsed > 0);
-    }
-
-    private static string ResolveComposerRawName(string extension)
-    {
-        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            return "TCOM";
-        }
-
-        if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            return ComposerUpperTag;
-        }
-
-        return "©wrt";
-    }
-
-    private static string ResolveLyricistRawName(string extension)
-    {
-        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            return "TEXT";
-        }
-
-        return LyricistRawTag;
     }
 
     private static void ApplyOverwriteRule(
@@ -915,5 +650,103 @@ public partial class LocalAutoTagRunner
             file,
             platformId,
             aliasOverwrite);
+    }
+
+    private static void ApplyAlbumLossyOverwriteGuard(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        string? existingAlbum)
+    {
+        var incomingAlbum = sourceTrack.Album?.Trim();
+        var currentAlbum = existingAlbum?.Trim();
+        if (!effectiveTagSettings.Album
+            || string.IsNullOrWhiteSpace(currentAlbum)
+            || string.IsNullOrWhiteSpace(incomingAlbum))
+        {
+            return;
+        }
+
+        var similarity = AutoTagSimilarity.ComputeScore(
+            AutoTagSimilarity.NormalizeText(currentAlbum),
+            AutoTagSimilarity.NormalizeText(incomingAlbum));
+        if (similarity >= 0.90d)
+        {
+            return;
+        }
+
+        sourceTrack.Album = currentAlbum;
+        effectiveTagSettings.Album = false;
+    }
+
+    private static void ApplyPlatformOverwriteGuards(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        TagLib.File file,
+        string platformId,
+        ArtistAliasOverwriteDecision aliasOverwrite = default)
+    {
+        if (!string.Equals(platformId, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var existingTitle = file.Tag.Title?.Trim();
+        if (effectiveTagSettings.Title
+            && !aliasOverwrite.ForcedTitle
+            && !string.IsNullOrWhiteSpace(existingTitle)
+            && !string.IsNullOrWhiteSpace(sourceTrack.Title))
+        {
+            var normalizedExistingTitle = AutoTagSimilarity.NormalizeText(existingTitle);
+            var normalizedIncomingTitle = AutoTagSimilarity.NormalizeText(sourceTrack.Title);
+            var titleSimilarity = AutoTagSimilarity.ComputeScore(normalizedExistingTitle, normalizedIncomingTitle);
+            if (!TrackTitleMatcher.HasCompatibleTitleIdentity(existingTitle, sourceTrack.Title)
+                || titleSimilarity < 0.90d)
+            {
+                sourceTrack.Title = existingTitle;
+                effectiveTagSettings.Title = false;
+            }
+        }
+
+        var existingArtists = SplitArtistCredits(file.Tag.Performers?.Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value)).ToList()
+            ?? new List<string>());
+        var incomingArtists = SplitArtistCredits(sourceTrack.Artists);
+        if (effectiveTagSettings.Artist
+            && !aliasOverwrite.ForcedArtist
+            && existingArtists.Count > 0
+            && incomingArtists.Count > 0
+            && !AreArtistCreditsEquivalent(existingArtists, incomingArtists))
+        {
+            sourceTrack.Artists = existingArtists;
+            effectiveTagSettings.Artist = false;
+        }
+
+        var existingAlbumArtists = SplitArtistCredits(file.Tag.AlbumArtists?.Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value)).ToList()
+            ?? new List<string>());
+        var incomingAlbumArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
+        if (effectiveTagSettings.AlbumArtist
+            && !aliasOverwrite.ForcedAlbumArtist
+            && existingAlbumArtists.Count > 0
+            && incomingAlbumArtists.Count > 0
+            && !AreArtistCreditsEquivalent(existingAlbumArtists, incomingAlbumArtists))
+        {
+            sourceTrack.AlbumArtists = existingAlbumArtists;
+            effectiveTagSettings.AlbumArtist = false;
+        }
+
+        var existingAlbum = file.Tag.Album?.Trim();
+        var incomingAlbum = sourceTrack.Album?.Trim();
+        if (effectiveTagSettings.Album
+            && !string.IsNullOrWhiteSpace(existingAlbum)
+            && !string.IsNullOrWhiteSpace(incomingAlbum))
+        {
+            var normalizedExistingAlbum = AutoTagSimilarity.NormalizeText(existingAlbum);
+            var normalizedIncomingAlbum = AutoTagSimilarity.NormalizeText(incomingAlbum);
+            var albumSimilarity = AutoTagSimilarity.ComputeScore(normalizedExistingAlbum, normalizedIncomingAlbum);
+            if (albumSimilarity < 0.90d)
+            {
+                sourceTrack.Album = existingAlbum;
+                effectiveTagSettings.Album = false;
+            }
+        }
     }
 }
