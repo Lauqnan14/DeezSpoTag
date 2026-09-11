@@ -74,8 +74,13 @@ public sealed class BeatportRelease
 
 public sealed class BeatportMatchConfig
 {
+    [JsonPropertyName("art_resolution")]
     public int ArtResolution { get; set; } = 500;
+
+    [JsonPropertyName("max_pages")]
     public int MaxPages { get; set; } = 1;
+
+    [JsonPropertyName("ignore_version")]
     public bool IgnoreVersion { get; set; } = false;
 }
 

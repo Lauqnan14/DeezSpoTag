@@ -4,9 +4,19 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class LastFmConfig
 {
+    [JsonPropertyName("maxTags")]
     public int MaxTags { get; set; } = 12;
+
+    [JsonPropertyName("minTagCount")]
     public int MinTagCount { get; set; } = 10;
-    public double MinRelativeWeight { get; set; } = 0.15;
+
+    /// <summary>
+    /// Minimum share of the top tag's weight a tag must reach to be kept, as a percentage
+    /// (15 = 15%). Stored on the 0-100 scale the UI exposes; <see cref="LastFmMatcher"/>
+    /// normalizes it to a 0-1 fraction.
+    /// </summary>
+    [JsonPropertyName("minRelativeWeight")]
+    public double MinRelativeWeight { get; set; } = 15d;
 }
 
 public sealed class LastFmTopTagsResponse

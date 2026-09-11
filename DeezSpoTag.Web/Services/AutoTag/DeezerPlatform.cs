@@ -85,7 +85,7 @@ public sealed class DeezerPlatform : AutoTagPlatformBase
                     "albumId"),
                 CustomOptions = CreateOptions(
                     NumberOption("art_resolution", "Album Art Resolution", new NumberOptionValues(100, 1600, 100, 1200)),
-                    BooleanOption("match_by_id", "Match by existing Deezer ID tag first", true))
+                    BooleanOption("match_by_id", "Match by existing Deezer ID tag first", false))
             },
             "deezer.png");
     }

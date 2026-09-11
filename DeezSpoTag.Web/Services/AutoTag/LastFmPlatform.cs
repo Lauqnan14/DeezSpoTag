@@ -37,6 +37,13 @@ public sealed class LastFmPlatform : AutoTagPlatformBase
                         Label = "Minimum tag weight",
                         Tooltip = "Reject weak community tags below this Last.fm weight.",
                         Value = new PlatformCustomOptionNumber { Min = 0, Max = 100, Step = 1, Value = 10, Slider = true }
+                    },
+                    new()
+                    {
+                        Id = "minRelativeWeight",
+                        Label = "Minimum tag share (%)",
+                        Tooltip = "Reject tags whose weight is below this percentage of the top tag's weight.",
+                        Value = new PlatformCustomOptionNumber { Min = 0, Max = 100, Step = 1, Value = 15, Slider = true }
                     }
                 }
             }

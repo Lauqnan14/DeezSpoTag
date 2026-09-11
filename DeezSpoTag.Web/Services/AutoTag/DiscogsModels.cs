@@ -106,8 +106,13 @@ public sealed class DiscogsRelease
 public sealed class DiscogsConfig
 {
     public string Token { get; set; } = "";
+
+    [JsonPropertyName("max_albums")]
     public int MaxAlbums { get; set; } = 4;
+
+    [JsonPropertyName("track_number_int")]
     public bool TrackNumberInt { get; set; } = false;
+
     public int? RateLimit { get; set; }
 }
 
