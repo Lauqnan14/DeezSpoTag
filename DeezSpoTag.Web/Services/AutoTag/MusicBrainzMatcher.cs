@@ -21,11 +21,19 @@ public sealed class MusicBrainzMatcher
     ];
 
     private readonly MusicBrainzClient _client;
+    private readonly AcoustIdFingerprintService? _acoustIdFingerprintService;
+    private readonly AcoustIdClient? _acoustIdClient;
     private readonly ILogger<MusicBrainzMatcher> _logger;
 
-    public MusicBrainzMatcher(MusicBrainzClient client, ILogger<MusicBrainzMatcher> logger)
+    public MusicBrainzMatcher(
+        MusicBrainzClient client,
+        ILogger<MusicBrainzMatcher> logger,
+        AcoustIdFingerprintService? acoustIdFingerprintService = null,
+        AcoustIdClient? acoustIdClient = null)
     {
         _client = client;
+        _acoustIdFingerprintService = acoustIdFingerprintService;
+        _acoustIdClient = acoustIdClient;
         _logger = logger;
     }
 
@@ -81,8 +89,90 @@ public sealed class MusicBrainzMatcher
             return await TryMatchIsrcAsync(info, matchingConfig, resolvedConfig, preferences, cancellationToken);
         }
 
+        // Fingerprint fallback: when the file carries no usable tags (or the text
+        // matching failed), fingerprint it and let AcoustID name the recording —
+        // the same fallback Picard runs, then resolved through MusicBrainz.
+        if (resolvedConfig.UseAcoustIdFallback
+            && !string.IsNullOrWhiteSpace(info.FilePath)
+            && File.Exists(info.FilePath))
+        {
+            return await TryMatchByFingerprintAsync(info, matchingConfig, preferences, resolvedConfig, cancellationToken);
+        }
+
         return null;
     }
+
+    private async Task<AutoTagMatchResult?> TryMatchByFingerprintAsync(
+        AutoTagAudioInfo info,
+        AutoTagMatchingConfig matchingConfig,
+        MusicBrainzPreferences preferences,
+        MusicBrainzMatchConfig resolvedConfig,
+        CancellationToken cancellationToken)
+    {
+        if (_acoustIdFingerprintService == null || _acoustIdClient == null)
+        {
+            return null;
+        }
+
+        var fingerprint = await _acoustIdFingerprintService.FingerprintAsync(info.FilePath!, resolvedConfig.FpcalcPath, cancellationToken);
+        if (fingerprint == null)
+        {
+            return null;
+        }
+
+        var lookup = await _acoustIdClient.LookupAsync(fingerprint.Fingerprint, fingerprint.DurationSeconds, cancellationToken);
+        if (lookup?.Results is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var candidates = lookup.Results
+            .SelectMany(result => result.Recordings ?? new List<AcoustIdRecording>(),
+                (result, recording) => new AcoustIdCandidate(result.Score, recording.Id))
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.RecordingId))
+            .GroupBy(candidate => candidate.RecordingId, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderByDescending(candidate => candidate.Score)
+            .Take(8)
+            .ToList();
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var recording = await _client.GetRecordingAsync(candidate.RecordingId, cancellationToken);
+                if (recording == null || string.IsNullOrWhiteSpace(recording.Id))
+                {
+                    continue;
+                }
+
+                var track = ToTrack(recording, preferences);
+                await ExtendTrackAsync(info, track, preferences, cancellationToken);
+                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
+                {
+                    continue;
+                }
+
+                return new AutoTagMatchResult
+                {
+                    Accuracy = Math.Clamp(candidate.Score, 0d, 1d),
+                    Track = ToAutoTagTrack(track),
+                    MatchStrategy = "fingerprint"
+                };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "MusicBrainz fingerprint candidate lookup failed for {RecordingId}", candidate.RecordingId);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private sealed record AcoustIdCandidate(double Score, string RecordingId);
 
     private async Task<AutoTagMatchResult?> TryMatchRecordingIdAsync(
         AutoTagAudioInfo info,
@@ -247,11 +337,18 @@ public sealed class MusicBrainzMatcher
             Isrc = recording.Isrcs?.FirstOrDefault()
         };
 
-        AddOtherValue(track.Other, "MUSICBRAINZ_RECORDINGID", recording.Id);
-        AddOtherValues(track.Other, "MUSICBRAINZ_ARTISTID", recording.ArtistCredit?.Select(credit => credit.Artist.Id));
-        AddOtherValues(track.Other, "MUSICBRAINZ_ALBUMARTISTID", release?.ArtistCredit?.Select(credit => credit.Artist.Id));
-        AddOtherValues(track.Other, "ISRCS", recording.Isrcs);
         AddOtherValue(track.Other, "ORIGINALDATE", recording.FirstReleaseDate);
+        track.RecordingRelations = recording.Relations;
+        track.Aliases = recording.Aliases ?? new List<Alias>();
+        track.ArtistCredits = recording.ArtistCredit;
+
+        var artistSortName = recording.ArtistCredit?
+            .Select(credit => credit.Artist.SortName)
+            .FirstOrDefault(sortName => !string.IsNullOrWhiteSpace(sortName));
+        if (!string.IsNullOrWhiteSpace(artistSortName))
+        {
+            AddOtherValue(track.Other, "artistsort", artistSortName);
+        }
 
         return track;
     }
@@ -299,11 +396,287 @@ public sealed class MusicBrainzMatcher
             ApplyLabelInfo(track, release);
             ApplyTrackPosition(track, release);
             ApplyReleaseMetadata(track, release);
+            await ApplyRelationshipsAsync(track, cancellationToken);
+            ApplyLocalizedAliases(track, preferences);
+
+            var albumArtistSortName = release.ArtistCredit?
+                .Select(credit => credit.Artist.SortName)
+                .FirstOrDefault(sortName => !string.IsNullOrWhiteSpace(sortName));
+            if (!string.IsNullOrWhiteSpace(albumArtistSortName))
+            {
+                AddOtherValue(track.Other, "albumartistsort", albumArtistSortName);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to extend MusicBrainz track.");
         }
+    }
+
+    /// <summary>
+    /// Derives the relationship credits MusicBrainz knows for the recording (Picard
+    /// writes the same set): composer, lyricist, writer, librettist, remixer, performer
+    /// (with instruments), conductor, producer, engineer, mixer, DJ-mixer, arranger,
+    /// orchestrator and mastering. Composer/lyricist relationships usually hang off the
+    /// work ("performance") node, performer/technical roles off the recording itself.
+    /// </summary>
+    private async Task ApplyRelationshipsAsync(MusicBrainzTrack track, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (track.RecordingRelations is not { Count: > 0 } && !string.IsNullOrWhiteSpace(track.TrackId))
+            {
+                var recording = await _client.GetRecordingAsync(track.TrackId!, cancellationToken);
+                if (recording?.Relations is { Count: > 0 })
+                {
+                    track.RecordingRelations = recording.Relations;
+                }
+            }
+
+            if (track.RecordingRelations is not { Count: > 0 })
+            {
+                return;
+            }
+
+            var composers = new List<string>();
+            var composerIds = new List<string>();
+            var lyricists = new List<string>();
+            var involvedPeople = new List<string>();
+
+            void AddComposer(string? name, string? artistId)
+            {
+                if (!string.IsNullOrWhiteSpace(name) && !composers.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    composers.Add(name);
+                }
+
+                if (!string.IsNullOrWhiteSpace(artistId) && !composerIds.Contains(artistId, StringComparer.OrdinalIgnoreCase))
+                {
+                    composerIds.Add(artistId);
+                }
+            }
+
+            void AddInvolved(string role, string? name)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return;
+                }
+
+                involvedPeople.Add($"{role}: {name}");
+            }
+
+            void CollectArtistRelation(Relation relation)
+            {
+                var name = relation.Artist?.Name;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return;
+                }
+
+                var instrument = string.Join(", ", (relation.Attributes ?? new List<string>())
+                    .Select(attribute => attribute.Trim())
+                    .Where(attribute => attribute.Length > 0));
+                switch (relation.Type)
+                {
+                    case "composer":
+                        AddComposer(name, relation.Artist?.Id);
+                        break;
+                    case "writer":
+                        AddComposer(name, relation.Artist?.Id);
+                        break;
+                    case "lyricist":
+                        if (!lyricists.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            lyricists.Add(name);
+                        }
+
+                        track.Lyricist ??= name;
+                        break;
+                    case "remixer":
+                        if (!track.Remixers.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            track.Remixers.Add(name);
+                        }
+
+                        break;
+                    case "performer":
+                        AddInvolved(instrument.Length > 0 ? $"Performer ({instrument})" : "Performer", name);
+                        break;
+                    case "conductor":
+                        AddInvolved("Conductor", name);
+                        break;
+                    case "producer":
+                        AddInvolved("Producer", name);
+                        break;
+                    case "engineer":
+                        AddInvolved("Engineer", name);
+                        break;
+                    case "mixer":
+                        AddInvolved("Mixer", name);
+                        break;
+                    case "djmixer":
+                        AddInvolved("DJ-Mixer", name);
+                        break;
+                    case "arranger":
+                        AddInvolved("Arranger", name);
+                        break;
+                    case "orchestrator":
+                        AddInvolved("Orchestrator", name);
+                        break;
+                    case "mastering":
+                        AddInvolved("Mastering", name);
+                        break;
+                    case "librettist":
+                        AddInvolved("Librettist", name);
+                        break;
+                }
+            }
+
+            foreach (var relation in track.RecordingRelations)
+            {
+                if (relation.TargetType?.Equals("artist", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    CollectArtistRelation(relation);
+                }
+                else if (relation.TargetType?.Equals("work", StringComparison.OrdinalIgnoreCase) == true
+                    && !string.IsNullOrWhiteSpace(relation.Work?.Id))
+                {
+                    AddOtherValue(track.Other, "MUSICBRAINZ_WORKID", relation.Work!.Id);
+                    foreach (var workRelation in relation.Work?.Relations ?? new List<Relation>())
+                    {
+                        if (workRelation.TargetType?.Equals("artist", StringComparison.OrdinalIgnoreCase) == true)
+                        {
+                            CollectArtistRelation(workRelation);
+                        }
+                    }
+                }
+            }
+
+            if (composers.Count > 0)
+            {
+                AddOtherValues(track.Other, "composer", composers);
+            }
+
+            if (composerIds.Count > 0)
+            {
+                AddOtherValues(track.Other, "MUSICBRAINZ_COMPOSERID", composerIds);
+            }
+
+            if (lyricists.Count > 0)
+            {
+                AddOtherValues(track.Other, "lyricist", lyricists);
+            }
+
+            if (involvedPeople.Count > 0)
+            {
+                AddOtherValues(track.Other, "involvedPeople", involvedPeople);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to derive MusicBrainz relationship credits for {RecordingId}", track.RecordingId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replaces the canonical title/artist names with the localized alias matching the
+    /// user's preferred locales (Picard's "translate titles/names using these locales").
+    /// Only runs when the user enabled aliases and picked locales — the canonical
+    /// names stay untouched otherwise.
+    /// </summary>
+    private static void ApplyLocalizedAliases(MusicBrainzTrack track, MusicBrainzPreferences preferences)
+    {
+        if (!preferences.UseAliases || preferences.PreferredLocales.Count == 0)
+        {
+            return;
+        }
+
+        var localizedTitle = FindLocalizedAliasName(track.Aliases, preferences.PreferredLocales);
+        if (!string.IsNullOrWhiteSpace(localizedTitle))
+        {
+            track.Title = localizedTitle;
+        }
+
+        // Artist localization walks the recording's artist credits in order, replacing
+        // each credited artist name with its localized alias when one exists.
+        var credits = track.ArtistCredits;
+        if (credits is { Count: > 0 })
+        {
+            for (var index = 0; index < credits.Count && index < track.Artists.Count; index++)
+            {
+                var localizedArtist = FindLocalizedAliasName(credits[index].Artist.Aliases, preferences.PreferredLocales);
+                if (!string.IsNullOrWhiteSpace(localizedArtist))
+                {
+                    track.Artists[index] = localizedArtist;
+                }
+            }
+        }
+    }
+
+    private static string? FindLocalizedAliasName(List<Alias>? aliases, IReadOnlyList<string> preferredLocales)
+    {
+        if (aliases is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        foreach (var preferredLocale in preferredLocales)
+        {
+            var localeMatches = aliases
+                .Where(alias => !string.IsNullOrWhiteSpace(alias.Name)
+                    && !string.IsNullOrWhiteSpace(alias.Locale)
+                    && (string.Equals(alias.Locale, preferredLocale, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(alias.Locale.Split('_')[0], preferredLocale, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (localeMatches.Count == 0)
+            {
+                continue;
+            }
+
+            var primary = localeMatches.FirstOrDefault(alias => alias.Primary == true);
+            return (primary ?? localeMatches.First()).Name;
+        }
+
+        return null;
+    }
+
+    private static bool IsTitleCompatibleWithSource(
+        AutoTagAudioInfo info,
+        MusicBrainzTrack track,
+        AutoTagMatchingConfig config)
+    {
+        // The canonical title and every localized alias are candidate titles: a file
+        // titled with the localized name still matches the canonical recording.
+        var candidateTitles = new List<string> { track.Title };
+        if (track.Aliases is { Count: > 0 })
+        {
+            candidateTitles.AddRange(track.Aliases
+                .Select(alias => alias.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name)));
+        }
+        foreach (var candidateTitle in candidateTitles)
+        {
+            if (string.IsNullOrWhiteSpace(candidateTitle) || !IsVariantCompatible(info.Title, candidateTitle))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(info.Title) || string.IsNullOrWhiteSpace(candidateTitle))
+            {
+                return true;
+            }
+
+            if (HasCompatibleTitleIdentity(info.Title, candidateTitle, config))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void ApplyCoverArt(MusicBrainzTrack track, Release release)
@@ -668,17 +1041,9 @@ public sealed class MusicBrainzMatcher
         MusicBrainzTrack track,
         AutoTagMatchingConfig config)
     {
-        if (!IsVariantCompatible(info.Title, track.Title))
+        if (!IsTitleCompatibleWithSource(info, track, config))
         {
             return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(info.Title) && !string.IsNullOrWhiteSpace(track.Title))
-        {
-            if (!HasCompatibleTitleIdentity(info.Title, track.Title, config))
-            {
-                return false;
-            }
         }
 
         var sourceArtists = info.Artists.Count > 0
@@ -898,6 +1263,8 @@ public sealed class MusicBrainzMatcher
             Genres = track.Genres.ToList(),
             Art = track.Art,
             ReleaseDate = track.ReleaseDate,
+            Lyricist = string.IsNullOrWhiteSpace(track.Lyricist) ? null : track.Lyricist,
+            Remixers = track.Remixers.ToList(),
             Other = BuildOtherDictionary(track)
         };
     }
@@ -916,6 +1283,8 @@ public sealed class MusicBrainzMatcher
         public string? PreferredPrimaryType { get; init; }
         public IReadOnlyList<string> PreferredCountries { get; init; } = Array.Empty<string>();
         public IReadOnlyList<string> PreferredFormats { get; init; } = Array.Empty<string>();
+        public bool UseAliases { get; init; }
+        public IReadOnlyList<string> PreferredLocales { get; init; } = Array.Empty<string>();
         public int OfficialWeight { get; init; }
         public int CompilationPenaltyWeight { get; init; }
         public int PrimaryTypeWeight { get; init; }
@@ -941,6 +1310,8 @@ public sealed class MusicBrainzMatcher
                 PreferredPrimaryType = preferredType,
                 PreferredCountries = ParseCsv(config.PreferredReleaseCountries),
                 PreferredFormats = ParseCsv(config.PreferredMediaFormats),
+                UseAliases = config.UseAliases,
+                PreferredLocales = ParseCsv(config.PreferredLocales),
                 OfficialWeight = config.OfficialWeight,
                 CompilationPenaltyWeight = config.CompilationPenaltyWeight,
                 PrimaryTypeWeight = config.PrimaryTypeWeight,

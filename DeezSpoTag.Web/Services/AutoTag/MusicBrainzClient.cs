@@ -63,7 +63,11 @@ public sealed class MusicBrainzClient
 
     public async Task<Recording?> GetRecordingAsync(string recordingId, CancellationToken cancellationToken)
     {
-        var response = await GetAsync($"recording/{Uri.EscapeDataString(recordingId)}?inc=artists+releases+isrcs&fmt=json", cancellationToken);
+        // Relationship subqueries surface the artist/work credits MusicBrainz knows for
+        // the recording: composer, lyricist, performer (with instruments), conductor,
+        // producer, engineer, mixer, remixer, arranger — the tags Picard derives too.
+        // Aliases bring localized titles/names and alias-based title tolerance.
+        var response = await GetAsync($"recording/{Uri.EscapeDataString(recordingId)}?inc=artists+releases+isrcs+artist-credits+artist-rels+work-rels+work-level-rels+url-rels+aliases&fmt=json", cancellationToken);
         if (response == null)
         {
             return null;

@@ -11,6 +11,7 @@ public sealed class AutoTagAudioInfo
     public int? DurationSeconds { get; set; }
     public string? Isrc { get; set; }
     public int? TrackNumber { get; set; }
+    public string? FilePath { get; set; }
     public Dictionary<string, List<string>> Tags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool HasEmbeddedTitle { get; set; }
     public bool HasEmbeddedArtist { get; set; }

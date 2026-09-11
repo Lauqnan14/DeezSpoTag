@@ -18,6 +18,7 @@ public sealed class QuickTagTagSourceService
     private const string ShazamProvider = "shazam";
     private const string MusicBrainzProvider = "musicbrainz";
     private const string DiscogsProvider = "discogs";
+    private const string AcoustIdProvider = "acoustid";
     private const string AlbumType = "album";
     private const string TrackType = "track";
     private const string UntitledLabel = "(Untitled)";
@@ -40,6 +41,8 @@ public sealed class QuickTagTagSourceService
     private ShazamDiscoveryService ShazamDiscoveryService => _serviceProvider.GetRequiredService<ShazamDiscoveryService>();
     private BoomplayMetadataService BoomplayMetadataService => _serviceProvider.GetRequiredService<BoomplayMetadataService>();
     private SpotifyMetadataService SpotifyMetadataService => _serviceProvider.GetRequiredService<SpotifyMetadataService>();
+    private AcoustIdFingerprintService AcoustIdFingerprintService => _serviceProvider.GetRequiredService<AcoustIdFingerprintService>();
+    private AcoustIdClient AcoustIdClient => _serviceProvider.GetRequiredService<AcoustIdClient>();
 
     public QuickTagTagSourceService(
         DeezSpoTagSearchService searchService,
@@ -62,6 +65,14 @@ public sealed class QuickTagTagSourceService
     public async Task<QuickTagTagSourceSearchResult> SearchAsync(QuickTagTagSourceSearchRequest request, CancellationToken cancellationToken)
     {
         var provider = NormalizeProvider(request.Provider);
+
+        // AcoustID fingerprints the selected audio file instead of running a text
+        // search — it needs no text query, only a local file.
+        if (provider == AcoustIdProvider)
+        {
+            return await SearchAcoustIdAsync(request, cancellationToken);
+        }
+
         var query = BuildQuery(request);
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -88,13 +99,103 @@ public sealed class QuickTagTagSourceService
                 return await SearchMusicBrainzAsync(query, cancellationToken);
             case DiscogsProvider:
                 return await SearchDiscogsAsync(request, query, cancellationToken);
-            case "acoustid":
-                return Unsupported(provider, "AcoustID search requires audio fingerprinting and is not wired into Quick Tag yet.");
             case "amazon":
                 return Unsupported(provider, "Amazon catalog search requires provider credentials and is not configured in this project yet.");
             default:
                 return Unsupported(provider, "Unknown tag source provider.");
         }
+    }
+
+    /// <summary>
+    /// AcoustID provider: fingerprints the selected audio file (Chromaprint fpcalc)
+    /// and lists the matching MusicBrainz recordings — the same identification path
+    /// Picard uses, exposed through the normal tag-source result cards.
+    /// </summary>
+    private async Task<QuickTagTagSourceSearchResult> SearchAcoustIdAsync(
+        QuickTagTagSourceSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var path = request.Path?.Trim();
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return Unsupported(AcoustIdProvider, "AcoustID fingerprints the selected audio file. Select a track with a local audio file, then search again.");
+        }
+
+        var fingerprint = await AcoustIdFingerprintService.FingerprintAsync(path, configuredPath: null, cancellationToken);
+        if (fingerprint == null)
+        {
+            return Unsupported(AcoustIdProvider, "AcoustID requires the Chromaprint 'fpcalc' binary. Install fpcalc and keep it on the PATH, or set DEEZSPOTAG_FPCALC_PATH.");
+        }
+
+        var lookup = await AcoustIdClient.LookupAsync(fingerprint.Fingerprint, fingerprint.DurationSeconds, cancellationToken);
+        if (lookup?.Results is not { Count: > 0 })
+        {
+            return new QuickTagTagSourceSearchResult
+            {
+                Provider = AcoustIdProvider,
+                Supported = true,
+                Message = "No AcoustID matches were found for this audio.",
+                Items = new List<QuickTagTagSourceSearchItem>()
+            };
+        }
+
+        var items = lookup.Results
+            .SelectMany(result => (result.Recordings ?? new List<AcoustIdRecording>()).Select(recording => (result.Score, Recording: recording)))
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Recording?.Id))
+            .OrderByDescending(entry => entry.Score)
+            .Take(60)
+            .Select(entry =>
+            {
+                var recording = entry.Recording!;
+                var artist = BuildAcoustIdArtistText(recording);
+                var release = recording.Releases?.FirstOrDefault();
+                var year = ParseYear(release?.Date?.Year);
+                var detailsParts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(release?.Title))
+                {
+                    detailsParts.Add(release.Title);
+                }
+                if (recording.Duration is > 0)
+                {
+                    detailsParts.Add(FormatDuration(TimeSpan.FromSeconds(recording.Duration.Value)));
+                }
+
+                return new QuickTagTagSourceSearchItem
+                {
+                    Id = recording.Id!,
+                    Title = string.IsNullOrWhiteSpace(recording.Title) ? UntitledLabel : recording.Title,
+                    Subtitle = artist,
+                    Details = string.Join(" • ", detailsParts),
+                    Url = $"https://musicbrainz.org/recording/{recording.Id}",
+                    Year = year
+                };
+            })
+            .ToList();
+
+        return new QuickTagTagSourceSearchResult
+        {
+            Provider = AcoustIdProvider,
+            Supported = true,
+            Message = $"Found {items.Count} match(es) by AcoustID fingerprint.",
+            Items = items
+        };
+    }
+
+    private static string BuildAcoustIdArtistText(AcoustIdRecording recording)
+    {
+        var creditNames = (recording.ArtistCredit ?? new List<AcoustIdCredit>())
+            .Where(credit => !string.IsNullOrWhiteSpace(credit?.Name))
+            .Select(credit => $"{credit!.Name}{credit.JoinPhrase}")
+            .ToList();
+        if (creditNames.Count == 0)
+        {
+            creditNames = (recording.Artists ?? new List<AcoustIdArtist>())
+                .Where(artist => !string.IsNullOrWhiteSpace(artist?.Name))
+                .Select(artist => artist!.Name!)
+                .ToList();
+        }
+
+        return string.Join(", ", creditNames);
     }
 
     private async Task<QuickTagTagSourceSearchResult> SearchMusicBrainzAsync(string query, CancellationToken cancellationToken)
@@ -955,6 +1056,9 @@ public sealed class QuickTagTagSourceService
                 AppleProvider => await GetAppleDetailAsync(id, cancellationToken),
                 ShazamProvider => await GetShazamDetailAsync(id, cancellationToken),
                 MusicBrainzProvider => await GetMusicBrainzDetailAsync(id, cancellationToken),
+                // AcoustID result ids are MusicBrainz recording IDs; the detail view
+                // resolves through the same MusicBrainz detail path.
+                AcoustIdProvider => await GetMusicBrainzDetailAsync(id, cancellationToken),
                 DiscogsProvider => await GetDiscogsDetailAsync(id, cancellationToken),
                 _ => null
             };

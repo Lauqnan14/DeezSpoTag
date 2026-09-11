@@ -4256,6 +4256,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DurationSeconds = source.DurationSeconds,
             Isrc = source.Isrc,
             TrackNumber = source.TrackNumber,
+            FilePath = source.FilePath,
             Tags = source.Tags.ToDictionary(pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase),
             HasEmbeddedTitle = source.HasEmbeddedTitle,
             HasEmbeddedArtist = source.HasEmbeddedArtist
@@ -5246,6 +5247,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DurationSeconds = normalizedDurationSeconds,
             Isrc = string.IsNullOrWhiteSpace(draft.Isrc) ? null : draft.Isrc,
             TrackNumber = draft.TrackNumber,
+            FilePath = filePath,
             Tags = draft.Tags,
             HasEmbeddedTitle = draft.HasEmbeddedTitle,
             HasEmbeddedArtist = draft.HasEmbeddedArtist
@@ -5281,6 +5283,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Artist = draft.Artist,
             Artists = draft.Artists,
             Album = string.IsNullOrWhiteSpace(draft.Album) ? null : draft.Album,
+            FilePath = filePath,
             HasEmbeddedTitle = false,
             HasEmbeddedArtist = false
         };

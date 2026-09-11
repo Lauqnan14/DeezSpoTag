@@ -1053,9 +1053,16 @@
             return null;
         }
 
+        // AcoustID fingerprints the selected audio file and needs no text query —
+        // only a local file path. Every other provider still requires metadata.
+        const isFingerprintProvider = state.tagSourceProvider === "acoustid";
         const query = buildTagSourceQuery(primary);
-        if (!query) {
+        if (!query && !isFingerprintProvider) {
             clearTagSourceSearchState("Selected track has insufficient metadata for search.", "warning");
+            return null;
+        }
+        if (isFingerprintProvider && !String(primary.path || "").trim()) {
+            clearTagSourceSearchState("AcoustID fingerprints the selected audio file. Select a track with a local audio file.", "warning");
             return null;
         }
 

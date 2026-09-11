@@ -20,6 +20,41 @@ public sealed class Recording
     public string? FirstReleaseDate { get; set; }
     public List<ReleaseSmall>? Releases { get; set; }
     public List<string>? Isrcs { get; set; }
+    [JsonPropertyName("relations")]
+    public List<Relation>? Relations { get; set; }
+    [JsonPropertyName("aliases")]
+    public List<Alias>? Aliases { get; set; }
+}
+
+public sealed class Alias
+{
+    public string Name { get; set; } = "";
+    public string? Locale { get; set; }
+    public string? Type { get; set; }
+    public bool? Primary { get; set; }
+    [JsonPropertyName("sort-name")]
+    public string? SortName { get; set; }
+}
+
+public sealed class Relation
+{
+    [JsonPropertyName("target-type")]
+    public string? TargetType { get; set; }
+    public string? Type { get; set; }
+    public string? Direction { get; set; }
+    public Artist? Artist { get; set; }
+    public Work? Work { get; set; }
+    public string? Url { get; set; }
+    [JsonPropertyName("attribute-list")]
+    public List<string>? Attributes { get; set; }
+}
+
+public sealed class Work
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    [JsonPropertyName("relations")]
+    public List<Relation>? Relations { get; set; }
 }
 
 public sealed class ReleaseSmall
@@ -102,6 +137,13 @@ public sealed class MusicBrainzTrack
     public int? ReleaseYear { get; set; }
     public DateTime? ReleaseDate { get; set; }
     public string? Isrc { get; set; }
+    public string? Lyricist { get; set; }
+    public List<string> Remixers { get; set; } = new();
+    [JsonPropertyName("relations")]
+    public List<Relation>? RecordingRelations { get; set; }
+    [JsonPropertyName("aliases")]
+    public List<Alias>? Aliases { get; set; }
+    public List<ArtistCredit>? ArtistCredits { get; set; }
     public string? Label { get; set; }
     public string? CatalogNumber { get; set; }
     public int? TrackNumber { get; set; }
@@ -124,12 +166,18 @@ public sealed class ArtistCredit
 {
     public string Name { get; set; } = "";
     public Artist Artist { get; set; } = new();
+    [JsonPropertyName("joinphrase")]
+    public string? JoinPhrase { get; set; }
 }
 
 public sealed class Artist
 {
     public string Name { get; set; } = "";
     public string Id { get; set; } = "";
+    [JsonPropertyName("sort-name")]
+    public string? SortName { get; set; }
+    [JsonPropertyName("aliases")]
+    public List<Alias>? Aliases { get; set; }
 }
 
 public sealed class ReleaseGroup
@@ -175,6 +223,18 @@ public sealed class MusicBrainzMatchConfig
 
     [JsonPropertyName("match_by_id")]
     public bool MatchById { get; set; } = true;
+
+    [JsonPropertyName("use_acoustid_fallback")]
+    public bool UseAcoustIdFallback { get; set; } = true;
+
+    [JsonPropertyName("fpcalc_path")]
+    public string FpcalcPath { get; set; } = "";
+
+    [JsonPropertyName("use_aliases")]
+    public bool UseAliases { get; set; } = false;
+
+    [JsonPropertyName("preferred_locales")]
+    public string PreferredLocales { get; set; } = "";
 
     [JsonPropertyName("prefer_official")]
     public bool PreferOfficial { get; set; } = true;

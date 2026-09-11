@@ -146,7 +146,7 @@
         { tag: "artists", label: "Artists (multi)" },
         { tag: "title", label: "Title" },
         { tag: "version", label: "Version" },
-        { tag: "remixer", label: "Remixers", tooltip: "Available from Beatport" },
+        { tag: "remixer", label: "Remixers", tooltip: "Available from Beatport and MusicBrainz" },
         { tag: "genre", label: "Genre", tooltip: "Shared across enabled providers, including Last.fm, Boomplay, Spotify, Deezer, Discogs, Bandcamp, and Beatport." },
         { tag: "style", label: "Style / Subgenre", tooltip: "Shared across enabled providers, including classified Last.fm tags, Discogs, Bandcamp, and Beatport." },
         { tag: "label", label: "Label" },

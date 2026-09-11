@@ -1359,6 +1359,8 @@ public partial class Program
                 SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.MusicBrainzMatcher>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.AcoustIdFingerprintService>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.AcoustIdClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.ShazamMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BandcampClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BandcampMatcher>();

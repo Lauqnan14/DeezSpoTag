@@ -52,6 +52,7 @@ RUN apt-get update -o Acquire::Retries=5 \
        curl \
        aria2 \
        ffmpeg \
+       libchromaprint-tools \
        unzip \
     && if ! apt-get install -y --no-install-recommends gpac; then \
          os_id="$(. /etc/os-release && echo "${ID}")"; \
