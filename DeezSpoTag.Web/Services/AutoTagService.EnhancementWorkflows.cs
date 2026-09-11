@@ -499,7 +499,8 @@ public partial class AutoTagService
         string? sourceArtist = null,
         string? coverPath = null,
         bool countOutcome = true,
-        long? trackId = null)
+        long? trackId = null,
+        string? activityState = null)
     {
         lock (job)
         {
@@ -513,6 +514,7 @@ public partial class AutoTagService
                 Status = new TaggingStatus
                 {
                     Status = status,
+                    ActivityState = activityState,
                     Path = path,
                     Message = message,
                     SourceTitle = lyrics?.Title ?? sourceTitle,
@@ -553,10 +555,11 @@ public partial class AutoTagService
         string rootPath,
         string configPath,
         bool includesEnhancementWorkflows,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AutoTagMoveSummary? autoMoveSummary = null)
     {
         if (!includesEnhancementWorkflows
-            || !ShouldRunEnhancementForIntent(job.RunIntent)
+            || !ShouldRunIntegratedWorkflowsForIntent(job.RunIntent)
             || !IsEnhancementWorkflowTrigger(job.Trigger))
         {
             return;
@@ -569,22 +572,59 @@ public partial class AutoTagService
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+
+        // Manual enrichment just moved its fully enriched files to the destination
+        // library folder. Sidecar lookups run on those moved files with their library
+        // track identity, after the library has ingested the moved paths.
+        var movedFiles = IsManualEnrichmentRunIntent(job.RunIntent) && autoMoveSummary is { MovedCount: > 0 }
+            ? autoMoveSummary.ChangedFilePaths
+            : null;
+        if (movedFiles != null)
+        {
+            await IngestKnownFilesAfterAutoMoveAsync(job, autoMoveSummary!, cancellationToken);
+        }
+
         var alreadyRanSidecars = job.EnhancementWorkflows.Any(workflow =>
-            string.Equals(workflow.Name, AutoTagLiterals.EnhancementFeatureSidecars, StringComparison.OrdinalIgnoreCase));
+            string.Equals(workflow.Name, AutoTagLiterals.EnhancementFeatureSidecars, StringComparison.OrdinalIgnoreCase)
+            && IsCompletedEnhancementWorkflow(workflow.Status));
         if (!alreadyRanSidecars && EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))
         {
-            await RunEnhancementWorkflowAsync(
-                job,
-                AutoTagLiterals.EnhancementFeatureSidecars,
-                token => RunConfiguredSidecarsAsync(
+            if (movedFiles != null)
+            {
+                await RunManualEnrichmentBatchSidecarsAsync(
                     job,
-                    rootPath,
+                    configPath,
                     root,
                     enhancementRoot,
                     enabledFolders,
-                    configPath,
-                    token),
-                cancellationToken);
+                    autoMoveSummary!,
+                    movedFiles,
+                    cancellationToken);
+            }
+            else
+            {
+                await RunEnhancementWorkflowAsync(
+                    job,
+                    AutoTagLiterals.EnhancementFeatureSidecars,
+                    token => RunConfiguredSidecarsAsync(
+                        job,
+                        rootPath,
+                        root,
+                        enhancementRoot,
+                        enabledFolders,
+                        configPath,
+                        token),
+                    cancellationToken);
+            }
+        }
+
+        // Quality checks and folder uniformity keep the enhancement-intent gate: their
+        // folder scoping is built for enhancement runs. Manual enrichment gets the
+        // sidecar lookup only; download enrichment gets neither (its sidecars are
+        // produced by the download prefetch).
+        if (!ShouldRunEnhancementForIntent(job.RunIntent))
+        {
+            return;
         }
 
         if (EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancementRoot))
@@ -648,6 +688,55 @@ public partial class AutoTagService
             token => RunConfiguredSidecarsAsync(
                 job,
                 job.RootPath ?? string.Empty,
+                root,
+                enhancementRoot,
+                enabledFolders,
+                configPath,
+                token,
+                currentFiles),
+            cancellationToken);
+
+        SaveJob(job);
+    }
+
+    /// <summary>
+    /// Manual enrichment sidecars run on the files at their moved destination paths.
+    /// The destination library folder is the containment root for the cover pass, and
+    /// the library has already ingested the moved paths, so the lyrics lookup resolves
+    /// each file's track identity the same way the enhancement-run batch flow does.
+    /// </summary>
+    private async Task RunManualEnrichmentBatchSidecarsAsync(
+        AutoTagJob job,
+        string configPath,
+        JsonObject root,
+        JsonObject enhancementRoot,
+        IReadOnlyList<FolderDto> enabledFolders,
+        AutoTagMoveSummary autoMoveSummary,
+        IReadOnlyList<string> movedFiles,
+        CancellationToken cancellationToken)
+    {
+        var currentFiles = movedFiles
+            .Select(NormalizePathForJob)
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (currentFiles.Count == 0)
+        {
+            AppendLog(job, "manual enrichment sidecars skipped: no existing audio files remained after the move.");
+            return;
+        }
+
+        var destinationRoot = autoMoveSummary.DestinationRoots.FirstOrDefault(rootPath => !string.IsNullOrWhiteSpace(rootPath))
+            ?? job.RootPath
+            ?? string.Empty;
+
+        AppendLog(job, $"manual enrichment: running opted-in sidecars for {currentFiles.Count} moved file(s).");
+        await RunEnhancementWorkflowAsync(
+            job,
+            AutoTagLiterals.EnhancementFeatureSidecars,
+            token => RunConfiguredSidecarsAsync(
+                job,
+                destinationRoot,
                 root,
                 enhancementRoot,
                 enabledFolders,
@@ -802,7 +891,7 @@ public partial class AutoTagService
 
     private bool ShouldRunIntegratedEnhancementWorkflows(AutoTagJob job, string configPath)
     {
-        if (!ShouldRunEnhancementForIntent(job.RunIntent) || !IsEnhancementWorkflowTrigger(job.Trigger))
+        if (!ShouldRunIntegratedWorkflowsForIntent(job.RunIntent) || !IsEnhancementWorkflowTrigger(job.Trigger))
         {
             return false;
         }
@@ -874,7 +963,14 @@ public partial class AutoTagService
         }
 
         return string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trigger, AutoTagLiterals.RecoveryTrigger, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCompletedEnhancementWorkflow(string? status)
+    {
+        return string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "skipped", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<EnhancementWorkflowOutcome> RunConfiguredFolderUniformityAsync(
@@ -1328,6 +1424,16 @@ public partial class AutoTagService
         var overwriteExistingAnimatedArtwork = ReadBool(coverMaintenance, "overwriteExistingAnimatedArtwork") == true;
         var removeOldAnimatedArtwork = ReadBool(coverMaintenance, "removeOldAnimatedArtwork") == true;
         var upgradeLowResolution = ReadBool(coverMaintenance, "upgradeLowResolutionCovers") == true;
+
+        // Conflicting sidecar toggles are mutually exclusive: at most one of a pair may
+        // be active. A stored configuration that still holds both (legacy data) enables
+        // neither; the user must explicitly re-enable exactly one in the UI.
+        if (renameExistingAnimatedArtwork && overwriteExistingAnimatedArtwork)
+        {
+            renameExistingAnimatedArtwork = false;
+            overwriteExistingAnimatedArtwork = false;
+        }
+
         if (!replaceMissingEmbedded
             && !syncExternalCovers
             && !queueAnimatedArtwork
@@ -1347,7 +1453,6 @@ public partial class AutoTagService
         }
 
         var minResolution = ReadBoundedInt(coverMaintenance, "minResolution", 500, 100, 5000);
-        var workerCount = ReadBoundedInt(coverMaintenance, "workerCount", 8, 1, 32);
         var settings = BuildEnhancementLyricsSettings(configRoot);
         ApplyProfileArtworkExtras(configRoot, settings);
         var enabledSources = ResolveProfileCoverSources(settings);
@@ -1392,6 +1497,7 @@ public partial class AutoTagService
         var totalUpdated = 0;
         var totalSkipped = 0;
         var totalErrors = 0;
+        var refreshedArtistIds = new HashSet<long>();
         AppendLog(job, $"enhancement workflow: cover maintenance starting ({albumRepresentatives.Count} unique album(s), {batchCount} batch(es)).");
         PublishEnhancementPhaseHeartbeat(
             job,
@@ -1420,7 +1526,7 @@ public partial class AutoTagService
             var request = new CoverLibraryMaintenanceRequest(
                 RootPaths: rootPaths,
                 IncludeSubfolders: true,
-                WorkerCount: workerCount,
+                WorkerCount: 1,
                 UpgradeLowResolutionCovers: upgradeLowResolution,
                 MinResolution: minResolution,
                 TargetResolution: targetResolution,
@@ -1444,11 +1550,57 @@ public partial class AutoTagService
                 WriteEmbeddedCover: settings.Tags?.Cover != false,
                 WriteExternalSidecar: settings.SaveArtwork,
                 LocalArtworkFormat: settings.LocalArtworkFormat,
-                UseShazamForUntaggedFiles: ReadBool(coverMaintenance, "useShazamForUntaggedFiles") == true);
+                UseShazamForUntaggedFiles: ReadBool(coverMaintenance, "useShazamForUntaggedFiles") == true,
+                Settings: settings);
+            for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
+            {
+                var filePath = batch[itemIndex];
+                var representative = ResolveSidecarCoverRepresentative(
+                    representativeTracks,
+                    Path.GetDirectoryName(filePath) ?? string.Empty,
+                    filePath);
+                var coverPlan = await _coverMaintenanceService.PlanAsync(filePath, request, cancellationToken);
+                var artistPlan = representative is { TrackId: > 0 }
+                    ? await _artistImageQueueService.PlanArtistRefreshAsync(representative.TrackId, cancellationToken)
+                    : ArtistArtworkRefreshPlan.Skip(0, "Library track is unavailable.");
+                var fetchArtistArtwork = artistPlan.ShouldFetchArtistArtwork
+                    && refreshedArtistIds.Add(artistPlan.ArtistId);
+                var fetchMessage = SidecarFetchActivity.Describe(new SidecarFetchWork(
+                    coverPlan.FetchStillArtwork,
+                    coverPlan.FetchAnimatedArtwork,
+                    fetchArtistArtwork,
+                    false));
+                if (fetchMessage != null)
+                {
+                    RecordEnhancementItemStatus(
+                        job,
+                        AutoTagLiterals.EnhancementFeatureSidecars,
+                        representative?.FilePath ?? filePath,
+                        AutoTagLiterals.TaggingStatus,
+                        fetchMessage,
+                        Math.Min(albumRepresentatives.Count, (batchIndex * EnhancementBatchSize) + itemIndex + 1),
+                        albumRepresentatives.Count,
+                        batchIndex + 1,
+                        batchCount,
+                        itemIndex + 1,
+                        batch.Count,
+                        sourceTitle: representative?.Title,
+                        sourceArtist: representative?.Artist,
+                        countOutcome: false,
+                        trackId: representative?.TrackId,
+                        activityState: "fetchingSidecars");
+                }
+
+                if (fetchArtistArtwork)
+                {
+                    await _artistImageQueueService.RefreshArtistNowAsync(artistPlan, cancellationToken);
+                }
+            }
+
             var result = await _coverMaintenanceService.RunAsync(
                 request,
                 cancellationToken,
-                (album, completed, albumCount, _) =>
+                onAlbumCompleted: (album, completed, albumCount, _) =>
                 {
                     var processed = Math.Min(albumRepresentatives.Count, (batchIndex * EnhancementBatchSize) + completed);
                     var status = album.Status.Equals("error", StringComparison.OrdinalIgnoreCase)
@@ -1456,15 +1608,10 @@ public partial class AutoTagService
                         : album.Status.Equals("ok", StringComparison.OrdinalIgnoreCase)
                             ? AutoTagLiterals.OkStatus
                             : AutoTagLiterals.SkippedStatus;
-                    representativeTracks.TryGetValue(album.AlbumDirectory, out var representative);
-                    if (representative == null
-                        && album.RepresentativeFilePath is { } representativePath)
-                    {
-                        representativeTracks.TryGetValue(
-                            Path.GetDirectoryName(representativePath) ?? string.Empty,
-                            out representative);
-                    }
-
+                    var representative = ResolveSidecarCoverRepresentative(
+                        representativeTracks,
+                        album.AlbumDirectory,
+                        album.RepresentativeFilePath);
                     var primaryPath = representative?.FilePath ?? album.RepresentativeFilePath ?? album.AlbumDirectory;
                     var animatedBadges = album.HasAnimatedArtwork ? new[] { "animated-artwork" } : null;
                     long? representativeTrackId = representative is { TrackId: > 0 } ? representative.TrackId : null;
@@ -1561,6 +1708,27 @@ public partial class AutoTagService
         return representatives;
     }
 
+    private static SidecarAlbumRepresentative? ResolveSidecarCoverRepresentative(
+        IReadOnlyDictionary<string, SidecarAlbumRepresentative> representativeTracks,
+        string albumDirectory,
+        string? representativeFilePath)
+    {
+        if (representativeTracks.TryGetValue(albumDirectory, out var representative))
+        {
+            return representative;
+        }
+
+        if (string.IsNullOrWhiteSpace(representativeFilePath))
+        {
+            return null;
+        }
+
+        representativeTracks.TryGetValue(
+            Path.GetDirectoryName(representativeFilePath) ?? string.Empty,
+            out representative);
+        return representative;
+    }
+
     private async Task<EnhancementWorkflowOutcome> RunConfiguredQualityChecksAsync(
         AutoTagJob job,
         string rootPath,
@@ -1650,27 +1818,37 @@ public partial class AutoTagService
                     // Identity enrichment is best-effort; refresh proceeds.
                 }
 
+                var refreshOptions = BuildLyricsRefreshOptions(options);
+                var refreshPlan = await _lyricsRefreshQueueService.PlanTrackRefreshAsync(
+                    trackId,
+                    refreshOptions,
+                    cancellationToken);
                 LyricsRefreshTrackResult result;
-                RecordEnhancementItemStatus(
-                    job,
-                    AutoTagLiterals.EnhancementFeatureSidecars,
-                    trackFilePath ?? $"track {trackId}",
-                    AutoTagLiterals.TaggingStatus,
-                    "Fetching lyrics",
-                    processed + 1,
-                    targetTrackIds.Count,
-                    batchIndex + 1,
-                    batchCount,
-                    itemIndex + 1,
-                    batch.Count,
-                    sourceTitle: sourceTitle,
-                    sourceArtist: sourceArtist,
-                    countOutcome: false);
+                if (refreshPlan.ShouldFetchLyrics)
+                {
+                    RecordEnhancementItemStatus(
+                        job,
+                        AutoTagLiterals.EnhancementFeatureSidecars,
+                        refreshPlan.FilePath ?? trackFilePath ?? $"track {trackId}",
+                        AutoTagLiterals.TaggingStatus,
+                        SidecarFetchActivity.Describe(new SidecarFetchWork(false, false, false, true)),
+                        processed + 1,
+                        targetTrackIds.Count,
+                        batchIndex + 1,
+                        batchCount,
+                        itemIndex + 1,
+                        batch.Count,
+                        sourceTitle: sourceTitle,
+                        sourceArtist: sourceArtist,
+                        countOutcome: false,
+                        trackId: trackId,
+                        activityState: "fetchingSidecars");
+                }
                 try
                 {
                     result = await _lyricsRefreshQueueService.RefreshTrackNowAsync(
                         trackId,
-                        BuildLyricsRefreshOptions(options),
+                        refreshOptions,
                         cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1731,10 +1909,22 @@ public partial class AutoTagService
     private static SidecarLyricsOptions BuildSidecarLyricsOptions(JsonObject enhancementRoot)
     {
         var sidecars = enhancementRoot["sidecars"] as JsonObject ?? new JsonObject();
+        var removeLineSyncedTtml = ReadBool(sidecars, "removeLineSyncedTtml") == true;
+        var rewriteLineSyncedTtml = ReadBool(sidecars, "rewriteLineSyncedTtml") == true;
+
+        // Conflicting sidecar toggles are mutually exclusive: at most one of a pair may
+        // be active. A stored configuration that still holds both (legacy data) enables
+        // neither; the user must explicitly re-enable exactly one in the UI.
+        if (removeLineSyncedTtml && rewriteLineSyncedTtml)
+        {
+            removeLineSyncedTtml = false;
+            rewriteLineSyncedTtml = false;
+        }
+
         return new SidecarLyricsOptions(
             QueueLyricsRefresh: ReadBool(sidecars, "queueLyricsRefresh") == true,
-            RemoveLineSyncedTtml: ReadBool(sidecars, "removeLineSyncedTtml") == true,
-            RewriteLineSyncedTtml: ReadBool(sidecars, "rewriteLineSyncedTtml") == true);
+            RemoveLineSyncedTtml: removeLineSyncedTtml,
+            RewriteLineSyncedTtml: rewriteLineSyncedTtml);
     }
 
     private static LyricsRefreshOptions BuildLyricsRefreshOptions(SidecarLyricsOptions options)

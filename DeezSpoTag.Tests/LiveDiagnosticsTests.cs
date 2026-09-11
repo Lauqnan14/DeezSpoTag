@@ -472,7 +472,7 @@ public sealed class LiveDiagnosticsTests
             Path.GetDirectoryName(info.FilePath) ?? string.Empty,
             Path.GetFileNameWithoutExtension(info.FilePath));
         Assert.False(
-            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.elrc") || File.Exists($"{stem}.ttml"),
+            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.ttml"),
             $"The selected live track already has a lyrics sidecar: {info.FilePath}");
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -481,7 +481,7 @@ public sealed class LiveDiagnosticsTests
         Assert.True(result.Success, result.Message);
         Assert.NotEmpty(result.SidecarFormats);
         Assert.True(
-            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.elrc") || File.Exists($"{stem}.ttml"),
+            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.ttml"),
             $"Enhancement reported success but created no lyrics sidecar beside {info.FilePath}");
         Console.WriteLine(
             $"trackId={trackId} title=\"{info.Title}\" artist=\"{info.ArtistName}\" formats={string.Join(',', result.SidecarFormats)} file=\"{info.FilePath}\"");

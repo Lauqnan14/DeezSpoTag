@@ -37,21 +37,49 @@ public static class LyricsSettingsPolicy
             return false;
         }
 
-        var formats = (settings.LrcFormat ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(static token => token.Trim().ToLowerInvariant())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (formats.Contains("both")
-            || formats.Contains("richlyrics")
-            || formats.Contains("rich-lyrics")
-            || formats.Contains("all")
-            || formats.Contains("lrc+ttml"))
-        {
-            formats.Add("ttml");
-        }
+        var formats = ParseOutputFormats(settings.LrcFormat);
 
         return ParseSelectedTypes(settings.LrcType).Contains(TtmlLyricsType)
             && formats.Contains("ttml");
+    }
+
+    public static bool WantsLrcOutput(DeezSpoTagSettings settings)
+    {
+        if (!settings.SyncedLyrics || !IsLyricsGateEnabled(settings))
+        {
+            return false;
+        }
+
+        var formats = ParseOutputFormats(settings.LrcFormat);
+        var types = ParseSelectedTypes(settings.LrcType);
+        return formats.Contains("lrc")
+            && (types.Contains(LyricsType)
+                || types.Contains(SyllableLyricsType)
+                || (settings.SynthesizeLrcFromTtml && types.Contains(TtmlLyricsType)));
+    }
+
+    public static bool WantsEnhancedLrc(DeezSpoTagSettings settings)
+        => WantsLrcOutput(settings)
+            && LrcTimingModes.ImpliesEnhanced(settings.LrcTimingPreference);
+
+    public static bool WantsUnsyncedTextOutput(DeezSpoTagSettings settings)
+        => settings.SaveLyrics
+            && IsLyricsGateEnabled(settings)
+            && ParseSelectedTypes(settings.LrcType).Contains(UnsyncedLyricsType);
+
+    private static HashSet<string> ParseOutputFormats(string? rawValue)
+    {
+        var formats = (rawValue ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static token => token.Trim().ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (formats.Overlaps(["both", "richlyrics", "rich-lyrics", "all", "lrc+ttml"]))
+        {
+            formats.Add("lrc");
+            formats.Add("ttml");
+        }
+
+        return formats;
     }
 
     private static HashSet<string> ParseSelectedTypes(string? rawValue)

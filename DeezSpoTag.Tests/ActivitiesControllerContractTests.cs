@@ -196,6 +196,32 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesHistorySidecar_ShowsFetchingAsActivityNotAColumn()
+    {
+        var historySource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/wwwroot/js/autotag-status.js"));
+        var viewSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("task-activity", historySource, StringComparison.Ordinal);
+        Assert.Contains("activityState", historySource, StringComparison.Ordinal);
+        Assert.Contains("fetchingsidecars", historySource, StringComparison.Ordinal);
+        Assert.Contains("findActiveSidecarKey", historySource, StringComparison.Ordinal);
+        Assert.Contains("group[group.length - 1]", historySource, StringComparison.Ordinal);
+        Assert.Contains("String(inner.message || \"\")", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("parseSidecarFetchingKinds", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("formatSidecarFetchingActivity", historySource, StringComparison.Ordinal);
+        Assert.Contains(".autotag-lyrics-list .task-activity", viewSource, StringComparison.Ordinal);
+        Assert.Contains("var(--accent-blue)", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("lyrics-row-activity", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("lyrics-row-activity", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("<th scope=\"col\">Fetching</th>", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Fetching lyrics…", historySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagHistorySidecar_DoesNotTreatKeptExistingLyricsAsMissing()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -321,6 +347,88 @@ public sealed class ActivitiesControllerContractTests
         Assert.DoesNotContain("retryDownload(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("download-queue", source, StringComparison.Ordinal);
         Assert.DoesNotContain("queue-list", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesHistoryAndLogsTabs_AreDirectChildrenOfTabContent()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        var htmlStart = source.IndexOf("<div class=\"container-fluid activities-container\">", StringComparison.Ordinal);
+        var htmlEnd = source.IndexOf("@section Scripts", StringComparison.Ordinal);
+        Assert.True(htmlStart >= 0 && htmlEnd > htmlStart, "Activities markup bounds are missing.");
+        var html = source[htmlStart..htmlEnd];
+
+        Assert.Equal("activitiesTabsContent", FindParentDivId(html, "history-content"));
+        Assert.Equal("activitiesTabsContent", FindParentDivId(html, "logs-content"));
+        Assert.Equal("activitiesTabsContent", FindParentDivId(html, "media-operations-content"));
+    }
+
+    private static string? FindParentDivId(string html, string childId)
+    {
+        var stack = new Stack<string?>();
+        var index = 0;
+        while (index < html.Length)
+        {
+            var nextOpen = html.IndexOf("<div", index, StringComparison.OrdinalIgnoreCase);
+            var nextClose = html.IndexOf("</div>", index, StringComparison.OrdinalIgnoreCase);
+            if (nextOpen < 0 && nextClose < 0)
+            {
+                break;
+            }
+
+            if (nextOpen >= 0 && (nextClose < 0 || nextOpen < nextClose))
+            {
+                var tagEnd = html.IndexOf('>', nextOpen);
+                if (tagEnd < 0)
+                {
+                    break;
+                }
+
+                var tag = html[nextOpen..tagEnd];
+                var id = ReadHtmlAttribute(tag, "id");
+                stack.Push(id);
+                if (string.Equals(id, childId, StringComparison.Ordinal))
+                {
+                    foreach (var parentId in stack)
+                    {
+                        if (!string.Equals(parentId, childId, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(parentId))
+                        {
+                            return parentId;
+                        }
+                    }
+
+                    return null;
+                }
+
+                index = tagEnd + 1;
+                continue;
+            }
+
+            if (stack.Count > 0)
+            {
+                stack.Pop();
+            }
+
+            index = nextClose + 6;
+        }
+
+        return null;
+    }
+
+    private static string? ReadHtmlAttribute(string tag, string name)
+    {
+        var needle = $" {name}=\"";
+        var start = tag.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        start += needle.Length;
+        var end = tag.IndexOf('"', start);
+        return end < 0 ? null : tag[start..end];
     }
 
     [Fact]

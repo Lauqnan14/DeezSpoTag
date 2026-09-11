@@ -16,18 +16,21 @@ internal static class LyricsSidecarTimingBadges
         var ttmlPath = Path.ChangeExtension(filePath, ".ttml");
         if (File.Exists(ttmlPath) && TryRead(ttmlPath, out var ttml) && AppleLyricsService.IsWordSyncedTtml(ttml))
         {
-            badges.Add("time-synced");
+            badges.Add("ttml");
         }
 
         var lrcPath = Path.ChangeExtension(filePath, ".lrc");
-        var elrcPath = Path.ChangeExtension(filePath, ".elrc");
         if (File.Exists(lrcPath) && TryRead(lrcPath, out var lrc))
         {
-            badges.Add(LrcContent.IsWordSynchronized(lrc) ? "enhanced-synchronized" : "synced");
-        }
-        else if (File.Exists(elrcPath))
-        {
-            badges.Add("enhanced-synchronized");
+            var timing = LrcContent.ClassifyTiming(lrc);
+            if (timing == LrcTimingKind.Word)
+            {
+                badges.Add("enhanced");
+            }
+            else if (timing == LrcTimingKind.Line)
+            {
+                badges.Add("synced");
+            }
         }
 
         if (badges.Count == 0 && File.Exists(Path.ChangeExtension(filePath, ".txt")))

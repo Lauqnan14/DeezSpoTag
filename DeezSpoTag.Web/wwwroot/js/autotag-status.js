@@ -623,18 +623,20 @@
 
     function lyricsBadgeMarkup(kind) {
         const normalized = String(kind || "").toLowerCase();
-        const cls = normalized === "time-synced"
+        const cls = normalized === "ttml" || normalized === "time-synced"
             ? "badge-lyrics-timesynced"
-            : normalized === "enhanced-synchronized"
+            : normalized === "enhanced" || normalized === "enhanced-synchronized"
                 ? "badge-lyrics-enhanced"
                 : normalized === "synced"
                     ? "badge-lyrics-synced"
                     : "badge-lyrics-unsynced";
-        const text = normalized === "time-synced"
-            ? "Time-Synced"
-            : normalized === "enhanced-synchronized"
-                ? "Enhanced Synced Lyrics"
-                : `${normalized} lyrics`;
+        const text = normalized === "ttml" || normalized === "time-synced"
+            ? "TTML lyrics"
+            : normalized === "enhanced" || normalized === "enhanced-synchronized"
+                ? "Enhanced lyrics"
+                : normalized === "synced"
+                    ? "Synced lyrics"
+                    : "Unsynced lyrics";
         return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
     }
 
@@ -734,44 +736,107 @@
             || message.startsWith("fetching cover artwork");
     }
 
-    // Collapse the per-track progress records ("Fetching lyrics" + result) of
-    // one sidecar workflow item into a single card that updates in place, so a
-    // normal user sees one row per track instead of frozen placeholder pairs.
-    function sidecarRowKey(inner) {
+    function sidecarTrackId(inner) {
+        const explicitId = Number(inner?.lyricsTrackId);
+        if (Number.isFinite(explicitId) && explicitId > 0) {
+            return String(explicitId);
+        }
         const path = String(inner?.path || "");
         const trackIdMatch = path.match(/^track\s+(\d+)$/i);
-        if (trackIdMatch) {
-            return `tid:${trackIdMatch[1]}`;
+        return trackIdMatch ? trackIdMatch[1] : "";
+    }
+
+    // Collapse the per-track progress records (fetching + result) of one sidecar
+    // workflow item into a single card that updates in place, so a normal user
+    // sees one row per track — fetching is a transient activity line, not a
+    // leftover card or a permanent Fetching column.
+    function sidecarRowKey(inner, pathToTrackId) {
+        const trackId = sidecarTrackId(inner);
+        if (trackId) {
+            return `tid:${trackId}`;
         }
-        if (inner?.lyricsTrackId) {
-            return `tid:${inner.lyricsTrackId}`;
+        const path = String(inner?.path || "").toLowerCase();
+        const mapped = path && pathToTrackId ? pathToTrackId.get(path) : "";
+        if (mapped) {
+            return `tid:${mapped}`;
         }
-        return `path:${path.toLowerCase()}`;
+        return `path:${path}`;
+    }
+
+    function isSidecarFetchingRecord(inner) {
+        if (isSidecarPhaseHeartbeat(inner)) {
+            return false;
+        }
+        return String(inner?.activityState || "").toLowerCase() === "fetchingsidecars";
+    }
+
+    function resolveSidecarFetchingActivity(group) {
+        // Same rule as downloads: activity exists only while this item is the
+        // one currently running. Status history is oldest-first, so the last
+        // record in the group is the live state. A result (or the next file)
+        // replaces fetching and the line must disappear.
+        if (!group.length) {
+            return "";
+        }
+        const newest = group[group.length - 1];
+        const inner = newest?.status?.status || {};
+        if (!isSidecarFetchingRecord(inner)) {
+            return "";
+        }
+        return String(inner.message || "");
+    }
+
+    function findActiveSidecarKey(filtered, pathToTrackId, groups) {
+        for (let index = filtered.length - 1; index >= 0; index -= 1) {
+            const inner = filtered[index]?.status?.status || {};
+            if (!isSidecarFetchingRecord(inner)) {
+                continue;
+            }
+            const key = sidecarRowKey(inner, pathToTrackId);
+            const group = groups.get(key);
+            if (!group || !group.length) {
+                continue;
+            }
+            const newest = group[group.length - 1];
+            if (isSidecarFetchingRecord(newest?.status?.status || {})) {
+                return key;
+            }
+        }
+        return "";
     }
 
     function mergeSidecarRows(rows) {
-        // rows are newest-first: keep the newest record per track, union the
-        // badges of the group (so e.g. an animated-artwork badge survives the
-        // lyrics record landing later), and inherit title/artist/cover from
-        // older records when the newest lacks them.
-        const groups = new Map();
-        rows.forEach((entry) => {
+        const filtered = [];
+        const pathToTrackId = new Map();
+        (rows || []).forEach((entry) => {
             const inner = entry?.status?.status || {};
             if (isSidecarPhaseHeartbeat(inner)) {
                 return;
             }
-            const key = sidecarRowKey(inner);
+            filtered.push(entry);
+            const trackId = sidecarTrackId(inner);
+            const path = String(inner?.path || "").toLowerCase();
+            if (trackId && path && !/^track\s+\d+$/i.test(path)) {
+                pathToTrackId.set(path, trackId);
+            }
+        });
+
+        const groups = new Map();
+        filtered.forEach((entry) => {
+            const inner = entry?.status?.status || {};
+            const key = sidecarRowKey(inner, pathToTrackId);
             if (!groups.has(key)) {
                 groups.set(key, []);
             }
             groups.get(key).push(entry);
         });
-        return Array.from(groups.values()).map((group) => {
-            const kept = group[0];
-            const keptInner = kept?.status?.status || {};
+        const activeKey = findActiveSidecarKey(filtered, pathToTrackId, groups);
+        return Array.from(groups.entries()).map(([key, group]) => {
+            const display = group.find((entry) => !isSidecarFetchingRecord(entry?.status?.status || {})) || group[0];
+            const keptInner = display?.status?.status || {};
             const lyricsBadges = new Set(Array.isArray(keptInner.lyricsBadges) ? keptInner.lyricsBadges : []);
             const artworkBadges = new Set(Array.isArray(keptInner.artworkBadges) ? keptInner.artworkBadges : []);
-            for (const entry of group.slice(1)) {
+            for (const entry of group) {
                 const other = entry?.status?.status || {};
                 (Array.isArray(other.lyricsBadges) ? other.lyricsBadges : []).forEach((badge) => lyricsBadges.add(badge));
                 (Array.isArray(other.artworkBadges) ? other.artworkBadges : []).forEach((badge) => artworkBadges.add(badge));
@@ -779,11 +844,18 @@
                     keptInner.sourceTitle = other.sourceTitle;
                     keptInner.sourceArtist = keptInner.sourceArtist || other.sourceArtist || "";
                 }
+                keptInner.sourceArtist = keptInner.sourceArtist || other.sourceArtist || "";
                 keptInner.lyricsCoverUrl = keptInner.lyricsCoverUrl || other.lyricsCoverUrl;
+                if (!keptInner.path && other.path) {
+                    keptInner.path = other.path;
+                }
             }
             keptInner.lyricsBadges = Array.from(lyricsBadges);
             keptInner.artworkBadges = Array.from(artworkBadges);
-            return kept;
+            return {
+                entry: display,
+                activity: key === activeKey ? resolveSidecarFetchingActivity(group) : ""
+            };
         });
     }
 
@@ -793,18 +865,19 @@
             return;
         }
 
-        rows = mergeSidecarRows(rows || []);
-        setText("autotag-lyrics-count", String(rows.length));
+        const cards = mergeSidecarRows(rows || []);
+        setText("autotag-lyrics-count", String(cards.length));
         if (!state.selectedRunId) {
             container.innerHTML = `<div class="autotag-run-empty">${escapeHtml(state.runSelectionMessage || "Select a run to load sidecar results.")}</div>`;
             return;
         }
-        if (!rows.length) {
+        if (!cards.length) {
             container.innerHTML = '<div class="autotag-run-empty">No sidecar items were processed in this run.</div>';
             return;
         }
 
-        container.innerHTML = rows.map((entry, index) => {
+        container.innerHTML = cards.map((card, index) => {
+            const entry = card.entry;
             const inner = entry?.status?.status || {};
             const platform = String(entry?.status?.platform || "").toLowerCase();
             const title = inner.sourceTitle || toFileName(inner.path) || "Unknown title";
@@ -813,23 +886,26 @@
             const artworkBadges = Array.isArray(inner.artworkBadges) ? inner.artworkBadges : [];
             const art = sidecarCoverMarkup(inner);
             const artistHtml = artist ? `<div class="lyrics-row-artist">${escapeHtml(artist)}</div>` : "";
+            const activityHtml = card.activity
+                ? `<div class="task-activity">${escapeHtml(card.activity)}</div>`
+                : "";
             const lyricsHtml = lyricsBadges.length
                 ? lyricsBadges.map(lyricsBadgeMarkup).join("")
-                : lyricsMissingMarkup(inner, platform);
+                : (card.activity ? "" : lyricsMissingMarkup(inner, platform));
             const artworkHtml = artworkBadges.map(artworkBadgeMarkup).join("");
-            const isFetching = String(inner.message || "").toLowerCase().includes("fetching lyrics");
-            const badgeHtml = `${lyricsHtml}${artworkHtml}`
-                || (isFetching
-                    ? '<span class="badge badge-lyrics-unsynced">Fetching lyrics…</span>'
-                    : '<span class="text-muted">--</span>');
+            const badgeHtml = `${lyricsHtml}${artworkHtml}`;
+            const badgesBlock = badgeHtml
+                ? `<div class="lyrics-row-badges">${badgeHtml}</div>`
+                : "";
             return `<div class="lyrics-row" title="${escapeHtml(inner.path || "")}">
                 <div class="lyrics-row-index">${index + 1}</div>
                 ${art}
                 <div class="lyrics-row-main">
                     <div class="lyrics-row-title">${escapeHtml(title)}</div>
                     ${artistHtml}
+                    ${activityHtml}
                 </div>
-                <div class="lyrics-row-badges">${badgeHtml}</div>
+                ${badgesBlock}
             </div>`;
         }).join("");
     }

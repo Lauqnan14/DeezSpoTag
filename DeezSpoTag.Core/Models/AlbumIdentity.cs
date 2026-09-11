@@ -3,14 +3,29 @@ using DeezSpoTag.Core.Utils;
 
 namespace DeezSpoTag.Core.Models;
 
-public sealed record AlbumIdentity(string? ReleaseDate, string? AlbumId, string? AlbumArtistId)
+public sealed record AlbumIdentity(
+    string? ReleaseDate,
+    string? AlbumId,
+    string? AlbumArtistId,
+    string? ReleaseGroupId = null,
+    string? ReleaseStatus = null,
+    string? ReleaseCountry = null,
+    string? Barcode = null,
+    string? ReleaseType = null,
+    IReadOnlyDictionary<string, string>? PlatformReleaseIds = null)
 {
     public static readonly AlbumIdentity Empty = new(null, null, null);
 
     public bool IsEmpty =>
         string.IsNullOrWhiteSpace(ReleaseDate)
         && string.IsNullOrWhiteSpace(AlbumId)
-        && string.IsNullOrWhiteSpace(AlbumArtistId);
+        && string.IsNullOrWhiteSpace(AlbumArtistId)
+        && string.IsNullOrWhiteSpace(ReleaseGroupId)
+        && string.IsNullOrWhiteSpace(ReleaseStatus)
+        && string.IsNullOrWhiteSpace(ReleaseCountry)
+        && string.IsNullOrWhiteSpace(Barcode)
+        && string.IsNullOrWhiteSpace(ReleaseType)
+        && !HasPlatformReleaseIds(PlatformReleaseIds);
 
     public AlbumIdentity CoalesceWith(AlbumIdentity? candidate)
     {
@@ -22,7 +37,13 @@ public sealed record AlbumIdentity(string? ReleaseDate, string? AlbumId, string?
         return new AlbumIdentity(
             Prefer(ReleaseDate, candidate.ReleaseDate),
             Prefer(AlbumId, candidate.AlbumId),
-            Prefer(AlbumArtistId, candidate.AlbumArtistId));
+            Prefer(AlbumArtistId, candidate.AlbumArtistId),
+            Prefer(ReleaseGroupId, candidate.ReleaseGroupId),
+            Prefer(ReleaseStatus, candidate.ReleaseStatus),
+            Prefer(ReleaseCountry, candidate.ReleaseCountry),
+            Prefer(Barcode, candidate.Barcode),
+            Prefer(ReleaseType, candidate.ReleaseType),
+            CoalescePlatformReleaseIds(PlatformReleaseIds, candidate.PlatformReleaseIds));
     }
 
     public static string? BuildKey(string? albumArtist, string? albumTitle)
@@ -85,6 +106,41 @@ public sealed record AlbumIdentity(string? ReleaseDate, string? AlbumId, string?
 
     private static string? NullIfBlank(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool HasPlatformReleaseIds(IReadOnlyDictionary<string, string>? values)
+        => values?.Any(entry => !string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value)) == true;
+
+    private static IReadOnlyDictionary<string, string>? CoalescePlatformReleaseIds(
+        IReadOnlyDictionary<string, string>? established,
+        IReadOnlyDictionary<string, string>? candidate)
+    {
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddPlatformReleaseIds(merged, established);
+        AddPlatformReleaseIds(merged, candidate);
+        return merged.Count == 0 ? null : merged;
+    }
+
+    private static void AddPlatformReleaseIds(
+        Dictionary<string, string> target,
+        IReadOnlyDictionary<string, string>? values)
+    {
+        if (values is null)
+        {
+            return;
+        }
+
+        foreach (var (key, value) in values)
+        {
+            if (string.IsNullOrWhiteSpace(key)
+                || string.IsNullOrWhiteSpace(value)
+                || target.ContainsKey(key.Trim()))
+            {
+                continue;
+            }
+
+            target[key.Trim()] = value.Trim();
+        }
+    }
 
     private static string Normalize(string? value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();

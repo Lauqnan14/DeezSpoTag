@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Apple;
@@ -182,6 +183,97 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         return await ProcessTrackLyricsRefreshAsync(trackId, options ?? LyricsRefreshOptions.Default, cancellationToken);
     }
 
+    public async Task<LyricsRefreshPlan> PlanTrackRefreshAsync(
+        long trackId,
+        LyricsRefreshOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return LyricsRefreshPlan.Skip(trackId, null, "Library repository is not configured.");
+        }
+
+        var info = await _repository.GetTrackAudioInfoAsync(trackId, cancellationToken);
+        if (info is null || string.IsNullOrWhiteSpace(info.FilePath) || !File.Exists(info.FilePath))
+        {
+            return LyricsRefreshPlan.Skip(trackId, info?.FilePath, "Audio file is unavailable.");
+        }
+
+        if (info.DestinationFolderId <= 0)
+        {
+            return LyricsRefreshPlan.Skip(trackId, info.FilePath, "Library folder profile could not be resolved.");
+        }
+
+        var profile = await _profileSettingsResolver.ResolveProfileAsync(info.DestinationFolderId, cancellationToken);
+        if (profile?.Technical == null)
+        {
+            return LyricsRefreshPlan.Skip(trackId, info.FilePath, "Library folder profile could not be resolved.");
+        }
+
+        var settings = _settingsService.LoadSettings();
+        TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
+        return PlanExistingLyrics(trackId, info.FilePath, settings, options ?? LyricsRefreshOptions.Default);
+    }
+
+    public static LyricsRefreshPlan PlanExistingLyrics(
+        long trackId,
+        string audioPath,
+        DeezSpoTagSettings settings,
+        LyricsRefreshOptions options)
+    {
+        var badges = LyricsSidecarTimingBadges.FromAudioPath(audioPath);
+        if (!options.RefreshLyrics)
+        {
+            var cleanupTtmlPath = Path.ChangeExtension(audioPath, ".ttml");
+            var rewriteTtml = options.RewriteLineSyncedTtml
+                && TtmlSidecarCleanup.IsNonWordTimed(cleanupTtmlPath)
+                && LyricsSettingsPolicy.WantsTtmlOutput(settings);
+            return new LyricsRefreshPlan(
+                trackId,
+                audioPath,
+                rewriteTtml,
+                badges,
+                rewriteTtml ? null : "Lyrics refresh was not selected for this file.");
+        }
+
+        if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
+        {
+            return new LyricsRefreshPlan(
+                trackId,
+                audioPath,
+                false,
+                badges,
+                "Lyrics fetching is disabled by the assigned profile.");
+        }
+
+        var lrcPath = Path.ChangeExtension(audioPath, ".lrc");
+        var lrcTiming = TryReadFile(lrcPath, out var lrc)
+            ? LrcContent.ClassifyTiming(lrc)
+            : LrcTimingKind.None;
+        var wantsLrc = LyricsSettingsPolicy.WantsLrcOutput(settings);
+        var lrcSatisfied = !wantsLrc
+            || lrcTiming == LrcTimingKind.Word
+            || (lrcTiming == LrcTimingKind.Line && !LyricsSettingsPolicy.WantsEnhancedLrc(settings));
+
+        var ttmlPath = Path.ChangeExtension(audioPath, ".ttml");
+        var wantsTtml = LyricsSettingsPolicy.WantsTtmlOutput(settings);
+        var ttmlSatisfied = !wantsTtml
+            || (TryReadFile(ttmlPath, out var ttml) && AppleLyricsService.IsWordSyncedTtml(ttml));
+
+        var wantsTxt = LyricsSettingsPolicy.WantsUnsyncedTextOutput(settings);
+        var richLyricsPresent = lrcTiming != LrcTimingKind.None || (wantsTtml && ttmlSatisfied);
+        var txtSatisfied = !wantsTxt
+            || richLyricsPresent
+            || (TryReadFile(Path.ChangeExtension(audioPath, ".txt"), out var txt) && !string.IsNullOrWhiteSpace(txt));
+        var shouldFetch = !lrcSatisfied || !ttmlSatisfied || !txtSatisfied;
+        return new LyricsRefreshPlan(
+            trackId,
+            audioPath,
+            shouldFetch,
+            badges,
+            shouldFetch ? null : "Existing lyrics satisfy the assigned profile.");
+    }
+
     private async Task<LyricsRefreshTrackResult> ProcessTrackLyricsRefreshAsync(
         long trackId,
         LyricsRefreshOptions options,
@@ -222,11 +314,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         }
 
         var ttmlPath = Path.Join(directory, $"{filename}.ttml");
-        var hadNonWordTtml = TtmlSidecarCleanup.IsNonWordTimed(ttmlPath);
-        var shouldFetch = options.RefreshLyrics
-            || (options.RewriteLineSyncedTtml
-                && hadNonWordTtml
-                && LyricsSettingsPolicy.WantsTtmlOutput(settings));
+        var shouldFetch = PlanExistingLyrics(trackId, info.FilePath, settings, options).ShouldFetchLyrics;
 
         if (shouldFetch && !LyricsSettingsPolicy.CanFetchLyrics(settings) && !options.RemoveLineSyncedTtml)
         {
@@ -318,12 +406,20 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         if (filesByFormat.TryGetValue("ttml", out var ttmlPath) && TryReadFile(ttmlPath, out var ttml)
             && AppleLyricsService.IsWordSyncedTtml(ttml))
         {
-            badges.Add("time-synced");
+            badges.Add("ttml");
         }
 
         if (filesByFormat.TryGetValue("lrc", out var lrcPath) && TryReadFile(lrcPath, out var lrc))
         {
-            badges.Add(LrcContent.IsWordSynchronized(lrc) ? "enhanced-synchronized" : "synced");
+            var timing = LrcContent.ClassifyTiming(lrc);
+            if (timing == LrcTimingKind.Word)
+            {
+                badges.Add("enhanced");
+            }
+            else if (timing == LrcTimingKind.Line)
+            {
+                badges.Add("synced");
+            }
         }
 
         if (badges.Count == 0 && filesByFormat.ContainsKey("txt"))
@@ -575,6 +671,17 @@ public sealed record LyricsRefreshOptions(
     bool RewriteLineSyncedTtml = false)
 {
     public static LyricsRefreshOptions Default { get; } = new();
+}
+
+public sealed record LyricsRefreshPlan(
+    long TrackId,
+    string? FilePath,
+    bool ShouldFetchLyrics,
+    IReadOnlyList<string> CurrentBadges,
+    string? SkipReason)
+{
+    public static LyricsRefreshPlan Skip(long trackId, string? filePath, string reason)
+        => new(trackId, filePath, false, Array.Empty<string>(), reason);
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);

@@ -41,6 +41,21 @@ public sealed record AudiomackSongCandidate(
     /// <summary>Creator-set moods; empty when the payload omits them.</summary>
     public IReadOnlyList<string> Moods { get; init; } = Array.Empty<string>();
 
+    /// <summary>Public-page user tags (slugs); empty when the payload omits them.</summary>
+    public IReadOnlyList<string> UserTags { get; init; } = Array.Empty<string>();
+
+    /// <summary>Public-page display tags; location chips use <c>-&gt;</c> and are not music.</summary>
+    public IReadOnlyList<string> TagDisplay { get; init; } = Array.Empty<string>();
+
+    /// <summary>Alternate artist list when the payload ships <c>artists: []</c>.</summary>
+    public IReadOnlyList<string> Artists { get; init; } = Array.Empty<string>();
+
+    /// <summary>Featured-credit string from the public song object.</summary>
+    public string? Featuring { get; init; }
+
+    /// <summary>Audiomack entity type (<c>song</c>, <c>audiobook</c>, <c>podcast</c>).</summary>
+    public string? ContentType { get; init; }
+
     /// <summary>Alternate typed-tags container: (name, audiomack-declared type). Null unless the payload uses it.</summary>
     public IReadOnlyList<(string Name, string? Type)>? TypedTags { get; init; }
 
@@ -78,16 +93,20 @@ public sealed record AudiomackSongCandidate(
             Title: title,
             Artist: artist,
             Album: GetStringOrNull(element, "album"),
-            Genre: GetStringOrNull(element, "genre"),
+            Genre: GetNameOrStringOrNull(element, "genre"),
             Mood: GetStringOrNull(element, "mood"),
-            Isrc: GetStringOrNull(element, "isrc"),
+            Isrc: GetStringOrNull(element, "isrc") ?? GetStringOrNull(element, "isrcCode"),
             Label: GetStringOrNull(element, "label"),
             DurationSeconds: GetIntOrNull(element, "duration") ?? GetIntOrNull(element, "duration_seconds"),
             ArtworkUrl: GetHttpUrlOrNull(element, "image") ?? GetHttpUrlOrNull(element, "artwork") ?? GetHttpUrlOrNull(element, "artwork_url"),
             ReleasedDate: GetStringOrNull(element, "released_date")
                 ?? GetStringOrNull(element, "released")
-                ?? GetStringOrNull(element, "created_date"),
-            Url: GetHttpUrlOrNull(element, "url") ?? GetHttpUrlOrNull(element, "full_url") ?? GetHttpUrlOrNull(element, "share_url"),
+                ?? GetStringOrNull(element, "created_date")
+                ?? GetNumberOrStringOrNull(element, "original_release_date"),
+            Url: GetHttpUrlOrNull(element, "url")
+                ?? GetHttpUrlOrNull(element, "full_url")
+                ?? GetHttpUrlOrNull(element, "share_url")
+                ?? GetLinkSelfOrNull(element),
             UrlSlug: GetStringOrNull(element, "url_slug"),
             ArtistSlug: GetStringOrNull(element, "artist_slug") ?? uploaderUrlSlug,
             UploaderName: uploaderName,
@@ -95,6 +114,11 @@ public sealed record AudiomackSongCandidate(
         {
             Subgenres = GetStringArrayOrNull(element, "subgenres"),
             Moods = GetStringArrayOrNull(element, "moods"),
+            UserTags = GetCommaSeparatedOrEmpty(element, "usertags"),
+            TagDisplay = GetCommaSeparatedOrEmpty(element, "tagdisplay"),
+            Artists = GetStringArrayOrNull(element, "artists"),
+            Featuring = GetStringOrNull(element, "featuring"),
+            ContentType = GetStringOrNull(element, "type"),
             TypedTags = GetTypedTagsOrNull(element)
         };
     }
@@ -151,6 +175,51 @@ public sealed record AudiomackSongCandidate(
         => element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
             ? string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString()!.Trim()
             : null;
+
+    private static string? GetNameOrStringOrNull(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString()!.Trim();
+        }
+
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            return GetStringOrNull(value, "name")
+                ?? GetStringOrNull(value, "slug")
+                ?? GetStringOrNull(value, "title");
+        }
+
+        return null;
+    }
+
+    private static string? GetLinkSelfOrNull(JsonElement element)
+    {
+        if (!element.TryGetProperty("links", out var links) || links.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return GetHttpUrlOrNull(links, "self");
+    }
+
+    private static IReadOnlyList<string> GetCommaSeparatedOrEmpty(JsonElement element, string propertyName)
+    {
+        var raw = GetStringOrNull(element, propertyName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return Array.Empty<string>();
+        }
+
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => value.Length > 0)
+            .ToArray();
+    }
 
     private static string? GetNumberOrStringOrNull(JsonElement element, string propertyName)
     {
@@ -366,6 +435,37 @@ public sealed class AudiomackApiClient
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Audiomack song lookup failed ({ArtistSlug}/{SongSlug})", artistSlug, songSlug);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Public track page overlay: the signed search/song API often omits moods,
+    /// subgenres and <c>tagdisplay</c>. The Next.js payload (and JSON-LD as a
+    /// last resort) is anonymous and fills those gaps. Failure is non-fatal.
+    /// </summary>
+    public async Task<AudiomackSongCandidate?> GetPublicPageSongAsync(
+        string artistSlug,
+        string songSlug,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(artistSlug) || string.IsNullOrWhiteSpace(songSlug))
+        {
+            return null;
+        }
+
+        try
+        {
+            var debugPath = Environment.GetEnvironmentVariable("AUDIOMACK_DEBUG_PAYLOAD") == "1"
+                ? "/tmp/deezspotag-audiomack-nextdata.json"
+                : null;
+            var song = await AudiomackNextDataExtractor.FetchSongObjectAsync(
+                _httpClientFactory, artistSlug, songSlug, debugPath, cancellationToken).ConfigureAwait(false);
+            return song is null ? null : AudiomackSongCandidate.FromJson(song.Value);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Audiomack public page overlay failed ({ArtistSlug}/{SongSlug})", artistSlug, songSlug);
             return null;
         }
     }

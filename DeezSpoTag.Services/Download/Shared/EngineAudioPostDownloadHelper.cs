@@ -160,35 +160,11 @@ public static partial class EngineAudioPostDownloadHelper
     public static string? DescribePrefetchWork(PrefetchRequest request)
     {
         var requirements = BuildPrefetchRequirements(request);
-        if (!requirements.ShouldQueueWork)
-        {
-            return null;
-        }
-
-        var parts = new List<string>();
-        if (requirements.ShouldFetchPrimaryArtwork)
-        {
-            parts.Add("album artwork");
-        }
-
-        if (requirements.ShouldFetchAnimatedArtwork)
-        {
-            parts.Add("animated artwork");
-        }
-
-        if (requirements.ShouldFetchArtistArtwork)
-        {
-            parts.Add("artist artwork");
-        }
-
-        if (requirements.ShouldFetchLyrics)
-        {
-            parts.Add("lyrics");
-        }
-
-        return parts.Count == 1
-            ? $"Fetching {parts[0]}"
-            : $"Fetching {string.Join(", ", parts.Take(parts.Count - 1))} and {parts[^1]}";
+        return SidecarFetchActivity.Describe(new SidecarFetchWork(
+            requirements.ShouldFetchPrimaryArtwork,
+            requirements.ShouldFetchAnimatedArtwork,
+            requirements.ShouldFetchArtistArtwork,
+            requirements.ShouldFetchLyrics));
     }
 
     private sealed record PrefetchRequirements(
@@ -1687,13 +1663,12 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         var lrcPath = Path.Join(directory, $"{baseName}.lrc");
-        var elrcPath = Path.Join(directory, $"{baseName}.elrc");
         var ttmlPath = Path.Join(directory, $"{baseName}.ttml");
         var txtPath = Path.Join(directory, $"{baseName}.txt");
 
         if (tagSettings.SyncedLyrics && !HasSyncedLyrics(track))
         {
-            var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, elrcPath, ttmlPath);
+            var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
             if (syncedLines.Count > 0)
             {
                 track.Lyrics!.Sync = string.Join(Environment.NewLine, syncedLines);
@@ -1707,7 +1682,7 @@ public static partial class EngineAudioPostDownloadHelper
 
         if (tagSettings.Lyrics && string.IsNullOrWhiteSpace(track.Lyrics!.Unsync))
         {
-            var unsyncedText = ResolveUnsyncedTextFromSidecars(txtPath, lrcPath, elrcPath, ttmlPath);
+            var unsyncedText = ResolveUnsyncedTextFromSidecars(txtPath, lrcPath, ttmlPath);
             if (!string.IsNullOrWhiteSpace(unsyncedText))
             {
                 track.Lyrics.Unsync = unsyncedText;
@@ -1719,16 +1694,11 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
-    private static List<string> ResolveSyncedLinesFromSidecars(string lrcPath, string elrcPath, string ttmlPath)
+    private static List<string> ResolveSyncedLinesFromSidecars(string lrcPath, string ttmlPath)
     {
         if (File.Exists(lrcPath))
         {
             return NormalizeLrcLines(File.ReadAllLines(lrcPath));
-        }
-
-        if (File.Exists(elrcPath))
-        {
-            return NormalizeLrcLines(File.ReadAllLines(elrcPath));
         }
 
         if (!File.Exists(ttmlPath))
@@ -1739,14 +1709,14 @@ public static partial class EngineAudioPostDownloadHelper
         return new List<string>();
     }
 
-    private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string elrcPath, string ttmlPath)
+    private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string ttmlPath)
     {
         if (File.Exists(txtPath))
         {
             return (File.ReadAllText(txtPath) ?? string.Empty).Trim();
         }
 
-        var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, elrcPath, ttmlPath);
+        var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
         if (syncedLines.Count == 0)
         {
             return string.Empty;

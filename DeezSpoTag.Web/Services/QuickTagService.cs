@@ -84,7 +84,7 @@ public sealed class QuickTagService
 
     private static readonly HashSet<string> LyricsSidecarExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".lrc", ".elrc", ".ttml", ".srt", ".vtt"
+        ".lrc", ".ttml", ".srt", ".vtt"
     };
 
     private static readonly string[] LyricsFileNameTokens =

@@ -30,6 +30,7 @@ public sealed class AudiomackPlatform : AutoTagPlatformBase
                 "length",
                 "date",
                 "genre",
+                "style",
                 "mood",
                 "label"
             },
@@ -49,6 +50,7 @@ public sealed class AudiomackPlatform : AutoTagPlatformBase
                 SupportedTag.Duration,
                 SupportedTag.ReleaseDate,
                 SupportedTag.Genre,
+                SupportedTag.Style,
                 SupportedTag.Mood,
                 SupportedTag.Label
             },

@@ -722,6 +722,9 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         // Artist-alphabetical two-wave order keeps albums contiguous inside an artist block.
         Assert.Contains("OrderFilesForEnhancementRun(", runnerSource, StringComparison.Ordinal);
         Assert.Contains("ReadArtistSortMeta(file)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("tag.FirstAlbumArtist", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("tag.Performers", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("preferPathAnchor: true", runnerSource, StringComparison.Ordinal);
         Assert.Contains("BuildLibraryWideEnhancementBatchRanges(plan.Files, passFileCount, batchSize)", batchBody, StringComparison.Ordinal);
         // Batches extend past the limit only to finish the active album.
         Assert.Contains("end - start < resolvedBatchSize", runnerSource, StringComparison.Ordinal);

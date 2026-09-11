@@ -80,15 +80,46 @@ public sealed class AlbumAwarenessTests
         var registry = new AlbumIdentityRegistry();
         Assert.False(registry.IsDirty);
 
-        var first = registry.Establish("key", new AlbumIdentity(null, "mbid-1", null));
+        var first = registry.Establish("key", new AlbumIdentity(
+            null,
+            "mbid-1",
+            null,
+            ReleaseGroupId: "rg-1",
+            ReleaseCountry: "US",
+            Barcode: "123456789",
+            ReleaseType: "album",
+            PlatformReleaseIds: new Dictionary<string, string> { ["SPOTIFY_RELEASE_ID"] = "sp-album-1" }));
         Assert.Equal("mbid-1", first.AlbumId);
+        Assert.Equal("rg-1", first.ReleaseGroupId);
+        Assert.Equal("US", first.ReleaseCountry);
+        Assert.Equal("123456789", first.Barcode);
+        Assert.Equal("album", first.ReleaseType);
+        Assert.Equal("sp-album-1", first.PlatformReleaseIds?["SPOTIFY_RELEASE_ID"]);
         Assert.True(registry.IsDirty);
 
         // Later candidates only fill gaps; they never overwrite established values.
-        var second = registry.Establish("key", new AlbumIdentity("2024-01-01", "mbid-2", "artist-2"));
+        var second = registry.Establish("key", new AlbumIdentity(
+            "2024-01-01",
+            "mbid-2",
+            "artist-2",
+            ReleaseGroupId: "rg-2",
+            ReleaseCountry: "GB",
+            Barcode: "987654321",
+            ReleaseType: "single",
+            PlatformReleaseIds: new Dictionary<string, string>
+            {
+                ["SPOTIFY_RELEASE_ID"] = "sp-album-2",
+                ["DEEZER_RELEASE_ID"] = "dz-album-1"
+            }));
         Assert.Equal("mbid-1", second.AlbumId);
         Assert.Equal("artist-2", second.AlbumArtistId);
         Assert.Equal("2024-01-01", second.ReleaseDate);
+        Assert.Equal("rg-1", second.ReleaseGroupId);
+        Assert.Equal("US", second.ReleaseCountry);
+        Assert.Equal("123456789", second.Barcode);
+        Assert.Equal("album", second.ReleaseType);
+        Assert.Equal("sp-album-1", second.PlatformReleaseIds?["SPOTIFY_RELEASE_ID"]);
+        Assert.Equal("dz-album-1", second.PlatformReleaseIds?["DEEZER_RELEASE_ID"]);
     }
 
     [Fact]
@@ -112,7 +143,16 @@ public sealed class AlbumAwarenessTests
             var store = new AlbumIdentityStore();
             store.Merge(new[]
             {
-                ("key-a", new AlbumIdentity("2024-01-01", "mbid-a", "artist-a"), DateTimeOffset.UtcNow),
+                ("key-a", new AlbumIdentity(
+                    "2024-01-01",
+                    "mbid-a",
+                    "artist-a",
+                    ReleaseGroupId: "rg-a",
+                    ReleaseStatus: "official",
+                    ReleaseCountry: "US",
+                    Barcode: "123456789",
+                    ReleaseType: "album",
+                    PlatformReleaseIds: new Dictionary<string, string> { ["SPOTIFY_RELEASE_ID"] = "sp-album-1" }), DateTimeOffset.UtcNow),
                 ("key-b", new AlbumIdentity(null, "mbid-b", null), DateTimeOffset.UtcNow),
             });
             store.Save(path);
@@ -120,6 +160,12 @@ public sealed class AlbumAwarenessTests
             var reloaded = AlbumIdentityStore.Load(path);
             Assert.Equal(2, reloaded.Entries.Count);
             Assert.Contains(reloaded.Entries, entry => entry.Key == "key-a" && entry.Identity.AlbumId == "mbid-a");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.ReleaseGroupId == "rg-a");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.ReleaseStatus == "official");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.ReleaseCountry == "US");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.Barcode == "123456789");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.ReleaseType == "album");
+            Assert.Contains(reloaded.Entries, entry => entry.Identity.PlatformReleaseIds?["SPOTIFY_RELEASE_ID"] == "sp-album-1");
 
             // A later snapshot fills gaps but never overwrites established values.
             reloaded.Merge(new[]

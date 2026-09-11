@@ -1038,7 +1038,7 @@ public class AutoTagLibraryOrganizer
         var destinationPath = target.DestinationPath;
         var sourceFileName = Path.GetFileName(fullPath);
         var destinationFileName = Path.GetFileName(destinationPath);
-        var requiresDirectoryMove = !string.Equals(sourceDir, destinationDir, StringComparison.OrdinalIgnoreCase);
+        var requiresDirectoryMove = !AreSameOrganizerPath(sourceDir, destinationDir);
         var requiresRename = !string.Equals(sourceFileName, destinationFileName, StringComparison.OrdinalIgnoreCase);
 
         if (!options.MoveMisplacedFiles && requiresDirectoryMove)
@@ -3541,7 +3541,6 @@ public class AutoTagLibraryOrganizer
         }
 
         return extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".elrc", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".srt", StringComparison.OrdinalIgnoreCase);

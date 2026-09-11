@@ -651,7 +651,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var (startPlatformIndex, startFileIndex) = ResolveResumeStartIndices(
             plan,
             resumeCursor,
-            preferPathAnchor: !string.IsNullOrWhiteSpace(resumeMismatchReason));
+            preferPathAnchor: true);
 
         // Mid-run pickup: files added while the run is in progress join the run when
         // their artist sorts after the current position, and are deferred to an
@@ -1049,7 +1049,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             using var file = TagLib.File.Create(path);
             var tag = file.Tag;
-            var artists = (tag.Artists ?? Array.Empty<string>())
+            var artists = (tag.Performers ?? Array.Empty<string>())
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .ToList();
             var albumArtist = !string.IsNullOrWhiteSpace(tag.FirstAlbumArtist)
@@ -1060,7 +1060,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 artists.Add(tag.FirstPerformer);
             }
 
-            var artistKey = ArtistOrderKey.ResolveMainArtistKey(artists, albumArtist);
+            // Sort by album/main artist so featured credits do not pull a track
+            // under another name. Fall back to track artists when album artist is empty.
+            var artistKey = ArtistOrderKey.ResolveMainArtistKey(
+                string.IsNullOrWhiteSpace(albumArtist) ? artists : new[] { albumArtist },
+                artists.FirstOrDefault());
             var album = string.IsNullOrWhiteSpace(tag.Album) ? null : tag.Album;
             var weakIdentity = TrackIdentityTrust.IsWeakMetadataValue(artists.FirstOrDefault() ?? albumArtist)
                 || TrackIdentityTrust.IsWeakMetadataValue(album);
@@ -5777,6 +5781,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         [".flac", ".mp3", ".m4a", ".mp4", ".aac", ".alac", ".ogg", ".opus", ".wav"];
 
     private static readonly string[] AlbumIdentityDateRawNames = ["DATE", "TDRC", "TDRL", "TYER"];
+    private static readonly string[] AlbumIdentityAlbumIdRawNames =
+        [AlbumIdRawTag, "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "MUSICBRAINZ_RELEASE_ID"];
+    private static readonly string[] AlbumIdentityAlbumArtistIdRawNames =
+        [AlbumArtistIdRawTag, "MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID"];
+    private static readonly string[] AlbumIdentityReleaseGroupIdRawNames =
+        [ReleaseGroupIdRawTag, "MUSICBRAINZ_RELEASEGROUPID", "MUSICBRAINZ_RELEASE_GROUP_ID"];
+    private static readonly string[] PlatformReleaseIdRawNames =
+        ["DEEZER_RELEASE_ID", "SPOTIFY_RELEASE_ID", "ITUNES_RELEASE_ID", "APPLE_RELEASE_ID", "APPLE_ALBUM_ID"];
 
     private AlbumIdentityStore? _albumIdentityStore;
     private readonly string? _albumIdentityStorePath;
@@ -5871,31 +5883,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 TryResolveProspectiveAlbumDirectory(context, track));
         }
 
-        var candidate = new AlbumIdentity(
-            AlbumIdentity.FormatReleaseDate(track.ReleaseDate),
-            track.AlbumId,
-            track.AlbumArtistId);
+        var candidate = BuildAlbumIdentityCandidate(track, context.Platform);
         var established = context.Plan.AlbumIdentities.Establish(key, candidate, seed);
         if (established.IsEmpty)
         {
             return;
         }
 
-        var establishedDate = AlbumIdentity.ParseReleaseDate(established.ReleaseDate);
-        if (establishedDate.HasValue)
-        {
-            track.ReleaseDate = establishedDate;
-        }
-
-        if (!string.IsNullOrWhiteSpace(established.AlbumId))
-        {
-            track.AlbumId = established.AlbumId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(established.AlbumArtistId))
-        {
-            track.AlbumArtistId = established.AlbumArtistId;
-        }
+        ApplyEstablishedAlbumIdentity(track, established, context.Platform);
 
         ApplyFolderAlbumIdentity(context, sourceInfo, track, albumArtist, established);
     }
@@ -5948,6 +5943,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 track.AlbumArtists = new List<string> { establishedFolder.AlbumArtist };
             }
+
+            ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform);
         }
         else if (AlbumTitleNormalizer.IsEditionConflict(establishedFolder.AlbumTitle, track.Album))
         {
@@ -5959,17 +5956,124 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 track.AlbumArtists = new List<string> { establishedFolder.AlbumArtist };
             }
 
-            if (!string.IsNullOrWhiteSpace(establishedFolder.Identity.AlbumId))
-            {
-                track.AlbumId = establishedFolder.Identity.AlbumId;
-                track.ReleaseId = establishedFolder.Identity.AlbumId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(establishedFolder.Identity.AlbumArtistId))
-            {
-                track.AlbumArtistId = establishedFolder.Identity.AlbumArtistId;
-            }
+            ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform);
         }
+    }
+
+    private static AlbumIdentity BuildAlbumIdentityCandidate(AutoTagTrack track, string platformId)
+    {
+        return new AlbumIdentity(
+            AlbumIdentity.FormatReleaseDate(track.ReleaseDate),
+            track.AlbumId,
+            track.AlbumArtistId,
+            track.ReleaseGroupId,
+            track.ReleaseStatus,
+            track.ReleaseCountry,
+            track.Barcode,
+            track.ReleaseType,
+            BuildPlatformReleaseIds(track, platformId));
+    }
+
+    private static IReadOnlyDictionary<string, string>? BuildPlatformReleaseIds(AutoTagTrack track, string platformId)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddPlatformReleaseId(values, PlatformReleaseIdRawName(platformId), track.ReleaseId);
+        foreach (var rawName in PlatformReleaseIdRawNames)
+        {
+            AddPlatformReleaseId(values, rawName, ResolveOtherValues(track, rawName).FirstOrDefault());
+        }
+
+        return values.Count == 0 ? null : values;
+    }
+
+    private static void AddPlatformReleaseId(IDictionary<string, string> target, string? rawName, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(rawName) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        target.TryAdd(rawName.Trim().ToUpperInvariant(), value.Trim());
+    }
+
+    private static string? PlatformReleaseIdRawName(string? platformId)
+        => string.IsNullOrWhiteSpace(platformId) ? null : $"{platformId.Trim().ToUpperInvariant()}_RELEASE_ID";
+
+    private static void ApplyEstablishedAlbumIdentity(AutoTagTrack track, AlbumIdentity identity, string platformId)
+    {
+        var establishedDate = AlbumIdentity.ParseReleaseDate(identity.ReleaseDate);
+        if (establishedDate.HasValue)
+        {
+            track.ReleaseDate = establishedDate;
+            SetOtherValue(track, "RELEASEDATE", identity.ReleaseDate);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.AlbumId))
+        {
+            track.AlbumId = identity.AlbumId;
+            track.ReleaseId = identity.AlbumId;
+            SetOtherValue(track, AlbumIdRawTag, identity.AlbumId);
+            SetOtherValue(track, "MUSICBRAINZ_ALBUMID", identity.AlbumId);
+            SetOtherValue(track, "MUSICBRAINZ_RELEASE_ID", identity.AlbumId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ReleaseGroupId))
+        {
+            track.ReleaseGroupId = identity.ReleaseGroupId;
+            SetOtherValue(track, ReleaseGroupIdRawTag, identity.ReleaseGroupId);
+            SetOtherValue(track, "MUSICBRAINZ_RELEASEGROUPID", identity.ReleaseGroupId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.AlbumArtistId))
+        {
+            track.AlbumArtistId = identity.AlbumArtistId;
+            SetOtherValue(track, AlbumArtistIdRawTag, identity.AlbumArtistId);
+            SetOtherValue(track, "MUSICBRAINZ_ALBUMARTISTID", identity.AlbumArtistId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ReleaseStatus))
+        {
+            track.ReleaseStatus = identity.ReleaseStatus;
+            SetOtherValue(track, ReleaseStatusRawTag, identity.ReleaseStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ReleaseCountry))
+        {
+            track.ReleaseCountry = identity.ReleaseCountry;
+            SetOtherValue(track, ReleaseCountryRawTag, identity.ReleaseCountry);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.Barcode))
+        {
+            track.Barcode = identity.Barcode;
+            SetOtherValue(track, BarcodeRawTag, identity.Barcode);
+            SetOtherValue(track, BarcodeTag, identity.Barcode);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ReleaseType))
+        {
+            track.ReleaseType = identity.ReleaseType;
+            SetOtherValue(track, ReleaseTypeRawTag, identity.ReleaseType);
+        }
+
+        var platformReleaseIdName = PlatformReleaseIdRawName(platformId);
+        if (!string.IsNullOrWhiteSpace(platformReleaseIdName)
+            && identity.PlatformReleaseIds?.TryGetValue(platformReleaseIdName, out var platformReleaseId) == true
+            && !string.IsNullOrWhiteSpace(platformReleaseId))
+        {
+            track.ReleaseId = platformReleaseId.Trim();
+            SetOtherValue(track, platformReleaseIdName, platformReleaseId);
+        }
+    }
+
+    private static void SetOtherValue(AutoTagTrack track, string key, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        track.Other[key.Trim()] = new List<string> { value.Trim() };
     }
 
     private static string ResolveAlbumFolderKey(AutoTagFileRunContext context, AutoTagTrack track)
@@ -6049,15 +6153,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static AlbumIdentity ReadAlbumIdentityFromDirectory(string directory, string filePath)
     {
-        var identity = AlbumIdentity.Empty;
+        var identities = new List<AlbumIdentity>();
         IEnumerable<string> siblings;
         try
         {
-            siblings = Directory.EnumerateFiles(directory).ToList();
+            siblings = Directory.EnumerateFiles(directory).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return identity;
+            return AlbumIdentity.Empty;
         }
 
         foreach (var sibling in siblings)
@@ -6076,23 +6180,98 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             try
             {
                 using var file = TagLib.File.Create(sibling);
-                identity = identity.CoalesceWith(new AlbumIdentity(
+                var identity = new AlbumIdentity(
                     ReadRawTagValuesAny(file, extension, AlbumIdentityDateRawNames).FirstOrDefault(),
-                    ReadRawTagValuesAny(file, extension, AlbumIdRawTag).FirstOrDefault(),
-                    ReadRawTagValuesAny(file, extension, AlbumArtistIdRawTag).FirstOrDefault()));
+                    ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumIdRawNames).FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumArtistIdRawNames).FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, AlbumIdentityReleaseGroupIdRawNames).FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, ReleaseStatusRawTag).FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, ReleaseCountryRawTag).FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, BarcodeRawTag, BarcodeTag, "upc").FirstOrDefault(),
+                    ReadRawTagValuesAny(file, extension, ReleaseTypeRawTag).FirstOrDefault(),
+                    ReadPlatformReleaseIds(file, extension));
+                if (!identity.IsEmpty)
+                {
+                    identities.Add(identity);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 continue;
             }
+        }
 
-            if (!identity.IsEmpty)
+        return BuildMajorityAlbumIdentity(identities);
+    }
+
+    private static AlbumIdentity BuildMajorityAlbumIdentity(IReadOnlyList<AlbumIdentity> identities)
+    {
+        if (identities.Count == 0)
+        {
+            return AlbumIdentity.Empty;
+        }
+
+        return new AlbumIdentity(
+            SelectMajority(identities.Select(identity => identity.ReleaseDate)),
+            SelectMajority(identities.Select(identity => identity.AlbumId)),
+            SelectMajority(identities.Select(identity => identity.AlbumArtistId)),
+            SelectMajority(identities.Select(identity => identity.ReleaseGroupId)),
+            SelectMajority(identities.Select(identity => identity.ReleaseStatus)),
+            SelectMajority(identities.Select(identity => identity.ReleaseCountry)),
+            SelectMajority(identities.Select(identity => identity.Barcode)),
+            SelectMajority(identities.Select(identity => identity.ReleaseType)),
+            BuildMajorityPlatformReleaseIds(identities));
+    }
+
+    private static IReadOnlyDictionary<string, string>? BuildMajorityPlatformReleaseIds(IReadOnlyList<AlbumIdentity> identities)
+    {
+        var keys = identities
+            .SelectMany(identity => identity.PlatformReleaseIds?.Keys ?? Array.Empty<string>())
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToList();
+        if (keys.Count == 0)
+        {
+            return null;
+        }
+
+        var selected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in keys)
+        {
+            var value = SelectMajority(identities.Select(identity =>
+                identity.PlatformReleaseIds?.TryGetValue(key, out var platformValue) == true ? platformValue : null));
+            if (!string.IsNullOrWhiteSpace(value))
             {
-                break;
+                selected[key] = value;
             }
         }
 
-        return identity;
+        return selected.Count == 0 ? null : selected;
+    }
+
+    private static string? SelectMajority(IEnumerable<string?> values)
+    {
+        return values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .GroupBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => group.Key)
+            .FirstOrDefault();
+    }
+
+    private static IReadOnlyDictionary<string, string>? ReadPlatformReleaseIds(TagLib.File file, string extension)
+    {
+        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawName in PlatformReleaseIdRawNames)
+        {
+            AddPlatformReleaseId(ids, rawName, ReadRawTagValuesAny(file, extension, rawName).FirstOrDefault());
+        }
+
+        return ids.Count == 0 ? null : ids;
     }
 
     private async Task<TagFileWriteResult> TagFileAsync(
@@ -7778,7 +7957,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void MoveAdjacentSidecars(string sourcePath, string destinationPath)
     {
-        foreach (var extension in new[] { ".lrc", ".elrc", TtmlExtension, ".txt" })
+        foreach (var extension in new[] { ".lrc", TtmlExtension, ".txt" })
         {
             var sourceSidecar = Path.ChangeExtension(sourcePath, extension);
             if (!IOFile.Exists(sourceSidecar))
@@ -8089,7 +8268,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (!context.SidecarState.HasTxt
             || (!context.SidecarState.HasLrc
-                && !context.SidecarState.HasElrc
                 && !context.SidecarState.HasTtml
                 && !sidecarWriteResult.WroteLrcSidecar
                 && !sidecarWriteResult.WroteTtmlSidecar))
@@ -8155,17 +8333,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) GetLyricsSidecarState(string filePath)
+    private static (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt, string TxtPath) GetLyricsSidecarState(string filePath)
     {
         var lrcPath = Path.ChangeExtension(filePath, ".lrc");
-        var elrcPath = Path.ChangeExtension(filePath, ".elrc");
         var ttmlPath = Path.ChangeExtension(filePath, TtmlExtension);
         var txtPath = Path.ChangeExtension(filePath, ".txt");
         var hasLrc = IOFile.Exists(lrcPath);
-        var hasElrc = IOFile.Exists(elrcPath);
         var hasTtml = HasTimedTtmlSidecar(ttmlPath);
         var hasTxt = IOFile.Exists(txtPath);
-        return (hasLrc || hasElrc || hasTtml || hasTxt, hasLrc, hasElrc, hasTtml, hasTxt, txtPath);
+        return (hasLrc || hasTtml || hasTxt, hasLrc, hasTtml, hasTxt, txtPath);
     }
 
     private static bool HasTimedTtmlSidecar(string path)
@@ -9110,7 +9286,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required bool AllowsUnsyncedType { get; init; }
         public required bool AllowsLrcByFormat { get; init; }
         public required bool AllowsTtmlByFormat { get; init; }
-        public required (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
+        public required (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
         public required bool ShouldSkipEmbeddedLyrics { get; init; }
         public HashSet<SupportedTag> AttemptedTags { get; } = new();
     }

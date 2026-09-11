@@ -90,4 +90,15 @@ public sealed class VibeAudiomackPayloadTests
         Assert.Equal(new[] { "uplifting", "reflective" }, metadata.Moods);
         Assert.Equal(3, metadata.RawTags.Count);
     }
+
+    [Fact]
+    public void AudiobookPrimaryGenre_IsNotMusicEvidence_TagDisplayBecomesStyle()
+    {
+        var candidate = Load("track-page-song.json") with { Genre = "Audiobook" };
+        var metadata = AudiomackVibeMetadataService.MapCandidate(candidate, 0.9);
+
+        Assert.Null(metadata.PrimaryGenre);
+        Assert.Equal(new[] { "Amapiano" }, metadata.Subgenres);
+        Assert.DoesNotContain(metadata.Subgenres, value => value.Contains("Tanzania", StringComparison.OrdinalIgnoreCase));
+    }
 }

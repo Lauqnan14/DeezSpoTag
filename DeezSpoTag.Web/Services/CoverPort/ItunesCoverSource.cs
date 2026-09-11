@@ -67,21 +67,9 @@ public sealed class ItunesCoverSource : ICoverSource
 
             return candidates;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             throw;
-        }
-        catch (OperationCanceledException ex)
-        {
-            // Internal timeouts (the shared HttpClient's limit, provider budgets) also
-            // surface as OperationCanceledException. Only a real stop request may
-            // propagate; otherwise this source was simply unavailable for this query.
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Cover source request timed out");
-            }
-
-            return Array.Empty<CoverCandidate>();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -157,21 +145,9 @@ public sealed class ItunesCoverSource : ICoverSource
 
             return candidates;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             throw;
-        }
-        catch (OperationCanceledException ex)
-        {
-            // Internal timeouts (the shared HttpClient's limit, provider budgets) also
-            // surface as OperationCanceledException. Only a real stop request may
-            // propagate; otherwise this source was simply unavailable for this query.
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Cover source request timed out");
-            }
-
-            return Array.Empty<CoverCandidate>();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

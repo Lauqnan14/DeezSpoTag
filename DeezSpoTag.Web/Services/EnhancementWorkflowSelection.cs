@@ -18,6 +18,39 @@ internal static class EnhancementWorkflowSelection
         "rewriteLineSyncedTtml"
     ];
 
+    /// <summary>
+    /// Conflicting sidecar toggles are mutually exclusive: at most one toggle of a pair
+    /// may be active, and activating the other requires disabling the active one first.
+    /// The UI blocks the second enable and profile saves are validated; canonicalization
+    /// resolves stored configurations that still hold both (legacy data) to the
+    /// non-destructive member of the pair.
+    /// </summary>
+    public sealed record ExclusiveSidecarTogglePair(
+        string Section,
+        string FirstKey,
+        string SecondKey,
+        string FirstLabel,
+        string SecondLabel,
+        string PreservedKey);
+
+    public static readonly ExclusiveSidecarTogglePair[] ExclusiveSidecarTogglePairs =
+    [
+        new(
+            "sidecars",
+            "removeLineSyncedTtml",
+            "rewriteLineSyncedTtml",
+            "Remove line-synced TTML",
+            "Rewrite line-synced TTML with word timing",
+            "rewriteLineSyncedTtml"),
+        new(
+            "coverMaintenance",
+            "renameExistingAnimatedArtwork",
+            "overwriteExistingAnimatedArtwork",
+            "Rename existing animated artwork",
+            "Overwrite existing animated artwork",
+            "renameExistingAnimatedArtwork")
+    ];
+
     public static readonly string[] OrderedFeatures =
     [
         GapFill,
@@ -139,7 +172,69 @@ internal static class EnhancementWorkflowSelection
             }
         }
 
+        foreach (var pair in ExclusiveSidecarTogglePairs)
+        {
+            var section = enhancement[pair.Section] as JsonObject;
+            if (section == null)
+            {
+                continue;
+            }
+
+            changed |= ResolveExclusiveTogglePairToNonDestructive(section, pair);
+        }
+
         return changed;
+    }
+
+    /// <summary>
+    /// A stored configuration that still holds both members of an exclusive pair (legacy
+    /// data, or a save predating the exclusivity validation) resolves to the
+    /// non-destructive member of the pair: Rewrite wins over Remove, Rename wins over
+    /// Overwrite. A stored setting is never silently wiped to disabled.
+    /// </summary>
+    private static bool ResolveExclusiveTogglePairToNonDestructive(JsonObject section, ExclusiveSidecarTogglePair pair)
+    {
+        var first = ReadBool(section, pair.FirstKey) == true;
+        var second = ReadBool(section, pair.SecondKey) == true;
+        if (!first || !second)
+        {
+            return false;
+        }
+
+        // The destructive toggle loses; the constructive one stays enabled.
+        var preservedIsFirst = string.Equals(pair.PreservedKey, pair.FirstKey, StringComparison.OrdinalIgnoreCase);
+        var otherKey = preservedIsFirst ? pair.SecondKey : pair.FirstKey;
+        section[pair.PreservedKey] = true;
+        section[otherKey] = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a user-facing message when both members of an exclusive sidecar toggle
+    /// pair are enabled, or null when the configuration is valid.
+    /// </summary>
+    public static string? DescribeSidecarToggleConflict(JsonObject? enhancement)
+    {
+        if (enhancement == null)
+        {
+            return null;
+        }
+
+        foreach (var pair in ExclusiveSidecarTogglePairs)
+        {
+            if (enhancement[pair.Section] is not JsonObject section)
+            {
+                continue;
+            }
+
+            if (ReadBool(section, pair.FirstKey) == true && ReadBool(section, pair.SecondKey) == true)
+            {
+                return $"\"{pair.SecondLabel}\" conflicts with the active \"{pair.FirstLabel}\". "
+                    + $"Disable \"{pair.FirstLabel}\" first.";
+            }
+        }
+
+        return null;
     }
 
     public static bool IsGapFillRunnable(JsonObject configNode)

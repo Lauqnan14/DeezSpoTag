@@ -274,10 +274,58 @@ public sealed class AutoTagVariantTitleGuardTests
         var folderBody = ExtractMethodBody(runner, "private void ApplyFolderAlbumIdentity(");
         Assert.Contains("AlbumTitleNormalizer.IsSameEdition(establishedFolder.AlbumTitle, track.Album)", folderBody, StringComparison.Ordinal);
         Assert.Contains("track.Album = establishedFolder.AlbumTitle", folderBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform)", folderBody, StringComparison.Ordinal);
 
         // Different edition → keep the folder's established edition (never rewrite).
         Assert.Contains("AlbumTitleNormalizer.IsEditionConflict(establishedFolder.AlbumTitle, track.Album)", folderBody, StringComparison.Ordinal);
-        Assert.Contains("track.AlbumId = establishedFolder.Identity.AlbumId", folderBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform)", folderBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AlbumConsensus_UsesCompleteIdentityAndMajoritySiblingSeed()
+    {
+        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        var consensusBody = ExtractMethodBody(runner, "private void ApplyAlbumIdentityConsensus(");
+        Assert.Contains("BuildAlbumIdentityCandidate(track, context.Platform)", consensusBody, StringComparison.Ordinal);
+
+        var readBody = ExtractMethodBody(runner, "private static AlbumIdentity ReadAlbumIdentityFromDirectory(");
+        Assert.Contains("BuildMajorityAlbumIdentity", readBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("break;", readBody, StringComparison.Ordinal);
+        Assert.Contains("MUSICBRAINZ_RELEASE_ID", runner, StringComparison.Ordinal);
+        Assert.Contains("MUSICBRAINZ_RELEASEGROUPID", runner, StringComparison.Ordinal);
+        Assert.Contains("DEEZER_RELEASE_ID", runner, StringComparison.Ordinal);
+        Assert.Contains("SPOTIFY_RELEASE_ID", runner, StringComparison.Ordinal);
+        Assert.Contains("ITUNES_RELEASE_ID", runner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AlbumConsensus_AppliesCompleteFolderIdentityBeforeTagging()
+    {
+        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        var applyBody = ExtractMethodBody(runner, "private static void ApplyEstablishedAlbumIdentity(");
+        Assert.Contains("track.ReleaseGroupId = identity.ReleaseGroupId", applyBody, StringComparison.Ordinal);
+        Assert.Contains("track.ReleaseCountry = identity.ReleaseCountry", applyBody, StringComparison.Ordinal);
+        Assert.Contains("track.Barcode = identity.Barcode", applyBody, StringComparison.Ordinal);
+        Assert.Contains("track.ReleaseType = identity.ReleaseType", applyBody, StringComparison.Ordinal);
+        Assert.Contains("identity.PlatformReleaseIds", applyBody, StringComparison.Ordinal);
+        Assert.Contains("SetOtherValue(track, ReleaseGroupIdRawTag", applyBody, StringComparison.Ordinal);
+        Assert.Contains("SetOtherValue(track, BarcodeRawTag", applyBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AlbumConsensus_RemainsSharedByEnhancementAndEnrichmentRuns()
+    {
+        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        var consensusIndex = runner.IndexOf("ApplyAlbumIdentityConsensus(context, validationBasis, match.Track)", StringComparison.Ordinal);
+        var tagIndex = runner.IndexOf("TagFileAsync(", consensusIndex < 0 ? 0 : consensusIndex, StringComparison.Ordinal);
+
+        Assert.True(consensusIndex >= 0, "Album identity consensus must run in the shared match path.");
+        Assert.True(tagIndex > consensusIndex, "Album identity consensus must run before tag writing.");
+        Assert.DoesNotContain("isManualEnrichment && ApplyAlbumIdentityConsensus", runner, StringComparison.Ordinal);
+        Assert.Contains("public Dictionary<string, FolderAlbumIdentity> AlbumFolderIdentities { get; } = new", runner, StringComparison.Ordinal);
     }
 
     // --- batch display reflects the real album-boundary batches ----------------------

@@ -790,7 +790,8 @@
     font-size: 0.9rem;
 }
 
-.downloads-tab .task-activity {
+.downloads-tab .task-activity,
+.autotag-lyrics-list .task-activity {
     margin-top: 0.35rem;
     color: var(--accent-blue);
     font-size: 0.82rem;
@@ -3835,6 +3836,7 @@ span.badge.badge-artwork-animated {
                                 </div>
                             </div>
                         </div>
+                    </div>
 
                     <div class="ops-secondary">
                         <div class="mini-grid">
@@ -5779,18 +5781,20 @@ async function clearCanceledTasks() {
                         ${lyricsBadges.length
                             ? lyricsBadges.map(label => {
                                 const kind = label.toLowerCase();
-                                const cls = kind === 'time-synced'
+                                const cls = kind === 'ttml' || kind === 'time-synced'
                                     ? 'badge-lyrics-timesynced'
-                                    : kind === 'enhanced-synchronized'
+                                    : kind === 'enhanced' || kind === 'enhanced-synchronized'
                                         ? 'badge-lyrics-enhanced'
                                         : kind === 'synced'
                                             ? 'badge-lyrics-synced'
                                             : 'badge-lyrics-unsynced';
-                                if (kind === 'enhanced-synchronized') {
-                                    return `<span class="badge ${cls}">Enhanced Synced Lyrics</span>`;
+                                if (kind === 'enhanced' || kind === 'enhanced-synchronized') {
+                                    return `<span class="badge ${cls}">Enhanced lyrics</span>`;
                                 }
-                                const text = kind === 'time-synced' ? 'Time-Synced' : label;
-                                return `<span class="badge ${cls}">${text} lyrics</span>`;
+                                const text = kind === 'ttml' || kind === 'time-synced'
+                                    ? 'TTML lyrics'
+                                    : kind === 'synced' ? 'Synced lyrics' : 'Unsynced lyrics';
+                                return `<span class="badge ${cls}">${text}</span>`;
                             }).join('')
                             : ''
                         }
@@ -7489,10 +7493,10 @@ function getLyricsBadgesFromArtifacts(artifacts) {
         .filter(value => value !== 'txt' || !hasRich)
         .map(value => {
             if (value === 'ttml') {
-                return 'time-synced';
+                return 'ttml';
             }
             if (value === 'lrc') {
-                return lrcTiming === 'word' ? 'enhanced-synchronized' : 'synced';
+                return lrcTiming === 'word' ? 'enhanced' : 'synced';
             }
             return 'unsynced';
         });

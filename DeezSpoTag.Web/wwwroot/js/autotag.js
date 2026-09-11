@@ -3,6 +3,24 @@
 
     const ENHANCEMENT_RUN_SECTION_IDS = ["tag-gap-fill", "sidecars", "quality-checks", "folder-uniformity"];
 
+    // Conflicting sidecar toggles are mutually exclusive: at most one toggle of a pair
+    // may be active. Enabling the other requires disabling the active one first.
+    // Mirrors EnhancementWorkflowSelection.ExclusiveSidecarTogglePairs on the server.
+    const SIDECAR_EXCLUSIVE_TOGGLE_PAIRS = [
+        {
+            firstId: "enhancementRemoveLineSyncedTtml",
+            secondId: "enhancementRewriteLineSyncedTtml",
+            firstLabel: "Remove line-synced TTML",
+            secondLabel: "Rewrite line-synced TTML with word timing"
+        },
+        {
+            firstId: "renameExistingAnimatedArtwork",
+            secondId: "overwriteExistingAnimatedArtwork",
+            firstLabel: "Rename existing animated artwork",
+            secondLabel: "Overwrite existing animated artwork"
+        }
+    ];
+
     const DEFAULT_CONFIG = {
         platforms: ["deezer", "itunes"],
         path: null,
@@ -355,13 +373,13 @@
     ]);
 
     const LYRICS_TYPE_OPTIONS = [
-        { value: "lyrics", label: "Standard synchronized lyrics" },
-        { value: "syllable-lyrics", label: "Enhanced Synced Lyrics" },
+        { value: "lyrics", label: "Synced lyrics (line-synced .lrc)" },
+        { value: "syllable-lyrics", label: "Enhanced lyrics (word-synced .lrc)" },
         { value: "ttml-lyrics", label: "TTML lyrics" },
         { value: "unsynced-lyrics", label: "Unsynced lyrics" }
     ];
     const LYRICS_FORMAT_OPTIONS = [
-        { value: "lrc", label: "Synchronized lyrics" },
+        { value: "lrc", label: "Synced lyrics (.lrc)" },
         { value: "ttml", label: "TTML lyrics (.ttml)" }
     ];
 
@@ -7480,6 +7498,30 @@
     el("runEnhancementGapFilling")?.addEventListener("click", runEnhancementGapFilling);
     el("runSelectedEnhancementSections")?.addEventListener("click", runSelectedEnhancementSections);
     el("runSelectedEnhancementSectionsRecent")?.addEventListener("click", runSelectedEnhancementSectionsOnRecentDownloads);
+
+    // Conflicting sidecar toggles are mutually exclusive: at most one toggle of a pair
+    // may be active. Enabling the other requires disabling the active one first — the
+    // second enable is rejected here instead of being auto-switched.
+    for (const pair of SIDECAR_EXCLUSIVE_TOGGLE_PAIRS) {
+        const first = el(pair.firstId);
+        const second = el(pair.secondId);
+        if (!first || !second) {
+            continue;
+        }
+
+        first.addEventListener("change", () => {
+            if (first.checked && second.checked) {
+                first.checked = false;
+                showToast(`"${pair.secondLabel}" is active. Disable it before enabling "${pair.firstLabel}".`, "warning");
+            }
+        });
+        second.addEventListener("change", () => {
+            if (second.checked && first.checked) {
+                second.checked = false;
+                showToast(`"${pair.firstLabel}" is active. Disable it before enabling "${pair.secondLabel}".`, "warning");
+            }
+        });
+    }
 
     el("enhancementRunScopeSelectAll")?.addEventListener("click", () => {
         for (const id of ENHANCEMENT_RUN_SECTION_IDS) {

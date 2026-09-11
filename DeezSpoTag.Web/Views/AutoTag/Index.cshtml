@@ -1008,8 +1008,8 @@
                                     <label for="renameExistingAnimatedArtwork">
                                         Rename existing animated artwork
                                         <span class="autotag-tooltip-icon ms-1"
-                                              title="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept unless Overwrite existing animated artwork is also selected."
-                                              aria-label="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept unless Overwrite existing animated artwork is also selected.">
+                                              title="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept. Mutually exclusive with Overwrite existing animated artwork: disable it before enabling this option."
+                                              aria-label="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept. Mutually exclusive with Overwrite existing animated artwork: disable it before enabling this option.">
                                             <i class="fas fa-question-circle"></i>
                                         </span>
                                     </label>
@@ -1927,11 +1927,11 @@
                                 <div class="lyrics-type-options lyrics-type-card-grid" id="lyricsTypeOptions">
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-type-standard" data-value="lyrics" checked />
-                                        <label for="lyrics-type-standard">Standard synchronized lyrics</label>
+                                        <label for="lyrics-type-standard">Synced lyrics (line-synced .lrc)</label>
                                     </div>
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-type-enhanced" data-value="syllable-lyrics" checked />
-                                        <label for="lyrics-type-enhanced">Enhanced Synced Lyrics</label>
+                                        <label for="lyrics-type-enhanced">Enhanced lyrics (word-synced .lrc)</label>
                                     </div>
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-type-ttml" data-value="ttml-lyrics" checked />
@@ -1954,7 +1954,7 @@
                                 <div class="lyrics-format-options lyrics-format-card-grid" id="lyricsFormatOptions">
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-format-lrc" data-value="lrc" checked />
-                                        <label for="lyrics-format-lrc">Synchronized lyrics</label>
+                                        <label for="lyrics-format-lrc">Synced lyrics (.lrc)</label>
                                     </div>
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-format-ttml" data-value="ttml" checked />
@@ -1983,7 +1983,7 @@
                                 <div class="form-group mt-3" id="lrcTimingPreferenceGroup">
                                     <label>
                                         Synchronized .lrc timing
-                                        <span class="autotag-tooltip-icon ms-1" title="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Word-enhanced only writes when the provider supplies word tokens. That usually requires Enhanced Synced Lyrics to be selected as a lyrics type." aria-label="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Word-enhanced only writes when the provider supplies word tokens. That usually requires Enhanced Synced Lyrics to be selected as a lyrics type.">
+                                        <span class="autotag-tooltip-icon ms-1" title="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Enhanced lyrics only write when the provider supplies word timing." aria-label="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Enhanced lyrics only write when the provider supplies word timing.">
                                             <i class="fas fa-question-circle"></i>
                                         </span>
                                     </label>

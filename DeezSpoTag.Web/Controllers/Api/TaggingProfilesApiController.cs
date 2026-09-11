@@ -4,6 +4,7 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -69,6 +70,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Verification = request.Verification ?? existing?.Verification ?? new VerificationSettings()
         };
 
+        var sidecarToggleConflict = DescribeSidecarToggleConflict(profile.AutoTag);
+        if (sidecarToggleConflict != null)
+        {
+            return BadRequest(sidecarToggleConflict);
+        }
+
         var saved = await _profiles.UpsertAsync(profile);
         if (saved is null)
         {
@@ -76,6 +83,23 @@ public sealed class TaggingProfilesApiController : ControllerBase
         }
 
         return Ok(ToResponseModel(saved));
+    }
+
+    /// <summary>
+    /// Conflicting sidecar toggles are mutually exclusive: at most one toggle of a pair
+    /// may be active, and enabling the other requires disabling the active one first.
+    /// </summary>
+    private static string? DescribeSidecarToggleConflict(AutoTagSettings? autoTag)
+    {
+        if (autoTag?.Data == null
+            || !autoTag.Data.TryGetValue("enhancement", out var enhancementElement)
+            || enhancementElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var enhancement = JsonNode.Parse(enhancementElement.GetRawText()) as JsonObject;
+        return EnhancementWorkflowSelection.DescribeSidecarToggleConflict(enhancement);
     }
 
     public sealed record CopyProfileRequest(string Name);

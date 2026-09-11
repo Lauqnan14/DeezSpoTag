@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared;
@@ -66,6 +67,8 @@ public sealed class CoverLibraryMaintenanceService
     private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly ISpotifyArtworkResolver? _spotifyArtworkResolver;
+    private readonly Integrations.Deezer.DeezerClient? _deezerClient;
     private readonly ILogger<CoverLibraryMaintenanceService> _logger;
 
     public CoverLibraryMaintenanceService(
@@ -74,20 +77,49 @@ public sealed class CoverLibraryMaintenanceService
         ITrackIdentityResolver trackIdentityResolver,
         IHttpClientFactory httpClientFactory,
         ShazamRecognitionService shazamRecognitionService,
-        ILogger<CoverLibraryMaintenanceService> logger)
+        ILogger<CoverLibraryMaintenanceService> logger,
+        ISpotifyArtworkResolver? spotifyArtworkResolver = null,
+        Integrations.Deezer.DeezerClient? deezerClient = null)
     {
         _coverSearchService = coverSearchService;
         _appleMusicCatalogService = appleMusicCatalogService;
         _trackIdentityResolver = trackIdentityResolver;
         _httpClientFactory = httpClientFactory;
         _shazamRecognitionService = shazamRecognitionService;
+        _spotifyArtworkResolver = spotifyArtworkResolver;
+        _deezerClient = deezerClient;
         _logger = logger;
+    }
+
+    public Task<CoverAlbumMaintenancePlan> PlanAsync(
+        string representativeFilePath,
+        CoverLibraryMaintenanceRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var albumDirectory = Path.GetDirectoryName(representativeFilePath);
+        if (string.IsNullOrWhiteSpace(albumDirectory) || !File.Exists(representativeFilePath))
+        {
+            return Task.FromResult(CoverAlbumMaintenancePlan.Skip(albumDirectory ?? string.Empty, "Representative audio file is unavailable."));
+        }
+
+        var audioFiles = Directory.EnumerateFiles(albumDirectory)
+            .Where(path => AudioExtensions.Contains(Path.GetExtension(path)))
+            .ToList();
+        if (audioFiles.Count == 0 || !TryReadRequiredMetadata(audioFiles, out var metadata))
+        {
+            return Task.FromResult(CoverAlbumMaintenancePlan.Skip(albumDirectory, "Album metadata is unavailable."));
+        }
+
+        var artworkState = InspectAlbumArtwork(albumDirectory, representativeFilePath, audioFiles.Count, metadata, request);
+        return Task.FromResult(ToPublicPlan(albumDirectory, BuildWorkPlan(request, artworkState), request));
     }
 
     public async Task<CoverLibraryMaintenanceResult> RunAsync(
         CoverLibraryMaintenanceRequest request,
         CancellationToken cancellationToken = default,
-        Func<CoverAlbumMaintenanceOutcome, int, int, CancellationToken, ValueTask>? onAlbumCompleted = null)
+        Func<CoverAlbumMaintenanceOutcome, int, int, CancellationToken, ValueTask>? onAlbumCompleted = null,
+        Func<CoverAlbumMaintenancePlan, int, int, CancellationToken, ValueTask>? onAlbumFetchStarted = null)
     {
         var rootPaths = request.RootPaths?
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -122,6 +154,7 @@ public sealed class CoverLibraryMaintenanceService
         var outcomes = new ConcurrentQueue<CoverAlbumMaintenanceOutcome>();
         var workerCount = Math.Clamp(request.WorkerCount, 1, 32);
         var completedAlbums = 0;
+        var startedAlbums = 0;
         await Parallel.ForEachAsync(
             albumDirs,
             new ParallelOptions
@@ -134,7 +167,19 @@ public sealed class CoverLibraryMaintenanceService
                 CoverAlbumMaintenanceOutcome outcome;
                 try
                 {
-                    outcome = await ProcessAlbumDirectoryAsync(albumDir, request, logs, ct);
+                    outcome = await ProcessAlbumDirectoryAsync(
+                        albumDir,
+                        request,
+                        logs,
+                        ct,
+                        async (plan, token) =>
+                        {
+                            if (onAlbumFetchStarted != null)
+                            {
+                                var started = Interlocked.Increment(ref startedAlbums);
+                                await onAlbumFetchStarted(plan, started, albumDirs.Count, token);
+                            }
+                        });
                 }
                 catch (OperationCanceledException)
                 {
@@ -179,7 +224,8 @@ public sealed class CoverLibraryMaintenanceService
         string albumDir,
         CoverLibraryMaintenanceRequest request,
         ConcurrentQueue<string> logs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CoverAlbumMaintenancePlan, CancellationToken, ValueTask>? onFetchStarted = null)
     {
         var audioFiles = Directory
             .EnumerateFiles(albumDir)
@@ -244,6 +290,15 @@ public sealed class CoverLibraryMaintenanceService
                 AudioFilePaths: audioFiles);
         }
 
+        var maintenancePlan = ToPublicPlan(albumDir, workPlan, request);
+        if (maintenancePlan.FetchStillArtwork || maintenancePlan.FetchAnimatedArtwork)
+        {
+            if (onFetchStarted != null)
+            {
+                await onFetchStarted(maintenancePlan, cancellationToken);
+            }
+        }
+
         var updatedAnything = false;
         var animatedResult = default(AnimatedArtworkUpdateResult);
         var stillUpdated = false;
@@ -293,6 +348,28 @@ public sealed class CoverLibraryMaintenanceService
         CancellationToken cancellationToken)
     {
         var query = BuildCoverSearchQuery(context.Metadata, context.ShazamHints);
+
+        // Still-artwork lookup alignment with the download side: resolve the primary
+        // candidate URLs through the same download artwork engines (Apple catalog,
+        // Spotify, Deezer) using the file-tag identity, then keep the multi-source
+        // search as the fallback. Shazam hints stay first when present.
+        var engineArtworkUrls = await ResolveDownloadEngineArtworkUrlsAsync(
+            context.Metadata,
+            context.Request,
+            cancellationToken);
+        if (engineArtworkUrls.Count > 0)
+        {
+            var mergedUrls = (query.DirectArtworkUrls ?? Array.Empty<string>())
+                .Concat(engineArtworkUrls)
+                .Where(url => !string.IsNullOrWhiteSpace(url))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (mergedUrls.Count > 0)
+            {
+                query = query with { DirectArtworkUrls = mergedUrls };
+            }
+        }
+
         var tempCoverPath = Path.Join(context.AlbumDir, $".deezspotag-cover-{Guid.NewGuid():N}.jpg");
         var referenceBytes = await ReadReferenceImageBytesAsync(context.ArtworkState.ExternalCoverPath, context.AudioFiles[0], cancellationToken);
         var searchOptions = BuildSearchOptions(context.Request, context.ArtworkState.ExternalCoverPath, referenceBytes);
@@ -594,6 +671,58 @@ public sealed class CoverLibraryMaintenanceService
             DirectArtworkUrls: hints?.DirectArtworkUrls);
     }
 
+    /// <summary>
+    /// Resolves primary still-artwork candidate URLs through the same download artwork
+    /// engines the download prefetch uses (Apple catalog, Spotify, Deezer), with the
+    /// file-tag identity standing in for the download payload identity. Best-effort:
+    /// an empty result keeps the multi-source search as the only lookup.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ResolveDownloadEngineArtworkUrlsAsync(
+        AlbumMetadata metadata,
+        CoverLibraryMaintenanceRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Settings is null)
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            return await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
+                new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
+                    request.Settings,
+                    _appleMusicCatalogService,
+                    _httpClientFactory,
+                    _spotifyArtworkResolver,
+                    _deezerClient,
+                    AppleId: null,
+                    Title: metadata.Title,
+                    Artist: metadata.Artist,
+                    Album: metadata.Album,
+                    CollectionType: null,
+                    DeezerId: null,
+                    PayloadCover: null,
+                    Isrc: null,
+                    _logger),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogDebug(ex, "Cover engine artwork URL resolution timed out for {Artist} - {Album}", metadata.Artist, metadata.Album);
+            return Array.Empty<string>();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Cover engine artwork URL resolution failed for {Artist} - {Album}", metadata.Artist, metadata.Album);
+            return Array.Empty<string>();
+        }
+    }
+
     private async Task<(AlbumMetadata Metadata, ShazamCoverHints Hints)?> TryRecognizeUntaggedAlbumAsync(
         string audioFile,
         ConcurrentQueue<string> logs,
@@ -709,6 +838,17 @@ public sealed class CoverLibraryMaintenanceService
             || (request.RenameExistingAnimatedArtwork && artworkState.HasLegacyAnimatedArtwork);
         return new AlbumWorkPlan(needsEmbedded, needsExternal, needsUpgrade, noArtworkAtAll, needsAnimatedArtwork);
     }
+
+    private static CoverAlbumMaintenancePlan ToPublicPlan(
+        string albumDirectory,
+        AlbumWorkPlan workPlan,
+        CoverLibraryMaintenanceRequest request)
+        => new(
+            albumDirectory,
+            workPlan.RequiresStillCoverUpdate,
+            workPlan.NeedsAnimatedArtwork && request.QueueAnimatedArtwork,
+            workPlan.NeedsAnimatedArtwork && !request.QueueAnimatedArtwork,
+            workPlan.RequiresAnyWork ? null : "Album artwork already satisfies the selected maintenance options.");
 
     private static CoverSearchOptions BuildSearchOptions(
         CoverLibraryMaintenanceRequest request,
@@ -1048,7 +1188,19 @@ public sealed record CoverLibraryMaintenanceRequest(
     bool WriteEmbeddedCover = true,
     bool WriteExternalSidecar = true,
     string LocalArtworkFormat = "jpg",
-    bool UseShazamForUntaggedFiles = false);
+    bool UseShazamForUntaggedFiles = false,
+    Core.Models.Settings.DeezSpoTagSettings? Settings = null);
+
+public sealed record CoverAlbumMaintenancePlan(
+    string AlbumDirectory,
+    bool FetchStillArtwork,
+    bool FetchAnimatedArtwork,
+    bool HasLocalOnlyWork,
+    string? SkipReason)
+{
+    public static CoverAlbumMaintenancePlan Skip(string albumDirectory, string reason)
+        => new(albumDirectory, false, false, false, reason);
+}
 
 public sealed record CoverLibraryMaintenanceResult(
     bool Success,

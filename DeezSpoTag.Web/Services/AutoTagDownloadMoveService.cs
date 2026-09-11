@@ -182,7 +182,6 @@ public sealed class AutoTagDownloadMoveService
     private static readonly HashSet<string> EnhancementReplacementSidecarExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".lrc",
-        ".elrc",
         ".ttml",
         ".txt",
         ".jpg",

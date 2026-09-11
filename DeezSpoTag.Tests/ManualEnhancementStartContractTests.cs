@@ -156,6 +156,9 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("ResumeJobAsync(id, cancellationToken)", controller, StringComparison.Ordinal);
         Assert.Contains("public async Task<ResumeJobOutcome?> ResumeJobAsync", service, StringComparison.Ordinal);
         Assert.Contains("ResumeFromJobId: job.Id", service, StringComparison.Ordinal);
+        Assert.Contains("!string.Equals(job.Id, resumed.Id, StringComparison.OrdinalIgnoreCase)", service, StringComparison.Ordinal);
+        Assert.Contains("A drifted config hash must not rewind an enhancement run to file 0.", service, StringComparison.Ordinal);
+        Assert.Contains("string.Equals(stage.Name, AutoTagLiterals.EnhancementStage", service, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.ResumedStatus", service, StringComparison.Ordinal);
         // The resume endpoint must not depend on the passive scope lookup: it names the source job.
         Assert.Contains("if (!string.IsNullOrWhiteSpace(options.ResumeFromJobId))", service, StringComparison.Ordinal);

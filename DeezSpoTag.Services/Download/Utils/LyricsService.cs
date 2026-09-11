@@ -3416,7 +3416,6 @@ public class LyricsService
         var saveState = new LyricsSaveState(paths, settings);
         var overwriteSidecar = ShouldOverwriteLyricsSidecar(settings);
         saveState.HadExistingLrc = System.IO.File.Exists(saveState.LrcPath);
-        saveState.HadExistingElrc = System.IO.File.Exists(saveState.ElrcPath);
         saveState.HadExistingTtml = System.IO.File.Exists(saveState.TtmlPath);
         saveState.HadExistingTxt = System.IO.File.Exists(saveState.TxtPath);
 
@@ -3511,12 +3510,10 @@ public class LyricsService
     private sealed class LyricsSaveState((string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths, DeezSpoTagSettings settings)
     {
         public string LrcPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.lrc");
-        public string ElrcPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.elrc");
         public string TtmlPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.ttml");
         public string TxtPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.txt");
         public bool RichOutputRequested { get; } = ShouldSaveSyncedLrc(settings) || ShouldSaveEnhancedSynchronizedLyrics(settings) || ShouldOutputTtmlBySettings(settings);
         public bool HadExistingLrc { get; set; }
-        public bool HadExistingElrc { get; set; }
         public bool HadExistingTtml { get; set; }
         public bool HadExistingTxt { get; set; }
         public bool SavedLyrics { get; set; }
@@ -3551,6 +3548,14 @@ public class LyricsService
                 : string.Empty;
             var usedEnhanced = !string.IsNullOrEmpty(enhanced);
             if (timingPreference == LrcTimingModes.WordEnhanced && !usedEnhanced)
+            {
+                return;
+            }
+
+            var upgradingExistingLineLrc = state.HadExistingLrc
+                && LrcTimingModes.ImpliesEnhanced(timingPreference)
+                && ReadExistingLrcTiming(state.LrcPath) == LrcTimingKind.Line;
+            if (upgradingExistingLineLrc && !usedEnhanced)
             {
                 return;
             }
@@ -3592,6 +3597,20 @@ public class LyricsService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Error downloading synchronized lyrics.");
+        }
+    }
+
+    private static LrcTimingKind ReadExistingLrcTiming(string path)
+    {
+        try
+        {
+            return System.IO.File.Exists(path)
+                ? LrcContent.ClassifyTiming(System.IO.File.ReadAllText(path))
+                : LrcTimingKind.None;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return LrcTimingKind.None;
         }
     }
 
@@ -3668,10 +3687,8 @@ public class LyricsService
         var hasExistingRichLyrics = state.SavedLrc
             || state.SavedTtml
             || state.HadExistingLrc
-            || state.HadExistingElrc
             || state.HadExistingTtml
             || System.IO.File.Exists(state.LrcPath)
-            || System.IO.File.Exists(state.ElrcPath)
             || System.IO.File.Exists(state.TtmlPath);
         return state.RichOutputRequested && (state.SavedLrc || state.SavedTtml || hasExistingRichLyrics);
     }
@@ -3708,7 +3725,7 @@ public class LyricsService
     private void RemoveTxtWhenRichLyricsExist(LyricsSaveState state)
     {
         if (!state.RichOutputRequested
-            || !(state.SavedLrc || state.SavedTtml || state.HadExistingLrc || state.HadExistingElrc || state.HadExistingTtml)
+            || !(state.SavedLrc || state.SavedTtml || state.HadExistingLrc || state.HadExistingTtml)
             || !System.IO.File.Exists(state.TxtPath))
         {
             return;

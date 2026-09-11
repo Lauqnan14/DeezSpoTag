@@ -14,6 +14,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private readonly ArtistArtworkCatalogService _artworkCatalog;
     private readonly ArtistMetadataCacheRefreshService _cacheRefreshService;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly IDownloadTagSettingsResolver _profileSettingsResolver;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
     private readonly Dictionary<long, QueueItem> _queueItems = new();
@@ -30,6 +31,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         _artworkCatalog = dependencies.ArtworkCatalog;
         _cacheRefreshService = dependencies.CacheRefreshService;
         _settingsService = dependencies.SettingsService;
+        _profileSettingsResolver = dependencies.ProfileSettingsResolver;
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(dependencies.Environment);
     }
@@ -67,6 +69,57 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
                 "info",
                 $"Artist image fetch queued ({enqueued} artists)."));
         }
+    }
+
+    public async Task<ArtistArtworkRefreshPlan> PlanArtistRefreshAsync(
+        long trackId,
+        CancellationToken cancellationToken)
+    {
+        var info = await _repository.GetTrackAudioInfoAsync(trackId, cancellationToken);
+        if (info is null || info.DestinationFolderId <= 0)
+        {
+            return ArtistArtworkRefreshPlan.Skip(trackId, "Library track or assigned profile is unavailable.");
+        }
+
+        var profile = await _profileSettingsResolver.ResolveProfileAsync(info.DestinationFolderId, cancellationToken);
+        var settings = _settingsService.LoadSettings();
+        var saveArtistArtwork = profile?.RuntimeOverrides?.SaveArtworkArtist ?? settings.SaveArtworkArtist;
+        if (!saveArtistArtwork)
+        {
+            return ArtistArtworkRefreshPlan.Skip(trackId, "Artist artwork is disabled by the assigned profile.");
+        }
+
+        var artistId = await _repository.GetArtistIdForTrackAsync(trackId, cancellationToken);
+        if (!artistId.HasValue || artistId.Value <= 0)
+        {
+            return ArtistArtworkRefreshPlan.Skip(trackId, "Library artist is unavailable.");
+        }
+
+        var artist = await _repository.GetArtistAsync(artistId.Value, cancellationToken);
+        if (artist is null)
+        {
+            return ArtistArtworkRefreshPlan.Skip(trackId, "Library artist is unavailable.");
+        }
+
+        var item = new QueueItem(artist.Id, artist.Name);
+        var shouldFetch = await ShouldFetchAsync(item, cancellationToken);
+        return new ArtistArtworkRefreshPlan(
+            trackId,
+            artist.Id,
+            artist.Name,
+            shouldFetch,
+            shouldFetch ? null : "Existing artist artwork satisfies the assigned profile.");
+    }
+
+    public async Task<bool> RefreshArtistNowAsync(ArtistArtworkRefreshPlan plan, CancellationToken cancellationToken)
+    {
+        if (!plan.ShouldFetchArtistArtwork || plan.ArtistId <= 0 || string.IsNullOrWhiteSpace(plan.ArtistName))
+        {
+            return false;
+        }
+
+        await ProcessQueueItemAsync(new QueueItem(plan.ArtistId, plan.ArtistName), cancellationToken);
+        return true;
     }
 
     public override Task StartAsync(CancellationToken cancellationToken)
@@ -248,4 +301,15 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     }
 
     private sealed record QueueItem(long ArtistId, string ArtistName);
+}
+
+public sealed record ArtistArtworkRefreshPlan(
+    long TrackId,
+    long ArtistId,
+    string ArtistName,
+    bool ShouldFetchArtistArtwork,
+    string? SkipReason)
+{
+    public static ArtistArtworkRefreshPlan Skip(long trackId, string reason)
+        => new(trackId, 0, string.Empty, false, reason);
 }

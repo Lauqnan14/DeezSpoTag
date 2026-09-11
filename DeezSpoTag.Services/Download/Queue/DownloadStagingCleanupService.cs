@@ -37,7 +37,6 @@ public sealed class DownloadStagingCleanupService
     private static readonly string[] RelatedFileExtensions =
     [
         ".lrc",
-        ".elrc",
         ".ttml",
         ".txt"
     ];

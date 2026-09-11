@@ -223,6 +223,7 @@ public class TaggingStatusWrap
 public class TaggingStatus
 {
     public string Status { get; set; } = "";
+    public string? ActivityState { get; set; }
     public string Path { get; set; } = "";
     public string? Message { get; set; }
     public double? Accuracy { get; set; }
@@ -331,6 +332,7 @@ public partial class AutoTagService
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
+    private readonly LibraryArtistImageQueueService _artistImageQueueService;
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
@@ -594,6 +596,7 @@ public partial class AutoTagService
         public required QualityScannerService QualityScannerService { get; init; }
         public required DuplicateCleanerService DuplicateCleanerService { get; init; }
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
+        public required LibraryArtistImageQueueService ArtistImageQueueService { get; init; }
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
@@ -634,6 +637,7 @@ public partial class AutoTagService
         _qualityScannerService = collaborators.QualityScannerService;
         _duplicateCleanerService = collaborators.DuplicateCleanerService;
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
+        _artistImageQueueService = collaborators.ArtistImageQueueService;
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
         _profileResolutionService = collaborators.ProfileResolutionService;
         _mediaServerRefreshService = collaborators.MediaServerRefreshService;
@@ -1066,6 +1070,11 @@ public partial class AutoTagService
         if (source.StartedPlatforms.Count > 0)
         {
             target.StartedPlatforms.AddRange(source.StartedPlatforms);
+        }
+
+        if (source.EnhancementWorkflows.Count > 0)
+        {
+            target.EnhancementWorkflows.AddRange(source.EnhancementWorkflows);
         }
 
         foreach (var (diffPath, diffValue) in source.TagDiffs)
@@ -2347,12 +2356,18 @@ public partial class AutoTagService
                 null);
         }
 
-        // Mark the source job as resumed AFTER StartJob consumed its checkpoint seed.
-        job.Status = AutoTagLiterals.ResumedStatus;
-        job.Error = $"Resumed by successor job {resumed.Id}.";
-        AppendLog(job, $"resume: successor job {resumed.Id} started from checkpoint {job.ResumeCheckpoint.StageName}.");
-        AppendActivityLog(job.Id, $"autotag resumed by successor job {resumed.Id}");
-        SaveJob(job);
+        // Same-id resume (enhancement reuses the root job id): StartJob already
+        // replaced the in-memory job with the running continuation. Stamping this
+        // stale reference as "resumed" would overwrite that continuation on disk
+        // and make the run look like it started over.
+        if (!string.Equals(job.Id, resumed.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            job.Status = AutoTagLiterals.ResumedStatus;
+            job.Error = $"Resumed by successor job {resumed.Id}.";
+            AppendLog(job, $"resume: successor job {resumed.Id} started from checkpoint {job.ResumeCheckpoint.StageName}.");
+            AppendActivityLog(job.Id, $"autotag resumed by successor job {resumed.Id}");
+            SaveJob(job);
+        }
 
         return new ResumeJobOutcome(true, null, resumed.Id);
     }
@@ -2786,8 +2801,11 @@ public partial class AutoTagService
                 job,
                 $"resume checkpoint active for stage '{stage.Name}': platformIndex={resumeCursor.PlatformIndex}, fileIndex={resumeCursor.FileIndex}");
         }
-        else if (job.ResumeCheckpoint != null && !CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+        else if (job.ResumeCheckpoint != null
+            && !string.Equals(job.ResumeCheckpoint.StageName, stage.Name, StringComparison.OrdinalIgnoreCase))
         {
+            // Only drop the checkpoint when this stage is not the one it belongs to.
+            // A drifted config hash must not rewind an enhancement run to file 0.
             job.ResumeCheckpoint = null;
             SaveJob(job);
         }
@@ -2926,8 +2944,9 @@ public partial class AutoTagService
         SuccessPostProcessingContext context,
         CancellationToken cancellationToken)
     {
+        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
         var autoMove = await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
-        if (IsManualEnrichmentRunIntent(job.RunIntent) && !autoMove.Completed)
+        if (isManualEnrichment && !autoMove.Completed)
         {
             throw new InvalidOperationException(
                 autoMove.Summary.Error ?? "Manual enrichment finalization did not move every fully enriched file.");
@@ -2937,8 +2956,8 @@ public partial class AutoTagService
             path,
             context.ConfigPath,
             context.IncludesEnhancementWorkflows,
-            cancellationToken);
-        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
+            cancellationToken,
+            autoMove.Summary);
         var hasEnhancementWork = context.IncludesEnhancementStage
             || context.IncludesEnhancementWorkflows
             || isManualEnrichment;
@@ -2946,10 +2965,15 @@ public partial class AutoTagService
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
         }
-        await IngestKnownFilesAfterAutoMoveAsync(
-            job,
-            autoMove.Summary,
-            cancellationToken);
+        if (!isManualEnrichment)
+        {
+            // Manual enrichment already ingested the moved paths before its sidecar
+            // lookup; the lookup resolves track identities at the moved paths.
+            await IngestKnownFilesAfterAutoMoveAsync(
+                job,
+                autoMove.Summary,
+                cancellationToken);
+        }
         await TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
             job,
             hasEnhancementWork,
@@ -5001,6 +5025,21 @@ public partial class AutoTagService
             && !string.Equals(normalized, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The integrated enhancement workflows (sidecar lookup, quality checks, folder
+    /// uniformity) run for enhancement intents and for manual enrichment — manual
+    /// enrichment's just-moved files get the sidecar lookup with their library track
+    /// identity. Download enrichment is excluded: its sidecars are produced by the
+    /// download prefetch and no sidecar lookup runs there.
+    /// The gap-fill STAGE keeps using <see cref="ShouldRunEnhancementForIntent"/>,
+    /// which also excludes manual enrichment (manual runs tag via the enrichment stage).
+    /// </summary>
+    private static bool ShouldRunIntegratedWorkflowsForIntent(string? runIntent)
+    {
+        var normalized = NormalizeRunIntent(runIntent);
+        return !string.Equals(normalized, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string InjectRunTrigger(string configJson, string trigger)
     {
         try
@@ -5624,13 +5663,30 @@ public partial class AutoTagService
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(checkpoint.StageName) || string.IsNullOrWhiteSpace(checkpoint.StageConfigHash))
+        if (string.IsNullOrWhiteSpace(checkpoint.StageName))
         {
             return false;
         }
 
-        return string.Equals(checkpoint.StageName, stage.Name, StringComparison.OrdinalIgnoreCase)
-               && string.Equals(checkpoint.StageConfigHash, stage.ConfigHash, StringComparison.OrdinalIgnoreCase);
+        if (!string.Equals(checkpoint.StageName, stage.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Enhancement/gap-fill stage JSON is rebuilt on resume (platform auth,
+        // eligibility, sanitization). A hash drift must not discard the cursor —
+        // LastPath still identifies the file that finished.
+        if (string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(checkpoint.StageConfigHash))
+        {
+            return false;
+        }
+
+        return string.Equals(checkpoint.StageConfigHash, stage.ConfigHash, StringComparison.OrdinalIgnoreCase);
     }
 
     private void TryCaptureTagDiff(AutoTagJob job, TaggingStatusWrap status)

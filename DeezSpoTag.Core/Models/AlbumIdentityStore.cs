@@ -40,7 +40,16 @@ public sealed class AlbumIdentityStore
                 .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
                 .Select(entry => new AlbumIdentityStoreEntry(
                     entry.Key,
-                    new AlbumIdentity(entry.ReleaseDate, entry.AlbumId, entry.AlbumArtistId),
+                    new AlbumIdentity(
+                        entry.ReleaseDate,
+                        entry.AlbumId,
+                        entry.AlbumArtistId,
+                        entry.ReleaseGroupId,
+                        entry.ReleaseStatus,
+                        entry.ReleaseCountry,
+                        entry.Barcode,
+                        entry.ReleaseType,
+                        entry.PlatformReleaseIds),
                     entry.UpdatedAt))
                 .ToList()
         };
@@ -88,7 +97,13 @@ public sealed class AlbumIdentityStore
                     entry.Identity.ReleaseDate,
                     entry.Identity.AlbumId,
                     entry.Identity.AlbumArtistId,
-                    entry.UpdatedAt))
+                    entry.UpdatedAt,
+                    entry.Identity.ReleaseGroupId,
+                    entry.Identity.ReleaseStatus,
+                    entry.Identity.ReleaseCountry,
+                    entry.Identity.Barcode,
+                    entry.Identity.ReleaseType,
+                    entry.Identity.PlatformReleaseIds))
                 .ToList()
         };
 
@@ -120,4 +135,10 @@ public sealed record AlbumIdentityStoreEntryDocument(
     [property: JsonPropertyName("releaseDate")] string? ReleaseDate,
     [property: JsonPropertyName("albumId")] string? AlbumId,
     [property: JsonPropertyName("albumArtistId")] string? AlbumArtistId,
-    [property: JsonPropertyName("updatedAt")] DateTimeOffset UpdatedAt);
+    [property: JsonPropertyName("updatedAt")] DateTimeOffset UpdatedAt,
+    [property: JsonPropertyName("releaseGroupId")] string? ReleaseGroupId,
+    [property: JsonPropertyName("releaseStatus")] string? ReleaseStatus,
+    [property: JsonPropertyName("releaseCountry")] string? ReleaseCountry,
+    [property: JsonPropertyName("barcode")] string? Barcode,
+    [property: JsonPropertyName("releaseType")] string? ReleaseType,
+    [property: JsonPropertyName("platformReleaseIds")] IReadOnlyDictionary<string, string>? PlatformReleaseIds);

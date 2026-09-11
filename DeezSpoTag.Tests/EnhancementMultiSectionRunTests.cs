@@ -759,6 +759,11 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("AnimatedArtworkNaming.IsAlbumAnimatedArtworkSidecar", runnerSource, StringComparison.Ordinal);
         Assert.Contains("artworkBadgeMarkup", historySource, StringComparison.Ordinal);
         Assert.Contains("renderLyricsCards(allRows.filter(isSidecarHistoryRow))", historySource, StringComparison.Ordinal);
+        Assert.Contains("task-activity", historySource, StringComparison.Ordinal);
+        Assert.Contains("activityState", historySource, StringComparison.Ordinal);
+        Assert.Contains("resolveSidecarFetchingActivity", historySource, StringComparison.Ordinal);
+        Assert.Contains("findActiveSidecarKey", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Fetching lyrics…", historySource, StringComparison.Ordinal);
         Assert.DoesNotContain("collectSidecarRows", historySource, StringComparison.Ordinal);
         Assert.DoesNotContain("${usedShazam}${message}${artworkBadgeHtml}", historySource, StringComparison.Ordinal);
         Assert.Contains("resolveSidecarCoverUrl", historySource, StringComparison.Ordinal);
@@ -784,6 +789,13 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("quality checks starting", workflows, StringComparison.Ordinal);
         Assert.Contains("folder uniformity starting", workflows, StringComparison.Ordinal);
         Assert.Contains("onAlbumCompleted", coverService, StringComparison.Ordinal);
+        Assert.Contains("onAlbumFetchStarted", coverService, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.RecoveryTrigger", workflows, StringComparison.Ordinal);
+        Assert.Contains("IsCompletedEnhancementWorkflow", workflows, StringComparison.Ordinal);
+        Assert.Contains("SidecarFetchActivity.Describe", workflows, StringComparison.Ordinal);
+        Assert.Contains("PlanTrackRefreshAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("activityState: \"fetchingSidecars\"", workflows, StringComparison.Ordinal);
+        Assert.Contains("_coverMaintenanceService.PlanAsync", workflows, StringComparison.Ordinal);
         Assert.Contains("lock (job)", workflows, StringComparison.Ordinal);
         Assert.Contains("updateTrackIndex: false", autoTagService, StringComparison.Ordinal);
         Assert.DoesNotContain("job.TotalItems = job.TargetUsable;\n        }", workflows, StringComparison.Ordinal);

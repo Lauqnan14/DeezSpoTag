@@ -286,6 +286,58 @@ public sealed class FolderUniformityRemoveEmptyFoldersTests : IDisposable
             "batch-scoped callers such as download moves must never sweep the whole library root");
     }
 
+    [Fact]
+    public async Task OrganizePathInBatchesAsync_MergesAlbumFoldersThatDifferOnlyByCaseOnLinux()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var libraryRoot = Path.Join(_tempRoot, "case-only-album");
+        var canonicalAlbumDir = Path.Join(libraryRoot, "21 Savage", "american dream");
+        var misplacedAlbumDir = Path.Join(libraryRoot, "21 Savage", "American Dream");
+        Directory.CreateDirectory(canonicalAlbumDir);
+        Directory.CreateDirectory(misplacedAlbumDir);
+
+        var canonicalTrack = Path.Join(canonicalAlbumDir, "21 Savage - First.flac");
+        var misplacedTrack = Path.Join(misplacedAlbumDir, "21 Savage - Second.flac");
+        await CreateAudioAsync(canonicalTrack);
+        await CreateAudioAsync(misplacedTrack);
+
+        foreach (var (path, title, trackNumber) in new[]
+                 {
+                     (canonicalTrack, "First", 1u),
+                     (misplacedTrack, "Second", 2u)
+                 })
+        {
+            using var file = TagLib.File.Create(path);
+            file.Tag.Title = title;
+            file.Tag.Album = "american dream";
+            file.Tag.Performers = ["21 Savage"];
+            file.Tag.AlbumArtists = ["21 Savage"];
+            file.Tag.Track = trackNumber;
+            file.Save();
+        }
+
+        await _organizer.OrganizePathInBatchesAsync(
+            libraryRoot,
+            new AutoTagOrganizerOptions
+            {
+                MoveMisplacedFiles = true,
+                MergeIntoExistingDestinationFolders = true,
+                RenameFilesToTemplate = true,
+                RemoveEmptyFolders = true
+            },
+            batchSize: 40,
+            log: null,
+            CancellationToken.None);
+
+        Assert.True(Directory.Exists(canonicalAlbumDir));
+        Assert.False(Directory.Exists(misplacedAlbumDir));
+        Assert.Equal(2, Directory.EnumerateFiles(canonicalAlbumDir, "*.flac").Count());
+    }
+
     private async Task<(string LibraryRoot, string EmptyArtistDir)> BuildLibraryAsync(string name)
     {
         var libraryRoot = Path.Join(_tempRoot, name);
