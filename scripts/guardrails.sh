@@ -107,6 +107,7 @@ run_all_tests=0
 run_download_suite=0
 run_library_suite=0
 run_spotify_suite=0
+run_autotag_suite=0
 
 if [[ "$MODE" == "full" ]]; then
   run_all_tests=1
@@ -129,6 +130,15 @@ else
     run_library_suite=1
   fi
 
+  if have_changes_matching '^DeezSpoTag\.Web/Services/AutoTag' \
+    || have_changes_matching '^DeezSpoTag\.Web/Services/AutoTagService' \
+    || have_changes_matching '^DeezSpoTag\.Web/Controllers/Api/AutoTag' \
+    || have_changes_matching '^DeezSpoTag\.Web/Views/AutoTag' \
+    || have_changes_matching '^DeezSpoTag\.Web/wwwroot/js/autotag' \
+    || have_changes_matching '^DeezSpoTag\.Web/wwwroot/css/autotag' ; then
+    run_autotag_suite=1
+  fi
+
   if have_changes_matching '^DeezSpoTag\.Web/Services/SpotifyArtistService\.cs' \
     || have_changes_matching '^DeezSpoTag\.Web/Services/Spotify.*' \
     || have_changes_matching '^DeezSpoTag\.Web/Controllers/Api/Spotify.*' ; then
@@ -142,23 +152,28 @@ if [[ "$run_all_tests" -eq 1 ]]; then
 else
   if [[ "$run_download_suite" -eq 1 ]]; then
     run_test_filter "download regression suite" \
-      "FullyQualifiedName~QobuzQueueEndToEndTests|FullyQualifiedName~LyricsSettingsPolicyTests|FullyQualifiedName~TechnicalLyricsSettingsApplierTests|FullyQualifiedName~AppleAacVariantSelectionTests|FullyQualifiedName~AppleHlsManifestParserTests|FullyQualifiedName~ArtworkFallbackHelperTests"
+      "FullyQualifiedName~QobuzQueueEndToEndTest|FullyQualifiedName~LyricsSettingsPolicyTest|FullyQualifiedName~TechnicalLyricsSettingsApplierTest|FullyQualifiedName~AppleAacVariantSelectionTest|FullyQualifiedName~AppleHlsManifestParserTest|FullyQualifiedName~ArtworkFallbackHelperTest"
   fi
 
   if [[ "$run_library_suite" -eq 1 ]]; then
     run_test_filter "library regression suite" \
-      "FullyQualifiedName~LibraryRepositoryCoverageTests"
+      "FullyQualifiedName~LibraryRepositoryCoverageTest"
   fi
 
   if [[ "$run_spotify_suite" -eq 1 ]]; then
     run_test_filter "spotify matching regression suite" \
-      "FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTests"
+      "FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTest"
   fi
 
-  if [[ "$run_download_suite" -eq 0 && "$run_library_suite" -eq 0 && "$run_spotify_suite" -eq 0 ]]; then
+  if [[ "$run_autotag_suite" -eq 1 ]]; then
+    run_test_filter "autotag regression suite" \
+      "FullyQualifiedName~AutoTag|FullyQualifiedName~OneTagger|FullyQualifiedName~AlbumIdentity|FullyQualifiedName~ManualEnhancement|FullyQualifiedName~LastFmAutoTag"
+  fi
+
+  if [[ "$run_download_suite" -eq 0 && "$run_library_suite" -eq 0 && "$run_spotify_suite" -eq 0 && "$run_autotag_suite" -eq 0 ]]; then
     log "No mapped impact area; running smoke subset."
     run_test_filter "smoke suite" \
-      "FullyQualifiedName~QobuzQueueEndToEndTests|FullyQualifiedName~LibraryRepositoryCoverageTests|FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTests"
+      "FullyQualifiedName~QobuzQueueEndToEndTest|FullyQualifiedName~LibraryRepositoryCoverageTest|FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTest"
   fi
 fi
 
