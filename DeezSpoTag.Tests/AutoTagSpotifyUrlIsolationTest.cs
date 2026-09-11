@@ -7,7 +7,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class AutoTagSpotifyUrlIsolationTests
+public sealed class AutoTagSpotifyUrlIsolationTest
 {
     private const string SpotifyTrackId = "0VjIjW4GlUZAMYd2vXMi3b";
     private const string CanonicalSpotifyUrl = "https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b";
@@ -98,12 +98,7 @@ public sealed class AutoTagSpotifyUrlIsolationTests
     [Fact]
     public void SpotifyUrlWriter_IsOwnedByTheUrlSelection()
     {
-        var source = File.ReadAllText(Path.Combine(
-            ResolveRepoRoot(),
-            "DeezSpoTag.Web",
-            "Services",
-            "AutoTag",
-            "LocalAutoTagRunner.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var methodStart = source.IndexOf("private static void WriteUrlTag", StringComparison.Ordinal);
         var methodEnd = source.IndexOf("private static void WriteTrackIdTag", methodStart, StringComparison.Ordinal);
         var method = source[methodStart..methodEnd];

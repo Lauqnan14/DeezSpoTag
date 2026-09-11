@@ -6,7 +6,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class DeezerAuthenticationPathGuardrailTests
+public sealed class DeezerAuthenticationPathGuardrailTest
 {
     [Fact]
     public void GlobalSettings_DoNotExposeLegacyDeezerCredentials()
@@ -36,8 +36,8 @@ public sealed class DeezerAuthenticationPathGuardrailTests
         var lyrics = ReadSource("DeezSpoTag.Services", "Download", "Utils", "LyricsService.cs");
         var matcher = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "DeezerMatcher.cs");
         var autoTagClient = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "DeezerClient.cs");
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
-        var autoTag = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var autoTag = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("_authenticatedDeezerService.GetArlAsync()", lyrics, StringComparison.Ordinal);
         Assert.DoesNotContain("settings.Arl", lyrics, StringComparison.Ordinal);

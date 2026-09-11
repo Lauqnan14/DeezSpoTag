@@ -11,7 +11,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class LyricsProviderRegistryTests
+public sealed class LyricsProviderRegistryTest
 {
     [Fact]
     public void Registry_ContainsOnlyApprovedProviders_InDefaultOrder()
@@ -139,12 +139,7 @@ public sealed class LyricsProviderRegistryTests
     public void StageMatrix_UsesUnifiedEngineAndExcludesAutomaticDownloadEnrichment()
     {
         var root = ResolveRepoRoot();
-        var runner = File.ReadAllText(Path.Join(
-            root,
-            "DeezSpoTag.Web",
-            "Services",
-            "AutoTag",
-            "LocalAutoTagRunner.cs"));
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var stages = File.ReadAllText(Path.Join(
             root,
             "DeezSpoTag.Web",

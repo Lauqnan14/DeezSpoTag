@@ -13,7 +13,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class MusicBrainzImplementationTests
+public sealed class MusicBrainzImplementationTest
 {
     [Fact]
     public void Descriptor_AdvertisesExistingSharedTagsMusicBrainzCanPopulate()
@@ -42,7 +42,7 @@ public sealed class MusicBrainzImplementationTests
     {
         var repoRoot = ResolveRepoRoot();
         var autoTagJs = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
-        var runner = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var matcher = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "MusicBrainzMatcher.cs"));
         var canonicalizer = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "TaggingProfileCanonicalizer.cs"));
         var downloadConverter = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "DownloadTagSettingsConverter.cs"));

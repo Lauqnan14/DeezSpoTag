@@ -4,12 +4,12 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class AutoTagPlatformMatchTimeoutGuardrailTests
+public sealed class AutoTagPlatformMatchTimeoutGuardrailTest
 {
     [Fact]
     public void LocalAutoTagRunner_OpensPerJobCircuitAfterFirstMatchTimeout()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("HashSet<string> UnavailablePlatforms", runner, StringComparison.Ordinal);
         Assert.Contains("IsPlatformUnavailable(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
@@ -22,7 +22,7 @@ public sealed class AutoTagPlatformMatchTimeoutGuardrailTests
     [Fact]
     public void LocalAutoTagRunner_DoesNotTreatLaterTimeoutSkipsAsProviderErrors()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var resolveStart = runner.IndexOf("private async Task<AutoTagMatchResult?> ResolvePlatformMatchAsync", StringComparison.Ordinal);
         Assert.True(resolveStart >= 0, "Missing ResolvePlatformMatchAsync.");
         var resolveEnd = runner.IndexOf("private async Task<AutoTagMatchResult?> RunPlatformMatchWithTimeoutAsync", resolveStart, StringComparison.Ordinal);
@@ -84,7 +84,7 @@ public sealed class AutoTagPlatformMatchTimeoutGuardrailTests
     [Fact]
     public void LibrespotInnerTimeout_IsShorterThanAutoTagMatchTimeout()
     {
-        var runner = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var blob = ReadSource("DeezSpoTag.Web", "Services", "SpotifyBlobService.cs");
         var pathfinder = ReadSource("DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs");
 

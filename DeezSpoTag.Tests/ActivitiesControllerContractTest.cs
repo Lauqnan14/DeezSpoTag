@@ -10,7 +10,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class ActivitiesControllerContractTests
+public sealed class ActivitiesControllerContractTest
 {
     [Fact]
     public void CancelDownloadRequest_RejectsEmptyUuid()
@@ -275,9 +275,7 @@ public sealed class ActivitiesControllerContractTests
     [Fact]
     public void AutoTag_ProtectsExistingAlbumFromLossyPlatformMatches()
     {
-        var source = File.ReadAllText(Path.Combine(
-            AppContext.BaseDirectory,
-            "../../../../DeezSpoTag.Web/Services/AutoTag/LocalAutoTagRunner.cs"));
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("ApplyAlbumLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Album);", source, StringComparison.Ordinal);
         Assert.Contains("sourceTrack.Album = currentAlbum;", source, StringComparison.Ordinal);
