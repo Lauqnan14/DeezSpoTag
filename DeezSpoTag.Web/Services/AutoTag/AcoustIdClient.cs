@@ -39,7 +39,7 @@ public sealed class AcoustIdClient
     public async Task<AcoustIdLookupResponse?> LookupAsync(string fingerprint, int? durationSeconds, CancellationToken cancellationToken)
     {
         var duration = durationSeconds is > 0 ? durationSeconds.Value.ToString() : string.Empty;
-        var path = $"/v2/lookup?client={Uri.EscapeDataString(ClientKey)}&meta={Uri.EscapeDataString("recordings+releases+releasegroups+compress+sources")}"
+        var path = $"/v2/lookup?client={Uri.EscapeDataString(ClientKey)}&meta={Uri.EscapeDataString("recordings+releases+compress+sources")}"
             + (duration.Length > 0 ? $"&duration={duration}" : string.Empty)
             + $"&fingerprint={Uri.EscapeDataString(fingerprint)}";
 
@@ -123,7 +123,6 @@ public sealed class AcoustIdError
 public sealed class AcoustIdResult
 {
     public double Score { get; set; }
-    public int? Duration { get; set; }
     [JsonPropertyName("recordings")]
     public List<AcoustIdRecording>? Recordings { get; set; }
 }
@@ -137,8 +136,6 @@ public sealed class AcoustIdRecording
     public List<AcoustIdCredit>? ArtistCredit { get; set; }
     [JsonPropertyName("artists")]
     public List<AcoustIdArtist>? Artists { get; set; }
-    [JsonPropertyName("releasegroups")]
-    public List<AcoustIdReleaseGroup>? ReleaseGroups { get; set; }
     [JsonPropertyName("releases")]
     public List<AcoustIdRelease>? Releases { get; set; }
 }
@@ -153,14 +150,6 @@ public sealed class AcoustIdCredit
 public sealed class AcoustIdArtist
 {
     public string? Name { get; set; }
-}
-
-public sealed class AcoustIdReleaseGroup
-{
-    public string? Id { get; set; }
-    public string? Title { get; set; }
-    [JsonPropertyName("primary-type")]
-    public string? PrimaryType { get; set; }
 }
 
 public sealed class AcoustIdRelease

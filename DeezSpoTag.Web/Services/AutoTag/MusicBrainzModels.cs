@@ -30,10 +30,7 @@ public sealed class Alias
 {
     public string Name { get; set; } = "";
     public string? Locale { get; set; }
-    public string? Type { get; set; }
     public bool? Primary { get; set; }
-    [JsonPropertyName("sort-name")]
-    public string? SortName { get; set; }
 }
 
 public sealed class Relation
@@ -41,10 +38,8 @@ public sealed class Relation
     [JsonPropertyName("target-type")]
     public string? TargetType { get; set; }
     public string? Type { get; set; }
-    public string? Direction { get; set; }
     public Artist? Artist { get; set; }
     public Work? Work { get; set; }
-    public string? Url { get; set; }
     [JsonPropertyName("attribute-list")]
     public List<string>? Attributes { get; set; }
 }

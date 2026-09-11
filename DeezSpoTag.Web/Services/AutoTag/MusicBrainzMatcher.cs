@@ -43,6 +43,7 @@ public sealed class MusicBrainzMatcher
         MusicBrainzMatchConfig config,
         CancellationToken cancellationToken)
     {
+        var matchStartedAt = DateTimeOffset.UtcNow;
         var resolvedConfig = NormalizeConfig(config);
         var preferences = MusicBrainzPreferences.FromConfig(resolvedConfig);
 
@@ -92,21 +93,33 @@ public sealed class MusicBrainzMatcher
         // Fingerprint fallback: when the file carries no usable tags (or the text
         // matching failed), fingerprint it and let AcoustID name the recording —
         // the same fallback Picard runs, then resolved through MusicBrainz.
+        // Budget-aware: the platform match runs under a hard per-file timeout with a
+        // one-strike circuit breaker, so the fallback stands down before the hard
+        // timeout instead of burning it and disabling MusicBrainz for the run.
         if (resolvedConfig.UseAcoustIdFallback
             && !string.IsNullOrWhiteSpace(info.FilePath)
-            && File.Exists(info.FilePath))
+            && File.Exists(info.FilePath)
+            && DateTimeOffset.UtcNow - matchStartedAt < FingerprintFallbackDeadline)
         {
-            return await TryMatchByFingerprintAsync(info, matchingConfig, preferences, resolvedConfig, cancellationToken);
+            return await TryMatchByFingerprintAsync(info, matchingConfig, preferences, resolvedConfig, matchStartedAt, cancellationToken);
         }
 
         return null;
     }
+
+    /// <summary>
+    /// The fingerprint fallback shares the platform's 45s match budget with the text
+    /// queries; it stands down before the hard timeout instead of burning the budget
+    /// and tripping the one-strike platform circuit breaker.
+    /// </summary>
+    private static readonly TimeSpan FingerprintFallbackDeadline = TimeSpan.FromSeconds(38);
 
     private async Task<AutoTagMatchResult?> TryMatchByFingerprintAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig matchingConfig,
         MusicBrainzPreferences preferences,
         MusicBrainzMatchConfig resolvedConfig,
+        DateTimeOffset matchStartedAt,
         CancellationToken cancellationToken)
     {
         if (_acoustIdFingerprintService == null || _acoustIdClient == null)
@@ -133,11 +146,18 @@ public sealed class MusicBrainzMatcher
             .GroupBy(candidate => candidate.RecordingId, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderByDescending(candidate => candidate.Score)
-            .Take(8)
+            .Take(3)
             .ToList();
 
         foreach (var candidate in candidates)
         {
+            // Each candidate resolution costs rate-limited MusicBrainz requests; stop
+            // before the platform's hard match timeout fires.
+            if (DateTimeOffset.UtcNow - matchStartedAt >= FingerprintFallbackDeadline)
+            {
+                return null;
+            }
+
             try
             {
                 var recording = await _client.GetRecordingAsync(candidate.RecordingId, cancellationToken);
