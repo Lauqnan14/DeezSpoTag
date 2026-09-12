@@ -384,6 +384,57 @@ public sealed class EnhancementMultiSectionRunTest
         => File.ReadAllText(Path.Join(
             FindRepoRoot(), "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
 
+    /// <summary>
+    /// Quality checks are manual-only. A stored qualityChecks.enabled survives the loss
+    /// of its checkbox, so automation must not read it — otherwise the section stays
+    /// scheduled with no way to switch it off from the UI.
+    /// </summary>
+    [Fact]
+    public void ScheduledEnhancement_NeverDispatchesQualityChecks()
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "GetEnabledEnhancementFeatures",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        List<string> FeaturesFor(JsonObject enhancement)
+        {
+            var configJson = new JsonObject { ["enhancement"] = enhancement }.ToJsonString();
+            return Assert.IsType<List<string>>(method!.Invoke(null, [configJson]));
+        }
+
+        // A profile whose only enhancement work is quality checks schedules nothing.
+        var qualityOnly = FeaturesFor(new JsonObject
+        {
+            ["qualityChecks"] = new JsonObject { ["enabled"] = true, ["flagMissingTags"] = true }
+        });
+        Assert.DoesNotContain(AutoTagLiterals.EnhancementFeatureQualityChecks, qualityOnly);
+        Assert.Empty(qualityOnly);
+
+        // A stale enabled flag cannot ride along on a run scheduled for another section.
+        var sidecarsAndQuality = FeaturesFor(new JsonObject
+        {
+            ["sidecars"] = new JsonObject { ["enabled"] = true, ["queueLyricsRefresh"] = true },
+            ["qualityChecks"] = new JsonObject { ["enabled"] = true, ["flagDuplicates"] = true }
+        });
+        Assert.Contains(AutoTagLiterals.EnhancementFeatureSidecars, sidecarsAndQuality);
+        Assert.DoesNotContain(AutoTagLiterals.EnhancementFeatureQualityChecks, sidecarsAndQuality);
+    }
+
+    [Fact]
+    public void ScheduledFeatureList_StaysFreeOfTheQualityChecksGate()
+    {
+        var source = ReadOrchestration();
+        var start = source.IndexOf("private static List<string> GetEnabledEnhancementFeatures", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var end = source.IndexOf("private static string BuildEnhancementFeatureConfig", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        Assert.DoesNotContain("IsQualityChecksRunnable", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnhancementFeatureQualityChecks", method, StringComparison.Ordinal);
+        Assert.Contains("EnhancementFeatureFolderUniformity", method, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ManualFolderRun_LivesInTheEnhancementTabNotTheLibraryFolderRows()
     {
