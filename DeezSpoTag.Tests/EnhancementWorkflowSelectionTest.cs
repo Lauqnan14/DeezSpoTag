@@ -105,22 +105,45 @@ public sealed class EnhancementWorkflowSelectionTest
         Assert.True(EnhancementWorkflowSelection.IsSidecarsRunnable(enhancement));
     }
 
+    /// <summary>
+    /// Quality Checks is manual-only: its own action depends on checks being configured, not on
+    /// the legacy "enabled" schedule flag, and legacy sidecar lyrics keys never count as checks.
+    /// </summary>
     [Fact]
-    public void IsQualityChecksRunnable_IgnoresLegacyLyricsKeys()
+    public void HasConfiguredQualityChecks_IgnoresLegacyLyricsKeysAndTheEnabledFlag()
     {
         var enhancement = Parse("""
             {
               "qualityChecks": {
-                "enabled": true,
+                "enabled": false,
                 "queueLyricsRefresh": true,
                 "removeLineSyncedTtml": true
               }
             }
             """);
-        Assert.False(EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancement));
+        Assert.False(EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancement));
 
         enhancement["qualityChecks"]!["flagDuplicates"] = true;
-        Assert.True(EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancement));
+        Assert.True(EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancement));
+    }
+
+    /// <summary>
+    /// Configuring checks alone must not make a profile count as having scheduled enhancement
+    /// work, because Quality Checks never joins a scheduled or combined run.
+    /// </summary>
+    [Fact]
+    public void ConfiguringQualityChecksAloneDoesNotCountAsScheduledEnhancementWork()
+    {
+        var config = Parse("""
+            {
+              "enhancement": {
+                "qualityChecks": { "enabled": true, "flagDuplicates": true }
+              }
+            }
+            """);
+
+        Assert.True(EnhancementWorkflowSelection.HasConfiguredQualityChecks(config["enhancement"]!.AsObject()));
+        Assert.False(EnhancementWorkflowSelection.HasConfiguredEnhancementWorkflows(config));
     }
 
     [Fact]

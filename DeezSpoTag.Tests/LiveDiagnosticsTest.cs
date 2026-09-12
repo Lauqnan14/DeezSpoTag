@@ -30,6 +30,12 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+// These diagnostics read DEEZSPOTAG_DATA_DIR and assert it points at a populated data root.
+// CredentialProtectionTest and ArtistMetadataUpdaterServicePlexPushTest repoint that same
+// process-wide variable at a temp directory for the duration of each test, and only mark
+// themselves mutually exclusive via this collection. Without membership here these tests run
+// in parallel with them, observe the temp path, and fail. Same collection = serialized.
+[Collection("DataRoot Environment")]
 public sealed class LiveDiagnosticsTest
 {
     private const string AppleWrapperLiveFlag = "DEEZSPOTAG_LIVE_APPLE_WRAPPER_TESTS";

@@ -519,7 +519,7 @@ public class LyricsService
                 () => ResolveLoadedLyricsOrNullAsync(
                     () => _lrclibLyricsService.ResolveLyricsAsync(
                         track,
-                        BuildLrclibRequestOptions(providerOptions?.Lrclib),
+                        BuildLrclibRequestOptions(settings, providerOptions?.Lrclib),
                         cancellationToken))),
             MusixmatchProvider => await ResolveCachedProviderLyricsAsync(
                 MusixmatchProvider,
@@ -664,20 +664,23 @@ public class LyricsService
         return new LyricsOutputRequirements(wantsLrcLyrics, wantsEnhancedSynchronizedLyrics, wantsTtmlLyrics, wantsPlainLyrics);
     }
 
-    private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
+    /// <summary>
+    /// Resolves the LRCLIB request options for a call. The profile's "lrclib" platform card is the
+    /// single source of truth: <see cref="DeezSpoTagSettings.Lrclib"/> is populated from
+    /// <c>profile.autoTag.custom.lrclib</c> by the settings overlay, so the download pipeline and the
+    /// AutoTag runner resolve the same values. Explicit provider options, when supplied, still win.
+    /// </summary>
+    private static LrclibLyricsService.LrclibRequestOptions BuildLrclibRequestOptions(
+        DeezSpoTagSettings settings,
         LrclibLyricsProviderOptions? options)
     {
-        if (options == null)
-        {
-            return null;
-        }
-
+        var configured = settings.Lrclib ?? new LrclibOptions();
         return new LrclibLyricsService.LrclibRequestOptions
         {
-            DurationToleranceSeconds = options.DurationToleranceSeconds ?? 10,
-            UseDurationHint = options.UseDurationHint ?? true,
-            SearchFallback = options.SearchFallback ?? true,
-            PreferSynced = options.PreferSynced ?? true
+            DurationToleranceSeconds = options?.DurationToleranceSeconds ?? configured.DurationToleranceSeconds,
+            UseDurationHint = options?.UseDurationHint ?? configured.UseDurationHint,
+            SearchFallback = options?.SearchFallback ?? configured.SearchFallback,
+            PreferSynced = options?.PreferSynced ?? configured.PreferSynced
         };
     }
 
@@ -1422,9 +1425,56 @@ public class LyricsService
             return null;
         }
 
+        if (!BetterLyricsTimelineMatches(ttml, track, settings))
+        {
+            return null;
+        }
+
         var lyrics = BuildLyricsFromAppleTtml(ttml, settings);
         lyrics.SourcePayloadHash = ComputePayloadHash(body);
         return lyrics;
+    }
+
+    /// <summary>
+    /// Confirms that a search-based BetterLyrics response describes the recording we asked about.
+    ///
+    /// BetterLyrics is the only lyrics provider that resolves by song + artist and then trusts the
+    /// answer, so a radio edit, a live take or a same-titled track would otherwise be written to the
+    /// file unchecked. The API exposes no usable match score, so this compares the length of the
+    /// timed document against the track's own duration.
+    ///
+    /// The two directions are deliberately asymmetric — running long is normal (trailing silence,
+    /// outro, fade) and is allowed up to the configured tolerance, while running short means missing
+    /// verses and is rejected against a small fixed allowance. A track with no known duration, or a
+    /// response with no measurable length, cannot be judged either way and is accepted, so this
+    /// never fails a track it has no evidence against.
+    /// </summary>
+    private static bool BetterLyricsTimelineMatches(
+        string ttml,
+        Track track,
+        DeezSpoTagSettings settings)
+    {
+        if (track.Duration <= 0
+            || !AppleLyricsService.TryReadTtmlEndMilliseconds(ttml, out var documentEndMilliseconds))
+        {
+            return true;
+        }
+
+        var toleranceSeconds = Math.Clamp(
+            settings.BetterLyrics?.DurationToleranceSeconds ?? 0,
+            0,
+            120);
+
+        var trackMilliseconds = (long)track.Duration * 1000L;
+        var endMilliseconds = (long)documentEndMilliseconds;
+
+        if (endMilliseconds < trackMilliseconds
+            - (BetterLyricsOptions.ShorterAllowanceSeconds * 1000L))
+        {
+            return false;
+        }
+
+        return endMilliseconds <= trackMilliseconds + (toleranceSeconds * 1000L);
     }
 
     private async Task<LyricsBase?> ResolveYouLyPlusLyricsAsync(
@@ -1818,13 +1868,14 @@ public class LyricsService
             return LyricsNew.CreateError("Track artist is required for Musixmatch lyrics");
         }
 
-        var body = await FetchMusixmatchLyricsPayloadAsync(track, track.Title, artist, cancellationToken);
+        var musixmatchOptions = settings.Musixmatch ?? new MusixmatchOptions();
+        var body = await FetchMusixmatchLyricsPayloadAsync(track, track.Title, artist, musixmatchOptions, cancellationToken);
         if (body == null)
         {
             return LyricsNew.CreateError("No Musixmatch lyrics payload");
         }
 
-        var validation = ValidateMusixmatchPayload(track, body);
+        var validation = ValidateMusixmatchPayload(track, body, musixmatchOptions);
         if (!validation.IsMatch)
         {
             if (_logger.IsEnabled(LogLevel.Information))
@@ -1888,6 +1939,7 @@ public class LyricsService
         Track expected,
         string title,
         string artist,
+        MusixmatchOptions options,
         CancellationToken cancellationToken,
         bool tokenRetryUsed = false)
     {
@@ -1903,8 +1955,10 @@ public class LyricsService
             {
                 new("q_track", title),
                 new("q_artist", artist),
-                new("f_has_lyrics", "true"),
-                new("page_size", "10"),
+                // Fixed on. Musixmatch: 1 returns only content containing lyrics, 0 returns both.
+                // Never surfaced as a control, so there is nothing to read it from.
+                new("f_has_lyrics", "1"),
+                new("page_size", Math.Clamp(options.SearchPageSize, 1, 100).ToString(CultureInfo.InvariantCulture)),
                 new("usertoken", token)
             },
             cancellationToken);
@@ -1919,10 +1973,10 @@ public class LyricsService
             ClearMusixmatchAuthCache();
             return tokenRetryUsed
                 ? null
-                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, options, cancellationToken, tokenRetryUsed: true);
         }
 
-        var selectedTrack = SelectMusixmatchTrack(expected, ParseMusixmatchSearchTracks(searchDocument.RootElement));
+        var selectedTrack = SelectMusixmatchTrack(expected, ParseMusixmatchSearchTracks(searchDocument.RootElement), options);
         if (selectedTrack == null || selectedTrack.TrackId == null)
         {
             return null;
@@ -1939,7 +1993,7 @@ public class LyricsService
                 new("track_id", trackId),
                 new("usertoken", token),
                 new("f_richsync_length", duration),
-                new("f_richsync_length_max_deviation", "10")
+                new("f_richsync_length_max_deviation", Math.Clamp(options.RichsyncMaxDeviationSeconds, 0, 60).ToString(CultureInfo.InvariantCulture))
             },
             cancellationToken);
         if (richsyncDocument != null && IsMusixmatchAuthRejected(richsyncDocument.RootElement))
@@ -1947,7 +2001,7 @@ public class LyricsService
             ClearMusixmatchAuthCache();
             return tokenRetryUsed
                 ? payload
-                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, options, cancellationToken, tokenRetryUsed: true);
         }
 
         payload.RichsyncBody = TryReadMusixmatchRichsyncBody(richsyncDocument?.RootElement);
@@ -1959,7 +2013,7 @@ public class LyricsService
                 new("track_id", trackId),
                 new("usertoken", token),
                 new("f_subtitle_length", duration),
-                new("f_subtitle_length_max_deviation", "10")
+                new("f_subtitle_length_max_deviation", Math.Clamp(options.SubtitleMaxDeviationSeconds, 0, 60).ToString(CultureInfo.InvariantCulture))
             },
             cancellationToken);
         if (subtitleDocument != null && IsMusixmatchAuthRejected(subtitleDocument.RootElement))
@@ -1967,7 +2021,7 @@ public class LyricsService
             ClearMusixmatchAuthCache();
             return tokenRetryUsed
                 ? payload
-                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, options, cancellationToken, tokenRetryUsed: true);
         }
 
         payload.SubtitleBody = TryReadMusixmatchSubtitleBody(subtitleDocument?.RootElement);
@@ -1985,7 +2039,7 @@ public class LyricsService
             ClearMusixmatchAuthCache();
             return tokenRetryUsed
                 ? payload
-                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, options, cancellationToken, tokenRetryUsed: true);
         }
 
         payload.LyricsBody = TryReadMusixmatchLyricsBody(lyricsDocument?.RootElement);
@@ -2225,13 +2279,16 @@ public class LyricsService
         return tracks;
     }
 
-    private static MusixmatchTrack? SelectMusixmatchTrack(Track expected, IReadOnlyList<MusixmatchTrack> candidates)
+    private static MusixmatchTrack? SelectMusixmatchTrack(
+        Track expected,
+        IReadOnlyList<MusixmatchTrack> candidates,
+        MusixmatchOptions options)
     {
         return candidates
             .Select(candidate => new
             {
                 Track = candidate,
-                Validation = ValidateMusixmatchTrack(expected, candidate),
+                Validation = ValidateMusixmatchTrack(expected, candidate, options),
                 DurationDelta = ResolveMusixmatchDurationDelta(expected, candidate)
             })
             .Where(candidate => candidate.Validation.IsMatch)
@@ -2241,7 +2298,10 @@ public class LyricsService
             .FirstOrDefault();
     }
 
-    private static LyricsIdentityValidationResult ValidateMusixmatchTrack(Track expected, MusixmatchTrack track)
+    private static LyricsIdentityValidationResult ValidateMusixmatchTrack(
+        Track expected,
+        MusixmatchTrack track,
+        MusixmatchOptions options)
     {
         return LyricsIdentityValidator.ValidateSearchCandidate(
             expected,
@@ -2253,7 +2313,7 @@ public class LyricsService
                 track.AlbumName,
                 track.TrackLength.HasValue ? (int)Math.Round(track.TrackLength.Value) : null,
                 track.TrackIsrc),
-            durationToleranceSeconds: 10,
+            durationToleranceSeconds: Math.Clamp(options.DurationToleranceSeconds, 0, 60),
             requireArtist: true);
     }
 
@@ -2495,9 +2555,10 @@ public class LyricsService
 
     private static LyricsIdentityValidationResult ValidateMusixmatchPayload(
         Track expected,
-        MusixmatchLyricsPayload body)
+        MusixmatchLyricsPayload body,
+        MusixmatchOptions options)
     {
-        return ValidateMusixmatchTrack(expected, body.Track);
+        return ValidateMusixmatchTrack(expected, body.Track, options);
     }
 
     private sealed class MusixmatchLyricsPayload

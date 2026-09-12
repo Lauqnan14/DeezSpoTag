@@ -2783,7 +2783,7 @@ public static partial class EngineAudioPostDownloadHelper
                 artistArtwork.Url,
                 settings,
                 execution.Request.Context.Track,
-                appleArtworkSize,
+                AppleQueueHelpers.ArtistArtworkSize,
                 preferMaxQualityCover,
                 execution.Request.Logger),
             token);

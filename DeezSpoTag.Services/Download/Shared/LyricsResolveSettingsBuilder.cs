@@ -29,6 +29,8 @@ internal static class LyricsResolveSettingsBuilder
             LrcTimingPreference = settings.LrcTimingPreference,
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = settings.LyricsFallbackOrder,
+            Lrclib = settings.Lrclib?.Clone() ?? new LrclibOptions(),
+            Musixmatch = settings.Musixmatch?.Clone() ?? new MusixmatchOptions(),
             DeezerCountry = settings.DeezerCountry,
             AppleMusic = settings.AppleMusic,
             AuthorizationToken = settings.AuthorizationToken,

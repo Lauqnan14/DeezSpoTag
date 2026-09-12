@@ -649,23 +649,119 @@ public sealed class AppleLyricsService
             return false;
         }
 
-        if (decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var seconds)
-            && seconds >= 0
-            && seconds <= int.MaxValue / 1000m)
+        return TryParseTtmlTimeMilliseconds(value, out milliseconds);
+    }
+
+    /// <summary>
+    /// Parses a TTML time expression into milliseconds.
+    ///
+    /// TTML times arrive in three shapes, and all three occur in real payloads:
+    /// <list type="bullet">
+    ///   <item><description><c>SS.mmm</c> — seconds only, e.g. <c>9.731</c>.</description></item>
+    ///   <item><description><c>M:SS.mmm</c> — e.g. <c>5:47.085</c>. This is the one that matters:
+    ///   it appears on every line past the tenth minute, and a parser that rejects it silently
+    ///   loses the tail of the song.</description></item>
+    ///   <item><description><c>H:MM:SS.mmm</c> — e.g. <c>00:01:30.500</c>.</description></item>
+    /// </list>
+    ///
+    /// <see cref="TimeSpan.TryParse(string, IFormatProvider, out TimeSpan)"/> cannot be used here.
+    /// It reads <c>M:SS.mmm</c> as hours and minutes (so <c>5:47.085</c> would become 5h47m, not
+    /// 5m47s), and it rejects <c>M:SS.mmm</c> outright when the seconds field is narrow. So the
+    /// components are parsed explicitly instead.
+    ///
+    /// Fractional seconds are parsed as <see cref="decimal"/> rather than <see cref="double"/> to
+    /// avoid binary rounding on the millisecond conversion.
+    /// </summary>
+    private static bool TryParseTtmlTimeMilliseconds(string value, out int milliseconds)
+    {
+        milliseconds = 0;
+        if (string.IsNullOrWhiteSpace(value))
         {
-            milliseconds = (int)decimal.Round(seconds * 1000m, 0, MidpointRounding.AwayFromZero);
-            return true;
+            return false;
         }
 
-        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var timestamp)
-            && timestamp >= TimeSpan.Zero
-            && timestamp.TotalMilliseconds <= int.MaxValue)
+        var parts = value.Trim().Split(':');
+        if (parts.Length is 0 or > 3)
         {
-            milliseconds = (int)Math.Round(timestamp.TotalMilliseconds, MidpointRounding.AwayFromZero);
-            return true;
+            return false;
         }
 
-        return false;
+        // Seconds carry the fraction; the leading fields are whole numbers.
+        if (!decimal.TryParse(
+                parts[^1],
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var seconds)
+            || seconds < 0m)
+        {
+            return false;
+        }
+
+        decimal totalSeconds = seconds;
+        if (parts.Length >= 2)
+        {
+            if (!int.TryParse(parts[^2], NumberStyles.None, CultureInfo.InvariantCulture, out var minutes)
+                || minutes < 0)
+            {
+                return false;
+            }
+
+            totalSeconds += minutes * 60m;
+        }
+
+        if (parts.Length == 3)
+        {
+            if (!int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var hours)
+                || hours < 0)
+            {
+                return false;
+            }
+
+            totalSeconds += hours * 3600m;
+        }
+
+        if (totalSeconds > int.MaxValue / 1000m)
+        {
+            return false;
+        }
+
+        milliseconds = (int)decimal.Round(totalSeconds * 1000m, 0, MidpointRounding.AwayFromZero);
+        return true;
+    }
+
+    /// <summary>
+    /// Reads how long a timed TTML document actually runs, as the latest <c>end</c> timestamp of any
+    /// line. Used to tell whether a search-based provider returned lyrics for the recording we asked
+    /// about: a radio edit, a live take or a same-titled song will end at a visibly different point.
+    ///
+    /// Returns <see langword="false"/> for untimed, malformed or empty documents, so callers can
+    /// treat "no measurable length" as "cannot be verified" rather than as a match.
+    /// </summary>
+    public static bool TryReadTtmlEndMilliseconds(string? ttml, out int endMilliseconds)
+    {
+        endMilliseconds = 0;
+        if (!TryReadTtmlDocument(ttml, out var document))
+        {
+            return false;
+        }
+
+        var found = false;
+        foreach (var paragraph in document.Descendants()
+                     .Where(element => element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!TryReadTimestampMilliseconds(paragraph, "end", out var candidate))
+            {
+                continue;
+            }
+
+            if (!found || candidate > endMilliseconds)
+            {
+                endMilliseconds = candidate;
+                found = true;
+            }
+        }
+
+        return found;
     }
 
     public static bool TryExtractPlainLyrics(string? ttml, out string plainLyrics)

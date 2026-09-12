@@ -59,6 +59,102 @@ public sealed class AutoTagPlatformOptionContractTest
         "ItunesMatchConfig.AnimatedArtwork",
     ];
 
+    /// <summary>
+    /// Config properties filled in at run time by <c>AutoTagService.InjectPlatformAuthAsync</c> from
+    /// the platform-auth store (the Login page), *not* by a control on the platform's configuration
+    /// card. These are credentials, so they deliberately have no card control; listing them here
+    /// keeps the orphan check honest and stops it reporting a live credential as a dead property.
+    /// </summary>
+    private static readonly HashSet<string> SuppliedByPlatformAuth =
+    [
+        // Written as custom.discogs.token from DiscogsAuth.Token.
+        "DiscogsConfig.Token",
+        // Written as custom.bpmsupreme.{email,password,library} from BpmSupremeAuth.
+        "BpmSupremeConfig.Email",
+        "BpmSupremeConfig.Password",
+        "BpmSupremeConfig.Library",
+    ];
+
+    /// <summary>
+    /// Options whose declared default and backend default deliberately live on different scales.
+    /// The value still round-trips unchanged; only the unit differs, and the matcher normalizes it.
+    /// Maps "ConfigType.Property" to the divisor that converts the declared unit to the backend unit.
+    /// </summary>
+    /// <remarks>
+    /// Empty on purpose: the backend stores the same unit the UI shows. Shazam previously kept its
+    /// similarity thresholds as 0-1 fractions while the card showed percentages (72 vs 0.72); the
+    /// config now stores 72/52 and <c>ShazamMatcher.NormalizeThreshold</c> does the conversion.
+    /// </remarks>
+    private static readonly Dictionary<string, double> DeclaredUnitScale = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Platforms whose config carries credential/catalog properties supplied by the platform-auth
+    /// store. They are deliberately absent from <see cref="Registry"/>: that registry drives the
+    /// "every declared option" theories, which assert a card declares at least one option, and these
+    /// platforms' cards declare none. They are checked here instead, so the
+    /// <see cref="SuppliedByPlatformAuth"/> exemptions are actually exercised rather than silently
+    /// inert.
+    /// </summary>
+    private static readonly (string PlatformId, Type AdapterType, Type ConfigType)[] AuthSuppliedPlatforms =
+    [
+        ("bpmsupreme", typeof(BpmSupremePlatform), typeof(BpmSupremeConfig)),
+    ];
+
+    public static TheoryData<string> AuthSuppliedPlatformIds()
+    {
+        var data = new TheoryData<string>();
+        foreach (var entry in AuthSuppliedPlatforms)
+        {
+            data.Add(entry.PlatformId);
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Closes the direction the orphan check cannot see. The orphan check catches config a card
+    /// cannot set; this catches the opposite mistake — a card declaring a control for a property
+    /// that the platform-auth store supplies at run time. That would put a credential or a
+    /// login-only choice on the configuration card, where it does not belong and where it would be
+    /// overwritten (or silently ignored) by the injected value.
+    ///
+    /// Authentication details belong to the Login page's per-platform tab, never to a card.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AuthSuppliedPlatformIds))]
+    public void AuthSuppliedProperty_IsNeverADeclaredCardControl(string platformId)
+    {
+        var entry = AuthSuppliedPlatforms.Single(e => e.PlatformId == platformId);
+        var cardIds = DeclaredOptions(entry.AdapterType)
+            .Select(o => o.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var violations = new List<string>();
+        foreach (var property in ReadableProperties(entry.ConfigType))
+        {
+            if (!SuppliedByPlatformAuth.Contains($"{entry.ConfigType.Name}.{property.Name}"))
+            {
+                continue;
+            }
+
+            if (cardIds.Contains(property.Name))
+            {
+                violations.Add($"{property.Name}: supplied by the platform-auth store (Login page), but the card declares a control for it.");
+            }
+        }
+
+        // Prove the exemptions are real: every auth-supplied property must be covered, otherwise a
+        // rename would make this guard pass vacuously.
+        var exemptForConfig = SuppliedByPlatformAuth.Count(e => e.StartsWith(entry.ConfigType.Name + ".", StringComparison.Ordinal));
+        Assert.True(exemptForConfig > 0,
+            $"{entry.ConfigType.Name} has no entry in {nameof(SuppliedByPlatformAuth)}; this guard would be vacuous.");
+
+        Assert.True(violations.Count == 0,
+            $"{entry.ConfigType.Name} exposes authentication details on its configuration card "
+            + $"(they belong to the Login page's {entry.PlatformId} tab):{Environment.NewLine}  "
+            + string.Join(Environment.NewLine + "  ", violations));
+    }
+
     public static TheoryData<string> PlatformIds()
     {
         var data = new TheoryData<string>();
@@ -151,7 +247,8 @@ public sealed class AutoTagPlatformOptionContractTest
             }
 
             var declared = DeclaredDefault(option);
-            if (!ValuesEqual(declared, backendDefault))
+            var expected = ExpectedBackendDefault(configType, property, declared);
+            if (!ValuesEqual(expected, backendDefault))
             {
                 failures.Add($"{option.Id}: UI default is {Format(declared)}, backend default is {Format(backendDefault)} (property {property.Name}).");
             }
@@ -187,6 +284,12 @@ public sealed class AutoTagPlatformOptionContractTest
                 continue;
             }
 
+            // Credentials reach the runner through the platform-auth store, never the card.
+            if (SuppliedByPlatformAuth.Contains($"{configType.Name}.{property.Name}"))
+            {
+                continue;
+            }
+
             orphans.Add($"{property.Name} (json key '{key}')");
         }
 
@@ -196,6 +299,20 @@ public sealed class AutoTagPlatformOptionContractTest
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// Converts an adapter's declared default into the unit the backend config stores, for options
+    /// that intentionally differ in scale (see <see cref="DeclaredUnitScale"/>).
+    /// </summary>
+    private static object? ExpectedBackendDefault(Type configType, System.Reflection.PropertyInfo property, object? declared)
+    {
+        if (declared is null || !DeclaredUnitScale.TryGetValue($"{configType.Name}.{property.Name}", out var divisor))
+        {
+            return declared;
+        }
+
+        return Convert.ToDouble(declared, CultureInfo.InvariantCulture) / divisor;
+    }
 
     private sealed class StubWebHostEnvironment : Microsoft.AspNetCore.Hosting.IWebHostEnvironment
     {

@@ -189,10 +189,13 @@ public sealed class ShazamMatcher
         return true;
     }
 
+    /// <summary>
+    /// Converts a similarity threshold from the percentage the profile stores (72 = 72%, the same
+    /// unit the UI control shows) to the 0-1 fraction the similarity comparisons use.
+    /// </summary>
     private static double NormalizeThreshold(double raw)
     {
-        var value = raw > 1d ? raw / 100d : raw;
-        return Math.Clamp(value, 0d, 1d);
+        return Math.Clamp(raw / 100d, 0d, 1d);
     }
 
     private static double ComputeTitleSimilarity(string? sourceTitle, string? recognizedTitle)

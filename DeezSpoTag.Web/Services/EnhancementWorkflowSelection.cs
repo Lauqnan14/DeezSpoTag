@@ -51,11 +51,15 @@ internal static class EnhancementWorkflowSelection
             "renameExistingAnimatedArtwork")
     ];
 
+    /// <summary>
+    /// The workflows that run together in one combined enhancement job, in execution order.
+    /// Quality Checks is deliberately absent: it only inspects and flags rather than rewriting
+    /// files, so it runs as its own independently triggered job instead of joining this sequence.
+    /// </summary>
     public static readonly string[] OrderedFeatures =
     [
         GapFill,
         Sidecars,
-        QualityChecks,
         FolderUniformity
     ];
 
@@ -284,10 +288,14 @@ internal static class EnhancementWorkflowSelection
             && (HasSidecarLyricsActions(enhancementRoot) || HasExplicitCoverActions(enhancementRoot));
     }
 
-    public static bool IsQualityChecksRunnable(JsonObject enhancementRoot)
+    /// <summary>
+    /// True when any individual quality check is configured, regardless of the legacy
+    /// <c>enabled</c> flag. Quality Checks is manual-only — it has no schedule tick — so its own
+    /// "Run Selected Checks" action depends on the checks being configured, not on that flag.
+    /// </summary>
+    public static bool HasConfiguredQualityChecks(JsonObject enhancementRoot)
     {
-        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
-            || ReadBool(qualityChecks, "enabled") != true)
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks)
         {
             return false;
         }
@@ -307,12 +315,16 @@ internal static class EnhancementWorkflowSelection
             && ReadBool(qualityChecks, "flagMissingTags") == true;
     }
 
+    /// <summary>
+    /// True when the profile has any enhancement work that a scheduled run would perform.
+    /// Quality Checks is excluded: it is manual-only, so configuring checks alone must not make
+    /// a profile count as having scheduled enhancement work.
+    /// </summary>
     public static bool HasConfiguredEnhancementWorkflows(JsonObject root)
     {
         return root[AutoTagLiterals.EnhancementStage] is JsonObject enhancementRoot
             && (IsFolderUniformityRunnable(enhancementRoot)
-                || IsSidecarsRunnable(enhancementRoot)
-                || IsQualityChecksRunnable(enhancementRoot));
+                || IsSidecarsRunnable(enhancementRoot));
     }
 
     private static void EnsureGapFillTagsMirrorRequestedTags(JsonObject configNode)

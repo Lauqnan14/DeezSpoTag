@@ -52,7 +52,7 @@ public sealed class LastFmMatcher
         var title = NormalizeDisplay(OneTaggerMatching.CleanTitle(info.Title));
         if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
 
-        var cacheKey = $"{NormalizeKey(artist)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{Math.Clamp(config.MinRelativeWeight, 0, 1):0.###}";
+        var cacheKey = $"{NormalizeKey(artist)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{NormalizeRelativeWeight(config.MinRelativeWeight):0.###}";
         if (_cache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
         {
             return BuildResult(info, cached.Tags);
@@ -120,15 +120,26 @@ public sealed class LastFmMatcher
             .OrderByDescending(tag => tag.Count)
             .ToList() ?? new();
         var leading = weighted.FirstOrDefault()?.Count ?? 0;
+        var minRelativeWeight = NormalizeRelativeWeight(config.MinRelativeWeight);
         return weighted
             .Where(tag => tag.Count >= Math.Max(0, config.MinTagCount))
-            .Where(tag => leading <= 0 || tag.Count / (double)leading >= Math.Clamp(config.MinRelativeWeight, 0, 1))
+            .Where(tag => leading <= 0 || tag.Count / (double)leading >= minRelativeWeight)
             .Select(Classify)
             .Where(tag => tag != null)
             .Select(tag => tag!)
             .DistinctBy(tag => $"{tag.Kind}:{tag.Value}", StringComparer.OrdinalIgnoreCase)
             .Take(Math.Clamp(config.MaxTags, 1, 50))
             .ToArray();
+    }
+
+    /// <summary>
+    /// The UI exposes the minimum tag share as a percentage (15 = 15%); the comparison needs a
+    /// 0-1 fraction. Values above 1 are treated as percentages so stored profiles stay valid.
+    /// </summary>
+    private static double NormalizeRelativeWeight(double raw)
+    {
+        var value = raw > 1d ? raw / 100d : raw;
+        return Math.Clamp(value, 0d, 1d);
     }
 
     private static bool IdentityMatches(LastFmTopTagsAttributes? attributes, string artist, string title)

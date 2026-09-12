@@ -20,7 +20,31 @@ public sealed class BetterLyricsPlatform : AutoTagPlatformBase
                     SupportedTag.SyncedLyrics,
                     SupportedTag.UnsyncedLyrics,
                     SupportedTag.TtmlLyrics
-                ]
+                ],
+                CustomOptions = new PlatformCustomOptions
+                {
+                    Options = new List<PlatformCustomOption>
+                    {
+                        new()
+                        {
+                            Id = "duration_tolerance_seconds",
+                            Label = "Extra length allowance (seconds)",
+                            Tooltip = "BetterLyrics matches by song and artist, so a radio edit, a live take or a "
+                                + "same-titled song can come back instead. Lyrics are rejected when the timed "
+                                + "document ends more than this much later than the track, or more than 5 seconds "
+                                + "earlier (missing verses). Trailing silence and outros routinely run long, so keep "
+                                + "this generous.",
+                            Value = new PlatformCustomOptionNumber
+                            {
+                                Min = 0,
+                                Max = 120,
+                                Step = 1,
+                                Value = 15,
+                                Slider = true
+                            }
+                        }
+                    }
+                }
             },
             "better-lyrics.png");
     }

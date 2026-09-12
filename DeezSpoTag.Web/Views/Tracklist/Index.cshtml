@@ -2886,6 +2886,23 @@ function normalizeCoverUrl(value) {
     return '';
 }
 
+/**
+ * Routes Spotify CDN artwork through the app's allow-listed image proxy.
+ *
+ * Used for <img> display only. The download payload keeps the raw CDN URL (see
+ * data-track-cover) so the download engine is unaffected. Proxying stops the browser
+ * from fetching i.scdn.co directly, which otherwise fails with net::ERR_TIMED_OUT
+ * whenever the client cannot reach that CDN.
+ */
+function proxySpotifyCoverUrl(value) {
+    const normalized = normalizeCoverUrl(value);
+    if (!/^https?:\/\/(?:i\.scdn\.co|image-cdn-ak\.spotifycdn\.com)\//i.test(normalized)) {
+        return normalized;
+    }
+
+    return `/api/externalimages?url=${encodeURIComponent(normalized)}`;
+}
+
 function normalizeLocalLibraryCoverUrl(value) {
     const normalized = normalizeCoverUrl(value);
     if (!normalized || /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized)) {
@@ -3579,14 +3596,14 @@ function renderTracklist(data, options = {}) {
             <div class="tracklist-header" style="background-image: url('${backgroundImage}')">
                 <div class="tracklist-header-content">
                     <div class="tracklist-cover">
-                        ${coverImage ? `<img src="${coverImage}" alt="">` : typeIcon}
+                        ${coverImage ? `<img src="${proxySpotifyCoverUrl(coverImage)}" alt="">` : typeIcon}
                     </div>
                     <div class="tracklist-info">
                         <h1>${escapeHtml(title)}</h1>
                         ${description ? `<div class="metadata">${formatTracklistDescription(description)}</div>` : ''}
                         <div class="metadata tracklist-meta-row">
                             <span class="tracklist-owner">
-                                ${ownerAvatar ? `<img class="tracklist-owner-avatar" src="${ownerAvatar}" alt="">` : ''}
+                                ${ownerAvatar ? `<img class="tracklist-owner-avatar" src="${proxySpotifyCoverUrl(ownerAvatar)}" alt="">` : ''}
                                 <span>by ${escapeHtml(artistName)}</span>
                             </span>
                             <span class="tracklist-meta-separator">•</span>
@@ -6183,7 +6200,7 @@ function normalizeBoomplayLabelForDisplay(value, options = {}) {
 }
 
 function renderTrackTitleHtml(track) {
-    const cover = normalizeCoverUrl(track.album?.cover_medium);
+    const cover = proxySpotifyCoverUrl(track.album?.cover_medium);
     const explicit = track.explicit_lyrics;
     const rawTitle = track.title || 'Loading…';
     const rawArtist = resolveArtistName(track);

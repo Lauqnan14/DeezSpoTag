@@ -627,19 +627,19 @@ public partial class AutoTagService
             return;
         }
 
-        if (EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancementRoot))
+        // Quality Checks is deliberately NOT part of the combined run. It only inspects
+        // and flags; it does not tag or move files, so it runs as its own job triggered
+        // from its own section. See RunQualityChecksOnlyAsync.
+        if (IsQualityChecksOnlyRun(job))
         {
-            await RunEnhancementWorkflowAsync(
+            await RunQualityChecksOnlyAsync(
                 job,
-                AutoTagLiterals.EnhancementFeatureQualityChecks,
-                token => RunConfiguredQualityChecksAsync(
-                    job,
-                    rootPath,
-                    enhancementRoot,
-                    enabledFolders,
-                    configPath,
-                    token),
+                rootPath,
+                enhancementRoot,
+                enabledFolders,
+                configPath,
                 cancellationToken);
+            return;
         }
 
         if (EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot))
@@ -650,6 +650,51 @@ public partial class AutoTagService
                 token => RunConfiguredFolderUniformityAsync(job, rootPath, enhancementRoot, enabledFolders, configPath, token),
                 cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// True when the job was started for Quality Checks alone — either from the section's own
+    /// "Run Selected Checks" action or any other single-feature trigger. A combined run never
+    /// carries a single feature, so this cannot match one.
+    /// </summary>
+    private static bool IsQualityChecksOnlyRun(AutoTagJob job)
+        => string.Equals(
+            job.EnhancementFeature,
+            AutoTagLiterals.EnhancementFeatureQualityChecks,
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The independent Quality Checks execution path. Runs the configured checks and nothing
+    /// else: no gap filling, no sidecars, no folder uniformity, and no auto-move, because the
+    /// checks only report on files rather than rewriting them.
+    /// </summary>
+    private async Task RunQualityChecksOnlyAsync(
+        AutoTagJob job,
+        string rootPath,
+        JsonObject enhancementRoot,
+        IReadOnlyList<DeezSpoTag.Services.Library.FolderDto> enabledFolders,
+        string configPath,
+        CancellationToken cancellationToken)
+    {
+        // Quality Checks is manual-only: it runs on demand from its own section and never as part
+        // of a scheduled or combined run. Because it has no schedule tick, its runnability comes
+        // from the checks being configured rather than from the legacy "enabled" flag.
+        if (!EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancementRoot))
+        {
+            return;
+        }
+
+        await RunEnhancementWorkflowAsync(
+            job,
+            AutoTagLiterals.EnhancementFeatureQualityChecks,
+            token => RunConfiguredQualityChecksAsync(
+                job,
+                rootPath,
+                enhancementRoot,
+                enabledFolders,
+                configPath,
+                token),
+            cancellationToken);
     }
 
     private async Task ApplyCompletedGapFillBatchAsync(
@@ -902,9 +947,16 @@ public partial class AutoTagService
             return false;
         }
 
+        // Quality Checks is manual-only, so it does not join the combined run. When the job was
+        // started for the checks alone (its own "Run Selected Checks" action), it gets the
+        // dedicated path below.
+        if (IsQualityChecksOnlyRun(job))
+        {
+            return EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancementRoot);
+        }
+
         return EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot)
-            || EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot)
-            || EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancementRoot);
+            || EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot);
     }
 
     private static bool HasConfiguredEnhancementWorkflows(JsonObject root)

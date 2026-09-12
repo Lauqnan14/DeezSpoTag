@@ -19,8 +19,6 @@ public sealed class MusicBrainzPlatform : AutoTagPlatformBase
                 NumberOption("search_limit", "Search limit", new NumberOptionValues(5, 100, 5, 25), "How many MusicBrainz recording candidates to evaluate per query."),
                 BooleanOption("use_isrc_first", "Use ISRC search first", true, "Prioritizes exact ISRC lookup before text search."),
                 BooleanOption("match_by_id", "Match by existing MusicBrainz ID first", true, "Uses embedded MusicBrainz recording ID tags before ISRC/text search."),
-                BooleanOption("use_acoustid_fallback", "Fallback to AcoustID fingerprint lookup", true, "When text, ISRC and ID matching fail, fingerprints the audio with Chromaprint (fpcalc) and matches through AcoustID — the same fallback Picard uses."),
-                StringOption("fpcalc_path", "fpcalc path", string.Empty, "Path to the Chromaprint fpcalc binary. Leave empty to resolve from DEEZSPOTAG_FPCALC_PATH or the system PATH."),
                 BooleanOption("use_aliases", "Use MusicBrainz aliases and localized titles", false, "Writes localized titles/names when the recording has a localized alias matching the preferred locales, and tolerates alias-titled files during matching."),
                 StringOption("preferred_locales", "Preferred locales (comma separated)", string.Empty, "Example: de,en. When aliases are enabled, a title/name localized to one of these locales replaces the canonical one."),
                 BooleanOption("prefer_official", "Prefer official releases", true),

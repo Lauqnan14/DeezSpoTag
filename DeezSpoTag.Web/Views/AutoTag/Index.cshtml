@@ -1106,101 +1106,6 @@
                 </div>
             </div>
 
-            <!-- Quality Checks -->
-            <div class="card bg-darker border-secondary mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-check-circle me-2"></i>Quality Checks
-                    </h5>
-                </div>
-                <div class="card-body autotag-card-body">
-                    <div class="download-section enhancement-settings-panel folder-settings-panel">
-                        <div class="checkbox-group mb-3">
-                            <input type="checkbox" id="enableQualityChecksWorkflow" />
-                            <label for="enableQualityChecksWorkflow">Include in scheduled enhancement</label>
-                        </div>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Checks to Run</div>
-                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                                <div class="checkbox-group">
-                                    <input type="checkbox" id="flagDuplicates" />
-                                    <label for="flagDuplicates">
-                                        Move duplicate tracks to the duplicates folder
-                                        <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
-                                            <i class="fas fa-info-circle"></i>
-                                        </span>
-                                    </label>
-                                </div>
-                                <div class="checkbox-group">
-                                    <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
-                                    <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
-                                </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="flagMissingTags" />
-                                <label for="flagMissingTags">Run missing metadata scan</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="flagMismatchedMetadata" />
-                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
-                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enhancementQueueTechnicalProfileUpgrades" />
-                                <label for="enhancementQueueTechnicalProfileUpgrades">
-                                    Requeue selected technical profiles for better quality
-                                    <span class="autotag-tooltip-icon ms-1"
-                                          title="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks."
-                                          aria-label="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks.">
-                                        <i class="fas fa-question-circle"></i>
-                                    </span>
-                                </label>
-                            </div>
-                            </div>
-                        </section>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Scope and Profiles</div>
-                            <div class="download-grid download-grid-3">
-                            <div class="form-group">
-                                <label for="enhancementQualityFolder">Library folder scope</label>
-                                <div class="dropdown-select" id="enhancementQualityFolderDropdown">
-                                    <button type="button" class="dropdown-trigger" id="enhancementQualityFolderTrigger">All enabled music folders</button>
-                                    <div class="dropdown-menu" id="enhancementQualityFolderMenu">
-                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
-                                        <div id="enhancementQualityFolderOptions" class="dropdown-options"></div>
-                                    </div>
-                                </div>
-                                <input type="hidden" id="enhancementQualityFolder" value="" />
-                            </div>
-                            <div class="form-group">
-                                <label for="qualityChecksDuplicatesFolderName">Duplicates folder name</label>
-                                <input type="text" id="qualityChecksDuplicatesFolderName" value="%duplicates%" />
-                            </div>
-                            <div class="form-group">
-                                <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
-                                <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
-                                    <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
-                                    <div class="dropdown-menu" id="enhancementTechnicalProfilesMenu">
-                                        <p class="artwork-order-hint">Leave everything unchecked to allow all technical profiles.</p>
-                                        <div class="fallback-source-toggles technical-profile-options" id="enhancementTechnicalProfilesOptions">
-                                            <div class="helper">Loading technical profiles...</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            </div>
-                        </section>
-                        <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
-                        <span class="helper" id="enhancementQualityChecksStatus"></span>
-                        <div class="enhancement-action-row">
-                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementQualityChecks">Run Selected Checks</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
             <!-- Folder Uniformity -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
@@ -1400,17 +1305,108 @@
             </div>
 
 
+            <!-- Quality Checks -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-check-circle me-2"></i>Quality Checks
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section enhancement-settings-panel folder-settings-panel">
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Checks to Run</div>
+                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="flagDuplicates" />
+                                    <label for="flagDuplicates">
+                                        Move duplicate tracks to the duplicates folder
+                                        <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
+                                            <i class="fas fa-info-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
+                                    <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
+                                </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMissingTags" />
+                                <label for="flagMissingTags">Run missing metadata scan</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMismatchedMetadata" />
+                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
+                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueTechnicalProfileUpgrades" />
+                                <label for="enhancementQueueTechnicalProfileUpgrades">
+                                    Requeue selected technical profiles for better quality
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks."
+                                          aria-label="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Scope and Profiles</div>
+                            <div class="download-grid download-grid-3">
+                            <div class="form-group">
+                                <label for="enhancementQualityFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementQualityFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementQualityFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementQualityFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div id="enhancementQualityFolderOptions" class="dropdown-options"></div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="enhancementQualityFolder" value="" />
+                            </div>
+                            <div class="form-group">
+                                <label for="qualityChecksDuplicatesFolderName">Duplicates folder name</label>
+                                <input type="text" id="qualityChecksDuplicatesFolderName" value="%duplicates%" />
+                            </div>
+                            <div class="form-group">
+                                <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
+                                <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
+                                    <div class="dropdown-menu" id="enhancementTechnicalProfilesMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to allow all technical profiles.</p>
+                                        <div class="fallback-source-toggles technical-profile-options" id="enhancementTechnicalProfilesOptions">
+                                            <div class="helper">Loading technical profiles...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            </div>
+                        </section>
+                        <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
+                        <span class="helper" id="enhancementQualityChecksStatus"></span>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementQualityChecks">Run Selected Checks</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="download-section enhancement-settings-panel folder-settings-panel mb-0">
                 <section class="playlist-settings-section">
                     <div class="playlist-settings-section-title">
                         Enhancement Run Workflows
                         <span class="autotag-tooltip-icon ms-1"
-                              title="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Quality Checks, Folder Uniformity. These ticks apply to this run only. Each section above still has its own saved schedule enable."
-                              aria-label="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Quality Checks, Folder Uniformity. These ticks apply to this run only.">
+                              title="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Folder Uniformity. Quality Checks is not part of a combined run — it only inspects and flags, so it runs on its own from its section. These ticks apply to this run only. Each section above still has its own saved schedule enable."
+                              aria-label="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Folder Uniformity. Quality Checks runs separately from its own section. These ticks apply to this run only.">
                             <i class="fas fa-question-circle"></i>
                         </span>
                     </div>
-                    <div class="download-grid download-grid-4 enhancement-checkbox-grid">
+                    <div class="download-grid download-grid-3 enhancement-checkbox-grid">
                         <div class="checkbox-group">
                             <input type="checkbox" id="runScope-tag-gap-fill" />
                             <label for="runScope-tag-gap-fill">
@@ -1427,17 +1423,6 @@
                             <label for="runScope-sidecars">
                                 Sidecars
                                 <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-sidecars"
-                                      title="Nothing is enabled or configured in this section, so it will not run."
-                                      aria-label="Nothing is enabled or configured in this section, so it will not run.">
-                                    <i class="fas fa-exclamation-triangle"></i>
-                                </span>
-                            </label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="runScope-quality-checks" />
-                            <label for="runScope-quality-checks">
-                                Quality Checks
-                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-quality-checks"
                                       title="Nothing is enabled or configured in this section, so it will not run."
                                       aria-label="Nothing is enabled or configured in this section, so it will not run.">
                                     <i class="fas fa-exclamation-triangle"></i>

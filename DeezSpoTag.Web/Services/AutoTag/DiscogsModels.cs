@@ -105,6 +105,13 @@ public sealed class DiscogsRelease
 
 public sealed class DiscogsConfig
 {
+    /// <summary>
+    /// Discogs API token. It is NOT a control on the Discogs configuration card: the user enters it
+    /// on the Login page's Discogs tab (the Platform Authentication section), which stores it
+    /// encrypted. <c>AutoTagService.InjectPlatformAuthAsync</c> copies it into
+    /// <c>custom.discogs.token</c> at run time. Do not add a card control for it.
+    /// </summary>
+    [JsonPropertyName("token")]
     public string Token { get; set; } = "";
 
     [JsonPropertyName("max_albums")]
@@ -113,7 +120,10 @@ public sealed class DiscogsConfig
     [JsonPropertyName("track_number_int")]
     public bool TrackNumberInt { get; set; } = false;
 
-    public int? RateLimit { get; set; }
+    /// <summary>Requests per minute against the Discogs API. Defaults to the authenticated ceiling
+    /// the client also assumes when the profile carries no value.</summary>
+    [JsonPropertyName("rate_limit")]
+    public int? RateLimit { get; set; } = 60;
 }
 
 public sealed class DiscogsNullableIntConverter : JsonConverter<int?>

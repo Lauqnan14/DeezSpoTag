@@ -11,6 +11,9 @@ public sealed class AutoTagAudioInfo
     public int? DurationSeconds { get; set; }
     public string? Isrc { get; set; }
     public int? TrackNumber { get; set; }
+
+    /// <summary>Path of the file being tagged. Read by the Lyrics and Artwork partials, so it must
+    /// stay on this type for the AutoTag runner to compile.</summary>
     public string? FilePath { get; set; }
     public Dictionary<string, List<string>> Tags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool HasEmbeddedTitle { get; set; }

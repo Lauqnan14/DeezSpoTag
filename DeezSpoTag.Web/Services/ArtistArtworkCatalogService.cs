@@ -17,6 +17,12 @@ namespace DeezSpoTag.Web.Services;
 public sealed partial class ArtistArtworkCatalogService
 {
     private const string CandidateRole = "candidate";
+
+    /// <summary>
+    /// Artist image sources offered by the artwork-order control, in its default order. Kept in
+    /// step with ARTIST_ARTWORK_SOURCE_ORDER in autotag.js.
+    /// </summary>
+    private static readonly string[] DefaultArtistArtworkSourceOrder = ["apple", "deezer", "spotify", "lastfm"];
     private readonly LibraryRepository _repository;
     private readonly SpotifyArtistService _spotify;
     private readonly DeezerClient _deezer;
@@ -33,10 +39,11 @@ public sealed partial class ArtistArtworkCatalogService
 
     private int ResolveRequestSize(string provider)
     {
-        var desired = _settingsService is null
-            ? DeezSpoTag.Services.Download.Shared.ArtworkSizePolicy.DefaultRequestSize
-            : AppleQueueHelpers.GetAppleArtworkSize(_settingsService.LoadSettings());
-        return DeezSpoTag.Services.Download.Shared.ArtworkSizePolicy.ResolveRequestSize(desired, provider);
+        // Artist artwork always asks for the largest size the provider serves, so this is
+        // independent of the album artwork size settings.
+        return DeezSpoTag.Services.Download.Shared.ArtworkSizePolicy.ResolveRequestSize(
+            AppleQueueHelpers.ArtistArtworkSize,
+            provider);
     }
 
     public ArtistArtworkCatalogService(
@@ -229,12 +236,25 @@ public sealed partial class ArtistArtworkCatalogService
         {
             await ResolveLocalAsync(artistId, localImagePath, cancellationToken)
         };
-        await AddRemoteProviderAsync(resolutions, gate, "spotify", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "spotify", inner => ResolveSpotifyAsync(artistId, artistName, includeGallery, inner), token), cancellationToken);
-        await AddRemoteProviderAsync(resolutions, gate, "deezer", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "deezer", inner => ResolveDeezerAsync(artistId, artistName, inner), token), cancellationToken);
-        await AddRemoteProviderAsync(resolutions, gate, "itunes", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "itunes", inner => ResolveItunesAsync(artistId, artistName, allowArtistPageScrape, inner), token), cancellationToken);
-        await AddRemoteProviderAsync(resolutions, gate, "tidal", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "tidal", inner => ResolveTidalAsync(artistId, inner), token), cancellationToken);
-        await AddRemoteProviderAsync(resolutions, gate, "qobuz", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "qobuz", inner => ResolveQobuzAsync(artistId, inner), token), cancellationToken);
-        await AddRemoteProviderAsync(resolutions, gate, "lastfm", Includes, NeedsRefresh, token => RunProviderAsync(artistId, "lastfm", inner => ResolveLastFmAsync(artistName, includeGallery, inner), token), cancellationToken);
+
+        // Query the remote providers in the order the user configured. The artist order is
+        // independent of the album order, but only carries providers the artwork-order control
+        // actually offers; anything the user did not select is not queried at all.
+        foreach (var provider in ResolveArtistArtworkSourceOrder())
+        {
+            await AddRemoteProviderAsync(
+                resolutions,
+                gate,
+                provider,
+                Includes,
+                NeedsRefresh,
+                token => RunProviderAsync(
+                    artistId,
+                    provider,
+                    inner => ResolveRemoteProviderAsync(provider, artistId, artistName, includeGallery, allowArtistPageScrape, inner),
+                    token),
+                cancellationToken);
+        }
         var results = new List<ArtistArtworkProviderResult>(resolutions.Count);
         foreach (var resolution in resolutions)
         {
@@ -265,6 +285,42 @@ public sealed partial class ArtistArtworkCatalogService
 
         return results;
     }
+
+    /// <summary>
+    /// The remote providers to query, in the user's configured order.
+    ///
+    /// The artwork-order control offers artist image sources independently of the album cover
+    /// sources, and only those sources are queried. When no artist order is stored the album
+    /// order is inherited, matching every other artwork selection stage.
+    /// </summary>
+    private IReadOnlyList<string> ResolveArtistArtworkSourceOrder()
+    {
+        var settings = _settingsService?.LoadSettings();
+        if (settings is null)
+        {
+            return DefaultArtistArtworkSourceOrder;
+        }
+
+        return ArtworkFallbackHelper.ResolveArtistOrder(settings);
+    }
+
+    private Task<IReadOnlyList<RemoteCandidate>> ResolveRemoteProviderAsync(
+        string provider,
+        long artistId,
+        string artistName,
+        bool includeGallery,
+        bool allowArtistPageScrape,
+        CancellationToken cancellationToken)
+        => provider switch
+        {
+            "spotify" => ResolveSpotifyAsync(artistId, artistName, includeGallery, cancellationToken),
+            "deezer" => ResolveDeezerAsync(artistId, artistName, cancellationToken),
+            "apple" or "itunes" => ResolveItunesAsync(artistId, artistName, allowArtistPageScrape, cancellationToken),
+            "tidal" => ResolveTidalAsync(artistId, cancellationToken),
+            "qobuz" => ResolveQobuzAsync(artistId, cancellationToken),
+            "lastfm" => ResolveLastFmAsync(artistName, includeGallery, cancellationToken),
+            _ => Task.FromResult<IReadOnlyList<RemoteCandidate>>(Array.Empty<RemoteCandidate>())
+        };
 
     private async Task AddRemoteProviderAsync(
         List<ProviderResolution> resolutions,

@@ -3166,9 +3166,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             features.Add(AutoTagLiterals.EnhancementFeatureSidecars);
         }
-        // Quality checks are deliberately absent here: they are manual-only ("Run Selected
-        // Checks"). A stored qualityChecks.enabled can survive after the section stopped
-        // being schedulable, so it must never add the feature to an automation run.
+        // Quality Checks is deliberately not collected here. It is manual-only — it never joins a
+        // scheduled enhancement — so a stored profile that still carries the legacy
+        // "qualityChecks.enabled" flag must not schedule it. It runs from its own section action,
+        // which is driven by EnhancementWorkflowSelection.HasConfiguredQualityChecks.
         if (EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot))
         {
             features.Add(AutoTagLiterals.EnhancementFeatureFolderUniformity);

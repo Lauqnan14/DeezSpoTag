@@ -66,6 +66,16 @@ public class DeezSpoTagSettings
     public string LrcTimingPreference { get; set; } = LrcTimingModes.PreferEnhanced;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics";
+
+    /// <summary>LRCLIB lookup tunables. Kept in step with the profile's "lrclib" platform card so
+    /// the AutoTag runner and the download pipeline resolve identical values.</summary>
+    public LrclibOptions Lrclib { get; set; } = new();
+
+    /// <summary>Musixmatch lookup tunables, kept in step with the profile's "musixmatch" platform card.</summary>
+    public MusixmatchOptions Musixmatch { get; set; } = new();
+
+    /// <summary>BetterLyrics lookup tunables, kept in step with the profile's "betterlyrics" platform card.</summary>
+    public BetterLyricsOptions BetterLyrics { get; set; } = new();
     public int LyricsProviderRegistryVersion { get; set; }
     public int LyricsFormatSchemaVersion { get; set; }
     public bool NormalizeGenreTags { get; set; } = false;

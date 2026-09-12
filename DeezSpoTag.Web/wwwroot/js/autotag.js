@@ -1,7 +1,9 @@
 (() => {
     const DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS = true;
 
-    const ENHANCEMENT_RUN_SECTION_IDS = ["tag-gap-fill", "sidecars", "quality-checks", "folder-uniformity"];
+    // Quality Checks is intentionally absent: it only inspects and flags, so it runs on its own
+    // from its own section ("Run Selected Checks") and never joins a combined run.
+    const ENHANCEMENT_RUN_SECTION_IDS = ["tag-gap-fill", "sidecars", "folder-uniformity"];
 
     // Conflicting sidecar toggles are mutually exclusive: at most one toggle of a pair
     // may be active. Enabling the other requires disabling the active one first.
@@ -3070,7 +3072,6 @@
         setChecked("useShazamForUntaggedCovers", state.config.enhancement.coverMaintenance.useShazamForUntaggedFiles === true);
         updateCoverMaintenanceFolderSummary(state.config.enhancement.coverMaintenance.folderIds ?? []);
         setValue("coverWorkerCount", state.config.enhancement.coverMaintenance.workerCount ?? 8);
-        setChecked("enableQualityChecksWorkflow", state.config.enhancement.qualityChecks.enabled);
         setChecked("flagDuplicates", state.config.enhancement.qualityChecks.flagDuplicates);
         setChecked("flagMissingTags", state.config.enhancement.qualityChecks.flagMissingTags);
         setChecked("flagMismatchedMetadata", state.config.enhancement.qualityChecks.flagMismatchedMetadata);
@@ -4182,7 +4183,8 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = state.config.enhancement.qualityChecks;
-        qualityChecks.enabled = getChecked("enableQualityChecksWorkflow", qualityChecks.enabled);
+        // Quality Checks is manual-only: it has no "include in scheduled enhancement" tick, so the
+        // config flag is left untouched rather than being read from a control that no longer exists.
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
         sidecars.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", sidecars.queueLyricsRefresh);
@@ -4685,19 +4687,9 @@
             automatic: sidecars.enabled
         });
 
-        const checks = enhancement.qualityChecks;
-        sections.push({
-            id: "quality-checks",
-            label: "Quality Checks",
-            folderIds: checks.folderIds,
-            configured: checks.flagDuplicates
-                || checks.flagMissingTags
-                || checks.flagMismatchedMetadata
-                || checks.queueAtmosAlternatives
-                || checks.queueTechnicalProfileUpgrades,
-            automatic: checks.enabled
-        });
-
+        // Quality Checks is not collected here: it is not a selectable member of a combined run,
+        // so it has no run-scope tick, hint or enabled-workflows entry. Its section uses its own
+        // scheduled enable plus its own "Run Selected Checks" action.
         const uniformity = enhancement.folderUniformity;
         sections.push({
             id: "folder-uniformity",
@@ -4713,7 +4705,6 @@
     const ENHANCEMENT_SECTION_CHECKBOX_IDS = {
         "tag-gap-fill": "runScope-tag-gap-fill",
         "sidecars": "runScope-sidecars",
-        "quality-checks": "runScope-quality-checks",
         "folder-uniformity": "runScope-folder-uniformity"
     };
 

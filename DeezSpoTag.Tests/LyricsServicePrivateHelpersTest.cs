@@ -384,12 +384,64 @@ public sealed class LyricsServicePrivateHelpersTest
 
         var requestOptions = InvokeStatic<LrclibLyricsService.LrclibRequestOptions>(
             "BuildLrclibRequestOptions",
+            new DeezSpoTagSettings(),
             providerOptions);
 
         Assert.Equal(10, requestOptions.DurationToleranceSeconds);
         Assert.True(requestOptions.UseDurationHint);
         Assert.True(requestOptions.SearchFallback);
         Assert.True(requestOptions.PreferSynced);
+    }
+
+    [Fact]
+    public void BuildLrclibRequestOptions_UsesProfileCardValuesWhenNoProviderOptions()
+    {
+        // The download path supplies no provider options; the profile's "lrclib" card must still apply.
+        var settings = new DeezSpoTagSettings
+        {
+            Lrclib = new LrclibOptions
+            {
+                DurationToleranceSeconds = 4,
+                UseDurationHint = false,
+                SearchFallback = false,
+                PreferSynced = false
+            }
+        };
+
+        var requestOptions = InvokeStatic<LrclibLyricsService.LrclibRequestOptions>(
+            "BuildLrclibRequestOptions",
+            settings,
+            null);
+
+        Assert.Equal(4, requestOptions.DurationToleranceSeconds);
+        Assert.False(requestOptions.UseDurationHint);
+        Assert.False(requestOptions.SearchFallback);
+        Assert.False(requestOptions.PreferSynced);
+    }
+
+    [Fact]
+    public void BuildLrclibRequestOptions_ProviderOptionsStillWinOverSettings()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Lrclib = new LrclibOptions { DurationToleranceSeconds = 30, PreferSynced = true }
+        };
+        var providerOptions = new LrclibLyricsProviderOptions
+        {
+            DurationToleranceSeconds = 2,
+            PreferSynced = false
+        };
+
+        var requestOptions = InvokeStatic<LrclibLyricsService.LrclibRequestOptions>(
+            "BuildLrclibRequestOptions",
+            settings,
+            providerOptions);
+
+        Assert.Equal(2, requestOptions.DurationToleranceSeconds);
+        Assert.False(requestOptions.PreferSynced);
+        // Unset provider values fall through to the profile card.
+        Assert.True(requestOptions.UseDurationHint);
+        Assert.True(requestOptions.SearchFallback);
     }
 
     [Fact]
@@ -405,6 +457,7 @@ public sealed class LyricsServicePrivateHelpersTest
 
         var requestOptions = InvokeStatic<LrclibLyricsService.LrclibRequestOptions>(
             "BuildLrclibRequestOptions",
+            new DeezSpoTagSettings(),
             providerOptions);
 
         Assert.Equal(3, requestOptions.DurationToleranceSeconds);
@@ -1831,7 +1884,8 @@ public sealed class LyricsServicePrivateHelpersTest
                     Duration = 200,
                     ISRC = "USUG11904206"
                 },
-                tracks
+                tracks,
+                new MusixmatchOptions()
             ]);
 
         Assert.NotNull(selected);

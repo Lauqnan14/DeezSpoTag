@@ -21,19 +21,11 @@ public sealed class MusicBrainzMatcher
     ];
 
     private readonly MusicBrainzClient _client;
-    private readonly AcoustIdFingerprintService? _acoustIdFingerprintService;
-    private readonly AcoustIdClient? _acoustIdClient;
     private readonly ILogger<MusicBrainzMatcher> _logger;
 
-    public MusicBrainzMatcher(
-        MusicBrainzClient client,
-        ILogger<MusicBrainzMatcher> logger,
-        AcoustIdFingerprintService? acoustIdFingerprintService = null,
-        AcoustIdClient? acoustIdClient = null)
+    public MusicBrainzMatcher(MusicBrainzClient client, ILogger<MusicBrainzMatcher> logger)
     {
         _client = client;
-        _acoustIdFingerprintService = acoustIdFingerprintService;
-        _acoustIdClient = acoustIdClient;
         _logger = logger;
     }
 
@@ -68,6 +60,13 @@ public sealed class MusicBrainzMatcher
         var queries = BuildQueries(info).ToList();
         for (var queryIndex = 0; queryIndex < queries.Count; queryIndex++)
         {
+            // The text phase shares the platform's hard 45s match budget with the
+            // fingerprint fallback — stop querying before the budget is gone.
+            if (DateTimeOffset.UtcNow - matchStartedAt >= TextPhaseSoftDeadline)
+            {
+                break;
+            }
+
             var results = await _client.SearchAsync(queries[queryIndex], resolvedConfig.SearchLimit, cancellationToken);
             if (results?.Recordings is null || results.Recordings.Count == 0)
             {
@@ -90,109 +89,22 @@ public sealed class MusicBrainzMatcher
             return await TryMatchIsrcAsync(info, matchingConfig, resolvedConfig, preferences, cancellationToken);
         }
 
-        // Fingerprint fallback: when the file carries no usable tags (or the text
-        // matching failed), fingerprint it and let AcoustID name the recording —
-        // the same fallback Picard runs, then resolved through MusicBrainz.
-        // Budget-aware: the platform match runs under a hard per-file timeout with a
-        // one-strike circuit breaker, so the fallback stands down before the hard
-        // timeout instead of burning it and disabling MusicBrainz for the run.
-        if (resolvedConfig.UseAcoustIdFallback
-            && !string.IsNullOrWhiteSpace(info.FilePath)
-            && File.Exists(info.FilePath)
-            && DateTimeOffset.UtcNow - matchStartedAt < FingerprintFallbackDeadline)
-        {
-            return await TryMatchByFingerprintAsync(info, matchingConfig, preferences, resolvedConfig, matchStartedAt, cancellationToken);
-        }
-
         return null;
     }
 
     /// <summary>
-    /// The fingerprint fallback shares the platform's 45s match budget with the text
-    /// queries; it stands down before the hard timeout instead of burning the budget
-    /// and tripping the one-strike platform circuit breaker.
+    /// The text phase stops issuing further search queries at this point, keeping
+    /// distance from the platform's hard 45s match budget (one timeout would trip the
+    /// run's one-strike platform circuit breaker).
     /// </summary>
-    private static readonly TimeSpan FingerprintFallbackDeadline = TimeSpan.FromSeconds(38);
+    private static readonly TimeSpan TextPhaseSoftDeadline = TimeSpan.FromSeconds(30);
 
-    private async Task<AutoTagMatchResult?> TryMatchByFingerprintAsync(
-        AutoTagAudioInfo info,
-        AutoTagMatchingConfig matchingConfig,
-        MusicBrainzPreferences preferences,
-        MusicBrainzMatchConfig resolvedConfig,
-        DateTimeOffset matchStartedAt,
-        CancellationToken cancellationToken)
-    {
-        if (_acoustIdFingerprintService == null || _acoustIdClient == null)
-        {
-            return null;
-        }
+    /// <summary>
+    /// Per-call cap for fpcalc: a hung fingerprint process must not outlive the
+    /// platform match budget (the service's own default timeout is far larger).
+    /// </summary>
+    private static readonly TimeSpan FpcalcBudget = TimeSpan.FromSeconds(15);
 
-        var fingerprint = await _acoustIdFingerprintService.FingerprintAsync(info.FilePath!, resolvedConfig.FpcalcPath, cancellationToken);
-        if (fingerprint == null)
-        {
-            return null;
-        }
-
-        var lookup = await _acoustIdClient.LookupAsync(fingerprint.Fingerprint, fingerprint.DurationSeconds, cancellationToken);
-        if (lookup?.Results is not { Count: > 0 })
-        {
-            return null;
-        }
-
-        var candidates = lookup.Results
-            .SelectMany(result => result.Recordings ?? new List<AcoustIdRecording>(),
-                (result, recording) => new AcoustIdCandidate(result.Score, recording.Id))
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.RecordingId))
-            .GroupBy(candidate => candidate.RecordingId, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderByDescending(candidate => candidate.Score)
-            .Take(3)
-            .ToList();
-
-        foreach (var candidate in candidates)
-        {
-            // Each candidate resolution costs rate-limited MusicBrainz requests; stop
-            // before the platform's hard match timeout fires.
-            if (DateTimeOffset.UtcNow - matchStartedAt >= FingerprintFallbackDeadline)
-            {
-                return null;
-            }
-
-            try
-            {
-                var recording = await _client.GetRecordingAsync(candidate.RecordingId, cancellationToken);
-                if (recording == null || string.IsNullOrWhiteSpace(recording.Id))
-                {
-                    continue;
-                }
-
-                var track = ToTrack(recording, preferences);
-                await ExtendTrackAsync(info, track, preferences, cancellationToken);
-                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
-                {
-                    continue;
-                }
-
-                return new AutoTagMatchResult
-                {
-                    Accuracy = Math.Clamp(candidate.Score, 0d, 1d),
-                    Track = ToAutoTagTrack(track),
-                    MatchStrategy = "fingerprint"
-                };
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "MusicBrainz fingerprint candidate lookup failed for {RecordingId}", candidate.RecordingId);
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private sealed record AcoustIdCandidate(double Score, string RecordingId);
 
     private async Task<AutoTagMatchResult?> TryMatchRecordingIdAsync(
         AutoTagAudioInfo info,

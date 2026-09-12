@@ -219,12 +219,6 @@ public sealed class MusicBrainzMatchConfig
     [JsonPropertyName("match_by_id")]
     public bool MatchById { get; set; } = true;
 
-    [JsonPropertyName("use_acoustid_fallback")]
-    public bool UseAcoustIdFallback { get; set; } = true;
-
-    [JsonPropertyName("fpcalc_path")]
-    public string FpcalcPath { get; set; } = "";
-
     [JsonPropertyName("use_aliases")]
     public bool UseAliases { get; set; } = false;
 

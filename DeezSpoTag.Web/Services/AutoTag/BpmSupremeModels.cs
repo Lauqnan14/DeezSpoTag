@@ -85,10 +85,25 @@ public enum BpmSupremeLibrary
     Latino
 }
 
+/// <summary>
+/// BPM Supreme credentials and catalog choice. All three members are supplied at run time by
+/// <c>AutoTagService.InjectPlatformAuthAsync</c> from the platform-auth store, which the user fills
+/// in on the Login page's BPM Supreme tab (the Platform Authentication section) — email, password,
+/// and the Library dropdown all live there. None of them is a control on the BPM Supreme
+/// configuration card, which declares no options at all. Do not add card controls for them.
+/// </summary>
 public sealed class BpmSupremeConfig
 {
+    /// <summary>Account email, from the Login page's BPM Supreme tab.</summary>
     public string Email { get; set; } = "";
+
+    /// <summary>Account password, from the Login page's BPM Supreme tab.</summary>
     public string Password { get; set; } = "";
+
+    /// <summary>
+    /// Which catalog to search (Supreme or Latino). Chosen with the Library dropdown on the Login
+    /// page's BPM Supreme tab, not on the configuration card.
+    /// </summary>
     public BpmSupremeLibrary Library { get; set; } = BpmSupremeLibrary.Supreme;
 }
 

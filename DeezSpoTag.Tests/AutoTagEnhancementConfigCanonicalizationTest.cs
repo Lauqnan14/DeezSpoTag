@@ -441,7 +441,10 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
         var organizerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs"));
 
         Assert.Contains("enableFolderUniformityWorkflow", viewSource, StringComparison.Ordinal);
-        Assert.Contains("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
+        // Quality Checks is manual-only: no scheduled-enhancement tick, and no "enabled" flag
+        // written from the UI. Its own action runs whatever checks are configured.
+        Assert.DoesNotContain("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("qualityChecks.enabled = getChecked", scriptSource, StringComparison.Ordinal);
         Assert.Contains("enableSidecarsWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("folderUniformityIncludeSubfolders", viewSource, StringComparison.Ordinal);
         Assert.Contains("Keep both on unresolved sidecar/path conflicts", viewSource, StringComparison.Ordinal);
@@ -449,12 +452,11 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
         Assert.Contains("folderUniformity.includeSubfolders = getChecked(\"folderUniformityIncludeSubfolders\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("delete folderUniformity.renameSpotifyArtistFolders", scriptSource, StringComparison.Ordinal);
         Assert.Contains("sidecars.enabled = getChecked(\"enableSidecarsWorkflow\"", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("qualityChecks.enabled = getChecked(\"enableQualityChecksWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("gap-fill tagging skipped", serviceSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementWorkflowSelection.IsFolderUniformityRunnable", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementWorkflowSelection.IsSidecarsRunnable", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("EnhancementWorkflowSelection.IsQualityChecksRunnable", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.HasConfiguredQualityChecks", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementWorkflowSelection.HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("profile has no gap-fill tags or enhancement workflows", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);

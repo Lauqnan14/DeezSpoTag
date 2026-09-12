@@ -353,11 +353,9 @@ public static class DownloadEngineArtworkHelper
         for (var index = 0; index < fallbackOrder.Count; index++)
         {
             var source = fallbackOrder[index];
-            var isLastProvider = index == fallbackOrder.Count - 1;
-            var resolution = await TryResolveArtistImageBySourceAsync(
+            var resolution = await TryResolveArtistPortraitBySourceAsync(
                 source,
                 request,
-                allowAlbumArtworkFallback: isLastProvider,
                 cancellationToken);
             if (resolution != null)
             {
@@ -368,6 +366,25 @@ public static class DownloadEngineArtworkHelper
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Artist));
                 StoreArtistArtwork(cacheKey, resolution);
                 return resolution;
+            }
+        }
+
+        // Last resort, only once every configured source has missed: borrow album or song
+        // artwork from the first source in the configured order that can actually serve it.
+        // This is decided by what each source can provide, never by its position in the list,
+        // so a source with no album-artwork path, or one missing the id required to use it,
+        // is skipped rather than ending the search. The order stays user-configurable and the
+        // last resort still respects it.
+        foreach (var source in fallbackOrder)
+        {
+            var albumArtwork = await TryResolveArtistImageFromAlbumArtworkAsync(
+                source,
+                request,
+                cancellationToken);
+            if (albumArtwork != null)
+            {
+                StoreArtistArtwork(cacheKey, albumArtwork);
+                return albumArtwork;
             }
         }
 
@@ -435,42 +452,30 @@ public static class DownloadEngineArtworkHelper
         }
     }
 
-    /// <summary>
-    /// Resolves an artist portrait from a single provider. Album or song artwork is only an
-    /// acceptable answer for the last provider in the configured order; every earlier provider
-    /// must report a miss so the chain keeps moving.
-    /// </summary>
-    private static async Task<ArtistArtworkResolution?> TryResolveArtistImageBySourceAsync(
-        string source,
-        ArtistImageResolveRequest request,
-        bool allowAlbumArtworkFallback,
-        CancellationToken cancellationToken)
-    {
-        var portrait = await TryResolveArtistPortraitBySourceAsync(source, request, cancellationToken);
-        if (portrait != null || !allowAlbumArtworkFallback)
-        {
-            return portrait;
-        }
-
-        return await TryResolveArtistImageFromAlbumArtworkAsync(source, request, cancellationToken);
-    }
-
     private static async Task<ArtistArtworkResolution?> TryResolveArtistImageFromAlbumArtworkAsync(
         string source,
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
         var normalized = source?.Trim().ToLowerInvariant();
+
+        // Each source can only serve this last resort when the id its album-artwork lookup
+        // needs is actually present. A source that is not configured for this track is
+        // skipped so the caller can move on to the next one in the configured order.
         var url = normalized switch
         {
-            "apple" => await ResolveAppleAlbumArtworkForArtistAsync(request, cancellationToken),
-            "deezer" => await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
-                request.DeezerClient,
-                request.DeezerId,
-                ArtworkSizePolicy.ResolveRequestSize(request.Settings.LocalArtworkSize, "deezer"),
-                request.Logger,
-                cancellationToken),
-            "spotify" => request.SpotifyArtworkResolver == null
+            "apple" => string.IsNullOrWhiteSpace(request.AppleId)
+                ? null
+                : await ResolveAppleAlbumArtworkForArtistAsync(request, cancellationToken),
+            "deezer" => string.IsNullOrWhiteSpace(request.DeezerId)
+                ? null
+                : await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
+                    request.DeezerClient,
+                    request.DeezerId,
+                    ArtworkSizePolicy.ResolveRequestSize(request.Settings.LocalArtworkSize, "deezer"),
+                    request.Logger,
+                    cancellationToken),
+            "spotify" => string.IsNullOrWhiteSpace(request.SpotifyId) || request.SpotifyArtworkResolver == null
                 ? null
                 : await request.SpotifyArtworkResolver.ResolveAlbumCoverUrlAsync(request.SpotifyId, cancellationToken),
             _ => null
@@ -517,7 +522,7 @@ public static class DownloadEngineArtworkHelper
             request.AppleCatalog,
             request.AppleId,
             storefront,
-            AppleQueueHelpers.GetAppleArtworkSize(request.Settings),
+            AppleQueueHelpers.ArtistArtworkSize,
             request.Logger,
             cancellationToken,
             allowAlbumArtwork: true);
@@ -598,7 +603,7 @@ public static class DownloadEngineArtworkHelper
                 request.AppleCatalog,
                 request.AppleArtistId,
                 storefront,
-                AppleQueueHelpers.GetAppleArtworkSize(request.Settings),
+                AppleQueueHelpers.ArtistArtworkSize,
                 cancellationToken);
             if (!string.IsNullOrWhiteSpace(byArtistId))
             {

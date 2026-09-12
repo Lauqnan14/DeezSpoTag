@@ -31,11 +31,14 @@ public sealed class ShazamMatchConfig
     [JsonPropertyName("include_release_date")]
     public bool IncludeReleaseDate { get; set; } = true;
 
+    /// <summary>Minimum title similarity, as a percentage (72 = 72%). Stored on the 0-100 scale the
+    /// UI exposes; <see cref="ShazamMatcher"/> converts it to the 0-1 fraction it compares against.</summary>
     [JsonPropertyName("min_title_similarity")]
-    public double MinTitleSimilarity { get; set; } = 0.72;
+    public double MinTitleSimilarity { get; set; } = 72d;
 
+    /// <summary>Minimum artist similarity, as a percentage (52 = 52%). Same 0-100 scale as the UI.</summary>
     [JsonPropertyName("min_artist_similarity")]
-    public double MinArtistSimilarity { get; set; } = 0.52;
+    public double MinArtistSimilarity { get; set; } = 52d;
 
     [JsonPropertyName("max_duration_delta_seconds")]
     public int MaxDurationDeltaSeconds { get; set; } = 20;

@@ -528,6 +528,13 @@ public partial class Program
         services.AddRazorPages();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryPinUnlockService>();
         services.AddHttpClient(Options.DefaultName, client => client.Timeout = TimeSpan.FromSeconds(20));
+        // Cover-art proxy for allow-listed image CDNs. Redirects are not followed so an allowed
+        // host cannot bounce the request to an internal address.
+        services.AddHttpClient(Controllers.Api.ExternalImagesApiController.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(20))
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
+            {
+                AllowAutoRedirect = false
+            });
         services.AddAntiforgery(options =>
         {
             options.HeaderName = "X-CSRF-TOKEN";

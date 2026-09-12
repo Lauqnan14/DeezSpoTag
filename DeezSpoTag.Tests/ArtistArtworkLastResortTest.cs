@@ -4,7 +4,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class ArtistArtworkLastProviderFallbackTest
+public sealed class ArtistArtworkLastResortTest
 {
     private static string ReadHelperSource()
     {
@@ -18,36 +18,78 @@ public sealed class ArtistArtworkLastProviderFallbackTest
     }
 
     [Fact]
-    public void AlbumArtworkFallbackIsGatedToTheLastProviderInTheOrder()
+    public void AlbumArtworkFallbackIsNotGatedToTheLastProviderInTheOrder()
     {
         var source = ReadHelperSource();
 
-        Assert.Contains("var isLastProvider = index == fallbackOrder.Count - 1;", source, System.StringComparison.Ordinal);
-        Assert.Contains("allowAlbumArtworkFallback: isLastProvider", source, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("isLastProvider", source, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("allowAlbumArtworkFallback", source, System.StringComparison.Ordinal);
     }
 
     [Fact]
-    public void EarlierProvidersReturnTheirPortraitResultWithoutAlbumFallback()
+    public void EveryConfiguredSourceIsExhaustedBeforeTheAlbumArtworkLastResort()
     {
         var source = ReadHelperSource();
 
-        Assert.Contains(
-            "if (portrait != null || !allowAlbumArtworkFallback)",
-            source,
+        var loopIndex = source.IndexOf(
+            "for (var index = 0; index < fallbackOrder.Count; index++)",
             System.StringComparison.Ordinal);
+        var lastResortIndex = source.IndexOf(
+            "Last resort, only once every configured source has missed",
+            System.StringComparison.Ordinal);
+
+        Assert.True(loopIndex > 0, "the portrait loop should exist");
+        Assert.True(lastResortIndex > loopIndex, "the album artwork last resort must run after the portrait loop");
+    }
+
+    [Fact]
+    public void LastResortWalksTheConfiguredOrderAndTakesTheFirstSourceThatCanServe()
+    {
+        var source = ReadHelperSource();
+
+        var lastResortIndex = source.IndexOf(
+            "Last resort, only once every configured source has missed",
+            System.StringComparison.Ordinal);
+        Assert.True(lastResortIndex > 0);
+        var body = source[lastResortIndex..(lastResortIndex + 1400)];
+
+        Assert.Contains("foreach (var source in fallbackOrder)", body, System.StringComparison.Ordinal);
+        Assert.Contains("if (albumArtwork != null)", body, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SourcesMissingTheIdTheirAlbumArtworkLookupNeedsAreSkipped()
+    {
+        var start = FindAlbumArtworkMethodDefinition();
+        var body = ReadHelperSource()[start..(start + 3000)];
+
+        Assert.Contains("string.IsNullOrWhiteSpace(request.AppleId)", body, System.StringComparison.Ordinal);
+        Assert.Contains("string.IsNullOrWhiteSpace(request.DeezerId)", body, System.StringComparison.Ordinal);
+        Assert.Contains("string.IsNullOrWhiteSpace(request.SpotifyId)", body, System.StringComparison.Ordinal);
     }
 
     [Fact]
     public void EveryOrderableProviderCanSupplyTheLastResortAlbumArtwork()
     {
-        var source = ReadHelperSource();
-        var start = source.IndexOf("TryResolveArtistImageFromAlbumArtworkAsync(", System.StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var body = source[start..(start + 2000)];
+        var start = FindAlbumArtworkMethodDefinition();
+        var body = ReadHelperSource()[start..(start + 3000)];
 
         Assert.Contains("\"apple\" =>", body, System.StringComparison.Ordinal);
         Assert.Contains("\"deezer\" =>", body, System.StringComparison.Ordinal);
         Assert.Contains("\"spotify\" =>", body, System.StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Locates the album-artwork helper's definition rather than its call site.
+    /// </summary>
+    private static int FindAlbumArtworkMethodDefinition()
+    {
+        var source = ReadHelperSource();
+        var start = source.IndexOf(
+            "Task<ArtistArtworkResolution?> TryResolveArtistImageFromAlbumArtworkAsync(",
+            System.StringComparison.Ordinal);
+        Assert.True(start > 0, "the album artwork helper definition should exist");
+        return start;
     }
 
     [Fact]

@@ -115,6 +115,14 @@ public static class AppleQueueHelpers
 
     private const string DefaultArtworkFormat = "jpg";
     private const string DefaultLanguage = "en-US";
+
+    /// <summary>
+    /// Size requested for artist artwork. Artist images are always fetched at the largest size the
+    /// provider serves, independently of the album artwork size settings: the CDN clamps a request
+    /// above the largest real asset, so this yields the highest quality available rather than an
+    /// upscaled original.
+    /// </summary>
+    public const int ArtistArtworkSize = 5000;
     public const int DefaultAnimatedArtworkMaxSizeMb = 10;
     private const string AnimatedArtworkMp4 = "mp4";
     private const string AnimatedArtworkWebp = "webp";

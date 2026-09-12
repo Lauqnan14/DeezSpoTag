@@ -219,6 +219,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
                 ? string.Join(",", LyricsProviderRegistry.DefaultOrder)
                 : baseSettings.LyricsFallbackOrder,
+            // Same source as the download pipeline: the profile's lrclib / musixmatch /
+            // betterlyrics cards.
+            Lrclib = baseSettings.Lrclib ?? new LrclibOptions(),
+            Musixmatch = baseSettings.Musixmatch ?? new MusixmatchOptions(),
+            BetterLyrics = baseSettings.BetterLyrics ?? new BetterLyricsOptions(),
             LrcFormat = NormalizeLyricsFormat(baseSettings.LrcFormat),
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
                 ? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"

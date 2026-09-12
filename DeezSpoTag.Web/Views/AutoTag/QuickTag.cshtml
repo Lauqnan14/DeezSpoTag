@@ -166,6 +166,11 @@
                         <option value="amazon">Amazon</option>
                         <option value="discogs">Discogs</option>
                     </select>
+                    <label class="qt-tag-source-label" for="qtTagSourceAcoustidEnabled"
+                           title="Include AcoustID in the source list. AcoustID fingerprints the selected audio file to identify it — requires the Chromaprint fpcalc binary.">
+                        <input type="checkbox" id="qtTagSourceAcoustidEnabled" checked />
+                        AcoustID
+                    </label>
                 </div>
                 <button type="button" id="qtTagSourceSearch" class="qt-btn qt-btn-outline">Search</button>
                 <div id="qtTagSourceStatus" class="qt-tag-source-status" aria-live="polite">Select a track, then click Search.</div>

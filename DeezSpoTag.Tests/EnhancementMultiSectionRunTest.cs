@@ -283,10 +283,12 @@ public sealed class EnhancementMultiSectionRunTest
 
         Assert.Contains("id=\"runScope-tag-gap-fill\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"runScope-sidecars\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"runScope-quality-checks\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"runScope-folder-uniformity\"", view, StringComparison.Ordinal);
+        // Quality Checks runs independently, so it has no run-scope tick.
+        Assert.DoesNotContain("id=\"runScope-quality-checks\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"enableFolderUniformityWorkflow\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"enableQualityChecksWorkflow\"", view, StringComparison.Ordinal);
+        // Quality Checks is manual-only: it has no scheduled-enhancement tick.
+        Assert.DoesNotContain("id=\"enableQualityChecksWorkflow\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"enableSidecarsWorkflow\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"runSelectedEnhancementSections\"", view, StringComparison.Ordinal);
         Assert.Contains("enhancement-checkbox-grid", view, StringComparison.Ordinal);
@@ -384,57 +386,6 @@ public sealed class EnhancementMultiSectionRunTest
         => File.ReadAllText(Path.Join(
             FindRepoRoot(), "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
 
-    /// <summary>
-    /// Quality checks are manual-only. A stored qualityChecks.enabled survives the loss
-    /// of its checkbox, so automation must not read it — otherwise the section stays
-    /// scheduled with no way to switch it off from the UI.
-    /// </summary>
-    [Fact]
-    public void ScheduledEnhancement_NeverDispatchesQualityChecks()
-    {
-        var method = typeof(DownloadOrchestrationService).GetMethod(
-            "GetEnabledEnhancementFeatures",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-
-        List<string> FeaturesFor(JsonObject enhancement)
-        {
-            var configJson = new JsonObject { ["enhancement"] = enhancement }.ToJsonString();
-            return Assert.IsType<List<string>>(method!.Invoke(null, [configJson]));
-        }
-
-        // A profile whose only enhancement work is quality checks schedules nothing.
-        var qualityOnly = FeaturesFor(new JsonObject
-        {
-            ["qualityChecks"] = new JsonObject { ["enabled"] = true, ["flagMissingTags"] = true }
-        });
-        Assert.DoesNotContain(AutoTagLiterals.EnhancementFeatureQualityChecks, qualityOnly);
-        Assert.Empty(qualityOnly);
-
-        // A stale enabled flag cannot ride along on a run scheduled for another section.
-        var sidecarsAndQuality = FeaturesFor(new JsonObject
-        {
-            ["sidecars"] = new JsonObject { ["enabled"] = true, ["queueLyricsRefresh"] = true },
-            ["qualityChecks"] = new JsonObject { ["enabled"] = true, ["flagDuplicates"] = true }
-        });
-        Assert.Contains(AutoTagLiterals.EnhancementFeatureSidecars, sidecarsAndQuality);
-        Assert.DoesNotContain(AutoTagLiterals.EnhancementFeatureQualityChecks, sidecarsAndQuality);
-    }
-
-    [Fact]
-    public void ScheduledFeatureList_StaysFreeOfTheQualityChecksGate()
-    {
-        var source = ReadOrchestration();
-        var start = source.IndexOf("private static List<string> GetEnabledEnhancementFeatures", StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var end = source.IndexOf("private static string BuildEnhancementFeatureConfig", start, StringComparison.Ordinal);
-        var method = source[start..end];
-
-        Assert.DoesNotContain("IsQualityChecksRunnable", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("EnhancementFeatureQualityChecks", method, StringComparison.Ordinal);
-        Assert.Contains("EnhancementFeatureFolderUniformity", method, StringComparison.Ordinal);
-    }
-
     [Fact]
     public void ManualFolderRun_LivesInTheEnhancementTabNotTheLibraryFolderRows()
     {
@@ -469,7 +420,7 @@ public sealed class EnhancementMultiSectionRunTest
         var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
         var script = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
 
-        foreach (var id in new[] { "tag-gap-fill", "folder-uniformity", "quality-checks", "sidecars" })
+        foreach (var id in new[] { "tag-gap-fill", "folder-uniformity", "sidecars" })
         {
             Assert.Contains($"id=\"runScopeHint-{id}\"", view, StringComparison.Ordinal);
         }
@@ -501,13 +452,14 @@ public sealed class EnhancementMultiSectionRunTest
         var runBlock = segment.IndexOf("Enhancement Run Workflows", StringComparison.Ordinal);
         var gap = segment.IndexOf("<!-- Gap Filling -->", StringComparison.Ordinal);
         var sidecars = segment.IndexOf("<!-- Sidecars -->", StringComparison.Ordinal);
-        var quality = segment.IndexOf("<!-- Quality Checks -->", StringComparison.Ordinal);
         var uniformity = segment.IndexOf("<!-- Folder Uniformity -->", StringComparison.Ordinal);
+        var quality = segment.IndexOf("<!-- Quality Checks -->", StringComparison.Ordinal);
 
         Assert.True(gap > 0 && sidecars > gap);
-        Assert.True(quality > sidecars);
-        Assert.True(uniformity > quality);
-        Assert.True(runBlock > uniformity, "the run block must render after the section cards");
+        // Folder Uniformity and Quality Checks were interchanged, putting Quality Checks last.
+        Assert.True(uniformity > sidecars, "Folder Uniformity now follows Sidecars");
+        Assert.True(quality > uniformity, "Quality Checks is now the last section");
+        Assert.True(runBlock > quality, "the run block must render after the section cards");
     }
 
     [Fact]
@@ -601,12 +553,83 @@ public sealed class EnhancementMultiSectionRunTest
         var method = workflows[start..end];
 
         var sidecarIndex = method.IndexOf("EnhancementFeatureSidecars", StringComparison.Ordinal);
-        var qualityIndex = method.IndexOf("EnhancementFeatureQualityChecks", StringComparison.Ordinal);
         var uniformityIndex = method.IndexOf("EnhancementFeatureFolderUniformity", StringComparison.Ordinal);
         Assert.True(sidecarIndex > 0);
-        Assert.True(qualityIndex > sidecarIndex);
-        Assert.True(uniformityIndex > qualityIndex);
+        Assert.True(uniformityIndex > sidecarIndex);
         Assert.DoesNotContain("if (enhancementStageRan)", method, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Quality Checks is not part of the combined enhancement run: it only inspects and flags, so
+    /// it must not be executed from the integrated multi-section sequence.
+    /// </summary>
+    [Fact]
+    public void QualityChecksDoesNotJoinTheCombinedEnhancementSequence()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task RunIntegratedEnhancementWorkflowsAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var end = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
+        var combined = workflows[start..end];
+
+        // The combined sequence runs Folder Uniformity, and the block that runs the checks is
+        // gated behind the dedicated quality-checks-only job marker rather than joining the run.
+        Assert.Contains("EnhancementFeatureFolderUniformity", combined, StringComparison.Ordinal);
+        Assert.Contains("IsQualityChecksOnlyRun(job)", combined, StringComparison.Ordinal);
+        Assert.Contains("RunQualityChecksOnlyAsync(", combined, StringComparison.Ordinal);
+
+        // No unguarded execution of the checks remains in the combined sequence: every occurrence
+        // of the checks runner sits inside the dedicated path.
+        var runnerCalls = 0;
+        var searchFrom = 0;
+        while (true)
+        {
+            var at = combined.IndexOf("RunConfiguredQualityChecksAsync(", searchFrom, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                break;
+            }
+
+            runnerCalls++;
+            searchFrom = at + 1;
+        }
+
+        Assert.Equal(1, runnerCalls);
+
+        // The checks keep their own entry point instead.
+        var qualityStart = workflows.IndexOf("private async Task RunQualityChecksOnlyAsync", StringComparison.Ordinal);
+        Assert.True(qualityStart > 0, "Quality Checks needs its own execution path");
+        var qualityEnd = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", qualityStart, StringComparison.Ordinal);
+        var qualityOnly = workflows[qualityStart..qualityEnd];
+        Assert.Contains("RunConfiguredQualityChecksAsync", qualityOnly, StringComparison.Ordinal);
+        // Manual-only: runnability comes from the checks being configured, not the legacy
+        // "enabled" schedule flag.
+        Assert.Contains("HasConfiguredQualityChecks", qualityOnly, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The combined-run declaration and the UI run-scope list must both exclude Quality Checks,
+    /// otherwise the section creeps back into a combined run.
+    /// </summary>
+    [Fact]
+    public void QualityChecksIsExcludedFromTheCombinedRunDeclarationAndRunScope()
+    {
+        var selection = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "EnhancementWorkflowSelection.cs"));
+        var orderedStart = selection.IndexOf("OrderedFeatures", StringComparison.Ordinal);
+        Assert.True(orderedStart > 0);
+        var orderedBlock = selection[orderedStart..selection.IndexOf("];", orderedStart, StringComparison.Ordinal)];
+        Assert.Contains("GapFill", orderedBlock, StringComparison.Ordinal);
+        Assert.Contains("Sidecars", orderedBlock, StringComparison.Ordinal);
+        Assert.Contains("FolderUniformity", orderedBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("QualityChecks", orderedBlock, StringComparison.Ordinal);
+
+        var script = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var runScopeStart = script.IndexOf("const ENHANCEMENT_RUN_SECTION_IDS", StringComparison.Ordinal);
+        Assert.True(runScopeStart > 0);
+        var runScopeLine = script[runScopeStart..script.IndexOf(';', runScopeStart)];
+        Assert.DoesNotContain("quality-checks", runScopeLine, StringComparison.Ordinal);
+        Assert.Contains("folder-uniformity", runScopeLine, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -470,7 +470,7 @@ public static class ArtworkFallbackHelper
         if (appleCatalog != null && !string.IsNullOrWhiteSpace(appleTrackId))
         {
             var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
-            var trackLinkedArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
+            var trackLinkedArtworkSize = AppleQueueHelpers.ArtistArtworkSize;
             var fromSong = await AppleQueueHelpers.ResolveAppleArtistImageFromSongAsync(
                 appleCatalog,
                 appleTrackId,
@@ -489,7 +489,7 @@ public static class ArtworkFallbackHelper
             return null;
         }
 
-        var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
+        var appleArtworkSize = AppleQueueHelpers.ArtistArtworkSize;
         return await AppleQueueHelpers.ResolveItunesArtistImageAsync(
             httpClientFactory,
             artist,

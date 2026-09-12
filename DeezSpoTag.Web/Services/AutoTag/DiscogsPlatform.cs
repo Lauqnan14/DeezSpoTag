@@ -61,6 +61,13 @@ public sealed class DiscogsPlatform : AutoTagPlatformBase
                         Id = "track_number_int",
                         Label = "Write track number as number, rather than Discogs's format",
                         Value = new PlatformCustomOptionBoolean { Value = false }
+                    },
+                    new()
+                    {
+                        Id = "rate_limit",
+                        Label = "Requests per minute",
+                        Tooltip = "Discogs allows ~25 requests/min unauthenticated and ~60 authenticated. Lower this if you see 429 responses.",
+                        Value = new PlatformCustomOptionNumber { Min = 1, Max = 120, Step = 1, Value = 60 }
                     }
                 }
             }

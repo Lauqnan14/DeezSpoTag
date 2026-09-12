@@ -11,6 +11,7 @@
     const QUICKTAG_COLUMN_PRESET_KEY = "deezspotag.quicktag.columnPreset";
     const QUICKTAG_SOURCE_TEMPLATE_KEY = "deezspotag.quicktag.sourceTemplate";
     const QUICKTAG_TAG_SOURCE_PROVIDER_KEY = "deezspotag.quicktag.tagSourceProvider";
+    const QUICKTAG_TAG_SOURCE_ACOUSTID_ENABLED_KEY = "deezspotag.quicktag.tagSourceAcoustidEnabled";
 
     const DEFAULT_SEPARATORS = {
         id3: ", ",
@@ -170,6 +171,7 @@
         sortDescending: false,
         sourceTemplate: "auto",
         tagSourceProvider: "spotify",
+        tagSourceAcoustidEnabled: true,
         tagSourceDetail: null,
         artworkViewIndex: 0,
         artworkClipboard: null,
@@ -225,6 +227,7 @@
         sourceFilter: document.getElementById("qtSourceFilter"),
         sourceTags: document.getElementById("qtSourceTags"),
         tagSourceProvider: document.getElementById("qtTagSourceProvider"),
+        tagSourceAcoustidEnabled: document.getElementById("qtTagSourceAcoustidEnabled"),
         tagSourceSearchBtn: document.getElementById("qtTagSourceSearch"),
         tagSourceStatus: document.getElementById("qtTagSourceStatus"),
         tagSourceResults: document.getElementById("qtTagSourceResults"),
@@ -658,8 +661,43 @@
             state.tagSourceProvider = provider;
         }
 
+        const acoustidStored = localStorage.getItem(QUICKTAG_TAG_SOURCE_ACOUSTID_ENABLED);
+        state.tagSourceAcoustidEnabled = acoustidStored === null
+            ? true
+            : acoustidStored === "true";
+        if (state.tagSourceAcoustidEnabled === false && state.tagSourceProvider === "acoustid") {
+            state.tagSourceProvider = "spotify";
+        }
+
         if (dom.tagSourceProvider) {
             dom.tagSourceProvider.value = state.tagSourceProvider;
+        }
+
+        applyTagSourceAcoustidAvailability();
+    }
+
+    // AcoustID opt-in/out: the toggle controls whether the AcoustID fingerprint
+    // source appears in the source list at all.
+    function applyTagSourceAcoustidAvailability() {
+        const enabled = state.tagSourceAcoustidEnabled === true;
+        if (dom.tagSourceAcoustidEnabled) {
+            dom.tagSourceAcoustidEnabled.checked = enabled;
+        }
+
+        const acoustidOption = Array.from(dom.tagSourceProvider?.options || [])
+            .find(option => option.value === "acoustid");
+        if (acoustidOption) {
+            acoustidOption.hidden = !enabled;
+            acoustidOption.disabled = !enabled;
+        }
+
+        if (!enabled && state.tagSourceProvider === "acoustid") {
+            state.tagSourceProvider = "spotify";
+            if (dom.tagSourceProvider) {
+                dom.tagSourceProvider.value = "spotify";
+            }
+            localStorage.setItem(QUICKTAG_TAG_SOURCE_PROVIDER_KEY, state.tagSourceProvider);
+            clearTagSourceSearchState("AcoustID source is disabled. Pick another tag source.", "warning");
         }
     }
 
