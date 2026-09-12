@@ -90,6 +90,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         settings.DateFormat = technical.DateFormat;
         settings.AlbumVariousArtists = technical.AlbumVariousArtists;
         settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+        settings.RemoveFeaturedFromAlbumTitle = technical.RemoveFeaturedFromAlbumTitle;
         settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
         settings.FeaturedToTitle = technical.FeaturedToTitle;
         settings.TitleCasing = technical.TitleCasing;

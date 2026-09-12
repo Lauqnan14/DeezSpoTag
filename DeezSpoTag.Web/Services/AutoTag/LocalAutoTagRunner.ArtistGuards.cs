@@ -559,9 +559,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool HasFeaturedMarker(string title)
     {
-        return title.Contains("(feat", StringComparison.OrdinalIgnoreCase)
-            || title.Contains(" feat.", StringComparison.OrdinalIgnoreCase)
-            || title.Contains(" ft.", StringComparison.OrdinalIgnoreCase)
-            || title.Contains(" featuring ", StringComparison.OrdinalIgnoreCase);
+        // Shared with Track.GetFeatTitle / Album.GetCleanTitle so the guard's idea of "already
+        // credits a featured artist" cannot drift from the code that adds or strips the credit.
+        return DeezSpoTag.Core.Utils.FeaturedTitleMarker.HasCredit(title);
     }
 }

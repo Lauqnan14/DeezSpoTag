@@ -21,6 +21,7 @@ public static class TechnicalLyricsSettingsApplier
         settings.AlbumVariousArtists = technical.AlbumVariousArtists;
         settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
         settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+        settings.RemoveFeaturedFromAlbumTitle = technical.RemoveFeaturedFromAlbumTitle;
 
         if (!string.IsNullOrWhiteSpace(technical.MultiArtistSeparator))
         {

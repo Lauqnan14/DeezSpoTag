@@ -1816,9 +1816,8 @@
         if (!state.config.custom.itunes) {
             state.config.custom.itunes = {};
         }
-        if (!state.config.custom.itunes.art_resolution) {
-            state.config.custom.itunes.art_resolution = 1000;
-        }
+        // Per-option defaults are owned by the backend adapters and applied by
+        // ensurePlatformCustomDefaults(). Do not duplicate a backend default here.
     }
 
     function ensurePlatformCustomDefaults() {
@@ -2551,16 +2550,25 @@
         return String(platformId || "").trim().toLowerCase();
     }
 
+    // Order here is the two-column layout: the renderer alternates cards by index
+    // (even -> left column, odd -> right), so this list decides which column each
+    // card lands in. It is arranged so the two columns end at close to the same
+    // height -- musicbrainz (17 options) and shazam (12) are the tall cards and are
+    // kept in separate columns. See autotag.js renderPlatformOptions and
+    // .autotag-platform-options in autotag.css.
     const TECHNICAL_PLATFORM_ORDER = Object.freeze([
         "boomplay",
         "lastfm",
         "discogs",
         "deezer",
         "beatport",
-        "itunes",
-        "lrclib",
         "musicbrainz",
-        "shazam"
+        "itunes",
+        "musixmatch",
+        "lrclib",
+        "betterlyrics",
+        "shazam",
+        "audiomack"
     ]);
 
     const TECHNICAL_PLATFORM_ORDER_INDEX = Object.freeze(
@@ -2576,14 +2584,6 @@
             return true;
         }
         return globalThis.matchMedia(PLATFORM_OPTIONS_COLUMN_LAYOUT_QUERY).matches;
-    }
-
-    function clampItunesArtResolution(value, fallback = 1000) {
-        const parsed = Number.parseInt(String(value ?? ""), 10);
-        if (!Number.isFinite(parsed)) {
-            return fallback;
-        }
-        return Math.max(100, Math.min(5000, parsed));
     }
 
     function createPlatformOptionLabel(option) {
@@ -2936,6 +2936,7 @@
 
     function loadConfigToUI() {
         ensureCustomDefaults();
+        ensurePlatformCustomDefaults();
         ensureEnhancementDefaults();
         renderSuccessLibraryOptions();
         renderEnhancementFolderOptions();
@@ -6190,6 +6191,7 @@
         applyFieldCheckedWhenBoolean("albumVariousArtists", technical.albumVariousArtists);
         applyFieldCheckedWhenBoolean("removeDuplicateArtists", technical.removeDuplicateArtists);
         applyFieldCheckedWhenBoolean("removeAlbumVersion", technical.removeAlbumVersion);
+        applyFieldCheckedWhenBoolean("removeFeaturedFromAlbumTitle", technical.removeFeaturedFromAlbumTitle);
         applyFieldValueIfPresent("dateFormat", technical.dateFormat);
         applyFieldValueIfPresent("featuredToTitle", technical.featuredToTitle);
         applyFieldValueIfPresent("titleCasing", technical.titleCasing);
@@ -6335,6 +6337,7 @@
         technical.albumVariousArtists = getChecked("albumVariousArtists", technical.albumVariousArtists ?? false);
         technical.removeDuplicateArtists = getChecked("removeDuplicateArtists", technical.removeDuplicateArtists ?? false);
         technical.removeAlbumVersion = getChecked("removeAlbumVersion", technical.removeAlbumVersion ?? false);
+        technical.removeFeaturedFromAlbumTitle = getChecked("removeFeaturedFromAlbumTitle", technical.removeFeaturedFromAlbumTitle ?? false);
         technical.dateFormat = getValue("dateFormat", technical.dateFormat ?? "Y-M-D");
         technical.featuredToTitle = getValue("featuredToTitle", technical.featuredToTitle ?? "0");
         technical.titleCasing = getValue("titleCasing", technical.titleCasing ?? "nothing");
@@ -6536,24 +6539,16 @@
     }
 
     function loadItunesArtOptions() {
-        const select = el("autotag-itunes-art-resolution");
         const animatedControls = getAnimatedArtworkControls();
-        if (!select && animatedControls.length === 0) {
+        if (animatedControls.length === 0) {
             return;
         }
         ensureCustomDefaults();
-        if (select) {
-            const resolution = clampItunesArtResolution(state.config.custom.itunes.art_resolution, 1000);
-            state.config.custom.itunes.art_resolution = resolution;
-            select.value = String(resolution);
-        }
         const configured = state.config?.custom?.itunes?.animated_artwork;
         const animatedValue = typeof configured === "boolean"
             ? configured
             : false;
-        if (animatedControls.length > 0) {
-            setAnimatedArtworkControls(animatedValue);
-        }
+        setAnimatedArtworkControls(animatedValue);
     }
 
     function getAnimatedArtworkControls() {

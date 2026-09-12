@@ -394,6 +394,7 @@ public class PerformanceOptimizationService : IDisposable
             DateFormat = baseSettings.DateFormat,
             AlbumVariousArtists = baseSettings.AlbumVariousArtists,
             RemoveAlbumVersion = baseSettings.RemoveAlbumVersion,
+            RemoveFeaturedFromAlbumTitle = baseSettings.RemoveFeaturedFromAlbumTitle,
             RemoveDuplicateArtists = baseSettings.RemoveDuplicateArtists,
             FeaturedToTitle = baseSettings.FeaturedToTitle,
             TitleCasing = baseSettings.TitleCasing,

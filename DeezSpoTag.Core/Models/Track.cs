@@ -172,6 +172,7 @@ public class Track : AudioFeaturesBase
         ApplyAlbumMainArtistSaveFlag(settings);
         ApplyArtistDeduplication(settings);
         ApplyFeaturedTitleMode(settings);
+        ApplyFeaturedAlbumTitleRemoval(settings);
         RemoveAlbumVersionSuffix(settings);
         ApplyTrackCasing(settings);
         ApplyArtistTagFormatting(settings);
@@ -363,7 +364,6 @@ public class Track : AudioFeaturesBase
         switch (settings.FeaturedToTitle)
         {
             case "0":
-            case "3":
                 ApplyCleanTitleToTrackAndAlbum();
                 break;
             case "1":
@@ -373,6 +373,23 @@ public class Track : AudioFeaturesBase
                 Title = GetFeatTitle();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Drops featured artists from the album title ("Rise Up (feat. Falz)" becomes "Rise Up").
+    ///
+    /// This is a user toggle independent of <see cref="ApplyFeaturedTitleMode"/>, so it combines
+    /// with any Featured To Title option. It affects the album tag and, because the default album
+    /// folder template is "%album%", the album folder name the files are written into.
+    /// </summary>
+    private void ApplyFeaturedAlbumTitleRemoval(DeezSpoTagSettings settings)
+    {
+        if (!settings.RemoveFeaturedFromAlbumTitle || Album == null)
+        {
+            return;
+        }
+
+        Album.Title = Album.GetCleanTitle();
     }
 
     private void ApplyCleanTitleToTrackAndAlbum()
@@ -515,15 +532,22 @@ public class Track : AudioFeaturesBase
     }
 
     /// <summary>
-    /// Get title with featured artists
+    /// Get title with featured artists.
+    ///
+    /// When the title already credits featured artists, the credit is rewritten into the same
+    /// canonical "(feat. X)" form the app writes when it adds one, so the result does not depend
+    /// on how the source metadata happened to spell it ("ft.", "featuring", bracketed or inline).
     /// </summary>
     public string GetFeatTitle()
     {
-        if (!string.IsNullOrEmpty(FeatArtistsString) && !Title.Contains("feat.", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrEmpty(FeatArtistsString))
         {
-            return $"{Title} ({FeatArtistsString})";
+            return Title;
         }
-        return Title;
+
+        return FeaturedTitleMarker.HasCredit(Title)
+            ? FeaturedTitleMarker.NormalizeCredit(Title)
+            : $"{Title} ({FeatArtistsString})";
     }
 
     /// <summary>
@@ -549,23 +573,7 @@ public class Track : AudioFeaturesBase
 
     private static string RemoveFeatures(string title)
     {
-        // Remove trailing collaboration suffixes from title variants.
-        var patterns = new[]
-        {
-            @"\s*\((feat|ft|featuring)\.?\s+.*?\)",
-            @"\s*\[(feat|ft|featuring)\.?\s+.*?\]",
-            @"\s*(feat|ft|featuring)\.?\s+.*$"
-        };
-        foreach (var pattern in patterns)
-        {
-            title = System.Text.RegularExpressions.Regex.Replace(
-                title,
-                pattern,
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase,
-                RegexTimeout);
-        }
-        return title.Trim();
+        return FeaturedTitleMarker.StripCredit(title);
     }
 
     private static string ChangeCase(string text, string casing)

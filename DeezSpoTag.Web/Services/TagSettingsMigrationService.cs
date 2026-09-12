@@ -188,6 +188,7 @@ public sealed class TagSettingsMigrationService
             result.AlbumVariousArtists = settings.AlbumVariousArtists;
             result.RemoveDuplicateArtists = settings.RemoveDuplicateArtists;
             result.RemoveAlbumVersion = settings.RemoveAlbumVersion;
+            result.RemoveFeaturedFromAlbumTitle = settings.RemoveFeaturedFromAlbumTitle;
             result.DateFormat = settings.DateFormat;
             result.FeaturedToTitle = settings.FeaturedToTitle;
             result.TitleCasing = settings.TitleCasing;

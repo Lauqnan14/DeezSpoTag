@@ -62,24 +62,7 @@ public class Album
 
     public string GetCleanTitle()
     {
-        var title = Title ?? string.Empty;
-        var patterns = new[]
-        {
-            @"\s*\((feat|ft|featuring)\.?\s+.*?\)",
-            @"\s*\[(feat|ft|featuring)\.?\s+.*?\]",
-            @"\s*(feat|ft|featuring)\.?\s+.*$"
-        };
-        foreach (var pattern in patterns)
-        {
-            title = System.Text.RegularExpressions.Regex.Replace(
-                title,
-                pattern,
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase,
-                RegexTimeout);
-        }
-
-        return title.Trim();
+        return FeaturedTitleMarker.StripCredit(Title);
     }
 
     public void ParseAlbum(ApiAlbum albumAPI)

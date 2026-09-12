@@ -365,6 +365,7 @@ public class AutoTagLibraryOrganizer
             settings.AlbumVariousArtists = technical.AlbumVariousArtists;
             settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
             settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+            settings.RemoveFeaturedFromAlbumTitle = technical.RemoveFeaturedFromAlbumTitle;
             settings.DateFormat = technical.DateFormat;
             settings.FeaturedToTitle = technical.FeaturedToTitle;
             settings.TitleCasing = technical.TitleCasing;

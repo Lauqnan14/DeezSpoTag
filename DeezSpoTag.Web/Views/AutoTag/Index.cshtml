@@ -2023,11 +2023,17 @@
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-id3v24" />
                                 <label for="autotag-id3v24">Use ID3v2.4 (vs ID3v2.3)</label>
-                                <div class="form-check" id="autotag-edition-conflict-review-group">
-                                    <input type="checkbox" class="form-check-input" id="autotag-edition-conflict-review" />
-                                    <label class="form-check-label" for="autotag-edition-conflict-review">Flag album edition conflicts for review</label>
-                                    <div class="form-text">When a provider matches a different edition of the same album (standard vs deluxe, remaster), keep the downloaded edition and flag the file for review instead of rewriting it.</div>
-                                </div>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-edition-conflict-review" />
+                                <label for="autotag-edition-conflict-review">
+                                    Flag album edition conflicts for review
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="When a provider matches a different edition of the same album (standard vs deluxe, remaster), keep the downloaded edition and flag the file for review instead of rewriting it."
+                                          aria-label="When a provider matches a different edition of the same album (standard vs deluxe, remaster), keep the downloaded edition and flag the file for review instead of rewriting it.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="saveID3v1" checked />
@@ -2116,8 +2122,8 @@
                                 <label for="featuredToTitle">Featured To Title</label>
                                 <select id="featuredToTitle">
                                     <option value="0">No</option>
-                                    <option value="1">Move to title</option>
-                                    <option value="2">Copy to title</option>
+                                    <option value="1">Copy to title</option>
+                                    <option value="2">Move to title</option>
                                 </select>
                             </div>
                         </div>
@@ -2129,6 +2135,17 @@
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeAlbumVersion" />
                                 <label for="removeAlbumVersion">Remove Album Version</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="removeFeaturedFromAlbumTitle" />
+                                <label for="removeFeaturedFromAlbumTitle">
+                                    Remove featured artists from album title
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Enabled: drops featured artists from the album name, so &quot;Rise Up (feat. Falz)&quot; is tagged and filed as &quot;Rise Up&quot;. Useful for singles, where the album name repeats the track name. The album folder is renamed to match, because the default album folder template is %album%. Independent of Featured To Title, so it works with any of its options."
+                                          aria-label="Enabled: drops featured artists from the album name, so the album is tagged and filed without the featured artist. The album folder is renamed to match. Independent of Featured To Title.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-short-title" />

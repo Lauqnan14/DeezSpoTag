@@ -141,6 +141,14 @@ public class DeezSpoTagSettings
     public string DateFormat { get; set; } = "Y-M-D";
     public bool AlbumVariousArtists { get; set; } = true;
     public bool RemoveAlbumVersion { get; set; } = false;
+
+    /// <summary>
+    /// Removes featured artists from the album title ("Rise Up (feat. Falz)" becomes "Rise Up").
+    /// Applies to the album tag and, because the default album folder template is "%album%", to
+    /// the album folder name as well. Independent of FeaturedToTitle, so it can be combined with
+    /// any of the title options.
+    /// </summary>
+    public bool RemoveFeaturedFromAlbumTitle { get; set; } = false;
     public bool RemoveDuplicateArtists { get; set; } = true;
     public string FeaturedToTitle { get; set; } = "0"; // FeaturesOption.NO_CHANGE
     public string TitleCasing { get; set; } = "nothing";

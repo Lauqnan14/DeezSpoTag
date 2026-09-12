@@ -14,6 +14,11 @@ public class TechnicalTagSettings
     public bool AlbumVariousArtists { get; set; } = true;
     public bool RemoveDuplicateArtists { get; set; } = true;
     public bool RemoveAlbumVersion { get; set; } = false;
+
+    /// <summary>
+    /// Removes featured artists from the album title (and therefore the album folder name).
+    /// </summary>
+    public bool RemoveFeaturedFromAlbumTitle { get; set; } = false;
     public string DateFormat { get; set; } = "Y-M-D";
     public string FeaturedToTitle { get; set; } = "0";
     public string TitleCasing { get; set; } = "nothing";

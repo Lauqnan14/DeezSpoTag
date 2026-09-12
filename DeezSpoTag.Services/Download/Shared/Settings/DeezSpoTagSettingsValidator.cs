@@ -140,6 +140,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.AlbumVariousArtists, (v) => settings.AlbumVariousArtists = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion),
                 () => settings.RemoveAlbumVersion, (v) => settings.RemoveAlbumVersion = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveFeaturedFromAlbumTitle),
+                () => settings.RemoveFeaturedFromAlbumTitle, (v) => settings.RemoveFeaturedFromAlbumTitle = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveDuplicateArtists),
                 () => settings.RemoveDuplicateArtists, (v) => settings.RemoveDuplicateArtists = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.DlAlbumcoverForPlaylist),
@@ -562,6 +564,7 @@ public class DeezSpoTagSettingsValidator
             DateFormat = "Y-M-D",
             AlbumVariousArtists = true,
             RemoveAlbumVersion = false,
+            RemoveFeaturedFromAlbumTitle = false,
             RemoveDuplicateArtists = true,
             FeaturedToTitle = "0",
             TitleCasing = "nothing",

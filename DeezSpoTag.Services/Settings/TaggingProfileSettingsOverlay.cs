@@ -26,6 +26,7 @@ public static class TaggingProfileSettingsOverlay
         settings.AlbumVariousArtists = technical.AlbumVariousArtists;
         settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
         settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+        settings.RemoveFeaturedFromAlbumTitle = technical.RemoveFeaturedFromAlbumTitle;
         settings.DateFormat = technical.DateFormat ?? "Y-M-D";
         settings.FeaturedToTitle = technical.FeaturedToTitle ?? "0";
         settings.TitleCasing = technical.TitleCasing ?? defaultTitleCasing;
