@@ -43,18 +43,17 @@
     margin: 0 0 32px 0;
 }
 
-.settings-section {
+.settings-page .settings-width > .settings-section {
     background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 12px;
     margin-bottom: 24px;
+    padding-bottom: 0;
     overflow: hidden;
 }
 
 .settings-page .settings-width > .settings-section:last-child {
-    border-bottom: 1px solid var(--border-secondary);
     margin-bottom: 24px;
-    padding-bottom: 30px;
 }
 
 .settings-header {
@@ -100,6 +99,13 @@
     display: none;
 }
 
+.settings-page .settings-width > .settings-section > .settings-content {
+    margin: 0 12px 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
+}
+
 .settings-content.active {
     display: block;
 }
@@ -143,9 +149,22 @@
     padding: 10px 12px;
     border-radius: 8px;
     border: 1px solid var(--border-secondary);
-    background: var(--bg-primary);
+    background: var(--bg-tertiary);
     color: var(--text-primary);
     font-size: 14px;
+}
+
+.settings-page .settings-content .dropdown-trigger {
+    background: var(--bg-tertiary);
+}
+
+.settings-page .settings-content .checkbox-item,
+.settings-page .settings-content .login-tab-control-item,
+.settings-page .settings-content .server-library-card,
+.settings-page .settings-content .notification-event-card,
+.settings-page .settings-content .notification-option-card,
+.settings-page .settings-content .settings-section--toggle-style .switch-row {
+    background: var(--bg-tertiary);
 }
 
 .form-group input:focus,
@@ -317,6 +336,17 @@
 .settings-section:not(#notification-settings) .checkbox-item {
     width: 100%;
     box-sizing: border-box;
+}
+
+.shazam-options-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+#shazam-settings .shazam-options-grid .checkbox-group {
+    margin-bottom: 0;
 }
 
 .engine-order-panel {
@@ -1070,6 +1100,10 @@
 }
 
 @@media (max-width: 768px) {
+    .shazam-options-grid {
+        grid-template-columns: 1fr;
+    }
+
     .form-row,
     .form-row-3,
     .form-row-half,
@@ -1463,26 +1497,28 @@
                 Shazam
             </div>
             <div class="settings-content">
-                <div class="checkbox-group">
-                    <div class="checkbox-item"><input type="checkbox" id="shazamEnabled">
-                    <label for="shazamEnabled">Enable logo-triggered Shazam capture</label></div>
-                </div>
-                <div class="checkbox-group">
-                    <div class="checkbox-item"><input type="checkbox" id="shazamUseCenteredOverlay">
-                    <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label></div>
+                <div class="shazam-options-grid">
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="shazamEnabled">
+                        <label for="shazamEnabled">Enable logo-triggered Shazam capture</label></div>
+                    </div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="shazamUseCenteredOverlay">
+                        <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label></div>
+                    </div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="shazamAllowHttpFileFallback">
+                        <label for="shazamAllowHttpFileFallback">Allow HTTP fallback via audio file capture/upload when live microphone API is unavailable</label></div>
+                    </div>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item"><input type="checkbox" id="shazamRemoteMemoryOnly">
+                        <label for="shazamRemoteMemoryOnly">When not on local network, keep capture payload in memory only</label></div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
                     <input type="number" id="shazamCaptureDurationSeconds" min="3" max="20" value="11">
                     <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
-                </div>
-                <div class="checkbox-group">
-                    <div class="checkbox-item"><input type="checkbox" id="shazamAllowHttpFileFallback">
-                    <label for="shazamAllowHttpFileFallback">Allow HTTP fallback via audio file capture/upload when live microphone API is unavailable</label></div>
-                </div>
-                <div class="checkbox-group">
-                    <div class="checkbox-item"><input type="checkbox" id="shazamRemoteMemoryOnly">
-                    <label for="shazamRemoteMemoryOnly">When not on local network, keep capture payload in memory only</label></div>
                 </div>
             </div>
         </div>
@@ -1712,7 +1748,7 @@
                 Artist's Aliases
             </div>
             <div class="settings-content">
-                <div class="warning-text">Merge two or more artist names that refer to the same artist and keep one preferred name. Saving a merge re-points the library, merges folders on disk, rewrites names, and starts a targeted AutoTag run for the affected files (including featured appearances).</div>
+                <div class="warning-text" data-tooltip-target="artistAliasSearch">Merge two or more artist names that refer to the same artist and keep one preferred name. Saving a merge re-points the library, merges folders on disk, rewrites names, and starts a targeted AutoTag run for the affected files (including featured appearances).</div>
 
                 <div class="form-group">
                     <div class="form-label">Artists to merge</div>

@@ -208,7 +208,7 @@
                 </div>
             </div>
 
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-layer-group me-2"></i>Profile Manager
@@ -261,7 +261,7 @@
             </div>
 
             <!-- Library Folders -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">
                         <i class="fas fa-folder-open me-2"></i>Library Folders
@@ -442,7 +442,7 @@
             </div>
 
             <!-- Folder Structure -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-sitemap me-2"></i>Folder Structure
@@ -550,7 +550,7 @@
             </div>
 
             <!-- Multi-Artist Handling -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-users me-2"></i>Multi-Artist Handling
@@ -597,7 +597,7 @@
             </div>
 
             <!-- File Templates -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-font me-2"></i>File Templates
@@ -623,7 +623,7 @@
             </div>
 
             <!-- Run Scope -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-layer-group me-2"></i>Run Scope
@@ -659,74 +659,78 @@
             </div>
 
             <!-- Download Tag Metadata Sources -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-sort-amount-down me-2"></i>Download Tag Metadata Source
                     </h5>
                 </div>
                 <div class="card-body autotag-card-body">
-                    <div class="tag-sources-grid">
-                        <!-- Follow Download Engine -->
-                        <div class="enrichment-source-item">
-                            <div class="switch-row">
-                                <div class="source-header">
-                                    <i class="fas fa-route me-2" style="color: #7dd3fc;"></i>
-                                    <label class="switch-label" for="metadataSourceEngineEnabled">Follow download engine</label>
+                    <div class="download-section">
+                        <div class="tag-sources-grid">
+                            <!-- Follow Download Engine -->
+                            <div class="enrichment-source-item">
+                                <div class="switch-row">
+                                    <div class="source-header">
+                                        <i class="fas fa-route me-2" style="color: #7dd3fc;"></i>
+                                        <label class="switch-label" for="metadataSourceEngineEnabled">Follow download engine</label>
+                                    </div>
+                                    <span class="switch">
+                                        <input type="checkbox" id="metadataSourceEngineEnabled" />
+                                        <span class="slider"></span>
+                                    </span>
                                 </div>
-                                <span class="switch">
-                                    <input type="checkbox" id="metadataSourceEngineEnabled" />
-                                    <span class="slider"></span>
-                                </span>
                             </div>
-                        </div>
 
-                        <!-- Deezer Source -->
-                        <div class="enrichment-source-item">
-                            <div class="switch-row">
-                                <div class="source-header">
-                                    <i class="fab fa-deezer me-2" style="color: #feaa2d;"></i>
-                                    <label class="switch-label" for="metadataSourceDeezerEnabled">Deezer</label>
+                            <!-- Deezer Source -->
+                            <div class="enrichment-source-item">
+                                <div class="switch-row">
+                                    <div class="source-header">
+                                        <i class="fab fa-deezer me-2" style="color: #feaa2d;"></i>
+                                        <label class="switch-label" for="metadataSourceDeezerEnabled">Deezer</label>
+                                    </div>
+                                    <span class="switch">
+                                        <input type="checkbox" id="metadataSourceDeezerEnabled" checked />
+                                        <span class="slider"></span>
+                                    </span>
                                 </div>
-                                <span class="switch">
-                                    <input type="checkbox" id="metadataSourceDeezerEnabled" checked />
-                                    <span class="slider"></span>
-                                </span>
                             </div>
-                        </div>
 
-                        <!-- Spotify Source -->
-                        <div class="enrichment-source-item">
-                            <div class="switch-row">
-                                <div class="source-header">
-                                    <i class="fab fa-spotify me-2" style="color: #1db954;"></i>
-                                    <label class="switch-label" for="metadataSourceSpotifyEnabled">Spotify</label>
+                            <!-- Spotify Source -->
+                            <div class="enrichment-source-item">
+                                <div class="switch-row">
+                                    <div class="source-header">
+                                        <i class="fab fa-spotify me-2" style="color: #1db954;"></i>
+                                        <label class="switch-label" for="metadataSourceSpotifyEnabled">Spotify</label>
+                                    </div>
+                                    <span class="switch">
+                                        <input type="checkbox" id="metadataSourceSpotifyEnabled" />
+                                        <span class="slider"></span>
+                                    </span>
                                 </div>
-                                <span class="switch">
-                                    <input type="checkbox" id="metadataSourceSpotifyEnabled" />
-                                    <span class="slider"></span>
-                                </span>
                             </div>
-                        </div>
 
+                        </div>
                     </div>
                 </div>
             </div>
 
             <!-- Download Tags -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-download me-2"></i>Download Tags
                     </h5>
                 </div>
                 <div class="card-body autotag-card-body">
-                    <div class="tags-toolbar">
-                        <button class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="downloadTags">Enable all</button>
-                        <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="downloadTags">Disable all</button>
-                        <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="downloadTags">Toggle</button>
+                    <div class="download-section">
+                        <div class="tags-toolbar">
+                            <button class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="downloadTags">Enable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="downloadTags">Disable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="downloadTags">Toggle</button>
+                        </div>
+                        <div class="tags-grid download-tags-grid" id="autotag-download-tags"></div>
                     </div>
-                    <div class="tags-grid download-tags-grid" id="autotag-download-tags"></div>
                 </div>
             </div>
 
@@ -742,7 +746,7 @@
                 </div>
             </div>
 
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-tags me-2"></i>Enrichment Tags
@@ -766,7 +770,7 @@
                 </div>
             </div>
 
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-play-circle me-2"></i>Manual Enrichment
@@ -879,12 +883,15 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section enhancement-settings-panel folder-settings-panel">
-                        <div class="tags-toolbar">
-                            <button type="button" class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="gapFillTags">Enable all</button>
-                            <button type="button" class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="gapFillTags">Disable all</button>
-                            <button type="button" class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="gapFillTags">Toggle</button>
-                        </div>
-                        <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Tags</div>
+                            <div class="tags-toolbar">
+                                <button type="button" class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="gapFillTags">Enable all</button>
+                                <button type="button" class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="gapFillTags">Disable all</button>
+                                <button type="button" class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="gapFillTags">Toggle</button>
+                            </div>
+                            <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
+                        </section>
                         <section class="playlist-settings-section mt-3">
                             <div class="playlist-settings-section-title">Recognition method</div>
                             <div class="manual-release-label">
@@ -1462,7 +1469,7 @@
                 </div>
             </div>
 
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-globe me-2"></i>Platforms
@@ -1505,7 +1512,7 @@
             </div>
 
             <!-- Matching Settings -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-crosshairs me-2"></i>Matching Settings
@@ -1577,7 +1584,7 @@
             </div>
 
             <!-- Artwork Settings -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-image me-2"></i>Artwork Settings
@@ -1826,7 +1833,7 @@
 
             <!-- Lyrics Settings -->
             <script type="application/json" id="lyricsProviderRegistry">@Html.Raw(lyricsProviderJson)</script>
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-microphone me-2"></i>Lyrics Settings
@@ -1995,7 +2002,7 @@
             </div>
 
             <!-- ID3 & Format Settings -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-file-audio me-2"></i>ID3 & Format Settings
@@ -2060,7 +2067,7 @@
             </div>
 
             <!-- Text Processing -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-font me-2"></i>Text Processing
@@ -2154,7 +2161,7 @@
             </div>
 
             <!-- Style/Genre Handling -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-music me-2"></i>Style/Genre Handling
@@ -2208,7 +2215,7 @@
             </div>
 
             <!-- Tag Overwrite Settings -->
-            <div class="card bg-darker border-secondary mb-4">
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-edit me-2"></i>Tag Overwrite Settings

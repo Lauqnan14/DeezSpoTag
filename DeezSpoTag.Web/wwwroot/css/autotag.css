@@ -1835,6 +1835,12 @@ body.autotag-col-resizing * {
     background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
 }
 
+.autotag-page .autotag-quality-background .download-section {
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
+}
+
 .folder-settings-panel .playlist-settings-section-title {
     font-size: 11px;
     text-transform: uppercase;
@@ -1957,7 +1963,8 @@ body.autotag-col-resizing * {
     align-items: flex-start;
 }
 
-.enhancement-settings-panel .enhancement-checkbox-grid .checkbox-group {
+.enhancement-settings-panel .enhancement-checkbox-grid .checkbox-group,
+.folder-structure-extras > .checkbox-group {
     align-items: center;
     min-height: 36px;
     padding: 8px 10px;
@@ -2646,14 +2653,19 @@ body.autotag-col-resizing * {
 }
 
 .folder-structure-extras {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
-    padding: 16px;
-    border-radius: 12px;
-    border: 1px solid var(--border-secondary);
-    background: var(--bg-tertiary);
-    margin-bottom: 20px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    margin-bottom: 0;
+}
+
+@media (max-width: 767px) {
+    .autotag-page .folder-structure-extras {
+        grid-template-columns: 1fr;
+    }
 }
 
 .folder-structure-char {
@@ -2746,10 +2758,6 @@ body.autotag-col-resizing * {
 
 @media (max-width: 480px) {
     .folder-structure-item {
-        padding: 12px;
-    }
-
-    .folder-structure-extras {
         padding: 12px;
     }
 

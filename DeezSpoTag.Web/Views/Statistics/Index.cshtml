@@ -67,6 +67,10 @@
     gap: 14px;
 }
 
+.statistics-container .statistics-module {
+    background: var(--bg-secondary);
+}
+
 .statistics-module .playlist-settings-title-row {
     margin-bottom: 2px;
 }
@@ -102,6 +106,10 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
 }
 
 .statistics-subsection .playlist-settings-help {
@@ -115,7 +123,7 @@
 }
 
 .stat-card {
-    background: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
+    background: var(--bg-tertiary);
     border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
     box-shadow: inset 0 1px 0 color-mix(in srgb, var(--primary-color) 12%, transparent);
     border-radius: 12px;
@@ -157,8 +165,8 @@
 }
 
 .library-card {
-    background: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
-    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: var(--bg-tertiary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 32%, transparent);
     border-radius: 14px;
     padding: 12px;
     display: flex;
@@ -170,7 +178,7 @@
     padding: 14px;
     border-radius: 10px;
     border: 1px dashed color-mix(in srgb, var(--primary-color) 24%, transparent);
-    background: color-mix(in srgb, var(--bg-secondary) 70%, var(--bg-primary));
+    background: var(--bg-tertiary);
     color: var(--text-muted);
 }
 
@@ -179,6 +187,8 @@
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
 }
 
 .library-card-header .library-name {
@@ -245,6 +255,10 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
 }
 
 .library-card-stats .library-stat .label {
@@ -267,19 +281,21 @@
 }
 
 .detail-panel {
-    background: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
-    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: var(--bg-tertiary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 32%, transparent);
     border-radius: 14px;
     padding: 12px;
 }
 
 .detail-panel h4 {
-    margin: 0 0 8px;
+    margin: 0 0 10px;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--text-muted);
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
 }
 
 .breakdown-list {
@@ -293,6 +309,10 @@
     justify-content: space-between;
     gap: 12px;
     font-size: 13px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
 }
 
 .breakdown-item .label {
@@ -308,7 +328,7 @@
     padding: 10px 12px;
     border-radius: 10px;
     border: 1px dashed color-mix(in srgb, var(--primary-color) 24%, transparent);
-    background: color-mix(in srgb, var(--bg-secondary) 70%, var(--bg-primary));
+    background: var(--bg-tertiary);
     font-size: 12px;
     color: var(--text-muted);
 }
@@ -380,7 +400,7 @@
             </div>
             <span class="playlist-settings-rule-count">Refresh 10s</span>
         </div>
-        <div>
+        <div class="statistics-subsection">
             <div class="stats-grid">
                 <div class="stat-card">
                     <h4>Active Downloads</h4>

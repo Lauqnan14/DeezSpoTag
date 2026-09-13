@@ -1730,9 +1730,15 @@ span.badge.badge-artwork-animated {
     gap: 16px;
 }
 
-.media-operations-tab .meloday-section {
+.media-operations-tab .meloday-section,
+.media-operations-tab #metadata-updater-card .metadata-updater-select-row,
+.media-operations-tab #metadata-updater-card .metadata-updater-option-group {
     display: grid;
     gap: 12px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
 }
 
 .media-operations-tab .meloday-section-header {
@@ -1779,7 +1785,7 @@ span.badge.badge-artwork-animated {
     padding: 12px;
     border: 1px solid color-mix(in srgb, var(--primary-color) 34%, var(--border-secondary));
     border-radius: 14px;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     box-shadow: inset 0 0 18px color-mix(in srgb, var(--primary-color) 6%, transparent);
 }
 
@@ -1875,7 +1881,7 @@ span.badge.badge-artwork-animated {
     padding: 14px;
     border: 1px solid var(--border-secondary);
     border-radius: 14px;
-    background: var(--bg-primary, var(--bg-secondary));
+    background: var(--bg-tertiary);
 }
 
 .media-operations-tab .meloday-library-head {
@@ -1947,7 +1953,7 @@ span.badge.badge-artwork-animated {
 .media-operations-tab .meloday-library-max select {
     border: 1px solid var(--border-secondary);
     border-radius: 9px;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     color: var(--text-primary);
     font: inherit;
     font-size: 13px;
@@ -1992,7 +1998,7 @@ span.badge.badge-artwork-animated {
     padding: 8px 10px;
     border: 1px solid var(--border-secondary);
     border-radius: 10px;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     cursor: pointer;
     min-width: 0;
 }
@@ -2037,7 +2043,7 @@ span.badge.badge-artwork-animated {
 
 .media-operations-tab .meloday-slot-chip.is-selected {
     border-color: color-mix(in srgb, var(--primary-color) 55%, transparent);
-    background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-secondary));
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-tertiary));
     box-shadow: 0 0 12px color-mix(in srgb, var(--primary-color) 14%, transparent);
 }
 
@@ -2189,7 +2195,7 @@ span.badge.badge-artwork-animated {
     align-items: center;
     gap: 8px;
     border: 1px solid var(--border-secondary);
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     border-radius: 10px;
     padding: 9px 12px;
     font-size: 13px;
@@ -2223,7 +2229,7 @@ span.badge.badge-artwork-animated {
     width: 100%;
     border: 1px solid var(--border-secondary);
     border-radius: 9px;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     color: var(--text-primary);
     font: inherit;
     font-size: 13px;
@@ -2297,6 +2303,11 @@ span.badge.badge-artwork-animated {
     display: grid;
     gap: 14px;
     box-shadow: var(--ops-glow);
+}
+
+.media-operations-tab #meloday-card,
+.media-operations-tab #metadata-updater-card {
+    background: var(--bg-secondary);
 }
 
 .media-operations-tab .tool-card-label {
@@ -2798,8 +2809,8 @@ span.badge.badge-artwork-animated {
     align-items: center;
 }
 
-.media-operations-tab .tool-card-controls select {
-    background: var(--bg-secondary);
+.media-operations-tab #metadata-updater-card .tool-card-controls select {
+    background: var(--bg-tertiary);
     border: 1px solid var(--border-secondary);
     color: var(--text-primary);
     border-radius: 10px;
@@ -2819,7 +2830,7 @@ span.badge.badge-artwork-animated {
     align-items: center;
     gap: 8px;
     border: 1px solid var(--border-secondary);
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     border-radius: 10px;
     padding: 9px 12px;
     color: var(--text-primary);
