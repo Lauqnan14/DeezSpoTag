@@ -352,6 +352,324 @@
     font-size: 13px;
 }
 
+.autotag-folder-uniformity-shell {
+    display: grid;
+    gap: 14px;
+}
+
+.autotag-folder-uniformity-header,
+.autotag-folder-uniformity-results {
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-tertiary) 88%, transparent);
+    padding: 14px;
+}
+
+.autotag-folder-uniformity-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.autotag-folder-uniformity-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.autotag-folder-uniformity-description {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: 5px 0 0;
+}
+
+.autotag-folder-uniformity-mode {
+    flex: 0 0 auto;
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 9px;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.autotag-folder-uniformity-summary-item {
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+    min-width: 0;
+    padding: 10px 12px;
+}
+
+.autotag-folder-uniformity-summary-label,
+.autotag-folder-uniformity-results-label {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.autotag-folder-uniformity-summary-value {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+}
+
+.autotag-folder-uniformity-state {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-top: 8px;
+}
+
+.autotag-folder-uniformity-artist-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.autotag-folder-uniformity-artist,
+.autotag-folder-uniformity-album {
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+    overflow: hidden;
+}
+
+.autotag-folder-uniformity-artist > summary,
+.autotag-folder-uniformity-album > summary {
+    cursor: pointer;
+    list-style: none;
+}
+
+.autotag-folder-uniformity-artist > summary::-webkit-details-marker,
+.autotag-folder-uniformity-album > summary::-webkit-details-marker {
+    display: none;
+}
+
+.autotag-folder-uniformity-artist-summary {
+    align-items: center;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 14px 36px minmax(130px, 1fr) auto;
+    padding: 9px 12px;
+}
+
+.autotag-folder-uniformity-chevron {
+    color: var(--accent-color);
+    font-size: 11px;
+    transition: transform 0.16s ease;
+}
+
+.autotag-folder-uniformity-artist[open] > summary .autotag-folder-uniformity-chevron,
+.autotag-folder-uniformity-album[open] > summary .autotag-folder-uniformity-chevron {
+    transform: rotate(90deg);
+}
+
+.autotag-folder-uniformity-art {
+    align-items: center;
+    background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-tertiary));
+    border: 1px solid var(--border-secondary);
+    color: var(--text-muted);
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 32px;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    width: 32px;
+}
+
+.autotag-folder-uniformity-art.is-artist {
+    border-radius: 50%;
+}
+
+.autotag-folder-uniformity-art.is-album {
+    border-radius: 5px;
+}
+
+.autotag-folder-uniformity-art img {
+    height: 100%;
+    inset: 0;
+    object-fit: cover;
+    position: absolute;
+    width: 100%;
+}
+
+.autotag-folder-uniformity-name {
+    color: var(--text-primary);
+    font-weight: 600;
+    min-width: 0;
+}
+
+.autotag-folder-uniformity-name small {
+    color: var(--text-muted);
+    display: block;
+    font-size: 10px;
+    font-weight: 500;
+    margin-top: 1px;
+}
+
+.autotag-folder-uniformity-counts {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.autotag-folder-uniformity-count {
+    align-items: center;
+    color: var(--text-muted);
+    display: inline-flex;
+    font-size: 10px;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-count i,
+.autotag-folder-uniformity-status-pill i {
+    font-size: 9px;
+}
+
+.autotag-folder-uniformity-count.is-completed,
+.autotag-folder-uniformity-status-pill.is-completed {
+    color: #22dd78;
+}
+
+.autotag-folder-uniformity-count.is-processing,
+.autotag-folder-uniformity-status-pill.is-processing {
+    color: var(--accent-color);
+}
+
+.autotag-folder-uniformity-count.is-queued,
+.autotag-folder-uniformity-status-pill.is-queued {
+    color: #9eb1ce;
+}
+
+.autotag-folder-uniformity-count.is-skipped,
+.autotag-folder-uniformity-status-pill.is-skipped,
+.autotag-folder-uniformity-status-pill.is-failed {
+    color: #ff2f68;
+}
+
+.autotag-folder-uniformity-albums {
+    border-top: 1px solid var(--border-secondary);
+    display: grid;
+    gap: 7px;
+    padding: 8px 10px 10px 36px;
+}
+
+.autotag-folder-uniformity-album-columns,
+.autotag-folder-uniformity-album-summary {
+    align-items: center;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(190px, 1.4fr) minmax(104px, 0.65fr) minmax(190px, 1fr) 82px 18px;
+}
+
+.autotag-folder-uniformity-album-columns {
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0 10px 2px;
+    text-transform: uppercase;
+}
+
+.autotag-folder-uniformity-album-summary {
+    min-height: 44px;
+    padding: 6px 10px;
+}
+
+.autotag-folder-uniformity-album-identity {
+    align-items: center;
+    display: flex;
+    gap: 9px;
+    min-width: 0;
+}
+
+.autotag-folder-uniformity-album-title {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-status-pill {
+    align-items: center;
+    background: color-mix(in srgb, currentColor 11%, var(--bg-tertiary));
+    border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 10px;
+    font-weight: 700;
+    gap: 5px;
+    justify-self: start;
+    padding: 3px 8px;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-operation {
+    color: var(--text-secondary);
+    font-size: 10px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-time,
+.autotag-folder-uniformity-menu {
+    color: var(--text-muted);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.autotag-folder-uniformity-menu {
+    color: var(--accent-color);
+    text-align: right;
+}
+
+.autotag-folder-uniformity-files {
+    background: rgba(0, 0, 0, 0.16);
+    border-top: 1px solid var(--border-secondary);
+    display: grid;
+    gap: 5px;
+    padding: 8px 10px;
+}
+
+.autotag-folder-uniformity-file {
+    align-items: start;
+    color: var(--text-muted);
+    display: grid;
+    font-size: 10px;
+    gap: 10px;
+    grid-template-columns: minmax(220px, 1.4fr) 100px minmax(180px, 1fr) 60px;
+}
+
+.autotag-folder-uniformity-file-path {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.autotag-folder-uniformity-artist-list:empty {
+    display: none;
+}
+
 @@media (max-width: 991.98px) {
     .autotag-history-layout {
         grid-template-columns: 1fr;
@@ -387,6 +705,50 @@
         text-align: center;
         flex: 1 1 auto;
         min-width: 0;
+    }
+
+    .autotag-folder-uniformity-heading {
+        display: grid;
+    }
+
+    .autotag-folder-uniformity-mode {
+        justify-self: start;
+        white-space: normal;
+    }
+
+    .autotag-folder-uniformity-summary {
+        grid-template-columns: 1fr;
+    }
+
+    .autotag-folder-uniformity-artist-summary {
+        grid-template-columns: 14px 36px minmax(0, 1fr);
+    }
+
+    .autotag-folder-uniformity-counts {
+        grid-column: 2 / -1;
+        justify-content: flex-start;
+    }
+
+    .autotag-folder-uniformity-albums {
+        padding-left: 10px;
+    }
+
+    .autotag-folder-uniformity-album-columns {
+        display: none;
+    }
+
+    .autotag-folder-uniformity-album-summary,
+    .autotag-folder-uniformity-file {
+        grid-template-columns: 1fr;
+    }
+
+    .autotag-folder-uniformity-operation {
+        overflow: visible;
+        white-space: normal;
+    }
+
+    .autotag-folder-uniformity-menu {
+        display: none;
     }
 
     .autotag-calendar-grid {
@@ -3928,18 +4290,59 @@ span.badge.badge-artwork-animated {
                         </div>
                         <div class="autotag-history-main">
                             <div class="autotag-run-detail-card">
-                                <div class="autotag-view-toggle btn-group btn-group-sm mb-3" role="group" aria-label="Switch between tag and sidecar results">
+                                <div class="autotag-view-toggle btn-group btn-group-sm mb-3" role="group" aria-label="Switch AutoTag history result view">
                                     <button type="button" class="btn btn-outline-secondary active" data-view="tags">
                                         <i class="fas fa-tags me-1"></i>Tags
                                     </button>
                                     <button type="button" class="btn btn-outline-secondary" data-view="sidecar">
-                                        <i class="fas fa-photo-film me-1"></i>Sidecar <span class="badge bg-secondary ms-1" id="autotag-lyrics-count">0</span>
+                                        <i class="fas fa-photo-film me-1"></i>Sidecars <span class="badge bg-secondary ms-1" id="autotag-lyrics-count">0</span>
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" data-view="folder-uniformity">
+                                        <i class="fas fa-folder-tree me-1"></i>Folder Uniformity
                                     </button>
                                 </div>
                                 <div id="autotag-lyrics-panel" style="display: none;">
                                     <div class="autotag-lyrics-list" id="autotag-lyrics-list">
                                         <div class="autotag-run-empty">Select a run to load sidecar results.</div>
                                     </div>
+                                </div>
+                                <div id="autotag-folder-uniformity-panel" style="display: none;">
+                                    <section class="autotag-folder-uniformity-shell" aria-labelledby="autotag-folder-uniformity-title">
+                                        <div class="autotag-folder-uniformity-header">
+                                            <div class="autotag-folder-uniformity-heading">
+                                                <div>
+                                                    <div class="autotag-folder-uniformity-title" id="autotag-folder-uniformity-title">
+                                                        <i class="fas fa-folder-tree me-2"></i>Folder Uniformity activity
+                                                    </div>
+                                                    <p class="autotag-folder-uniformity-description">
+                                                        Folder and file template alignment recorded for the selected AutoTag run.
+                                                    </p>
+                                                </div>
+                                                <span class="autotag-folder-uniformity-mode" id="autotag-folder-uniformity-mode">Select a run</span>
+                                            </div>
+                                            <div class="autotag-folder-uniformity-summary">
+                                                <div class="autotag-folder-uniformity-summary-item">
+                                                    <div class="autotag-folder-uniformity-summary-label">Run status</div>
+                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-status">--</div>
+                                                </div>
+                                                <div class="autotag-folder-uniformity-summary-item">
+                                                    <div class="autotag-folder-uniformity-summary-label">Scope</div>
+                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-scope">Not recorded</div>
+                                                </div>
+                                                <div class="autotag-folder-uniformity-summary-item">
+                                                    <div class="autotag-folder-uniformity-summary-label">Progress</div>
+                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-progress">Not recorded</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="autotag-folder-uniformity-results">
+                                            <div class="autotag-folder-uniformity-results-label">Artist, album, file and folder breakdown</div>
+                                            <div class="autotag-folder-uniformity-state" id="autotag-folder-uniformity-state" role="status" aria-live="polite">
+                                                Select a run to load Folder Uniformity activity.
+                                            </div>
+                                            <div class="autotag-folder-uniformity-artist-list" id="autotag-folder-uniformity-artist-list" role="list"></div>
+                                        </div>
+                                    </section>
                                 </div>
                                 <div id="autotag-tags-panel">
                                 <div class="autotag-filter-toolbar mb-3">

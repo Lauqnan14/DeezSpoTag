@@ -115,6 +115,137 @@ public sealed class AutoTagStatusRefreshGuardrailTest
     }
 
     [Fact]
+    public void ActivitiesHistory_ExposesDedicatedFolderUniformityView()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var view = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml"));
+        var script = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag-status.js"));
+
+        var tagsButtonAt = view.IndexOf("data-view=\"tags\"", StringComparison.Ordinal);
+        var sidecarButtonAt = view.IndexOf("data-view=\"sidecar\"", StringComparison.Ordinal);
+        var uniformityButtonAt = view.IndexOf("data-view=\"folder-uniformity\"", StringComparison.Ordinal);
+        Assert.True(tagsButtonAt >= 0 && sidecarButtonAt > tagsButtonAt && uniformityButtonAt > sidecarButtonAt);
+        Assert.Contains("</i>Sidecars", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"autotag-folder-uniformity-panel\"", view, StringComparison.Ordinal);
+        foreach (var id in new[]
+        {
+            "autotag-folder-uniformity-mode",
+            "autotag-folder-uniformity-status",
+            "autotag-folder-uniformity-scope",
+            "autotag-folder-uniformity-progress",
+            "autotag-folder-uniformity-state",
+            "autotag-folder-uniformity-artist-list"
+        })
+        {
+            Assert.Contains($"id=\"{id}\"", view, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("const folderUniformityPanel = el(\"autotag-folder-uniformity-panel\");", script, StringComparison.Ordinal);
+        Assert.Contains("state.historyView === \"folder-uniformity\"", script, StringComparison.Ordinal);
+        Assert.Contains("function renderFolderUniformityShell(summary, archive)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_AutoSwitchesAllWorkflowHistoryViewsWithoutOverridingManualHistory()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var script = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag-status.js"));
+        var folderPhaseMethod = ExtractFunction(script, "function isFolderUniformityPhase");
+        var autoSwitchMethod = ExtractFunction(script, "function autoSwitchHistoryView");
+
+        Assert.Contains("folder-uniformity", folderPhaseMethod, StringComparison.Ordinal);
+        Assert.Contains("job?.lastStatus?.platform", folderPhaseMethod, StringComparison.Ordinal);
+        Assert.Contains("job?.currentPhase", folderPhaseMethod, StringComparison.Ordinal);
+        Assert.Contains("state.manualHistorySelection", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("setHistoryView(\"folder-uniformity\")", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("setHistoryView(\"sidecar\")", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("setHistoryView(\"tags\")", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("autoSwitchedHistoryView", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("sidecarAutoSwitched", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_RendersFolderUniformityFromExistingHistoryWithoutLibraryLookups()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var script = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag-status.js"));
+        var renderer = ExtractFunction(script, "function renderFolderUniformityShell");
+
+        Assert.Contains("function renderFolderUniformityShell(summary, archive)", renderer, StringComparison.Ordinal);
+        Assert.Contains("archive?.statusHistory", renderer, StringComparison.Ordinal);
+        Assert.Contains("summary?.targetReason", renderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/library/artists", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fetchJson(", renderer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_RoutesFolderUniformityRowsOutOfTagsAndIntoDedicatedActivity()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var script = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag-status.js"));
+        var renderHistory = ExtractFunction(script, "function renderFilteredHistory");
+        var uniformityClassifier = ExtractFunction(script, "function isFolderUniformityHistoryRow");
+        var uniformityRenderer = ExtractFunction(script, "function renderFolderUniformityActivity");
+
+        Assert.Contains("folder-uniformity", uniformityClassifier, StringComparison.Ordinal);
+        Assert.Contains("renderFolderUniformityActivity(allRows.filter(isFolderUniformityHistoryRow))", renderHistory, StringComparison.Ordinal);
+        Assert.Contains("!isFolderUniformityHistoryRow(entry)", renderHistory, StringComparison.Ordinal);
+        Assert.Contains("autotag-folder-uniformity-artist-list", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("buildFolderUniformityArtistGroups", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("autotag-folder-uniformity-artist", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("autotag-folder-uniformity-album", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("folderUniformityStatusPill", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("autotag-folder-uniformity-status-pill", script, StringComparison.Ordinal);
+        Assert.Contains("folderUniformityImageUrl", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("inner.path", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("inner.message", uniformityRenderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("fetchJson(", uniformityRenderer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesHistory_FolderUniformityActivityHasSeparateStatusColumn()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var view = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml"));
+
+        Assert.Contains(".autotag-folder-uniformity-artist", view, StringComparison.Ordinal);
+        Assert.Contains(".autotag-folder-uniformity-album", view, StringComparison.Ordinal);
+        Assert.Contains(".autotag-folder-uniformity-album-columns", view, StringComparison.Ordinal);
+        Assert.Contains(".autotag-folder-uniformity-status-pill", view, StringComparison.Ordinal);
+        Assert.Contains(".autotag-folder-uniformity-art", view, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagStatusScript_PreservesManualHistoricalSelectionWhileLiveRunUpdates()
     {
         var repoRoot = ResolveRepoRoot();
