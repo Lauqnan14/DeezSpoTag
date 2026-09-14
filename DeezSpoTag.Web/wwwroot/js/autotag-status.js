@@ -718,9 +718,10 @@
         const latestByPath = new Map();
         for (const entry of rows) {
             const inner = entry?.status?.status || {};
-            const path = normalizeFolderUniformityPath(inner.path);
-            if (path && !latestByPath.has(path.toLowerCase())) {
-                latestByPath.set(path.toLowerCase(), entry);
+            const path = normalizeFolderUniformityPath(inner.destinationPath || inner.path || inner.sourcePath);
+            const identityPath = normalizeFolderUniformityPath(inner.sourcePath || path);
+            if (path && identityPath && !latestByPath.has(identityPath.toLowerCase())) {
+                latestByPath.set(identityPath.toLowerCase(), entry);
             }
         }
 
@@ -728,9 +729,15 @@
         for (const entry of latestByPath.values()) {
             const wrapper = entry?.status || {};
             const inner = wrapper.status || {};
-            const pathInfo = folderUniformityPathParts(inner.path, rootPath);
+            const pathInfo = folderUniformityPathParts(inner.destinationPath || inner.path || inner.sourcePath, rootPath);
             if (!pathInfo) {
                 continue;
+            }
+            if (inner.sourceArtist) {
+                pathInfo.artistName = inner.sourceArtist;
+            }
+            if (inner.sourceAlbum) {
+                pathInfo.albumName = inner.sourceAlbum;
             }
             const artistKey = pathInfo.artistPath.toLowerCase();
             const albumKey = pathInfo.albumPath.toLowerCase();
@@ -738,6 +745,7 @@
                 artists.set(artistKey, {
                     name: pathInfo.artistName,
                     path: pathInfo.artistPath,
+                    imageUrl: inner.artistImageUrl || "",
                     albums: new Map()
                 });
             }
@@ -746,12 +754,16 @@
                 artist.albums.set(albumKey, {
                     name: pathInfo.albumName,
                     path: pathInfo.albumPath,
+                    imageUrl: inner.albumImageUrl || "",
                     items: []
                 });
             }
             artist.albums.get(albumKey).items.push({
                 path: pathInfo.filePath,
-                operation: inner.message || "Folder Uniformity update",
+                itemKind: inner.itemKind || "file",
+                operation: inner.operationKind
+                    ? `${inner.operationKind}${inner.sourcePath && inner.destinationPath && inner.sourcePath !== inner.destinationPath ? `: ${inner.sourcePath} → ${inner.destinationPath}` : ""}`
+                    : inner.message || "Folder Uniformity update",
                 status: folderUniformityStatusMeta(inner.status),
                 progress: typeof wrapper.progress === "number"
                     ? `${Math.round(Math.max(0, Math.min(1, wrapper.progress)) * 100)}%`
@@ -775,13 +787,6 @@
             .sort((left, right) => left.name.localeCompare(right.name));
     }
 
-    function folderUniformityImageUrl(folderPath, size) {
-        const folder = normalizeFolderUniformityPath(folderPath);
-        return folder
-            ? `/api/library/image?path=${encodeURIComponent(`${folder}/folder.jpg`)}&size=${size}`
-            : "";
-    }
-
     function folderUniformityArtMarkup(url, kind, label) {
         const icon = kind === "artist" ? "fa-user" : "fa-compact-disc";
         const image = url
@@ -792,10 +797,6 @@
 
     function folderUniformityStatusPill(status) {
         return `<span class="autotag-folder-uniformity-status-pill is-${status.key}"><i class="fas ${status.icon}"></i>${escapeHtml(status.label)}</span>`;
-    }
-
-    function folderUniformityCountMarkup(count, key, label, icon) {
-        return `<span class="autotag-folder-uniformity-count is-${key}"><i class="fas ${icon}"></i>${count} ${label}</span>`;
     }
 
     function renderFolderUniformityActivity(rows) {
@@ -832,14 +833,9 @@
             "autotag-folder-uniformity-state",
             `${artists.length} artist${artists.length === 1 ? "" : "s"} and ${albumCount} album${albumCount === 1 ? "" : "s"} processed in this run. Expand an artist or album to view recorded file details.`);
         container.innerHTML = artists.map((artist, artistIndex) => {
-            const albumStates = artist.albums.map((album) => album.status.key);
-            const completed = albumStates.filter((state) => state === "completed").length;
-            const processing = albumStates.filter((state) => state === "processing").length;
-            const queued = albumStates.filter((state) => state === "queued").length;
-            const skipped = albumStates.filter((state) => state === "skipped" || state === "failed").length;
-            const artistArtUrl = folderUniformityImageUrl(artist.path, 96);
+            const artistArtUrl = artist.imageUrl || "";
             const albums = artist.albums.map((album) => {
-                const albumArtUrl = folderUniformityImageUrl(album.path, 96);
+                const albumArtUrl = album.imageUrl || "";
                 const latest = album.latest || {};
                 const files = album.items.map((item) => `<div class="autotag-folder-uniformity-file">
                     <div class="autotag-folder-uniformity-file-path">${escapeHtml(item.path)}</div>
@@ -866,12 +862,6 @@
                     <i class="fas fa-chevron-right autotag-folder-uniformity-chevron"></i>
                     ${folderUniformityArtMarkup(artistArtUrl, "artist", artist.name)}
                     <div class="autotag-folder-uniformity-name">${escapeHtml(artist.name)}<small>${artist.albums.length} album${artist.albums.length === 1 ? "" : "s"}</small></div>
-                    <div class="autotag-folder-uniformity-counts">
-                        ${folderUniformityCountMarkup(completed, "completed", "Completed", "fa-check-circle")}
-                        ${folderUniformityCountMarkup(processing, "processing", "Processing", "fa-info-circle")}
-                        ${folderUniformityCountMarkup(queued, "queued", "Queued", "fa-clock")}
-                        ${folderUniformityCountMarkup(skipped, "skipped", "Skipped", "fa-times-circle")}
-                    </div>
                 </summary>
                 <div class="autotag-folder-uniformity-albums">
                     <div class="autotag-folder-uniformity-album-columns" aria-hidden="true">
@@ -893,7 +883,7 @@
                     ? "badge-lyrics-synced"
                     : "badge-lyrics-unsynced";
         const text = normalized === "ttml" || normalized === "time-synced"
-            ? "TTML lyrics"
+            ? "Word Synced Lyrics"
             : normalized === "enhanced" || normalized === "enhanced-synchronized"
                 ? "Enhanced lyrics"
                 : normalized === "synced"
@@ -1205,45 +1195,29 @@
         renderFilteredHistory();
     }
 
-    function renderFolderUniformityShell(summary, archive) {
+    function renderFolderUniformityState(summary, archive) {
         const artistList = el("autotag-folder-uniformity-artist-list");
         artistList?.replaceChildren();
 
         if (!summary) {
-            setText("autotag-folder-uniformity-mode", "Select a run");
-            setText("autotag-folder-uniformity-status", "--");
-            setText("autotag-folder-uniformity-scope", "Not recorded");
-            setText("autotag-folder-uniformity-progress", "Not recorded");
             setText("autotag-folder-uniformity-state", "Select a run to load Folder Uniformity activity.");
             return;
         }
 
         const statusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
-        const canonicalValues = [summary?.enhancementFeature, summary?.currentPhase];
+        const selectedFeatures = Array.isArray(summary?.selectedEnhancementFeatures)
+            ? summary.selectedEnhancementFeatures.map((value) => String(value || "").trim().toLowerCase())
+            : [];
+        const canonicalValues = [summary?.enhancementFeature, summary?.currentPhase, ...selectedFeatures];
         for (const entry of statusHistory) {
             canonicalValues.push(entry?.status?.platform);
         }
         const includesFolderUniformity = canonicalValues
             .some((value) => String(value || "").trim().toLowerCase() === "folder-uniformity");
-        const totalItems = Number(summary?.totalItems || 0);
-        const processedItems = Number(summary?.processedItems || 0);
-
-        setText(
-            "autotag-folder-uniformity-mode",
-            includesFolderUniformity
-                ? String(summary?.targetReason || "").trim().toLowerCase() === "folder-enumeration"
-                    ? "Dedicated folder run"
-                    : "Batch-scoped enhancement"
-                : "Not applicable");
-        setText("autotag-folder-uniformity-status", summary?.status || "--");
-        setText("autotag-folder-uniformity-scope", summary?.rootPath || "Not recorded");
-        setText(
-            "autotag-folder-uniformity-progress",
-            totalItems > 0 ? `${processedItems} / ${totalItems}` : "Not recorded");
         setText(
             "autotag-folder-uniformity-state",
             includesFolderUniformity
-                ? "Run-scoped artist, album, and file/folder modification details are not available in this UI-only phase."
+                ? "No Folder Uniformity artist or album updates were recorded for this run."
                 : "The selected run did not include Folder Uniformity.");
     }
 
@@ -1254,7 +1228,7 @@
         state.selectedRunSummary = summary || null;
 
         setText("autotag-history-selected-date", state.selectedDate ? formatDate(state.selectedDate) : "--");
-        renderFolderUniformityShell(summary, archive);
+        renderFolderUniformityState(summary, archive);
         if (summary && archive) {
             renderStatusPanelForArchive(summary, archive);
         }
@@ -1289,6 +1263,7 @@
             trigger: job.trigger || "manual",
             runIntent: job.runIntent || null,
             enhancementFeature: job.enhancementFeature || null,
+            selectedEnhancementFeatures: Array.isArray(job.selectedEnhancementFeatures) ? job.selectedEnhancementFeatures : [],
             enhancementGroupId: job.enhancementGroupId || null,
             targetReason: job.targetReason || null,
             currentPhase: job.currentPhase || null,

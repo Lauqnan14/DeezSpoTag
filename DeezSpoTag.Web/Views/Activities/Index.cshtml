@@ -352,12 +352,6 @@
     font-size: 13px;
 }
 
-.autotag-folder-uniformity-shell {
-    display: grid;
-    gap: 14px;
-}
-
-.autotag-folder-uniformity-header,
 .autotag-folder-uniformity-results {
     border: 1px solid var(--border-secondary);
     border-radius: 12px;
@@ -365,66 +359,12 @@
     padding: 14px;
 }
 
-.autotag-folder-uniformity-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.autotag-folder-uniformity-title {
-    color: var(--text-primary);
-    font-size: 15px;
-    font-weight: 700;
-}
-
-.autotag-folder-uniformity-description {
-    color: var(--text-muted);
-    font-size: 12px;
-    margin: 5px 0 0;
-}
-
-.autotag-folder-uniformity-mode {
-    flex: 0 0 auto;
-    border: 1px solid var(--border-secondary);
-    border-radius: 999px;
-    color: var(--text-secondary);
-    font-size: 11px;
-    font-weight: 700;
-    padding: 5px 9px;
-    white-space: nowrap;
-}
-
-.autotag-folder-uniformity-summary {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    margin-top: 14px;
-}
-
-.autotag-folder-uniformity-summary-item {
-    border: 1px solid var(--border-secondary);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
-    min-width: 0;
-    padding: 10px 12px;
-}
-
-.autotag-folder-uniformity-summary-label,
 .autotag-folder-uniformity-results-label {
     color: var(--text-muted);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-}
-
-.autotag-folder-uniformity-summary-value {
-    color: var(--text-primary);
-    font-size: 13px;
-    font-weight: 600;
-    margin-top: 4px;
-    overflow-wrap: anywhere;
 }
 
 .autotag-folder-uniformity-state {
@@ -447,6 +387,16 @@
     overflow: hidden;
 }
 
+.autotag-folder-uniformity-artist {
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    transition: border-color 0.2s ease;
+}
+
+.autotag-folder-uniformity-artist:hover {
+    border-color: var(--primary-color);
+}
+
 .autotag-folder-uniformity-artist > summary,
 .autotag-folder-uniformity-album > summary {
     cursor: pointer;
@@ -461,9 +411,9 @@
 .autotag-folder-uniformity-artist-summary {
     align-items: center;
     display: grid;
-    gap: 10px;
-    grid-template-columns: 14px 36px minmax(130px, 1fr) auto;
-    padding: 9px 12px;
+    gap: 1rem;
+    grid-template-columns: 14px var(--art-thumb-size) minmax(130px, 1fr);
+    padding: 16px;
 }
 
 .autotag-folder-uniformity-chevron {
@@ -492,7 +442,9 @@
 }
 
 .autotag-folder-uniformity-art.is-artist {
-    border-radius: 50%;
+    border-radius: 10px;
+    height: var(--art-thumb-size);
+    width: var(--art-thumb-size);
 }
 
 .autotag-folder-uniformity-art.is-album {
@@ -509,56 +461,35 @@
 
 .autotag-folder-uniformity-name {
     color: var(--text-primary);
-    font-weight: 600;
+    font-size: 1.1rem;
+    font-weight: 700;
     min-width: 0;
 }
 
 .autotag-folder-uniformity-name small {
     color: var(--text-muted);
     display: block;
-    font-size: 10px;
+    font-size: 0.9rem;
     font-weight: 500;
-    margin-top: 1px;
+    margin-top: 0.25rem;
 }
 
-.autotag-folder-uniformity-counts {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    justify-content: flex-end;
-}
-
-.autotag-folder-uniformity-count {
-    align-items: center;
-    color: var(--text-muted);
-    display: inline-flex;
-    font-size: 10px;
-    gap: 5px;
-    white-space: nowrap;
-}
-
-.autotag-folder-uniformity-count i,
 .autotag-folder-uniformity-status-pill i {
     font-size: 9px;
 }
 
-.autotag-folder-uniformity-count.is-completed,
 .autotag-folder-uniformity-status-pill.is-completed {
     color: #22dd78;
 }
 
-.autotag-folder-uniformity-count.is-processing,
 .autotag-folder-uniformity-status-pill.is-processing {
     color: var(--accent-color);
 }
 
-.autotag-folder-uniformity-count.is-queued,
 .autotag-folder-uniformity-status-pill.is-queued {
     color: #9eb1ce;
 }
 
-.autotag-folder-uniformity-count.is-skipped,
 .autotag-folder-uniformity-status-pill.is-skipped,
 .autotag-folder-uniformity-status-pill.is-failed {
     color: #ff2f68;
@@ -707,26 +638,9 @@
         min-width: 0;
     }
 
-    .autotag-folder-uniformity-heading {
-        display: grid;
-    }
-
-    .autotag-folder-uniformity-mode {
-        justify-self: start;
-        white-space: normal;
-    }
-
-    .autotag-folder-uniformity-summary {
-        grid-template-columns: 1fr;
-    }
-
     .autotag-folder-uniformity-artist-summary {
-        grid-template-columns: 14px 36px minmax(0, 1fr);
-    }
-
-    .autotag-folder-uniformity-counts {
-        grid-column: 2 / -1;
-        justify-content: flex-start;
+        grid-template-columns: 14px var(--art-thumb-size) minmax(0, 1fr);
+        padding: 12px;
     }
 
     .autotag-folder-uniformity-albums {
@@ -4307,34 +4221,7 @@ span.badge.badge-artwork-animated {
                                     </div>
                                 </div>
                                 <div id="autotag-folder-uniformity-panel" style="display: none;">
-                                    <section class="autotag-folder-uniformity-shell" aria-labelledby="autotag-folder-uniformity-title">
-                                        <div class="autotag-folder-uniformity-header">
-                                            <div class="autotag-folder-uniformity-heading">
-                                                <div>
-                                                    <div class="autotag-folder-uniformity-title" id="autotag-folder-uniformity-title">
-                                                        <i class="fas fa-folder-tree me-2"></i>Folder Uniformity activity
-                                                    </div>
-                                                    <p class="autotag-folder-uniformity-description">
-                                                        Folder and file template alignment recorded for the selected AutoTag run.
-                                                    </p>
-                                                </div>
-                                                <span class="autotag-folder-uniformity-mode" id="autotag-folder-uniformity-mode">Select a run</span>
-                                            </div>
-                                            <div class="autotag-folder-uniformity-summary">
-                                                <div class="autotag-folder-uniformity-summary-item">
-                                                    <div class="autotag-folder-uniformity-summary-label">Run status</div>
-                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-status">--</div>
-                                                </div>
-                                                <div class="autotag-folder-uniformity-summary-item">
-                                                    <div class="autotag-folder-uniformity-summary-label">Scope</div>
-                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-scope">Not recorded</div>
-                                                </div>
-                                                <div class="autotag-folder-uniformity-summary-item">
-                                                    <div class="autotag-folder-uniformity-summary-label">Progress</div>
-                                                    <div class="autotag-folder-uniformity-summary-value" id="autotag-folder-uniformity-progress">Not recorded</div>
-                                                </div>
-                                            </div>
-                                        </div>
+                                    <section aria-label="Folder Uniformity activity">
                                         <div class="autotag-folder-uniformity-results">
                                             <div class="autotag-folder-uniformity-results-label">Artist, album, file and folder breakdown</div>
                                             <div class="autotag-folder-uniformity-state" id="autotag-folder-uniformity-state" role="status" aria-live="polite">
@@ -6206,7 +6093,7 @@ async function clearCanceledTasks() {
                                     return `<span class="badge ${cls}">Enhanced lyrics</span>`;
                                 }
                                 const text = kind === 'ttml' || kind === 'time-synced'
-                                    ? 'TTML lyrics'
+                                    ? 'Word Synced Lyrics'
                                     : kind === 'synced' ? 'Synced lyrics' : 'Unsynced lyrics';
                                 return `<span class="badge ${cls}">${text}</span>`;
                             }).join('')

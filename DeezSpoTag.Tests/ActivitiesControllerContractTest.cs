@@ -237,6 +237,22 @@ public sealed class ActivitiesControllerContractTest
     }
 
     [Fact]
+    public void ActivitiesLyricsBadges_LabelTtmlAsWordSyncedLyrics()
+    {
+        var historySource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/wwwroot/js/autotag-status.js"));
+        var viewSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("Word Synced Lyrics", historySource, StringComparison.Ordinal);
+        Assert.Contains("Word Synced Lyrics", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TTML lyrics", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TTML lyrics", viewSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ActivitiesDownloadsTab_DerivesAnimatedArtworkBadgeFromGeneratedSidecars()
     {
         var source = File.ReadAllText(Path.Combine(

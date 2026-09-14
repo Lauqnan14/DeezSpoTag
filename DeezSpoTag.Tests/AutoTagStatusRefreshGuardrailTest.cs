@@ -137,22 +137,17 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.True(tagsButtonAt >= 0 && sidecarButtonAt > tagsButtonAt && uniformityButtonAt > sidecarButtonAt);
         Assert.Contains("</i>Sidecars", view, StringComparison.Ordinal);
         Assert.Contains("id=\"autotag-folder-uniformity-panel\"", view, StringComparison.Ordinal);
-        foreach (var id in new[]
-        {
-            "autotag-folder-uniformity-mode",
-            "autotag-folder-uniformity-status",
-            "autotag-folder-uniformity-scope",
-            "autotag-folder-uniformity-progress",
-            "autotag-folder-uniformity-state",
-            "autotag-folder-uniformity-artist-list"
-        })
-        {
-            Assert.Contains($"id=\"{id}\"", view, StringComparison.Ordinal);
-        }
+        Assert.Contains("id=\"autotag-folder-uniformity-state\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"autotag-folder-uniformity-artist-list\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"autotag-folder-uniformity-mode\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"autotag-folder-uniformity-status\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"autotag-folder-uniformity-scope\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"autotag-folder-uniformity-progress\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("autotag-folder-uniformity-header", view, StringComparison.Ordinal);
 
         Assert.Contains("const folderUniformityPanel = el(\"autotag-folder-uniformity-panel\");", script, StringComparison.Ordinal);
         Assert.Contains("state.historyView === \"folder-uniformity\"", script, StringComparison.Ordinal);
-        Assert.Contains("function renderFolderUniformityShell(summary, archive)", script, StringComparison.Ordinal);
+        Assert.Contains("function renderFolderUniformityState(summary, archive)", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -180,7 +175,7 @@ public sealed class AutoTagStatusRefreshGuardrailTest
     }
 
     [Fact]
-    public void AutoTagStatusScript_RendersFolderUniformityFromExistingHistoryWithoutLibraryLookups()
+    public void AutoTagStatusScript_RendersFolderUniformityStateFromExistingHistoryWithoutLibraryLookups()
     {
         var repoRoot = ResolveRepoRoot();
         var script = File.ReadAllText(Path.Join(
@@ -189,11 +184,11 @@ public sealed class AutoTagStatusRefreshGuardrailTest
             "wwwroot",
             "js",
             "autotag-status.js"));
-        var renderer = ExtractFunction(script, "function renderFolderUniformityShell");
+        var renderer = ExtractFunction(script, "function renderFolderUniformityState");
 
-        Assert.Contains("function renderFolderUniformityShell(summary, archive)", renderer, StringComparison.Ordinal);
+        Assert.Contains("function renderFolderUniformityState(summary, archive)", renderer, StringComparison.Ordinal);
         Assert.Contains("archive?.statusHistory", renderer, StringComparison.Ordinal);
-        Assert.Contains("summary?.targetReason", renderer, StringComparison.Ordinal);
+        Assert.Contains("summary?.selectedEnhancementFeatures", renderer, StringComparison.Ordinal);
         Assert.DoesNotContain("/api/library/artists", renderer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("fetchJson(", renderer, StringComparison.Ordinal);
     }
@@ -221,9 +216,12 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.Contains("autotag-folder-uniformity-album", uniformityRenderer, StringComparison.Ordinal);
         Assert.Contains("folderUniformityStatusPill", uniformityRenderer, StringComparison.Ordinal);
         Assert.Contains("autotag-folder-uniformity-status-pill", script, StringComparison.Ordinal);
-        Assert.Contains("folderUniformityImageUrl", uniformityRenderer, StringComparison.Ordinal);
-        Assert.Contains("inner.path", uniformityRenderer, StringComparison.Ordinal);
-        Assert.Contains("inner.message", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("artist.imageUrl", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("album.imageUrl", uniformityRenderer, StringComparison.Ordinal);
+        Assert.Contains("inner.destinationPath", script, StringComparison.Ordinal);
+        Assert.Contains("inner.operationKind", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("autotag-folder-uniformity-counts", uniformityRenderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformityCountMarkup", script, StringComparison.Ordinal);
         Assert.DoesNotContain("fetchJson(", uniformityRenderer, StringComparison.Ordinal);
     }
 
@@ -243,6 +241,11 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.Contains(".autotag-folder-uniformity-album-columns", view, StringComparison.Ordinal);
         Assert.Contains(".autotag-folder-uniformity-status-pill", view, StringComparison.Ordinal);
         Assert.Contains(".autotag-folder-uniformity-art", view, StringComparison.Ordinal);
+        Assert.Contains("grid-template-columns: 14px var(--art-thumb-size) minmax(130px, 1fr);", view, StringComparison.Ordinal);
+        Assert.Contains(".autotag-folder-uniformity-art.is-artist", view, StringComparison.Ordinal);
+        Assert.Contains("width: var(--art-thumb-size);", view, StringComparison.Ordinal);
+        Assert.Contains("height: var(--art-thumb-size);", view, StringComparison.Ordinal);
+        Assert.Contains("border-radius: 10px;", view, StringComparison.Ordinal);
     }
 
     [Fact]
