@@ -94,27 +94,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    /// <summary>Verifies a reconciled provider release ID through its own family: the
-    /// canonical write name must read back the expected value, and cleanup aliases must
-    /// be empty when the value is authoritatively absent.</summary>
-    internal static bool VerifyPersistedProviderReleaseId(
-        string filePath,
-        string platformId,
-        string? expectedValue,
-        bool overwrite)
-    {
-        var family = AutoTagIdentityTags.ResolveFamily(platformId, ProviderIdentityField.ReleaseId);
-        if (!string.IsNullOrWhiteSpace(expectedValue))
-        {
-            var actual = family.WriteNames
-                .Select(name => ReadRawIdentityValue(filePath, name))
-                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-            return string.Equals(actual, expectedValue, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return !overwrite || family.CleanupNames.All(name => !HasRawIdentityValue(filePath, name));
-    }
-
     /// <summary>
     /// Folds an album-identity-confirmed value for the current provider into the immutable
     /// provider payload, so the reconciliation result travels through the same single

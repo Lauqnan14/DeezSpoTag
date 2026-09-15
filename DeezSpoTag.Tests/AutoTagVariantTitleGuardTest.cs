@@ -287,16 +287,24 @@ public sealed class AutoTagVariantTitleGuardTest
         var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         var consensusBody = ExtractMethodBody(runner, "private void ApplyAlbumIdentityConsensus(");
-        Assert.Contains("BuildAlbumIdentityCandidate(track, context.Platform)", consensusBody, StringComparison.Ordinal);
+        Assert.Contains("BuildAlbumIdentityCandidate(track, payload)", consensusBody, StringComparison.Ordinal);
 
         var readBody = ExtractMethodBody(runner, "private static AlbumIdentity ReadAlbumIdentityFromDirectory(");
         Assert.Contains("BuildMajorityAlbumIdentity", readBody, StringComparison.Ordinal);
         Assert.DoesNotContain("break;", readBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("PathsReferToSameFile", readBody, StringComparison.Ordinal);
         Assert.Contains("MUSICBRAINZ_RELEASE_ID", runner, StringComparison.Ordinal);
         Assert.Contains("MUSICBRAINZ_RELEASEGROUPID", runner, StringComparison.Ordinal);
-        Assert.Contains("DEEZER_RELEASE_ID", runner, StringComparison.Ordinal);
-        Assert.Contains("SPOTIFY_RELEASE_ID", runner, StringComparison.Ordinal);
-        Assert.Contains("ITUNES_RELEASE_ID", runner, StringComparison.Ordinal);
+        // Per-provider release aliases live in the identity contract, never inline in the
+        // runner: the folder seed reader resolves them through that contract.
+        var identityContract = PartialSourceReader.ReadTypeSource(
+            "DeezSpoTag.Web", "Services", "AutoTag", "AutoTagIdentityTags.cs");
+        Assert.Contains("ProviderIdentityField.ReleaseId", identityContract, StringComparison.Ordinal);
+        Assert.Contains("ITUNES_RELEASE_ID", identityContract, StringComparison.Ordinal);
+        Assert.Contains(
+            "AutoTagIdentityTags.ResolveFamily(provider, ProviderIdentityField.ReleaseId)",
+            runner,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -309,7 +317,7 @@ public sealed class AutoTagVariantTitleGuardTest
         Assert.Contains("track.ReleaseCountry = identity.ReleaseCountry", applyBody, StringComparison.Ordinal);
         Assert.Contains("track.Barcode = identity.Barcode", applyBody, StringComparison.Ordinal);
         Assert.Contains("track.ReleaseType = identity.ReleaseType", applyBody, StringComparison.Ordinal);
-        Assert.Contains("identity.PlatformReleaseIds", applyBody, StringComparison.Ordinal);
+        Assert.Contains("identity.GetProviderIdentity(providerId)", applyBody, StringComparison.Ordinal);
         Assert.Contains("SetOtherValue(track, ReleaseGroupIdRawTag", applyBody, StringComparison.Ordinal);
         Assert.Contains("SetOtherValue(track, BarcodeRawTag", applyBody, StringComparison.Ordinal);
     }
@@ -319,7 +327,7 @@ public sealed class AutoTagVariantTitleGuardTest
     {
         var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
-        var consensusIndex = runner.IndexOf("ApplyAlbumIdentityConsensus(context, validationBasis, match.Track)", StringComparison.Ordinal);
+        var consensusIndex = runner.IndexOf("ApplyAlbumIdentityConsensus(", StringComparison.Ordinal);
         var tagIndex = runner.IndexOf("TagFileAsync(", consensusIndex < 0 ? 0 : consensusIndex, StringComparison.Ordinal);
 
         Assert.True(consensusIndex >= 0, "Album identity consensus must run in the shared match path.");

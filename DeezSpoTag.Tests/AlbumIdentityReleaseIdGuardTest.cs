@@ -10,9 +10,8 @@ namespace DeezSpoTag.Tests;
 
 /// <summary>
 /// Regression guard for the cross-platform release-id leak: the folder album identity
-/// must never stamp its (platform-agnostic) shared AlbumId into a foreign platform's
-/// release-id namespace, and per-platform release-id tags reject values from other
-/// id families.
+/// must never stamp one provider's ids into another provider's namespace, and only the
+/// provider's own alias family may carry an album-scoped identity.
 /// </summary>
 public sealed class AlbumIdentityReleaseIdGuardTest
 {
@@ -35,13 +34,22 @@ public sealed class AlbumIdentityReleaseIdGuardTest
         return Assert.IsType<bool>(method!.Invoke(null, [platformId, value]));
     }
 
-    private static AlbumIdentity BuildAlbumIdentityCandidate(AutoTagTrack track, string platformId)
+    private static AlbumIdentity BuildAlbumIdentityCandidate(AutoTagTrack track, string providerId, string? releaseId, string? albumId = null, string? albumArtistId = null)
     {
         var method = typeof(LocalAutoTagRunner).GetMethod(
             "BuildAlbumIdentityCandidate",
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
-        return Assert.IsType<AlbumIdentity>(method!.Invoke(null, [track, platformId]));
+        var payload = new ProviderIdentityPayload(
+            providerId,
+            TrackId: null,
+            albumId,
+            releaseId,
+            ArtistId: null,
+            albumArtistId,
+            Url: null,
+            IsNativeProviderResult: true);
+        return Assert.IsType<AlbumIdentity>(method!.Invoke(null, [track, payload]));
     }
 
     private static AlbumIdentity NormalizeSharedAlbumIdentity(AlbumIdentity identity)
@@ -53,15 +61,11 @@ public sealed class AlbumIdentityReleaseIdGuardTest
         return Assert.IsType<AlbumIdentity>(method!.Invoke(null, [identity]));
     }
 
-    private static IReadOnlyList<string> ProviderReleaseIdRawNames(string methodName, string platformId)
-    {
-        var method = typeof(LocalAutoTagRunner).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<IReadOnlyList<string>>(method!.Invoke(null, [platformId]));
-    }
-
-    private static void SetOther(AutoTagTrack track, string key, string value)
-        => track.Other[key] = new List<string> { value };
+    private static AlbumIdentity WithProvider(string providerId, string? albumId, string? releaseId, string? albumArtistId)
+        => AlbumIdentity.Empty.WithProviderIdentity(
+            providerId,
+            new ProviderAlbumIdentity(albumId, releaseId, albumArtistId),
+            overwrite: true);
 
     [Fact]
     public void EstablishedIdentity_DoesNotStampForeignAlbumIdIntoPlatformReleaseId()
@@ -71,14 +75,7 @@ public sealed class AlbumIdentityReleaseIdGuardTest
             Title = "Song",
             ReleaseId = "2flqcgHiEwy6XHlUuGe2ab"
         };
-        var identity = new AlbumIdentity(
-            ReleaseDate: "2026-03-27",
-            AlbumId: "943733001",
-            AlbumArtistId: null,
-            PlatformReleaseIds: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["AUDIOMACK_RELEASE_ID"] = "943733001"
-            });
+        var identity = WithProvider("audiomack", "943733001", "943733001", null);
 
         ApplyEstablishedAlbumIdentity(track, identity, "spotify");
 
@@ -98,18 +95,7 @@ public sealed class AlbumIdentityReleaseIdGuardTest
     {
         var track = new AutoTagTrack { Title = "Song" };
         var guid = "3f6b4d4c-8f8f-4d5a-9f61-1b6e20e2b0f1";
-        var identity = new AlbumIdentity(
-            ReleaseDate: "2026-03-27",
-            AlbumId: guid,
-            AlbumArtistId: null,
-            PlatformReleaseIds: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["MUSICBRAINZ_RELEASE_ID"] = guid
-            },
-            ConfirmedPlatformReleaseIdKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "MUSICBRAINZ_RELEASE_ID"
-            });
+        var identity = WithProvider("musicbrainz", guid, guid, guid);
 
         ApplyEstablishedAlbumIdentity(track, identity, "musicbrainz");
 
@@ -117,6 +103,7 @@ public sealed class AlbumIdentityReleaseIdGuardTest
         Assert.Equal(guid, track.AlbumId);
         Assert.Equal(guid, track.Other["MUSICBRAINZ_ALBUMID"].First());
         Assert.Equal(guid, track.Other["MUSICBRAINZ_RELEASE_ID"].First());
+        Assert.Equal(guid, track.Other["MUSICBRAINZ_ALBUMARTISTID"].First());
         // Generic compatibility fields are never written by an identity pass.
         Assert.False(track.Other.ContainsKey("ALBUMID"));
         Assert.False(track.Other.ContainsKey("ALBUMARTISTID"));
@@ -130,18 +117,7 @@ public sealed class AlbumIdentityReleaseIdGuardTest
             Title = "Song",
             ReleaseId = "999000111"
         };
-        var identity = new AlbumIdentity(
-            ReleaseDate: "2026-03-27",
-            AlbumId: "943733001",
-            AlbumArtistId: null,
-            PlatformReleaseIds: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["AUDIOMACK_RELEASE_ID"] = "943733001"
-            },
-            ConfirmedPlatformReleaseIdKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "AUDIOMACK_RELEASE_ID"
-            });
+        var identity = WithProvider("audiomack", "943733001", "943733001", null);
 
         ApplyEstablishedAlbumIdentity(track, identity, "audiomack");
 
@@ -169,21 +145,26 @@ public sealed class AlbumIdentityReleaseIdGuardTest
     [Fact]
     public void IdentityIntake_RejectsForeignShapedValues()
     {
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var addMethod = typeof(LocalAutoTagRunner).GetMethod(
-            "AddPlatformReleaseId",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(addMethod);
-        addMethod!.Invoke(null, [values, "SPOTIFY_RELEASE_ID", "943733001"]);
-        addMethod.Invoke(null, [values, "SPOTIFY_RELEASE_ID", "2flqcgHiEwy6XHlUuGe2ab"]);
-        addMethod.Invoke(null, [values, "AUDIOMACK_RELEASE_ID", "943733001"]);
-        addMethod.Invoke(null, [values, "MUSICBRAINZ_RELEASE_ID", "3f6b4d5a-9f61-4d5a-9f61-1b6e20e2b0f1"]);
-        addMethod.Invoke(null, [values, "MUSICBRAINZ_RELEASE_ID", "943733001"]);
+        var track = new AutoTagTrack { Title = "Song" };
 
-        Assert.Equal("2flqcgHiEwy6XHlUuGe2ab", values["SPOTIFY_RELEASE_ID"]);
-        Assert.Equal("943733001", values["AUDIOMACK_RELEASE_ID"]);
-        Assert.Equal("3f6b4d5a-9f61-4d5a-9f61-1b6e20e2b0f1", values["MUSICBRAINZ_RELEASE_ID"]);
-        Assert.Equal(3, values.Count);
+        // A numeric Audiomack id must not enter the spotify release namespace.
+        var spotify = BuildAlbumIdentityCandidate(track, "spotify", "943733001");
+        Assert.Null(spotify.GetProviderIdentity("spotify"));
+
+        // A 22-character Spotify id must not enter the MusicBrainz release namespace.
+        var musicBrainz = BuildAlbumIdentityCandidate(track, "musicbrainz", "2flqcgHiEwy6XHlUuGe2ab");
+        Assert.Null(musicBrainz.GetProviderIdentity("musicbrainz")?.ReleaseId);
+
+        var audiomack = BuildAlbumIdentityCandidate(track, "audiomack", "943733001");
+        Assert.Equal("943733001", audiomack.GetProviderIdentity("audiomack")!.ReleaseId);
+
+        var validMusicBrainz = BuildAlbumIdentityCandidate(
+            track,
+            "musicbrainz",
+            "3f6b4d5a-9f61-4d5a-9f61-1b6e20e2b0f1");
+        Assert.Equal(
+            "3f6b4d5a-9f61-4d5a-9f61-1b6e20e2b0f1",
+            validMusicBrainz.GetProviderIdentity("musicbrainz")!.ReleaseId);
     }
 
     [Fact]
@@ -196,10 +177,10 @@ public sealed class AlbumIdentityReleaseIdGuardTest
             ReleaseId = "533077002"
         };
 
-        var identity = BuildAlbumIdentityCandidate(track, "deezer");
+        var identity = BuildAlbumIdentityCandidate(track, "deezer", "533077002");
 
         Assert.Null(identity.AlbumId);
-        Assert.Equal("533077002", identity.PlatformReleaseIds!["DEEZER_RELEASE_ID"]);
+        Assert.Equal("533077002", identity.GetProviderIdentity("deezer")!.ReleaseId);
     }
 
     [Fact]
@@ -216,9 +197,10 @@ public sealed class AlbumIdentityReleaseIdGuardTest
             }
         };
 
-        var identity = BuildAlbumIdentityCandidate(track, "shazam");
+        var identity = BuildAlbumIdentityCandidate(track, "shazam", "179363330");
 
         Assert.Null(identity.AlbumId);
+        Assert.Null(identity.GetProviderIdentity("musicbrainz"));
     }
 
     [Fact]
@@ -238,23 +220,25 @@ public sealed class AlbumIdentityReleaseIdGuardTest
     [Fact]
     public void ProviderReleaseIdAliases_KeepWriteAndCleanupBoundariesSeparate()
     {
-        Assert.Equal(
-            new[] { "ITUNES_RELEASE_ID", "APPLE_ALBUM_ID" },
-            ProviderReleaseIdRawNames("ProviderReleaseIdWriteRawNames", "itunes"));
-
-        var appleCleanup = ProviderReleaseIdRawNames("ProviderReleaseIdCleanupRawNames", "itunes");
+        var itunes = AutoTagIdentityTags.ResolveFamily("itunes", ProviderIdentityField.ReleaseId);
+        Assert.Equal(["ITUNES_RELEASE_ID"], itunes.WriteNames);
+        var appleCleanup = itunes.CleanupNames;
         Assert.Contains("ITUNES_RELEASE_ID", appleCleanup);
-        Assert.Contains("APPLE_ALBUM_ID", appleCleanup);
         Assert.Contains("APPLE_RELEASE_ID", appleCleanup);
-        Assert.Contains("APPLE_MUSIC_ALBUM_ID", appleCleanup);
-        Assert.Contains("ITUNESALBUMID", appleCleanup);
-        Assert.Contains("ITUNES_ALBUM_ID", appleCleanup);
+        // An album id alias is not part of the release-id family.
+        Assert.DoesNotContain("APPLE_ALBUM_ID", appleCleanup);
+        Assert.DoesNotContain("ITUNESALBUMID", appleCleanup);
+        Assert.DoesNotContain("ITUNES_ALBUM_ID", appleCleanup);
 
         Assert.Equal(
-            new[] { "DEEZER_RELEASE_ID" },
-            ProviderReleaseIdRawNames("ProviderReleaseIdWriteRawNames", "deezer"));
-        Assert.Equal(
-            new[] { "SHAZAM_RELEASE_ID" },
-            ProviderReleaseIdRawNames("ProviderReleaseIdCleanupRawNames", "shazam"));
+            ["DEEZER_RELEASE_ID"],
+            AutoTagIdentityTags.ResolveFamily("deezer", ProviderIdentityField.ReleaseId).WriteNames);
+        Assert.DoesNotContain(
+            "ALBUMID",
+            AutoTagIdentityTags.ResolveFamily("musicbrainz", ProviderIdentityField.ReleaseId).CleanupNames);
+        Assert.DoesNotContain(
+            "ALBUMID",
+            AutoTagIdentityTags.ResolveFamily("musicbrainz", ProviderIdentityField.AlbumId).WriteNames.Concat(
+                AutoTagIdentityTags.ResolveFamily("musicbrainz", ProviderIdentityField.AlbumId).CleanupNames));
     }
 }

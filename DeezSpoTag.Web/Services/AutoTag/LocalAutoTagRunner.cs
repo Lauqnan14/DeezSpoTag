@@ -484,8 +484,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         [AlbumArtistIdRawTag, "MUSICBRAINZ_ALBUMARTISTID", "MUSICBRAINZ_ALBUM_ARTIST_ID"];
     private static readonly string[] AlbumIdentityReleaseGroupIdRawNames =
         [ReleaseGroupIdRawTag, "MUSICBRAINZ_RELEASEGROUPID", "MUSICBRAINZ_RELEASE_GROUP_ID"];
-    private static readonly string[] PlatformReleaseIdRawNames =
-        ["DEEZER_RELEASE_ID", "SPOTIFY_RELEASE_ID", "ITUNES_RELEASE_ID", "APPLE_RELEASE_ID", "APPLE_ALBUM_ID"];
 
     private AlbumIdentityStore? _albumIdentityStore;
     private readonly string? _albumIdentityStorePath;

@@ -49,10 +49,121 @@ public sealed class AlbumIdentityStore
                         entry.ReleaseCountry,
                         entry.Barcode,
                         entry.ReleaseType,
-                        entry.PlatformReleaseIds),
+                        PlatformReleaseIds: null,
+                        ConfirmedPlatformReleaseIdKeys: null,
+                        entry.CanonicalAlbumTitle,
+                        entry.CanonicalAlbumArtist,
+                        entry.AlbumRelativePath,
+                        ResolveProviderIdentities(entry)),
                     entry.UpdatedAt))
                 .ToList()
         };
+    }
+
+    /// <summary>
+    /// Reads the provider-keyed identity map. Version-2 documents carried a release-id-only
+    /// map plus a set of confirmed raw names: only confirmed entries migrate, and each one
+    /// moves into the release field of its own provider. Unconfirmed legacy values and the
+    /// legacy generic album/album-artist ids never become trusted identities.
+    /// </summary>
+    private static IReadOnlyDictionary<string, ProviderAlbumIdentity>? ResolveProviderIdentities(
+        AlbumIdentityStoreEntryDocument entry)
+    {
+        var values = new Dictionary<string, ProviderAlbumIdentity>(StringComparer.OrdinalIgnoreCase);
+        if (entry.ProviderIdentities is not null)
+        {
+            foreach (var (key, value) in entry.ProviderIdentities)
+            {
+                if (value is null)
+                {
+                    continue;
+                }
+
+                AddProviderIdentity(values, key, new ProviderAlbumIdentity(
+                    value.AlbumId,
+                    value.ReleaseId,
+                    value.AlbumArtistId));
+            }
+        }
+
+        if (entry.ConfirmedPlatformReleaseIdKeys is null || entry.PlatformReleaseIds is null)
+        {
+            return values.Count == 0 ? null : values;
+        }
+
+        foreach (var rawName in entry.ConfirmedPlatformReleaseIdKeys)
+        {
+            if (!TryResolveLegacyProviderId(rawName, out var providerId)
+                || !TryReadLegacyReleaseId(entry.PlatformReleaseIds, rawName, out var releaseId))
+            {
+                continue;
+            }
+
+            AddProviderIdentity(values, providerId, new ProviderAlbumIdentity(null, releaseId, null));
+        }
+
+        return values.Count == 0 ? null : values;
+    }
+
+    private static void AddProviderIdentity(
+        Dictionary<string, ProviderAlbumIdentity> values,
+        string? providerId,
+        ProviderAlbumIdentity identity)
+    {
+        var normalized = AlbumIdentity.NormalizeProviderId(providerId);
+        if (normalized.Length == 0 || identity.IsEmpty)
+        {
+            return;
+        }
+
+        values[normalized] = values.TryGetValue(normalized, out var existing)
+            ? existing.CoalesceWith(identity)
+            : identity;
+    }
+
+    private static bool TryReadLegacyReleaseId(
+        IReadOnlyDictionary<string, string> values,
+        string rawName,
+        out string releaseId)
+    {
+        releaseId = string.Empty;
+        foreach (var (key, value) in values)
+        {
+            if (!string.IsNullOrWhiteSpace(key)
+                && key.Trim().Equals(rawName.Trim(), StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(value))
+            {
+                releaseId = value.Trim();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveLegacyProviderId(string? rawName, out string providerId)
+    {
+        providerId = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            return false;
+        }
+
+        const string suffix = "_RELEASE_ID";
+        var name = rawName.Trim();
+        if (!name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var provider = AlbumIdentity.NormalizeProviderId(name[..^suffix.Length]);
+        if (provider.Length == 0)
+        {
+            return false;
+        }
+
+        providerId = provider;
+        return true;
     }
 
     public void Merge(IReadOnlyList<(string Key, AlbumIdentity Identity, DateTimeOffset UpdatedAt)> snapshot)
@@ -71,7 +182,7 @@ public sealed class AlbumIdentityStore
                 {
                     byKey[key] = new AlbumIdentityStoreEntry(
                         key,
-                        existing.Identity.CoalesceWith(identity),
+                        identity,
                         updatedAt);
                 }
             }
@@ -103,7 +214,20 @@ public sealed class AlbumIdentityStore
                     entry.Identity.ReleaseCountry,
                     entry.Identity.Barcode,
                     entry.Identity.ReleaseType,
-                    entry.Identity.PlatformReleaseIds))
+                    null,
+                    null,
+                    entry.Identity.CanonicalAlbumTitle,
+                    entry.Identity.CanonicalAlbumArtist,
+                    entry.Identity.AlbumRelativePath,
+                    entry.Identity.ProviderIdentities is null
+                        ? null
+                        : entry.Identity.ProviderIdentities.ToDictionary(
+                            pair => AlbumIdentity.NormalizeProviderId(pair.Key),
+                            pair => new ProviderAlbumIdentityDocument(
+                                pair.Value.AlbumId,
+                                pair.Value.ReleaseId,
+                                pair.Value.AlbumArtistId),
+                            StringComparer.OrdinalIgnoreCase)))
                 .ToList()
         };
 
@@ -124,7 +248,7 @@ public sealed record AlbumIdentityStoreEntry(string Key, AlbumIdentity Identity,
 public sealed class AlbumIdentityStoreDocument
 {
     [JsonPropertyName("version")]
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 3;
 
     [JsonPropertyName("identities")]
     public List<AlbumIdentityStoreEntryDocument> Identities { get; set; } = new();
@@ -141,4 +265,19 @@ public sealed record AlbumIdentityStoreEntryDocument(
     [property: JsonPropertyName("releaseCountry")] string? ReleaseCountry,
     [property: JsonPropertyName("barcode")] string? Barcode,
     [property: JsonPropertyName("releaseType")] string? ReleaseType,
-    [property: JsonPropertyName("platformReleaseIds")] IReadOnlyDictionary<string, string>? PlatformReleaseIds);
+    [property: JsonPropertyName("platformReleaseIds")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, string>? PlatformReleaseIds,
+    [property: JsonPropertyName("confirmedPlatformReleaseIdKeys")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? ConfirmedPlatformReleaseIdKeys = null,
+    [property: JsonPropertyName("canonicalAlbumTitle")] string? CanonicalAlbumTitle = null,
+    [property: JsonPropertyName("canonicalAlbumArtist")] string? CanonicalAlbumArtist = null,
+    [property: JsonPropertyName("albumRelativePath")] string? AlbumRelativePath = null,
+    [property: JsonPropertyName("providerIdentities")] IReadOnlyDictionary<string, ProviderAlbumIdentityDocument>? ProviderIdentities = null);
+
+/// <summary>Version-3 serialized form of one provider's album-scoped identity.</summary>
+public sealed record ProviderAlbumIdentityDocument(
+    [property: JsonPropertyName("albumId")] string? AlbumId = null,
+    [property: JsonPropertyName("releaseId")] string? ReleaseId = null,
+    [property: JsonPropertyName("albumArtistId")] string? AlbumArtistId = null);
