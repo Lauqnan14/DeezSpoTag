@@ -12,16 +12,25 @@ using Microsoft.Extensions.Logging;
 namespace DeezSpoTag.Web.Services.Audiomack;
 
 /// <summary>
-/// Resolves an artist's location (city + country) from the artist's public
-/// Audiomack profile. The Audiomack artist identity is resolved through the
+/// One resolved Audiomack artist profile snapshot: the normalized location and the
+/// raw biography (<c>bio</c>) taken from the same matched artist object. Either half
+/// may be null. A non-null snapshot means the page was fetched and the artist object
+/// matched; a null snapshot is a miss (unavailable page, parse miss, or no data).
+/// </summary>
+public sealed record AudiomackArtistProfile(AudiomackLocationResult? Location, string? Biography);
+
+/// <summary>
+/// Resolves an artist's location (city + country) and biography from the artist's
+/// public Audiomack profile. The Audiomack artist identity is resolved through the
 /// first-party web search API (anonymous: no cookies, no user tokens) and
 /// persisted in artist_source (source "audiomack") so later loads — and user
 /// corrections from the library artist page — target an exact profile instead
 /// of re-guessing a slug from the artist name. Lookups are keyed by the
 /// canonical slug and cached in memory plus persisted through
 /// <see cref="ArtistPageCacheRepository"/> so a restart does not re-fetch. A
-/// miss (no hometown set) is cached as well: an unknown location never
-/// triggers repeated fetching.
+/// miss (no hometown and no bio set) is cached as well: an unknown profile never
+/// triggers repeated fetching, while a failed fetch is deliberately NOT cached so
+/// a transient outage self-heals on the next call.
 /// </summary>
 public sealed class AudiomackArtistLocationService
 {
@@ -36,7 +45,7 @@ public sealed class AudiomackArtistLocationService
     private readonly AudiomackApiClient _apiClient;
     private readonly LibraryRepository? _libraryRepository;
     private readonly ILogger<AudiomackArtistLocationService> _logger;
-    private readonly ConcurrentDictionary<string, (AudiomackLocationResult? Location, DateTimeOffset FetchedUtc)> _memoryCache =
+    private readonly ConcurrentDictionary<string, (AudiomackArtistProfile? Profile, DateTimeOffset FetchedUtc)> _memoryCache =
         new(StringComparer.OrdinalIgnoreCase);
 
     public AudiomackArtistLocationService(
@@ -54,12 +63,27 @@ public sealed class AudiomackArtistLocationService
     }
 
     /// <summary>
-    /// Resolve for a library artist: prefers the stored Audiomack mapping in
-    /// artist_source (set once via the anonymous search API, correctable by the
-    /// user from the library artist page), discovers it only when absent, and
-    /// never re-searches behind a stored value.
+    /// Resolve the location for a library artist: prefers the stored Audiomack
+    /// mapping in artist_source (set once via the anonymous search API, correctable
+    /// by the user from the library artist page), discovers it only when absent,
+    /// and never re-searches behind a stored value.
     /// </summary>
     public async Task<AudiomackLocationResult?> ResolveAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
+        => (await ResolveProfileAsync(artistId, artistName, cancellationToken).ConfigureAwait(false))?.Location;
+
+    /// <summary>Name-based location resolution for flows without a library artist id.</summary>
+    public async Task<AudiomackLocationResult?> ResolveAsync(string? artistName, CancellationToken cancellationToken = default)
+        => (await ResolveProfileAsync(artistName, cancellationToken).ConfigureAwait(false))?.Location;
+
+    /// <summary>Biography for a library artist, or null when the profile carries none.</summary>
+    public async Task<string?> ResolveBiographyAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
+        => (await ResolveProfileAsync(artistId, artistName, cancellationToken).ConfigureAwait(false))?.Biography;
+
+    /// <summary>
+    /// Full profile (location + biography) for a library artist, sharing one fetch
+    /// and one cache entry so a page load never fetches the profile twice.
+    /// </summary>
+    public async Task<AudiomackArtistProfile?> ResolveProfileAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
     {
         var storedSlug = await TryGetStoredSlugAsync(artistId, cancellationToken).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(storedSlug))
@@ -68,7 +92,7 @@ public sealed class AudiomackArtistLocationService
             // A null here is a cached negative for that slug; rediscovery would burn a
             // search on every page load, so it stops here — the user can correct the
             // mapping from the library page instead.
-            return await ResolveBySlugAsync(storedSlug, artistName, cancellationToken).ConfigureAwait(false);
+            return await ResolveProfileBySlugAsync(storedSlug, artistName, cancellationToken).ConfigureAwait(false);
         }
 
         var candidate = await _apiClient.SearchArtistAsync(artistName, cancellationToken).ConfigureAwait(false);
@@ -78,20 +102,20 @@ public sealed class AudiomackArtistLocationService
             return null;
         }
 
-        var result = await ResolveBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
+        var result = await ResolveProfileBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
         if (result != null || candidate != null)
         {
             // Persist the identity as soon as it is validated (search name-match, or the
             // page parse confirmed the artist name) — including when Audiomack simply has
-            // no hometown, so the search cost is paid once.
+            // no profile data, so the search cost is paid once.
             await TryStoreSlugAsync(artistId, slug, cancellationToken).ConfigureAwait(false);
         }
 
         return result;
     }
 
-    /// <summary>Name-based resolution for flows without a library artist id.</summary>
-    public async Task<AudiomackLocationResult?> ResolveAsync(string? artistName, CancellationToken cancellationToken = default)
+    /// <summary>Name-based profile resolution for flows without a library artist id.</summary>
+    public async Task<AudiomackArtistProfile?> ResolveProfileAsync(string? artistName, CancellationToken cancellationToken = default)
     {
         var slug = BuildUrlSlug(artistName);
         if (slug == null)
@@ -99,7 +123,7 @@ public sealed class AudiomackArtistLocationService
             return null;
         }
 
-        return await ResolveBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
+        return await ResolveProfileBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
     }
 
     internal static string? BuildUrlSlug(string? artistName)
@@ -120,41 +144,57 @@ public sealed class AudiomackArtistLocationService
         return slug.Length == 0 ? null : slug;
     }
 
-    private async Task<AudiomackLocationResult?> ResolveBySlugAsync(string slug, string? artistName, CancellationToken cancellationToken)
+    private async Task<AudiomackArtistProfile?> ResolveProfileBySlugAsync(string slug, string? artistName, CancellationToken cancellationToken)
     {
         if (_memoryCache.TryGetValue(slug, out var cached) && DateTimeOffset.UtcNow - cached.FetchedUtc <= MemoryCacheTtl)
         {
-            return cached.Location;
+            return cached.Profile;
         }
 
-        var (persistentFound, persistentLocation) = await TryReadCachedLocationAsync(slug, cancellationToken).ConfigureAwait(false);
+        var (persistentFound, persistentProfile) = await TryReadCachedProfileAsync(slug, cancellationToken).ConfigureAwait(false);
         if (persistentFound)
         {
-            _memoryCache[slug] = (persistentLocation, DateTimeOffset.UtcNow);
-            return persistentLocation;
+            _memoryCache[slug] = (persistentProfile, DateTimeOffset.UtcNow);
+            return persistentProfile;
         }
 
-        AudiomackLocationResult? resolved = null;
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            // The page parser cross-checks the artist name; without one a wrong
+            // profile could be accepted, so nothing is fetched or cached.
+            return null;
+        }
+
+        AudiomackArtistProfile? resolved = null;
+        var fetched = false;
         try
         {
-            // BuildUrlSlug returned non-null, which is only possible for a
-            // non-whitespace artistName, hence the null-forgiving operator.
-            resolved = await FetchLocationAsync(slug, artistName!, cancellationToken).ConfigureAwait(false);
+            (fetched, resolved) = await TryFetchProfileAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
                 ex,
-                "Audiomack artist location fetch failed (slug={Slug})",
+                "Audiomack artist profile fetch failed (slug={Slug})",
                 LogSanitizer.OneLine(slug));
         }
 
+        if (!fetched)
+        {
+            // Unavailable page or network failure: not an authoritative "no data"
+            // answer, so nothing is cached and the next call retries.
+            return null;
+        }
+
         _memoryCache[slug] = (resolved, DateTimeOffset.UtcNow);
-        await WriteCachedLocationAsync(slug, resolved, cancellationToken).ConfigureAwait(false);
+        await WriteCachedProfileAsync(slug, resolved, cancellationToken).ConfigureAwait(false);
         return resolved;
     }
 
-    private async Task<AudiomackLocationResult?> FetchLocationAsync(string slug, string artistName, CancellationToken cancellationToken)
+    private async Task<(bool Fetched, AudiomackArtistProfile? Profile)> TryFetchProfileAsync(
+        string slug,
+        string artistName,
+        CancellationToken cancellationToken)
     {
         using var httpClient = _httpClientFactory.CreateClient();
         httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
@@ -165,12 +205,26 @@ public sealed class AudiomackArtistLocationService
         using var response = await httpClient.GetAsync(ArtistPageBaseUrl + slug, timeoutCts.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            return (false, null);
         }
 
         var html = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-        var rawLocation = AudiomackArtistPageParser.TryExtractRawLocation(html, slug, artistName);
-        return AudiomackLocationNormalizer.Normalize(rawLocation);
+        var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, slug, artistName);
+        if (info == null)
+        {
+            // The page loaded but no object matched (or the matched artist has no
+            // location and no bio). Authoritative negative.
+            return (true, null);
+        }
+
+        var location = AudiomackLocationNormalizer.Normalize(info.RawLocation);
+        var biography = string.IsNullOrWhiteSpace(info.RawBiography) ? null : info.RawBiography.Trim();
+        if (location == null && biography == null)
+        {
+            return (true, null);
+        }
+
+        return (true, new AudiomackArtistProfile(location, biography));
     }
 
     private async Task<string?> TryGetStoredSlugAsync(long artistId, CancellationToken cancellationToken)
@@ -208,7 +262,7 @@ public sealed class AudiomackArtistLocationService
         }
     }
 
-    private async Task<(bool Found, AudiomackLocationResult? Location)> TryReadCachedLocationAsync(
+    private async Task<(bool Found, AudiomackArtistProfile? Profile)> TryReadCachedProfileAsync(
         string slug,
         CancellationToken cancellationToken)
     {
@@ -227,13 +281,25 @@ public sealed class AudiomackArtistLocationService
                 return (true, null);
             }
 
-            if (!root.TryGetProperty("raw_location", out var rawElement) || rawElement.ValueKind != JsonValueKind.String)
+            AudiomackLocationResult? location = null;
+            if (root.TryGetProperty("raw_location", out var rawLocationElement)
+                && rawLocationElement.ValueKind == JsonValueKind.String)
             {
-                // Negative cache entry: the artist had no usable location.
-                return (true, null);
+                location = AudiomackLocationNormalizer.Normalize(rawLocationElement.GetString());
             }
 
-            return (true, AudiomackLocationNormalizer.Normalize(rawElement.GetString()));
+            string? biography = null;
+            if (root.TryGetProperty("raw_biography", out var rawBiographyElement)
+                && rawBiographyElement.ValueKind == JsonValueKind.String)
+            {
+                var value = rawBiographyElement.GetString();
+                biography = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            }
+
+            // Neither half present: negative cache entry for this slug.
+            return location == null && biography == null
+                ? (true, null)
+                : (true, new AudiomackArtistProfile(location, biography));
         }
         catch (JsonException)
         {
@@ -241,17 +307,19 @@ public sealed class AudiomackArtistLocationService
         }
     }
 
-    private async Task WriteCachedLocationAsync(string slug, AudiomackLocationResult? location, CancellationToken cancellationToken)
+    private async Task WriteCachedProfileAsync(string slug, AudiomackArtistProfile? profile, CancellationToken cancellationToken)
     {
-        var payload = location == null
+        var payload = profile == null
             ? "{}"
             : JsonSerializer.Serialize(new
             {
-                city = location.City,
-                country = location.Country,
-                country_code = location.CountryCode,
+                city = profile.Location?.City,
+                country = profile.Location?.Country,
+                country_code = profile.Location?.CountryCode,
                 location_source = "audiomack",
-                raw_location = location.RawLocation
+                raw_location = profile.Location?.RawLocation,
+                biography = profile.Biography,
+                raw_biography = profile.Biography
             });
 
         await _artistPageCache.UpsertAsync(LocationCacheSource, slug, payload, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);

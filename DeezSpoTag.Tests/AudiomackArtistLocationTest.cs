@@ -208,6 +208,129 @@ public sealed class AudiomackArtistLocationTest
         {
             Assert.Null(AudiomackArtistPageParser.TryExtractRawLocation(FlightPageHtml, "still-shadey", expectedArtistName));
         }
+
+        // ---- Biography (bio) extraction -------------------------------------------------
+
+        private const string BioArtistHtml = """
+            <script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"artist\":{\"id\":7,\"name\":\"Bio Artist\",\"hometown\":\"\",\"bio\":\"A real profile biography.\",\"url_slug\":\"bio-artist\",\"type\":\"artist\"}}]"])</script>
+            """;
+
+        [Fact]
+        public void TryExtractRawBiography_ReturnsBioOfTheMatchedArtistObject()
+        {
+            Assert.Equal(
+                "A real profile biography.",
+                AudiomackArtistPageParser.TryExtractRawBiography(BioArtistHtml, "bio-artist", "Bio Artist"));
+        }
+
+        [Fact]
+        public void TryExtractArtistPageInfo_BiographyWithoutLocation_StillReturnsInfo()
+        {
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(BioArtistHtml, "bio-artist", "Bio Artist");
+
+            Assert.NotNull(info);
+            Assert.Equal("bio-artist", info!.CanonicalUrlSlug);
+            Assert.Null(info.RawLocation);
+            Assert.Equal("A real profile biography.", info.RawBiography);
+        }
+
+        [Fact]
+        public void TryExtractRawBiography_LocationWithoutBiography_ReturnsNullBio()
+        {
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(FlightPageHtml, "still-shadey", "Still Shadey");
+
+            Assert.NotNull(info);
+            Assert.Equal("Accra, Ghana", info!.RawLocation);
+            Assert.Null(info.RawBiography);
+            Assert.Null(AudiomackArtistPageParser.TryExtractRawBiography(FlightPageHtml, "still-shadey", "Still Shadey"));
+        }
+
+        [Fact]
+        public void TryExtractRawBiography_EmptyBio_ReturnsNull()
+        {
+            const string html = """
+                <script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"artist\":{\"name\":\"No Bio\",\"hometown\":\"Nairobi, Kenya\",\"bio\":\"   \",\"url_slug\":\"no-bio\",\"type\":\"artist\"}}]"])</script>
+                """;
+
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "no-bio", "No Bio");
+
+            Assert.NotNull(info);
+            Assert.Equal("Nairobi, Kenya", info!.RawLocation);
+            Assert.Null(info.RawBiography);
+        }
+
+        [Fact]
+        public void TryExtractRawBiography_NeverCrossesArtistObjects()
+        {
+            // A matching artist with no bio must never inherit a neighbour's bio,
+            // exactly like the location cross-object regression.
+            const string html = """
+                <script>self.__next_f.push([1,"9:[\"$\",\"div\",null,{\"artist\":{\"name\":\"Quiet Artist\",\"hometown\":\"Lagos, Nigeria\",\"bio\":\"\",\"url_slug\":\"quiet-artist\",\"type\":\"artist\"}}"])</script>
+                <script>self.__next_f.push([1,"12:[\"$\",\"$L4c\",null,{\"related\":[{\"name\":\"Loud Artist\",\"bio\":\"Someone else's biography.\",\"url_slug\":\"loud-artist\",\"type\":\"artist\"}]}"])</script>
+                """;
+
+            Assert.Null(AudiomackArtistPageParser.TryExtractRawBiography(html, "quiet-artist", "Quiet Artist"));
+            Assert.Equal("Someone else's biography.", AudiomackArtistPageParser.TryExtractRawBiography(html, "loud-artist", "Loud Artist"));
+        }
+
+        [Fact]
+        public void TryExtractRawBiography_RecycledSlugWithDifferentArtist_ReturnsNull()
+        {
+            const string html = """
+                <script>self.__next_f.push([1,"8:[\"$\",\"div\",null,{\"artist\":{\"name\":\"Kay The Magician\",\"hometown\":\"Thika\",\"bio\":\"Wrong artist bio.\",\"url_slug\":\"khaligraph-jones\",\"type\":\"artist\"}}]"])</script>
+                """;
+
+            Assert.Null(AudiomackArtistPageParser.TryExtractRawBiography(html, "khaligraph-jones", "Khaligraph Jones"));
+        }
+
+        [Fact]
+        public void TryExtractArtistPageInfo_RealArtistPageFixture_ReturnsLocationAndBiography()
+        {
+            // Fixture derived verbatim from the captured public payload: the artist
+            // object carries both hometown/location and a creator-written bio.
+            var html = ReadFixture("artist-page-flight.txt");
+
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "alikiba", "Alikiba");
+
+            Assert.NotNull(info);
+            Assert.Equal("alikiba", info!.CanonicalUrlSlug);
+            Assert.Equal("Dar es Salaam,Tanzania", info.RawLocation);
+            Assert.NotNull(info.RawBiography);
+            Assert.Contains("Ally Saleh Kiba", info.RawBiography);
+            Assert.Contains("Tanzanian recording artiste", info.RawBiography);
+        }
+
+        [Fact]
+        public void Normalize_RealFixtureBiography_IsPlainTextAfterSanitizing()
+        {
+            // The raw bio is HTML-free but carries runs of text; the shared sanitizer
+            // is the single cleaner used by the biography cache pipeline.
+            var html = ReadFixture("artist-page-flight.txt");
+            var raw = AudiomackArtistPageParser.TryExtractRawBiography(html, "alikiba", "Alikiba");
+
+            var clean = DeezSpoTag.Web.Services.ArtistBiographySanitizer.Clean(raw);
+
+            Assert.NotNull(clean);
+            Assert.DoesNotContain("<", clean);
+            Assert.StartsWith("Ally Saleh Kiba", clean);
+        }
+
+        private static string ReadFixture(string name)
+        {
+            var directory = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                var candidate = Path.Join(directory, "DeezSpoTag.Tests", "Fixtures", "Audiomack", name);
+                if (File.Exists(candidate))
+                {
+                    return File.ReadAllText(candidate);
+                }
+
+                directory = Directory.GetParent(directory)?.FullName ?? string.Empty;
+            }
+
+            throw new FileNotFoundException($"Audiomack fixture '{name}' was not found.");
+        }
     }
 
     public sealed class SlugBuilder
@@ -585,6 +708,178 @@ public sealed class AudiomackArtistLocationTest
         private sealed class StubHttpClientFactory : IHttpClientFactory
         {
             public HttpClient CreateClient(string name) => new(new StubHandler());
+        }
+    }
+
+    /// <summary>
+    /// Fetch/cache integration for the shared artist-profile path (location + bio from
+    /// one match). HTTP is stubbed from the fixture; these tests never hit the network.
+    /// </summary>
+    public sealed class ArtistProfileService
+    {
+        [Fact]
+        public async Task ResolveProfileAsync_RealFixture_ReturnsLocationAndBiographyFromOneFetch()
+        {
+            var (service, factory) = CreateService(ReadFixture("artist-page-flight.txt"));
+
+            var profile = await service.ResolveProfileAsync("Alikiba", CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.NotNull(profile!.Location);
+            Assert.Equal("Dar es Salaam", profile.Location!.City);
+            Assert.Equal("Tanzania", profile.Location.Country);
+            Assert.Equal("TZ", profile.Location.CountryCode);
+            Assert.Equal("Dar es Salaam,Tanzania", profile.Location.RawLocation);
+            Assert.NotNull(profile.Biography);
+            Assert.StartsWith("Ally Saleh Kiba", profile.Biography);
+
+            // Second read is served from the fetch cache: no extra page request.
+            var cached = await service.ResolveProfileAsync("Alikiba", CancellationToken.None);
+            Assert.NotNull(cached);
+            Assert.Equal("TZ", cached!.Location!.CountryCode);
+            Assert.Equal(1, factory.RequestCount);
+        }
+
+        [Fact]
+        public async Task ResolveBiographyAsync_LibraryArtistOverload_ReturnsBiography()
+        {
+            var (service, _) = CreateService(ReadFixture("artist-page-flight.txt"));
+
+            var biography = await service.ResolveBiographyAsync(4242, "Alikiba", CancellationToken.None);
+
+            Assert.NotNull(biography);
+            Assert.Contains("Tanzanian recording artiste", biography);
+        }
+
+        [Fact]
+        public async Task ResolveProfileAsync_BioOnlyProfile_ReturnsBiographyWithNullLocation()
+        {
+            const string html = """
+                <script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"artist\":{\"name\":\"Bio Artist\",\"bio\":\"Only a bio.\",\"url_slug\":\"bio-artist\",\"type\":\"artist\"}}]"])</script>
+                """;
+            var (service, _) = CreateService(html);
+
+            var profile = await service.ResolveProfileAsync("Bio Artist", CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.Null(profile!.Location);
+            Assert.Equal("Only a bio.", profile.Biography);
+        }
+
+        [Fact]
+        public async Task ResolveProfileAsync_UnavailablePage_ReturnsNullAndRetriesInsteadOfCachingFailure()
+        {
+            var (service, factory) = CreateService("<html><body>not found</body></html>", HttpStatusCode.NotFound);
+
+            Assert.Null(await service.ResolveProfileAsync("Alikiba", CancellationToken.None));
+            Assert.Null(await service.ResolveProfileAsync("Alikiba", CancellationToken.None));
+
+            // A failed fetch must never become a cached negative: the second call retried.
+            Assert.Equal(2, factory.RequestCount);
+        }
+
+        [Fact]
+        public async Task ResolveProfileAsync_ParseMiss_ReturnsNullWithoutThrowing()
+        {
+            var (service, _) = CreateService("<html><body>no flight chunks here</body></html>");
+
+            Assert.Null(await service.ResolveProfileAsync("Alikiba", CancellationToken.None));
+        }
+
+        private static (AudiomackArtistLocationService Service, StubHttpClientFactory Factory) CreateService(
+            string html,
+            HttpStatusCode status = HttpStatusCode.OK)
+        {
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(Path.GetTempPath(), $"audiomack-profile-{Guid.NewGuid():N}.db")}"
+                })
+                .Build();
+            var factory = new StubHttpClientFactory(html, status);
+            var service = new AudiomackArtistLocationService(
+                factory,
+                new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance),
+                new AudiomackApiClient(
+                    factory,
+                    new AudiomackWebCredentialsProvider(factory, NullLogger<AudiomackWebCredentialsProvider>.Instance),
+                    NullLogger<AudiomackApiClient>.Instance),
+                NullLogger<AudiomackArtistLocationService>.Instance,
+                libraryRepository: null);
+            return (service, factory);
+        }
+
+        private static string ReadFixture(string name)
+        {
+            var directory = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                var candidate = Path.Join(directory, "DeezSpoTag.Tests", "Fixtures", "Audiomack", name);
+                if (File.Exists(candidate))
+                {
+                    return File.ReadAllText(candidate);
+                }
+
+                directory = Directory.GetParent(directory)?.FullName ?? string.Empty;
+            }
+
+            throw new FileNotFoundException($"Audiomack fixture '{name}' was not found.");
+        }
+
+        private sealed class StubHandler : HttpMessageHandler
+        {
+            private readonly string _html;
+            private readonly HttpStatusCode _status;
+
+            public StubHandler(string html, HttpStatusCode status)
+            {
+                _html = html;
+                _status = status;
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                return Task.FromResult(new HttpResponseMessage(_status)
+                {
+                    Content = new StringContent(_html, Encoding.UTF8, "text/html")
+                });
+            }
+
+            public Task<HttpResponseMessage> RespondAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                => SendAsync(request, cancellationToken);
+        }
+
+        private sealed class StubHttpClientFactory : IHttpClientFactory
+        {
+            private readonly StubHandler _handler;
+            private int _requestCount;
+
+            public StubHttpClientFactory(string html, HttpStatusCode status)
+            {
+                _handler = new StubHandler(html, status);
+            }
+
+            public int RequestCount => Volatile.Read(ref _requestCount);
+
+            public HttpClient CreateClient(string name) => new(new CountingHandler(this, _handler));
+
+            private sealed class CountingHandler : HttpMessageHandler
+            {
+                private readonly StubHttpClientFactory _owner;
+                private readonly StubHandler _inner;
+
+                public CountingHandler(StubHttpClientFactory owner, StubHandler inner)
+                {
+                    _owner = owner;
+                    _inner = inner;
+                }
+
+                protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                {
+                    Interlocked.Increment(ref _owner._requestCount);
+                    return _inner.RespondAsync(request, cancellationToken);
+                }
+            }
         }
     }
 }

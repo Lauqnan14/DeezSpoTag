@@ -150,6 +150,27 @@ public sealed class AudiomackPlatformTest
         Assert.DoesNotContain(SupportedTag.ISRC.ToString(), claimed);
     }
 
+    [Fact]
+    public void Identity_WritesOnlyTheAudiomackProviderFieldFamily()
+    {
+        // Audiomack is a provider in the AutoTag identity contract: it may only write
+        // its own AUDIOMACK_* fields and must never claim a generic compatibility field
+        // (those belong to no provider family).
+        var forbidden = new[] { "ALBUMID", "ARTISTID", "ALBUMARTISTID", "RECORDINGID", "URL", "WWWAUDIOFILE" };
+        foreach (var field in Enum.GetValues<ProviderIdentityField>())
+        {
+            var family = AutoTagIdentityTags.ResolveFamily("audiomack", field);
+            Assert.All(family.WriteNames, name => Assert.StartsWith("AUDIOMACK_", name));
+            Assert.DoesNotContain(family.CleanupNames, forbidden.Contains);
+        }
+
+        Assert.Contains("AUDIOMACK_TRACK_ID", AutoTagIdentityTags.ResolveFamily("audiomack", ProviderIdentityField.TrackId).WriteNames);
+        Assert.Contains("AUDIOMACK_ALBUM_ID", AutoTagIdentityTags.ResolveFamily("audiomack", ProviderIdentityField.AlbumId).WriteNames);
+        Assert.Contains("AUDIOMACK_RELEASE_ID", AutoTagIdentityTags.ResolveFamily("audiomack", ProviderIdentityField.ReleaseId).WriteNames);
+        Assert.Contains("AUDIOMACK_ARTIST_ID", AutoTagIdentityTags.ResolveFamily("audiomack", ProviderIdentityField.ArtistId).WriteNames);
+        Assert.Contains("AUDIOMACK_URL", AutoTagIdentityTags.ResolveFamily("audiomack", ProviderIdentityField.Url).WriteNames);
+    }
+
     [Theory]
     [InlineData(2, 5)]
     [InlineData(99, 30)]

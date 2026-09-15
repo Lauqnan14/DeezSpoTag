@@ -8,8 +8,9 @@ using System.Text.RegularExpressions;
 namespace DeezSpoTag.Web.Services.Audiomack;
 
 /// <summary>
-/// Extracts the raw artist location (hometown/location) from a public Audiomack
-/// artist page. The page embeds its data in Next.js flight chunks
+/// Extracts the raw artist location (hometown/location) and biography (<c>bio</c>)
+/// from a public Audiomack artist page. The page embeds its data in Next.js flight
+/// chunks
 /// (self.__next_f.push([1,"&lt;escaped json&gt;"])). Each chunk string is decoded
 /// exactly one level with a real escape decoder and the decoded stream is
 /// reassembled, so objects fragmented across chunks become whole. Balanced,
@@ -24,8 +25,10 @@ namespace DeezSpoTag.Web.Services.Audiomack;
 /// </summary>
 /// Result of a successful artist-object match: the canonical url_slug of the
 /// matched profile (always equal to the requested slug today, but carried
-/// explicitly so callers can persist the identifier) plus the raw location.
-public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation);
+/// explicitly so callers can persist the identifier) plus the raw location and
+/// biography. Either value may be null; the info is returned when at least one
+/// of them is present, so a biography-only profile is still usable.
+public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography);
 
 public static class AudiomackArtistPageParser
 {
@@ -38,6 +41,16 @@ public static class AudiomackArtistPageParser
     public static string? TryExtractRawLocation(string? html, string? urlSlug, string? expectedArtistName)
     {
         return TryExtractArtistPageInfo(html, urlSlug, expectedArtistName)?.RawLocation;
+    }
+
+    /// <summary>
+    /// Raw biography (<c>bio</c>) of the matched artist object, or null when the
+    /// artist object carries none. Never synthesised: only the profile's own
+    /// value is returned.
+    /// </summary>
+    public static string? TryExtractRawBiography(string? html, string? urlSlug, string? expectedArtistName)
+    {
+        return TryExtractArtistPageInfo(html, urlSlug, expectedArtistName)?.RawBiography;
     }
 
     public static AudiomackArtistPageInfo? TryExtractArtistPageInfo(string? html, string? urlSlug, string? expectedArtistName)
@@ -81,6 +94,7 @@ public static class AudiomackArtistPageParser
             string? name;
             string? hometown;
             string? location;
+            string? biography;
             string? canonicalSlug = null;
             try
             {
@@ -95,6 +109,7 @@ public static class AudiomackArtistPageParser
                 hometown = GetTrimmedStringOrNull(root, "hometown");
                 location = GetTrimmedStringOrNull(root, "location")
                            ?? GetLocationDisplayOrNull(root);
+                biography = GetTrimmedStringOrNull(root, "bio");
                 canonicalSlug = GetTrimmedStringOrNull(root, "url_slug");
             }
             catch (JsonException)
@@ -109,9 +124,11 @@ public static class AudiomackArtistPageParser
             }
 
             var raw = !string.IsNullOrWhiteSpace(hometown) ? hometown : location;
-            if (!string.IsNullOrWhiteSpace(raw))
+            var rawLocation = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+            var rawBiography = string.IsNullOrWhiteSpace(biography) ? null : biography.Trim();
+            if (rawLocation != null || rawBiography != null)
             {
-                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, raw.Trim());
+                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography);
             }
         }
 
