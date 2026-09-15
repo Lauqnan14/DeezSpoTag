@@ -3,6 +3,7 @@ using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata.Qobuz;
+using DeezSpoTag.Web.Services.Audiomack;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -14,7 +15,8 @@ public sealed class ArtistMetadataCacheRefreshService
         Apple,
         Tidal,
         Qobuz,
-        LastFm
+        LastFm,
+        Audiomack
     }
 
     private static readonly BiographyProvider[] BiographyProviders =
@@ -23,7 +25,8 @@ public sealed class ArtistMetadataCacheRefreshService
         BiographyProvider.Apple,
         BiographyProvider.Tidal,
         BiographyProvider.Qobuz,
-        BiographyProvider.LastFm
+        BiographyProvider.LastFm,
+        BiographyProvider.Audiomack
     ];
     private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
     private readonly LibraryRepository _repository;
@@ -33,6 +36,7 @@ public sealed class ArtistMetadataCacheRefreshService
     private readonly ITidalAccessTokenProvider _tidalTokens;
     private readonly QobuzArtistService _qobuz;
     private readonly LastFmArtistImageService _lastFm;
+    private readonly AudiomackArtistLocationService _audiomack;
     private readonly ArtistMetadataUpdaterService _visualSlots;
     private readonly UserPreferencesStore _preferences;
     private readonly IHttpClientFactory _httpClients;
@@ -46,6 +50,7 @@ public sealed class ArtistMetadataCacheRefreshService
         ITidalAccessTokenProvider tidalTokens,
         QobuzArtistService qobuz,
         LastFmArtistImageService lastFm,
+        AudiomackArtistLocationService audiomack,
         ArtistMetadataUpdaterService visualSlots,
         UserPreferencesStore preferences,
         IHttpClientFactory httpClients,
@@ -58,6 +63,7 @@ public sealed class ArtistMetadataCacheRefreshService
         _tidalTokens = tidalTokens;
         _qobuz = qobuz;
         _lastFm = lastFm;
+        _audiomack = audiomack;
         _visualSlots = visualSlots;
         _preferences = preferences;
         _httpClients = httpClients;
@@ -261,6 +267,7 @@ public sealed class ArtistMetadataCacheRefreshService
                 BiographyProvider.Tidal => await ResolveTidalBiographyAsync(artistId, cancellationToken),
                 BiographyProvider.Qobuz => await ResolveQobuzBiographyAsync(artistId, cancellationToken),
                 BiographyProvider.LastFm => (await _lastFm.GetArtistBiographyAsync(artistName, cancellationToken))?.Biography,
+                BiographyProvider.Audiomack => await _audiomack.ResolveBiographyAsync(artistId, artistName, cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
             };
         }
@@ -359,6 +366,7 @@ public sealed class ArtistMetadataCacheRefreshService
             "tidal" => BiographyProvider.Tidal,
             "qobuz" => BiographyProvider.Qobuz,
             "lastfm" => BiographyProvider.LastFm,
+            "audiomack" => BiographyProvider.Audiomack,
             _ => null
         };
     }
@@ -371,6 +379,7 @@ public sealed class ArtistMetadataCacheRefreshService
             BiographyProvider.Tidal => "tidal",
             BiographyProvider.Qobuz => "qobuz",
             BiographyProvider.LastFm => "lastfm",
+            BiographyProvider.Audiomack => "audiomack",
             _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
         };
 

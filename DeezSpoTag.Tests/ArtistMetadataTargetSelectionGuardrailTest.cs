@@ -15,6 +15,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
     [InlineData("tidal", "Tidal")]
     [InlineData("qobuz", "Qobuz")]
     [InlineData("lastfm", "LastFm")]
+    [InlineData("audiomack", "Audiomack")]
     public void Artist_metadata_cache_refresh_accepts_only_closed_biography_providers(
         string source,
         string expectedProvider)

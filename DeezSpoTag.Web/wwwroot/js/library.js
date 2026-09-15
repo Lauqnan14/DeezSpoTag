@@ -78,6 +78,7 @@ const libraryState = {
         biographyQobuzId: null,
         lastFmBiography: null,
         biographyLastFmArtistName: null,
+        audiomackBiography: null,
         tidalArtistId: null,
         storedTidalId: null,
         qobuzArtistId: null,
@@ -4379,6 +4380,7 @@ function applyStoredArtistExternalIds(resolvedArtist, appleIdData, tidalIdData, 
     libraryState.appleExtras.biographyQobuzId = storedIds.qobuzId || null;
     libraryState.appleExtras.lastFmBiography = null;
     libraryState.appleExtras.biographyLastFmArtistName = libraryState.currentLocalArtistName || null;
+    libraryState.appleExtras.audiomackBiography = null;
     return storedIds;
 }
 
@@ -6510,7 +6512,7 @@ function normalizeArtistBiographyForSync(value) {
 
 function getSelectedArtistBiographySource() {
     const selected = (document.getElementById('artist-biography-source')?.value || 'spotify').toString().trim().toLowerCase();
-    if (selected === 'apple' || selected === 'tidal' || selected === 'lastfm' || selected === 'qobuz') {
+    if (selected === 'apple' || selected === 'tidal' || selected === 'lastfm' || selected === 'qobuz' || selected === 'audiomack') {
         return selected;
     }
     return 'spotify';
@@ -6525,6 +6527,9 @@ function getArtistBiographySourceLabel(source) {
     }
     if (source === 'qobuz') {
         return 'Qobuz';
+    }
+    if (source === 'audiomack') {
+        return 'Audiomack';
     }
     return source === 'lastfm' ? 'Last.fm' : 'Spotify';
 }
@@ -6542,6 +6547,9 @@ function getArtistBiographyBySource(source) {
     }
     if (source === 'lastfm') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.lastFmBiography || '');
+    }
+    if (source === 'audiomack') {
+        return normalizeArtistBiographyForSync(libraryState.appleExtras?.audiomackBiography || '');
     }
 
     return normalizeArtistBiographyForSync(libraryState.cachedBiographies.spotify || libraryState.currentSpotifyArtist?.biography || '');
@@ -6570,6 +6578,8 @@ async function loadArtistBiographiesFromCache(artistId) {
                 libraryState.appleExtras.qobuzBiography = text;
             } else if (source === 'lastfm') {
                 libraryState.appleExtras.lastFmBiography = text;
+            } else if (source === 'audiomack') {
+                libraryState.appleExtras.audiomackBiography = text;
             } else if (source === 'spotify') {
                 libraryState.cachedBiographies.spotify = text;
             }
@@ -6589,7 +6599,8 @@ async function loadArtistBiographiesFromCache(artistId) {
             loadAppleArtistBiography(appleExtras.appleArtistId),
             loadTidalArtistBiography(appleExtras.tidalArtistId),
             loadQobuzArtistBiography(appleExtras.qobuzArtistId),
-            loadLastFmArtistBiography(libraryState.currentLocalArtistName)
+            loadLastFmArtistBiography(libraryState.currentLocalArtistName),
+            loadAudiomackArtistBiography(artistId)
         ]);
     }
 }
@@ -6601,7 +6612,8 @@ async function refreshArtistBiographiesFromSources(artistId) {
         loadAppleArtistBiography(appleExtras.appleArtistId),
         loadTidalArtistBiography(appleExtras.tidalArtistId),
         loadQobuzArtistBiography(appleExtras.qobuzArtistId),
-        loadLastFmArtistBiography(libraryState.currentLocalArtistName)
+        loadLastFmArtistBiography(libraryState.currentLocalArtistName),
+        loadAudiomackArtistBiography(artistId)
     ]);
     applySelectedArtistBiographySource();
     const selected = getSelectedArtistBiographySource();
@@ -6626,10 +6638,12 @@ function updateArtistBiographySourceControls() {
     const tidalOption = select.querySelector('option[value="tidal"]');
     const lastFmOption = select.querySelector('option[value="lastfm"]');
     const qobuzOption = select.querySelector('option[value="qobuz"]');
+    const audiomackOption = select.querySelector('option[value="audiomack"]');
     const hasAppleBiography = !!getArtistBiographyBySource('apple');
     const hasTidalBiography = !!getArtistBiographyBySource('tidal');
     const hasLastFmBiography = !!getArtistBiographyBySource('lastfm');
     const hasQobuzBiography = !!getArtistBiographyBySource('qobuz');
+    const hasAudiomackBiography = !!getArtistBiographyBySource('audiomack');
     if (appleOption) {
         appleOption.disabled = !hasAppleBiography;
     }
@@ -6642,6 +6656,9 @@ function updateArtistBiographySourceControls() {
     if (qobuzOption) {
         qobuzOption.disabled = !hasQobuzBiography;
     }
+    if (audiomackOption) {
+        audiomackOption.disabled = !hasAudiomackBiography;
+    }
     if (select.value === 'apple' && !hasAppleBiography) {
         select.value = 'spotify';
     }
@@ -6652,6 +6669,9 @@ function updateArtistBiographySourceControls() {
         select.value = 'spotify';
     }
     if (select.value === 'qobuz' && !hasQobuzBiography) {
+        select.value = 'spotify';
+    }
+    if (select.value === 'audiomack' && !hasAudiomackBiography) {
         select.value = 'spotify';
     }
 }
@@ -6783,6 +6803,28 @@ async function loadLastFmArtistBiography(artistName) {
             updateArtistBiographySourceControls();
         }
         console.warn('Last.fm artist biography failed.', error);
+    }
+}
+
+// Live Audiomack biography. The endpoint resolves the artist's public Audiomack
+// profile and persists a non-empty result, so a miss leaves the cached bio alone.
+async function loadAudiomackArtistBiography(artistId) {
+    const numericArtistId = Number.parseInt(artistId, 10);
+    if (!Number.isFinite(numericArtistId) || numericArtistId <= 0) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(numericArtistId)}/audiomack-biography`);
+        libraryState.appleExtras.audiomackBiography = data?.available
+            ? (normalizeArtistBiographyForSync(data?.biography || '') || null)
+            : null;
+        updateArtistBiographySourceControls();
+        if (getSelectedArtistBiographySource() === 'audiomack') {
+            applySelectedArtistBiographySource();
+        }
+    } catch (error) {
+        console.warn('Audiomack artist biography failed.', error);
     }
 }
 

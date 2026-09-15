@@ -130,6 +130,44 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return Ok(new { selected = source });
     }
 
+    /// <summary>
+    /// Live Audiomack biography for the artist page. Resolves the artist's public
+    /// Audiomack profile (the same shared fetch/cache the location pipeline uses)
+    /// and persists a non-empty result into the biography cache so the source
+    /// selector can keep serving it. A miss or a failure answers available=false
+    /// and leaves any previously cached biography untouched.
+    /// </summary>
+    [HttpGet("{id:long}/audiomack-biography")]
+    public async Task<IActionResult> GetAudiomackBiography(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(LibraryDbNotConfiguredMessage);
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
+        {
+            return NotFound();
+        }
+
+        var biography = ArtistBiographySanitizer.Clean(
+            await _audiomackArtistLocation.ResolveBiographyAsync(id, artist.Name, cancellationToken));
+        if (!string.IsNullOrWhiteSpace(biography))
+        {
+            // Preserve any existing selection so a refresh never deselects the source.
+            var alreadySelected = (await _repository.GetArtistBiographyRowsAsync(id, cancellationToken))
+                .Any(row => string.Equals(row.Source, AudiomackSource, StringComparison.OrdinalIgnoreCase) && row.Selected);
+            await _repository.UpsertArtistBiographyCacheAsync(id, AudiomackSource, biography, alreadySelected, cancellationToken);
+        }
+
+        return Ok(new
+        {
+            available = biography is not null,
+            biography = biography ?? string.Empty
+        });
+    }
+
     [HttpGet("unmatched-spotify")]
     public async Task<IActionResult> GetUnmatchedSpotifyArtists(
         [FromQuery] int limit = 50,
