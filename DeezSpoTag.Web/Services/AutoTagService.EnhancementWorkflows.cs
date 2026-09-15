@@ -1289,6 +1289,8 @@ public partial class AutoTagService
     {
         public static SidecarFetchStepResult<T> Completed(T result) => new(true, false, null, result);
 
+        public static SidecarFetchStepResult<T> Failed(string message) => new(false, false, message, default!);
+
         public static SidecarFetchStepResult<T> Expired(SidecarFetchBudget budget, bool duringWrite)
             => new(
                 false,
@@ -1317,6 +1319,12 @@ public partial class AutoTagService
         catch (OperationCanceledException)
         {
             return SidecarFetchStepResult<T>.Expired(budget, budget.WritePhaseStarted);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A provider failure on one file must not abort the whole pass: it is recorded as
+            // that file's failure (metadata untouched) and the run continues to the next file.
+            return SidecarFetchStepResult<T>.Failed($"{ex.GetType().Name}: {ex.Message}");
         }
     }
 

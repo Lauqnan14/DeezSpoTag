@@ -277,6 +277,38 @@ public sealed class SidecarFetchProgressTest
         Assert.Equal(17, result.Result);
     }
 
+    /// <summary>
+    /// A provider failure on one file is recorded as that file's failure and the pass keeps
+    /// going, instead of an exception from one file aborting every remaining file.
+    /// </summary>
+    [Fact]
+    public async Task AProviderFailureOnOneFileIsRecordedForThatFileAndDoesNotAbortThePass()
+    {
+        using var budget = new AutoTagService.SidecarFetchBudget(
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        var result = await AutoTagService.RunSidecarFetchStepAsync<bool>(
+            _ => throw new InvalidOperationException(
+                "Cover maintenance finished: 0 updated, 0 skipped, 1 errors."),
+            budget,
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.TimedOut);
+        Assert.Contains("InvalidOperationException", result.FailureMessage, StringComparison.Ordinal);
+
+        var failure = AutoTagService.DescribeSidecarFetchFailure(
+            "/music/Artist/Album One/02 - Second.flac",
+            result.FailureMessage,
+            2,
+            5);
+        Assert.Contains("02 - Second.flac", failure, StringComparison.Ordinal);
+        Assert.Contains("file 2/5", failure, StringComparison.Ordinal);
+        Assert.Contains("existing artwork and lyrics were kept", failure, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task SidecarFetchStepStillPropagatesARealRunCancellation()
     {
