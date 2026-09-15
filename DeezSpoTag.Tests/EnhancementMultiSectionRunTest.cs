@@ -707,7 +707,7 @@ public sealed class EnhancementMultiSectionRunTest
 
         var sidecarStart = workflows.IndexOf("private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync", StringComparison.Ordinal);
         Assert.True(sidecarStart > 0);
-        var sidecarBody = workflows[sidecarStart..(sidecarStart + 9000)];
+        var sidecarBody = workflows[sidecarStart..(sidecarStart + 14000)];
         Assert.Contains("RunLyricsRefreshForBatchAsync(", sidecarBody, StringComparison.Ordinal);
         Assert.Contains("RunLyricsRefreshIfRequestedAsync(", workflows, StringComparison.Ordinal);
         Assert.Contains("ResolveSidecarRunFilesAsync(", sidecarBody, StringComparison.Ordinal);
@@ -776,7 +776,7 @@ public sealed class EnhancementMultiSectionRunTest
             "private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync",
             StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = workflows[start..(start + 10000)];
+        var body = workflows[start..(start + 14000)];
 
         // One ordered pass over the files, the way downloads are processed: the
         // parallel lyrics/cover passes are gone.
@@ -797,10 +797,36 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("_runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath))", planBody, StringComparison.Ordinal);
         Assert.Contains("_runLyrics && trackId > 0", planBody, StringComparison.Ordinal);
 
-        // The card names exactly what this file is about to fetch.
+        // Detection happens first: what the file actually still needs decides both the message
+        // and whether the pass does any network work at all.
+        Assert.Contains("var coverPlan = ownsAlbumArtwork", body, StringComparison.Ordinal);
+        Assert.Contains("PlanConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("_lyricsRefreshQueueService.PlanTrackRefreshAsync(", body, StringComparison.Ordinal);
+        Assert.Contains(
+            "var needs = ResolveSidecarFileNeeds(ownsAlbumArtwork, coverPlan, handlesLyrics, lyricsPlan);",
+            body,
+            StringComparison.Ordinal);
+
+        // A fully-populated file is skipped at once and reported skipped, not failed.
+        Assert.Contains("if (needs.IsAlreadyComplete)", body, StringComparison.Ordinal);
+        Assert.Contains("RecordSidecarFetchSkipped(", body, StringComparison.Ordinal);
+
+        // The card names exactly what this file is actually missing.
         Assert.Contains("SidecarFetchActivity.Describe(new SidecarFetchWork(", body, StringComparison.Ordinal);
-        Assert.Contains("handlesLyrics && lyricsOptions.QueueLyricsRefresh));", body, StringComparison.Ordinal);
-        Assert.Contains("DescribeSidecarFetchProgress(filePath, fetchMessage, processed, orderedRun.Count)", body, StringComparison.Ordinal);
+        Assert.Contains("needs.NeedsStillArtwork,", body, StringComparison.Ordinal);
+        Assert.Contains("needs.NeedsAnimatedArtwork,", body, StringComparison.Ordinal);
+        Assert.Contains("needs.NeedsLyrics));", body, StringComparison.Ordinal);
+        Assert.Contains("DescribeSidecarFetchProgress(filePath, fetchMessage, counters.Processed, orderedRun.Count)", body, StringComparison.Ordinal);
+
+        // The network wait is bounded per file, the disk write gets its own budget, and a
+        // lyrics check that does not finish is recorded as unverified rather than as absence.
+        Assert.Contains("new SidecarFetchBudget(", body, StringComparison.Ordinal);
+        Assert.Contains("SidecarArtworkNetworkTimeout", body, StringComparison.Ordinal);
+        Assert.Contains("onWritePhaseStarted: artworkBudget.BeginWrite", body, StringComparison.Ordinal);
+        Assert.Contains("onWritePhaseStarted: lyricsBudget.BeginWrite", body, StringComparison.Ordinal);
+        Assert.Contains("RecordSidecarLyricsUnverified(", body, StringComparison.Ordinal);
+        Assert.Contains("ClassifyLyricsOutcome(", body, StringComparison.Ordinal);
+        Assert.Contains("DescribeSidecarCompletion(counters)", body, StringComparison.Ordinal);
 
         // Artist artwork is processed and updated on its own path, never here.
         Assert.DoesNotContain("PlanArtistRefreshAsync", workflows, StringComparison.Ordinal);
