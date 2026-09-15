@@ -202,6 +202,24 @@ public sealed class AtmosPipelineGuardrailTest
         Assert.DoesNotContain("IsAppleAtmosQuality", intent, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void QueueAtmos_SkipsTracksAlreadyInTheAtmosLibraryAndHonoursTheRunDestination()
+    {
+        var scanner = ReadSource("DeezSpoTag.Web/Services/QualityScannerService.cs");
+        var workflows = ReadSource("DeezSpoTag.Web/Services/AutoTagService.EnhancementWorkflows.cs");
+
+        // Dedupe consults the Atmos library itself, not just the download queue: a track whose
+        // Atmos copy already sits in the Atmos destination is not queued again.
+        Assert.Contains("atmos_already_in_library", scanner, StringComparison.Ordinal);
+        Assert.Contains("IsSameTrackAsAtmosCopy", scanner, StringComparison.Ordinal);
+        Assert.Contains("GetQualityScanTracksAsync", scanner, StringComparison.Ordinal);
+
+        // The run's picked destination wins; the global multi-quality destination is the fallback.
+        Assert.Contains("request.AtmosDestinationFolderId ?? GetAtmosDestinationFolderId(settings)", scanner, StringComparison.Ordinal);
+        Assert.Contains("AtmosDestinationFolderId = atmosDestinationFolderId,", workflows, StringComparison.Ordinal);
+        Assert.Contains("ResolveAtmosDestinationFolderId(qualityChecks)", workflows, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

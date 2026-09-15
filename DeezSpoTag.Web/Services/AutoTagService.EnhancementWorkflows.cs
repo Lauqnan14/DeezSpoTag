@@ -2519,6 +2519,13 @@ public partial class AutoTagService
             $"enhancement workflow: missing core metadata DB audit finished (files={missingFiles.Count}, fields={summary}).");
     }
 
+    private static long? ResolveAtmosDestinationFolderId(JsonObject qualityChecks)
+        => qualityChecks["atmosDestinationFolderId"] is JsonValue value
+           && value.TryGetValue<long>(out var folderId)
+           && folderId > 0
+            ? folderId
+            : null;
+
     private async Task<bool> RunQualityScannerIfRequestedAsync(
         AutoTagJob job,
         JsonObject qualityChecks,
@@ -2530,6 +2537,10 @@ public partial class AutoTagService
         {
             return false;
         }
+
+        // The run's Atmos destination: the profile's picker when the user chose one, with the
+        // global multi-quality destination staying as the fallback.
+        var atmosDestinationFolderId = ResolveAtmosDestinationFolderId(qualityChecks);
 
         if (options.QueueTechnicalProfileUpgrades)
         {
@@ -2557,7 +2568,8 @@ public partial class AutoTagService
                 queueAtmosAlternatives: true,
                 technicalProfiles: Array.Empty<string>(),
                 "atmos-alternatives",
-                cancellationToken))
+                cancellationToken,
+                atmosDestinationFolderId: atmosDestinationFolderId))
             {
                 return true;
             }
@@ -2575,7 +2587,8 @@ public partial class AutoTagService
         IReadOnlyList<string> technicalProfiles,
         string phase,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<long>? targetTrackIds = null)
+        IReadOnlyCollection<long>? targetTrackIds = null,
+        long? atmosDestinationFolderId = null)
     {
         var tracks = await _libraryRepository.GetQualityScanTracksAsync(
             "all",
@@ -2626,6 +2639,7 @@ public partial class AutoTagService
                 FolderId = scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
                 RunQualityUpgradeStage = runQualityUpgradeStage,
                 QueueAtmosAlternatives = queueAtmosAlternatives,
+                AtmosDestinationFolderId = atmosDestinationFolderId,
                 CooldownMinutes = ReadOptionalInt(qualityChecks, "cooldownMinutes"),
                 Trigger = "enhancement",
                 MarkAutomationWindow = false,

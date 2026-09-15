@@ -125,7 +125,9 @@ public sealed class QualityScannerService
         var effectiveQueueAtmos = request.QueueAtmosAlternatives ?? automationSettings.QueueAtmosAlternatives;
         var runQualityUpgradeStage = request.RunQualityUpgradeStage ?? true;
         var effectiveCooldown = Math.Clamp(request.CooldownMinutes ?? automationSettings.CooldownMinutes, 0, 43200);
-        var atmosDestinationFolderId = GetAtmosDestinationFolderId(settings);
+        // The run's own Atmos destination wins; the global multi-quality secondary
+        // destination remains the fallback for runs that do not pick one.
+        var atmosDestinationFolderId = request.AtmosDestinationFolderId ?? GetAtmosDestinationFolderId(settings);
         CancellationTokenSource? previousCts;
 
         lock (_stateLock)
@@ -1083,7 +1085,50 @@ public sealed class QualityScannerService
             return new AtmosQueuePrecheckResult(0, AtmosQueueResult.DuplicateItem());
         }
 
+        // Dedupe against the Atmos library itself. The lookup above only sees queued items, so
+        // without this a run would re-queue every track whose Atmos copy already sits in the
+        // Atmos destination. Only files with no Atmos copy there are queued.
+        var atmosLibraryTracks = await _repository.GetQualityScanTracksAsync(
+            "all",
+            atmosphereDestination,
+            minFormat: null,
+            minBitDepth: null,
+            minSampleRateHz: null,
+            cancellationToken);
+        if (atmosLibraryTracks.Any(existing => IsSameTrackAsAtmosCopy(existing, track)))
+        {
+            await TryRecordActionAsync(new QualityScannerActionLogDto(
+                RunId: GetState().RunId,
+                TrackId: track.TrackId,
+                ActionType: "atmos_already_in_library",
+                Source: AtmosQuality,
+                Quality: AtmosQuality,
+                ContentType: DownloadContentTypes.Atmos,
+                DestinationFolderId: atmosphereDestination,
+                QueueUuid: null,
+                Message: "Skipped: the Atmos copy is already in the Atmos destination."), cancellationToken);
+            return new AtmosQueuePrecheckResult(0, AtmosQueueResult.DuplicateItem());
+        }
+
         return new AtmosQueuePrecheckResult(atmosphereDestination.Value, null);
+    }
+
+    /// <summary>
+    /// True when the Atmos destination already holds this track. ISRC is the identity when both
+    /// sides carry one; otherwise the artist and title pair must match.
+    /// </summary>
+    private static bool IsSameTrackAsAtmosCopy(QualityScanTrackDto existing, QualityScanTrackDto target)
+    {
+        if (!string.IsNullOrWhiteSpace(target.Isrc)
+            && string.Equals(existing.Isrc?.Trim(), target.Isrc.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(target.Title)
+            && !string.IsNullOrWhiteSpace(target.ArtistName)
+            && string.Equals(existing.Title?.Trim(), target.Title.Trim(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existing.ArtistName?.Trim(), target.ArtistName.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<IReadOnlyList<FolderDto>> LoadEnabledFolderSnapshotAsync(CancellationToken cancellationToken)
@@ -1704,6 +1749,11 @@ public sealed class QualityScannerStartRequest
     public bool? RunQualityUpgradeStage { get; init; }
     public bool? QueueAtmosAlternatives { get; init; }
     public int? CooldownMinutes { get; init; }
+    /// <summary>
+    /// The Atmos destination for this run. When set it wins over the global multi-quality
+    /// secondary destination, which stays as the fallback.
+    /// </summary>
+    public long? AtmosDestinationFolderId { get; init; }
     public string Trigger { get; init; } = "manual";
     public bool MarkAutomationWindow { get; init; }
     public IReadOnlyCollection<string>? TechnicalProfiles { get; init; }
