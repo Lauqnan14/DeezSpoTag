@@ -63,6 +63,31 @@ internal static class EnhancementWorkflowSelection
         FolderUniformity
     ];
 
+    public const string FolderUniformityModeBatchScoped = "batch-scoped";
+    public const string FolderUniformityModeLibraryWide = "library-wide";
+
+    public static IReadOnlyList<string> OrderSelectedFeatures(IEnumerable<string?>? features)
+    {
+        var selected = NormalizeSelectedFeatures(features);
+        return OrderedFeatures
+            .Concat([QualityChecks, ManualEnrichment])
+            .Where(selected.Contains)
+            .ToList();
+    }
+
+    public static string? ResolveFolderUniformityRunMode(IReadOnlyCollection<string> selectedFeatures)
+    {
+        var selected = NormalizeSelectedFeatures(selectedFeatures);
+        if (!selected.Contains(FolderUniformity))
+        {
+            return null;
+        }
+
+        return selected.Count == 1
+            ? FolderUniformityModeLibraryWide
+            : FolderUniformityModeBatchScoped;
+    }
+
     public static HashSet<string> NormalizeSelectedFeatures(IEnumerable<string?>? features)
     {
         return (features ?? Array.Empty<string?>())
@@ -93,7 +118,20 @@ internal static class EnhancementWorkflowSelection
 
         var selected = selectedFeatures as HashSet<string>
             ?? selectedFeatures.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (selected.Count > 0)
+
+        // A checks run is not a feature selection: the profile decides what is switched on.
+        // Its request carries the checks marker alone, so the other sections keep whatever
+        // enablement the profile stored instead of being switched off by the request, and
+        // qualityChecks.enabled is written only as the run marker.
+        var isChecksRun = selected.Contains(QualityChecks)
+            && !selected.Contains(GapFill)
+            && !selected.Contains(Sidecars)
+            && !selected.Contains(FolderUniformity);
+        if (isChecksRun)
+        {
+            SetSectionEnabled(enhancement, "qualityChecks", true);
+        }
+        else if (selected.Count > 0)
         {
             SetSectionEnabled(enhancement, "folderUniformity", selected.Contains(FolderUniformity));
             SetSectionEnabled(enhancement, "sidecars", selected.Contains(Sidecars));

@@ -334,7 +334,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
     }
 
     [Fact]
-    public void EnhancementFeatureSelection_DisablesUnselectedWorkflowsAndGapFill()
+    public void EnhancementFeatureSelection_KeepsTheProfileWorkflowsForAChecksRun()
     {
         var method = typeof(AutoTagJobsController).GetMethod(
             "ApplyEnhancementRunSelection",
@@ -358,15 +358,17 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
         method.Invoke(null, [config, request, new long[] { 7 }, Array.Empty<string>()]);
 
         var enhancement = config["enhancement"]!.AsObject();
-        Assert.False(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
-        Assert.False(enhancement["coverMaintenance"]!["enabled"]!.GetValue<bool>());
+        // A checks run keeps the profile's own configuration: the sections the profile has
+        // switched on are not switched off by the request, which only writes the run marker.
+        Assert.True(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        Assert.True(enhancement["coverMaintenance"]!["enabled"]!.GetValue<bool>());
         Assert.True(enhancement["qualityChecks"]!["enabled"]!.GetValue<bool>());
         Assert.Equal(7, enhancement["qualityChecks"]!["folderIds"]![0]!.GetValue<long>());
-        Assert.Empty(config["gapFillTags"]!.AsArray());
+        Assert.Single(config["gapFillTags"]!.AsArray());
     }
 
     [Fact]
-    public void MissingMetadataScan_DoesNotEnableGapFillWhenQualityChecksAreSelectedAlone()
+    public void MissingMetadataScan_KeepsTheProfilesSectionsAndGapFillTags()
     {
         var config = System.Text.Json.Nodes.JsonNode.Parse("""
             {
@@ -393,9 +395,11 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
             new[] { "/tmp/music/track.flac" });
 
         var enhancement = config["enhancement"]!.AsObject();
-        Assert.False(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        // The audited files stay the run's scope while the profile's sections stay switched
+        // on, so gap filling and folder tidy-up repair exactly those files.
+        Assert.True(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
         Assert.True(enhancement["qualityChecks"]!["enabled"]!.GetValue<bool>());
-        Assert.Empty(config["gapFillTags"]!.AsArray());
+        Assert.Equal(5, config["gapFillTags"]!.AsArray().Count);
         Assert.Equal("/tmp/music/track.flac", config["targetFiles"]![0]!.GetValue<string>());
     }
 

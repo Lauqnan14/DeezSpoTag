@@ -13,6 +13,38 @@ namespace DeezSpoTag.Tests;
 public sealed class EnhancementMultiSectionRunTest
 {
     [Fact]
+    public void EnhancementJobSelection_RoundTripsThroughPersistenceJson()
+    {
+        var job = new AutoTagJob
+        {
+            SelectedEnhancementFeatures = ["tag-gap-fill", "folder-uniformity"],
+            FolderUniformityRunMode = "batch-scoped",
+            EnhancementBatchState = new AutoTagEnhancementBatchState
+            {
+                NextBatchIndex = 2,
+                BatchCount = 4,
+                Pending = new AutoTagPendingEnhancementBatch
+                {
+                    BatchNumber = 3,
+                    BatchCount = 4,
+                    OriginalPaths = ["/music/A/Album/01.flac"],
+                    CurrentPaths = ["/music/A/Album/01.flac"],
+                    CompletedFeatures = ["tag-gap-fill", "sidecars"]
+                }
+            }
+        };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(job);
+        var restored = System.Text.Json.JsonSerializer.Deserialize<AutoTagJob>(json)!;
+
+        Assert.Equal(["tag-gap-fill", "folder-uniformity"], restored.SelectedEnhancementFeatures);
+        Assert.Equal("batch-scoped", restored.FolderUniformityRunMode);
+        Assert.Equal(2, restored.EnhancementBatchState.NextBatchIndex);
+        Assert.Equal(3, restored.EnhancementBatchState.Pending?.BatchNumber);
+        Assert.Equal(["tag-gap-fill", "sidecars"], restored.EnhancementBatchState.Pending?.CompletedFeatures);
+    }
+
+    [Fact]
     public void EnhancementStart_AcceptsMoreThanOneSection()
     {
         var source = ReadController();
@@ -102,15 +134,19 @@ public sealed class EnhancementMultiSectionRunTest
     }
 
     [Fact]
-    public void MissingCoreMetadataAudit_OnlyPreparesWhenQualityChecksIsPartOfTheRun()
+    public void MissingCoreMetadataAudit_PreparesFromTheChecksMarkerNotTheLegacyFlag()
     {
         var source = ReadWorkflows();
-        var start = source.IndexOf("private static bool ShouldPrepareMissingCoreMetadataTargets", StringComparison.Ordinal);
+        var start = source.IndexOf("internal static bool ShouldNarrowToMissingCoreMetadata", StringComparison.Ordinal);
         Assert.True(start > 0);
         var end = source.IndexOf("private async Task<EnhancementRunManifest> BuildEnhancementRunManifestAsync", start, StringComparison.Ordinal);
         var method = source[start..end];
 
-        Assert.Contains("ReadBool(qualityChecks, EnabledField) == true", method, StringComparison.Ordinal);
+        // The gate is the run marker plus the audit toggle; the stored enabled flag is still
+        // written as the marker but is no longer consulted to decide the run's scope.
+        Assert.Contains("isChecksRun", method, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(qualityChecks, \"flagMissingTags\") == true", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadBool(qualityChecks, EnabledField) == true", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -126,101 +162,69 @@ public sealed class EnhancementMultiSectionRunTest
     }
 
     [Fact]
-    public void MissingCoreMetadataNarrowing_IsGatedOnDedicatedScansInTheRunPreparation()
+    public void MissingCoreMetadataNarrowing_IsGatedOnTheChecksRunMarkerAndTheAuditToggle()
     {
         var source = ReadWorkflows();
 
         Assert.Contains(
-            "if (IsMissingCoreMetadataOnlyScan(root, enhancementRoot) && existingTargets.Count == 0)",
+            "ShouldNarrowToMissingCoreMetadata(IsChecksRun(job), enhancementRoot)",
             source,
             StringComparison.Ordinal);
+        // The legacy "enabled" gate and the old "nothing else selected" contract are gone.
+        Assert.DoesNotContain("IsMissingCoreMetadataOnlyScan", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldPrepareMissingCoreMetadataTargets", source, StringComparison.Ordinal);
+        // The audited files define the run's scope, so the priority-wave write is gone too.
         Assert.DoesNotContain(
-            "if (ShouldPrepareMissingCoreMetadataTargets(enhancementRoot) && existingTargets.Count == 0)",
-            source,
-            StringComparison.Ordinal);
-        // Full-scope runs keep the priority wave: audited files ride the normal
-        // ≤40-file batches instead of defining the run's scope.
-        Assert.Contains(
             "WriteStringList(root, AutoTagLiterals.PriorityTargetFilesKey, priorityPaths);",
             source,
             StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MissingCoreMetadataScanOnly_QualifiesForTargetNarrowing()
+    public void ChecksRunWithTheMissingMetadataAudit_NarrowsTheRunTargets()
     {
         var enhancement = BuildEnhancementRoot(flagMissingTags: true);
-        var root = new JsonObject { ["enhancement"] = enhancement };
 
-        Assert.True(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+        Assert.True(AutoTagService.ShouldNarrowToMissingCoreMetadata(true, enhancement));
     }
 
     [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenOtherQualityOptionsAreSelected()
+    public void ChecksRunNarrowing_SurvivesEveryOtherCheckAndSectionBeingOn()
     {
+        // The profile decides what is switched on, and the audit's file list stays the run's
+        // scope: ticking a second check must not widen the run back to the whole library.
         var enhancement = BuildEnhancementRoot(flagMissingTags: true, flagDuplicates: true);
-        var root = new JsonObject { ["enhancement"] = enhancement };
-
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
-    }
-
-    [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenGapFillIsSelected()
-    {
-        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
         enhancement["gapFilling"] = new JsonObject { ["enabled"] = true };
-        var root = new JsonObject
-        {
-            ["enhancement"] = enhancement,
-            ["gapFillTags"] = new JsonArray("title")
-        };
-
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
-    }
-
-    [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenSidecarsAreSelected()
-    {
-        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
         enhancement["sidecars"] = new JsonObject { ["enabled"] = true, ["queueLyricsRefresh"] = true };
-        var root = new JsonObject { ["enhancement"] = enhancement };
-
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
-    }
-
-    [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenFolderUniformityIsSelected()
-    {
-        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
         enhancement["folderUniformity"] = new JsonObject { ["enabled"] = true, ["enforceFolderStructure"] = true };
-        var root = new JsonObject { ["enhancement"] = enhancement };
-
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
-    }
-
-    [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenCoverMaintenanceIsSelected()
-    {
-        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
         enhancement["coverMaintenance"] = new JsonObject { ["enabled"] = true, ["replaceMissingEmbeddedCovers"] = true };
-        var root = new JsonObject { ["enhancement"] = enhancement };
 
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+        Assert.True(AutoTagService.ShouldNarrowToMissingCoreMetadata(true, enhancement));
     }
 
     [Fact]
-    public void MissingCoreMetadataNarrowing_RejectedWhenTheScanIsDisabled()
+    public void NarrowingIsRejectedWithoutTheChecksRunMarker()
+    {
+        // A stored qualityChecks.enabled no longer narrows anything on its own.
+        var enhancement = BuildEnhancementRoot(flagMissingTags: true);
+
+        Assert.False(AutoTagService.ShouldNarrowToMissingCoreMetadata(false, enhancement));
+    }
+
+    [Fact]
+    public void NarrowingIsRejectedWhenTheAuditToggleIsOff()
     {
         var enhancement = BuildEnhancementRoot(flagMissingTags: false);
-        var root = new JsonObject { ["enhancement"] = enhancement };
 
-        Assert.False(AutoTagService.IsMissingCoreMetadataOnlyScan(root, enhancement));
+        Assert.False(AutoTagService.ShouldNarrowToMissingCoreMetadata(true, enhancement));
     }
 
     [Fact]
     public void PriorityTargetsFeedTheSharedBatchOrderingNotSeparateBatches()
     {
         var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var planner = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "EnhancementBatchPlanner.cs"));
 
         // The two-wave order consumes the audited priority paths...
         Assert.Contains("BuildNormalizedPathSet(config.PriorityTargetFiles)", runner, StringComparison.Ordinal);
@@ -232,8 +236,8 @@ public sealed class EnhancementMultiSectionRunTest
             runner,
             StringComparison.Ordinal);
         // Batches stay capped at 40 except when finishing the active album.
-        Assert.Contains("end - start < resolvedBatchSize", runner, StringComparison.Ordinal);
-        Assert.Contains("SameAlbumDirectory(files[end - 1], files[end])", runner, StringComparison.Ordinal);
+        Assert.Contains("end - start < resolvedBatchSize", planner, StringComparison.Ordinal);
+        Assert.Contains("SameAlbumDirectory(orderedFiles[end - 1], orderedFiles[end])", planner, StringComparison.Ordinal);
     }
 
     private static JsonObject BuildEnhancementRoot(
@@ -549,13 +553,11 @@ public sealed class EnhancementMultiSectionRunTest
         var workflows = ReadEnhancementWorkflows();
         var start = workflows.IndexOf("private async Task RunIntegratedEnhancementWorkflowsAsync", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var end = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
+        var end = workflows.IndexOf("private static bool IsQualityChecksOnlyRun", start, StringComparison.Ordinal);
         var method = workflows[start..end];
 
-        var sidecarIndex = method.IndexOf("EnhancementFeatureSidecars", StringComparison.Ordinal);
-        var uniformityIndex = method.IndexOf("EnhancementFeatureFolderUniformity", StringComparison.Ordinal);
-        Assert.True(sidecarIndex > 0);
-        Assert.True(uniformityIndex > sidecarIndex);
+        Assert.Contains("RunWorkflowOnlyEnhancementBatchesAsync", method, StringComparison.Ordinal);
+        Assert.Contains("FolderUniformityModeLibraryWide", method, StringComparison.Ordinal);
         Assert.DoesNotContain("if (enhancementStageRan)", method, StringComparison.Ordinal);
     }
 
@@ -569,7 +571,7 @@ public sealed class EnhancementMultiSectionRunTest
         var workflows = ReadEnhancementWorkflows();
         var start = workflows.IndexOf("private async Task RunIntegratedEnhancementWorkflowsAsync", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var end = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
+        var end = workflows.IndexOf("private static bool IsQualityChecksOnlyRun", start, StringComparison.Ordinal);
         var combined = workflows[start..end];
 
         // The combined sequence runs Folder Uniformity, and the block that runs the checks is
@@ -594,12 +596,12 @@ public sealed class EnhancementMultiSectionRunTest
             searchFrom = at + 1;
         }
 
-        Assert.Equal(1, runnerCalls);
+        Assert.Equal(0, runnerCalls);
 
         // The checks keep their own entry point instead.
         var qualityStart = workflows.IndexOf("private async Task RunQualityChecksOnlyAsync", StringComparison.Ordinal);
         Assert.True(qualityStart > 0, "Quality Checks needs its own execution path");
-        var qualityEnd = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", qualityStart, StringComparison.Ordinal);
+        var qualityEnd = workflows.IndexOf("private async Task RunCoordinatedEnhancementBatchAsync", qualityStart, StringComparison.Ordinal);
         var qualityOnly = workflows[qualityStart..qualityEnd];
         Assert.Contains("RunConfiguredQualityChecksAsync", qualityOnly, StringComparison.Ordinal);
         // Manual-only: runnability comes from the checks being configured, not the legacy
@@ -641,13 +643,14 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.DoesNotContain("RunEnabledEnhancementSectionsForBatchAsync", workflows, StringComparison.Ordinal);
         Assert.DoesNotContain("RunCoverMaintenanceForBatchAsync", workflows, StringComparison.Ordinal);
         Assert.DoesNotContain("RunQualityChecksForBatchAsync", workflows, StringComparison.Ordinal);
-        Assert.Contains("ApplyCompletedGapFillBatchAsync", workflows, StringComparison.Ordinal);
-        Assert.Contains("if (!EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))", workflows, StringComparison.Ordinal);
-        Assert.Contains("running opted-in sidecars.", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunCoordinatedEnhancementBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("FolderUniformityModeBatchScoped", workflows, StringComparison.Ordinal);
+        Assert.Contains("running Sidecars", workflows, StringComparison.Ordinal);
+        Assert.Contains("running Folder Uniformity", workflows, StringComparison.Ordinal);
         Assert.Contains("sidecars lyrics lookup starting", workflows, StringComparison.Ordinal);
         Assert.Contains("IngestAndVerifyAsync(context.FilesByFolder, cancellationToken)", workflows, StringComparison.Ordinal);
         Assert.Contains("GetTrackIdsByFilePathsAsync", workflows, StringComparison.Ordinal);
-        Assert.Contains("RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken)", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunLyricsRefreshForBatchAsync(", workflows, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveTrackIdsFromPathsAsync", workflows, StringComparison.Ordinal);
         Assert.DoesNotContain("lyrics already applied during gap-fill tagging.", workflows, StringComparison.Ordinal);
         Assert.Contains("RunConfiguredSidecarsAsync(", workflows, StringComparison.Ordinal);
@@ -704,10 +707,10 @@ public sealed class EnhancementMultiSectionRunTest
 
         var sidecarStart = workflows.IndexOf("private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync", StringComparison.Ordinal);
         Assert.True(sidecarStart > 0);
-        var sidecarBody = workflows[sidecarStart..(sidecarStart + 4500)];
-        Assert.Contains("RunConfiguredSidecarLyricsAsync(", sidecarBody, StringComparison.Ordinal);
+        var sidecarBody = workflows[sidecarStart..(sidecarStart + 9000)];
+        Assert.Contains("RunLyricsRefreshForBatchAsync(", sidecarBody, StringComparison.Ordinal);
         Assert.Contains("RunLyricsRefreshIfRequestedAsync(", workflows, StringComparison.Ordinal);
-        Assert.Contains("if (batchFiles is not null)", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("ResolveSidecarRunFilesAsync(", sidecarBody, StringComparison.Ordinal);
         Assert.Contains("IngestAndVerifyAsync", workflows, StringComparison.Ordinal);
     }
 
@@ -719,13 +722,13 @@ public sealed class EnhancementMultiSectionRunTest
         var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var statusScript = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
 
-        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs"), StringComparison.Ordinal);
-        var applyBatch = workflows.IndexOf("private async Task ApplyCompletedGapFillBatchAsync", StringComparison.Ordinal);
+        Assert.Contains("RunCoordinatedEnhancementBatchAsync(job, stage.ConfigPath, batch, token)", PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs"), StringComparison.Ordinal);
+        var applyBatch = workflows.IndexOf("private async Task RunCoordinatedEnhancementBatchAsync", StringComparison.Ordinal);
         Assert.True(applyBatch > 0);
-        var applyBody = workflows[applyBatch..(applyBatch + 2500)];
-        Assert.Contains("IsSidecarsRunnable", applyBody, StringComparison.Ordinal);
+        var applyBody = workflows[applyBatch..Math.Min(workflows.Length, applyBatch + 7000)];
+        Assert.Contains("EnhancementWorkflowSelection.Sidecars", applyBody, StringComparison.Ordinal);
         Assert.DoesNotContain("IsQualityChecksRunnable", applyBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("IsFolderUniformityRunnable", applyBody, StringComparison.Ordinal);
+        Assert.Contains("FolderUniformityModeBatchScoped", applyBody, StringComparison.Ordinal);
         Assert.DoesNotContain("skipLyricsRefresh", workflows, StringComparison.Ordinal);
         Assert.DoesNotContain("\"lyrics-refresh\"", workflows, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.EnhancementPhaseSidecarsLyrics", workflows, StringComparison.Ordinal);
@@ -766,20 +769,46 @@ public sealed class EnhancementMultiSectionRunTest
     }
 
     [Fact]
-    public void SidecarWorkflowRunsLyricsAndCoverMaintenanceTogether()
+    public void SidecarsRunOneFileAtATimeWithAlbumArtworkFetchedOnce()
     {
         var workflows = ReadEnhancementWorkflows();
         var start = workflows.IndexOf(
             "private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync",
             StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = workflows[start..(start + 4200)];
+        var body = workflows[start..(start + 6000)];
 
-        Assert.Contains("var sidecarTasks = new List<Task<EnhancementWorkflowOutcome>>();", body, StringComparison.Ordinal);
-        Assert.Contains("sidecarTasks.Add(RunConfiguredSidecarLyricsAsync(", body, StringComparison.Ordinal);
-        Assert.Contains("sidecarTasks.Add(RunConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
-        Assert.Contains("var outcomes = await Task.WhenAll(sidecarTasks);", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("await RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken);\n            if (runCovers)", body, StringComparison.Ordinal);
+        // One ordered pass over the files, the way downloads are processed: the
+        // parallel lyrics/cover passes are gone.
+        Assert.DoesNotContain("var sidecarTasks = new List<Task<EnhancementWorkflowOutcome>>();", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.WhenAll(sidecarTasks)", body, StringComparison.Ordinal);
+        Assert.Contains("foreach (var filePath in orderedRun)", body, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("RunLyricsRefreshForBatchAsync(", body, StringComparison.Ordinal);
+
+        // The first file of an album fetches the artwork; every file handles its own lyrics.
+        Assert.Contains("var ownsAlbumArtwork = runCovers && artworkAlbums.Add(albumKey);", body, StringComparison.Ordinal);
+        Assert.Contains("var handlesLyrics = runLyrics && trackId > 0;", body, StringComparison.Ordinal);
+
+        // The card names exactly what this file is about to fetch.
+        Assert.Contains("SidecarFetchActivity.Describe(new SidecarFetchWork(", body, StringComparison.Ordinal);
+        Assert.Contains("handlesLyrics && lyricsOptions.QueueLyricsRefresh));", body, StringComparison.Ordinal);
+
+        // Artist artwork is processed and updated on its own path, never here.
+        Assert.DoesNotContain("PlanArtistRefreshAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshArtistNowAsync", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CoverMaintenanceWithoutAStillArtworkSource_IsSkippedWhenStillArtworkWasRequested()
+    {
+        var shouldSkip = AutoTagService.ShouldSkipCoverMaintenanceForMissingStillArtworkSource(
+            replaceMissingEmbedded: true,
+            syncExternalCovers: true,
+            upgradeLowResolution: true,
+            enabledSourceCount: 0);
+
+        Assert.True(shouldSkip);
     }
 
     [Fact]
@@ -861,7 +890,6 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("onAlbumCompleted", coverService, StringComparison.Ordinal);
         Assert.Contains("onAlbumFetchStarted", coverService, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.RecoveryTrigger", workflows, StringComparison.Ordinal);
-        Assert.Contains("IsCompletedEnhancementWorkflow", workflows, StringComparison.Ordinal);
         Assert.Contains("SidecarFetchActivity.Describe", workflows, StringComparison.Ordinal);
         Assert.Contains("PlanTrackRefreshAsync", workflows, StringComparison.Ordinal);
         Assert.Contains("activityState: \"fetchingSidecars\"", workflows, StringComparison.Ordinal);

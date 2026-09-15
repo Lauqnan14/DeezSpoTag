@@ -7,6 +7,28 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EnhancementWorkflowSelectionTest
 {
+    [Theory]
+    [InlineData(new[] { "folder-uniformity" }, "library-wide")]
+    [InlineData(new[] { "tag-gap-fill", "folder-uniformity" }, "batch-scoped")]
+    [InlineData(new[] { "sidecars", "folder-uniformity" }, "batch-scoped")]
+    [InlineData(new[] { "tag-gap-fill", "sidecars", "folder-uniformity" }, "batch-scoped")]
+    [InlineData(new[] { "tag-gap-fill", "sidecars" }, null)]
+    public void FolderUniformityMode_DependsOnIndependentVersusCombinedSelection(
+        string[] selected,
+        string? expected)
+    {
+        Assert.Equal(expected, EnhancementWorkflowSelection.ResolveFolderUniformityRunMode(selected));
+    }
+
+    [Fact]
+    public void OrderSelectedFeatures_UsesCanonicalWorkflowOrder()
+    {
+        var result = EnhancementWorkflowSelection.OrderSelectedFeatures(
+            ["folder-uniformity", "unknown", "sidecars", "tag-gap-fill", "sidecars"]);
+
+        Assert.Equal(["tag-gap-fill", "sidecars", "folder-uniformity"], result);
+    }
+
     [Fact]
     public void FolderUniformityOnly_ClearsGapFillTags()
     {
@@ -34,7 +56,7 @@ public sealed class EnhancementWorkflowSelectionTest
     }
 
     [Fact]
-    public void QualityChecksOnly_DoesNotKeepGapFillBecauseOfFlagMissingTags()
+    public void QualityChecksRun_KeepsTheProfilesSectionsAndTheRunMarker()
     {
         var config = Parse("""
             {
@@ -54,9 +76,13 @@ public sealed class EnhancementWorkflowSelectionTest
             [7],
             ["/tmp/music/track.flac"]);
 
-        Assert.False(config["enhancement"]!["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        // The profile decides what is switched on: a checks run carries the profile's own
+        // configuration and only writes the checks marker, so no section is switched off
+        // and the stored gap-fill tag selection survives.
+        Assert.True(config["enhancement"]!["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        Assert.True(config["enhancement"]!["coverMaintenance"]!["enabled"]!.GetValue<bool>());
         Assert.True(config["enhancement"]!["qualityChecks"]!["enabled"]!.GetValue<bool>());
-        Assert.Empty(config["gapFillTags"]!.AsArray());
+        Assert.Equal(3, config["gapFillTags"]!.AsArray().Count);
         Assert.Equal("/tmp/music/track.flac", config["targetFiles"]![0]!.GetValue<string>());
     }
 
@@ -199,7 +225,7 @@ public sealed class EnhancementWorkflowSelectionTest
     }
 
     [Fact]
-    public void ApplyEnhancementRunSelection_EnablesOnlyOptedInSections()
+    public void ApplyEnhancementRunSelection_KeepsTheProfileConfigurationForAChecksRun()
     {
         var config = Parse("""
             {
@@ -218,8 +244,10 @@ public sealed class EnhancementWorkflowSelectionTest
         Assert.Contains(AutoTagLiterals.EnhancementFeatureQualityChecks, selected);
         Assert.DoesNotContain(AutoTagLiterals.EnhancementFeatureSidecars, selected);
         Assert.True(config["enhancement"]!["qualityChecks"]!["enabled"]!.GetValue<bool>());
-        Assert.False(config["enhancement"]!["sidecars"]!["enabled"]!.GetValue<bool>());
-        Assert.False(config["enhancement"]!["coverMaintenance"]!["enabled"]!.GetValue<bool>());
+        // The profile's sidecars and cover maintenance stay switched on: the checks run
+        // repairs the audited files with exactly what the profile enables.
+        Assert.True(config["enhancement"]!["sidecars"]!["enabled"]!.GetValue<bool>());
+        Assert.True(config["enhancement"]!["coverMaintenance"]!["enabled"]!.GetValue<bool>());
     }
 
     [Fact]
