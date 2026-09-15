@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -315,6 +316,26 @@ public sealed class AudiomackArtistLocationTest
             Assert.StartsWith("Ally Saleh Kiba", clean);
         }
 
+        [Fact]
+        public void TryExtractArtistPageInfo_CarriesMatchedObjectsOwnId()
+        {
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(FlightPageHtml, "still-shadey", "Still Shadey");
+
+            Assert.NotNull(info);
+            Assert.Equal("22", info!.RawArtistId);
+        }
+
+        [Fact]
+        public void TryExtractArtistPageInfo_RealFixture_CarriesArtistId()
+        {
+            var html = ReadFixture("artist-page-flight.txt");
+
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "alikiba", "Alikiba");
+
+            Assert.NotNull(info);
+            Assert.Equal("16579133", info!.RawArtistId);
+        }
+
         private static string ReadFixture(string name)
         {
             var directory = Directory.GetCurrentDirectory();
@@ -363,6 +384,100 @@ public sealed class AudiomackArtistLocationTest
     /// matching, signed-URL structure and the web-identity extraction used to
     /// avoid embedding Audiomack's signing secret as a permanent constant.
     /// </summary>
+    /// <summary>
+    /// Artist confirmation: a text-search hit is only trusted when the name matches
+    /// and (when we hold albums and Audiomack exposes a catalogue) the candidate's
+    /// catalogue contains one of them. Name-only matching is an explicit fallback.
+    /// </summary>
+    public sealed class ArtistCandidateMatching
+    {
+        [Fact]
+        public void Confirm_MatchingNameAndHeldAlbum_IsAccepted()
+        {
+            var decision = AudiomackArtistMatcher.Confirm(
+                candidateName: "Alikiba",
+                expectedName: "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                candidateAlbums: new[] { "Only One", "Cinderella" });
+
+            Assert.True(decision.Accepted);
+            Assert.Equal(AudiomackArtistMatchOutcome.Accepted, decision.Outcome);
+        }
+
+        [Fact]
+        public void Confirm_SameNamedWrongArtist_IsRejectedOnAlbumMismatch()
+        {
+            var decision = AudiomackArtistMatcher.Confirm(
+                candidateName: "Alikiba",
+                expectedName: "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                candidateAlbums: new[] { "Some Other Record" });
+
+            Assert.False(decision.Accepted);
+            Assert.Equal(AudiomackArtistMatchOutcome.RejectedAlbumMismatch, decision.Outcome);
+            Assert.True(decision.IsAlbumMismatch);
+            // The reason names both sides so a wrong match is diagnosable.
+            Assert.Contains("Only One", decision.Reason);
+            Assert.Contains("Some Other Record", decision.Reason);
+        }
+
+        [Fact]
+        public void Confirm_NoHeldAlbums_AllowsNameOnlyMatchExplicitly()
+        {
+            var decision = AudiomackArtistMatcher.Confirm(
+                candidateName: "Alikiba",
+                expectedName: "Alikiba",
+                expectedAlbums: Array.Empty<string>(),
+                candidateAlbums: new[] { "Anything" });
+
+            Assert.True(decision.Accepted);
+            Assert.Equal(AudiomackArtistMatchOutcome.AcceptedWithoutAlbumCrossCheck, decision.Outcome);
+            Assert.Contains("no library albums", decision.Reason);
+        }
+
+        [Fact]
+        public void Confirm_CandidateCatalogueUnavailable_AllowsNameOnlyMatchExplicitly()
+        {
+            var decision = AudiomackArtistMatcher.Confirm(
+                candidateName: "Alikiba",
+                expectedName: "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                candidateAlbums: Array.Empty<string>());
+
+            Assert.True(decision.Accepted);
+            Assert.Equal(AudiomackArtistMatchOutcome.AcceptedWithoutAlbumCrossCheck, decision.Outcome);
+            Assert.Contains("no catalogue albums", decision.Reason);
+        }
+
+        [Fact]
+        public void Confirm_DifferentArtist_IsRejectedOnName()
+        {
+            var decision = AudiomackArtistMatcher.Confirm("Different Artist", "Alikiba", new[] { "Only One" }, new[] { "Only One" });
+
+            Assert.False(decision.Accepted);
+            Assert.Equal(AudiomackArtistMatchOutcome.RejectedNameMismatch, decision.Outcome);
+        }
+
+        [Theory]
+        [InlineData("Only One", "Only One (Deluxe)", true)]
+        [InlineData("Piano Season", "piano season", true)]
+        [InlineData("Only One", "Cinderella", false)]
+        public void AlbumTitlesMatch_NormalizesAndAllowsContainment(string left, string right, bool expected)
+        {
+            Assert.Equal(expected, AudiomackArtistMatcher.AlbumTitlesMatch(left, right));
+        }
+
+        [Theory]
+        [InlineData(16579133L, "16579133", true)]
+        [InlineData(16579133L, null, true)]
+        [InlineData(null, "16579133", true)]
+        [InlineData(999L, "16579133", false)]
+        public void ArtistIdMatches_RequiresAgreementOnlyWhenBothPresent(long? candidateId, string? pageId, bool expected)
+        {
+            Assert.Equal(expected, AudiomackArtistMatcher.ArtistIdMatches(candidateId, pageId));
+        }
+    }
+
     public sealed class AudiomackSearchApi
     {
         private const string SearchResponseJson = """
@@ -882,4 +997,267 @@ public sealed class AudiomackArtistLocationTest
             }
         }
     }
+
+    /// <summary>
+    /// End-to-end confirmation flow over a real (temp SQLite) library repository and a
+    /// routing HTTP stub: the stored slug must win over search; a search candidate must
+    /// be accepted only when the name and an album match; a rejected candidate must not
+    /// fetch or persist anything. No test hits the network.
+    /// </summary>
+    public sealed class ArtistCandidateConfirmation
+    {
+        private const string SearchArtistJson = """
+            {"verified_artist":{"id":16579133,"name":"Alikiba","url_slug":"alikiba"}}
+            """;
+
+        private const string AlikibaSongsJson = """
+            {"results":[
+              {"id":78139729,"title":"Fallen Angel","artist":"Alikiba","album":"Only One","artist_slug":"alikiba","uploader":{"id":"16579133","name":"Alikiba","url_slug":"alikiba"}},
+              {"id":78139730,"title":"Cinderella","artist":"Alikiba","album":"Cinderella","artist_slug":"alikiba","uploader":{"id":"16579133","name":"Alikiba","url_slug":"alikiba"}}
+            ]}
+            """;
+
+        private const string WrongArtistSongsJson = """
+            {"results":[
+              {"id":1,"title":"Some Song","artist":"Alikiba","album":"Some Other Record","artist_slug":"alikiba-other","uploader":{"id":"424242","name":"Alikiba","url_slug":"alikiba-other"}}
+            ]}
+            """;
+
+        [Fact]
+        public async Task StoredSlug_IsUsedAheadOfSearch()
+        {
+            var (service, factory, repository) = await CreateServiceAsync(storedSlug: "alikiba");
+
+            var profile = await service.ResolveAsync(7401, "Alikiba", CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.Equal("Dar es Salaam", profile!.City);
+            Assert.True(factory.PageRequested);
+            // Nothing stored means no search: no api.audiomack.com call at all.
+            Assert.DoesNotContain(factory.Requests, url => url.Contains("api.audiomack.com", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal("alikiba", await repository.GetArtistSourceIdAsync(7401, "audiomack"));
+        }
+
+        [Fact]
+        public async Task SearchCandidateWithHeldAlbum_IsAcceptedAndPersisted()
+        {
+            var (service, factory, repository) = await CreateServiceAsync(storedSlug: null);
+
+            var profile = await service.ResolveProfileAsync(
+                7401,
+                "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.Equal("TZ", profile!.Location!.CountryCode);
+            Assert.True(factory.PageRequested);
+            Assert.Contains(factory.Requests, url => url.Contains("type=songs", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal("alikiba", await repository.GetArtistSourceIdAsync(7401, "audiomack"));
+        }
+
+        [Fact]
+        public async Task SameNamedWrongArtist_IsRejectedOnAlbumMismatchAndNothingIsFetchedOrStored()
+        {
+            var (service, factory, repository) = await CreateServiceAsync(storedSlug: null, songsJson: WrongArtistSongsJson);
+
+            var profile = await service.ResolveProfileAsync(
+                7401,
+                "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                CancellationToken.None);
+
+            Assert.Null(profile);
+            Assert.False(factory.PageRequested);
+            Assert.Null(await repository.GetArtistSourceIdAsync(7401, "audiomack"));
+        }
+
+        [Fact]
+        public async Task NoHeldAlbums_NameOnlyFallbackStillResolves()
+        {
+            var (service, factory, _) = await CreateServiceAsync(storedSlug: null);
+
+            var profile = await service.ResolveProfileAsync(
+                7401,
+                "Alikiba",
+                expectedAlbums: Array.Empty<string>(),
+                CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.True(factory.PageRequested);
+            // Nothing to cross-check against: no catalogue song search is spent.
+            Assert.DoesNotContain(factory.Requests, url => url.Contains("type=songs", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public async Task CandidateIdMismatchWithArtistPage_IsRejected()
+        {
+            const string wrongIdJson = """
+                {"verified_artist":{"id":999,"name":"Alikiba","url_slug":"alikiba"}}
+                """;
+            var (service, factory, repository) = await CreateServiceAsync(storedSlug: null, artistJson: wrongIdJson);
+
+            var profile = await service.ResolveProfileAsync(
+                7401,
+                "Alikiba",
+                expectedAlbums: Array.Empty<string>(),
+                CancellationToken.None);
+
+            Assert.Null(profile);
+            // The page was fetched (the id is only known from it), but nothing was stored.
+            Assert.True(factory.PageRequested);
+            Assert.Null(await repository.GetArtistSourceIdAsync(7401, "audiomack"));
+        }
+
+        [Fact]
+        public async Task NoSearchCandidate_FallsBackToSlugGuess()
+        {
+            var (service, factory, _) = await CreateServiceAsync(storedSlug: null, artistJson: """{"results":[]}""");
+
+            var profile = await service.ResolveProfileAsync(
+                7401,
+                "Alikiba",
+                expectedAlbums: new[] { "Only One" },
+                CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.True(factory.PageRequested);
+        }
+
+        private static async Task<(AudiomackArtistLocationService Service, RoutingHttpClientFactory Factory, LibraryRepository Repository)> CreateServiceAsync(
+            string? storedSlug,
+            string artistJson = SearchArtistJson,
+            string songsJson = AlikibaSongsJson)
+        {
+            var dbPath = Path.Combine(Path.GetTempPath(), $"audiomack-candidate-{Guid.NewGuid():N}.db");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+                })
+                .Build();
+            await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+
+            var artistId = 7401;
+            await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+            {
+                await connection.OpenAsync();
+                await using (var artistCommand = connection.CreateCommand())
+                {
+                    artistCommand.CommandText = "INSERT INTO artist (id, name) VALUES ($id, $name);";
+                    artistCommand.Parameters.AddWithValue("$id", artistId);
+                    artistCommand.Parameters.AddWithValue("$name", "Alikiba");
+                    await artistCommand.ExecuteNonQueryAsync();
+                }
+
+                if (!string.IsNullOrWhiteSpace(storedSlug))
+                {
+                    await using var sourceCommand = connection.CreateCommand();
+                    sourceCommand.CommandText = "INSERT INTO artist_source (artist_id, source, source_id) VALUES ($id, 'audiomack', $slug);";
+                    sourceCommand.Parameters.AddWithValue("$id", artistId);
+                    sourceCommand.Parameters.AddWithValue("$slug", storedSlug);
+                    await sourceCommand.ExecuteNonQueryAsync();
+                }
+            }
+
+            var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+            var factory = new RoutingHttpClientFactory
+            {
+                ArtistSearchJson = artistJson,
+                SongSearchJson = songsJson,
+                PageHtml = ReadFixture("artist-page-flight.txt")
+            };
+            var service = new AudiomackArtistLocationService(
+                factory,
+                new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance),
+                new AudiomackApiClient(
+                    factory,
+                    new AudiomackWebCredentialsProvider(factory, NullLogger<AudiomackWebCredentialsProvider>.Instance),
+                    NullLogger<AudiomackApiClient>.Instance),
+                NullLogger<AudiomackArtistLocationService>.Instance,
+                repository);
+            return (service, factory, repository);
+        }
+
+        private static string ReadFixture(string name)
+        {
+            var directory = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                var candidate = Path.Join(directory, "DeezSpoTag.Tests", "Fixtures", "Audiomack", name);
+                if (File.Exists(candidate))
+                {
+                    return File.ReadAllText(candidate);
+                }
+
+                directory = Directory.GetParent(directory)?.FullName ?? string.Empty;
+            }
+
+            throw new FileNotFoundException($"Audiomack fixture '{name}' was not found.");
+        }
+
+        private sealed class RoutingHttpClientFactory : IHttpClientFactory
+        {
+            private readonly object _gate = new();
+            private readonly List<string> _requests = new();
+
+            public string ArtistSearchJson { get; set; } = string.Empty;
+            public string SongSearchJson { get; set; } = string.Empty;
+            public string PageHtml { get; set; } = string.Empty;
+
+            public IReadOnlyList<string> Requests
+            {
+                get
+                {
+                    lock (_gate)
+                    {
+                        return _requests.ToArray();
+                    }
+                }
+            }
+
+            // Only the artist profile page counts; credential discovery also touches
+            // audiomack.com (/search and the JS chunks), which is not a profile fetch.
+            public bool PageRequested => Requests.Any(url =>
+                url.Equals("https://audiomack.com/alikiba", StringComparison.OrdinalIgnoreCase));
+
+            public HttpClient CreateClient(string name) => new(new RoutingHandler(this));
+
+            private sealed class RoutingHandler : HttpMessageHandler
+            {
+                private readonly RoutingHttpClientFactory _owner;
+
+                public RoutingHandler(RoutingHttpClientFactory owner)
+                {
+                    _owner = owner;
+                }
+
+                protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                {
+                    var url = request.RequestUri?.ToString() ?? string.Empty;
+                    lock (_owner._gate)
+                    {
+                        _owner._requests.Add(url);
+                    }
+
+                    if (url.Contains("api.audiomack.com", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var body = url.Contains("type=songs", StringComparison.OrdinalIgnoreCase)
+                            ? _owner.SongSearchJson
+                            : _owner.ArtistSearchJson;
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(body, Encoding.UTF8, "application/json")
+                        });
+                    }
+
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(_owner.PageHtml, Encoding.UTF8, "text/html")
+                    });
+                }
+            }
+        }
+    }
+
 }

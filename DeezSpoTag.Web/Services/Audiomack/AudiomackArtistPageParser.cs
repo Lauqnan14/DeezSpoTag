@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,8 +26,10 @@ namespace DeezSpoTag.Web.Services.Audiomack;
 /// matched profile (always equal to the requested slug today, but carried
 /// explicitly so callers can persist the identifier) plus the raw location and
 /// biography. Either value may be null; the info is returned when at least one
-/// of them is present, so a biography-only profile is still usable.
-public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography);
+/// of them is present, so a biography-only profile is still usable. The matched
+/// object's own numeric id (<c>RawArtistId</c>) is carried too so a search hit's
+/// id can be confirmed against Audiomack's own page before it is trusted.
+public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography, string? RawArtistId = null);
 
 public static class AudiomackArtistPageParser
 {
@@ -96,6 +97,7 @@ public static class AudiomackArtistPageParser
             string? location;
             string? biography;
             string? canonicalSlug = null;
+            string? artistId = null;
             try
             {
                 using var document = JsonDocument.Parse(stream[span.Value.Open..(span.Value.Close + 1)]);
@@ -111,6 +113,7 @@ public static class AudiomackArtistPageParser
                            ?? GetLocationDisplayOrNull(root);
                 biography = GetTrimmedStringOrNull(root, "bio");
                 canonicalSlug = GetTrimmedStringOrNull(root, "url_slug");
+                artistId = GetIdOrNull(root, "id");
             }
             catch (JsonException)
             {
@@ -128,7 +131,7 @@ public static class AudiomackArtistPageParser
             var rawBiography = string.IsNullOrWhiteSpace(biography) ? null : biography.Trim();
             if (rawLocation != null || rawBiography != null)
             {
-                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography);
+                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography, artistId);
             }
         }
 
@@ -225,6 +228,26 @@ public static class AudiomackArtistPageParser
     }
 
     /// <summary>
+    /// The artist object's own <c>id</c>, which Audiomack emits as a JSON number on
+    /// some payloads and a string on others. Normalized to its invariant text so it
+    /// can be compared with the search API's id.
+    /// </summary>
+    private static string? GetIdOrNull(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString()!.Trim(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null
+        };
+    }
+
+    /// <summary>
     /// Some profiles carry location as a structured object instead of a string,
     /// e.g. {"tag":"ghanagreateraccraaccra","display":"Accra, Ghana"}; its
     /// display value is the artist's normalized "City, Country" text.
@@ -246,32 +269,7 @@ public static class AudiomackArtistPageParser
     }
 
     private static bool IsExpectedArtist(string? objectName, string expectedArtistName)
-    {
-        if (string.IsNullOrWhiteSpace(objectName))
-        {
-            return false;
-        }
-
-        var expected = NormalizeName(expectedArtistName);
-        var actual = NormalizeName(objectName);
-        if (expected.Length == 0 || actual.Length == 0)
-        {
-            return false;
-        }
-
-        if (string.Equals(expected, actual, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        const int minimumNameLengthForPrefixMatch = 4;
-        return expected.Length >= minimumNameLengthForPrefixMatch
-            && actual.Length >= minimumNameLengthForPrefixMatch
-            && (expected.StartsWith(actual, StringComparison.Ordinal) || actual.StartsWith(expected, StringComparison.Ordinal));
-    }
-
-    private static string NormalizeName(string value) =>
-        new(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+        => AudiomackArtistMatcher.IsSameArtist(objectName, expectedArtistName);
 
     private readonly record struct ObjectSpan(int Open, int Close);
 }

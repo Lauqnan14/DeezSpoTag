@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
@@ -39,6 +41,9 @@ public sealed class AudiomackArtistLocationService
     private const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan MemoryCacheTtl = TimeSpan.FromDays(7);
+
+    /// <summary>Songs fetched to learn a search candidate's album catalogue.</summary>
+    private const int CandidateCatalogueSearchLimit = 25;
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ArtistPageCacheRepository _artistPageCache;
@@ -81,9 +86,25 @@ public sealed class AudiomackArtistLocationService
 
     /// <summary>
     /// Full profile (location + biography) for a library artist, sharing one fetch
-    /// and one cache entry so a page load never fetches the profile twice.
+    /// and one cache entry so a page load never fetches the profile twice. The
+    /// artist's held albums are loaded from the library and used to confirm an
+    /// Audiomack search candidate: a same-named artist whose catalogue does not
+    /// contain them is rejected (and logged) instead of being accepted blindly.
     /// </summary>
-    public async Task<AudiomackArtistProfile?> ResolveProfileAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
+    public Task<AudiomackArtistProfile?> ResolveProfileAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
+        => ResolveProfileAsync(artistId, artistName, expectedAlbums: null, cancellationToken);
+
+    /// <summary>
+    /// Profile resolution with an explicit album cross-check list. Passing
+    /// <paramref name="expectedAlbums"/> as null loads the albums the library holds
+    /// for the artist; passing an empty list explicitly disables the album
+    /// cross-check (name-only), which is the caller's responsibility to justify.
+    /// </summary>
+    public async Task<AudiomackArtistProfile?> ResolveProfileAsync(
+        long artistId,
+        string? artistName,
+        IReadOnlyList<string>? expectedAlbums,
+        CancellationToken cancellationToken = default)
     {
         var storedSlug = await TryGetStoredSlugAsync(artistId, cancellationToken).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(storedSlug))
@@ -92,26 +113,71 @@ public sealed class AudiomackArtistLocationService
             // A null here is a cached negative for that slug; rediscovery would burn a
             // search on every page load, so it stops here — the user can correct the
             // mapping from the library page instead.
-            return await ResolveProfileBySlugAsync(storedSlug, artistName, cancellationToken).ConfigureAwait(false);
+            var stored = await ResolveProfileBySlugAsync(storedSlug, artistName, candidate: null, cancellationToken).ConfigureAwait(false);
+            return stored.Profile;
         }
 
+        var heldAlbums = expectedAlbums ?? await LoadExpectedAlbumsAsync(artistId, cancellationToken).ConfigureAwait(false);
+
         var candidate = await _apiClient.SearchArtistAsync(artistName, cancellationToken).ConfigureAwait(false);
-        var slug = candidate?.UrlSlug ?? BuildUrlSlug(artistName);
-        if (slug == null)
+        if (candidate == null)
+        {
+            // Nothing to cross-check against: fall back to the name-derived slug and
+            // let the page parser's own name check guard it. This is explicit, not a
+            // silent text-search acceptance.
+            var guessedSlug = BuildUrlSlug(artistName);
+            if (guessedSlug == null)
+            {
+                return null;
+            }
+
+            _logger.LogInformation(
+                "Audiomack artist search returned no candidate for {ArtistName}; falling back to slug guess {Slug}",
+                LogSanitizer.OneLine(artistName),
+                LogSanitizer.OneLine(guessedSlug));
+            var guessed = await ResolveProfileBySlugAsync(guessedSlug, artistName, candidate: null, cancellationToken).ConfigureAwait(false);
+            if (guessed.Profile != null)
+            {
+                await TryStoreSlugAsync(artistId, guessedSlug, cancellationToken).ConfigureAwait(false);
+            }
+
+            return guessed.Profile;
+        }
+
+        var candidateAlbums = heldAlbums.Count == 0
+            ? (IReadOnlyList<string>)Array.Empty<string>()
+            : await TryResolveCandidateAlbumTitlesAsync(candidate, cancellationToken).ConfigureAwait(false);
+        var decision = AudiomackArtistMatcher.Confirm(candidate.Name, artistName, heldAlbums, candidateAlbums);
+        if (!decision.Accepted)
+        {
+            // Observable rejection: a wrong match is diagnosable instead of a silent null.
+            _logger.LogWarning(
+                "Audiomack artist candidate rejected for {ArtistName} (slug={Slug}): {Reason}",
+                LogSanitizer.OneLine(artistName),
+                LogSanitizer.OneLine(candidate.UrlSlug),
+                decision.Reason);
+            return null;
+        }
+
+        if (decision.Outcome == AudiomackArtistMatchOutcome.AcceptedWithoutAlbumCrossCheck)
+        {
+            _logger.LogInformation(
+                "Audiomack artist candidate for {ArtistName} accepted by name only: {Reason}",
+                LogSanitizer.OneLine(artistName),
+                decision.Reason);
+        }
+
+        var resolved = await ResolveProfileBySlugAsync(candidate.UrlSlug, artistName, candidate, cancellationToken).ConfigureAwait(false);
+        if (resolved.CandidateRejected)
         {
             return null;
         }
 
-        var result = await ResolveProfileBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
-        if (result != null || candidate != null)
-        {
-            // Persist the identity as soon as it is validated (search name-match, or the
-            // page parse confirmed the artist name) — including when Audiomack simply has
-            // no profile data, so the search cost is paid once.
-            await TryStoreSlugAsync(artistId, slug, cancellationToken).ConfigureAwait(false);
-        }
-
-        return result;
+        // Persist the identity once it is validated (search name/album match, or the
+        // page parse confirmed the artist name) — including when Audiomack simply has
+        // no profile data, so the search cost is paid once.
+        await TryStoreSlugAsync(artistId, candidate.UrlSlug, cancellationToken).ConfigureAwait(false);
+        return resolved.Profile;
     }
 
     /// <summary>Name-based profile resolution for flows without a library artist id.</summary>
@@ -123,7 +189,8 @@ public sealed class AudiomackArtistLocationService
             return null;
         }
 
-        return await ResolveProfileBySlugAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
+        var resolved = await ResolveProfileBySlugAsync(slug, artistName, candidate: null, cancellationToken).ConfigureAwait(false);
+        return resolved.Profile;
     }
 
     internal static string? BuildUrlSlug(string? artistName)
@@ -144,32 +211,44 @@ public sealed class AudiomackArtistLocationService
         return slug.Length == 0 ? null : slug;
     }
 
-    private async Task<AudiomackArtistProfile?> ResolveProfileBySlugAsync(string slug, string? artistName, CancellationToken cancellationToken)
+    /// <summary>
+    /// Result of resolving a slug: the profile (may be null for a miss) plus whether the
+    /// page confirmed the search candidate's id was wrong, in which case nothing was
+    /// cached or persisted and the caller must not store the slug.
+    /// </summary>
+    private sealed record ProfileResolution(AudiomackArtistProfile? Profile, bool CandidateRejected);
+
+    private async Task<ProfileResolution> ResolveProfileBySlugAsync(
+        string slug,
+        string? artistName,
+        AudiomackArtistCandidate? candidate,
+        CancellationToken cancellationToken)
     {
         if (_memoryCache.TryGetValue(slug, out var cached) && DateTimeOffset.UtcNow - cached.FetchedUtc <= MemoryCacheTtl)
         {
-            return cached.Profile;
+            return new ProfileResolution(cached.Profile, false);
         }
 
         var (persistentFound, persistentProfile) = await TryReadCachedProfileAsync(slug, cancellationToken).ConfigureAwait(false);
         if (persistentFound)
         {
             _memoryCache[slug] = (persistentProfile, DateTimeOffset.UtcNow);
-            return persistentProfile;
+            return new ProfileResolution(persistentProfile, false);
         }
 
         if (string.IsNullOrWhiteSpace(artistName))
         {
             // The page parser cross-checks the artist name; without one a wrong
             // profile could be accepted, so nothing is fetched or cached.
-            return null;
+            return new ProfileResolution(null, false);
         }
 
         AudiomackArtistProfile? resolved = null;
+        AudiomackArtistPageInfo? info = null;
         var fetched = false;
         try
         {
-            (fetched, resolved) = await TryFetchProfileAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
+            (fetched, resolved, info) = await TryFetchProfileAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -183,15 +262,28 @@ public sealed class AudiomackArtistLocationService
         {
             // Unavailable page or network failure: not an authoritative "no data"
             // answer, so nothing is cached and the next call retries.
-            return null;
+            return new ProfileResolution(null, false);
+        }
+
+        // A text-search candidate's id must be confirmed against Audiomack's own page
+        // before the mapping is trusted; a present-but-different id is a hard rejection.
+        if (candidate != null && info != null && !AudiomackArtistMatcher.ArtistIdMatches(candidate.Id, info.RawArtistId))
+        {
+            _logger.LogWarning(
+                "Audiomack artist id mismatch for {ArtistName}: search id {SearchId} but page id {PageId} (slug={Slug})",
+                LogSanitizer.OneLine(artistName),
+                candidate.Id,
+                LogSanitizer.OneLine(info.RawArtistId),
+                LogSanitizer.OneLine(slug));
+            return new ProfileResolution(null, true);
         }
 
         _memoryCache[slug] = (resolved, DateTimeOffset.UtcNow);
         await WriteCachedProfileAsync(slug, resolved, cancellationToken).ConfigureAwait(false);
-        return resolved;
+        return new ProfileResolution(resolved, false);
     }
 
-    private async Task<(bool Fetched, AudiomackArtistProfile? Profile)> TryFetchProfileAsync(
+    private async Task<(bool Fetched, AudiomackArtistProfile? Profile, AudiomackArtistPageInfo? Info)> TryFetchProfileAsync(
         string slug,
         string artistName,
         CancellationToken cancellationToken)
@@ -205,7 +297,7 @@ public sealed class AudiomackArtistLocationService
         using var response = await httpClient.GetAsync(ArtistPageBaseUrl + slug, timeoutCts.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            return (false, null);
+            return (false, null, null);
         }
 
         var html = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
@@ -214,17 +306,17 @@ public sealed class AudiomackArtistLocationService
         {
             // The page loaded but no object matched (or the matched artist has no
             // location and no bio). Authoritative negative.
-            return (true, null);
+            return (true, null, null);
         }
 
         var location = AudiomackLocationNormalizer.Normalize(info.RawLocation);
         var biography = string.IsNullOrWhiteSpace(info.RawBiography) ? null : info.RawBiography.Trim();
         if (location == null && biography == null)
         {
-            return (true, null);
+            return (true, null, info);
         }
 
-        return (true, new AudiomackArtistProfile(location, biography));
+        return (true, new AudiomackArtistProfile(location, biography), info);
     }
 
     private async Task<string?> TryGetStoredSlugAsync(long artistId, CancellationToken cancellationToken)
@@ -260,6 +352,90 @@ public sealed class AudiomackArtistLocationService
         {
             _logger.LogWarning(ex, "Audiomack source persist failed for artist {ArtistId}", artistId);
         }
+    }
+
+    /// <summary>
+    /// The albums the library holds for the artist, used to confirm a search
+    /// candidate. A missing/disabled repository, a query failure or an artist with
+    /// no albums all yield an empty list, which disables the album cross-check
+    /// (name-only) rather than rejecting a real artist.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadExpectedAlbumsAsync(long artistId, CancellationToken cancellationToken)
+    {
+        if (_libraryRepository == null || !_libraryRepository.IsConfigured || artistId <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var albums = await _libraryRepository.GetArtistAlbumsAsync(artistId, cancellationToken).ConfigureAwait(false);
+            return albums
+                .Select(album => album.Title)
+                .Where(title => !string.IsNullOrWhiteSpace(title))
+                .Select(title => title.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Audiomack expected-album lookup failed for artist {ArtistId}", artistId);
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// The album titles Audiomack's own catalogue exposes for a search candidate,
+    /// learned from song-search results restricted to the candidate artist. An
+    /// empty list means the catalogue was unavailable (which enables the explicit
+    /// name-only fallback); it never means "mismatch".
+    /// </summary>
+    private async Task<IReadOnlyList<string>> TryResolveCandidateAlbumTitlesAsync(
+        AudiomackArtistCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var songs = await _apiClient
+                .SearchSongsAsync(candidate.Name, CandidateCatalogueSearchLimit, cancellationToken)
+                .ConfigureAwait(false);
+            var titles = new List<string>();
+            foreach (var song in songs)
+            {
+                if (!BelongsToCandidate(song, candidate) || string.IsNullOrWhiteSpace(song.Album))
+                {
+                    continue;
+                }
+
+                var title = song.Album.Trim();
+                if (!titles.Any(existing => string.Equals(existing, title, StringComparison.OrdinalIgnoreCase)))
+                {
+                    titles.Add(title);
+                }
+            }
+
+            return titles;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                ex,
+                "Audiomack candidate catalogue lookup failed ({ArtistName})",
+                LogSanitizer.OneLine(candidate.Name));
+            return Array.Empty<string>();
+        }
+    }
+
+    private static bool BelongsToCandidate(AudiomackSongCandidate song, AudiomackArtistCandidate candidate)
+    {
+        if (!string.IsNullOrWhiteSpace(candidate.UrlSlug)
+            && !string.IsNullOrWhiteSpace(song.ArtistSlug)
+            && string.Equals(song.ArtistSlug.Trim(), candidate.UrlSlug.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return AudiomackApiClient.NameMatches(song.UploaderName ?? song.Artist, candidate.Name);
     }
 
     private async Task<(bool Found, AudiomackArtistProfile? Profile)> TryReadCachedProfileAsync(
