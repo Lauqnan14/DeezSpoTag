@@ -268,7 +268,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
 
         Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
         Assert.Contains("const features = [\"quality-checks\"];", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("startCentralEnhancementFeature(features, scope.folderIds, \"enhancementQualityChecksStatus\")", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("postCentralEnhancementStart(features, folderIds)", scriptSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementWorkflowSelection.ApplyFeatureSelection", controllerSource, StringComparison.Ordinal);
         Assert.Contains("var runQualityUpgradeStage = queueTechnicalProfileUpgrades", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementAdmissionLimit = EnhancementBatchSize", workflowSource, StringComparison.Ordinal);
@@ -292,7 +292,11 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
         Assert.Contains("/api/autotag/enhancement/start", scriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement/folder-uniformity/start", scriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement/folder-uniformity/status", scriptSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("enhancement/quality-checks", scriptSource, StringComparison.Ordinal);
+        // Quality checks start only through the central job path; the queue progress handle is a read
+        // endpoint on the same central jobs controller, not a separate start path.
+        Assert.DoesNotContain("enhancement/quality-checks/start", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement/quality-checks/status", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("[HttpGet(\"enhancement/quality-checks/queue/{id}\")]", jobsController, StringComparison.Ordinal);
         Assert.DoesNotContain("[HttpPost", enhancementController, StringComparison.Ordinal);
         Assert.DoesNotContain("ExecuteFolderUniformityAsync", enhancementController, StringComparison.Ordinal);
         Assert.DoesNotContain("StartEnhancementQualityScannerAsync", enhancementController, StringComparison.Ordinal);

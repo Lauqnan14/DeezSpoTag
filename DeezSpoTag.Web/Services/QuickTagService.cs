@@ -6,6 +6,7 @@ using System.Text.Json;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
@@ -102,16 +103,31 @@ public sealed class QuickTagService
     private readonly ILogger<QuickTagService> _logger;
     private readonly LibraryConfigStore _configStore;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly IServiceProvider _serviceProvider;
 
     public QuickTagService(
         ILogger<QuickTagService> logger,
         LibraryConfigStore configStore,
-        DeezSpoTagSettingsService settingsService)
+        DeezSpoTagSettingsService settingsService,
+        IServiceProvider serviceProvider)
     {
         _logger = logger;
         _configStore = configStore;
         _settingsService = settingsService;
+        _serviceProvider = serviceProvider;
     }
+
+    /// <summary>
+    /// Confident identification probe for a mashup-style candidate, delegating to the tag-source
+    /// service that owns the fingerprint (Chromaprint/AcoustID) and platform clients.
+    /// </summary>
+    public Task<bool> IsConfidentlyIdentifiedAsync(
+        string? filePath,
+        string? title,
+        string? artist,
+        CancellationToken cancellationToken)
+        => _serviceProvider.GetRequiredService<QuickTagTagSourceService>()
+            .IsConfidentlyIdentifiedAsync(filePath, title, artist, cancellationToken);
 
     public QuickTagFolderResult GetFolder(string? inputPath, string? subdir)
     {

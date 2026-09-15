@@ -4733,7 +4733,7 @@
         return selected.length > 0 ? selected.map((folderId) => [folderId]) : [];
     }
 
-    async function startCentralEnhancementFeature(feature, folderIds, statusElementId, groupId = null, options = null) {
+    async function postCentralEnhancementStart(feature, folderIds, groupId = null, options = null) {
         const features = [...new Set((Array.isArray(feature) ? feature : [feature])
             .map((id) => String(id || "").toLowerCase())
             .filter(Boolean))];
@@ -4757,6 +4757,11 @@
         if (payload?.jobId) {
             localStorage.setItem("autotagJobId", String(payload.jobId));
         }
+        return { payload, features };
+    }
+
+    async function startCentralEnhancementFeature(feature, folderIds, statusElementId, groupId = null, options = null) {
+        const { payload, features } = await postCentralEnhancementStart(feature, folderIds, groupId, options);
         if (payload?.target && Number(payload.target.usable) > 0) {
             const requested = Number(payload.target.requested || payload.target.usable);
             const usable = Number(payload.target.usable);
@@ -5131,59 +5136,49 @@
             const folders = state.libraryFolders.length > 0
                 ? state.libraryFolders
                 : await fetchEnhancementEligibleFolders();
-            // One library per run; "all libraries" queues every library and runs them one at a
-            // time. The choice is read fresh from the picker every time — never remembered.
-            const scopes = resolveQualityChecksLibraryScopes(folders, selectedLibraryKey);
-            if (scopes.length === 0) {
+
+            // One request. A chosen library sends that library's folders; "all libraries" sends an
+            // empty scope and the server walks the libraries one at a time (hold/release the
+            // pipeline lock per library) and continues after a failed library.
+            let folderIds = [];
+            if (selectedLibraryKey) {
+                const scopes = resolveQualityChecksLibraryScopes(folders, selectedLibraryKey);
+                if (scopes.length === 0) {
+                    throw new Error("No enabled music folders are available for enhancement.");
+                }
+                folderIds = scopes[0].folderIds;
+            } else if (folders.length === 0) {
                 throw new Error("No enabled music folders are available for enhancement.");
             }
 
-            const total = scopes.length;
-            const summaries = [];
-            const failures = [];
-            for (let index = 0; index < total; index += 1) {
-                const scope = scopes[index];
-                const position = `Library ${index + 1}/${total}: ${scope.libraryName}`;
-                try {
-                    setEnhancementStatus("enhancementQualityChecksStatus", `${position} — starting...`);
-                    const job = await startCentralEnhancementFeature(features, scope.folderIds, "enhancementQualityChecksStatus");
-                    const workflow = findEnhancementWorkflow(job, "quality-checks");
-                    const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
-                        || String(workflow?.status || "").toLowerCase() === "failed";
-                    if (failed) {
-                        throw new Error(workflow?.message || job?.error || "quality checks failed");
-                    }
-
-                    if (job?.checksReportOnly === true) {
-                        const warning = `${position}: this profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.`;
-                        setEnhancementStatus("enhancementQualityChecksStatus", warning);
-                        showToast(warning, "warning");
-                    }
-
-                    summaries.push(describeQualityCheckStageCounts(scope, job));
-                    await waitForEnhancementDownloadsToSettle(job, "enhancementQualityChecksStatus");
-                } catch (error) {
-                    // section 11 decision 1: a failed library is reported but never cancels the queue; the
-                    // remaining libraries still run.
-                    failures.push(`${position} failed: ${error?.message || error}`);
-                    setEnhancementStatus(
-                        "enhancementQualityChecksStatus",
-                        `${position} failed — continuing with the remaining libraries...`);
-                }
+            setEnhancementStatus("enhancementQualityChecksStatus", "Starting quality checks...");
+            const { payload } = await postCentralEnhancementStart(features, folderIds);
+            if (payload?.qualityChecksQueue === true) {
+                // section 11: warn about report-only libraries before the first one starts.
+                warnAboutReportOnlyLibraries(payload?.libraries);
+                const snapshot = await pollQualityChecksQueue(payload.jobId, "enhancementQualityChecksStatus");
+                reportQualityChecksQueueResult(snapshot);
+                return;
             }
 
-            if (failures.length > 0) {
-                const completed = total - failures.length;
-                const message = `Quality checks finished: ${completed}/${total} libraries completed. ${failures.join(" ")}`;
-                setEnhancementStatus("enhancementQualityChecksStatus", message);
-                showToast(message, "error");
-            } else {
-                const message = total === 1
-                    ? `Quality checks completed for ${scopes[0].libraryName}. ${summaries[0]}`
-                    : `Quality checks completed for ${total} libraries. ${summaries.join(" ")}`;
-                setEnhancementStatus("enhancementQualityChecksStatus", message);
-                showToast(message, "success");
+            const job = await pollCentralEnhancementJob(payload.jobId, "enhancementQualityChecksStatus", "quality-checks");
+            const workflow = findEnhancementWorkflow(job, "quality-checks");
+            const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
+                || String(workflow?.status || "").toLowerCase() === "failed";
+            if (failed) {
+                throw new Error(workflow?.message || job?.error || "quality checks failed");
             }
+
+            if (payload?.checksReportOnly === true) {
+                const warning = "This profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.";
+                setEnhancementStatus("enhancementQualityChecksStatus", warning);
+                showToast(warning, "warning");
+            }
+
+            const libraryName = librarySelect?.selectedOptions?.[0]?.textContent || "the library";
+            const message = `Quality checks completed for ${libraryName}. ${describeQualityCheckStageCounts({ libraryName }, job)}`;
+            setEnhancementStatus("enhancementQualityChecksStatus", message);
+            showToast(message, "success");
         } catch (error) {
             const message = `Enhancement quality checks failed: ${error?.message || error}`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
@@ -5195,6 +5190,93 @@
         }
     }
 
+    // A report-only profile has gap filling, sidecars and folder tidy-up all off, so files are
+    // listed but never repaired. The queue knows this per library before it starts.
+    function warnAboutReportOnlyLibraries(libraries) {
+        if (!Array.isArray(libraries)) {
+            return;
+        }
+
+        const flagged = libraries.filter((item) => item?.checksReportOnly === true);
+        if (flagged.length === 0) {
+            return;
+        }
+
+        const names = flagged.map((item) => item?.libraryName || "Library").join(", ");
+        const warning = flagged.length === 1
+            ? `${names}: this profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.`
+            : `${flagged.length} libraries (${names}) have gap filling, sidecars and folder tidy-up all off, so their files are only reported on, not repaired.`;
+        setEnhancementStatus("enhancementQualityChecksStatus", warning);
+        showToast(warning, "warning");
+    }
+
+    // Polls the server-side Quality Checks queue: "all libraries" is one request, and the server
+    // reports which library is running and how each finished.
+    async function pollQualityChecksQueue(queueId, statusElementId) {
+        const id = String(queueId || "").trim();
+        if (!id) {
+            throw new Error("Quality checks queue did not return a valid id.");
+        }
+
+        while (true) {
+            const response = await fetch(`/api/autotag/enhancement/quality-checks/queue/${encodeURIComponent(id)}`);
+            const snapshot = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(snapshot?.error || snapshot?.message || `Request failed (${response.status})`);
+            }
+
+            const total = Number(snapshot?.total || 0);
+            const index = Math.max(0, Number(snapshot?.currentIndex || 0));
+            const status = String(snapshot?.status || "").toLowerCase();
+            const libraries = Array.isArray(snapshot?.libraries) ? snapshot.libraries : [];
+            const current = libraries[index];
+            const name = String(snapshot?.currentLibraryName || current?.libraryName || "");
+            const reportOnly = current?.checksReportOnly === true ? " (report only)" : "";
+            setEnhancementStatus(
+                statusElementId,
+                `Library ${Math.min(index + 1, total)}/${total}: ${name}${reportOnly} — ${status}...`);
+
+            if (!["queued", "running", "tagging"].includes(status)) {
+                return snapshot;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+    }
+
+    function reportQualityChecksQueueResult(snapshot) {
+        const libraries = Array.isArray(snapshot?.libraries) ? snapshot.libraries : [];
+        const total = Number(snapshot?.total || libraries.length);
+        const completed = Number(snapshot?.completedCount || 0);
+        const failures = libraries.filter((item) => String(item?.status || "").toLowerCase() === "failed");
+        if (failures.length > 0) {
+            const details = failures
+                .map((item) => `${item?.libraryName || "Library"}: ${item?.error || "quality checks failed"}`)
+                .join(" ");
+            const message = `Quality checks finished: ${completed}/${total} libraries completed. ${details}`;
+            setEnhancementStatus("enhancementQualityChecksStatus", message);
+            showToast(message, "error");
+            return;
+        }
+
+        const summaries = libraries
+            .filter((item) => String(item?.status || "").toLowerCase() === "completed")
+            .map(describeQualityChecksLibraryResult);
+        const message = total === 1
+            ? `Quality checks completed for ${libraries[0]?.libraryName || "the library"}. ${summaries[0] || ""}`
+            : `Quality checks completed for ${total} libraries. ${summaries.join(" ")}`;
+        setEnhancementStatus("enhancementQualityChecksStatus", message);
+        showToast(message, "success");
+    }
+
+    function describeQualityChecksLibraryResult(result) {
+        const found = Number(result?.foundCount ?? 0);
+        const gapFilled = Number(result?.gapFilledCount ?? 0);
+        const sidecarred = Number(result?.sidecarredCount ?? 0);
+        const tidied = Number(result?.tidiedCount ?? 0);
+        return `${result?.libraryName || "Library"}: found ${found}, gap-filled ${gapFilled}, sidecars ${sidecarred}, tidied ${tidied}.`;
+    }
+
     // Per-stage counts reported by the job: found / gap-filled / sidecarred / tidied.
     function describeQualityCheckStageCounts(scope, job) {
         const found = Number(job?.enhancementFoundCount ?? 0);
@@ -5202,40 +5284,6 @@
         const sidecarred = Number(job?.enhancementSidecarredCount ?? 0);
         const tidied = Number(job?.enhancementTidiedCount ?? 0);
         return `${scope.libraryName}: found ${found}, gap-filled ${gapFilled}, sidecars ${sidecarred}, tidied ${tidied}.`;
-    }
-
-    function isActiveDownloadQueueStatus(status) {
-        const normalized = String(status || "").trim().toLowerCase();
-        return ["resolving", "queued", "in_queue", "inqueue", "running", "downloading", "paused", "retrying", "retry_waiting"]
-            .includes(normalized);
-    }
-
-    // A library's run only ends at the download batch boundary; when it staged Atmos or upgrade
-    // downloads the next library must not start until those settle. Bounded and fail-open so a
-    // queue we cannot read never blocks the run.
-    async function waitForEnhancementDownloadsToSettle(job, statusElementId) {
-        const staged = Number(job?.enhancementDownloadItemCount ?? job?.EnhancementDownloadItemCount ?? 0);
-        if (!(staged > 0)) {
-            return;
-        }
-
-        const deadline = Date.now() + 30 * 60 * 1000;
-        while (Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-            const response = await fetch("/Activities/GetDownloadQueue");
-            const payload = await response.json().catch(() => null);
-            const queue = payload?.data?.queue;
-            if (!queue || typeof queue !== "object") {
-                return;
-            }
-            const active = Object.values(queue).filter((item) => isActiveDownloadQueueStatus(item?.status));
-            if (active.length === 0) {
-                return;
-            }
-            setEnhancementStatus(
-                statusElementId,
-                `Waiting for ${active.length} download(s) to settle before the next library...`);
-        }
     }
 
     async function runEnhancementGapFilling() {

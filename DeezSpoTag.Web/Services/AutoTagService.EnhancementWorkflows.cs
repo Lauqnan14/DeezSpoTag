@@ -105,7 +105,7 @@ public partial class AutoTagService
             var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
                 scopedFolders.Select(folder => folder.Id).ToList(),
                 cancellationToken);
-            var (repairableFiles, unofficialCount) = PartitionUnofficialMashups(missingFiles);
+            var (repairableFiles, unofficialCount) = await PartitionUnofficialMashupsAsync(missingFiles, IsMashupCandidateIdentifiedAsync, cancellationToken);
             if (unofficialCount > 0)
             {
                 AppendLog(
@@ -179,27 +179,52 @@ public partial class AutoTagService
 
     /// <summary>
     /// Splits the missing-metadata audit into files the run can repair and mashup/unofficial files
-    /// it should not aim at. A mashup or DJ mix matches no database release, so counting it as an
-    /// orphan needing repair would send the run after tags no provider can supply.
+    /// it should not aim at. A pattern-matched mashup candidate is only unofficial when the
+    /// fingerprint → platform chain (including MusicBrainz) cannot identify it; a confidently
+    /// identified candidate is taggable and is repaired like any other file.
     /// </summary>
-    internal static (List<MissingCoreMetadataFileDto> Repairable, int Unofficial) PartitionUnofficialMashups(
-        IReadOnlyList<MissingCoreMetadataFileDto> files)
+    internal static async Task<(List<MissingCoreMetadataFileDto> Repairable, int Unofficial)> PartitionUnofficialMashupsAsync(
+        IReadOnlyList<MissingCoreMetadataFileDto> files,
+        Func<MissingCoreMetadataFileDto, CancellationToken, Task<bool>> isIdentifiedAsync,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(files);
+        ArgumentNullException.ThrowIfNull(isIdentifiedAsync);
+
         var repairable = new List<MissingCoreMetadataFileDto>(files.Count);
         var unofficial = 0;
         foreach (var file in files)
         {
-            if (MashupClassifier.IsMashupFile(file.FilePath))
+            if (!MashupClassifier.IsMashupFile(file.FilePath)
+                && !MashupClassifier.IsMashupTitle(file.Title))
             {
-                unofficial++;
+                repairable.Add(file);
                 continue;
             }
 
-            repairable.Add(file);
+            if (await isIdentifiedAsync(file, cancellationToken))
+            {
+                repairable.Add(file);
+                continue;
+            }
+
+            unofficial++;
         }
 
         return (repairable, unofficial);
     }
+
+    /// <summary>
+    /// Production identification chain for a mashup candidate: an identity already stored by the
+    /// scanner is enough, otherwise fingerprint first and then look on the platforms including
+    /// MusicBrainz.
+    /// </summary>
+    private Task<bool> IsMashupCandidateIdentifiedAsync(
+        MissingCoreMetadataFileDto file,
+        CancellationToken cancellationToken)
+        => file.HasProviderIdentity
+            ? Task.FromResult(true)
+            : _quickTagService.IsConfidentlyIdentifiedAsync(file.FilePath, file.Title, file.Artist, cancellationToken);
 
     private async Task<EnhancementRunManifest> BuildEnhancementRunManifestAsync(
         AutoTagJob job,
@@ -2559,7 +2584,7 @@ public partial class AutoTagService
         }
 
         var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(scopedFolderIds, cancellationToken);
-        var (repairableFiles, unofficialCount) = PartitionUnofficialMashups(missingFiles);
+        var (repairableFiles, unofficialCount) = await PartitionUnofficialMashupsAsync(missingFiles, IsMashupCandidateIdentifiedAsync, cancellationToken);
         var missingFieldSummary = repairableFiles
             .SelectMany(file => file.MissingFields)
             .GroupBy(field => field, StringComparer.OrdinalIgnoreCase)

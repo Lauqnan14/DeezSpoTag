@@ -198,6 +198,89 @@ public sealed class QuickTagTagSourceService
         return string.Join(", ", creditNames);
     }
 
+    private const double ConfidentFingerprintScore = 0.85;
+
+    /// <summary>
+    /// Confident identification probe for a mashup-style candidate: fingerprint first
+    /// (Chromaprint/AcoustID), then a platform lookup including MusicBrainz. Returns true only when
+    /// a match is confident enough that the file should be treated as a taggable release instead of
+    /// an unofficial mashup. A probe failure reads as "not identified", which keeps the candidate
+    /// out of the repair targets rather than risking a repair aimed at an unmatchable file.
+    /// </summary>
+    public async Task<bool> IsConfidentlyIdentifiedAsync(
+        string? filePath,
+        string? title,
+        string? artist,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var path = filePath?.Trim();
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                var fingerprint = await AcoustIdFingerprintService.FingerprintAsync(path, configuredPath: null, cancellationToken);
+                if (fingerprint != null)
+                {
+                    var lookup = await AcoustIdClient.LookupAsync(fingerprint.Fingerprint, fingerprint.DurationSeconds, cancellationToken);
+                    var confidentFingerprintMatch = lookup?.Results?.Any(result =>
+                        result.Score >= ConfidentFingerprintScore
+                        && (result.Recordings?.Any(recording => !string.IsNullOrWhiteSpace(recording.Id)) ?? false)) == true;
+                    if (confidentFingerprintMatch)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            // Fingerprint did not settle it, so look the candidate up on the platforms, including
+            // MusicBrainz. Some mashups do exist cross-platform, and those are taggable.
+            var normalizedTitle = NormalizeIdentityText(title);
+            if (normalizedTitle.Length == 0)
+            {
+                return false;
+            }
+
+            var query = BuildQuery(new QuickTagTagSourceSearchRequest { Title = title, Artist = artist });
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return false;
+            }
+
+            var musicBrainz = await SearchMusicBrainzAsync(query, cancellationToken);
+            return musicBrainz?.Items is { Count: > 0 }
+                && musicBrainz.Items.Any(item =>
+                    string.Equals(NormalizeIdentityText(item.Title), normalizedTitle, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Mashup identification probe failed for {Path}.", filePath);
+            return false;
+        }
+    }
+
+    private static string NormalizeIdentityText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(char.ToLowerInvariant(character));
+            }
+        }
+
+        return builder.ToString();
+    }
+
     private async Task<QuickTagTagSourceSearchResult> SearchMusicBrainzAsync(string query, CancellationToken cancellationToken)
     {
         var response = await MusicBrainzClient.SearchAsync(query, cancellationToken);

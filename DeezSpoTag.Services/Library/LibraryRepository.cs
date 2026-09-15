@@ -15818,13 +15818,20 @@ SELECT t.id AS track_id,
        t.tag_album,
        t.tag_album_artist,
        t.track_no,
-       t.tag_track_no
+       t.tag_track_no,
+       t.tag_isrc,
+       tsc.shazam_track_id,
+       tsc.spotify_id,
+       tsc.apple_id,
+       tsc.deezer_id,
+       tsc.isrc AS shazam_isrc
 FROM track t
 JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
+LEFT JOIN track_shazam_cache tsc ON tsc.track_id = t.id
 WHERE f.id IN (
     SELECT value
     FROM json_each(@folderIdsJson)
@@ -15864,13 +15871,27 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
                 continue;
             }
 
+            var hasProviderIdentity = false;
+            for (var identityIndex = 13; identityIndex <= 18; identityIndex++)
+            {
+                if (!await reader.IsDBNullAsync(identityIndex, cancellationToken)
+                    && !string.IsNullOrWhiteSpace(reader.GetString(identityIndex)))
+                {
+                    hasProviderIdentity = true;
+                    break;
+                }
+            }
+
             results.Add(new MissingCoreMetadataFileDto(
                 reader.GetInt64(0),
                 audioFileId,
                 reader.GetInt64(2),
                 filePath,
                 repair.Fields,
-                repair.Score));
+                repair.Score,
+                string.IsNullOrWhiteSpace(title) ? null : title,
+                string.IsNullOrWhiteSpace(artist) ? null : artist,
+                hasProviderIdentity));
         }
 
         return results

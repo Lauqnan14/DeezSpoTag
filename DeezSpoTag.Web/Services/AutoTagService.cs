@@ -311,6 +311,7 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunIndexUpdateUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastJobFullSaveUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, QualityChecksQueueState> _qualityChecksQueues = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _archivedLogLineCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _archivedStatusEntryCounts = new(StringComparer.OrdinalIgnoreCase);
     private AutoTagJob? _latestTerminalJob;

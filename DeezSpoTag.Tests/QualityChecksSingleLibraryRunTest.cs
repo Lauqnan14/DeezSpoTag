@@ -6,9 +6,9 @@ using Xunit;
 namespace DeezSpoTag.Tests;
 
 /// <summary>
-/// Behavioural guardrails for the quality-checks run shape: one library per run, a per-library
-/// sequential queue that stops on failure, a report-only warning, per-stage counts, and the
-/// removals that came with the redesign.
+/// Guardrails for the quality-checks run shape: one library per pick, a server-side queue that
+/// walks "all libraries" in turn and continues after a failure, the remembered last library, the
+/// report-only warning, per-stage counts, and the removals that came with the redesign.
 /// </summary>
 public sealed class QualityChecksSingleLibraryRunTest
 {
@@ -38,40 +38,80 @@ public sealed class QualityChecksSingleLibraryRunTest
     }
 
     [Fact]
-    public void ChecksQueue_RunsLibrariesSequentiallyAndContinuesAfterAFailure()
+    public void ChecksRunner_MakesOneRequestAndLetsTheServerWalkTheLibraries()
     {
         var script = ReadScript();
-        var runner = Slice(script, "async function runEnhancementQualityChecks", "function describeQualityCheckStageCounts");
+        var runner = Slice(script, "async function runEnhancementQualityChecks", "async function pollQualityChecksQueue");
 
-        // One scope per library, "all libraries" queues every scope, and the call is awaited so the
-        // next library cannot start before the previous one finishes.
-        Assert.Contains("resolveQualityChecksLibraryScopes(folders, selectedLibraryKey)", runner, StringComparison.Ordinal);
-        Assert.Contains("await startCentralEnhancementFeature(features, scope.folderIds, \"enhancementQualityChecksStatus\")", runner, StringComparison.Ordinal);
-        Assert.Contains("await waitForEnhancementDownloadsToSettle(", runner, StringComparison.Ordinal);
-        // section 11 decision 1: a failure is reported and the queue continues, so the remaining libraries
-        // still run. The failure must be caught per library, never thrown out of the loop.
-        Assert.Contains("failures.push(", runner, StringComparison.Ordinal);
-        Assert.Contains("continuing with the remaining libraries", runner, StringComparison.Ordinal);
-        Assert.Contains("catch (error)", runner, StringComparison.Ordinal);
-        Assert.DoesNotContain("throw new Error(`${position} failed:", runner, StringComparison.Ordinal);
+        // section 11 decision 1 + the server-side queue: one request, and the server owns the loop.
+        Assert.Contains("postCentralEnhancementStart(features, folderIds)", runner, StringComparison.Ordinal);
+        Assert.Contains("payload?.qualityChecksQueue === true", runner, StringComparison.Ordinal);
+        Assert.Contains("pollQualityChecksQueue(", runner, StringComparison.Ordinal);
 
-        // The checks path no longer groups folders by profile.
-        Assert.DoesNotContain("groupFolderIdsByProfile", runner, StringComparison.Ordinal);
-        Assert.DoesNotContain("resolveEnhancementFolderScopes", runner, StringComparison.Ordinal);
+        // The UI must no longer loop over libraries or issue one request per library.
+        Assert.DoesNotContain("for (let index", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("startCentralEnhancementFeature(", runner, StringComparison.Ordinal);
+
+        // The staged-download wait moved to the server with the queue.
+        Assert.DoesNotContain("waitForEnhancementDownloadsToSettle", script, StringComparison.Ordinal);
+        Assert.Contains("/api/autotag/enhancement/quality-checks/queue/", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ServerQueue_WalksLibrariesInTurnAndContinuesAfterAFailure()
+    {
+        var queue = ReadWebFile("Services", "AutoTagService.QualityChecksQueue.cs");
+        var loop = Slice(queue, "private async Task RunQualityChecksQueueAsync", "private async Task<AutoTagJob?> StartQualityChecksLibraryJobAsync");
+
+        // One library at a time: the next step starts only after the previous job is fully done.
+        Assert.Contains("for (var index = 0; index < state.Steps.Count; index++)", loop, StringComparison.Ordinal);
+        Assert.Contains("await StartQualityChecksLibraryJobAsync(step)", loop, StringComparison.Ordinal);
+        Assert.Contains("await WaitForQualityChecksJobAsync(job.Id)", loop, StringComparison.Ordinal);
+        Assert.Contains("await WaitForQualityChecksDownloadsToSettleAsync()", loop, StringComparison.Ordinal);
+
+        // section 11 decision 1: a failed library is reported and the queue continues; it never
+        // breaks out of the loop.
+        Assert.Contains("continuing with the remaining libraries", loop, StringComparison.Ordinal);
+        Assert.DoesNotContain("break;", loop, StringComparison.Ordinal);
+
+        // The pipeline lock is acquired per library by StartJob, never once for the whole queue.
+        Assert.Contains("StartJob(step.RootPath, step.ConfigJson, step.Options)", queue, StringComparison.Ordinal);
+        Assert.Contains("_qualityChecksQueues[progress.Id] = state;", queue, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Controller_EnqueuesAllLibrariesAndExposesQueueProgress()
+    {
+        var controller = ReadWebFile("Controllers", "Api", "AutoTagApiController.cs");
+
+        Assert.Contains("StartQualityChecksEnhancementAsync(", controller, StringComparison.Ordinal);
+        Assert.Contains("_autoTagService.EnqueueQualityChecksRun(steps)", controller, StringComparison.Ordinal);
+        Assert.Contains("qualityChecksQueue = true", controller, StringComparison.Ordinal);
+        Assert.Contains("enhancement/quality-checks/queue/{id}", controller, StringComparison.Ordinal);
+        Assert.Contains("_autoTagService.GetQualityChecksRun(id)", controller, StringComparison.Ordinal);
+        // A single library still takes the direct per-library path.
+        Assert.Contains("_autoTagService.StartJob(single.RootPath, single.ConfigJson, single.Options)", controller, StringComparison.Ordinal);
     }
 
     [Fact]
     public void ChecksRun_ReportsPerStageCountsAndLibraryProgress()
     {
         var script = ReadScript();
-        var runner = Slice(script, "async function runEnhancementQualityChecks", "async function runEnhancementGapFilling");
-        var counts = Slice(script, "function describeQualityCheckStageCounts", "function isActiveDownloadQueueStatus");
+        var runner = Slice(script, "async function pollQualityChecksQueue", "async function runEnhancementGapFilling");
+        var counts = Slice(script, "function describeQualityChecksLibraryResult", "function describeQualityCheckStageCounts");
 
-        Assert.Contains("Library ${index + 1}/${total}: ${scope.libraryName}", runner, StringComparison.Ordinal);
-        Assert.Contains("enhancementFoundCount", counts, StringComparison.Ordinal);
-        Assert.Contains("enhancementGapFilledCount", counts, StringComparison.Ordinal);
-        Assert.Contains("enhancementSidecarredCount", counts, StringComparison.Ordinal);
-        Assert.Contains("enhancementTidiedCount", counts, StringComparison.Ordinal);
+        Assert.Contains("Library ${Math.min(index + 1, total)}/${total}: ${name}", runner, StringComparison.Ordinal);
+        Assert.Contains("foundCount", counts, StringComparison.Ordinal);
+        Assert.Contains("gapFilledCount", counts, StringComparison.Ordinal);
+        Assert.Contains("sidecarredCount", counts, StringComparison.Ordinal);
+        Assert.Contains("tidiedCount", counts, StringComparison.Ordinal);
+
+        var queue = ReadWebFile("Services", "AutoTagService.QualityChecksQueue.cs");
+        Assert.Contains("public int FoundCount", queue, StringComparison.Ordinal);
+        Assert.Contains("public int GapFilledCount", queue, StringComparison.Ordinal);
+        Assert.Contains("public int SidecarredCount", queue, StringComparison.Ordinal);
+        Assert.Contains("public int TidiedCount", queue, StringComparison.Ordinal);
+        Assert.Contains("result.FoundCount = finished?.EnhancementFoundCount", queue, StringComparison.Ordinal);
 
         var jobState = ReadWebFile("Services", "AutoTagService.cs");
         Assert.Contains("public int EnhancementFoundCount", jobState, StringComparison.Ordinal);
@@ -97,7 +137,13 @@ public sealed class QualityChecksSingleLibraryRunTest
 
         var controller = ReadWebFile("Controllers", "Api", "AutoTagApiController.cs");
         Assert.Contains("checksReportOnly", controller, StringComparison.Ordinal);
-        Assert.Contains("QualityChecksLibraryScope.SpansMultipleLibraries(scopedFolders)", controller, StringComparison.Ordinal);
+        Assert.Contains("!EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(configNode)", controller, StringComparison.Ordinal);
+        Assert.Contains("checksReportOnly = library.ChecksReportOnly", controller, StringComparison.Ordinal);
+
+        // The queue's report-only libraries are known up front, so the UI warns before the first
+        // library starts.
+        var script = ReadScript();
+        Assert.Contains("warnAboutReportOnlyLibraries(payload?.libraries)", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -135,7 +181,10 @@ public sealed class QualityChecksSingleLibraryRunTest
     public void MashupClassifier_IsUsedByTheAuditAndByDedupeStrongIdentity()
     {
         var workflows = ReadWorkflows();
-        Assert.Contains("PartitionUnofficialMashups(missingFiles)", workflows, StringComparison.Ordinal);
+        Assert.Contains(
+            "PartitionUnofficialMashupsAsync(missingFiles, IsMashupCandidateIdentifiedAsync, cancellationToken)",
+            workflows,
+            StringComparison.Ordinal);
         Assert.Contains("class MashupClassifier", ReadWebFile("Services", "MashupClassifier.cs"), StringComparison.Ordinal);
 
         var service = ReadWebFile("Services", "DuplicateCleanerService.cs");

@@ -142,15 +142,19 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("No enabled music library folders are available in the selected enhancement scope.");
         }
 
-        // A checks run is strictly per library: "all libraries" is a queue of one run per library,
-        // each sent as its own request. A single request may never span two libraries, otherwise
-        // one job would cover several libraries and the per-library sequencing guarantee breaks.
+        // A Quality Checks run is strictly per library: the profile that library is assigned to
+        // decides what is switched on. "All libraries" is a server-side queue — one request from the
+        // UI, and the server walks the libraries one at a time, releasing the pipeline lock between
+        // them. A single library keeps the direct per-library path.
         var isQualityChecksRun = selectedFeatures.Contains(AutoTagLiterals.EnhancementFeatureQualityChecks)
             && selectedFeatures.Count == 1;
-        if (isQualityChecksRun && QualityChecksLibraryScope.SpansMultipleLibraries(scopedFolders))
+        if (isQualityChecksRun)
         {
-            return BadRequest(
-                "A Quality Checks run covers exactly one library. Choose one library, or run all libraries one at a time.");
+            return await StartQualityChecksEnhancementAsync(
+                request,
+                scopedFolders,
+                requestedFolderIds,
+                cancellationToken);
         }
 
         var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
@@ -209,11 +213,6 @@ public class AutoTagJobsController : ControllerBase
             : Path.GetFullPath(scopedFolders[0].RootPath);
         configNode["path"] = rootPath;
 
-        // A checks run whose profile has gap filling, sidecars and folder tidy-up all off can only
-        // report on files. The response tells the UI so it can warn before the run starts.
-        var checksReportOnly = isQualityChecksRun
-            && !EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(configNode);
-
         var job = await _autoTagService.StartJob(
             rootPath,
             SerializeConfig(configNode),
@@ -225,7 +224,168 @@ public class AutoTagJobsController : ControllerBase
                 EnhancementFeature: selectedForJob.Count == 1 ? selectedForJob.Single() : null,
                 SelectedEnhancementFeatures: EnhancementWorkflowSelection.OrderSelectedFeatures(selectedForJob),
                 EnhancementGroupId: request.GroupId));
-        return CreateStartJobResponse(job, checksReportOnly);
+        return CreateStartJobResponse(job);
+    }
+
+    /// <summary>
+    /// Starts a Quality Checks run. One library runs directly; "all libraries" is handed to the
+    /// server-side queue, which walks the libraries in turn and continues after a failed library.
+    /// </summary>
+    private async Task<IActionResult> StartQualityChecksEnhancementAsync(
+        AutoTagEnhancementStartRequest request,
+        List<DeezSpoTag.Services.Library.FolderDto> scopedFolders,
+        IReadOnlyList<long> requestedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        var groups = QualityChecksLibraryScope.GroupByLibrary(scopedFolders);
+        if (groups.Count == 0)
+        {
+            return BadRequest("No enabled music library folders are available in the selected enhancement scope.");
+        }
+
+        var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
+            includeFolders: true,
+            cancellationToken);
+        var runIntent = string.Equals(
+            request.Scope,
+            "recent",
+            StringComparison.OrdinalIgnoreCase)
+                ? AutoTagLiterals.RunIntentEnhancementRecentDownloads
+                : AutoTagLiterals.RunIntentEnhancementOnly;
+
+        var steps = new List<AutoTagService.QualityChecksLibraryStep>(groups.Count);
+        foreach (var group in groups)
+        {
+            var groupFolders = scopedFolders
+                .Where(folder => group.FolderIds.Contains(folder.Id))
+                .ToList();
+            if (TryBuildQualityChecksLibraryStep(
+                    request,
+                    group,
+                    groupFolders,
+                    profileState,
+                    requestedFolderIds,
+                    runIntent,
+                    out var step,
+                    out var error))
+            {
+                steps.Add(step!);
+                continue;
+            }
+
+            steps.Add(new AutoTagService.QualityChecksLibraryStep(
+                group.LibraryName,
+                groupFolders.Count > 0 ? groupFolders[0].RootPath ?? string.Empty : string.Empty,
+                string.Empty,
+                null,
+                false,
+                error));
+        }
+
+        // A single library keeps the exact per-library behaviour (and its direct error response).
+        if (groups.Count == 1)
+        {
+            var single = steps[0];
+            if (!string.IsNullOrWhiteSpace(single.BuildError))
+            {
+                return BadRequest(single.BuildError);
+            }
+
+            var job = await _autoTagService.StartJob(single.RootPath, single.ConfigJson, single.Options);
+            return CreateStartJobResponse(job, single.ChecksReportOnly);
+        }
+
+        var progress = _autoTagService.EnqueueQualityChecksRun(steps);
+        return Ok(new
+        {
+            jobId = progress.Id,
+            qualityChecksQueue = true,
+            queueTotal = progress.Total,
+            status = progress.Status,
+            // The per-library report-only decision is known up front, so the UI can warn before the
+            // first library starts.
+            libraries = progress.Libraries
+                .Select(library => new { libraryName = library.LibraryName, checksReportOnly = library.ChecksReportOnly })
+                .ToList()
+        });
+    }
+
+    private bool TryBuildQualityChecksLibraryStep(
+        AutoTagEnhancementStartRequest request,
+        QualityChecksLibraryScope.LibraryScope group,
+        IReadOnlyList<DeezSpoTag.Services.Library.FolderDto> groupFolders,
+        AutoTagProfileResolutionService.ResolvedState profileState,
+        IReadOnlyList<long> requestedFolderIds,
+        string runIntent,
+        out AutoTagService.QualityChecksLibraryStep? step,
+        out string? error)
+    {
+        step = null;
+        error = null;
+        if (groupFolders.Count == 0)
+        {
+            error = $"{group.LibraryName}: the library has no enabled music folders.";
+            return false;
+        }
+
+        var assignedProfiles = groupFolders
+            .Select(folder => AutoTagProfileResolutionService.ResolveFolderProfile(
+                profileState,
+                folder.Id,
+                folder.AutoTagProfileId))
+            .Where(profile => profile != null)
+            .Cast<DeezSpoTag.Core.Models.Settings.TaggingProfile>()
+            .GroupBy(profile => profile.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(profileGroup => profileGroup.First())
+            .ToList();
+        if (assignedProfiles.Count != 1)
+        {
+            error = $"{group.LibraryName}: its folders are assigned to different profiles, so it cannot run as one Quality Checks job.";
+            return false;
+        }
+
+        var selectedProfile = assignedProfiles[0];
+        if (!TryBuildEffectiveConfigNode(selectedProfile, out var configNode, out _))
+        {
+            error = $"{group.LibraryName}: its profile has no usable AutoTag configuration.";
+            return false;
+        }
+
+        var selectedForJob = ApplyEnhancementRunSelection(configNode, request, requestedFolderIds, []);
+        configNode[AutoTagLiterals.EnhancementForceFingerprintKey] = request.ForceFingerprint;
+        var rootPath = Path.GetFullPath(groupFolders[0].RootPath!);
+        configNode["path"] = rootPath;
+
+        step = new AutoTagService.QualityChecksLibraryStep(
+            group.LibraryName,
+            rootPath,
+            SerializeConfig(configNode),
+            new AutoTagService.StartJobOptions(
+                ProfileId: selectedProfile.Id,
+                ProfileName: selectedProfile.Name,
+                RunIntent: runIntent,
+                FolderStructureOverride: selectedProfile.FolderStructure,
+                EnhancementFeature: selectedForJob.Count == 1 ? selectedForJob.Single() : null,
+                SelectedEnhancementFeatures: EnhancementWorkflowSelection.OrderSelectedFeatures(selectedForJob),
+                EnhancementGroupId: request.GroupId),
+            !EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(configNode));
+        return true;
+    }
+
+    /// <summary>
+    /// Progress handle for a server-side Quality Checks queue. The UI polls this while the queue
+    /// walks the libraries and reads the per-library results from it at the end.
+    /// </summary>
+    [HttpGet("enhancement/quality-checks/queue/{id}")]
+    public IActionResult GetQualityChecksQueue(string id)
+    {
+        var progress = _autoTagService.GetQualityChecksRun(id);
+        if (progress == null)
+        {
+            return NotFound(new { error = "Quality Checks queue was not found." });
+        }
+
+        return Ok(progress);
     }
 
     internal static HashSet<string> ApplyEnhancementRunSelection(

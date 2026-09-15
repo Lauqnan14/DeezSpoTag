@@ -379,7 +379,10 @@ public sealed record MissingCoreMetadataFileDto(
     long FolderId,
     string FilePath,
     IReadOnlyList<string> MissingFields,
-    int RepairScore = 0);
+    int RepairScore = 0,
+    string? Title = null,
+    string? Artist = null,
+    bool HasProviderIdentity = false);
 
 public sealed record QualityScannerAutomationSettingsDto(
     bool Enabled,
