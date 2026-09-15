@@ -124,4 +124,8 @@ docs/watchlist-smooth-sync-integration.md
 
 # Ignore untracked markdown (session plans/transcripts). Already-tracked
 # markdown files are unaffected: gitignore never applies to tracked files.
+docs/3 - deezspotag-project-flow.md
+docs/superpowers/plans/2026-09-07-vibe-audiomack-lastfm-discogs519.md
+docs/superpowers/specs/2026-09-09-enhancement-sidecar-preflight-design.md
+docs/superpowers/specs/2026-09-15-provider-identity-boundaries-design.md
 *.md
