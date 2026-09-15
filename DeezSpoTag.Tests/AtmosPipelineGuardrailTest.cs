@@ -224,6 +224,30 @@ public sealed class AtmosPipelineGuardrailTest
         Assert.Contains("ResolveAtmosDestinationFolderId(qualityChecks)", workflows, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void QueueAtmosPicker_AppearsOnlyWhenMoreThanOneAtmosFolderIsTyped()
+    {
+        var view = ReadSource("DeezSpoTag.Web/Views/AutoTag/Index.cshtml");
+        var scripts = ReadSource("DeezSpoTag.Web/wwwroot/js/autotag.js");
+
+        // The picker lives in the checks card next to "Queue Atmos alternatives", hidden until needed.
+        Assert.Contains("enhancementAtmosDestinationGroup", view, StringComparison.Ordinal);
+        Assert.Contains("enhancementAtmosDestinationFolder", view, StringComparison.Ordinal);
+
+        // Only folders typed Atmos are offered, and a single one needs no choice: the server uses it.
+        Assert.Contains("desiredQuality.includes(\"atmos\")", scripts, StringComparison.Ordinal);
+        Assert.Contains("atmosFolders.length <= 1", scripts, StringComparison.Ordinal);
+
+        // The chosen folder travels with the quality checks config the runner reads.
+        Assert.Contains(
+            "qualityChecks.atmosDestinationFolderId = readEnhancementAtmosDestinationFolderId();",
+            scripts,
+            StringComparison.Ordinal);
+
+        // A stored choice survives a reload even though the option list is fetched asynchronously.
+        Assert.Contains("state.config?.enhancement?.qualityChecks?.atmosDestinationFolderId", scripts, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

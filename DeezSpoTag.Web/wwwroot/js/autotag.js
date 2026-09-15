@@ -4187,6 +4187,9 @@
         // config flag is left untouched rather than being read from a control that no longer exists.
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
+        // Only carried when the picker is actually showing, so one Atmos folder keeps using the
+        // folder typed Atmos on the Folder tab without storing a redundant choice.
+        qualityChecks.atmosDestinationFolderId = readEnhancementAtmosDestinationFolderId();
         sidecars.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", sidecars.queueLyricsRefresh);
         sidecars.removeLineSyncedTtml = getChecked("enhancementRemoveLineSyncedTtml", sidecars.removeLineSyncedTtml);
         sidecars.rewriteLineSyncedTtml = getChecked("enhancementRewriteLineSyncedTtml", sidecars.rewriteLineSyncedTtml);
@@ -4532,6 +4535,61 @@
             const contentType = String(folder?.desiredQuality || "").trim().toLowerCase();
             return contentType !== "video" && contentType !== "podcast";
         });
+    }
+
+    function isAtmosDestinationFolder(folder) {
+        // Folders are typed on the Folder tab by their desired quality. Same rule the server uses,
+        // so the picker can never offer a folder the scanner would refuse.
+        const desiredQuality = String(folder?.desiredQuality || "").trim().toLowerCase();
+        return desiredQuality.includes("atmos") || desiredQuality === "5";
+    }
+
+    async function refreshEnhancementAtmosDestinationPicker() {
+        const group = el("enhancementAtmosDestinationGroup");
+        const select = el("enhancementAtmosDestinationFolder");
+        const toggle = el("enhancementQueueAtmosAlternatives");
+        if (!group || !select || !toggle) {
+            return;
+        }
+
+        if (!toggle.checked) {
+            group.style.display = "none";
+            return;
+        }
+
+        const folders = await fetchEnhancementEligibleFolders();
+        const atmosFolders = folders.filter(isAtmosDestinationFolder);
+        // A single Atmos folder is unambiguous, so the server uses it and no picker is shown.
+        if (atmosFolders.length <= 1) {
+            group.style.display = "none";
+            select.innerHTML = "";
+            return;
+        }
+
+        const previous = String(select.value || "").trim();
+        const stored = Number.parseInt(state.config?.enhancement?.qualityChecks?.atmosDestinationFolderId, 10);
+        const preferred = previous || (Number.isFinite(stored) && stored > 0 ? String(stored) : "");
+        select.innerHTML = "";
+        for (const folder of atmosFolders) {
+            const option = document.createElement("option");
+            option.value = String(folder.id);
+            option.textContent = String(folder.displayName || folder.rootPath || `Folder ${folder.id}`);
+            select.appendChild(option);
+        }
+        if (preferred && atmosFolders.some((folder) => String(folder.id) === preferred)) {
+            select.value = preferred;
+        }
+        group.style.display = "";
+    }
+
+    function readEnhancementAtmosDestinationFolderId() {
+        const group = el("enhancementAtmosDestinationGroup");
+        const select = el("enhancementAtmosDestinationFolder");
+        if (!group || !select || group.style.display === "none") {
+            return null;
+        }
+        const folderId = Number.parseInt(select.value, 10);
+        return Number.isFinite(folderId) && folderId > 0 ? folderId : null;
     }
 
     function groupFolderIdsByProfile(folders, allowedIds) {
@@ -5397,6 +5455,7 @@
         syncFallbackSourceControls();
         syncMultiArtistHandlingState();
         syncMatchingSettingsState();
+        void refreshEnhancementAtmosDestinationPicker();
     }
 
     function syncMultiArtistHandlingState() {
