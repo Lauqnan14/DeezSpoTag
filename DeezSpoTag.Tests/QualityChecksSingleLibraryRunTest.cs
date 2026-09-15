@@ -13,7 +13,7 @@ namespace DeezSpoTag.Tests;
 public sealed class QualityChecksSingleLibraryRunTest
 {
     [Fact]
-    public void ChecksCard_PicksOneLibraryAndNeverRemembersTheChoice()
+    public void ChecksCard_PicksOneLibraryAndRemembersTheChoice()
     {
         var view = ReadView();
         var script = ReadScript();
@@ -25,6 +25,11 @@ public sealed class QualityChecksSingleLibraryRunTest
         var picker = Slice(script, "function refreshQualityChecksLibraryPicker", "function qualityChecksLibraryKey");
         Assert.Contains("select.value = \"\";", picker, StringComparison.Ordinal);
         Assert.Contains("\"All libraries\"", picker, StringComparison.Ordinal);
+        // section 11 decision 2: the last library is persisted and pre-selected next time.
+        Assert.Contains("AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY", script, StringComparison.Ordinal);
+        Assert.Contains("localStorage.getItem(AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY)", picker, StringComparison.Ordinal);
+        Assert.Contains("select.value = storedKey;", picker, StringComparison.Ordinal);
+        Assert.Contains("persistQualityChecksLibrary(select.value)", picker, StringComparison.Ordinal);
 
         // The old multi-select control and its profile grouping are gone from the checks path.
         Assert.DoesNotContain("enhancementQualityFolder", script, StringComparison.Ordinal);
@@ -33,7 +38,7 @@ public sealed class QualityChecksSingleLibraryRunTest
     }
 
     [Fact]
-    public void ChecksQueue_RunsLibrariesSequentiallyAndStopsOnFailure()
+    public void ChecksQueue_RunsLibrariesSequentiallyAndContinuesAfterAFailure()
     {
         var script = ReadScript();
         var runner = Slice(script, "async function runEnhancementQualityChecks", "function describeQualityCheckStageCounts");
@@ -43,8 +48,12 @@ public sealed class QualityChecksSingleLibraryRunTest
         Assert.Contains("resolveQualityChecksLibraryScopes(folders, selectedLibraryKey)", runner, StringComparison.Ordinal);
         Assert.Contains("await startCentralEnhancementFeature(features, scope.folderIds, \"enhancementQualityChecksStatus\")", runner, StringComparison.Ordinal);
         Assert.Contains("await waitForEnhancementDownloadsToSettle(", runner, StringComparison.Ordinal);
-        // A failure throws out of the loop, so the remaining libraries are not started.
-        Assert.Contains("throw new Error(`${position} failed:", runner, StringComparison.Ordinal);
+        // section 11 decision 1: a failure is reported and the queue continues, so the remaining libraries
+        // still run. The failure must be caught per library, never thrown out of the loop.
+        Assert.Contains("failures.push(", runner, StringComparison.Ordinal);
+        Assert.Contains("continuing with the remaining libraries", runner, StringComparison.Ordinal);
+        Assert.Contains("catch (error)", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("throw new Error(`${position} failed:", runner, StringComparison.Ordinal);
 
         // The checks path no longer groups folders by profile.
         Assert.DoesNotContain("groupFolderIdsByProfile", runner, StringComparison.Ordinal);

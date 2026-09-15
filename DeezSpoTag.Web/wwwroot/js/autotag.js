@@ -416,6 +416,7 @@
     const AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY = "autotag-folder-uniformity-job-id";
     const AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY = "autotag-folder-uniformity-status-snapshot";
     const AUTOTAG_FOLDER_UNIFORMITY_LAST_SCAN_KEY = "autotag-folder-uniformity-last-scan";
+    const AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY = "autotag-quality-checks-library";
     const AUTOTAG_LIBRARY_FOLDERS_API = "/api/library/folders";
     const PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
     const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
@@ -1357,13 +1358,29 @@
                 select.appendChild(option);
             });
         select.value = "";
+        // Remember the last library the user picked and pre-select it next time (section 11 decision 2).
+        // A stored key that no longer exists falls back to "all libraries".
+        const storedKey = String(localStorage.getItem(AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY) || "").trim();
+        if (storedKey && groups.has(storedKey)) {
+            select.value = storedKey;
+        }
 
         if (select.dataset.qualityLibraryBound !== "true") {
             select.dataset.qualityLibraryBound = "true";
             select.addEventListener("change", () => {
+                persistQualityChecksLibrary(select.value);
                 void refreshEnhancementTechnicalProfiles();
                 void refreshEnhancementAtmosDestinationPicker();
             });
+        }
+    }
+
+    function persistQualityChecksLibrary(libraryKey) {
+        const key = String(libraryKey || "").trim();
+        if (key) {
+            localStorage.setItem(AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY, key);
+        } else {
+            localStorage.removeItem(AUTOTAG_QUALITY_CHECKS_LIBRARY_KEY);
         }
     }
 
@@ -5123,34 +5140,50 @@
 
             const total = scopes.length;
             const summaries = [];
+            const failures = [];
             for (let index = 0; index < total; index += 1) {
                 const scope = scopes[index];
                 const position = `Library ${index + 1}/${total}: ${scope.libraryName}`;
-                setEnhancementStatus("enhancementQualityChecksStatus", `${position} — starting...`);
-                const job = await startCentralEnhancementFeature(features, scope.folderIds, "enhancementQualityChecksStatus");
-                const workflow = findEnhancementWorkflow(job, "quality-checks");
-                const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
-                    || String(workflow?.status || "").toLowerCase() === "failed";
-                if (failed) {
-                    // A failed library stops the queue: the remaining libraries are not started.
-                    throw new Error(`${position} failed: ${workflow?.message || job?.error || "quality checks failed"}`);
-                }
+                try {
+                    setEnhancementStatus("enhancementQualityChecksStatus", `${position} — starting...`);
+                    const job = await startCentralEnhancementFeature(features, scope.folderIds, "enhancementQualityChecksStatus");
+                    const workflow = findEnhancementWorkflow(job, "quality-checks");
+                    const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
+                        || String(workflow?.status || "").toLowerCase() === "failed";
+                    if (failed) {
+                        throw new Error(workflow?.message || job?.error || "quality checks failed");
+                    }
 
-                if (job?.checksReportOnly === true) {
-                    const warning = `${position}: this profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.`;
-                    setEnhancementStatus("enhancementQualityChecksStatus", warning);
-                    showToast(warning, "warning");
-                }
+                    if (job?.checksReportOnly === true) {
+                        const warning = `${position}: this profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.`;
+                        setEnhancementStatus("enhancementQualityChecksStatus", warning);
+                        showToast(warning, "warning");
+                    }
 
-                summaries.push(describeQualityCheckStageCounts(scope, job));
-                await waitForEnhancementDownloadsToSettle(job, "enhancementQualityChecksStatus");
+                    summaries.push(describeQualityCheckStageCounts(scope, job));
+                    await waitForEnhancementDownloadsToSettle(job, "enhancementQualityChecksStatus");
+                } catch (error) {
+                    // section 11 decision 1: a failed library is reported but never cancels the queue; the
+                    // remaining libraries still run.
+                    failures.push(`${position} failed: ${error?.message || error}`);
+                    setEnhancementStatus(
+                        "enhancementQualityChecksStatus",
+                        `${position} failed — continuing with the remaining libraries...`);
+                }
             }
 
-            const message = total === 1
-                ? `Quality checks completed for ${scopes[0].libraryName}. ${summaries[0]}`
-                : `Quality checks completed for ${total} libraries. ${summaries.join(" ")}`;
-            setEnhancementStatus("enhancementQualityChecksStatus", message);
-            showToast(message, "success");
+            if (failures.length > 0) {
+                const completed = total - failures.length;
+                const message = `Quality checks finished: ${completed}/${total} libraries completed. ${failures.join(" ")}`;
+                setEnhancementStatus("enhancementQualityChecksStatus", message);
+                showToast(message, "error");
+            } else {
+                const message = total === 1
+                    ? `Quality checks completed for ${scopes[0].libraryName}. ${summaries[0]}`
+                    : `Quality checks completed for ${total} libraries. ${summaries.join(" ")}`;
+                setEnhancementStatus("enhancementQualityChecksStatus", message);
+                showToast(message, "success");
+            }
         } catch (error) {
             const message = `Enhancement quality checks failed: ${error?.message || error}`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
