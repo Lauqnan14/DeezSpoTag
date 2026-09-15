@@ -15,7 +15,7 @@ RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publi
 
 FROM docker:cli AS docker-cli
 
-FROM golang:1.26.4-bookworm AS apple-wrapper-build
+FROM golang:1.26.6-bookworm AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
 
@@ -40,8 +40,9 @@ LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" 
 COPY scripts/mp4decrypt /usr/local/bin/mp4decrypt
 
 RUN apt-get update -o Acquire::Retries=5 \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
-       perl-base=5.38.2-3.2ubuntu0.3 \
+       perl-base \
        tar \
     && apt-get install -y --no-install-recommends \
        openssl \
@@ -132,7 +133,7 @@ RUN apt-get update -o Acquire::Retries=5 \
 
 RUN set -eux; \
     python3 -m venv /opt/venv; \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip; \
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
     /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
     /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; \
     /opt/venv/bin/python3 - <<'PY'
@@ -193,7 +194,7 @@ COPY scripts/fetch-vibe-models.sh /tmp/fetch-vibe-models.sh
 
 RUN set -eux; \
     python3 -m venv /opt/shazam-venv; \
-    /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip; \
+    /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
     /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt; \
     models_dir=/app/Tools/models; \
     mkdir -p "${models_dir}"; \
