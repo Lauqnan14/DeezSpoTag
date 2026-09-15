@@ -116,4 +116,28 @@ public sealed class LyricsSettingsPolicyTest
         Assert.Equal("ttml-lyrics", result.LrcType);
         Assert.Equal("ttml", result.LrcFormat);
     }
+
+    [Fact]
+    public void WantsEnhancedLrc_RequiresEnhancedTypeFromTheUi()
+    {
+        var lineOnly = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "lyrics",
+            LrcFormat = "lrc",
+            LrcTimingPreference = LrcTimingModes.PreferEnhanced
+        };
+        Assert.False(LyricsSettingsPolicy.WantsEnhancedLrc(lineOnly));
+        Assert.True(LyricsSettingsPolicy.WantsLineSyncedLrc(lineOnly));
+
+        var enhanced = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "syllable-lyrics",
+            LrcFormat = "lrc",
+            LrcTimingPreference = LrcTimingModes.PreferEnhanced
+        };
+        Assert.True(LyricsSettingsPolicy.WantsEnhancedLrc(enhanced));
+        Assert.False(LyricsSettingsPolicy.WantsLineSyncedLrc(enhanced));
+    }
 }

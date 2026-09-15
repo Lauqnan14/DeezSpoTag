@@ -245,7 +245,7 @@ public sealed class ActivitiesControllerContractTest
     }
 
     [Fact]
-    public void ActivitiesLyricsBadges_LabelTtmlAsWordSyncedLyrics()
+    public void ActivitiesLyricsBadges_MatchLyricsSettingsLabels()
     {
         var historySource = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
@@ -254,10 +254,15 @@ public sealed class ActivitiesControllerContractTest
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
 
-        Assert.Contains("Word Synced Lyrics", historySource, StringComparison.Ordinal);
-        Assert.Contains("Word Synced Lyrics", viewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("TTML lyrics", historySource, StringComparison.Ordinal);
-        Assert.DoesNotContain("TTML lyrics", viewSource, StringComparison.Ordinal);
+        Assert.Contains(">TTML lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.Contains(">TTML lyrics</span>", viewSource, StringComparison.Ordinal);
+        Assert.Contains(">Enhanced lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.Contains(">Enhanced lyrics</span>", viewSource, StringComparison.Ordinal);
+        Assert.Contains(">Synced lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.Contains(">Synced lyrics</span>", viewSource, StringComparison.Ordinal);
+        Assert.Contains(">Unsynced lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Word Synced Lyrics", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Word Synced Lyrics", viewSource, StringComparison.Ordinal);
     }
 
     [Fact]

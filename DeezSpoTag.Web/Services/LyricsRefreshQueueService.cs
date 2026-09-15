@@ -474,32 +474,12 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
     private static IReadOnlyList<string> ResolveTimingBadges(IReadOnlyDictionary<string, string> filesByFormat)
     {
-        var badges = new List<string>();
-        if (filesByFormat.TryGetValue("ttml", out var ttmlPath) && TryReadFile(ttmlPath, out var ttml)
-            && AppleLyricsService.IsWordSyncedTtml(ttml))
-        {
-            badges.Add("ttml");
-        }
-
-        if (filesByFormat.TryGetValue("lrc", out var lrcPath) && TryReadFile(lrcPath, out var lrc))
-        {
-            var timing = LrcContent.ClassifyTiming(lrc);
-            if (timing == LrcTimingKind.Word)
-            {
-                badges.Add("enhanced");
-            }
-            else if (timing == LrcTimingKind.Line)
-            {
-                badges.Add("synced");
-            }
-        }
-
-        if (badges.Count == 0 && filesByFormat.ContainsKey("txt"))
-        {
-            badges.Add("unsynced");
-        }
-
-        return badges;
+        TryReadFile(filesByFormat.GetValueOrDefault("ttml") ?? string.Empty, out var ttml);
+        TryReadFile(filesByFormat.GetValueOrDefault("lrc") ?? string.Empty, out var lrc);
+        return LyricsSidecarTimingBadges.FromSidecars(
+            ttml,
+            lrc,
+            filesByFormat.ContainsKey("txt"));
     }
 
     private static bool TryReadFile(string path, out string content)

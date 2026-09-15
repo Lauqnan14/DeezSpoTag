@@ -15,7 +15,13 @@ public static partial class LrcContent
     private static partial Regex LineTimestampPattern();
 
     [GeneratedRegex(@"\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\][^\r\n]*<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>", RegexOptions.CultureInvariant)]
-    private static partial Regex WordTimestampPattern();
+    private static partial Regex AngleBracketWordPattern();
+
+    // Karaoke / enhanced LRC that timestamps each word with [mm:ss] instead of <mm:ss>.
+    // Dual line-start stamps ("[00:12.00][00:45.00]Chorus") have no lyric text between
+    // the brackets and stay line-synced.
+    [GeneratedRegex(@"\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\][^\r\n\[\]]*\S[^\r\n\[\]]*\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]", RegexOptions.CultureInvariant)]
+    private static partial Regex InterleavedBracketWordPattern();
 
     public static LrcTimingKind ClassifyTiming(string? content)
     {
@@ -24,7 +30,8 @@ public static partial class LrcContent
             return LrcTimingKind.None;
         }
 
-        if (WordTimestampPattern().IsMatch(content))
+        if (AngleBracketWordPattern().IsMatch(content)
+            || InterleavedBracketWordPattern().IsMatch(content))
         {
             return LrcTimingKind.Word;
         }

@@ -60,7 +60,13 @@ public static class LyricsSettingsPolicy
 
     public static bool WantsEnhancedLrc(DeezSpoTagSettings settings)
         => WantsLrcOutput(settings)
-            && LrcTimingModes.ImpliesEnhanced(settings.LrcTimingPreference);
+           && ParseSelectedTypes(settings.LrcType).Contains(SyllableLyricsType)
+           && LrcTimingModes.ImpliesEnhanced(settings.LrcTimingPreference);
+
+    public static bool WantsLineSyncedLrc(DeezSpoTagSettings settings)
+        => WantsLrcOutput(settings)
+           && ParseSelectedTypes(settings.LrcType).Contains(LyricsType)
+           && !LrcTimingModes.RequiresWordTiming(settings.LrcTimingPreference);
 
     public static bool WantsUnsyncedTextOutput(DeezSpoTagSettings settings)
         => settings.SaveLyrics

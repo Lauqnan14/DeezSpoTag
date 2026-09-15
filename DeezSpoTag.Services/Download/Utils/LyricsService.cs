@@ -3625,6 +3625,11 @@ public class LyricsService
                 return;
             }
 
+            if (!usedEnhanced && !IsLyricsTypeSelected(settings, LyricsType))
+            {
+                return;
+            }
+
             var upgradingExistingLineLrc = state.HadExistingLrc
                 && LrcTimingModes.ImpliesEnhanced(timingPreference)
                 && ReadExistingLrcTiming(state.LrcPath) == LrcTimingKind.Line;
@@ -3853,8 +3858,7 @@ public class LyricsService
             && settings.PreferEnhancedLrc
             && IsLyricsGateEnabled(settings)
             && outputFormats.Contains("lrc")
-            && (IsLyricsTypeSelected(settings, LyricsType)
-                || IsLyricsTypeSelected(settings, SyllableLyricsType));
+            && IsLyricsTypeSelected(settings, SyllableLyricsType);
     }
 
     private static bool ShouldSaveTtml(DeezSpoTagSettings settings, LyricsBase lyrics)

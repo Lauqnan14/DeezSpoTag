@@ -12,28 +12,36 @@ internal static class LyricsSidecarTimingBadges
             return Array.Empty<string>();
         }
 
+        TryRead(Path.ChangeExtension(filePath, ".ttml"), out var ttml);
+        TryRead(Path.ChangeExtension(filePath, ".lrc"), out var lrc);
+        var hasTxt = File.Exists(Path.ChangeExtension(filePath, ".txt"));
+        return FromSidecars(ttml, lrc, hasTxt);
+    }
+
+    /// <summary>
+    /// Matches Lyrics Settings: line-synced .lrc → synced, word-synced .lrc → enhanced,
+    /// word-synced .ttml → ttml, .txt only when no synchronized sidecar is present.
+    /// Line-synced TTML is never a TTML lyrics badge.
+    /// </summary>
+    internal static IReadOnlyList<string> FromSidecars(string? ttml, string? lrc, bool hasUnsyncedTxt)
+    {
         var badges = new List<string>();
-        var ttmlPath = Path.ChangeExtension(filePath, ".ttml");
-        if (File.Exists(ttmlPath) && TryRead(ttmlPath, out var ttml) && AppleLyricsService.IsWordSyncedTtml(ttml))
+        if (AppleLyricsService.IsWordSyncedTtml(ttml))
         {
             badges.Add("ttml");
         }
 
-        var lrcPath = Path.ChangeExtension(filePath, ".lrc");
-        if (File.Exists(lrcPath) && TryRead(lrcPath, out var lrc))
+        var timing = LrcContent.ClassifyTiming(lrc);
+        if (timing == LrcTimingKind.Word)
         {
-            var timing = LrcContent.ClassifyTiming(lrc);
-            if (timing == LrcTimingKind.Word)
-            {
-                badges.Add("enhanced");
-            }
-            else if (timing == LrcTimingKind.Line)
-            {
-                badges.Add("synced");
-            }
+            badges.Add("enhanced");
+        }
+        else if (timing == LrcTimingKind.Line)
+        {
+            badges.Add("synced");
         }
 
-        if (badges.Count == 0 && File.Exists(Path.ChangeExtension(filePath, ".txt")))
+        if (badges.Count == 0 && hasUnsyncedTxt)
         {
             badges.Add("unsynced");
         }

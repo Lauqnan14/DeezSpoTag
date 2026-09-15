@@ -769,8 +769,18 @@ public sealed class AutoTagProviderCapabilityContractTest
     public void PlatformLyricsResolution_IsRestrictedToTheCurrentProvider()
     {
         var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var populateStart = source.IndexOf("private async Task PopulatePlatformLyricsAsync(", StringComparison.Ordinal);
+        var lyricsPassStart = source.IndexOf("private async Task<AutoTagMatchResult?> MatchLyricsProviderAsync(", StringComparison.Ordinal);
+        Assert.True(populateStart >= 0, "PopulatePlatformLyricsAsync was not found.");
+        Assert.True(lyricsPassStart >= 0, "MatchLyricsProviderAsync was not found.");
+        var populate = source[populateStart..lyricsPassStart];
+        var lyricsPass = source[lyricsPassStart..];
 
-        Assert.Contains("lookupSettings.LyricsFallbackOrder = provider;", source, StringComparison.Ordinal);
+        Assert.Contains("lookupSettings.LyricsFallbackOrder = provider;", populate, StringComparison.Ordinal);
+        Assert.DoesNotContain("lookupSettings.LyricsFallbackOrder = provider;", lyricsPass, StringComparison.Ordinal);
+        Assert.DoesNotContain("lookupSettings.LyricsFallbackEnabled = true;", lyricsPass, StringComparison.Ordinal);
+        Assert.Contains("LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)", source, StringComparison.Ordinal);
+        Assert.Contains("LrcTimingPreference = LrcTimingModes.Normalize(", source, StringComparison.Ordinal);
         Assert.Contains("RestrictLyricsRequestToProvider", source, StringComparison.Ordinal);
         Assert.Contains("LyricsProviderRegistry.IsRegistered(provider)", source, StringComparison.Ordinal);
         Assert.Contains("LyricsProviderRegistry.YouLyPlus", source, StringComparison.Ordinal);

@@ -887,21 +887,16 @@
 
     function lyricsBadgeMarkup(kind) {
         const normalized = String(kind || "").toLowerCase();
-        const cls = normalized === "ttml" || normalized === "time-synced"
-            ? "badge-lyrics-timesynced"
-            : normalized === "enhanced" || normalized === "enhanced-synchronized"
-                ? "badge-lyrics-enhanced"
-                : normalized === "synced"
-                    ? "badge-lyrics-synced"
-                    : "badge-lyrics-unsynced";
-        const text = normalized === "ttml" || normalized === "time-synced"
-            ? "Word Synced Lyrics"
-            : normalized === "enhanced" || normalized === "enhanced-synchronized"
-                ? "Enhanced lyrics"
-                : normalized === "synced"
-                    ? "Synced lyrics"
-                    : "Unsynced lyrics";
-        return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
+        if (normalized === "ttml" || normalized === "time-synced") {
+            return '<span class="badge badge-lyrics-timesynced">TTML lyrics</span>';
+        }
+        if (normalized === "enhanced" || normalized === "enhanced-synchronized") {
+            return '<span class="badge badge-lyrics-enhanced">Enhanced lyrics</span>';
+        }
+        if (normalized === "synced") {
+            return '<span class="badge badge-lyrics-synced">Synced lyrics</span>';
+        }
+        return '<span class="badge badge-lyrics-unsynced">Unsynced lyrics</span>';
     }
 
     function artworkBadgeMarkup(kind) {

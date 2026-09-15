@@ -227,6 +227,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
                 ? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"
                 : baseSettings.LrcType,
+            LrcTimingPreference = LrcTimingModes.Normalize(
+                baseSettings.LrcTimingPreference,
+                baseSettings.PreferEnhancedLrc),
             Tags = new TagSettings
             {
                 Lyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
@@ -272,10 +275,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         var sidecarState = GetLyricsSidecarState(filePath);
         var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
+        var selectedTypes = ParseLyricsTypeSelection(settings.LrcType);
+        var wantsWordLrc = selectedTypes.Contains(SyllableLyricsType)
+            && LrcTimingModes.ImpliesEnhanced(timingPreference);
         var existingLrcIsWord = sidecarState.HasLrc
             && LrcContent.IsWordSynchronized(ReadFileOrEmpty(Path.ChangeExtension(filePath, ".lrc")));
         var lrcSatisfies = sidecarState.HasLrc
-            && (timingPreference == LrcTimingModes.Line || existingLrcIsWord);
+            && (wantsWordLrc ? existingLrcIsWord : true);
         if (lrcSatisfies)
         {
             requestFlags = requestFlags with { WantsSynced = false, WantsUnsynced = false };
@@ -442,8 +448,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             {
                 return false;
             }
-            if (LrcTimingModes.ImpliesEnhanced(LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc))
-                && !LrcContent.IsWordSynchronized(ReadFileOrEmpty(lrcPath)))
+
+            var selectedTypes = ParseLyricsTypeSelection(settings.LrcType);
+            var wantsWordLrc = selectedTypes.Contains(SyllableLyricsType)
+                && LrcTimingModes.ImpliesEnhanced(
+                    LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc));
+            if (wantsWordLrc && !LrcContent.IsWordSynchronized(ReadFileOrEmpty(lrcPath)))
             {
                 return false;
             }
@@ -626,8 +636,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             request.WantsSynced,
             request.WantsUnsynced,
             request.WantsTtml);
-        lookupSettings.LyricsFallbackEnabled = true;
-        lookupSettings.LyricsFallbackOrder = provider;
 
         var lyrics = await _downloadLyricsService.ResolveLyricsAsync(
             BuildLyricsLookupTrack(track, provider),
