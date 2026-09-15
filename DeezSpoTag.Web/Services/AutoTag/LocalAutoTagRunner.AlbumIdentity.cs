@@ -35,21 +35,343 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
-    private static string GetAlbumSortKey(string? path)
+    private static string? ResolveAlbumRootDirectory(string filePath, string? prospectiveAlbumRoot)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        string? candidate = !string.IsNullOrWhiteSpace(prospectiveAlbumRoot)
+            ? prospectiveAlbumRoot
+            : Path.GetDirectoryName(filePath);
+        if (string.IsNullOrWhiteSpace(candidate))
         {
-            return string.Empty;
+            return null;
         }
 
         try
         {
-            return Path.GetDirectoryName(Path.GetFullPath(path)) ?? string.Empty;
+            var fullPath = Path.GetFullPath(candidate)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var leaf = Path.GetFileName(fullPath);
+            if (Regex.IsMatch(leaf, "^CD\\d+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                fullPath = Path.GetDirectoryName(fullPath)?.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar) ?? fullPath;
+            }
+
+            return fullPath;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            return string.Empty;
+            return null;
         }
+    }
+
+    private static string? TryResolvePersistedAlbumRoot(string libraryRoot, string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(libraryRoot)
+            || string.IsNullOrWhiteSpace(relativePath)
+            || Path.IsPathRooted(relativePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var root = Path.GetFullPath(libraryRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
+            var relative = Path.GetRelativePath(root, candidate);
+            if (relative == ".."
+                || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || Path.IsPathRooted(relative))
+            {
+                return null;
+            }
+
+            return candidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private static string? BuildAlbumRelativePath(string libraryRoot, string? albumRoot)
+    {
+        if (string.IsNullOrWhiteSpace(albumRoot))
+        {
+            return null;
+        }
+
+        try
+        {
+            var root = Path.GetFullPath(libraryRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var candidate = Path.GetFullPath(albumRoot);
+            var relative = Path.GetRelativePath(root, candidate);
+            return relative == "."
+                || relative == ".."
+                || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || Path.IsPathRooted(relative)
+                    ? null
+                    : relative;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private static AutoTagAudioInfo ApplyConfirmedProviderReleaseIdHint(
+        AutoTagAudioInfo source,
+        AlbumIdentity identity,
+        string platformId)
+    {
+        var clone = CloneAudioInfo(source);
+        foreach (var rawName in AllProviderReleaseIdCleanupRawNames())
+        {
+            clone.Tags.Remove(rawName);
+        }
+
+        var canonicalName = PlatformReleaseIdRawName(platformId);
+        if (string.IsNullOrWhiteSpace(canonicalName)
+            || !identity.IsPlatformReleaseIdConfirmed(canonicalName)
+            || identity.PlatformReleaseIds?.TryGetValue(canonicalName, out var value) != true
+            || string.IsNullOrWhiteSpace(value))
+        {
+            return clone;
+        }
+
+        foreach (var rawName in ProviderReleaseIdWriteRawNames(platformId))
+        {
+            clone.Tags[rawName] = [value.Trim()];
+        }
+
+        if (string.Equals(platformId, "musicbrainz", StringComparison.OrdinalIgnoreCase))
+        {
+            clone.Tags[AlbumIdRawTag] = [value.Trim()];
+            clone.Tags["MUSICBRAINZ_ALBUMID"] = [value.Trim()];
+        }
+
+        return clone;
+    }
+
+    private static void ApplyProviderReleaseIdState(
+        TagWriteContext tagWriteContext,
+        string platformId,
+        string? releaseId,
+        bool authoritativeAbsence)
+    {
+        var cleanupNames = ProviderReleaseIdCleanupRawNames(platformId);
+        var writeNames = ProviderReleaseIdWriteRawNames(platformId);
+        var overwrite = ShouldOverwriteTag(tagWriteContext.Config, SupportedTag.ReleaseId);
+        if (authoritativeAbsence && !overwrite)
+        {
+            return;
+        }
+
+        if (!overwrite && cleanupNames.Any(name => HasRawTag(
+                tagWriteContext.File,
+                tagWriteContext.Extension,
+                name)))
+        {
+            tagWriteContext.AttemptedTags.Add(SupportedTag.ReleaseId);
+            return;
+        }
+
+        if (overwrite)
+        {
+            foreach (var rawName in cleanupNames)
+            {
+                RemoveRawTagValues(tagWriteContext, rawName);
+            }
+        }
+
+        if (!authoritativeAbsence && !string.IsNullOrWhiteSpace(releaseId))
+        {
+            foreach (var rawName in writeNames)
+            {
+                SetRaw(tagWriteContext, rawName, SupportedTag.ReleaseId, [releaseId.Trim()], force: true);
+            }
+        }
+
+        tagWriteContext.AttemptedTags.Add(SupportedTag.ReleaseId);
+    }
+
+    private Task ReconcileBatchAlbumIdentitiesAsync(
+        AutoTagRunPlan plan,
+        int batchStart,
+        int batchEnd,
+        CancellationToken token)
+    {
+        var enabled = BuildConfiguredTagSet(plan.Config.Tags);
+        var releaseIdEnabled = enabled.Contains(ReleaseIdTag);
+        for (var fileIndex = Math.Max(0, batchStart); fileIndex < Math.Min(batchEnd, plan.FileCount); fileIndex++)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!plan.AlbumReleaseContexts.TryGetValue(fileIndex, out var releaseContext)
+                || !plan.AlbumIdentities.TryGet(releaseContext.ReleaseKey, out var identity)
+                || identity.IsEmpty)
+            {
+                continue;
+            }
+
+            var filePath = plan.Files[fileIndex];
+            using var file = TagLib.File.Create(filePath);
+            var extension = Path.GetExtension(filePath);
+            var writeContext = new TagWriteContext(
+                file,
+                extension,
+                plan.Config,
+                ResolveArtistSeparator(plan.Config, filePath),
+                string.Empty,
+                plan.TagSettings.UseNullSeparator,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                Array.Empty<string>(),
+                false,
+                new HashSet<SupportedTag>());
+
+            if (enabled.Contains(AlbumTag)
+                && !string.IsNullOrWhiteSpace(identity.CanonicalAlbumTitle)
+                && (ShouldOverwriteTag(plan.Config, SupportedTag.Album)
+                    || string.IsNullOrWhiteSpace(file.Tag.Album)))
+            {
+                file.Tag.Album = identity.CanonicalAlbumTitle;
+            }
+
+            if (enabled.Contains(AlbumArtistTag)
+                && !string.IsNullOrWhiteSpace(identity.CanonicalAlbumArtist)
+                && (ShouldOverwriteTag(plan.Config, SupportedTag.AlbumArtist)
+                    || file.Tag.AlbumArtists.Length == 0))
+            {
+                file.Tag.AlbumArtists = [identity.CanonicalAlbumArtist];
+            }
+
+            if (enabled.Contains(ReleaseDateTag)
+                && AlbumIdentity.ParseReleaseDate(identity.ReleaseDate) is { } releaseDate)
+            {
+                WriteDate(
+                    file,
+                    extension,
+                    ReleaseDateTag,
+                    releaseDate,
+                    SupportedTag.ReleaseDate,
+                    plan.Config,
+                    plan.TagSettings.UseNullSeparator);
+            }
+
+            WriteReconciledRawIdentity(writeContext, enabled, ReleaseStatusTag, ReleaseStatusRawTag, SupportedTag.ReleaseStatus, identity.ReleaseStatus);
+            WriteReconciledRawIdentity(writeContext, enabled, ReleaseCountryTag, ReleaseCountryRawTag, SupportedTag.ReleaseCountry, identity.ReleaseCountry);
+            WriteReconciledRawIdentity(writeContext, enabled, BarcodeTag, BarcodeRawTag, SupportedTag.Barcode, identity.Barcode);
+            WriteReconciledRawIdentity(writeContext, enabled, ReleaseTypeTag, ReleaseTypeRawTag, SupportedTag.ReleaseType, identity.ReleaseType);
+
+            if (releaseIdEnabled)
+            {
+                foreach (var platform in plan.EffectivePlatforms)
+                {
+                    var providerKey = PlatformReleaseIdRawName(platform);
+                    if (string.IsNullOrWhiteSpace(providerKey)
+                        || !identity.IsPlatformReleaseIdConfirmed(providerKey))
+                    {
+                        continue;
+                    }
+
+                    string? providerReleaseId = null;
+                    identity.PlatformReleaseIds?.TryGetValue(providerKey, out providerReleaseId);
+                    ApplyProviderReleaseIdState(
+                        writeContext with { PlatformId = platform },
+                        platform,
+                        providerReleaseId,
+                        authoritativeAbsence: string.IsNullOrWhiteSpace(providerReleaseId));
+                }
+            }
+
+            file.Save();
+            foreach (var platform in plan.EffectivePlatforms)
+            {
+                var providerKey = PlatformReleaseIdRawName(platform);
+                if (!releaseIdEnabled
+                    || string.IsNullOrWhiteSpace(providerKey)
+                    || !identity.IsPlatformReleaseIdConfirmed(providerKey))
+                {
+                    continue;
+                }
+
+                string? expected = null;
+                identity.PlatformReleaseIds?.TryGetValue(providerKey, out expected);
+                if (!VerifyProviderReleaseIdState(
+                        file,
+                        extension,
+                        platform,
+                        expected,
+                        ShouldOverwriteTag(plan.Config, SupportedTag.ReleaseId),
+                        authoritativeAbsence: string.IsNullOrWhiteSpace(expected)))
+                {
+                    throw new IOException($"Album identity reconciliation failed for {platform} release ID.");
+                }
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void WriteReconciledRawIdentity(
+        TagWriteContext context,
+        HashSet<string> enabled,
+        string configuredName,
+        string rawName,
+        SupportedTag supportedTag,
+        string? value)
+    {
+        if (enabled.Contains(configuredName) && !string.IsNullOrWhiteSpace(value))
+        {
+            SetRaw(context, rawName, supportedTag, [value.Trim()]);
+        }
+    }
+
+    private static string? ResolveSourceAlbumIdentityKey(
+        string libraryRoot,
+        AutoTagAudioInfo source)
+    {
+        var albumArtist = source.Tags.TryGetValue("ALBUMARTIST", out var values)
+            ? values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            : null;
+        albumArtist ??= source.Artists.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        albumArtist ??= source.Artist;
+        return AlbumIdentity.BuildScopedEditionAwareKey(libraryRoot, albumArtist, source.Album);
+    }
+
+    private AutoTagAudioInfo PrepareProviderMatchInfo(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo source)
+    {
+        var key = ResolveSourceAlbumIdentityKey(context.Plan.TargetPath, source);
+        if (key is null)
+        {
+            return CloneAudioInfo(source);
+        }
+
+        var prospectiveRoot = ResolveAlbumRootDirectory(context.File, null);
+        if (!context.Plan.AlbumIdentities.TryGet(key, out var identity))
+        {
+            var seed = TryReadAlbumIdentityFromFolder(context.File, prospectiveRoot);
+            identity = context.Plan.AlbumIdentities.Establish(key, AlbumIdentity.Empty, seed);
+        }
+
+        var albumRoot = TryResolvePersistedAlbumRoot(context.Plan.TargetPath, identity.AlbumRelativePath)
+            ?? prospectiveRoot;
+        var albumArtist = identity.CanonicalAlbumArtist
+            ?? source.Tags.GetValueOrDefault("ALBUMARTIST")?.FirstOrDefault()
+            ?? source.Artists.FirstOrDefault()
+            ?? source.Artist;
+        var albumTitle = identity.CanonicalAlbumTitle ?? source.Album ?? string.Empty;
+        context.Plan.AlbumReleaseContexts[context.FileIndex] = new AlbumReleaseContext(
+            key,
+            albumRoot,
+            albumTitle,
+            albumArtist,
+            identity);
+
+        return ApplyConfirmedProviderReleaseIdHint(source, identity, context.Platform);
     }
 
     private static bool AlbumsReferToSameRelease(string? frozen, string? candidate)
@@ -71,13 +393,39 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     /// album ids — no matter which platform matched it. This is what keeps
     /// Navidrome-visible tags identical across files, platforms and sessions.
     /// </summary>
-    private void ApplyAlbumIdentityConsensus(AutoTagFileRunContext context, AutoTagAudioInfo sourceInfo, AutoTagTrack track)
+    private void ApplyAlbumIdentityConsensus(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo sourceInfo,
+        AutoTagTrack track,
+        string? matchedProviderReleaseId,
+        bool hasAuthoritativeProviderResult)
     {
+        if (!hasAuthoritativeProviderResult)
+        {
+            return;
+        }
+
+        track.HasAuthoritativeProviderReleaseIdResult = true;
+        track.HasAuthoritativeProviderReleaseIdAbsence = string.IsNullOrWhiteSpace(matchedProviderReleaseId);
+
         var albumArtist = track.AlbumArtists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
             ?? track.Artists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-        // Edition-aware key: standard vs deluxe stay separate identities; different
-        // wordings of the same edition ("Deluxe" vs "Deluxe Edition") share one key.
-        var key = AlbumIdentity.BuildEditionAwareKey(albumArtist, track.Album);
+        context.Plan.AlbumReleaseContexts.TryGetValue(context.FileIndex, out var releaseContext);
+        var sameKnownEdition = releaseContext is not null
+            && AlbumTitleNormalizer.IsSameEdition(releaseContext.AlbumTitle, track.Album);
+        if (sameKnownEdition)
+        {
+            track.Album = releaseContext!.AlbumTitle;
+            if (!string.IsNullOrWhiteSpace(releaseContext.AlbumArtist))
+            {
+                albumArtist = releaseContext.AlbumArtist;
+                track.AlbumArtists = [releaseContext.AlbumArtist];
+            }
+        }
+
+        var key = sameKnownEdition
+            ? releaseContext!.ReleaseKey
+            : AlbumIdentity.BuildScopedEditionAwareKey(context.Plan.TargetPath, albumArtist, track.Album);
         if (key is null)
         {
             return;
@@ -86,17 +434,40 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AlbumIdentity? seed = null;
         if (context.Plan.SeededAlbumIdentityKeys.Add(key))
         {
-            seed = TryReadAlbumIdentityFromSiblings(
+            seed = TryReadAlbumIdentityFromFolder(
                 context.File,
-                TryResolveProspectiveAlbumDirectory(context, track));
+                releaseContext?.AlbumRoot ?? TryResolveProspectiveAlbumDirectory(context, track));
         }
 
-        var candidate = BuildAlbumIdentityCandidate(track, context.Platform);
-        var established = context.Plan.AlbumIdentities.Establish(key, candidate, seed);
+        var albumRoot = !string.IsNullOrWhiteSpace(releaseContext?.Identity.AlbumRelativePath)
+            ? releaseContext.AlbumRoot
+            : ResolveAlbumRootDirectory(context.File, TryResolveProspectiveAlbumDirectory(context, track))
+                ?? releaseContext?.AlbumRoot;
+        var candidate = BuildAlbumIdentityCandidate(track, context.Platform) with
+        {
+            CanonicalAlbumTitle = track.Album,
+            CanonicalAlbumArtist = albumArtist,
+            AlbumRelativePath = BuildAlbumRelativePath(context.Plan.TargetPath, albumRoot)
+        };
+        var established = context.Plan.AlbumIdentities.Establish(
+            key,
+            candidate,
+            seed,
+            PlatformReleaseIdRawName(context.Platform),
+            matchedProviderReleaseId,
+            hasAuthoritativeProviderResult,
+            ShouldOverwriteTag(context.Plan.Config, SupportedTag.ReleaseId));
         if (established.IsEmpty)
         {
             return;
         }
+
+        context.Plan.AlbumReleaseContexts[context.FileIndex] = new AlbumReleaseContext(
+            key,
+            albumRoot,
+            established.CanonicalAlbumTitle ?? track.Album ?? string.Empty,
+            established.CanonicalAlbumArtist ?? albumArtist,
+            established);
 
         ApplyEstablishedAlbumIdentity(track, established, context.Platform);
 
@@ -138,6 +509,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        establishedFolder = establishedFolder with { Identity = establishedIdentity };
+        context.Plan.AlbumFolderIdentities[folderKey] = establishedFolder;
+
         // Same album and same edition: adopt the folder's established wording and
         // identity so every platform writes identical values.
         if (AlbumTitleNormalizer.IsSameEdition(establishedFolder.AlbumTitle, track.Album))
@@ -170,27 +544,45 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static AlbumIdentity BuildAlbumIdentityCandidate(AutoTagTrack track, string platformId)
     {
-        return new AlbumIdentity(
+        var isMusicBrainz = string.Equals(platformId, "musicbrainz", StringComparison.OrdinalIgnoreCase);
+        return NormalizeSharedAlbumIdentity(new AlbumIdentity(
             AlbumIdentity.FormatReleaseDate(track.ReleaseDate),
-            track.AlbumId,
-            track.AlbumArtistId,
-            track.ReleaseGroupId,
+            isMusicBrainz ? FirstMusicBrainzShapedId(
+                ResolveOtherValues(track, "MUSICBRAINZ_ALBUMID")
+                    .Concat(ResolveOtherValues(track, "MUSICBRAINZ_ALBUM_ID"))
+                    .Append(track.AlbumId)) : null,
+            isMusicBrainz ? FirstMusicBrainzShapedId(
+                ResolveOtherValues(track, "MUSICBRAINZ_ALBUMARTISTID")
+                    .Concat(ResolveOtherValues(track, "MUSICBRAINZ_ALBUM_ARTIST_ID"))
+                    .Append(track.AlbumArtistId)) : null,
+            isMusicBrainz ? FirstMusicBrainzShapedId(
+                ResolveOtherValues(track, "MUSICBRAINZ_RELEASEGROUPID")
+                    .Concat(ResolveOtherValues(track, "MUSICBRAINZ_RELEASE_GROUP_ID"))
+                    .Append(track.ReleaseGroupId)) : null,
             track.ReleaseStatus,
             track.ReleaseCountry,
             track.Barcode,
             track.ReleaseType,
-            BuildPlatformReleaseIds(track, platformId));
+            BuildPlatformReleaseIds(track, platformId)));
     }
+
+    private static AlbumIdentity NormalizeSharedAlbumIdentity(AlbumIdentity identity)
+    {
+        return identity with
+        {
+            AlbumId = ToMusicBrainzShapedId(identity.AlbumId),
+            AlbumArtistId = ToMusicBrainzShapedId(identity.AlbumArtistId),
+            ReleaseGroupId = ToMusicBrainzShapedId(identity.ReleaseGroupId)
+        };
+    }
+
+    private static string? FirstMusicBrainzShapedId(IEnumerable<string?> values)
+        => values.Select(ToMusicBrainzShapedId).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
     private static IReadOnlyDictionary<string, string>? BuildPlatformReleaseIds(AutoTagTrack track, string platformId)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         AddPlatformReleaseId(values, PlatformReleaseIdRawName(platformId), track.ReleaseId);
-        foreach (var rawName in PlatformReleaseIdRawNames)
-        {
-            AddPlatformReleaseId(values, rawName, ResolveOtherValues(track, rawName).FirstOrDefault());
-        }
-
         return values.Count == 0 ? null : values;
     }
 
@@ -216,7 +608,31 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static string? PlatformReleaseIdRawName(string? platformId)
-        => string.IsNullOrWhiteSpace(platformId) ? null : $"{platformId.Trim().ToUpperInvariant()}_RELEASE_ID";
+        => ProviderReleaseIdWriteRawNames(platformId).FirstOrDefault();
+
+    private static IReadOnlyList<string> ProviderReleaseIdWriteRawNames(string? platformId)
+        => string.IsNullOrWhiteSpace(platformId)
+            ? Array.Empty<string>()
+            : string.Equals(platformId.Trim(), ItunesPlatform, StringComparison.OrdinalIgnoreCase)
+            ? ["ITUNES_RELEASE_ID", "APPLE_ALBUM_ID"]
+            : string.Equals(platformId.Trim(), "musicbrainz", StringComparison.OrdinalIgnoreCase)
+            ? ["MUSICBRAINZ_RELEASE_ID", "MUSICBRAINZ_ALBUMID", AlbumIdRawTag]
+            : [$"{platformId.Trim().ToUpperInvariant()}_RELEASE_ID"];
+
+    private static IReadOnlyList<string> ProviderReleaseIdCleanupRawNames(string? platformId)
+        => string.Equals(platformId?.Trim(), ItunesPlatform, StringComparison.OrdinalIgnoreCase)
+            ? AutoTagIdentityTags.AppleLegacyIdentityAliases
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+            : string.Equals(platformId?.Trim(), "musicbrainz", StringComparison.OrdinalIgnoreCase)
+            ? ["MUSICBRAINZ_RELEASE_ID", "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", AlbumIdRawTag]
+            : ProviderReleaseIdWriteRawNames(platformId);
+
+    private static IReadOnlyList<string> AllProviderReleaseIdCleanupRawNames()
+        => KnownProviderReleaseIdPlatforms
+            .SelectMany(ProviderReleaseIdCleanupRawNames)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static void ApplyEstablishedAlbumIdentity(AutoTagTrack track, AlbumIdentity identity, string platformId)
     {
@@ -227,7 +643,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SetOtherValue(track, "RELEASEDATE", identity.ReleaseDate);
         }
 
-        if (!string.IsNullOrWhiteSpace(identity.AlbumId))
+        var musicBrainzConfirmed = identity.IsPlatformReleaseIdConfirmed("MUSICBRAINZ_RELEASE_ID");
+        if (musicBrainzConfirmed && !string.IsNullOrWhiteSpace(identity.AlbumId))
         {
             track.AlbumId = identity.AlbumId;
             // The shared AlbumId slot is platform-agnostic (the folder's majority id);
@@ -245,14 +662,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(identity.ReleaseGroupId))
+        if (musicBrainzConfirmed && !string.IsNullOrWhiteSpace(identity.ReleaseGroupId))
         {
             track.ReleaseGroupId = identity.ReleaseGroupId;
             SetOtherValue(track, ReleaseGroupIdRawTag, identity.ReleaseGroupId);
             SetOtherValue(track, "MUSICBRAINZ_RELEASEGROUPID", identity.ReleaseGroupId);
         }
 
-        if (!string.IsNullOrWhiteSpace(identity.AlbumArtistId))
+        if (musicBrainzConfirmed && !string.IsNullOrWhiteSpace(identity.AlbumArtistId))
         {
             track.AlbumArtistId = identity.AlbumArtistId;
             SetOtherValue(track, AlbumArtistIdRawTag, identity.AlbumArtistId);
@@ -286,6 +703,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         var platformReleaseIdName = PlatformReleaseIdRawName(platformId);
         if (!string.IsNullOrWhiteSpace(platformReleaseIdName)
+            && identity.IsPlatformReleaseIdConfirmed(platformReleaseIdName)
             && identity.PlatformReleaseIds?.TryGetValue(platformReleaseIdName, out var platformReleaseId) == true
             && !string.IsNullOrWhiteSpace(platformReleaseId))
         {
@@ -297,28 +715,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private static string ResolveAlbumFolderKey(AutoTagFileRunContext context, AutoTagTrack track)
     {
         var prospective = TryResolveProspectiveAlbumDirectory(context, track);
-        if (!string.IsNullOrWhiteSpace(prospective))
-        {
-            return Path.GetFullPath(prospective).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        }
-
-        try
-        {
-            return Path.GetDirectoryName(Path.GetFullPath(context.File))?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                ?? string.Empty;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return string.Empty;
-        }
+        return ResolveAlbumRootDirectory(context.File, prospective) ?? string.Empty;
     }
 
-    private static AlbumIdentity? TryReadAlbumIdentityFromSiblings(string filePath, string? destinationDirectory)
+    private static AlbumIdentity? TryReadAlbumIdentityFromFolder(string filePath, string? destinationDirectory)
     {
         var identity = AlbumIdentity.Empty;
         foreach (var directory in EnumerateAlbumIdentitySeedDirectories(filePath, destinationDirectory))
         {
-            identity = identity.CoalesceWith(ReadAlbumIdentityFromDirectory(directory, filePath));
+            identity = identity.CoalesceWith(ReadAlbumIdentityFromDirectory(directory));
             if (!identity.IsEmpty)
             {
                 break;
@@ -345,13 +750,22 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static AlbumIdentity ReadAlbumIdentityFromDirectory(string directory, string filePath)
+    private static AlbumIdentity ReadAlbumIdentityFromDirectory(string directory)
     {
         var identities = new List<AlbumIdentity>();
         IEnumerable<string> siblings;
         try
         {
-            siblings = Directory.EnumerateFiles(directory).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+            var seedDirectories = new List<string> { directory };
+            seedDirectories.AddRange(Directory.EnumerateDirectories(directory)
+                .Where(path => Regex.IsMatch(
+                    Path.GetFileName(path),
+                    "^CD\\d+$",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)));
+            siblings = seedDirectories
+                .SelectMany(Directory.EnumerateFiles)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -360,11 +774,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         foreach (var sibling in siblings)
         {
-            if (PathsReferToSameFile(sibling, filePath))
-            {
-                continue;
-            }
-
             var extension = Path.GetExtension(sibling);
             if (!AlbumIdentitySeedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             {
@@ -376,9 +785,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 using var file = TagLib.File.Create(sibling);
                 var identity = new AlbumIdentity(
                     ReadRawTagValuesAny(file, extension, AlbumIdentityDateRawNames).FirstOrDefault(),
-                    ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumIdRawNames).FirstOrDefault(),
-                    ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumArtistIdRawNames).FirstOrDefault(),
-                    ReadRawTagValuesAny(file, extension, AlbumIdentityReleaseGroupIdRawNames).FirstOrDefault(),
+                    FirstMusicBrainzShapedId(ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumIdRawNames)),
+                    FirstMusicBrainzShapedId(ReadRawTagValuesAny(file, extension, AlbumIdentityAlbumArtistIdRawNames)),
+                    FirstMusicBrainzShapedId(ReadRawTagValuesAny(file, extension, AlbumIdentityReleaseGroupIdRawNames)),
                     ReadRawTagValuesAny(file, extension, ReleaseStatusRawTag).FirstOrDefault(),
                     ReadRawTagValuesAny(file, extension, ReleaseCountryRawTag).FirstOrDefault(),
                     ReadRawTagValuesAny(file, extension, BarcodeRawTag, BarcodeTag, "upc").FirstOrDefault(),
@@ -460,7 +869,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private static IReadOnlyDictionary<string, string>? ReadPlatformReleaseIds(TagLib.File file, string extension)
     {
         var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rawName in PlatformReleaseIdRawNames)
+        foreach (var rawName in AllProviderReleaseIdCleanupRawNames())
         {
             AddPlatformReleaseId(ids, rawName, ReadRawTagValuesAny(file, extension, rawName).FirstOrDefault());
         }
@@ -542,24 +951,26 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteReleaseIdTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(ReleaseIdTag) || string.IsNullOrWhiteSpace(context.SourceTrack.ReleaseId))
+        if (!context.EnabledTags.Contains(ReleaseIdTag)
+            || !context.SourceTrack.HasAuthoritativeProviderReleaseIdResult)
         {
             return;
         }
 
-        var releaseId = context.SourceTrack.ReleaseId.Trim();
+        var releaseId = context.SourceTrack.ReleaseId?.Trim();
         // Namespace guard: a value from another platform's id family (e.g. an Audiomack
         // numeric album id) must never be written into this platform's release-id tag.
-        if (!IsPlatformReleaseIdShapeValid(context.PlatformId, releaseId))
+        if (!string.IsNullOrWhiteSpace(releaseId)
+            && !IsPlatformReleaseIdShapeValid(context.PlatformId, releaseId))
         {
             return;
         }
 
-        SetRaw(
+        ApplyProviderReleaseIdState(
             tagWriteContext,
-            $"{context.PlatformId.ToUpperInvariant()}_RELEASE_ID",
-            SupportedTag.ReleaseId,
-            new List<string> { releaseId });
+            context.PlatformId,
+            releaseId,
+            context.SourceTrack.HasAuthoritativeProviderReleaseIdAbsence);
     }
 
     /// <summary>
