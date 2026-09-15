@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using System;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -284,4 +285,14 @@ public sealed class EnhancementWorkflowSelectionTest
 
     private static JsonObject Parse(string json)
         => JsonNode.Parse(json)!.AsObject();
+
+    [Fact]
+    public void MultiProviderEnhancementSelection_DoesNotAddADedicatedIdentityWriter()
+    {
+        var source = PartialSourceReader.ReadTypeSource(
+            "DeezSpoTag.Web", "Services", "EnhancementWorkflowSelection.cs");
+        Assert.DoesNotContain("ProviderIdentityField", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WriteProviderIdentityAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveFamily(", source, StringComparison.Ordinal);
+    }
 }

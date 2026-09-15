@@ -932,4 +932,16 @@ public sealed class EnhancementMultiSectionRunTest
 
         throw new DirectoryNotFoundException("Repository root was not found.");
     }
+
+    [Fact]
+    public void MultiSectionEnhancementRun_ReusesTheSharedIdentityBoundary()
+    {
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.Contains("await _autoTagRunner.RunAsync(", service, StringComparison.Ordinal);
+
+        var workflows = PartialSourceReader.ReadTypeSource(
+            "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
+        Assert.DoesNotContain("ProviderIdentityField", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("WriteProviderIdentityAsync", workflows, StringComparison.Ordinal);
+    }
 }

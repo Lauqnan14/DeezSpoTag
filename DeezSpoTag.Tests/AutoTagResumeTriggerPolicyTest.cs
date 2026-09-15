@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -17,6 +18,35 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class AutoTagResumeTriggerPolicyTest
 {
+    [Fact]
+    public void LegacyCombinedRun_RewindsOnlyWhenFolderUniformityHasNoEvidence()
+    {
+        var config = JsonNode.Parse("""
+            {
+              "tags": ["title"],
+              "enhancement": {
+                "gapFilling": { "enabled": true },
+                "folderUniformity": { "enabled": true, "enforceFolderStructure": true }
+              }
+            }
+            """)!.AsObject();
+        var job = new AutoTagJob
+        {
+            ResumeCheckpoint = new AutoTagResumeCheckpoint
+            {
+                StageName = "enhancement",
+                FileIndex = 40,
+                PlatformIndex = 1
+            }
+        };
+
+        Assert.True(AutoTagService.ShouldRewindLegacyCombinedFolderUniformityJob(job, config));
+
+        job.SelectedEnhancementFeatures = ["tag-gap-fill", "folder-uniformity"];
+        job.FolderUniformityRunMode = "batch-scoped";
+        Assert.False(AutoTagService.ShouldRewindLegacyCombinedFolderUniformityJob(job, config));
+    }
+
     [Theory]
     [InlineData("manual", true)]
     [InlineData("schedule", true)]
@@ -204,5 +234,16 @@ public sealed class AutoTagResumeTriggerPolicyTest
         }
 
         throw new InvalidOperationException("Unable to locate repository root from test output path.");
+    }
+
+    [Fact]
+    public void ResumedRun_ReusesTheSharedIdentityBoundary()
+    {
+        var service = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var runnerCalls = service.Split("_autoTagRunner.RunAsync(").Length - 1;
+        Assert.Equal(1, runnerCalls);
+        Assert.DoesNotContain("ProviderIdentityField", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("WriteProviderIdentityAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveFamily(", service, StringComparison.Ordinal);
     }
 }

@@ -383,4 +383,14 @@ public sealed class ManualEnhancementStartContractTest
         var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
         return end > start ? source[start..end] : source[start..];
     }
+
+    [Fact]
+    public void ManualEnrichment_CentralIdentityResolutionStaysConfinedToTheManualPass()
+    {
+        var orchestration = PartialSourceReader.ReadTypeSource(
+            "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.RunOrchestration.cs");
+        Assert.Contains("isManualEnrichment && firstManualPass", orchestration, StringComparison.Ordinal);
+        Assert.Contains("ApplyCentralIdentityForManualEnrichmentAsync(", orchestration, StringComparison.Ordinal);
+        Assert.Contains("RestoreTrustedCoreIdentity(", orchestration, StringComparison.Ordinal);
+    }
 }
