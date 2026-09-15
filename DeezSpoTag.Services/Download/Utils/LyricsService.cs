@@ -59,6 +59,10 @@ public sealed record LyricsResolutionResult(
 public sealed record LyricsSaveResult(IReadOnlyDictionary<string, string> FilesByFormat)
 {
     public static LyricsSaveResult Empty { get; } = new(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+    public bool LookupFailed { get; init; }
+
+    public static LyricsSaveResult Failed { get; } = Empty with { LookupFailed = true };
 }
 
 /// <summary>
@@ -3449,9 +3453,8 @@ public class LyricsService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error saving lyrics for track {TrackId}", track.Id);
+            return LyricsSaveResult.Failed;
         }
-
-        return LyricsSaveResult.Empty;
     }
 
     /// <summary>

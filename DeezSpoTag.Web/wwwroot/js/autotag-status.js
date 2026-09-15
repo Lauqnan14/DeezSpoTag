@@ -892,29 +892,6 @@
         return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
     }
 
-    function lyricsMissingMarkup(inner, platform) {
-        if (!platform.includes("lyrics")) {
-            return "";
-        }
-
-        const message = String(inner.message || inner.reviewReason || "").toLowerCase();
-        const keptExisting = message.includes("existing lyrics")
-            || message.includes("overwrite was not selected")
-            || message.includes("refresh was not selected");
-        if (keptExisting) {
-            return "";
-        }
-
-        const unavailable = message.includes("no lyrics")
-            || message.includes("not returned")
-            || message.includes("unavailable");
-        if (!unavailable) {
-            return "";
-        }
-
-        return '<span class="badge badge-lyrics-unsynced">No lyrics</span>';
-    }
-
     function artworkBadgeMarkup(kind) {
         const normalized = String(kind || "").toLowerCase();
         if (normalized !== "animated-artwork") {
@@ -1022,15 +999,40 @@
         return String(inner?.activityState || "").toLowerCase() === "fetchingsidecars";
     }
 
+    function sidecarEntryTimestamp(entry) {
+        const parsed = Date.parse(entry?.timestamp || "");
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    // History is reversed newest-first for the tags table. Sidecar cards must
+    // not trust array order: sort each group by timestamp so "newest" is the
+    // latest event, not the first file's original fetching line.
+    function sortSidecarGroupByTimestamp(group) {
+        return (group || []).map((entry, index) => ({ entry, index }))
+            .sort((left, right) => {
+                const delta = sidecarEntryTimestamp(left.entry) - sidecarEntryTimestamp(right.entry);
+                if (delta !== 0) {
+                    return delta;
+                }
+                // historyStatus is newest-first; a later index is older.
+                return right.index - left.index;
+            })
+            .map((item) => item.entry);
+    }
+
+    function newestSidecarEntry(group) {
+        const sorted = sortSidecarGroupByTimestamp(group);
+        return sorted.length ? sorted[sorted.length - 1] : null;
+    }
+
     function resolveSidecarFetchingActivity(group) {
         // Same rule as downloads: activity exists only while this item is the
-        // one currently running. Status history is oldest-first, so the last
-        // record in the group is the live state. A result (or the next file)
-        // replaces fetching and the line must disappear.
+        // one currently running. A result (or the next file) replaces fetching
+        // and the line must disappear.
         if (!group.length) {
             return "";
         }
-        const newest = group[group.length - 1];
+        const newest = newestSidecarEntry(group);
         const inner = newest?.status?.status || {};
         if (!isSidecarFetchingRecord(inner)) {
             return "";
@@ -1039,8 +1041,18 @@
     }
 
     function findActiveSidecarKey(filtered, pathToTrackId, groups) {
-        for (let index = filtered.length - 1; index >= 0; index -= 1) {
-            const inner = filtered[index]?.status?.status || {};
+        const chronological = sortSidecarGroupByTimestamp(filtered);
+        if (!chronological.length) {
+            return "";
+        }
+
+        const newestOverall = chronological[chronological.length - 1];
+        if (!isSidecarFetchingRecord(newestOverall?.status?.status || {})) {
+            return "";
+        }
+
+        for (let index = chronological.length - 1; index >= 0; index -= 1) {
+            const inner = chronological[index]?.status?.status || {};
             if (!isSidecarFetchingRecord(inner)) {
                 continue;
             }
@@ -1049,7 +1061,7 @@
             if (!group || !group.length) {
                 continue;
             }
-            const newest = group[group.length - 1];
+            const newest = newestSidecarEntry(group);
             if (isSidecarFetchingRecord(newest?.status?.status || {})) {
                 return key;
             }
@@ -1084,7 +1096,10 @@
         });
         const activeKey = findActiveSidecarKey(filtered, pathToTrackId, groups);
         return Array.from(groups.entries()).map(([key, group]) => {
-            const display = group.find((entry) => !isSidecarFetchingRecord(entry?.status?.status || {})) || group[0];
+            const sorted = sortSidecarGroupByTimestamp(group);
+            const display = [...sorted].reverse().find((entry) => !isSidecarFetchingRecord(entry?.status?.status || {}))
+                || sorted[sorted.length - 1]
+                || group[0];
             const keptInner = display?.status?.status || {};
             const lyricsBadges = new Set(Array.isArray(keptInner.lyricsBadges) ? keptInner.lyricsBadges : []);
             const artworkBadges = new Set(Array.isArray(keptInner.artworkBadges) ? keptInner.artworkBadges : []);
@@ -1131,9 +1146,8 @@
         container.innerHTML = cards.map((card, index) => {
             const entry = card.entry;
             const inner = entry?.status?.status || {};
-            const platform = String(entry?.status?.platform || "").toLowerCase();
-            const title = inner.sourceTitle || toFileName(inner.path) || "Unknown title";
-            const artist = inner.sourceArtist || "";
+            const title = String(inner.sourceTitle || "").trim() || "Unknown title";
+            const artist = String(inner.sourceArtist || "").trim();
             const lyricsBadges = Array.isArray(inner.lyricsBadges) ? inner.lyricsBadges : [];
             const artworkBadges = Array.isArray(inner.artworkBadges) ? inner.artworkBadges : [];
             const art = sidecarCoverMarkup(inner);
@@ -1141,9 +1155,7 @@
             const activityHtml = card.activity
                 ? `<div class="task-activity">${escapeHtml(card.activity)}</div>`
                 : "";
-            const lyricsHtml = lyricsBadges.length
-                ? lyricsBadges.map(lyricsBadgeMarkup).join("")
-                : (card.activity ? "" : lyricsMissingMarkup(inner, platform));
+            const lyricsHtml = lyricsBadges.map(lyricsBadgeMarkup).join("");
             const artworkHtml = artworkBadges.map(artworkBadgeMarkup).join("");
             const badgeHtml = `${lyricsHtml}${artworkHtml}`;
             const badgesBlock = badgeHtml

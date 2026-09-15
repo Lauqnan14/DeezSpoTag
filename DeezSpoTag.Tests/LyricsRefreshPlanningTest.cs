@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Web.Services;
 using System;
 using System.IO;
@@ -34,6 +35,9 @@ public sealed class LyricsRefreshPlanningTest
         var plan = LyricsRefreshQueueService.PlanExistingLyrics(1, audioPath, LrcSettings(timing), LyricsRefreshOptions.Default);
 
         Assert.Equal(shouldFetch, plan.ShouldFetchLyrics);
+        Assert.Equal(
+            shouldFetch ? LyricsSidecarWorkKind.UpgradeLrcToWord : LyricsSidecarWorkKind.None,
+            plan.Work);
     }
 
     [Fact]
@@ -45,6 +49,45 @@ public sealed class LyricsRefreshPlanningTest
         var plan = LyricsRefreshQueueService.PlanExistingLyrics(1, audioPath, LrcSettings(LrcTimingModes.Line), LyricsRefreshOptions.Default);
 
         Assert.True(plan.ShouldFetchLyrics);
+        Assert.Equal(LyricsSidecarWorkKind.FetchMissing, plan.Work);
+    }
+
+    [Fact]
+    public void RemoveOnlyLineSyncedTtml_IsLocalWorkNotAFetch()
+    {
+        using var temp = new TemporaryDirectory();
+        var audioPath = CreateAudio(temp.Path);
+        File.WriteAllText(Path.ChangeExtension(audioPath, ".ttml"), "<tt>line synced</tt>");
+
+        var plan = LyricsRefreshQueueService.PlanExistingLyrics(
+            1,
+            audioPath,
+            LrcSettings(LrcTimingModes.Line),
+            new LyricsRefreshOptions(RefreshLyrics: false, RemoveLineSyncedTtml: true));
+
+        Assert.False(plan.ShouldFetchLyrics);
+        Assert.True(plan.NeedsLocalOnly);
+        Assert.Equal(LyricsSidecarWorkKind.RemoveLineSyncedTtml, plan.Work);
+    }
+
+    [Fact]
+    public void RewriteLineSyncedTtml_IsNetworkWorkWhenProfileWantsTtml()
+    {
+        using var temp = new TemporaryDirectory();
+        var audioPath = CreateAudio(temp.Path);
+        File.WriteAllText(Path.ChangeExtension(audioPath, ".ttml"), "<tt>line synced</tt>");
+        var settings = LrcSettings(LrcTimingModes.Line);
+        settings.LrcType = "ttml-lyrics";
+        settings.LrcFormat = "ttml";
+
+        var plan = LyricsRefreshQueueService.PlanExistingLyrics(
+            1,
+            audioPath,
+            settings,
+            new LyricsRefreshOptions(RefreshLyrics: false, RewriteLineSyncedTtml: true));
+
+        Assert.True(plan.ShouldFetchLyrics);
+        Assert.Equal(LyricsSidecarWorkKind.RewriteTtmlToWord, plan.Work);
     }
 
     [Fact]

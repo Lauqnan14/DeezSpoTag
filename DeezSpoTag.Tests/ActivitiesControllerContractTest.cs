@@ -209,7 +209,9 @@ public sealed class ActivitiesControllerContractTest
         Assert.Contains("activityState", historySource, StringComparison.Ordinal);
         Assert.Contains("fetchingsidecars", historySource, StringComparison.Ordinal);
         Assert.Contains("findActiveSidecarKey", historySource, StringComparison.Ordinal);
-        Assert.Contains("group[group.length - 1]", historySource, StringComparison.Ordinal);
+        Assert.Contains("sortSidecarGroupByTimestamp", historySource, StringComparison.Ordinal);
+        Assert.Contains("newestSidecarEntry", historySource, StringComparison.Ordinal);
+        Assert.Contains("sidecarEntryTimestamp", historySource, StringComparison.Ordinal);
         Assert.Contains("String(inner.message || \"\")", historySource, StringComparison.Ordinal);
         Assert.DoesNotContain("parseSidecarFetchingKinds", historySource, StringComparison.Ordinal);
         Assert.DoesNotContain("formatSidecarFetchingActivity", historySource, StringComparison.Ordinal);
@@ -222,18 +224,20 @@ public sealed class ActivitiesControllerContractTest
     }
 
     [Fact]
-    public void AutoTagHistorySidecar_DoesNotTreatKeptExistingLyricsAsMissing()
+    public void AutoTagHistorySidecar_ShowsTitleArtistAndNeverANoLyricsBadge()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/wwwroot/js/autotag-status.js"));
 
-        Assert.Contains("function lyricsMissingMarkup(inner, platform)", source, StringComparison.Ordinal);
-        Assert.Contains("existing lyrics", source, StringComparison.Ordinal);
-        Assert.Contains("overwrite was not selected", source, StringComparison.Ordinal);
+        Assert.Contains("inner.sourceTitle", source, StringComparison.Ordinal);
+        Assert.Contains("inner.sourceArtist", source, StringComparison.Ordinal);
+        Assert.Contains("lyrics-row-title", source, StringComparison.Ordinal);
+        Assert.Contains("lyrics-row-artist", source, StringComparison.Ordinal);
         Assert.Contains("lyricsBadges.map(lyricsBadgeMarkup)", source, StringComparison.Ordinal);
-        Assert.Contains("lyricsMissingMarkup(inner, platform)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("? '<span class=\"badge badge-lyrics-unsynced\">No lyrics</span>'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("function lyricsMissingMarkup", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("inner.sourceTitle || toFileName", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("badge-lyrics-unsynced\">No lyrics</span>", source, StringComparison.Ordinal);
     }
 
     [Fact]

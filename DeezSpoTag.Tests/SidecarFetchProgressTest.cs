@@ -30,15 +30,12 @@ public sealed class SidecarFetchProgressTest
         "/music/Artist/Album Two/02 - Fifth.flac"
     };
 
-    private static string FetchLine(string filePath, AutoTagService.SidecarFileNeeds needs, int processed, int total)
-    {
-        var fetchMessage = SidecarFetchActivity.Describe(new SidecarFetchWork(
-            needs.NeedsStillArtwork,
-            needs.NeedsAnimatedArtwork,
-            false,
-            needs.NeedsLyrics));
-        return AutoTagService.DescribeSidecarFetchProgress(filePath, fetchMessage, processed, total);
-    }
+    private static string FetchLine(AutoTagService.SidecarFileNeeds needs)
+        => AutoTagService.DescribeSidecarFetchProgress(
+            SidecarFetchActivity.DescribeEnhancement(
+                needs.NeedsStillArtwork,
+                needs.NeedsAnimatedArtwork,
+                needs.LyricsWork));
 
     private static CoverAlbumMaintenancePlan AlbumPlan(string filePath, bool still, bool animated, bool localOnly = false)
         => new(
@@ -48,8 +45,17 @@ public sealed class SidecarFetchProgressTest
             localOnly,
             SkipReason: null);
 
-    private static LyricsRefreshPlan LyricsPlan(string filePath, long trackId, bool shouldFetch)
-        => new(trackId, filePath, shouldFetch, Array.Empty<string>(), shouldFetch ? null : "already present");
+    private static LyricsRefreshPlan LyricsPlan(
+        string filePath,
+        long trackId,
+        bool shouldFetch,
+        LyricsSidecarWorkKind? work = null)
+        => new(
+            trackId,
+            filePath,
+            work ?? (shouldFetch ? LyricsSidecarWorkKind.FetchMissing : LyricsSidecarWorkKind.None),
+            Array.Empty<string>(),
+            shouldFetch ? null : "already present");
 
     /// <summary>
     /// Walks the real per-file resolution (album-artwork ownership + detection results) and
@@ -79,7 +85,7 @@ public sealed class SidecarFetchProgressTest
                 continue;
             }
 
-            messages.Add(FetchLine(filePath, needs, index + 1, OrderedFiles.Length));
+            messages.Add(FetchLine(needs));
         }
 
         return messages;
@@ -98,37 +104,66 @@ public sealed class SidecarFetchProgressTest
                 scope.OwnsAlbumArtwork ? AlbumPlan(filePath, still: true, animated: true) : null,
                 scope.HandlesLyrics ? LyricsPlan(filePath, 42, shouldFetch: true) : null));
 
-        // Every file gets its own line; none is silently dropped.
+        // Every file gets its own line; none is silently dropped. The visible activity
+        // names only remaining work — no file index or filename.
         Assert.Equal(OrderedFiles.Length, messages.Count);
         Assert.All(messages, message => Assert.False(string.IsNullOrWhiteSpace(message)));
-        Assert.Equal(OrderedFiles.Length, messages.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(messages, message => Assert.DoesNotContain("file ", message, StringComparison.Ordinal));
+        Assert.All(messages, message => Assert.DoesNotContain(".flac", message, StringComparison.OrdinalIgnoreCase));
 
         // The album's first file carries artwork + lyrics; the rest of that album carries
         // lyrics only. Nothing rests on the first file while the run continues.
-        Assert.StartsWith(
-            "Fetching album artwork, animated artwork and lyrics (file 1/5: 01 - First.flac)",
-            messages[0],
-            StringComparison.Ordinal);
-        Assert.StartsWith(
-            "Fetching lyrics (file 2/5: 02 - Second.flac)",
-            messages[1],
-            StringComparison.Ordinal);
-        Assert.StartsWith(
-            "Fetching lyrics (file 3/5: 03 - Third.flac)",
-            messages[2],
-            StringComparison.Ordinal);
-        Assert.StartsWith(
-            "Fetching album artwork, animated artwork and lyrics (file 4/5: 01 - Fourth.flac)",
-            messages[3],
-            StringComparison.Ordinal);
-        Assert.StartsWith(
-            "Fetching lyrics (file 5/5: 02 - Fifth.flac)",
-            messages[4],
-            StringComparison.Ordinal);
+        Assert.Equal("Fetching album artwork, animated artwork and lyrics", messages[0]);
+        Assert.Equal("Fetching lyrics", messages[1]);
+        Assert.Equal("Fetching lyrics", messages[2]);
+        Assert.Equal("Fetching album artwork, animated artwork and lyrics", messages[3]);
+        Assert.Equal("Fetching lyrics", messages[4]);
 
         // Artwork is claimed exactly twice - once per album - and never repeated.
         Assert.Equal(2, messages.Count(message => message.Contains("album artwork", StringComparison.Ordinal)));
         Assert.Equal(2, messages.Count(message => message.Contains("animated artwork", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void RemainingWorkLineShrinksToLyricsAfterAlbumArtwork()
+    {
+        var filePath = OrderedFiles[0];
+        var withArtwork = AutoTagService.ResolveSidecarFileNeeds(
+            true,
+            AlbumPlan(filePath, still: true, animated: true),
+            true,
+            LyricsPlan(filePath, 42, shouldFetch: true, LyricsSidecarWorkKind.UpgradeLrcToWord));
+        var lyricsOnly = AutoTagService.ResolveSidecarFileNeeds(
+            false,
+            null,
+            true,
+            LyricsPlan(filePath, 42, shouldFetch: true, LyricsSidecarWorkKind.UpgradeLrcToWord));
+
+        Assert.Equal(
+            "Fetching album artwork, animated artwork and updating lyrics",
+            FetchLine(withArtwork));
+        Assert.Equal("Updating lyrics", FetchLine(lyricsOnly));
+    }
+
+    [Fact]
+    public void RemoveOnlyTtmlIsLocalWorkNotAlreadyComplete()
+    {
+        var filePath = OrderedFiles[1];
+        var plan = new AutoTagService.SidecarFetchPlan(runCovers: true, runLyrics: true);
+        plan.Resolve(OrderedFiles[0], 42);
+        var scope = plan.Resolve(filePath, 42);
+        var needs = AutoTagService.ResolveSidecarFileNeeds(
+            scope.OwnsAlbumArtwork,
+            null,
+            scope.HandlesLyrics,
+            LyricsPlan(filePath, 42, shouldFetch: false, LyricsSidecarWorkKind.RemoveLineSyncedTtml));
+
+        Assert.False(needs.IsAlreadyComplete);
+        Assert.False(needs.RequiresFetch);
+        Assert.False(needs.RequiresArtworkStep);
+        Assert.True(needs.RequiresLyricsStep);
+        Assert.True(needs.HasLocalOnlyLyricsWork);
+        Assert.Equal("Removing line-synced TTML", FetchLine(needs));
     }
 
     [Fact]
@@ -140,9 +175,7 @@ public sealed class SidecarFetchProgressTest
             _ => 7,
             (filePath, _) => (null, LyricsPlan(filePath, 7, shouldFetch: true)));
 
-        Assert.All(
-            messages,
-            message => Assert.StartsWith("Fetching lyrics (file ", message, StringComparison.Ordinal));
+        Assert.All(messages, message => Assert.Equal("Fetching lyrics", message));
         Assert.DoesNotContain(messages, message => message.Contains("artwork", StringComparison.Ordinal));
     }
 
@@ -427,6 +460,20 @@ public sealed class SidecarFetchProgressTest
         Assert.False(
             AutoTagService.ResolveSidecarLyricsVerdict(
                 AutoTagService.ClassifyLyricsOutcome(absent, timedOut: true)).ConfirmsAbsence);
+
+        var lookupFailed = LyricsRefreshTrackResult.Skipped(
+            42,
+            "/music/Artist/Album One/02 - Second.flac",
+            "Lyrics could not be verified.") with
+        {
+            LookupFailed = true
+        };
+        Assert.Equal(
+            AutoTagService.SidecarLyricsOutcome.Unverified,
+            AutoTagService.ClassifyLyricsOutcome(lookupFailed, timedOut: false));
+        Assert.NotEqual(
+            AutoTagService.SidecarLyricsOutcome.Absent,
+            AutoTagService.ClassifyLyricsOutcome(lookupFailed, timedOut: false));
     }
 
     [Fact]

@@ -811,12 +811,16 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("if (needs.IsAlreadyComplete)", body, StringComparison.Ordinal);
         Assert.Contains("RecordSidecarFetchSkipped(", body, StringComparison.Ordinal);
 
-        // The card names exactly what this file is actually missing.
-        Assert.Contains("SidecarFetchActivity.Describe(new SidecarFetchWork(", body, StringComparison.Ordinal);
-        Assert.Contains("needs.NeedsStillArtwork,", body, StringComparison.Ordinal);
-        Assert.Contains("needs.NeedsAnimatedArtwork,", body, StringComparison.Ordinal);
-        Assert.Contains("needs.NeedsLyrics));", body, StringComparison.Ordinal);
-        Assert.Contains("DescribeSidecarFetchProgress(filePath, fetchMessage, counters.Processed, orderedRun.Count)", body, StringComparison.Ordinal);
+        // The card names exactly the remaining work for this file, and shrinks after artwork.
+        Assert.Contains("RecordSidecarRemainingWork(", body, StringComparison.Ordinal);
+        Assert.Contains("needs.RequiresLyricsStep", body, StringComparison.Ordinal);
+        Assert.Contains("RecordSidecarNoLyricsAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("SidecarFetchActivity.DescribeEnhancement", workflows, StringComparison.Ordinal);
+        Assert.Contains("DescribeSidecarFetchProgress(", workflows, StringComparison.Ordinal);
+        Assert.Contains("ResolveSidecarCardStateAsync(", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("(file {position}: {name})", workflows, StringComparison.Ordinal);
+        Assert.Contains("onAlbumCompleted: suppressFetchActivity", workflows, StringComparison.Ordinal);
+        Assert.Contains("HasLocalOnlyLyricsWork", workflows, StringComparison.Ordinal);
 
         // The network wait is bounded per file, the disk write gets its own budget, and a
         // lyrics check that does not finish is recorded as unverified rather than as absence.

@@ -223,56 +223,119 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         LyricsRefreshOptions options)
     {
         var badges = LyricsSidecarTimingBadges.FromAudioPath(audioPath);
+        var ttmlPath = Path.ChangeExtension(audioPath, ".ttml");
+        var nonWordTtml = TtmlSidecarCleanup.IsNonWordTimed(ttmlPath);
+
         if (!options.RefreshLyrics)
         {
-            var cleanupTtmlPath = Path.ChangeExtension(audioPath, ".ttml");
-            var rewriteTtml = options.RewriteLineSyncedTtml
-                && TtmlSidecarCleanup.IsNonWordTimed(cleanupTtmlPath)
-                && LyricsSettingsPolicy.WantsTtmlOutput(settings);
+            if (options.RewriteLineSyncedTtml
+                && nonWordTtml
+                && LyricsSettingsPolicy.WantsTtmlOutput(settings))
+            {
+                return new LyricsRefreshPlan(
+                    trackId,
+                    audioPath,
+                    LyricsSidecarWorkKind.RewriteTtmlToWord,
+                    badges,
+                    null);
+            }
+
+            if (options.RemoveLineSyncedTtml && nonWordTtml)
+            {
+                return new LyricsRefreshPlan(
+                    trackId,
+                    audioPath,
+                    LyricsSidecarWorkKind.RemoveLineSyncedTtml,
+                    badges,
+                    null);
+            }
+
             return new LyricsRefreshPlan(
                 trackId,
                 audioPath,
-                rewriteTtml,
+                LyricsSidecarWorkKind.None,
                 badges,
-                rewriteTtml ? null : "Lyrics refresh was not selected for this file.");
+                "Lyrics refresh was not selected for this file.");
         }
 
         if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
         {
+            if (options.RemoveLineSyncedTtml && nonWordTtml)
+            {
+                return new LyricsRefreshPlan(
+                    trackId,
+                    audioPath,
+                    LyricsSidecarWorkKind.RemoveLineSyncedTtml,
+                    badges,
+                    null);
+            }
+
             return new LyricsRefreshPlan(
                 trackId,
                 audioPath,
-                false,
+                LyricsSidecarWorkKind.None,
                 badges,
                 "Lyrics fetching is disabled by the assigned profile.");
         }
 
+        var work = LyricsSidecarWorkKind.None;
         var lrcPath = Path.ChangeExtension(audioPath, ".lrc");
         var lrcTiming = TryReadFile(lrcPath, out var lrc)
             ? LrcContent.ClassifyTiming(lrc)
             : LrcTimingKind.None;
         var wantsLrc = LyricsSettingsPolicy.WantsLrcOutput(settings);
-        var lrcSatisfied = !wantsLrc
-            || lrcTiming == LrcTimingKind.Word
-            || (lrcTiming == LrcTimingKind.Line && !LyricsSettingsPolicy.WantsEnhancedLrc(settings));
+        if (wantsLrc)
+        {
+            if (lrcTiming == LrcTimingKind.None)
+            {
+                work |= LyricsSidecarWorkKind.FetchMissing;
+            }
+            else if (lrcTiming == LrcTimingKind.Line && LyricsSettingsPolicy.WantsEnhancedLrc(settings))
+            {
+                work |= LyricsSidecarWorkKind.UpgradeLrcToWord;
+            }
+        }
 
-        var ttmlPath = Path.ChangeExtension(audioPath, ".ttml");
         var wantsTtml = LyricsSettingsPolicy.WantsTtmlOutput(settings);
-        var ttmlSatisfied = !wantsTtml
-            || (TryReadFile(ttmlPath, out var ttml) && AppleLyricsService.IsWordSyncedTtml(ttml));
+        var hasTtmlFile = File.Exists(ttmlPath);
+        var wordTtml = hasTtmlFile
+            && TryReadFile(ttmlPath, out var ttml)
+            && AppleLyricsService.IsWordSyncedTtml(ttml);
+        if (wantsTtml && !wordTtml)
+        {
+            if (hasTtmlFile)
+            {
+                work |= LyricsSidecarWorkKind.RewriteTtmlToWord;
+            }
+            else
+            {
+                work |= LyricsSidecarWorkKind.FetchMissing;
+            }
+        }
+
+        if (options.RemoveLineSyncedTtml
+            && nonWordTtml
+            && !work.HasFlag(LyricsSidecarWorkKind.RewriteTtmlToWord))
+        {
+            work |= LyricsSidecarWorkKind.RemoveLineSyncedTtml;
+        }
 
         var wantsTxt = LyricsSettingsPolicy.WantsUnsyncedTextOutput(settings);
-        var richLyricsPresent = lrcTiming != LrcTimingKind.None || (wantsTtml && ttmlSatisfied);
+        var richLyricsPresent = lrcTiming != LrcTimingKind.None || (wantsTtml && wordTtml);
         var txtSatisfied = !wantsTxt
             || richLyricsPresent
             || (TryReadFile(Path.ChangeExtension(audioPath, ".txt"), out var txt) && !string.IsNullOrWhiteSpace(txt));
-        var shouldFetch = !lrcSatisfied || !ttmlSatisfied || !txtSatisfied;
+        if (!txtSatisfied)
+        {
+            work |= LyricsSidecarWorkKind.FetchUnsyncedTxt;
+        }
+
         return new LyricsRefreshPlan(
             trackId,
             audioPath,
-            shouldFetch,
+            work,
             badges,
-            shouldFetch ? null : "Existing lyrics satisfy the assigned profile.");
+            work == LyricsSidecarWorkKind.None ? "Existing lyrics satisfy the assigned profile." : null);
     }
 
     private async Task<LyricsRefreshTrackResult> ProcessTrackLyricsRefreshAsync(
@@ -316,9 +379,10 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         }
 
         var ttmlPath = Path.Join(directory, $"{filename}.ttml");
-        var shouldFetch = PlanExistingLyrics(trackId, info.FilePath, settings, options).ShouldFetchLyrics;
+        var plan = PlanExistingLyrics(trackId, info.FilePath, settings, options);
+        var shouldFetch = plan.NeedsNetwork;
 
-        if (shouldFetch && !LyricsSettingsPolicy.CanFetchLyrics(settings) && !options.RemoveLineSyncedTtml)
+        if (shouldFetch && !LyricsSettingsPolicy.CanFetchLyrics(settings) && !plan.NeedsLocalOnly)
         {
             return BuildExistingLyricsResult(
                 trackId,
@@ -341,7 +405,8 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken, onWritePhaseStarted);
         }
 
-        var deletedLineTtml = options.RemoveLineSyncedTtml && TtmlSidecarCleanup.TryDeleteNonWordTimed(ttmlPath);
+        var deletedLineTtml = (options.RemoveLineSyncedTtml || plan.NeedsLocalOnly)
+            && TtmlSidecarCleanup.TryDeleteNonWordTimed(ttmlPath);
         var formats = savedLyrics.FilesByFormat.Keys
             .OrderBy(format => format, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -351,19 +416,24 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             LyricsSidecarTimingBadges.FromAudioPath(info.FilePath));
         var result = formats.Count > 0 || embeddedUpdated
             ? LyricsRefreshTrackResult.Completed(trackId, info.FilePath, formats, embeddedUpdated)
-            : deletedLineTtml
-                ? LyricsRefreshTrackResult.Skipped(
-                    trackId,
-                    info.FilePath,
-                    "Line-synced TTML removed.")
-                : timingBadges.Count > 0
+            : savedLyrics.LookupFailed
+                ? LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "Lyrics could not be verified.") with
+                    {
+                        LookupFailed = true
+                    }
+                : deletedLineTtml
                     ? LyricsRefreshTrackResult.Skipped(
                         trackId,
                         info.FilePath,
-                        "Existing lyrics kept; overwrite was not selected.")
-                    : shouldFetch
-                        ? LyricsRefreshTrackResult.ConfirmedAbsent(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
-                        : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics cleanup was required.");
+                        "Line-synced TTML removed.")
+                    : timingBadges.Count > 0
+                        ? LyricsRefreshTrackResult.Skipped(
+                            trackId,
+                            info.FilePath,
+                            "Existing lyrics kept; overwrite was not selected.")
+                        : shouldFetch
+                            ? LyricsRefreshTrackResult.ConfirmedAbsent(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
+                            : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics cleanup was required.");
         return result with
         {
             Title = info.Title,
@@ -678,12 +748,23 @@ public sealed record LyricsRefreshOptions(
 public sealed record LyricsRefreshPlan(
     long TrackId,
     string? FilePath,
-    bool ShouldFetchLyrics,
+    LyricsSidecarWorkKind Work,
     IReadOnlyList<string> CurrentBadges,
     string? SkipReason)
 {
+    public bool ShouldFetchLyrics => NeedsNetwork;
+
+    public bool NeedsNetwork => Work.HasFlag(LyricsSidecarWorkKind.FetchMissing)
+        || Work.HasFlag(LyricsSidecarWorkKind.UpgradeLrcToWord)
+        || Work.HasFlag(LyricsSidecarWorkKind.RewriteTtmlToWord)
+        || Work.HasFlag(LyricsSidecarWorkKind.FetchUnsyncedTxt);
+
+    public bool NeedsLocalOnly => Work.HasFlag(LyricsSidecarWorkKind.RemoveLineSyncedTtml) && !NeedsNetwork;
+
+    public bool HasAnyWork => Work != LyricsSidecarWorkKind.None;
+
     public static LyricsRefreshPlan Skip(long trackId, string? filePath, string reason)
-        => new(trackId, filePath, false, Array.Empty<string>(), reason);
+        => new(trackId, filePath, LyricsSidecarWorkKind.None, Array.Empty<string>(), reason);
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);
@@ -707,6 +788,8 @@ public sealed record LyricsRefreshTrackResult(
     /// "could not verify", not "no lyrics".
     /// </summary>
     public bool LyricsConfirmedAbsent { get; init; }
+
+    public bool LookupFailed { get; init; }
 
     public static LyricsRefreshTrackResult ConfirmedAbsent(long trackId, string? filePath, string message)
         => new(trackId, filePath, false, false, Array.Empty<string>(), message) { LyricsConfirmedAbsent = true };
