@@ -776,7 +776,7 @@ public sealed class EnhancementMultiSectionRunTest
             "private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync",
             StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = workflows[start..(start + 6000)];
+        var body = workflows[start..(start + 10000)];
 
         // One ordered pass over the files, the way downloads are processed: the
         // parallel lyrics/cover passes are gone.
@@ -787,12 +787,20 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("RunLyricsRefreshForBatchAsync(", body, StringComparison.Ordinal);
 
         // The first file of an album fetches the artwork; every file handles its own lyrics.
-        Assert.Contains("var ownsAlbumArtwork = runCovers && artworkAlbums.Add(albumKey);", body, StringComparison.Ordinal);
-        Assert.Contains("var handlesLyrics = runLyrics && trackId > 0;", body, StringComparison.Ordinal);
+        // The once-per-album ownership rule lives in the explicit plan the loop resolves.
+        Assert.Contains("var fetchScope = sidecarRunPlan.Resolve(filePath, trackId);", body, StringComparison.Ordinal);
+        Assert.Contains("var ownsAlbumArtwork = fetchScope.OwnsAlbumArtwork;", body, StringComparison.Ordinal);
+        Assert.Contains("var handlesLyrics = fetchScope.HandlesLyrics;", body, StringComparison.Ordinal);
+        var planStart = workflows.IndexOf("internal sealed class SidecarFetchPlan", StringComparison.Ordinal);
+        Assert.True(planStart > 0);
+        var planBody = workflows[planStart..(planStart + 1500)];
+        Assert.Contains("_runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath))", planBody, StringComparison.Ordinal);
+        Assert.Contains("_runLyrics && trackId > 0", planBody, StringComparison.Ordinal);
 
         // The card names exactly what this file is about to fetch.
         Assert.Contains("SidecarFetchActivity.Describe(new SidecarFetchWork(", body, StringComparison.Ordinal);
         Assert.Contains("handlesLyrics && lyricsOptions.QueueLyricsRefresh));", body, StringComparison.Ordinal);
+        Assert.Contains("DescribeSidecarFetchProgress(filePath, fetchMessage, processed, orderedRun.Count)", body, StringComparison.Ordinal);
 
         // Artist artwork is processed and updated on its own path, never here.
         Assert.DoesNotContain("PlanArtistRefreshAsync", workflows, StringComparison.Ordinal);

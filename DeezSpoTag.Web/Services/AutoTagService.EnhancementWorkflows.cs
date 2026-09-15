@@ -1038,57 +1038,90 @@ public partial class AutoTagService
         }
 
         var orderedRun = OrderSidecarRunFilesByAlbum(orderedFiles);
-        var artworkAlbums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sidecarRunPlan = new SidecarFetchPlan(runCovers, runLyrics);
         var outcomes = new List<EnhancementWorkflowOutcome>();
         var processed = 0;
         var artworkAlbumsServiced = 0;
         var lyricsTracksHandled = 0;
+        var sidecarFetchFailures = 0;
         foreach (var filePath in orderedRun)
         {
             cancellationToken.ThrowIfCancellationRequested();
             processed++;
 
             var trackId = trackIdsByPath.TryGetValue(filePath, out var resolvedTrackId) ? resolvedTrackId : 0;
-            var albumKey = ResolveSidecarAlbumKey(filePath);
-            var ownsAlbumArtwork = runCovers && artworkAlbums.Add(albumKey);
-            var handlesLyrics = runLyrics && trackId > 0;
+            var fetchScope = sidecarRunPlan.Resolve(filePath, trackId);
+            var ownsAlbumArtwork = fetchScope.OwnsAlbumArtwork;
+            var handlesLyrics = fetchScope.HandlesLyrics;
+            var hasFetchWork = ownsAlbumArtwork || handlesLyrics;
 
             var fetchMessage = SidecarFetchActivity.Describe(new SidecarFetchWork(
                 ownsAlbumArtwork && coverScope.FetchesStillArtwork,
                 ownsAlbumArtwork && coverScope.FetchesAnimatedArtwork,
                 false,
                 handlesLyrics && lyricsOptions.QueueLyricsRefresh));
-            RecordSidecarFetchStatus(job, filePath, fetchMessage, processed, orderedRun.Count, trackId);
+            fetchMessage = DescribeSidecarFetchProgress(filePath, fetchMessage, processed, orderedRun.Count);
+            RecordSidecarFetchStatus(job, filePath, fetchMessage, processed, orderedRun.Count, trackId, hasFetchWork);
 
             if (ownsAlbumArtwork)
             {
-                outcomes.Add(await RunConfiguredCoverMaintenanceAsync(
-                    job,
-                    rootPath,
-                    configRoot,
-                    enhancementRoot,
-                    enabledFolders,
-                    configPath,
-                    cancellationToken,
-                    [filePath],
-                    suppressFetchActivity: true));
+                var artworkStep = await RunSidecarFetchStepAsync(
+                    token => RunConfiguredCoverMaintenanceAsync(
+                        job,
+                        rootPath,
+                        configRoot,
+                        enhancementRoot,
+                        enabledFolders,
+                        configPath,
+                        token,
+                        [filePath],
+                        suppressFetchActivity: true),
+                    SidecarFetchStepTimeout,
+                    cancellationToken);
+                if (!artworkStep.Succeeded)
+                {
+                    sidecarFetchFailures++;
+                    RecordSidecarFetchFailure(job, filePath, artworkStep.FailureMessage, processed, orderedRun.Count, trackId);
+                    continue;
+                }
+
+                outcomes.Add(artworkStep.Result);
                 artworkAlbumsServiced++;
 
                 // Keep the file's activity visible while its lyrics are still being fetched.
                 if (handlesLyrics)
                 {
-                    RecordSidecarFetchStatus(job, filePath, fetchMessage, processed, orderedRun.Count, trackId);
+                    RecordSidecarFetchStatus(job, filePath, fetchMessage, processed, orderedRun.Count, trackId, true);
+                }
+                else
+                {
+                    // Artwork-only files have no lyrics settle to clear the activity line.
+                    RecordSidecarFetchSettled(job, filePath, artworkStep.Result, processed, orderedRun.Count, trackId);
                 }
             }
 
             if (handlesLyrics)
             {
-                await RunLyricsRefreshForBatchAsync(
-                    job,
-                    [trackId],
-                    lyricsOptions,
-                    cancellationToken,
-                    suppressFetchActivity: true);
+                var lyricsStep = await RunSidecarFetchStepAsync(
+                    async token =>
+                    {
+                        await RunLyricsRefreshForBatchAsync(
+                            job,
+                            [trackId],
+                            lyricsOptions,
+                            token,
+                            suppressFetchActivity: true);
+                        return true;
+                    },
+                    SidecarFetchStepTimeout,
+                    cancellationToken);
+                if (!lyricsStep.Succeeded)
+                {
+                    sidecarFetchFailures++;
+                    RecordSidecarFetchFailure(job, filePath, lyricsStep.FailureMessage, processed, orderedRun.Count, trackId);
+                    continue;
+                }
+
                 lyricsTracksHandled++;
             }
         }
@@ -1100,14 +1133,134 @@ public partial class AutoTagService
             return failed;
         }
 
-        AppendLog(
-            job,
-            $"enhancement workflow: sidecars finished ({processed} file(s), {artworkAlbumsServiced} album artwork pass(es), {lyricsTracksHandled} lyrics track(s)).");
+        var completionMessage = DescribeSidecarCompletion(
+            processed,
+            artworkAlbumsServiced,
+            lyricsTracksHandled,
+            sidecarFetchFailures);
+        AppendLog(job, $"enhancement workflow: {completionMessage}");
+        RecordSidecarFetchCompletion(job, completionMessage, processed, orderedRun.Count);
         return EnhancementWorkflowOutcome.Completed(
             batchFiles is not null
-                ? $"sidecars finished for {processed} file(s)."
-                : "sidecars finished.");
+                ? $"{completionMessage} (batch of {batchFiles.Count})"
+                : completionMessage);
     }
+
+    // A single unresponsive artwork or lyrics fetch must never freeze the per-file sidecar
+    // pass: each step is bounded and a timeout is recorded as that file's failure so the
+    // pass continues. The bound is deliberately generous - it only catches a hung call,
+    // not a slow provider.
+    private static readonly TimeSpan SidecarFetchStepTimeout = TimeSpan.FromMinutes(2);
+
+    internal readonly record struct SidecarFetchStepResult<T>(
+        bool Succeeded,
+        string? FailureMessage,
+        T Result)
+    {
+        public static SidecarFetchStepResult<T> Completed(T result) => new(true, null, result);
+
+        public static SidecarFetchStepResult<T> TimedOut(TimeSpan timeout)
+            => new(false, $"did not finish within {timeout.TotalSeconds:0}s", default!);
+    }
+
+    internal static async Task<SidecarFetchStepResult<T>> RunSidecarFetchStepAsync<T>(
+        Func<CancellationToken, Task<T>> step,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            var result = await step(timeoutCts.Token).WaitAsync(timeoutCts.Token);
+            return SidecarFetchStepResult<T>.Completed(result);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A real pause/stop must still propagate; only the timeout is swallowed.
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return SidecarFetchStepResult<T>.TimedOut(timeout);
+        }
+    }
+
+    /// <summary>
+    /// Every file in the pass gets its own line, naming the file and its position, so the
+    /// visible message always moves to the file being processed instead of resting on the
+    /// album's first file. The fetch wording itself stays with the shared builder.
+    /// </summary>
+    internal static string DescribeSidecarFetchProgress(
+        string filePath,
+        string? fetchMessage,
+        int processed,
+        int total)
+    {
+        var name = Path.GetFileName(filePath);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = filePath;
+        }
+
+        var position = $"{Math.Max(1, processed)}/{Math.Max(0, total)}";
+        return string.IsNullOrWhiteSpace(fetchMessage)
+            ? $"No sidecar fetch needed (file {position}: {name})"
+            : $"{fetchMessage} (file {position}: {name})";
+    }
+
+    internal static string DescribeSidecarFetchFailure(
+        string filePath,
+        string? failureMessage,
+        int processed,
+        int total)
+    {
+        var name = Path.GetFileName(filePath);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = filePath;
+        }
+
+        var reason = string.IsNullOrWhiteSpace(failureMessage) ? "did not finish" : failureMessage;
+        return $"Sidecar fetch failed for {name} (file {Math.Max(1, processed)}/{Math.Max(0, total)}): "
+               + $"{reason}; existing artwork and lyrics were kept.";
+    }
+
+    internal static string DescribeSidecarCompletion(
+        int processed,
+        int artworkAlbumsServiced,
+        int lyricsTracksHandled,
+        int failures)
+        => $"Sidecars finished: {processed} file(s) processed, {artworkAlbumsServiced} album artwork fetch(es), "
+           + $"{lyricsTracksHandled} lyrics refresh(es), {failures} failure(s).";
+
+    /// <summary>
+    /// Per-file scope of the sidecar pass: the album's artwork is fetched once, by the first
+    /// file of that album in the run, while every file handles its own lyrics. Kept as an
+    /// explicit stateful plan so the message sequence can be pinned by a test instead of
+    /// relying on the loop's local state.
+    /// </summary>
+    internal sealed class SidecarFetchPlan
+    {
+        private readonly HashSet<string> _artworkAlbums = new(StringComparer.OrdinalIgnoreCase);
+        private readonly bool _runCovers;
+        private readonly bool _runLyrics;
+
+        public SidecarFetchPlan(bool runCovers, bool runLyrics)
+        {
+            _runCovers = runCovers;
+            _runLyrics = runLyrics;
+        }
+
+        public SidecarFetchScope Resolve(string filePath, long trackId)
+        {
+            var ownsAlbumArtwork = _runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath));
+            var handlesLyrics = _runLyrics && trackId > 0;
+            return new SidecarFetchScope(ownsAlbumArtwork, handlesLyrics);
+        }
+    }
+
+    internal readonly record struct SidecarFetchScope(bool OwnsAlbumArtwork, bool HandlesLyrics);
 
     private void RecordSidecarFetchStatus(
         AutoTagJob job,
@@ -1115,7 +1268,8 @@ public partial class AutoTagService
         string? fetchMessage,
         int processed,
         int total,
-        long trackId)
+        long trackId,
+        bool isFetching)
     {
         if (fetchMessage == null)
         {
@@ -1136,7 +1290,74 @@ public partial class AutoTagService
             total,
             countOutcome: false,
             trackId: trackId > 0 ? trackId : null,
-            activityState: "fetchingSidecars");
+            activityState: isFetching ? "fetchingSidecars" : null);
+    }
+
+    private void RecordSidecarFetchSettled(
+        AutoTagJob job,
+        string filePath,
+        EnhancementWorkflowOutcome outcome,
+        int processed,
+        int total,
+        long trackId)
+    {
+        RecordEnhancementItemStatus(
+            job,
+            AutoTagLiterals.EnhancementFeatureSidecars,
+            filePath,
+            string.IsNullOrWhiteSpace(outcome.Status) ? AutoTagLiterals.SkippedStatus : outcome.Status,
+            outcome.Message,
+            processed,
+            total,
+            1,
+            1,
+            processed,
+            total,
+            countOutcome: false,
+            trackId: trackId > 0 ? trackId : null);
+    }
+
+    private void RecordSidecarFetchFailure(
+        AutoTagJob job,
+        string filePath,
+        string? failureMessage,
+        int processed,
+        int total,
+        long trackId)
+    {
+        RecordEnhancementItemStatus(
+            job,
+            AutoTagLiterals.EnhancementFeatureSidecars,
+            filePath,
+            AutoTagLiterals.ErrorStatus,
+            DescribeSidecarFetchFailure(filePath, failureMessage, processed, total),
+            processed,
+            total,
+            1,
+            1,
+            processed,
+            total,
+            countOutcome: false,
+            trackId: trackId > 0 ? trackId : null);
+    }
+
+    private void RecordSidecarFetchCompletion(AutoTagJob job, string message, int processed, int total)
+    {
+        // Clears any lingering per-file fetch activity: the run's last visible line is the
+        // totals, not the last file's "Fetching ..." line.
+        RecordEnhancementItemStatus(
+            job,
+            AutoTagLiterals.EnhancementFeatureSidecars,
+            job.RootPath ?? string.Empty,
+            AutoTagLiterals.CompletedStatus,
+            message,
+            processed,
+            Math.Max(processed, total),
+            1,
+            1,
+            processed,
+            Math.Max(processed, total),
+            countOutcome: false);
     }
 
     private sealed record SidecarCoverScope(bool FetchesStillArtwork, bool FetchesAnimatedArtwork);
