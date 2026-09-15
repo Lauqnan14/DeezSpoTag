@@ -84,14 +84,22 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static bool SameAlbumDirectory(string? left, string? right)
-        => string.Equals(GetAlbumSortKey(left), GetAlbumSortKey(right), StringComparison.OrdinalIgnoreCase);
+    private static readonly SupportedTag[] ProviderIdentitySupportedTags =
+    [
+        SupportedTag.TrackId,
+        SupportedTag.AlbumId,
+        SupportedTag.ReleaseId,
+        SupportedTag.ArtistId,
+        SupportedTag.AlbumArtistId,
+        SupportedTag.URL
+    ];
 
     private static HashSet<SupportedTag> VerifyPersistedTags(
         string filePath,
         AutoTagRunnerConfig config,
         string platformId,
         AutoTagTrack track,
+        ProviderIdentityPayload? providerIdentity,
         IEnumerable<SupportedTag> expectedTags)
     {
         var missing = new HashSet<SupportedTag>();
@@ -116,6 +124,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             {
                 SupportedTag.OtherTags => VerifyOtherTagsPersisted(file, extension, track),
                 SupportedTag.TtmlLyrics => IOFile.Exists(Path.ChangeExtension(filePath, TtmlExtension)),
+                SupportedTag.ReleaseGroupId => HasTag(file, extension, tag, config, platformId)
+                    && VerifyMusicBrainzAlbumIdentityAlias(file, extension, track.ReleaseGroupId, "MUSICBRAINZ_RELEASEGROUPID"),
+                _ when ProviderIdentitySupportedTags.Contains(tag) =>
+                    VerifyProviderIdentityFieldPersisted(filePath, providerIdentity, tag),
                 _ => HasTag(file, extension, tag, config, platformId)
             };
             if (!persisted)
@@ -125,6 +137,75 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return missing;
+    }
+
+    /// <summary>
+    /// Verifies the exact provider+field family through the same backend that wrote it.
+    /// Presence of any alias is never accepted as success: the canonical write name must
+    /// read back the immutable payload value.
+    /// </summary>
+    private static bool VerifyProviderIdentityFieldPersisted(
+        string filePath,
+        ProviderIdentityPayload? providerIdentity,
+        SupportedTag supportedTag)
+    {
+        if (providerIdentity is not { IsNativeProviderResult: true }
+            || !TryMapProviderIdentityField(supportedTag, out var field))
+        {
+            return false;
+        }
+
+        var expectedValue = providerIdentity.ValueFor(field);
+        if (string.IsNullOrWhiteSpace(expectedValue))
+        {
+            return false;
+        }
+
+        var family = AutoTagIdentityTags.ResolveFamily(providerIdentity.ProviderId, field);
+        var actual = family.WriteNames
+            .Select(name => ReadRawIdentityValue(filePath, name))
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        return string.Equals(actual, expectedValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryMapProviderIdentityField(SupportedTag supportedTag, out ProviderIdentityField field)
+    {
+        switch (supportedTag)
+        {
+            case SupportedTag.TrackId:
+                field = ProviderIdentityField.TrackId;
+                return true;
+            case SupportedTag.AlbumId:
+                field = ProviderIdentityField.AlbumId;
+                return true;
+            case SupportedTag.ReleaseId:
+                field = ProviderIdentityField.ReleaseId;
+                return true;
+            case SupportedTag.ArtistId:
+                field = ProviderIdentityField.ArtistId;
+                return true;
+            case SupportedTag.AlbumArtistId:
+                field = ProviderIdentityField.AlbumArtistId;
+                return true;
+            case SupportedTag.URL:
+                field = ProviderIdentityField.Url;
+                return true;
+            default:
+                field = default;
+                return false;
+        }
+    }
+
+    private static bool VerifyMusicBrainzAlbumIdentityAlias(
+        TagLib.File file,
+        string extension,
+        string? expectedValue,
+        string rawName)
+    {
+        var musicBrainzId = ToMusicBrainzShapedId(expectedValue);
+        return musicBrainzId == null
+            || ReadRawTagValuesAny(file, extension, rawName)
+                .Any(value => string.Equals(value, musicBrainzId, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool VerifyOtherTagsPersisted(TagLib.File file, string extension, AutoTagTrack track)

@@ -302,18 +302,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         // preservation, consensus, lyrics, artwork, or custom tags).
         match.ProviderIdentity ??= CaptureProviderIdentity(context.Platform, match);
 
-        if (!match.Track.ProviderReleaseIdAuthorityCaptured)
-        {
-            match.Track.ProviderReturnedReleaseId = match.Track.ReleaseId;
-            match.Track.ProviderReleaseIdAuthorityCaptured = true;
-        }
-
-        match.Track.HasAuthoritativeProviderReleaseIdResult = false;
-        match.Track.HasAuthoritativeProviderReleaseIdAbsence = false;
-        match.Track.ReleaseId = match.Track.ProviderReturnedReleaseId;
-        var returnedProviderReleaseId = string.IsNullOrWhiteSpace(match.Track.ProviderReturnedReleaseId)
-            ? null
-            : match.Track.ProviderReturnedReleaseId.Trim();
+        var returnedProviderReleaseId = match.ProviderIdentity.ValueFor(ProviderIdentityField.ReleaseId);
         var providerReleaseIdIsValid = returnedProviderReleaseId is null
             || IsPlatformReleaseIdShapeValid(context.Platform, returnedProviderReleaseId);
         var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
@@ -430,6 +419,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 match.Track,
                 returnedProviderReleaseId,
                 hasAuthoritativeProviderResult: !editionConflict && providerReleaseIdIsValid);
+            match.ProviderIdentity = MergeEstablishedIdentity(match.Track, match.ProviderIdentity, context.Platform);
             if (isManualEnrichment && frozenRelease == null)
             {
                 frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
@@ -504,14 +494,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.Config,
                 context.Plan.Settings,
                 context.Platform,
+                match.ProviderIdentity,
                 context.Token);
-            var returnedTags = ResolveReturnedEligibleTags(match.Track, tagPlan);
+            var returnedTags = ResolveReturnedEligibleTags(match.Track, tagPlan, match.ProviderIdentity);
             returnedTags.IntersectWith(writeResult.AttemptedTags);
             var persistenceFailures = VerifyPersistedTags(
                 context.File,
                 context.Plan.Config,
                 context.Platform,
                 match.Track,
+                match.ProviderIdentity,
                 returnedTags);
             if (persistenceFailures.Remove(SupportedTag.AlbumArt))
             {
@@ -1128,49 +1120,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             return null;
         }
-    }
-
-    private static void WriteSourceIdentityTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        WriteSingleRawTag(tagWriteContext, context, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, context.SourceTrack.RecordingId);
-        WriteSingleRawTag(tagWriteContext, context, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, context.SourceTrack.ArtistId);
-        // The generic ALBUMARTISTID/ALBUMID tags are one shared namespace: only
-        // GUID-shaped (MusicBrainz) values may be written there. Platform-local ids
-        // (Deezer numeric ids, Spotify ids, …) keep their own <PLATFORM>_… tags, so
-        // files of one album cannot end up with mixed id namespaces.
-        var albumArtistId = ToMusicBrainzShapedId(context.SourceTrack.AlbumArtistId);
-        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, albumArtistId);
-        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, AlbumArtistIdTag, "MUSICBRAINZ_ALBUMARTISTID", albumArtistId);
-
-        var releaseGroupId = ToMusicBrainzShapedId(context.SourceTrack.ReleaseGroupId);
-        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, releaseGroupId);
-        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, ReleaseGroupIdTag, "MUSICBRAINZ_RELEASEGROUPID", releaseGroupId);
-
-        var albumId = ToMusicBrainzShapedId(context.SourceTrack.AlbumId);
-        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, albumId);
-        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, AlbumIdTag, "MUSICBRAINZ_ALBUMID", albumId);
-        WriteSingleRawTag(tagWriteContext, context, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, context.SourceTrack.ReleaseStatus);
-        WriteSingleRawTag(tagWriteContext, context, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, context.SourceTrack.ReleaseCountry);
-        WriteSingleRawTag(tagWriteContext, context, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, context.SourceTrack.Barcode);
-        if (context.EnabledTags.Contains(MediaTag) && context.SourceTrack.Media.Count > 0)
-        {
-            SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);
-        }
-    }
-
-    private static void WriteMusicBrainzAlbumIdentityAlias(
-        TagWriteContext tagWriteContext,
-        TagWriteExecutionContext context,
-        string configTagKey,
-        string rawName,
-        string? value)
-    {
-        if (!context.EnabledTags.Contains(configTagKey) || string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        SetRawIfAllowed(tagWriteContext, configTagKey, rawName, new List<string> { value });
     }
 
     private static string? ToMusicBrainzShapedId(string? value)

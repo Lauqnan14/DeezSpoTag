@@ -96,15 +96,19 @@ public sealed class AutoTagSpotifyUrlIsolationTest
     }
 
     [Fact]
-    public void SpotifyUrlWriter_IsOwnedByTheUrlSelection()
+    public void SpotifyUrlWriter_IsOwnedByTheProviderIdentityContract()
     {
         var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
-        var methodStart = source.IndexOf("private static void WriteUrlTag", StringComparison.Ordinal);
-        var methodEnd = source.IndexOf("private static void WriteTrackIdTag", methodStart, StringComparison.Ordinal);
-        var method = source[methodStart..methodEnd];
+        var writerStart = source.IndexOf("private static Task<ProviderIdentityWriteResult> WriteProviderIdentityAsync", StringComparison.Ordinal);
+        Assert.True(writerStart >= 0, "the single provider identity writer was not found");
+        var writerEnd = source.IndexOf("private sealed class ProviderIdentityTagSession", writerStart, StringComparison.Ordinal);
+        var writer = source[writerStart..writerEnd];
 
-        Assert.Contains("context.EnabledTags.Contains(\"url\")", method, StringComparison.Ordinal);
-        Assert.Contains("SetRaw(tagWriteContext, SpotifyUrlTag, SupportedTag.URL", method, StringComparison.Ordinal);
+        Assert.Contains("AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field)", writer, StringComparison.Ordinal);
+        Assert.Contains("ShouldOverwriteTag(config, family.SupportedTag)", writer, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static void WriteUrlTag", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static void WriteTrackIdTag", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WwwAudioFileTag, track.Url", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -94,6 +94,120 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    /// <summary>Verifies a reconciled provider release ID through its own family: the
+    /// canonical write name must read back the expected value, and cleanup aliases must
+    /// be empty when the value is authoritatively absent.</summary>
+    internal static bool VerifyPersistedProviderReleaseId(
+        string filePath,
+        string platformId,
+        string? expectedValue,
+        bool overwrite)
+    {
+        var family = AutoTagIdentityTags.ResolveFamily(platformId, ProviderIdentityField.ReleaseId);
+        if (!string.IsNullOrWhiteSpace(expectedValue))
+        {
+            var actual = family.WriteNames
+                .Select(name => ReadRawIdentityValue(filePath, name))
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            return string.Equals(actual, expectedValue, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return !overwrite || family.CleanupNames.All(name => !HasRawIdentityValue(filePath, name));
+    }
+
+    /// <summary>
+    /// Folds an album-identity-confirmed value for the current provider into the immutable
+    /// provider payload, so the reconciliation result travels through the same single
+    /// writer as a native match instead of a second write path. Only values belonging to
+    /// the current provider's own field family are considered.
+    /// </summary>
+    internal static ProviderIdentityPayload? MergeEstablishedIdentity(
+        AutoTagTrack track,
+        ProviderIdentityPayload? payload,
+        string? platformId)
+    {
+        if (payload is not { IsNativeProviderResult: true })
+        {
+            return payload;
+        }
+
+        var merged = payload;
+        foreach (var field in Enum.GetValues<ProviderIdentityField>())
+        {
+            if (!string.IsNullOrWhiteSpace(payload.ValueFor(field)))
+            {
+                continue;
+            }
+
+            var family = AutoTagIdentityTags.ResolveFamily(platformId ?? payload.ProviderId, field);
+            var established = family.WriteNames
+                .Concat(family.CleanupNames)
+                .Select(name => track.Other.TryGetValue(name, out var values) && values.Count > 0 ? values[0] : null)
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            if (string.IsNullOrWhiteSpace(established))
+            {
+                continue;
+            }
+
+            merged = field switch
+            {
+                ProviderIdentityField.TrackId => merged with { TrackId = established.Trim() },
+                ProviderIdentityField.AlbumId => merged with { AlbumId = established.Trim() },
+                ProviderIdentityField.ReleaseId => merged with { ReleaseId = established.Trim() },
+                ProviderIdentityField.ArtistId => merged with { ArtistId = established.Trim() },
+                ProviderIdentityField.AlbumArtistId => merged with { AlbumArtistId = established.Trim() },
+                ProviderIdentityField.Url => merged with { Url = established.Trim() },
+                _ => merged
+            };
+        }
+
+        return merged;
+    }
+
+    /// <summary>The exact provider+field alias family used for presence checks: an
+    /// identity tag "exists" only inside its own provider namespace.</summary>
+    internal static IReadOnlyList<string> IdentityRawNames(string? platformId, ProviderIdentityField field)
+        => AutoTagIdentityTags.ResolveFamily(platformId, field).CleanupNames;
+
+    /// <summary>Maps the configured tag selection onto the provider identity fields this
+    /// pass is allowed to write.</summary>
+    private static IReadOnlySet<ProviderIdentityField> ResolveEnabledProviderIdentityFields(AutoTagRunnerConfig config)
+    {
+        var configured = BuildConfiguredTagSet(config.Tags);
+        var fields = new HashSet<ProviderIdentityField>();
+        if (configured.Contains(TrackIdTag))
+        {
+            fields.Add(ProviderIdentityField.TrackId);
+        }
+
+        if (configured.Contains(AlbumIdTag))
+        {
+            fields.Add(ProviderIdentityField.AlbumId);
+        }
+
+        if (configured.Contains(ReleaseIdTag))
+        {
+            fields.Add(ProviderIdentityField.ReleaseId);
+        }
+
+        if (configured.Contains(ArtistIdTag))
+        {
+            fields.Add(ProviderIdentityField.ArtistId);
+        }
+
+        if (configured.Contains(AlbumArtistIdTag))
+        {
+            fields.Add(ProviderIdentityField.AlbumArtistId);
+        }
+
+        if (configured.Contains(UrlTag))
+        {
+            fields.Add(ProviderIdentityField.Url);
+        }
+
+        return fields;
+    }
+
     /// <summary>
     /// Reads one raw identity value through the backend that owns the file. Returns null
     /// when the value is absent, blank, or the container cannot be read.

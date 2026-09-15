@@ -50,10 +50,6 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public string? Url { get; set; }
     public string? TrackId { get; set; }
     public string? ReleaseId { get; set; }
-    public string? ProviderReturnedReleaseId { get; set; }
-    public bool ProviderReleaseIdAuthorityCaptured { get; set; }
-    public bool HasAuthoritativeProviderReleaseIdResult { get; set; }
-    public bool HasAuthoritativeProviderReleaseIdAbsence { get; set; }
     public string? RecordingId { get; set; }
     public string? ArtistId { get; set; }
     public string? AlbumArtistId { get; set; }

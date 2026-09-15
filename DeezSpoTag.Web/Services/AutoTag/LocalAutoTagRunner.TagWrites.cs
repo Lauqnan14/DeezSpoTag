@@ -165,6 +165,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
         string platformId,
+        ProviderIdentityPayload? providerIdentity,
         CancellationToken token)
     {
         EnsureReleaseCategory(track);
@@ -219,6 +220,22 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 config,
                 platformId,
                 effectiveTagSettings.UseNullSeparator));
+        }
+
+        // Provider identity is written once, through the backend that owns this
+        // container, after every ordinary write has been saved.
+        var identityWriteResult = await WriteProviderIdentityAsync(
+            filePath,
+            providerIdentity,
+            config,
+            ResolveEnabledProviderIdentityFields(config),
+            token);
+        writeResult.AttemptedTags.UnionWith(identityWriteResult.AttemptedTags);
+        if (identityWriteResult.Failures.Count > 0)
+        {
+            var failure = identityWriteResult.Failures[0];
+            throw new IOException(
+                $"Provider identity persistence failed: format={failure.Format}, provider={failure.Provider}, field={failure.Field}, reason={failure.Reason}.");
         }
 
         if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
@@ -493,10 +510,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         WriteReleaseDateTag(file, context);
         WritePublishDateTag(file, context);
-        WriteUrlTag(tagWriteContext, context);
-        WriteTrackIdTag(tagWriteContext, context);
-        WriteReleaseIdTag(tagWriteContext, context);
-        WriteSourceIdentityTags(tagWriteContext, context);
+        // Provider identity tags are owned exclusively by WriteProviderIdentityAsync.
         WriteCatalogNumberTag(tagWriteContext, context);
         WriteDurationTag(tagWriteContext, context);
         WriteRemixerTag(tagWriteContext, context);
@@ -633,31 +647,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             writes.Add(new CustomTagWrite(RemixerTag, SupportedTag.Remixer, ResolveFieldRawName(SupportedTag.Remixer, format, config), track.Remixers.ToList()));
         }
 
-        AddSingleValueCustomTagWrite(writes, "url", SupportedTag.URL, WwwAudioFileTag, track.Url);
         AddSingleValueCustomTagWrite(
             writes,
             CatalogNumberTag,
             SupportedTag.CatalogNumber,
             ResolveFieldRawName(SupportedTag.CatalogNumber, format, config),
             track.CatalogNumber);
-        var platformKey = platformId.ToUpperInvariant();
-        AddSingleValueCustomTagWrite(
-            writes,
-            TrackIdTag,
-            SupportedTag.TrackId,
-            $"{platformKey}_TRACK_ID",
-            track.TrackId);
-        AddSingleValueCustomTagWrite(
-            writes,
-            ReleaseIdTag,
-            SupportedTag.ReleaseId,
-            $"{platformKey}_RELEASE_ID",
-            track.ReleaseId);
-        AddSingleValueCustomTagWrite(writes, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, track.RecordingId);
-        AddSingleValueCustomTagWrite(writes, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, track.ArtistId);
-        AddSingleValueCustomTagWrite(writes, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, track.AlbumArtistId);
+        // Provider identity tags (track/album/release/artist/album-artist id and URL)
+        // are written by the single provider identity writer, never here.
         AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);
-        AddSingleValueCustomTagWrite(writes, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, track.AlbumId);
         AddSingleValueCustomTagWrite(writes, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, track.ReleaseStatus);
         AddSingleValueCustomTagWrite(writes, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, track.ReleaseCountry);
         AddSingleValueCustomTagWrite(writes, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, track.Barcode);

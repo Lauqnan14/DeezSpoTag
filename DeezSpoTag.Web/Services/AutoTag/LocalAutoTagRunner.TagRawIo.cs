@@ -184,22 +184,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         file.Save();
     }
 
-    private static void WriteSingleRawTag(
-        TagWriteContext tagWriteContext,
-        TagWriteExecutionContext context,
-        string tagKey,
-        SupportedTag supportedTag,
-        string rawTagName,
-        string? value)
-    {
-        if (!context.EnabledTags.Contains(tagKey) || string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        SetRaw(tagWriteContext, rawTagName, supportedTag, new List<string> { value });
-    }
-
     private static List<string> ReadExistingGenre(string filePath)
     {
         try

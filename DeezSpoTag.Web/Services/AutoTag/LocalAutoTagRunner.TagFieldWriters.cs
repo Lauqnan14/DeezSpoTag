@@ -35,13 +35,52 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
-    private static HashSet<SupportedTag> ResolveReturnedEligibleTags(AutoTagTrack track, ProviderTagPlan plan)
+    private static readonly ProviderIdentityField[] IdentityReturnedFields =
+    [
+        ProviderIdentityField.TrackId,
+        ProviderIdentityField.AlbumId,
+        ProviderIdentityField.ReleaseId,
+        ProviderIdentityField.ArtistId,
+        ProviderIdentityField.AlbumArtistId,
+        ProviderIdentityField.Url
+    ];
+
+    private static HashSet<SupportedTag> ResolveReturnedEligibleTags(
+        AutoTagTrack track,
+        ProviderTagPlan plan,
+        ProviderIdentityPayload? providerIdentity)
     {
-        return CollectAutoTagTags(track)
+        var identityTags = IdentityReturnedFields
+            .Select(field => AutoTagIdentityTags.ResolveFamily("unknown", field).SupportedTag)
+            .ToHashSet();
+
+        var returned = CollectAutoTagTags(track)
             .Select(tag => SupportedTagMap.TryGetValue(tag, out var mapped) ? (SupportedTag?)mapped : null)
             .Where(tag => tag.HasValue && plan.Eligible.Contains(tag.Value))
             .Select(tag => tag!.Value)
+            // Provider identity is decided by the immutable provider payload, never by
+            // a mutated track value or by whichever alias happens to exist on disk.
+            .Where(tag => !identityTags.Contains(tag) && tag != SupportedTag.RecordingId)
             .ToHashSet();
+
+        if (providerIdentity is { IsNativeProviderResult: true })
+        {
+            foreach (var field in IdentityReturnedFields)
+            {
+                if (string.IsNullOrWhiteSpace(providerIdentity.ValueFor(field)))
+                {
+                    continue;
+                }
+
+                var family = AutoTagIdentityTags.ResolveFamily(providerIdentity.ProviderId, field);
+                if (plan.Eligible.Contains(family.SupportedTag))
+                {
+                    returned.Add(family.SupportedTag);
+                }
+            }
+        }
+
+        return returned;
     }
 
     private static string? TryResolveProspectiveAlbumDirectory(AutoTagFileRunContext context, AutoTagTrack track)
@@ -60,7 +99,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.TagSettings.SingleAlbumArtist,
                 context.Plan.Settings);
             var pathInfo = BuildTemplatePathInfo(coreTrack, context.Plan.Settings);
-            return string.IsNullOrWhiteSpace(pathInfo.FilePath) ? null : pathInfo.FilePath;
+            var candidate = pathInfo.CoverPath ?? pathInfo.FilePath;
+            return ResolveAlbumRootDirectory(context.File, candidate);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -332,54 +372,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             context.Config,
             context.EffectiveTagSettings.UseNullSeparator);
         MarkAttemptedIfPresent(context, file, SupportedTag.PublishDate);
-    }
-
-    private static void WriteUrlTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains("url") || string.IsNullOrWhiteSpace(context.SourceTrack.Url))
-        {
-            return;
-        }
-
-        var url = context.SourceTrack.Url;
-        if (string.Equals(context.PlatformId, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            url = NormalizeSpotifyTrackUrl(url);
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return;
-            }
-        }
-
-        SetRaw(tagWriteContext, WwwAudioFileTag, SupportedTag.URL, new List<string> { url });
-
-        if (!string.Equals(context.PlatformId, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var existingSpotifyUrls = ReadRawTagValues(tagWriteContext.File, context.Extension, SpotifyUrlTag);
-        var shouldWriteSpotifyUrl = ShouldOverwriteTag(context.Config, SupportedTag.URL)
-            || existingSpotifyUrls.Count == 0
-            || existingSpotifyUrls.Any(existing => NormalizeSpotifyTrackUrl(existing) == null);
-        if (shouldWriteSpotifyUrl)
-        {
-            SetRaw(tagWriteContext, SpotifyUrlTag, SupportedTag.URL, new List<string> { url }, force: true);
-        }
-    }
-
-    private static void WriteTrackIdTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(TrackIdTag) || string.IsNullOrWhiteSpace(context.SourceTrack.TrackId))
-        {
-            return;
-        }
-
-        SetRaw(
-            tagWriteContext,
-            $"{context.PlatformId.ToUpperInvariant()}_TRACK_ID",
-            SupportedTag.TrackId,
-            new List<string> { context.SourceTrack.TrackId });
     }
 
     private static void WriteRemixerTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)

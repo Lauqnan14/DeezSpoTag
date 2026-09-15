@@ -298,13 +298,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
                 string? expected = null;
                 identity.PlatformReleaseIds?.TryGetValue(providerKey, out expected);
-                if (!VerifyProviderReleaseIdState(
-                        file,
-                        extension,
+                if (!VerifyPersistedProviderReleaseId(
+                        filePath,
                         platform,
                         expected,
-                        ShouldOverwriteTag(plan.Config, SupportedTag.ReleaseId),
-                        authoritativeAbsence: string.IsNullOrWhiteSpace(expected)))
+                        ShouldOverwriteTag(plan.Config, SupportedTag.ReleaseId)))
                 {
                     throw new IOException($"Album identity reconciliation failed for {platform} release ID.");
                 }
@@ -404,9 +402,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             return;
         }
-
-        track.HasAuthoritativeProviderReleaseIdResult = true;
-        track.HasAuthoritativeProviderReleaseIdAbsence = string.IsNullOrWhiteSpace(matchedProviderReleaseId);
 
         var albumArtist = track.AlbumArtists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
             ?? track.Artists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
@@ -656,7 +651,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var musicBrainzAlbumId = ToMusicBrainzShapedId(identity.AlbumId);
             if (!string.IsNullOrWhiteSpace(musicBrainzAlbumId))
             {
-                SetOtherValue(track, AlbumIdRawTag, musicBrainzAlbumId);
+                // Only the provider's own family alias may carry the value; the generic
+                // ALBUMID compatibility slot is never written by an identity pass.
                 SetOtherValue(track, "MUSICBRAINZ_ALBUMID", musicBrainzAlbumId);
                 SetOtherValue(track, "MUSICBRAINZ_RELEASE_ID", musicBrainzAlbumId);
             }
@@ -672,7 +668,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         if (musicBrainzConfirmed && !string.IsNullOrWhiteSpace(identity.AlbumArtistId))
         {
             track.AlbumArtistId = identity.AlbumArtistId;
-            SetOtherValue(track, AlbumArtistIdRawTag, identity.AlbumArtistId);
+            // Only the provider's own family alias; generic ALBUMARTISTID stays untouched.
             SetOtherValue(track, "MUSICBRAINZ_ALBUMARTISTID", identity.AlbumArtistId);
         }
 
@@ -947,30 +943,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             track.AlbumArtists = new List<string> { folderArtist };
         }
-    }
-
-    private static void WriteReleaseIdTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
-    {
-        if (!context.EnabledTags.Contains(ReleaseIdTag)
-            || !context.SourceTrack.HasAuthoritativeProviderReleaseIdResult)
-        {
-            return;
-        }
-
-        var releaseId = context.SourceTrack.ReleaseId?.Trim();
-        // Namespace guard: a value from another platform's id family (e.g. an Audiomack
-        // numeric album id) must never be written into this platform's release-id tag.
-        if (!string.IsNullOrWhiteSpace(releaseId)
-            && !IsPlatformReleaseIdShapeValid(context.PlatformId, releaseId))
-        {
-            return;
-        }
-
-        ApplyProviderReleaseIdState(
-            tagWriteContext,
-            context.PlatformId,
-            releaseId,
-            context.SourceTrack.HasAuthoritativeProviderReleaseIdAbsence);
     }
 
     /// <summary>

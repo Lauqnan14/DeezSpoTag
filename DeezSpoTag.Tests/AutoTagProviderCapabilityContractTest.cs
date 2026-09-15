@@ -719,6 +719,31 @@ public sealed class AutoTagProviderCapabilityContractTest
     }
 
     [Fact]
+    public void MusicBrainzAlbumIdentity_IsOwnedByTheProviderIdentityContract()
+    {
+        var identity = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "AutoTagIdentityTags.cs");
+        Assert.Contains("\"MUSICBRAINZ_ALBUMID\"", identity, StringComparison.Ordinal);
+        Assert.Contains("\"MUSICBRAINZ_ALBUMARTISTID\"", identity, StringComparison.Ordinal);
+        Assert.Contains("\"MUSICBRAINZ_RELEASE_ID\"", identity, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"ALBUMID\"", identity, StringComparison.Ordinal);
+
+        var source = ReadLocalAutoTagRunnerSource();
+        var writerStart = source.IndexOf(
+            "private static Task<ProviderIdentityWriteResult> WriteProviderIdentityAsync(",
+            StringComparison.Ordinal);
+        Assert.True(writerStart >= 0, "the single provider identity writer was not found");
+        var writer = source[writerStart..source.IndexOf(
+            "private sealed class ProviderIdentityTagSession",
+            writerStart,
+            StringComparison.Ordinal)];
+        var verification = ExtractAnyMethodBody(source, "VerifyPersistedTags");
+
+        Assert.Contains("AutoTagIdentityTags.ResolveFamily", writer, StringComparison.Ordinal);
+        Assert.Contains("VerifyProviderIdentityFieldPersisted", verification, StringComparison.Ordinal);
+        Assert.DoesNotContain("WriteSourceIdentityTags", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlatformLyricsResolution_IsRestrictedToTheCurrentProvider()
     {
         var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");

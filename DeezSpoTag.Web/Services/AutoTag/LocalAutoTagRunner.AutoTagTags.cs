@@ -248,10 +248,20 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return true;
         }
 
+        if (GenericIdentityCompatibilityFields.Contains(key, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         return key.EndsWith("_TRACK_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_TRACKID", StringComparison.OrdinalIgnoreCase)
             || key.EndsWith("_RELEASE_ID", StringComparison.OrdinalIgnoreCase)
             || key.EndsWith("_ALBUM_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_ALBUMID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_ALBUM_ARTIST_ID", StringComparison.OrdinalIgnoreCase)
             || key.EndsWith("_ARTIST_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_ARTISTID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_RECORDING_ID", StringComparison.OrdinalIgnoreCase)
             || key.EndsWith("_URL", StringComparison.OrdinalIgnoreCase);
     }
 
