@@ -357,6 +357,7 @@ DeezSpoTag.DownloadClient = {
         this.settingsPromise = nextSettings
             ? Promise.resolve(nextSettings)
             : null;
+        this.refreshAppleNotificationMode();
     },
     applyUpdatedDownloadSource(serialized) {
         let payload = null;
@@ -411,6 +412,34 @@ DeezSpoTag.DownloadClient = {
     },
     getAppleNotificationMode() {
         return this.normalizeAppleNotificationMode(this.appleNotifications.mode);
+    },
+    isAppleNotificationContext(context = {}) {
+        const haystack = [
+            context.engine,
+            context.linkType,
+            context.queueType,
+            context.logLabel,
+            context.url,
+            context.sourceService
+        ].map((value) => String(value || '').toLowerCase()).join(' ');
+        return haystack.includes('apple') || this.isAppleUrl(context.url);
+    },
+    notifyAppleAware(kind, message, type = 'info', context = {}) {
+        if (!this.isAppleNotificationContext(context)) {
+            this.showNotification(message, type, context.options);
+            return;
+        }
+
+        const mode = this.getAppleNotificationMode();
+        if (mode === 'off') {
+            return;
+        }
+        if (mode === 'merged') {
+            this.queueAppleNotification(kind);
+            return;
+        }
+
+        this.showNotification(message, type, context.options);
     },
     queueAppleNotification(kind) {
         if (kind === 'started') {
@@ -552,7 +581,7 @@ DeezSpoTag.DownloadClient = {
         }
 
         const resolvedMessage = apiError.message || message;
-        this.showNotification(resolvedMessage, notificationType);
+        this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         let reasonCodes = [];
@@ -579,7 +608,7 @@ DeezSpoTag.DownloadClient = {
         }
 
         const resolvedMessage = result.message || message;
-        this.showNotification(resolvedMessage, notificationType);
+        this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         let reasonCodes = [];
@@ -606,7 +635,11 @@ DeezSpoTag.DownloadClient = {
             return null;
         }
 
-        this.showNotification(`Added ${result.queued.length} item(s) to the queue`, 'success');
+        this.notifyAppleAware(
+            'started',
+            `Added ${result.queued.length} item(s) to the queue`,
+            'success',
+            { engine, queueType, linkType, logLabel });
         this.logDownloadEvent('success', `added to queue (${logLabel})`);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         return {
@@ -631,7 +664,7 @@ DeezSpoTag.DownloadClient = {
 
         const deferredCount = Number.isFinite(result.deferredCount) ? result.deferredCount : 1;
         const resolvedMessage = result.message || message || `Queued ${deferredCount} item(s) for background processing.`;
-        this.showNotification(resolvedMessage, 'info');
+        this.notifyAppleAware('started', resolvedMessage, 'info', { linkType });
         this.logDownloadEvent('info', logMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         return { success: true, deferred: true, linkType };
@@ -703,17 +736,30 @@ DeezSpoTag.DownloadClient = {
         throw this.buildResultError(result, 'Failed to add to queue');
     },
 
-    createQueueNotifier(options = {}) {
+    createQueueNotifier(options = {}, url = '') {
+        const appleContext = {
+            url,
+            engine: options?.metadata?.sourceService || '',
+            sourceService: options?.metadata?.sourceService || '',
+            logLabel: url
+        };
         return {
             notify: (message, type = 'info', notificationOptions = {}) => {
-                if (!options.silent) {
-                    this.showNotification(message, type, notificationOptions);
+                if (options.silent) {
+                    return;
                 }
+                const kind = type === 'success' || type === 'info' ? 'started' : 'failed';
+                this.notifyAppleAware(kind, message, type, { ...appleContext, options: notificationOptions });
             },
             notifyQueue: (message, type = 'success') => {
-                if (!options.silent) {
-                    this.showQueueToast(message, type);
+                if (options.silent) {
+                    return;
                 }
+                if (this.isAppleNotificationContext(appleContext)) {
+                    this.notifyAppleAware('started', message, type, appleContext);
+                    return;
+                }
+                this.showQueueToast(message, type);
             }
         };
     },
@@ -752,16 +798,16 @@ DeezSpoTag.DownloadClient = {
         }
         delete this.inFlightByUrl[normalizedUrl];
     },
-    validateQueueInput(url, normalizedUrl, destinationFolderId, destinationId, notify) {
+    validateQueueInput(url, normalizedUrl, destinationFolderId, destinationId) {
         if (!url) {
             const errorMessage = 'Please provide a valid URL';
-            notify(errorMessage, 'error');
+            this.showNotification(errorMessage, 'error');
             return { success: false, errorMessage };
         }
         const activeLock = this.getActiveInFlightLock(normalizedUrl);
         if (activeLock) {
             const errorMessage = 'Download already queued or in progress';
-            notify(errorMessage, 'warning');
+            this.showNotification(errorMessage, 'warning');
             this.logDownloadEvent('info', errorMessage);
             return { success: false, errorMessage };
         }
@@ -1498,15 +1544,22 @@ DeezSpoTag.DownloadClient = {
     },
     // Add URL to download queue
     async addToQueue(url, bitrate = 0, destinationFolderId = null, options = {}) {
-        const { notify, notifyQueue } = this.createQueueNotifier(options);
         const normalizedUrl = String(url || '').trim();
+        const { notify, notifyQueue } = this.createQueueNotifier(options, normalizedUrl);
         const destinationId = destinationFolderId ?? this.getDestinationFolderId(true);
-        const validationError = this.validateQueueInput(url, normalizedUrl, destinationFolderId, destinationId, notify);
+        const validationError = this.validateQueueInput(url, normalizedUrl, destinationFolderId, destinationId);
         if (validationError) {
             return validationError;
         }
 
-        notify('Adding to download queue...', 'info');
+        const appleContext = {
+            url: normalizedUrl,
+            logLabel: normalizedUrl,
+            sourceService: options?.metadata?.sourceService
+        };
+        if (!options.silent && (!this.isAppleNotificationContext(appleContext) || this.getAppleNotificationMode() === 'detailed')) {
+            notify('Adding to download queue...', 'info');
+        }
         this.addPendingQueueIfNeeded(url, bitrate, destinationId, options);
         const lockId = this.acquireInFlightLock(normalizedUrl, destinationId);
 
@@ -1585,7 +1638,11 @@ DeezSpoTag.DownloadClient = {
         const inputSummary = inputDuplicates > 0
             ? ` (+${inputDuplicates} duplicates removed)`
             : '';
-        this.showNotification(`Adding ${dedupedUrls.length}${inputSummary} items to download queue...`, 'info');
+        const appleBatch = dedupedUrls.length > 0 && dedupedUrls.every((entry) => this.isAppleUrl(entry));
+        const appleMode = appleBatch ? this.getAppleNotificationMode() : 'detailed';
+        if (appleMode === 'detailed') {
+            this.showNotification(`Adding ${dedupedUrls.length}${inputSummary} items to download queue...`, 'info');
+        }
 
         // Persist the full bulk selection up front so queue submission survives page navigation.
         this.enqueuePendingQueueItems(dedupedUrls, bitrate, destinationId);
@@ -1597,7 +1654,9 @@ DeezSpoTag.DownloadClient = {
             await this.enqueueBatchChunk(chunk, bitrate, destinationId, results, concurrency);
         }
 
-        this.showBatchQueueSummary(results);
+        if (appleMode !== 'off') {
+            this.showBatchQueueSummary(results);
+        }
     },
     async enqueueBatchChunk(urls, bitrate, destinationId, results, concurrency) {
         const queue = [...urls];

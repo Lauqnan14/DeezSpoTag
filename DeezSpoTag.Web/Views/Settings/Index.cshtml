@@ -3496,6 +3496,10 @@ function persistAppleNotificationPreference() {
     if (globalThis.UserPrefs) {
         globalThis.UserPrefs.set('appleDownloadNotificationMode', mode);
     }
+    globalThis.dispatchEvent(new StorageEvent('storage', {
+        key: APPLE_NOTIFICATION_MODE_KEY,
+        newValue: mode
+    }));
 }
 
 function normalizeMediaServerCategory(category) {
@@ -4252,7 +4256,9 @@ const NOTIFICATION_EVENT_LABELS = {
     artist_new_release: 'Monitored artist has a new release',
     playlist_updated: 'Monitored playlist changed',
     download_failed: 'Download failed after all sources',
+    download_blocked: 'Download parked (staging missing)',
     provider_unhealthy: 'Public API provider unhealthy',
+    provider_recovered: 'Public API provider recovered',
     run_paused: 'Run paused or interrupted',
     run_resumed: 'Run resumed',
     run_completed: 'Run completed'
@@ -4392,9 +4398,15 @@ async function initNotificationPreferences() {
             if (webhookUrl?.value.trim()) {
                 body.webhookUrl = webhookUrl.value.trim();
             }
+            const headers = { 'Content-Type': 'application/json' };
+            const csrf = document.querySelector('meta[name="deezspotag-csrf-token"]')?.getAttribute('content')?.trim();
+            if (csrf) {
+                headers['X-CSRF-TOKEN'] = csrf;
+            }
             const response = await fetch('/api/notifications/preferences', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
+                credentials: 'same-origin',
                 body: JSON.stringify(body)
             });
             if (!response.ok) {
@@ -4416,7 +4428,16 @@ async function initNotificationPreferences() {
         testButton.addEventListener('click', async () => {
             try {
                 testButton.disabled = true;
-                const response = await fetch('/api/notifications/webhook-test', { method: 'POST' });
+                const headers = { 'Content-Type': 'application/json' };
+                const csrf = document.querySelector('meta[name="deezspotag-csrf-token"]')?.getAttribute('content')?.trim();
+                if (csrf) {
+                    headers['X-CSRF-TOKEN'] = csrf;
+                }
+                const response = await fetch('/api/notifications/webhook-test', {
+                    method: 'POST',
+                    headers,
+                    credentials: 'same-origin'
+                });
                 const payload = await response.json().catch(() => null);
                 if (!response.ok) {
                     throw new Error(payload?.error || `HTTP ${response.status}`);
@@ -4608,6 +4629,7 @@ async function initSettings() {
                 showToast(`Library scan settings failed to load: ${librarySettingsError.message}`, 'error');
             }
             loadAppleNotificationPreference();
+            document.getElementById('appleDownloadNotificationMode')?.addEventListener('change', persistAppleNotificationPreference);
             await loadMediaServerLibraryConfiguration(false);
             settingsReady = true;
         } else {

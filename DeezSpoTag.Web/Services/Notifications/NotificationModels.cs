@@ -21,6 +21,7 @@ public static class NotificationKinds
     public const string RunResumed = "run_resumed";
     public const string RunCompleted = "run_completed";
     public const string ProviderRecovered = "provider_recovered";
+    public const string DownloadBlocked = "download_blocked";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -32,7 +33,8 @@ public static class NotificationKinds
         RunPaused,
         RunResumed,
         RunCompleted,
-        ProviderRecovered
+        ProviderRecovered,
+        DownloadBlocked
     ];
 
     public static bool IsKnown(string? kind)

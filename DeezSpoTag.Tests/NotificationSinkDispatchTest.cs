@@ -143,6 +143,27 @@ public sealed class NotificationSinkDispatchTest : IDisposable
     }
 
     [Fact]
+    public async Task SinkRaise_AcceptsDownloadBlocked()
+    {
+        INotificationSink sink = _service;
+        sink.Raise(
+            "download_blocked",
+            "Download parked: staging artifact missing",
+            "Completed download abc123 lost its staging artifact.",
+            "Warning",
+            "download_blocked:abc123",
+            "download",
+            "abc123");
+
+        await DrainAsync();
+
+        var entry = Assert.Single(await _store.GetAsync());
+        Assert.Equal("download_blocked", entry.Kind);
+        Assert.Equal(NotificationSeverity.Warning, entry.Severity);
+        Assert.Equal(1, _listener.SendCount);
+    }
+
+    [Fact]
     public async Task SinkRaise_IgnoresUnknownKinds()
     {
         INotificationSink sink = _service;

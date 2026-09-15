@@ -179,6 +179,43 @@ public partial class AutoTagService
             job.Id);
     }
 
+    private void NotifyRunFinished(AutoTagJob job)
+    {
+        var status = job.Status?.Trim() ?? string.Empty;
+        if (!string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var label = IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag";
+        var succeeded = string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase);
+        _notifications.Raise(
+            "run_completed",
+            $"{label} run {status}",
+            job.Error
+                ?? $"{label} finished with {job.OkCount} ok, {job.ErrorCount} error, {job.SkippedCount} skipped.",
+            succeeded ? "Info" : "Warning",
+            $"run_completed:{job.Id}",
+            "job",
+            job.Id);
+    }
+
+    private void NotifyRunResumed(AutoTagJob job, string successorJobId)
+    {
+        var label = IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag";
+        _notifications.Raise(
+            "run_resumed",
+            $"{label} run resumed",
+            string.Equals(job.Id, successorJobId, StringComparison.OrdinalIgnoreCase)
+                ? $"{label} continued from its last checkpoint."
+                : $"{label} continued as job {successorJobId}.",
+            "Info",
+            $"run_resumed:{successorJobId}",
+            "job",
+            successorJobId);
+    }
+
     private void TrySaveLastJobId(string jobId)
     {
         try
@@ -442,6 +479,8 @@ public partial class AutoTagService
             var job = JsonSerializer.Deserialize<AutoTagJob>(utf8, _jsonOptions);
             if (job != null)
             {
+                job.SelectedEnhancementFeatures ??= new List<string>();
+                job.EnhancementBatchState ??= new AutoTagEnhancementBatchState();
                 foreach (var (pathKey, diff) in LoadPersistedTagDiffs(job.Id))
                 {
                     job.TagDiffs[pathKey] = diff;

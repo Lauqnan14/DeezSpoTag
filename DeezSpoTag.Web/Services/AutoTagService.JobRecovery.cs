@@ -120,6 +120,7 @@ public partial class AutoTagService
         job.ExitCode = 1;
         job.FinishedAt = DateTimeOffset.UtcNow;
         SaveJob(job);
+        NotifyRunStopped(job, job.Status, job.Error);
     }
 
     private async Task HandleRunJobFailureAsync(
@@ -136,6 +137,7 @@ public partial class AutoTagService
         AppendPlatformSummary(job);
         SaveJob(job);
         AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
+        NotifyRunFinished(job);
 
         if (IsManualEnrichmentRunIntent(job.RunIntent) && job.AutoMoveSummary != null)
         {

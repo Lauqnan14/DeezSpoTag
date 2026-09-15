@@ -61,14 +61,9 @@ public sealed class WatchlistPublicApiReadinessService
             .Where(static source => !string.IsNullOrWhiteSpace(source))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        if (configuredSources.Length == 0
-            || configuredSources.Any(source => !PublicApiSources.Contains(source)))
-        {
-            return WatchlistPublicApiReadiness.Ready();
-        }
 
         var unavailable = new List<string>();
-        foreach (var source in configuredSources)
+        foreach (var source in configuredSources.Where(source => PublicApiSources.Contains(source)))
         {
             var usable = source.ToLowerInvariant() switch
             {
@@ -77,12 +72,17 @@ public sealed class WatchlistPublicApiReadinessService
                 "tidal" => await HasUsableTidalProviderAsync(cancellationToken),
                 _ => true
             };
-            if (usable)
+            if (!usable)
             {
-                return WatchlistPublicApiReadiness.Ready();
+                unavailable.Add(source);
             }
+        }
 
-            unavailable.Add(source);
+        if (configuredSources.Length == 0
+            || configuredSources.Any(source => !PublicApiSources.Contains(source))
+            || unavailable.Count < configuredSources.Length)
+        {
+            return WatchlistPublicApiReadiness.Ready();
         }
 
         return new WatchlistPublicApiReadiness(
@@ -105,7 +105,7 @@ public sealed class WatchlistPublicApiReadinessService
         var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
         var sessionValid = requiresVerification
                            && await _amazonDownloads.HasPublicDownloadSessionAsync(cancellationToken);
-        NotifyVerificationRequired("Amazon Music", requiresVerification, sessionValid);
+        NotifyVerificationRequired("Amazon Music", "amazon", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
@@ -127,7 +127,7 @@ public sealed class WatchlistPublicApiReadinessService
         var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
         var sessionValid = requiresVerification
                            && await _qobuzDownloads.HasPublicDownloadSessionAsync(cancellationToken);
-        NotifyVerificationRequired("Qobuz", requiresVerification, sessionValid);
+        NotifyVerificationRequired("Qobuz", "qobuz", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
@@ -149,7 +149,7 @@ public sealed class WatchlistPublicApiReadinessService
         var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
         var sessionValid = requiresVerification
                            && await _tidalDownloads.HasPublicDownloadSessionAsync(cancellationToken);
-        NotifyVerificationRequired("Tidal", requiresVerification, sessionValid);
+        NotifyVerificationRequired("Tidal", "tidal", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
@@ -159,10 +159,20 @@ public sealed class WatchlistPublicApiReadinessService
 
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
 
-    private void NotifyVerificationRequired(string platform, bool anyRequiresVerification, bool sessionValid)
+    private void NotifyVerificationRequired(string platform, string slug, bool anyRequiresVerification, bool sessionValid)
     {
+        var key = $"verification_required:{slug}";
         if (!anyRequiresVerification || sessionValid)
         {
+            if (sessionValid)
+            {
+                _notifications.Resolve(
+                    key,
+                    manuallyResolved: false,
+                    $"{platform} public API verified",
+                    "Downloads can use it again. No action was needed.");
+            }
+
             return;
         }
 
@@ -171,9 +181,9 @@ public sealed class WatchlistPublicApiReadinessService
             $"{platform} public API needs verification",
             $"Downloads and watchlist runs using the {platform} public API are blocked until the session is verified in Settings.",
             "ActionRequired",
-            $"verification_required:{platform.ToLowerInvariant()}",
+            key,
             "platform",
-            platform.ToLowerInvariant());
+            slug);
     }
 
     internal static bool IsProviderUsable(

@@ -108,9 +108,9 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     public void NotifyProviderManuallyResolved(string providerId)
         => _notifications.Resolve($"provider_unhealthy:tidal:{providerId}", manuallyResolved: true);
 
-    private void NotifyProviderUnhealthy(ProviderState provider)
+    private void NotifyProviderUnhealthy(ProviderState provider, bool requireCooldown)
     {
-        if (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow)
+        if (!ShouldAnnounceProviderUnhealthy(provider, requireCooldown))
         {
             return;
         }
@@ -118,11 +118,39 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         _notifications.Raise(
             "provider_unhealthy",
             $"Tidal provider {provider.DisplayName} is unavailable",
-            $"{ResolveFailureMessage(provider.FailureCategory)} Downloads route around it until {provider.CooldownUntil.Value.ToUniversalTime():HH:mm:ss} UTC.",
+            $"{ResolveFailureMessage(provider.FailureCategory)}{BuildProviderUnhealthyDetail(provider)}",
             "Warning",
             $"provider_unhealthy:tidal:{provider.Id}",
             "provider",
             provider.Id);
+    }
+
+    private static bool ShouldAnnounceProviderUnhealthy(ProviderState provider, bool requireCooldown)
+    {
+        var onCooldown = provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
+        if (requireCooldown)
+        {
+            return onCooldown;
+        }
+
+        if (!provider.Enabled)
+        {
+            return false;
+        }
+
+        return !string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(provider.Status, DisabledStatus, StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(provider.Status, UnknownStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildProviderUnhealthyDetail(ProviderState provider)
+    {
+        if (provider.CooldownUntil is { } until && until > DateTimeOffset.UtcNow)
+        {
+            return $" Downloads route around it until {until.ToUniversalTime():HH:mm:ss} UTC.";
+        }
+
+        return " Downloads will route around it until it recovers.";
     }
 
     private async Task UpdateDownloadOutcomeAsync(
@@ -148,7 +176,14 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.FailureMessage = ResolveFailureMessage(category);
             provider.CooldownUntil = cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
-            NotifyProviderUnhealthy(provider);
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                NotifyProviderRecovered(provider, "online", activeCooldown: false);
+            }
+            else
+            {
+                NotifyProviderUnhealthy(provider, requireCooldown: true);
+            }
         }
         finally
         {
@@ -190,6 +225,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.CooldownUntil = activeCooldown ? provider.CooldownUntil : cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
             NotifyProviderRecovered(provider, status, activeCooldown);
+            NotifyProviderUnhealthy(provider, requireCooldown: false);
         }
         finally
         {

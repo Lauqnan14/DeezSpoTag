@@ -20,16 +20,19 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<QobuzPublicProviderRegistry> _logger;
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public QobuzPublicProviderRegistry(
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<QobuzPublicProviderRegistry> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
         _store = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
@@ -113,6 +116,14 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
             provider.FailureMessage = ResolveFailureMessage(category);
             provider.CooldownUntil = cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                NotifyProviderRecovered(provider, "online", activeCooldown: false);
+            }
+            else
+            {
+                NotifyProviderUnhealthy(provider, requireCooldown: true);
+            }
         }
         finally
         {
@@ -151,11 +162,72 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
             provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
             provider.CooldownUntil = activeCooldown ? provider.CooldownUntil : cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
+            NotifyProviderRecovered(provider, status, activeCooldown);
+            NotifyProviderUnhealthy(provider, requireCooldown: false);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private void NotifyProviderRecovered(ProviderState provider, string status, bool activeCooldown)
+    {
+        if (activeCooldown || !string.Equals(status, "online", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _notifications.Resolve(
+            $"provider_unhealthy:qobuz:{provider.Id}",
+            manuallyResolved: false,
+            $"Qobuz provider {provider.DisplayName} is back online",
+            "Downloads can use it again. No action was needed.");
+    }
+
+    private void NotifyProviderUnhealthy(ProviderState provider, bool requireCooldown)
+    {
+        if (!ShouldAnnounceProviderUnhealthy(provider, requireCooldown))
+        {
+            return;
+        }
+
+        _notifications.Raise(
+            "provider_unhealthy",
+            $"Qobuz provider {provider.DisplayName} is unavailable",
+            $"{ResolveFailureMessage(provider.FailureCategory)}{BuildProviderUnhealthyDetail(provider)}",
+            "Warning",
+            $"provider_unhealthy:qobuz:{provider.Id}",
+            "provider",
+            provider.Id);
+    }
+
+    private static bool ShouldAnnounceProviderUnhealthy(ProviderState provider, bool requireCooldown)
+    {
+        var onCooldown = provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
+        if (requireCooldown)
+        {
+            return onCooldown;
+        }
+
+        if (!provider.Enabled)
+        {
+            return false;
+        }
+
+        return !string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(provider.Status, DisabledStatus, StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(provider.Status, UnknownStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildProviderUnhealthyDetail(ProviderState provider)
+    {
+        if (provider.CooldownUntil is { } until && until > DateTimeOffset.UtcNow)
+        {
+            return $" Downloads route around it until {until.ToUniversalTime():HH:mm:ss} UTC.";
+        }
+
+        return " Downloads will route around it until it recovers.";
     }
 
     private static DateTimeOffset? ResolveCooldown(string category)
