@@ -1038,8 +1038,10 @@ public sealed class LyricsServicePrivateHelpersTest
             {
                 SyncedLyrics = true,
                 SaveLyrics = true,
-                LrcType = "lyrics,unsynced-lyrics",
-                LrcFormat = "elrc"
+                LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                LrcTimingPreference = LrcTimingModes.PreferEnhanced
             };
             var lyrics = new LyricsSource
             {
@@ -1158,14 +1160,15 @@ public sealed class LyricsServicePrivateHelpersTest
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_WordEnhancedOnly_UpgradesLineLrcWhenWordsExist()
+    public async Task SaveLyricsAsync_WordEnhancedOnly_KeepsExistingLineLrcWhenOverwriteDisabled()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
         try
         {
             var lrcPath = Path.Join(directory, "track.lrc");
-            await File.WriteAllTextAsync(lrcPath, "[00:01.00]Oh yeah\n");
+            const string existing = "[00:01.00]Oh yeah\n";
+            await File.WriteAllTextAsync(lrcPath, existing);
 
             var settings = new DeezSpoTagSettings
             {
@@ -1181,8 +1184,7 @@ public sealed class LyricsServicePrivateHelpersTest
             await service.SaveLyricsAsync(
                 CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
-            var lrc = await File.ReadAllTextAsync(lrcPath);
-            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
+            Assert.Equal(existing, await File.ReadAllTextAsync(lrcPath));
         }
         finally
         {
@@ -1255,14 +1257,15 @@ public sealed class LyricsServicePrivateHelpersTest
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_UpgradesLineLevelLrcToWordTiming_EvenWhenOverwriteDisabled()
+    public async Task SaveLyricsAsync_KeepsLineLevelLrcWhenOverwriteDisabled()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
         try
         {
             var lrcPath = Path.Join(directory, "track.lrc");
-            await File.WriteAllTextAsync(lrcPath, "[00:01.00]Oh yeah\n");
+            const string existing = "[00:01.00]Oh yeah\n";
+            await File.WriteAllTextAsync(lrcPath, existing);
 
             var settings = new DeezSpoTagSettings
             {
@@ -1277,8 +1280,7 @@ public sealed class LyricsServicePrivateHelpersTest
             await service.SaveLyricsAsync(
                 CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
-            var lrc = await File.ReadAllTextAsync(lrcPath);
-            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
+            Assert.Equal(existing, await File.ReadAllTextAsync(lrcPath));
         }
         finally
         {
@@ -1543,9 +1545,11 @@ public sealed class LyricsServicePrivateHelpersTest
             {
                 SyncedLyrics = true,
                 SaveLyrics = true,
-                LrcType = "lyrics,ttml-lyrics,unsynced-lyrics",
-                LrcFormat = "lrc,elrc,ttml",
-                SynthesizeLrcFromTtml = true
+                LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+                LrcFormat = "lrc,ttml",
+                SynthesizeLrcFromTtml = true,
+                PreferEnhancedLrc = true,
+                LrcTimingPreference = LrcTimingModes.PreferEnhanced
             };
             var lyrics = new LyricsSource
             {
@@ -1594,7 +1598,8 @@ public sealed class LyricsServicePrivateHelpersTest
             var settings = new DeezSpoTagSettings
             {
                 SyncedLyrics = true,
-                LrcType = "ttml-lyrics",
+                SaveLyrics = true,
+                LrcType = "lyrics,ttml-lyrics",
                 LrcFormat = "lrc",
                 SynthesizeLrcFromTtml = true
             };
