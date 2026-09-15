@@ -125,9 +125,11 @@ public sealed class QualityScannerService
         var effectiveQueueAtmos = request.QueueAtmosAlternatives ?? automationSettings.QueueAtmosAlternatives;
         var runQualityUpgradeStage = request.RunQualityUpgradeStage ?? true;
         var effectiveCooldown = Math.Clamp(request.CooldownMinutes ?? automationSettings.CooldownMinutes, 0, 43200);
-        // The run's own Atmos destination wins; the global multi-quality secondary
-        // destination remains the fallback for runs that do not pick one.
-        var atmosDestinationFolderId = request.AtmosDestinationFolderId ?? GetAtmosDestinationFolderId(settings);
+        // Kept separate on purpose: the run's own pick is checked against the folders typed Atmos
+        // on the Folder tab first, and only then does the global multi-quality destination act as
+        // a fallback for runs that do not pick one.
+        var atmosDestinationFolderId = request.AtmosDestinationFolderId;
+        var fallbackAtmosDestinationFolderId = GetAtmosDestinationFolderId(settings);
         CancellationTokenSource? previousCts;
 
         lock (_stateLock)
@@ -158,6 +160,7 @@ public sealed class QualityScannerService
                 QueueAtmosAlternatives: effectiveQueueAtmos,
                 CooldownMinutes: effectiveCooldown,
                 AtmosDestinationFolderId: atmosDestinationFolderId,
+                FallbackAtmosDestinationFolderId: fallbackAtmosDestinationFolderId,
                 MarkAutomationWindow: request.MarkAutomationWindow,
                 TechnicalProfiles: NormalizeTechnicalProfiles(request.TechnicalProfiles),
                 FolderIds: NormalizeFolderIds(request.FolderIds, request.FolderId),
@@ -1017,7 +1020,36 @@ public sealed class QualityScannerService
         IReadOnlyList<FolderDto> folderSnapshot,
         CancellationToken cancellationToken)
     {
+        // Where the Atmos copy goes. The folder picked for this run wins. Otherwise the folders
+        // typed Atmos on the Folder tab decide: each Atmos folder is its own library, one is
+        // unambiguous, and several mean the user has to choose rather than the app guessing.
         var atmosphereDestination = options.AtmosDestinationFolderId;
+        if (!atmosphereDestination.HasValue)
+        {
+            var atmosFolders = folderSnapshot.Where(IsAtmosDestinationFolder).ToList();
+            if (atmosFolders.Count == 1)
+            {
+                atmosphereDestination = atmosFolders[0].Id;
+            }
+            else if (atmosFolders.Count > 1)
+            {
+                const string ambiguousDestinationMessage =
+                    "More than one Atmos folder is configured. Choose the Atmos folder this run should use.";
+                await TryRecordActionAsync(new QualityScannerActionLogDto(
+                    RunId: GetState().RunId,
+                    TrackId: track.TrackId,
+                    ActionType: "atmos_destination_ambiguous",
+                    Source: AtmosQuality,
+                    Quality: AtmosQuality,
+                    ContentType: DownloadContentTypes.Atmos,
+                    DestinationFolderId: null,
+                    QueueUuid: null,
+                    Message: ambiguousDestinationMessage), cancellationToken);
+                return new AtmosQueuePrecheckResult(0, AtmosQueueResult.Error(ambiguousDestinationMessage));
+            }
+        }
+
+        atmosphereDestination ??= options.FallbackAtmosDestinationFolderId;
         if (!atmosphereDestination.HasValue)
         {
             const string missingDestinationMessage = "Atmos destination folder is not configured for enhancement queueing.";
@@ -1703,6 +1735,15 @@ public sealed class QualityScannerService
         };
     }
 
+    // A folder typed Atmos on the Folder tab (its desired quality says Atmos). Each Atmos
+    // folder is its own library, so these are the destinations "Queue Atmos" may use.
+    internal static bool IsAtmosDestinationFolder(FolderDto folder)
+    {
+        var desiredQuality = folder.DesiredQuality?.Trim() ?? string.Empty;
+        return desiredQuality.Contains(AtmosQuality, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(desiredQuality, "5", StringComparison.Ordinal);
+    }
+
     private static bool IsAtmosQuality(string? quality)
     {
         return !string.IsNullOrWhiteSpace(quality)
@@ -1832,6 +1873,11 @@ internal sealed record QualityScannerRunOptions(
     bool QueueAtmosAlternatives,
     int CooldownMinutes,
     long? AtmosDestinationFolderId,
+    /// <summary>
+    /// The global multi-quality Atmos destination, used only when neither the run nor the
+    /// folders typed Atmos on the Folder tab supply one.
+    /// </summary>
+    long? FallbackAtmosDestinationFolderId,
     bool MarkAutomationWindow,
     IReadOnlySet<string> TechnicalProfiles,
     IReadOnlySet<long> FolderIds,

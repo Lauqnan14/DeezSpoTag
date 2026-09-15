@@ -214,8 +214,12 @@ public sealed class AtmosPipelineGuardrailTest
         Assert.Contains("IsSameTrackAsAtmosCopy", scanner, StringComparison.Ordinal);
         Assert.Contains("GetQualityScanTracksAsync", scanner, StringComparison.Ordinal);
 
-        // The run's picked destination wins; the global multi-quality destination is the fallback.
-        Assert.Contains("request.AtmosDestinationFolderId ?? GetAtmosDestinationFolderId(settings)", scanner, StringComparison.Ordinal);
+        // The run's picked destination wins; the folders typed Atmos on the Folder tab decide
+        // when the run picked none, and the global multi-quality destination is only the fallback.
+        Assert.Contains("var atmosDestinationFolderId = request.AtmosDestinationFolderId;", scanner, StringComparison.Ordinal);
+        Assert.Contains("FallbackAtmosDestinationFolderId: fallbackAtmosDestinationFolderId,", scanner, StringComparison.Ordinal);
+        Assert.Contains("IsAtmosDestinationFolder", scanner, StringComparison.Ordinal);
+        Assert.Contains("atmos_destination_ambiguous", scanner, StringComparison.Ordinal);
         Assert.Contains("AtmosDestinationFolderId = atmosDestinationFolderId,", workflows, StringComparison.Ordinal);
         Assert.Contains("ResolveAtmosDestinationFolderId(qualityChecks)", workflows, StringComparison.Ordinal);
     }
