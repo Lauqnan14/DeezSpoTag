@@ -922,6 +922,8 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("job.ProcessedItems = Math.Max(job.ProcessedItems, Math.Max(0, processed));", workflows, StringComparison.Ordinal);
         Assert.Contains("job.TotalItems = job.TargetUsable > 0", workflows, StringComparison.Ordinal);
         Assert.Contains("PublishEnhancementPhaseHeartbeat", workflows, StringComparison.Ordinal);
+        Assert.Contains("PublishEnhancementPhaseHeartbeat(job, AutoTagLiterals.EnhancementFeatureSidecars, message)", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("job.RootPath ?? string.Empty,\n            AutoTagLiterals.CompletedStatus", workflows, StringComparison.Ordinal);
         Assert.Contains("cover maintenance starting", workflows, StringComparison.Ordinal);
         Assert.Contains("quality checks starting", workflows, StringComparison.Ordinal);
         Assert.Contains("folder uniformity starting", workflows, StringComparison.Ordinal);

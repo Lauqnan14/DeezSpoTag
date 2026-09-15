@@ -235,6 +235,10 @@ public sealed class ActivitiesControllerContractTest
         Assert.Contains("lyrics-row-title", source, StringComparison.Ordinal);
         Assert.Contains("lyrics-row-artist", source, StringComparison.Ordinal);
         Assert.Contains("lyricsBadges.map(lyricsBadgeMarkup)", source, StringComparison.Ordinal);
+        Assert.Contains("const settled = sorted.filter((entry) => !isSidecarFetchingRecord(entry?.status?.status || {}));", source, StringComparison.Ordinal);
+        Assert.Contains("const badgeSources = settled.length ? settled : [display];", source, StringComparison.Ordinal);
+        Assert.Contains("message.startsWith(\"sidecars finished\")", source, StringComparison.Ordinal);
+        Assert.Contains("!looksLikeAudio", source, StringComparison.Ordinal);
         Assert.DoesNotContain("function lyricsMissingMarkup", source, StringComparison.Ordinal);
         Assert.DoesNotContain("inner.sourceTitle || toFileName", source, StringComparison.Ordinal);
         Assert.DoesNotContain("badge-lyrics-unsynced\">No lyrics</span>", source, StringComparison.Ordinal);

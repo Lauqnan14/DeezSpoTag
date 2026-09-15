@@ -1783,21 +1783,18 @@ public partial class AutoTagService
 
     private void RecordSidecarFetchCompletion(AutoTagJob job, string message, int processed, int total)
     {
-        // Clears any lingering per-file fetch activity: the run's last visible line is the
-        // totals, not the last file's "Fetching ..." line.
-        RecordEnhancementItemStatus(
+        // Run-level totals, not a sidecar card. Emitting this against RootPath previously
+        // showed up as an empty "Unknown title" row when the next batch started.
+        SetEnhancementPhase(
             job,
             AutoTagLiterals.EnhancementFeatureSidecars,
-            job.RootPath ?? string.Empty,
-            AutoTagLiterals.CompletedStatus,
-            message,
             processed,
             Math.Max(processed, total),
-            1,
-            1,
-            processed,
-            Math.Max(processed, total),
-            countOutcome: false);
+            job.CurrentBatch,
+            job.BatchCount,
+            job.BatchProcessed,
+            job.BatchSize);
+        PublishEnhancementPhaseHeartbeat(job, AutoTagLiterals.EnhancementFeatureSidecars, message);
     }
 
     /// <summary>

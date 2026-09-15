@@ -969,12 +969,23 @@
     };
 
     // Phase progress records are emitted against the library folder root
-    // ("cover maintenance starting…", "Fetching cover artwork for batch…").
-    // They are run-level progress, not sidecar items — never render them.
+    // ("cover maintenance starting…", "Fetching cover artwork for batch…",
+    // "Sidecars finished…"). They are run-level progress, not sidecar items.
     function isSidecarPhaseHeartbeat(inner) {
         const message = String(inner?.message || "").toLowerCase();
-        return message.startsWith("cover maintenance starting")
-            || message.startsWith("fetching cover artwork");
+        if (message.startsWith("cover maintenance starting")
+            || message.startsWith("fetching cover artwork")
+            || message.startsWith("sidecars finished")) {
+            return true;
+        }
+
+        const title = String(inner?.sourceTitle || "").trim();
+        const trackId = Number(inner?.lyricsTrackId);
+        const path = String(inner?.path || "").trim();
+        const looksLikeAudio = /\.(flac|mp3|m4a|aac|wav|aiff|alac|ogg|opus|wma)$/i.test(path);
+        return !title
+            && !(Number.isFinite(trackId) && trackId > 0)
+            && !looksLikeAudio;
     }
 
     function sidecarTrackId(inner) {
@@ -1113,12 +1124,17 @@
                 || sorted[sorted.length - 1]
                 || group[0];
             const keptInner = display?.status?.status || {};
-            const lyricsBadges = new Set(Array.isArray(keptInner.lyricsBadges) ? keptInner.lyricsBadges : []);
-            const artworkBadges = new Set(Array.isArray(keptInner.artworkBadges) ? keptInner.artworkBadges : []);
-            for (const entry of group) {
+            const settled = sorted.filter((entry) => !isSidecarFetchingRecord(entry?.status?.status || {}));
+            const badgeSources = settled.length ? settled : [display];
+            const lyricsBadges = new Set();
+            const artworkBadges = new Set();
+            for (const entry of badgeSources) {
                 const other = entry?.status?.status || {};
                 (Array.isArray(other.lyricsBadges) ? other.lyricsBadges : []).forEach((badge) => lyricsBadges.add(badge));
                 (Array.isArray(other.artworkBadges) ? other.artworkBadges : []).forEach((badge) => artworkBadges.add(badge));
+            }
+            for (const entry of group) {
+                const other = entry?.status?.status || {};
                 if (!keptInner.sourceTitle && other.sourceTitle) {
                     keptInner.sourceTitle = other.sourceTitle;
                     keptInner.sourceArtist = keptInner.sourceArtist || other.sourceArtist || "";
