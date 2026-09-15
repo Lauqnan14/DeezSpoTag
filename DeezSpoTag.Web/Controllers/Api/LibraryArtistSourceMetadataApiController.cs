@@ -168,6 +168,52 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Provider-independent artist location for the library hero. Audiomack is the
+    /// only source of an auto-resolved location, and this route serves it directly
+    /// (manual override first) so an artist with no Spotify node still renders one.
+    /// A miss answers available=false and changes nothing.
+    /// </summary>
+    [HttpGet("{id:long}/location")]
+    public async Task<IActionResult> GetArtistLocation(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(new { available = false, location = default(object) });
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
+        {
+            return Ok(new { available = false, location = default(object) });
+        }
+
+        ArtistLocationPayload? payload;
+        try
+        {
+            payload = await ResolveArtistLocationAsync(id, artist.Name, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Artist location endpoint failed for artist {ArtistId}", id);
+            payload = null;
+        }
+
+        return Ok(new
+        {
+            available = payload is not null,
+            location = payload is null
+                ? null
+                : new
+                {
+                    city = payload.City,
+                    country = payload.Country,
+                    country_code = payload.CountryCode,
+                    source = payload.Source
+                }
+        });
+    }
+
     [HttpGet("unmatched-spotify")]
     public async Task<IActionResult> GetUnmatchedSpotifyArtists(
         [FromQuery] int limit = 50,
@@ -755,30 +801,10 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return node;
         }
 
-        // Manual override (library page "Location" editor) always wins over the
-        // Audiomack-resolved value.
-        var manualOverride = await _locationOverrides.GetAsync(artistId, CancellationToken.None);
-        if (manualOverride != null
-            && (!string.IsNullOrWhiteSpace(manualOverride.City) || !string.IsNullOrWhiteSpace(manualOverride.Country)))
-        {
-            var overrideNode = JsonSerializer.SerializeToNode(new
-            {
-                city = manualOverride.City,
-                country = manualOverride.Country,
-                country_code = manualOverride.CountryCode,
-                source = "manual"
-            });
-            if (overrideNode != null)
-            {
-                artistObject["location"] = overrideNode;
-            }
-
-            return node;
-        }
-
         try
         {
-            var location = await _audiomackArtistLocation.ResolveAsync(artistId, artistName, CancellationToken.None);
+            // Manual override wins; otherwise Audiomack's own profile location.
+            var location = await ResolveArtistLocationAsync(artistId, artistName, CancellationToken.None);
             if (location == null)
             {
                 return node;
@@ -802,6 +828,40 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         }
 
         return node;
+    }
+
+    /// <summary>Location payload attached to an artist node or served by its own route.</summary>
+    private sealed record ArtistLocationPayload(string? City, string? Country, string? CountryCode, string Source);
+
+    /// <summary>
+    /// Resolves an artist's location independently of any provider payload: the
+    /// library manual override always wins, otherwise Audiomack's own artist profile
+    /// is used. This is the single path both the Spotify artist response and the
+    /// standalone location route go through, so an Audiomack-only artist (no Spotify
+    /// node) still gets a location. Returns null when nothing is available; callers
+    /// must leave existing metadata untouched.
+    /// </summary>
+    private async Task<ArtistLocationPayload?> ResolveArtistLocationAsync(
+        long artistId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        // Manual override (library page "Location" editor) always wins over the
+        // Audiomack-resolved value.
+        var manualOverride = await _locationOverrides.GetAsync(artistId, cancellationToken);
+        if (manualOverride != null
+            && (!string.IsNullOrWhiteSpace(manualOverride.City) || !string.IsNullOrWhiteSpace(manualOverride.Country)))
+        {
+            return new ArtistLocationPayload(manualOverride.City, manualOverride.Country, manualOverride.CountryCode, "manual");
+        }
+
+        var location = await _audiomackArtistLocation.ResolveAsync(artistId, artistName, cancellationToken);
+        if (location == null)
+        {
+            return null;
+        }
+
+        return new ArtistLocationPayload(location.City, location.Country, location.CountryCode, location.Source);
     }
 
     private async Task PurgeSpotifyVisualFilesAsync(long artistId, string? previousSpotifyId, CancellationToken cancellationToken)

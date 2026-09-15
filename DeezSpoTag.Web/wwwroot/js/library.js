@@ -4327,6 +4327,7 @@ async function loadAlbums(artistId) {
     initQobuzIdEditor(artistIdValue);
     initAudiomackIdEditor(artistIdValue);
     initArtistLocationEditor(artistIdValue);
+    loadArtistLocation(artistIdValue);
 }
 
 function applyLocalArtistHeader(resolvedArtist) {
@@ -6152,6 +6153,20 @@ async function initAudiomackIdEditor(artistIdValue) {
     });
 }
 
+// Provider-independent location: Audiomack resolves its own artist location, so an
+// artist with no Spotify node still renders one. The manual override wins server-side.
+async function loadArtistLocation(artistIdValue) {
+    if (!artistIdValue) return;
+    try {
+        const data = await fetchJson(`/api/library/artists/${artistIdValue}/location`);
+        if (data && data.available && data.location && typeof globalThis.setSpotifyArtistLocation === 'function') {
+            globalThis.setSpotifyArtistLocation(data.location);
+        }
+    } catch (error) {
+        // Location is optional; a failure must never disturb the rest of the hero.
+    }
+}
+
 function initArtistLocationEditor(artistIdValue) {
     const cityInput = document.getElementById('artist-location-city');
     const countryInput = document.getElementById('artist-location-country');
@@ -6180,6 +6195,7 @@ function initArtistLocationEditor(artistIdValue) {
         try {
             await putOverride(city, country);
             await loadSpotifyArtist(artistIdValue, true, false);
+            await loadArtistLocation(artistIdValue);
             showToast('Location updated.');
         } catch (error) {
             showToast(`Location update failed: ${error.message}`, true);
@@ -6195,6 +6211,7 @@ function initArtistLocationEditor(artistIdValue) {
             cityInput.value = '';
             countryInput.value = '';
             await loadSpotifyArtist(artistIdValue, true, false);
+            await loadArtistLocation(artistIdValue);
             showToast('Location reset to source data.');
         } catch (error) {
             showToast(`Location reset failed: ${error.message}`, true);
