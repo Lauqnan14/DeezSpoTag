@@ -3410,7 +3410,8 @@ public class LyricsService
         Track track,
         (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths,
         DeezSpoTagSettings settings,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -3433,6 +3434,14 @@ public class LyricsService
             {
             _logger.LogWarning("Lyrics resolution returned null for track {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
                 return LyricsSaveResult.Empty;
+            }
+
+            // The provider lookups are done: only local sidecar/embedded writes remain.
+            // A caller that bounded the network wait is told to switch to its write phase
+            // so a write in progress is never aborted by the fetch/verification timeout.
+            if (onWritePhaseStarted != null)
+            {
+                await onWritePhaseStarted(cancellationToken);
             }
 
             return await SaveLyricsAsync(lyrics, track, paths, settings, cancellationToken);

@@ -119,7 +119,8 @@ public sealed class CoverLibraryMaintenanceService
         CoverLibraryMaintenanceRequest request,
         CancellationToken cancellationToken = default,
         Func<CoverAlbumMaintenanceOutcome, int, int, CancellationToken, ValueTask>? onAlbumCompleted = null,
-        Func<CoverAlbumMaintenancePlan, int, int, CancellationToken, ValueTask>? onAlbumFetchStarted = null)
+        Func<CoverAlbumMaintenancePlan, int, int, CancellationToken, ValueTask>? onAlbumFetchStarted = null,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         var rootPaths = request.RootPaths?
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -179,7 +180,8 @@ public sealed class CoverLibraryMaintenanceService
                                 var started = Interlocked.Increment(ref startedAlbums);
                                 await onAlbumFetchStarted(plan, started, albumDirs.Count, token);
                             }
-                        });
+                        },
+                        onWritePhaseStarted);
                 }
                 catch (OperationCanceledException)
                 {
@@ -225,7 +227,8 @@ public sealed class CoverLibraryMaintenanceService
         CoverLibraryMaintenanceRequest request,
         ConcurrentQueue<string> logs,
         CancellationToken cancellationToken,
-        Func<CoverAlbumMaintenancePlan, CancellationToken, ValueTask>? onFetchStarted = null)
+        Func<CoverAlbumMaintenancePlan, CancellationToken, ValueTask>? onFetchStarted = null,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         var audioFiles = Directory
             .EnumerateFiles(albumDir)
@@ -304,7 +307,7 @@ public sealed class CoverLibraryMaintenanceService
         var stillUpdated = false;
         if (workPlan.NeedsAnimatedArtwork)
         {
-            animatedResult = await TrySaveAnimatedArtworkAsync(albumDir, metadata, request, logs, cancellationToken);
+            animatedResult = await TrySaveAnimatedArtworkAsync(albumDir, metadata, request, logs, cancellationToken, onWritePhaseStarted);
             updatedAnything = animatedResult.AnimatedSaved || animatedResult.MatchingStillApplied || updatedAnything;
             stillUpdated = animatedResult.MatchingStillApplied;
         }
@@ -315,7 +318,8 @@ public sealed class CoverLibraryMaintenanceService
             stillUpdated = await TryUpdateStillCoverAsync(
                 context,
                 logs,
-                cancellationToken);
+                cancellationToken,
+                onWritePhaseStarted);
             updatedAnything = stillUpdated || updatedAnything;
         }
 
@@ -345,7 +349,8 @@ public sealed class CoverLibraryMaintenanceService
     private async Task<bool> TryUpdateStillCoverAsync(
         StillCoverUpdateContext context,
         ConcurrentQueue<string> logs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         var query = BuildCoverSearchQuery(context.Metadata, context.ShazamHints);
 
@@ -397,6 +402,13 @@ public sealed class CoverLibraryMaintenanceService
             }
 
             var coverBytes = await File.ReadAllBytesAsync(downloaded.OutputPath, cancellationToken);
+            // The download is done: the local sidecar/embedded writes follow and must be
+            // allowed to finish even if the network budget has already elapsed.
+            if (onWritePhaseStarted != null)
+            {
+                await onWritePhaseStarted(cancellationToken);
+            }
+
             var wroteAnything = false;
             if (context.Request.WriteExternalSidecar)
             {
@@ -434,7 +446,8 @@ public sealed class CoverLibraryMaintenanceService
         AlbumMetadata metadata,
         CoverLibraryMaintenanceRequest request,
         ConcurrentQueue<string> logs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         var saveRequest = new AppleQueueHelpers.AnimatedArtworkSaveRequest
         {
@@ -468,6 +481,14 @@ public sealed class CoverLibraryMaintenanceService
             return default;
         }
         var resolvedIdentity = identity;
+
+        // The animated-artwork conversion (ffmpeg) and its on-disk writes follow. From this
+        // point a sidecar network budget must no longer be able to abort a write in progress,
+        // so the caller is told to switch to its write phase before the conversion starts.
+        if (onWritePhaseStarted != null)
+        {
+            await onWritePhaseStarted(cancellationToken);
+        }
 
         var animatedResult = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleMusicCatalogService,

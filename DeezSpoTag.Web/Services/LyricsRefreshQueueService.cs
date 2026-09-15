@@ -178,9 +178,10 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     public async Task<LyricsRefreshTrackResult> RefreshTrackNowAsync(
         long trackId,
         LyricsRefreshOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
-        return await ProcessTrackLyricsRefreshAsync(trackId, options ?? LyricsRefreshOptions.Default, cancellationToken);
+        return await ProcessTrackLyricsRefreshAsync(trackId, options ?? LyricsRefreshOptions.Default, cancellationToken, onWritePhaseStarted);
     }
 
     public async Task<LyricsRefreshPlan> PlanTrackRefreshAsync(
@@ -277,7 +278,8 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     private async Task<LyricsRefreshTrackResult> ProcessTrackLyricsRefreshAsync(
         long trackId,
         LyricsRefreshOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
     {
         if (!_repository.IsConfigured)
         {
@@ -336,7 +338,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         var savedLyrics = LyricsSaveResult.Empty;
         if (shouldFetch && LyricsSettingsPolicy.CanFetchLyrics(settings))
         {
-            savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
+            savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken, onWritePhaseStarted);
         }
 
         var deletedLineTtml = options.RemoveLineSyncedTtml && TtmlSidecarCleanup.TryDeleteNonWordTimed(ttmlPath);
@@ -360,7 +362,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
                         info.FilePath,
                         "Existing lyrics kept; overwrite was not selected.")
                     : shouldFetch
-                        ? LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
+                        ? LyricsRefreshTrackResult.ConfirmedAbsent(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
                         : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics cleanup was required.");
         return result with
         {
@@ -698,6 +700,16 @@ public sealed record LyricsRefreshTrackResult(
     public string? ArtistName { get; init; }
     public string? CoverPath { get; init; }
     public IReadOnlyList<string> TimingBadges { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// True only when the configured lyrics sources were actually consulted and none of
+    /// them returned lyrics. A timeout or an error must never set this: elapsed time is
+    /// "could not verify", not "no lyrics".
+    /// </summary>
+    public bool LyricsConfirmedAbsent { get; init; }
+
+    public static LyricsRefreshTrackResult ConfirmedAbsent(long trackId, string? filePath, string message)
+        => new(trackId, filePath, false, false, Array.Empty<string>(), message) { LyricsConfirmedAbsent = true };
 
     public static LyricsRefreshTrackResult Completed(
         long trackId,
