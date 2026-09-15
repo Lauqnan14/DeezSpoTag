@@ -150,6 +150,86 @@ internal static class AtlTagHelper
         }
     }
 
+    /// <summary>
+    /// Opens the ATL native tag view of a file. Used for accepted AutoTag containers
+    /// whose provider identity cannot be persisted through TagLib's ID3/Xiph/Apple
+    /// paths; the caller owns the returned <see cref="Track"/> and must dispose the
+    /// underlying file by saving (no IDisposable is exposed by ATL).
+    /// </summary>
+    public static Track OpenNativeTrack(string path)
+    {
+        var track = new Track(path);
+        track.AdditionalFields ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return track;
+    }
+
+    /// <summary>True when the native additional-field dictionary holds a non-blank value.</summary>
+    public static bool HasNativeField(Track track, string name)
+    {
+        if (track.AdditionalFields is null || string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return track.AdditionalFields.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value);
+    }
+
+    /// <summary>Reads one native additional field, or null when absent/blank.</summary>
+    public static string? ReadNativeField(Track track, string name)
+    {
+        if (track.AdditionalFields is null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        return track.AdditionalFields.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
+            : null;
+    }
+
+    /// <summary>Sets one native additional field. Returns false when ATL has no native
+    /// additional-field dictionary for the container (the caller must then report an
+    /// explicit unsupported-persistence failure instead of substituting a generic tag).</summary>
+    public static bool SetNativeField(Track track, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (track.AdditionalFields is null)
+        {
+            track.AdditionalFields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        track.AdditionalFields[name] = value.Trim();
+        return true;
+    }
+
+    /// <summary>Removes one native additional field. Returns false when ATL has no
+    /// native additional-field dictionary for the container.</summary>
+    public static bool RemoveNativeField(Track track, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        if (track.AdditionalFields is null)
+        {
+            return false;
+        }
+
+        return track.AdditionalFields.Remove(name);
+    }
+
+    /// <summary>Persists the ATL native tag. Returns false when ATL refuses the save.</summary>
+    public static bool SaveNative(Track track)
+    {
+        track.Save();
+        return true;
+    }
+
     private static List<ChapterInfo> CloneChapters(IList<ChapterInfo> chapters)
     {
         var cloned = new List<ChapterInfo>(chapters.Count);

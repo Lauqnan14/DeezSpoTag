@@ -300,6 +300,23 @@ public sealed class AutoTagServiceEligibilityTest
         };
     }
 
+    [Fact]
+    public void ProviderIdentityPersistence_CoversEveryEligibleExtension()
+    {
+        var field = typeof(AutoTagService).GetField(
+            "EligibleAudioExtensions",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AutoTagService.EligibleAudioExtensions not found.");
+        var eligible = ((HashSet<string>)field.GetValue(null)!)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        var covered = ProviderIdentityFormatPersistenceTest.EligibleAudioExtensions
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(eligible, covered);
+    }
+
     private static AutoTagTagSnapshot SnapshotWithTags(
         string title,
         Dictionary<string, string[]> tags)
