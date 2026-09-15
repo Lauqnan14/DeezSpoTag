@@ -30,6 +30,11 @@ public sealed record AutoTagResumeCursor(
     int? FileCount = null,
     string? LastPath = null);
 
+public sealed record AutoTagCompletedBatch(
+    int BatchNumber,
+    int BatchCount,
+    IReadOnlyList<string> Files);
+
 public interface IAutoTagRunner
 {
     Task<AutoTagRunResult> RunAsync(
@@ -38,7 +43,7 @@ public interface IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<AutoTagCompletedBatch, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken);
 

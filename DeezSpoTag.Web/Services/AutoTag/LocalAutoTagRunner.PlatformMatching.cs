@@ -273,6 +273,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         try
         {
             var match = await matchTask.WaitAsync(PlatformMatchTimeout, context.Token);
+            NotePlatformMatchSuccess(context.JobMatchCache, context.Platform);
             context.LogCallback($"onetagger_autotag: {context.Platform} match completed");
             return match;
         }
@@ -280,11 +281,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             timeoutSource.Cancel();
             ObserveBackgroundTask(matchTask);
-            MarkPlatformUnavailable(context.JobMatchCache, context.Platform);
-            context.MatchFailureOutcome = "provider_error";
+            var openedCircuit = NotePlatformMatchTimeout(context.JobMatchCache, context.Platform);
+            context.MatchFailureOutcome = "provider_timeout";
             context.MatchFailureMessage = $"provider timed out after {PlatformMatchTimeout.TotalSeconds:0}s";
             context.LogCallback(
-                $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; skipping remaining {context.Platform} matches in this run");
+                openedCircuit
+                    ? $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; skipping remaining {context.Platform} matches after consecutive timeouts"
+                    : $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; continuing with later files");
             return null;
         }
     }

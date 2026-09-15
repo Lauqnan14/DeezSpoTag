@@ -28,6 +28,43 @@ public sealed class AutoPlaylistsControllerBehaviorTest
         Assert.Contains("librarySectionId = p.LibrarySectionId", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AutoPlaylists_AreRenderedInNonEmptySundayFirstDaySections()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "auto-playlists.js");
+
+        var sunday = source.IndexOf("{ id: \"sunday\", label: \"Sunday\" }", StringComparison.Ordinal);
+        var monday = source.IndexOf("{ id: \"monday\", label: \"Monday\" }", StringComparison.Ordinal);
+        var saturday = source.IndexOf("{ id: \"saturday\", label: \"Saturday\" }", StringComparison.Ordinal);
+
+        Assert.True(sunday >= 0 && sunday < monday && monday < saturday);
+        Assert.Contains("const playlistsForDay = playlistsByDay.get(day.id);", source, StringComparison.Ordinal);
+        Assert.Contains("if (!playlistsForDay || playlistsForDay.length === 0)", source, StringComparison.Ordinal);
+        Assert.Contains("dayGrid.className = \"auto-tools-grid\";", source, StringComparison.Ordinal);
+        Assert.Contains("daySection.className = \"auto-playlists-day-section\";", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoPlaylists_AreOrderedFromEarlyMorningThroughLateEveningWithinEachDay()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "auto-playlists.js");
+
+        var earlyMorning = source.IndexOf("{ id: \"early-morning\", order: 0 }", StringComparison.Ordinal);
+        var morning = source.IndexOf("{ id: \"morning\", order: 1 }", StringComparison.Ordinal);
+        var noon = source.IndexOf("{ id: \"noon\", order: 2 }", StringComparison.Ordinal);
+        var afternoon = source.IndexOf("{ id: \"afternoon\", order: 3 }", StringComparison.Ordinal);
+        var evening = source.IndexOf("{ id: \"evening\", order: 4 }", StringComparison.Ordinal);
+        var lateEvening = source.IndexOf("{ id: \"late-evening\", order: 5 }", StringComparison.Ordinal);
+
+        Assert.True(earlyMorning >= 0
+            && earlyMorning < morning
+            && morning < noon
+            && noon < afternoon
+            && afternoon < evening
+            && evening < lateEvening);
+        Assert.Contains("playlistsForDay.sort((left, right) => resolvePlaylistDaypartOrder(left) - resolvePlaylistDaypartOrder(right));", source, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] relativePath)
     {
         var repoRoot = FindRepoRoot();

@@ -994,6 +994,8 @@ public class AutoTagJobsController : ControllerBase
             job.ProfileId,
             job.ProfileName,
             job.EnhancementFeature,
+            job.SelectedEnhancementFeatures,
+            job.FolderUniformityRunMode,
             job.EnhancementGroupId,
             job.CurrentPhase,
             job.CurrentBatch,

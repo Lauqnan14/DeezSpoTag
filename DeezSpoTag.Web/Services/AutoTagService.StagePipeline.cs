@@ -94,6 +94,8 @@ public partial class AutoTagService
         AppendPlatformSummary(job);
         SaveJob(job);
         AppendActivityLog(job.Id, $"autotag finished: status={job.Status}");
+        NotifyRunFinished(job);
+        NotifyRunStopped(job, job.Status, job.Error ?? string.Empty);
     }
 
     private static void RegisterStageRuntimeConfigPaths(HashSet<string> runtimeConfigPaths, IReadOnlyList<AutoTagStageConfig> stages)
@@ -143,6 +145,7 @@ public partial class AutoTagService
         job.ResumeFromJobId = null;
         SaveJob(job);
         AppendActivityLog(job.Id, "autotag failed: no stages configured");
+        NotifyRunFinished(job);
         return true;
     }
 
@@ -197,6 +200,7 @@ public partial class AutoTagService
 
         try
         {
+            await ReplayPendingEnhancementBatchAsync(job, stage.ConfigPath, cancellationToken);
             var result = await _autoTagRunner.RunAsync(
                 job.Id,
                 path,
@@ -204,7 +208,7 @@ public partial class AutoTagService
                 status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, stageIndex, totalStages, fileOutcomes),
                 line => AppendLog(job, line),
                 IsEnhancementRunIntent(job.RunIntent)
-                    ? (files, token) => ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)
+                    ? (batch, token) => RunCoordinatedEnhancementBatchAsync(job, stage.ConfigPath, batch, token)
                     : null,
                 resumeCursor,
                 cancellationToken);
@@ -441,10 +445,11 @@ public partial class AutoTagService
             }
 
             WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);
+            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = EnhancementBatchSize;
         }
         else if (string.Equals(context.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
         {
-            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = EnhancementBatchSize;
         }
 
         stageRoot["skipTagged"] = ReadBool(baseRoot, "enhancementSkipTagged")

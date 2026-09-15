@@ -30,7 +30,7 @@ public sealed class EnhancementFingerprintRecoveryGuardrailTest
 
         Assert.Contains("if (shazamConfig.IdFirst && identityIsTrusted)", runner, StringComparison.Ordinal);
         Assert.Contains("HasUsableMatchIdentity", runner, StringComparison.Ordinal);
-        Assert.Contains("treatSourceAsUntrusted: !identityIsTrusted", runner, StringComparison.Ordinal);
+        Assert.Contains("treatSourceAsUntrusted: !HasTrustworthyEmbeddedIdentity(validationInfo, context.File)", runner, StringComparison.Ordinal);
         Assert.Contains("trustSourceIdentity: identityIsTrusted", runner, StringComparison.Ordinal);
         Assert.Contains("IsTrustedSourceIdentity", runner, StringComparison.Ordinal);
         Assert.Contains("TrackIdentityTrust.IsUntrustedIdentity", runner, StringComparison.Ordinal);

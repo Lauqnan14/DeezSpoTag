@@ -459,6 +459,10 @@ public partial class AutoTagService
         File.WriteAllText(reportPath, BuildReviewReport(job, statusValue, sourcePath, destinationPath), new UTF8Encoding(false));
         statusValue.ReviewDestinationPath = destinationPath;
         statusValue.ReviewReportPath = reportPath;
+        var destinationName = Path.GetFileName(destinationPath);
+        statusValue.Message = string.IsNullOrWhiteSpace(statusValue.Message)
+            ? $"Moved to review folder: {destinationName}"
+            : $"{statusValue.Message}; moved to review folder";
         AppendLog(job, $"review folder: moved Shazam-flagged file to {destinationPath}");
     }
 

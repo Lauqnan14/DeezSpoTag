@@ -78,6 +78,7 @@ public partial class AutoTagService
         string? RunIntent = null,
         FolderStructureSettings? FolderStructureOverride = null,
         string? EnhancementFeature = null,
+        IReadOnlyList<string>? SelectedEnhancementFeatures = null,
         string? EnhancementGroupId = null,
         string? ResumeFromJobId = null);
 

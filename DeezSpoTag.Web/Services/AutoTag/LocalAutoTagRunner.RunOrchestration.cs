@@ -41,7 +41,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<AutoTagCompletedBatch, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken)
     {
@@ -180,7 +180,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<AutoTagCompletedBatch, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
@@ -287,6 +287,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
             scheduler.ScanIfDue(Math.Min(passFileCount, plan.FileCount) - 1, token);
         }
+
+        await ReconcileBatchAlbumIdentitiesAsync(plan, 0, passFileCount, logCallback, token);
     }
 
     private async Task ExecuteLibraryWideEnhancementBatchesAsync(
@@ -294,7 +296,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<AutoTagCompletedBatch, CancellationToken, Task>? batchCompletedCallback,
         int startPlatformIndex,
         int startFileIndex,
         int passFileCount,
@@ -384,11 +386,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 }
             }
 
+            await ReconcileBatchAlbumIdentitiesAsync(plan, batchStart, batchEnd, logCallback, token);
+
             if (batchCompletedCallback != null)
             {
                 // Album-coherent batch: the sidecar/refresh hook sees complete albums.
                 var batchFiles = plan.Files.GetRange(batchStart, batchEnd - batchStart);
-                await batchCompletedCallback(batchFiles, token);
+                await batchCompletedCallback(
+                    new AutoTagCompletedBatch(rangeIndex + 1, ranges.Count, batchFiles),
+                    token);
             }
 
             scheduler.ScanIfDue(batchEnd - 1, token);
@@ -447,32 +453,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         IReadOnlyList<string> files,
         int fileCount,
         int batchSize)
-    {
-        var ranges = new List<(int Start, int End)>();
-        if (files.Count == 0 || fileCount <= 0)
-        {
-            return ranges;
-        }
-
-        var resolvedBatchSize = Math.Max(1, batchSize);
-        var limit = Math.Min(fileCount, files.Count);
-        var start = 0;
-        while (start < limit)
-        {
-            var end = start + 1;
-            while (end < limit
-                   && (end - start < resolvedBatchSize
-                       || SameAlbumDirectory(files[end - 1], files[end])))
-            {
-                end++;
-            }
-
-            ranges.Add((start, end));
-            start = end;
-        }
-
-        return ranges;
-    }
+        => EnhancementBatchPlanner.BuildRanges(files, fileCount, batchSize);
 
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
     {
@@ -550,7 +531,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         if (isManualEnrichment && firstManualPass)
         {
             context.Plan.OriginalManualInfo[context.FileIndex] = CloneAudioInfo(validationInfo);
+            RestoreTrustedCoreIdentity(validationInfo, info, context.File);
             await ApplyCentralIdentityForManualEnrichmentAsync(info, context.Plan.Config, context.LogCallback, context.Token);
+            RestoreTrustedCoreIdentity(validationInfo, info, context.File);
             context.Plan.ResolvedManualInfo[context.FileIndex] = CloneAudioInfo(info);
             if (shazamResult.UsedShazam)
             {
@@ -563,6 +546,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             && identityIsTrusted
             ? validationInfo
             : info;
+        matchInfo = PrepareProviderMatchInfo(context, matchInfo);
         var match = await ResolvePlatformMatchAsync(context, matchInfo);
         if (match == null)
         {
@@ -773,7 +757,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         foreach (var (key, identity, updatedAt) in _albumIdentityStore.Entries)
         {
-            plan.AlbumIdentities.Seed(key, identity, updatedAt);
+            plan.AlbumIdentities.Seed(key, NormalizeSharedAlbumIdentity(identity), updatedAt);
         }
     }
 

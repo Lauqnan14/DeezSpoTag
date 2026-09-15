@@ -572,13 +572,13 @@ public sealed class AutoTagRunnerMultiArtistHandlingTest
     }
 
     [Fact]
-    public void EvaluateGlobalMismatchGuard_TrustsAuthoritativePlatformIdMatch()
+    public void EvaluateGlobalMismatchGuard_TrustsCompatibleAuthoritativePlatformIdMatch()
     {
         var source = new AutoTagAudioInfo
         {
-            Title = "Incorrect old title",
-            Artist = "Incorrect old artist",
-            Artists = new List<string> { "Incorrect old artist" }
+            Title = "Resolved title",
+            Artist = "Resolved artist",
+            Artists = new List<string> { "Resolved artist" }
         };
         var match = new AutoTagMatchResult
         {

@@ -16,7 +16,14 @@ public sealed class DuplicateCleanResult
     public long SpaceFreedBytes { get; set; }
     public string DuplicatesFolderName { get; set; } = DuplicateCleanerService.DuplicatesFolderName;
     public bool UsedShazamForIdentity { get; set; }
+    public List<DuplicateCleanModification> Modifications { get; set; } = new();
 }
+
+public sealed record DuplicateCleanModification(
+    string ItemKind,
+    string OperationKind,
+    string SourcePath,
+    string? DestinationPath);
 
 public sealed record DuplicateCleanerOptions
 {
@@ -283,6 +290,96 @@ public class DuplicateCleanerService
         }
     }
 
+    public async Task<DuplicateCleanResult> ScanFilesAsync(
+        IReadOnlyList<FolderDto> folders,
+        IReadOnlyCollection<string> files,
+        DuplicateCleanerOptions? options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(folders);
+        ArgumentNullException.ThrowIfNull(files);
+
+        var resolvedOptions = NormalizeOptions(options);
+        var effectiveUseShazam = resolvedOptions.UseShazamForIdentity && _shazamRecognitionService.IsAvailable;
+        var result = new DuplicateCleanResult
+        {
+            DuplicatesFolderName = resolvedOptions.DuplicatesFolderName,
+            UsedShazamForIdentity = effectiveUseShazam
+        };
+        var runContext = new RunSummaryContext(
+            DateTimeOffset.UtcNow,
+            resolvedOptions.UseDuplicatesFolder,
+            resolvedOptions.DuplicatesFolderName,
+            effectiveUseShazam,
+            folders.Count);
+        var stopwatch = Stopwatch.StartNew();
+        SetLastRun(new DuplicateCleanerRunSummary(
+            "running",
+            runContext.StartedUtc,
+            null,
+            null,
+            runContext.UseDuplicatesFolder,
+            runContext.ActiveDuplicatesFolderName,
+            runContext.UseShazamForIdentity,
+            runContext.FolderCount,
+            0,
+            0,
+            0,
+            0,
+            null));
+        try
+        {
+        var normalizedFiles = files
+            .Where(IOFile.Exists)
+            .Select(Path.GetFullPath)
+            .Where(path => AudioExtensions.Contains(Path.GetExtension(path)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var settings = _settingsService.LoadSettings();
+        var roots = folders
+            .Where(folder => !ShouldSkipFolderForDedupe(folder, settings.DownloadLocation))
+            .Select(folder => folder.RootPath?.Trim())
+            .Where(static root => !string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
+            .Cast<string>()
+            .Select(Path.GetFullPath)
+            .OrderByDescending(static root => root.Length)
+            .ToList();
+        foreach (var root in roots)
+        {
+            var rootFiles = normalizedFiles
+                .Where(path => LibraryFolderPathSafety.IsSameOrDescendantPath(path, root))
+                .Where(path => !roots.Any(other => other.Length > root.Length
+                    && LibraryFolderPathSafety.IsSameOrDescendantPath(path, other)))
+                .ToList();
+            if (rootFiles.Count > 0)
+            {
+                await ScanFolderAsync(
+                    root,
+                    resolvedOptions with { UseShazamForIdentity = effectiveUseShazam },
+                    result,
+                    cancellationToken,
+                    rootFiles);
+            }
+        }
+
+        stopwatch.Stop();
+        SetLastRun(BuildRunSummary("completed", runContext, DateTimeOffset.UtcNow, stopwatch.ElapsedMilliseconds, result, null));
+        return result;
+        }
+        catch (OperationCanceledException)
+        {
+            stopwatch.Stop();
+            SetLastRun(BuildRunSummary("canceled", runContext, DateTimeOffset.UtcNow, stopwatch.ElapsedMilliseconds, result, null));
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            stopwatch.Stop();
+            SetLastRun(BuildRunSummary("error", runContext, DateTimeOffset.UtcNow, stopwatch.ElapsedMilliseconds, result, ex.Message));
+            throw;
+        }
+    }
+
     private static DuplicateCleanerOptions NormalizeOptions(DuplicateCleanerOptions? options)
     {
         var resolved = options ?? new DuplicateCleanerOptions();
@@ -358,7 +455,8 @@ public class DuplicateCleanerService
         string root,
         DuplicateCleanerOptions options,
         DuplicateCleanResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? exactFiles = null)
     {
         var excludedRoots = BuildExcludedRoots(root, options.DuplicatesFolderName);
         if (options.UseDuplicatesFolder)
@@ -366,9 +464,11 @@ public class DuplicateCleanerService
             Directory.CreateDirectory(Path.Join(root, options.DuplicatesFolderName));
         }
 
-        var files = Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories)
+        var files = (exactFiles ?? Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories).ToList())
             .Where(path => !IsInExcludedFolder(path, excludedRoots))
+            .Where(path => IOFile.Exists(path) && LibraryFolderPathSafety.IsSameOrDescendantPath(path, root))
             .Where(path => AudioExtensions.Contains(Path.GetExtension(path)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var candidates = new List<DuplicateCandidate>(files.Count);
@@ -809,10 +909,12 @@ public class DuplicateCleanerService
 
                 destinationPath = EnsureUniquePath(destinationPath);
                 await MoveFileAsync(file.FullPath, destinationPath, cancellationToken);
+                result.Modifications.Add(new DuplicateCleanModification("file", "quarantined", file.FullPath, destinationPath));
             }
             else
             {
                 IOFile.Delete(file.FullPath);
+                result.Modifications.Add(new DuplicateCleanModification("file", "deleted", file.FullPath, null));
             }
 
             result.Deleted += 1;

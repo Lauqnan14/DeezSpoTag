@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -113,6 +114,38 @@ public sealed class FolderUniformityRemoveEmptyFoldersTest : IDisposable
             CancellationToken.None);
 
         Assert.True(Directory.Exists(emptyArtistDir));
+    }
+
+    [Fact]
+    public async Task OrganizePathInBatchesAsync_NeverSplitsOneAlbumAcrossCallbacks()
+    {
+        var libraryRoot = Path.Join(_tempRoot, "album-boundary");
+        var albumDir = Path.Join(libraryRoot, "Artist A", "Large Album");
+        Directory.CreateDirectory(albumDir);
+        var seed = Path.Join(albumDir, "01.flac");
+        await CreateAudioAsync(seed);
+        for (var index = 2; index <= 41; index++)
+        {
+            System.IO.File.Copy(seed, Path.Join(albumDir, $"{index:00}.flac"));
+        }
+
+        var callbacks = new List<AutoTagLibraryOrganizer.AutoTagOrganizerBatchResult>();
+        await _organizer.OrganizePathInBatchesAsync(
+            libraryRoot,
+            new AutoTagOrganizerOptions(),
+            batchSize: 40,
+            log: null,
+            CancellationToken.None,
+            (batch, _) =>
+            {
+                callbacks.Add(batch);
+                return Task.CompletedTask;
+            });
+
+        var callback = Assert.Single(callbacks);
+        Assert.Equal(41, callback.Files.Count);
+        Assert.Equal(1, callback.BatchNumber);
+        Assert.Equal(1, callback.BatchCount);
     }
 
     [Fact]

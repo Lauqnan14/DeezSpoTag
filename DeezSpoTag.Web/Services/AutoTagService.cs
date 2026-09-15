@@ -122,6 +122,8 @@ public abstract class AutoTagRunState
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
     public string? EnhancementFeature { get; set; }
+    public List<string> SelectedEnhancementFeatures { get; set; } = new();
+    public string? FolderUniformityRunMode { get; set; }
     public string? EnhancementGroupId { get; set; }
     public string? CurrentPhase { get; set; }
     public int CurrentBatch { get; set; }
@@ -165,8 +167,25 @@ public class AutoTagJob : AutoTagRunState
     [System.Text.Json.Serialization.JsonIgnore]
     public Dictionary<string, AutoTagTagDiff> TagDiffs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public AutoTagResumeCheckpoint? ResumeCheckpoint { get; set; }
+    public AutoTagEnhancementBatchState EnhancementBatchState { get; set; } = new();
     public string? ResumeFromJobId { get; set; }
     public DateTimeOffset LastActivityAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class AutoTagEnhancementBatchState
+{
+    public int NextBatchIndex { get; set; }
+    public int BatchCount { get; set; }
+    public AutoTagPendingEnhancementBatch? Pending { get; set; }
+}
+
+public sealed class AutoTagPendingEnhancementBatch
+{
+    public int BatchNumber { get; set; }
+    public int BatchCount { get; set; }
+    public List<string> OriginalPaths { get; set; } = new();
+    public List<string> CurrentPaths { get; set; } = new();
+    public List<string> CompletedFeatures { get; set; } = new();
 }
 
 public sealed class AutoTagRunSummary : AutoTagRunState
@@ -233,6 +252,13 @@ public class TaggingStatus
     public string? ActivityState { get; set; }
     public string Path { get; set; } = "";
     public string? Message { get; set; }
+    public string? ItemKind { get; set; }
+    public string? OperationKind { get; set; }
+    public string? SourcePath { get; set; }
+    public string? DestinationPath { get; set; }
+    public string? SourceAlbum { get; set; }
+    public string? ArtistImageUrl { get; set; }
+    public string? AlbumImageUrl { get; set; }
     public double? Accuracy { get; set; }
     public bool UsedShazam { get; set; }
     public string? Outcome { get; set; }

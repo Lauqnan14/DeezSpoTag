@@ -606,6 +606,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public DateTimeOffset LastAccessUtc { get; set; } = DateTimeOffset.UtcNow;
         public Dictionary<string, MatchCacheEntry> Entries { get; } = new(StringComparer.Ordinal);
         public HashSet<string> UnavailablePlatforms { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> ConsecutiveTimeouts { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
     private sealed record MatchCacheEntry(AutoTagMatchResult? Match);
     private sealed record ProviderTagPlan(

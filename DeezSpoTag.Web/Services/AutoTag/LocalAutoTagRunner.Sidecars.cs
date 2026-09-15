@@ -221,17 +221,33 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool TryHandlePreSkippedFile(AutoTagFileRunContext context)
     {
-        if (!context.Plan.PreSkippedFiles.Contains(context.File))
+        if (context.Plan.PreSkippedFiles.Contains(context.File))
         {
-            return false;
+            if (context.PlatformIndex == 0)
+            {
+                EmitSkippedStatus(context, "already tagged");
+            }
+
+            return true;
         }
 
-        if (context.PlatformIndex == 0)
+        if (string.IsNullOrWhiteSpace(context.File) || !IOFile.Exists(context.File))
         {
-            EmitSkippedStatus(context, "already tagged");
+            var path = context.File ?? string.Empty;
+            if (!context.Plan.PreSkippedFiles.Contains(path)
+                && !context.Plan.ReviewedFiles.Contains(path))
+            {
+                EmitSkippedStatus(context, "file is no longer at this path");
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    context.Plan.PreSkippedFiles.Add(path);
+                }
+            }
+
+            return true;
         }
 
-        return true;
+        return false;
     }
 
     private static bool IsProviderNotConfigured(Exception exception)
@@ -310,6 +326,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             : null;
     }
 
+    internal const int PlatformTimeoutCircuitThreshold = 3;
+
     private static bool IsPlatformUnavailable(JobMatchCacheState cache, string platform)
     {
         lock (cache.SyncRoot)
@@ -318,12 +336,31 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static void MarkPlatformUnavailable(JobMatchCacheState cache, string platform)
+    private static void NotePlatformMatchSuccess(JobMatchCacheState cache, string platform)
     {
         lock (cache.SyncRoot)
         {
             cache.LastAccessUtc = DateTimeOffset.UtcNow;
+            cache.ConsecutiveTimeouts[platform] = 0;
+        }
+    }
+
+    private static bool NotePlatformMatchTimeout(JobMatchCacheState cache, string platform)
+    {
+        lock (cache.SyncRoot)
+        {
+            cache.LastAccessUtc = DateTimeOffset.UtcNow;
+            var next = cache.ConsecutiveTimeouts.TryGetValue(platform, out var current)
+                ? current + 1
+                : 1;
+            cache.ConsecutiveTimeouts[platform] = next;
+            if (next < PlatformTimeoutCircuitThreshold)
+            {
+                return false;
+            }
+
             cache.UnavailablePlatforms.Add(platform);
+            return true;
         }
     }
 

@@ -17,6 +17,47 @@
 
     const formatCount = (count) => `${count} playlist${count === 1 ? "" : "s"}`;
 
+    const melodayWeekdays = [
+        { id: "sunday", label: "Sunday" },
+        { id: "monday", label: "Monday" },
+        { id: "tuesday", label: "Tuesday" },
+        { id: "wednesday", label: "Wednesday" },
+        { id: "thursday", label: "Thursday" },
+        { id: "friday", label: "Friday" },
+        { id: "saturday", label: "Saturday" }
+    ];
+
+    const melodayDayparts = [
+        { id: "early-morning", order: 0 },
+        { id: "morning", order: 1 },
+        { id: "noon", order: 2 },
+        { id: "afternoon", order: 3 },
+        { id: "evening", order: 4 },
+        { id: "late-evening", order: 5 }
+    ];
+
+    const resolvePlaylistWeekday = (playlist) => {
+        const mixId = String(playlist?.id || "").trim().toLowerCase();
+        const scheduledDay = melodayWeekdays.find((day) => mixId.endsWith(`-${day.id}`));
+        if (scheduledDay) {
+            return scheduledDay.id;
+        }
+
+        const generatedAt = new Date(playlist?.updated);
+        return Number.isNaN(generatedAt.getTime())
+            ? ""
+            : melodayWeekdays[generatedAt.getDay()].id;
+    };
+
+    const resolvePlaylistDaypartOrder = (playlist) => {
+        const mixId = String(playlist?.id || "").trim().toLowerCase();
+        const daypart = melodayDayparts.find((candidate) =>
+            ["direct", "sonic"].some((mode) =>
+                mixId.endsWith(`-${candidate.id}-${mode}`)
+                || melodayWeekdays.some((day) => mixId.endsWith(`-${candidate.id}-${mode}-${day.id}`))));
+        return daypart?.order ?? Number.MAX_SAFE_INTEGER;
+    };
+
     const resolveMelodayCoverUrl = (playlist) => {
         const covers = Array.isArray(playlist?.coverUrls) ? playlist.coverUrls.filter(Boolean) : [];
         return covers.length > 0 ? covers[0] : "";
@@ -276,6 +317,41 @@
         return card;
     };
 
+    const renderAutoPlaylistSections = (playlists) => {
+        autoGrid.innerHTML = "";
+        const playlistsByDay = new Map(melodayWeekdays.map((day) => [day.id, []]));
+
+        playlists.forEach((playlist) => {
+            const weekday = resolvePlaylistWeekday(playlist);
+            if (weekday) {
+                playlistsByDay.get(weekday).push(playlist);
+            }
+        });
+
+        melodayWeekdays.forEach((day) => {
+            const playlistsForDay = playlistsByDay.get(day.id);
+            if (!playlistsForDay || playlistsForDay.length === 0) {
+                return;
+            }
+
+            playlistsForDay.sort((left, right) => resolvePlaylistDaypartOrder(left) - resolvePlaylistDaypartOrder(right));
+
+            const daySection = document.createElement("section");
+            daySection.className = "auto-playlists-day-section";
+
+            const heading = document.createElement("h3");
+            heading.className = "auto-playlists-day-heading";
+            heading.textContent = day.label;
+
+            const dayGrid = document.createElement("div");
+            dayGrid.className = "auto-tools-grid";
+            playlistsForDay.forEach((playlist) => dayGrid.appendChild(renderAutoCard(playlist)));
+
+            daySection.append(heading, dayGrid);
+            autoGrid.appendChild(daySection);
+        });
+    };
+
     const renderRecommendationCard = (station, libraryId) => {
         const card = document.createElement("div");
         card.className = "auto-tool-card recommendation-tool-card";
@@ -378,13 +454,8 @@
         fetch("/api/mixes", { cache: "no-store" })
             .then((response) => response.ok ? response.json() : [])
             .then((mixes) => {
-                autoGrid.innerHTML = "";
-                if (Array.isArray(mixes)) {
-                    mixes.forEach((mix) => {
-                        if (!mix?.id || !mix?.libraryId) {
-                            return;
-                        }
-                        autoGrid.appendChild(renderAutoCard({
+                const playlists = Array.isArray(mixes)
+                    ? mixes.filter((mix) => mix?.id && mix?.libraryId).map((mix) => ({
                             id: mix.id,
                             name: mix.name,
                             description: mix.description,
@@ -393,10 +464,10 @@
                             source: "Auto",
                             coverUrls: mix.coverUrls,
                             libraryId: mix.libraryId
-                        }));
-                    });
-                }
-                autoEmpty.hidden = autoGrid.children.length > 0;
+                        }))
+                    : [];
+                renderAutoPlaylistSections(playlists);
+                autoEmpty.hidden = playlists.length > 0;
             })
             .catch(() => {
                 autoGrid.innerHTML = "";

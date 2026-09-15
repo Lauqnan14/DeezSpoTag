@@ -153,23 +153,31 @@ public class AutoTagLibraryOrganizer
         Func<AutoTagOrganizerBatchResult, CancellationToken, Task>? batchCompleted = null)
     {
         var normalizedRoot = Path.GetFullPath(rootPath);
-        var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
+        var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders)
+            .OrderBy(path => Path.GetDirectoryName(path), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var effectiveBatchSize = Math.Max(1, batchSize);
-        var batchCount = files.Count == 0 ? 0 : (int)Math.Ceiling(files.Count / (double)effectiveBatchSize);
+        var ranges = DeezSpoTag.Web.Services.AutoTag.EnhancementBatchPlanner.BuildRanges(
+            files,
+            files.Count,
+            effectiveBatchSize);
+        var batchCount = ranges.Count;
         options.BatchScopedFilesOnly = true;
         var albumTransitions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        for (var offset = 0; offset < files.Count; offset += effectiveBatchSize)
+        for (var rangeIndex = 0; rangeIndex < ranges.Count; rangeIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var batch = files.Skip(offset).Take(effectiveBatchSize).ToList();
+            var (start, end) = ranges[rangeIndex];
+            var batch = files.GetRange(start, end - start);
             var report = new AutoTagOrganizerReport();
-            log?.Invoke($"organizer template batch prepared: {offset + 1}-{offset + batch.Count} of {files.Count}");
+            log?.Invoke($"organizer template batch prepared: {start + 1}-{end} of {files.Count}");
             await OrganizeAsync(normalizedRoot, batch, options, report, log, cancellationToken, albumTransitions);
             if (batchCompleted != null)
             {
                 await batchCompleted(
                     new AutoTagOrganizerBatchResult(
-                        offset / effectiveBatchSize + 1,
+                        rangeIndex + 1,
                         batchCount,
                         batch,
                         report),

@@ -175,10 +175,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+    internal static bool ShouldSkipAlbumIdentityFile(ISet<string> reviewedFiles, string? filePath)
+        => string.IsNullOrWhiteSpace(filePath)
+           || reviewedFiles.Contains(filePath)
+           || !IOFile.Exists(filePath);
+
     private async Task ReconcileBatchAlbumIdentitiesAsync(
         AutoTagRunPlan plan,
         int batchStart,
         int batchEnd,
+        Action<string> logCallback,
         CancellationToken token)
     {
         var enabled = BuildConfiguredTagSet(plan.Config.Tags);
@@ -196,7 +202,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
 
             var filePath = plan.Files[fileIndex];
+            if (ShouldSkipAlbumIdentityFile(plan.ReviewedFiles, filePath))
+            {
+                logCallback($"{AutoTagProtocol.LogMarker} skipped album-identity reconcile for missing or reviewed file {filePath}");
+                continue;
+            }
+
             var extension = Path.GetExtension(filePath);
+            try
+            {
             using (var file = TagLib.File.Create(filePath))
             {
             var writeContext = new TagWriteContext(
@@ -297,6 +311,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     throw new IOException(
                         $"Provider identity persistence failed: format={failure.Format}, provider={failure.Provider}, field={failure.Field}, reason={failure.Reason}.");
                 }
+            }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException
+                                       && (ex is FileNotFoundException
+                                           || ex is DirectoryNotFoundException
+                                           || !IOFile.Exists(filePath)))
+            {
+                logCallback($"{AutoTagProtocol.LogMarker} skipped album-identity reconcile for missing file {filePath}: {ex.Message}");
             }
         }
     }

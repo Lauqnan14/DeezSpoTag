@@ -25,6 +25,30 @@ namespace DeezSpoTag.Web.Services;
 public partial class AutoTagService
 {
 
+    internal static bool ShouldRewindLegacyCombinedFolderUniformityJob(AutoTagJob job, JsonObject configRoot)
+    {
+        if (job.SelectedEnhancementFeatures.Count > 0
+            || !string.IsNullOrWhiteSpace(job.FolderUniformityRunMode)
+            || job.EnhancementBatchState.Pending != null
+            || job.ResumeCheckpoint is not { } checkpoint
+            || (checkpoint.PlatformIndex <= 0 && checkpoint.FileIndex <= 0)
+            || configRoot[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot
+            || !EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot))
+        {
+            return false;
+        }
+
+        var combined = EnhancementWorkflowSelection.IsGapFillRunnable(configRoot)
+            || EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot);
+        var hasFolderUniformityEvidence = job.EnhancementWorkflows.Any(workflow =>
+                string.Equals(workflow.Name, EnhancementWorkflowSelection.FolderUniformity, StringComparison.OrdinalIgnoreCase))
+            || job.StatusHistory.Any(entry => string.Equals(
+                entry.Status?.Platform,
+                EnhancementWorkflowSelection.FolderUniformity,
+                StringComparison.OrdinalIgnoreCase));
+        return combined && !hasFolderUniformityEvidence;
+    }
+
     private static void HydrateResumeJob(AutoTagJob target, AutoTagJob source)
     {
         target.OkCount = source.OkCount;
@@ -33,6 +57,12 @@ public partial class AutoTagService
         target.SkippedCount = source.SkippedCount;
         target.Progress = source.Progress;
         target.EnhancementFeature ??= source.EnhancementFeature;
+        if (target.SelectedEnhancementFeatures.Count == 0)
+        {
+            target.SelectedEnhancementFeatures = source.SelectedEnhancementFeatures.ToList();
+        }
+        target.FolderUniformityRunMode ??= source.FolderUniformityRunMode;
+        target.EnhancementBatchState = CloneEnhancementBatchState(source.EnhancementBatchState);
         target.EnhancementGroupId ??= source.EnhancementGroupId;
         target.CurrentPhase = source.CurrentPhase;
         target.CurrentBatch = source.CurrentBatch;
@@ -225,7 +255,9 @@ public partial class AutoTagService
             return false;
         }
 
-        if (job.ResumeCheckpoint == null)
+        if (job.ResumeCheckpoint == null
+            && job.EnhancementBatchState.Pending == null
+            && job.EnhancementBatchState.NextBatchIndex <= 0)
         {
             return false;
         }
@@ -345,6 +377,7 @@ public partial class AutoTagService
                 ProfileName: job.ProfileName,
                 RunIntent: job.RunIntent,
                 EnhancementFeature: job.EnhancementFeature,
+                SelectedEnhancementFeatures: job.SelectedEnhancementFeatures,
                 ResumeFromJobId: job.Id));
         if (resumed == null)
         {
@@ -381,6 +414,7 @@ public partial class AutoTagService
             SaveJob(job);
         }
 
+        NotifyRunResumed(job, resumed.Id);
         return new ResumeJobOutcome(true, null, resumed.Id);
     }
 

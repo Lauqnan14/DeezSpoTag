@@ -238,6 +238,8 @@ public partial class AutoTagService
             ProfileId = source.ProfileId,
             ProfileName = source.ProfileName,
             EnhancementFeature = source.EnhancementFeature,
+            SelectedEnhancementFeatures = source.SelectedEnhancementFeatures.ToList(),
+            FolderUniformityRunMode = source.FolderUniformityRunMode,
             EnhancementGroupId = source.EnhancementGroupId,
             CurrentPhase = source.CurrentPhase,
             CurrentBatch = source.CurrentBatch,
@@ -267,6 +269,25 @@ public partial class AutoTagService
         return compact;
     }
 
+    private static AutoTagEnhancementBatchState CloneEnhancementBatchState(AutoTagEnhancementBatchState? source)
+        => source == null
+            ? new AutoTagEnhancementBatchState()
+            : new AutoTagEnhancementBatchState
+            {
+                NextBatchIndex = source.NextBatchIndex,
+                BatchCount = source.BatchCount,
+                Pending = source.Pending == null
+                    ? null
+                    : new AutoTagPendingEnhancementBatch
+                    {
+                        BatchNumber = source.Pending.BatchNumber,
+                        BatchCount = source.Pending.BatchCount,
+                        OriginalPaths = source.Pending.OriginalPaths.ToList(),
+                        CurrentPaths = source.Pending.CurrentPaths.ToList(),
+                        CompletedFeatures = source.Pending.CompletedFeatures.ToList()
+                    }
+            };
+
     private static AutoTagJob CreateJobPersistenceSnapshot(AutoTagJob source)
     {
         var snapshot = CreateCompactTerminalJob(source);
@@ -274,6 +295,39 @@ public partial class AutoTagService
         snapshot.EnhancedFilePaths.AddRange(source.EnhancedFilePaths);
         snapshot.StartedPlatforms.AddRange(source.StartedPlatforms);
         return snapshot;
+    }
+
+    internal const int StatusHistoryNonReviewLimit = 300;
+
+    /// <summary>
+    /// Keeps the newest non-review rows inside the live window, but never drops a
+    /// review row. Review moves happen early in a long run; dropping them made the
+    /// Activities Review filter look empty even though files were already moved.
+    /// </summary>
+    internal static void TrimStatusHistory(
+        List<TaggingStatusSnapshot> history,
+        int maxNonReviewEntries = StatusHistoryNonReviewLimit)
+    {
+        if (history.Count <= maxNonReviewEntries)
+        {
+            return;
+        }
+
+        var keptNonReview = 0;
+        for (var index = history.Count - 1; index >= 0; index--)
+        {
+            var status = history[index].Status?.Status?.Status;
+            if (string.Equals(status, AutoTagLiterals.ReviewStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            keptNonReview++;
+            if (keptNonReview > maxNonReviewEntries)
+            {
+                history.RemoveAt(index);
+            }
+        }
     }
 
     private void AppendStatusHistory(AutoTagJob job, TaggingStatusWrap status)
@@ -288,10 +342,7 @@ public partial class AutoTagService
         lock (job.StatusHistory)
         {
             job.StatusHistory.Add(snapshot);
-            if (job.StatusHistory.Count > 300)
-            {
-                job.StatusHistory.RemoveRange(0, job.StatusHistory.Count - 300);
-            }
+            TrimStatusHistory(job.StatusHistory);
         }
         AppendArchivedStatus(job.Id, snapshot);
     }

@@ -2283,6 +2283,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     ProfileName: profile.Name,
                     RunIntent: AutoTagLiterals.RunIntentEnhancementRecentDownloads,
                     EnhancementFeature: enabledFeatures.Count == 1 ? enabledFeatures[0] : null,
+                    SelectedEnhancementFeatures: EnhancementWorkflowSelection.OrderSelectedFeatures(enabledFeatures),
                     EnhancementGroupId: Guid.NewGuid().ToString("N")));
             if (job == null)
             {
@@ -2643,6 +2644,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     ProfileName: enhancementProfile.Name,
                     RunIntent: AutoTagLiterals.RunIntentEnhancementOnly,
                     EnhancementFeature: enabledFeatures.Count == 1 ? enabledFeatures[0] : null,
+                    SelectedEnhancementFeatures: EnhancementWorkflowSelection.OrderSelectedFeatures(enabledFeatures),
                     EnhancementGroupId: enhancementGroupId));
             if (enhancementJob == null)
             {

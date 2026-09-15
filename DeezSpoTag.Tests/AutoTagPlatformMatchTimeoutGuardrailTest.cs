@@ -7,16 +7,23 @@ namespace DeezSpoTag.Tests;
 public sealed class AutoTagPlatformMatchTimeoutGuardrailTest
 {
     [Fact]
-    public void LocalAutoTagRunner_OpensPerJobCircuitAfterFirstMatchTimeout()
+    public void LocalAutoTagRunner_OpensPerJobCircuitAfterConsecutiveMatchTimeouts()
     {
         var runner = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("HashSet<string> UnavailablePlatforms", runner, StringComparison.Ordinal);
+        Assert.Contains("Dictionary<string, int> ConsecutiveTimeouts", runner, StringComparison.Ordinal);
+        Assert.Contains("PlatformTimeoutCircuitThreshold = 3", runner, StringComparison.Ordinal);
         Assert.Contains("IsPlatformUnavailable(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
-        Assert.Contains("MarkPlatformUnavailable(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
+        Assert.Contains("NotePlatformMatchTimeout(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
+        Assert.Contains("NotePlatformMatchSuccess(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
         Assert.Contains("provider_unavailable", runner, StringComparison.Ordinal);
+        Assert.Contains("provider_timeout", runner, StringComparison.Ordinal);
         Assert.Contains("skipped; platform unavailable after earlier match timeout", runner, StringComparison.Ordinal);
-        Assert.Contains("skipping remaining {context.Platform} matches in this run", runner, StringComparison.Ordinal);
+        Assert.Contains("continuing with later files", runner, StringComparison.Ordinal);
+        Assert.Contains("skipping remaining {context.Platform} matches after consecutive timeouts", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("MarkPlatformUnavailable(context.JobMatchCache, context.Platform)", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("skipping remaining {context.Platform} matches in this run", runner, StringComparison.Ordinal);
     }
 
     [Fact]

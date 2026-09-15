@@ -221,6 +221,8 @@ public partial class AutoTagService
             ProfileId = job.ProfileId,
             ProfileName = job.ProfileName,
             EnhancementFeature = job.EnhancementFeature,
+            SelectedEnhancementFeatures = job.SelectedEnhancementFeatures.ToList(),
+            FolderUniformityRunMode = job.FolderUniformityRunMode,
             EnhancementGroupId = job.EnhancementGroupId,
             CurrentPhase = job.CurrentPhase,
             CurrentBatch = job.CurrentBatch,

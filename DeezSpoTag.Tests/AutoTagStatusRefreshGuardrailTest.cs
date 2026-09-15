@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Web.Controllers.Api;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
@@ -113,6 +115,62 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.Contains("autoTagStatus: '@AssetUrl.Versioned(ViewContext, Url, \"~/js/autotag-status.js\")'", source, StringComparison.Ordinal);
         Assert.DoesNotContain("autoTagStatus: '@Url.Content(\"~/js/autotag-status.js\")'", source, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void TrimStatusHistory_KeepsReviewRowsWhenTheLiveWindowOverflows()
+    {
+        var history = new List<TaggingStatusSnapshot>
+        {
+            Snapshot("shazam", AutoTagLiterals.ReviewStatus, "/music/review.flac")
+        };
+        for (var index = 0; index < 5; index++)
+        {
+            history.Add(Snapshot("lastfm", AutoTagLiterals.TaggedStatus, $"/music/{index}.flac"));
+        }
+
+        AutoTagService.TrimStatusHistory(history, maxNonReviewEntries: 3);
+
+        Assert.Contains(
+            history,
+            entry => string.Equals(entry.Status?.Status?.Status, AutoTagLiterals.ReviewStatus, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(4, history.Count);
+        Assert.DoesNotContain(
+            history,
+            entry => string.Equals(entry.Status?.Status?.Path, "/music/0.flac", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_ShowsReviewDestinationAndDoesNotHideReviewCounts()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
+        var renderHistory = ExtractFunction(script, "function renderFilteredHistory");
+        var filterCounts = ExtractFunction(script, "function updateFilterCountsFromHistory");
+
+        Assert.Contains("inner.reviewDestinationPath || inner.path", renderHistory, StringComparison.Ordinal);
+        Assert.Contains("selectedRunSummary?.reviewCount", filterCounts, StringComparison.Ordinal);
+        Assert.Contains("if (review < summaryReview)", filterCounts, StringComparison.Ordinal);
+        Assert.Contains("TrimStatusHistory(job.StatusHistory)", File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "AutoTagService.StatusStreaming.cs")), StringComparison.Ordinal);
+    }
+
+    private static TaggingStatusSnapshot Snapshot(string platform, string status, string path)
+        => new()
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Status = new TaggingStatusWrap
+            {
+                Platform = platform,
+                Status = new TaggingStatus
+                {
+                    Status = status,
+                    Path = path
+                }
+            }
+        };
 
     [Fact]
     public void ActivitiesHistory_ExposesDedicatedFolderUniformityView()
@@ -550,9 +608,12 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.Contains("RunPlatformMatchWithTimeoutAsync", source, StringComparison.Ordinal);
         Assert.Contains("matchTask.WaitAsync(PlatformMatchTimeout, context.Token)", source, StringComparison.Ordinal);
         Assert.Contains("match timed out after", source, StringComparison.Ordinal);
-        Assert.Contains("MarkPlatformUnavailable(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
+        Assert.Contains("NotePlatformMatchTimeout(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
+        Assert.Contains("NotePlatformMatchSuccess(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
         Assert.Contains("IsPlatformUnavailable(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
         Assert.Contains("provider_unavailable", source, StringComparison.Ordinal);
+        Assert.Contains("provider_timeout", source, StringComparison.Ordinal);
+        Assert.Contains("PlatformTimeoutCircuitThreshold = 3", source, StringComparison.Ordinal);
         Assert.Contains("stepTask.WaitAsync(timeout, context.Token)", source, StringComparison.Ordinal);
         Assert.Contains("ObserveBackgroundTask(stepTask)", source, StringComparison.Ordinal);
     }

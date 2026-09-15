@@ -19,13 +19,8 @@ public static class AlbumTitleNormalizer
     {
         "deluxe", "expanded", "anniversary", "remaster", "collector", "special edition",
         "limited edition", "bonus track", "bonus disc", "super deluxe", "deluxe edition",
-        "expanded edition", "edition"
-    };
-
-    private static readonly string[] RecognizedEditions =
-    {
-        "deluxe", "expanded", "anniversary", "remaster", "collector", "special edition",
-        "limited edition", "bonus"
+        "expanded edition", "complete edition", "ultimate edition", "mono", "stereo",
+        "clean", "explicit", "edition"
     };
 
     public static string NormalizeText(string? value)
@@ -89,16 +84,50 @@ public static class AlbumTitleNormalizer
             return intent;
         }
 
-        foreach (var marker in RecognizedEditions)
+        if (normalized.Contains("super deluxe", StringComparison.Ordinal))
         {
-            if (normalized.Contains(marker, StringComparison.Ordinal))
+            intent.Add("super deluxe");
+        }
+        else if (normalized.Contains("deluxe", StringComparison.Ordinal))
+        {
+            intent.Add("deluxe");
+        }
+
+        AddIntent(intent, normalized, "expanded", "expanded");
+        AddIntent(intent, normalized, "anniversary", "anniversary");
+        AddIntent(intent, normalized, "remaster", "remaster");
+        AddIntent(intent, normalized, "collector", "collector");
+        AddIntent(intent, normalized, "special edition", "special");
+        AddIntent(intent, normalized, "limited edition", "limited");
+        AddIntent(intent, normalized, "bonus", "bonus");
+        AddIntent(intent, normalized, "complete edition", "complete");
+        AddIntent(intent, normalized, "ultimate edition", "ultimate");
+        AddIntent(intent, normalized, "mono", "mono");
+        AddIntent(intent, normalized, "stereo", "stereo");
+        AddIntent(intent, normalized, "clean", "clean");
+        AddIntent(intent, normalized, "explicit", "explicit");
+
+        if (intent.Count > 0)
+        {
+            foreach (Match match in Regex.Matches(normalized, @"\b(?:19|20)\d{2}\b", RegexOptions.None, RegexTimeout))
             {
-                intent.Add(marker);
+                intent.Add(match.Value);
+            }
+
+            if (intent.Contains("anniversary"))
+            {
+                foreach (Match match in Regex.Matches(normalized, @"\b\d+(?:st|nd|rd|th)\b", RegexOptions.None, RegexTimeout))
+                {
+                    intent.Add(match.Value);
+                }
             }
         }
 
         return intent;
     }
+
+    public static string EditionSignature(string? albumTitle)
+        => string.Join('|', EditionIntent(albumTitle).OrderBy(value => value, StringComparer.Ordinal));
 
     /// <summary>True when both titles describe the same album (core) and the same edition intent.</summary>
     public static bool IsSameEdition(string? left, string? right)
@@ -115,7 +144,7 @@ public static class AlbumTitleNormalizer
             return false;
         }
 
-        return EditionIntent(left).SetEquals(EditionIntent(right));
+        return string.Equals(EditionSignature(left), EditionSignature(right), StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -138,7 +167,15 @@ public static class AlbumTitleNormalizer
             return false;
         }
 
-        return !EditionIntent(sourceTitle).SetEquals(EditionIntent(candidateTitle));
+        return !string.Equals(EditionSignature(sourceTitle), EditionSignature(candidateTitle), StringComparison.Ordinal);
+    }
+
+    private static void AddIntent(HashSet<string> target, string normalized, string marker, string canonical)
+    {
+        if (normalized.Contains(marker, StringComparison.Ordinal))
+        {
+            target.Add(canonical);
+        }
     }
 
     private static bool ContainsEditionMarker(string value)

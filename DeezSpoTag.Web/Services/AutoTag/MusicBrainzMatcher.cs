@@ -94,8 +94,8 @@ public sealed class MusicBrainzMatcher
 
     /// <summary>
     /// The text phase stops issuing further search queries at this point, keeping
-    /// distance from the platform's hard 45s match budget (one timeout would trip the
-    /// run's one-strike platform circuit breaker).
+    /// distance from the platform's hard 45s match budget (consecutive timeouts trip
+    /// the run's platform circuit breaker).
     /// </summary>
     private static readonly TimeSpan TextPhaseSoftDeadline = TimeSpan.FromSeconds(30);
 

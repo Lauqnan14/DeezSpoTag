@@ -586,9 +586,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
         Assert.Contains("trustSourceIdentity: identityIsTrusted", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo);", runnerSource, StringComparison.Ordinal);
+        Assert.Equal(2, runnerSource.Split("RestoreTrustedCoreIdentity(validationInfo, info, context.File);", StringSplitOptions.None).Length - 1);
+        Assert.Contains("HasTrustworthyEmbeddedIdentity(validationInfo, context.File)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("usedShazamForStatus", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("!string.Equals(context.Platform, ShazamPlatform", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var validationBasis", runnerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("var validationBasis = isManualEnrichment", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("Isrc = recognized.Isrc,", matcherSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Isrc = FirstNonEmpty(recognized.Isrc, info.Isrc)", matcherSource, StringComparison.Ordinal);
@@ -711,6 +713,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
         var autoTagSource = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
         var workflowSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
         var organizerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs");
+        var plannerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "EnhancementBatchPlanner.cs");
         var executeBody = ExtractMethodBody(runnerSource, "private async Task ExecutePlatformPassesAsync");
         var batchBody = ExtractMethodBody(runnerSource, "private async Task ExecuteLibraryWideEnhancementBatchesAsync");
         var enhancementBody = ExtractMethodBody(autoTagSource, "private bool TryBuildEnhancementStage");
@@ -727,19 +730,58 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
         Assert.Contains("preferPathAnchor: true", runnerSource, StringComparison.Ordinal);
         Assert.Contains("BuildLibraryWideEnhancementBatchRanges(plan.Files, passFileCount, batchSize)", batchBody, StringComparison.Ordinal);
         // Batches extend past the limit only to finish the active album.
-        Assert.Contains("end - start < resolvedBatchSize", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("SameAlbumDirectory(files[end - 1], files[end])", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("end - start < resolvedBatchSize", plannerSource, StringComparison.Ordinal);
+        Assert.Contains("SameAlbumDirectory(orderedFiles[end - 1], orderedFiles[end])", plannerSource, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
-        Assert.Contains("await batchCompletedCallback(batchFiles, token);", batchBody, StringComparison.Ordinal);
+        Assert.Contains("new AutoTagCompletedBatch(rangeIndex + 1, ranges.Count, batchFiles)", batchBody, StringComparison.Ordinal);
         // The batch hook is a notification: the runner must not offer a stop-after-batch control.
         Assert.DoesNotContain("Func<IReadOnlyList<string>, CancellationToken, Task<bool>>", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("(files, token) => ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", autoTagSource, StringComparison.Ordinal);
+        Assert.Contains("RunCoordinatedEnhancementBatchAsync(job, stage.ConfigPath, batch, token)", autoTagSource, StringComparison.Ordinal);
         Assert.Contains("OrganizePathInBatchesAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("options.BatchScopedFilesOnly = true;", workflowSource, StringComparison.Ordinal);
         Assert.Contains("if (options.BatchScopedFilesOnly)", organizerSource, StringComparison.Ordinal);
-        Assert.Contains("stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;", enhancementBody, StringComparison.Ordinal);
+        Assert.Contains("stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = EnhancementBatchSize;", enhancementBody, StringComparison.Ordinal);
         Assert.Contains("WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);", enhancementBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AlbumIdentityReconcile_SkipsReviewedAndMissingFilesInsteadOfFailingTheJob()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.AlbumIdentity.cs");
+        Assert.Contains("ShouldSkipAlbumIdentityFile(plan.ReviewedFiles, filePath)", source, StringComparison.Ordinal);
+        Assert.Contains("skipped album-identity reconcile for missing or reviewed file", source, StringComparison.Ordinal);
+        Assert.Contains("ex is FileNotFoundException", source, StringComparison.Ordinal);
+
+        Assert.True(InvokeStatic<bool>(
+            "ShouldSkipAlbumIdentityFile",
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            "/tmp/deezspotag-missing-review-file.flac"));
+
+        var existing = Path.GetTempFileName();
+        try
+        {
+            Assert.True(InvokeStatic<bool>(
+                "ShouldSkipAlbumIdentityFile",
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { existing },
+                existing));
+            Assert.False(InvokeStatic<bool>(
+                "ShouldSkipAlbumIdentityFile",
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                existing));
+        }
+        finally
+        {
+            File.Delete(existing);
+        }
+    }
+
+    [Fact]
+    public void MissingFiles_AreSkippedOnLaterPlatformPasses()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.Sidecars.cs");
+        Assert.Contains("file is no longer at this path", source, StringComparison.Ordinal);
+        Assert.Contains("!IOFile.Exists(context.File)", source, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] pathParts)

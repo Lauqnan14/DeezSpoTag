@@ -66,6 +66,17 @@ public partial class AutoTagService
             resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, options.ProfileId);
             resumeSourceJob = resumeSeed == null ? null : GetJob(resumeSeed.SourceJobId) ?? LoadJob(resumeSeed.SourceJobId);
         }
+        if (resumeSeed != null
+            && resumeSourceJob != null
+            && JsonNode.Parse(configJson) is JsonObject resumeConfigRoot
+            && ShouldRewindLegacyCombinedFolderUniformityJob(resumeSourceJob, resumeConfigRoot))
+        {
+            resumeSeed.Checkpoint.PlatformIndex = 0;
+            resumeSeed.Checkpoint.FileIndex = 0;
+            resumeSeed.Checkpoint.LastPath = null;
+            resumeSeed.Checkpoint.UpdatedAt = DateTimeOffset.UtcNow;
+            AppendLog(resumeSourceJob, "resume compatibility: rewound legacy combined enhancement checkpoint because Folder Uniformity had no recorded execution evidence.");
+        }
         var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString("N");
         var resumedStartedAt = resumeSeed?.StartedAt ?? DateTimeOffset.UtcNow;
 
@@ -119,6 +130,12 @@ public partial class AutoTagService
                 options.ProfileName);
         }
 
+        var selectedEnhancementFeatures = EnhancementWorkflowSelection
+            .OrderSelectedFeatures(options.SelectedEnhancementFeatures)
+            .ToList();
+        var folderUniformityRunMode = EnhancementWorkflowSelection.ResolveFolderUniformityRunMode(selectedEnhancementFeatures);
+        var isWorkflowOnlyRun = selectedEnhancementFeatures.Count > 0
+            && !selectedEnhancementFeatures.Contains(EnhancementWorkflowSelection.GapFill, StringComparer.OrdinalIgnoreCase);
         var job = new AutoTagJob
         {
             Id = resumedJobId,
@@ -130,8 +147,17 @@ public partial class AutoTagService
             ProfileId = string.IsNullOrWhiteSpace(options.ProfileId) ? null : options.ProfileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(options.ProfileName) ? null : options.ProfileName.Trim(),
             EnhancementFeature = NormalizeEnhancementFeature(options.EnhancementFeature),
+            SelectedEnhancementFeatures = selectedEnhancementFeatures,
+            FolderUniformityRunMode = folderUniformityRunMode,
             EnhancementGroupId = string.IsNullOrWhiteSpace(options.EnhancementGroupId) ? null : options.EnhancementGroupId.Trim(),
-            ResumeCheckpoint = resumeSeed?.Checkpoint,
+            ResumeCheckpoint = resumeSeed?.Checkpoint ?? (isWorkflowOnlyRun
+                ? new AutoTagResumeCheckpoint
+                {
+                    StageName = "enhancement-workflows",
+                    StageConfigHash = string.Empty,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }
+                : null),
             ResumeFromJobId = null,
             LastActivityAt = DateTimeOffset.UtcNow
         };

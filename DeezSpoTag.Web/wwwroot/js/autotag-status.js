@@ -558,6 +558,14 @@
             }
         });
 
+        const summaryReview = Number(
+            state.selectedRunSummary?.reviewCount
+            ?? state.liveJobSummary?.reviewCount
+            ?? 0);
+        if (review < summaryReview) {
+            review = summaryReview;
+        }
+
         setText("autotag-filter-ok-count", String(ok));
         setText("autotag-filter-error-count", String(error));
         setText("autotag-filter-review-count", String(review));
@@ -614,7 +622,8 @@
                 : (typeof status.progress === "number"
                     ? `${Math.round(Math.max(0, Math.min(1, status.progress)) * 100)}%`
                     : "--");
-            const track = toFileName(inner.path);
+            const displayPath = inner.reviewDestinationPath || inner.path;
+            const track = toFileName(displayPath);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
             const message = inner.message ? ` <span class="text-muted" title="${escapeHtml(inner.message)}">(${escapeHtml(inner.message)})</span>` : "";
             const encodedPath = inner.path ? encodeURIComponent(inner.path) : "";
@@ -625,12 +634,15 @@
             const diffButton = canDiff
                 ? `<button type="button" class="action-btn action-btn-sm autotag-diff-btn" data-path="${encodedPath}" data-platform="${encodedPlatform}">Diff</button>`
                 : '<span class="text-muted">--</span>';
+            const trackTitle = inner.reviewDestinationPath
+                ? `${inner.path || ""} → ${inner.reviewDestinationPath}`
+                : (inner.path || "");
             return `<tr>
                 <td data-label="Time">${escapeHtml(time)}</td>
                 <td data-label="Platform">${escapeHtml(platformLabel)}</td>
                 <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
                 <td data-label="Accuracy">${escapeHtml(accuracy)}</td>
-                <td data-label="Track" title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
+                <td data-label="Track" title="${escapeHtml(trackTitle)}">${escapeHtml(track)}</td>
                 <td data-label="Diff">${diffButton}</td>
             </tr>`;
         }).join("");

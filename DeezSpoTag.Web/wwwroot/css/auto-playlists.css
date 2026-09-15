@@ -152,6 +152,23 @@
     justify-content: start;
 }
 
+.auto-playlists-day-sections {
+    display: grid;
+    gap: 28px;
+}
+
+.auto-playlists-day-section {
+    display: grid;
+    gap: 12px;
+}
+
+.auto-playlists-day-heading {
+    margin: 0;
+    color: var(--accent-primary);
+    font-size: 16px;
+    font-weight: 700;
+}
+
 .meloday-playlist-card {
     cursor: pointer;
 }
