@@ -35,6 +35,67 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
+    private static ProviderIdentityPayload CaptureProviderIdentity(
+        string platformId,
+        AutoTagMatchResult match)
+    {
+        var provider = AutoTagIdentityTags.NormalizeProviderId(platformId);
+        var native = !IsForeignFallbackResult(provider, match.Track.Other);
+        return native
+            ? new ProviderIdentityPayload(
+                provider,
+                NullIfBlank(match.Track.TrackId),
+                NullIfBlank(match.Track.AlbumId),
+                NullIfBlank(match.Track.ReleaseId),
+                NullIfBlank(match.Track.ArtistId),
+                NullIfBlank(match.Track.AlbumArtistId),
+                NormalizeProviderUrl(provider, match.Track.Url),
+                true)
+            : new ProviderIdentityPayload(provider, null, null, null, null, null, null, false);
+    }
+
+    /// <summary>
+    /// A fallback match resolved through another provider is not a native result for the
+    /// stage provider. The Shazam id-first path records the provider it actually resolved
+    /// through in <c>SHAZAM_MATCH_PROVIDER</c>; any value other than the native Shazam
+    /// provider means the stage provider must not claim the returned identity.
+    /// </summary>
+    private static bool IsForeignFallbackResult(
+        string provider,
+        IReadOnlyDictionary<string, List<string>>? other)
+    {
+        if (other is null
+            || !other.TryGetValue("SHAZAM_MATCH_PROVIDER", out var values)
+            || values is null)
+        {
+            return false;
+        }
+
+        var marker = values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+        if (string.IsNullOrWhiteSpace(marker))
+        {
+            return false;
+        }
+
+        return !string.Equals(
+            AutoTagIdentityTags.NormalizeProviderId(marker),
+            provider,
+            StringComparison.Ordinal);
+    }
+
+    private static string? NullIfBlank(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizeProviderUrl(string provider, string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        return provider == SpotifyPlatform ? NormalizeSpotifyTrackUrl(url) : url.Trim();
+    }
+
     private static string? GetResumeCheckpointMismatchReason(AutoTagRunPlan plan, AutoTagResumeCursor? resumeCursor)
     {
         if (resumeCursor == null)
@@ -85,29 +146,54 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             NormalizeSpotifyTrackUrl(AutoTagTagValueReader.ReadFirstTagValue(info, "SHAZAM_SPOTIFY_URL")),
             NormalizeSpotifyTrackUrl(resolution.SpotifyId));
         var spotifyId = FirstNonEmpty(resolution.SpotifyId, ExtractSpotifyTrackIdFromTags(info.Tags));
-        AddResolvedIdentity(info, SpotifyTrackIdTag, spotifyId);
-        AddResolvedIdentity(info, SpotifyUrlTag, spotifyUrl);
-        AddResolvedIdentity(info, DeezerTrackIdTag, resolution.DeezerId);
-        AddResolvedIdentity(info, "DEEZER_URL", resolution.DeezerUrl);
-        AddResolvedIdentity(info, "ITUNES_TRACK_ID", resolution.AppleId);
-        AddResolvedIdentity(info, "APPLE_MUSIC_TRACK_ID", resolution.AppleId);
-        AddResolvedIdentity(info, "APPLE_MUSIC_URL", resolution.AppleUrl);
-        AddResolvedIdentity(info, "QOBUZ_TRACK_ID", resolution.QobuzId);
-        AddResolvedIdentity(info, "TIDAL_TRACK_ID", resolution.TidalId);
-        AddResolvedIdentity(info, "AMAZON_TRACK_ID", resolution.AmazonId);
+        AddResolvedIdentityIfMissing(info, SpotifyTrackIdTag, spotifyId);
+        AddResolvedIdentityIfMissing(info, SpotifyUrlTag, spotifyUrl);
+        AddResolvedIdentityIfMissing(info, DeezerTrackIdTag, resolution.DeezerId);
+        AddResolvedIdentityIfMissing(info, "DEEZER_URL", resolution.DeezerUrl);
+        AddResolvedIdentityIfMissing(info, "ITUNES_TRACK_ID", resolution.AppleId);
+        AddResolvedIdentityIfMissing(info, "APPLE_MUSIC_TRACK_ID", resolution.AppleId);
+        AddResolvedIdentityIfMissing(info, "APPLE_MUSIC_URL", resolution.AppleUrl);
+        AddResolvedIdentityIfMissing(info, "QOBUZ_TRACK_ID", resolution.QobuzId);
+        AddResolvedIdentityIfMissing(info, "TIDAL_TRACK_ID", resolution.TidalId);
+        AddResolvedIdentityIfMissing(info, "AMAZON_TRACK_ID", resolution.AmazonId);
         logCallback(
             $"onetagger_autotag: central identity resolved spotify={HasValue(resolution.SpotifyId)}, deezer={HasValue(resolution.DeezerId)}, apple={HasValue(resolution.AppleId)}, qobuz={HasValue(resolution.QobuzId)}, tidal={HasValue(resolution.TidalId)}, amazon={HasValue(resolution.AmazonId)}");
     }
 
-    private static void AddResolvedIdentity(AutoTagAudioInfo info, string key, string? value)
+    private static void AddResolvedIdentityIfMissing(AutoTagAudioInfo info, string key, string? value)
     {
-        if (!string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value)
+            || !string.IsNullOrWhiteSpace(AutoTagTagValueReader.ReadFirstTagValue(info, key)))
         {
-            info.Tags[key] = [value.Trim()];
+            return;
         }
+
+        info.Tags[key] = [value.Trim()];
     }
 
     private static string HasValue(string? value) => string.IsNullOrWhiteSpace(value) ? "no" : "yes";
+
+    private static bool HasTrustworthyEmbeddedIdentity(AutoTagAudioInfo source, string filePath)
+        => source.HasEmbeddedTitle
+            && source.HasEmbeddedArtist
+            && !TrackIdentityTrust.IsUntrustedIdentity(source.Title, source.Artist, filePath);
+
+    private static void RestoreTrustedCoreIdentity(
+        AutoTagAudioInfo original,
+        AutoTagAudioInfo working,
+        string filePath)
+    {
+        if (!HasTrustworthyEmbeddedIdentity(original, filePath))
+        {
+            return;
+        }
+
+        working.Title = original.Title;
+        working.Artist = original.Artist;
+        working.Artists = original.Artists.ToList();
+        working.Album = original.Album;
+        working.Isrc = original.Isrc;
+    }
 
     private async Task<AutoTagMatchResult?> ResolvePlatformMatchAsync(
         AutoTagFileRunContext context,
@@ -211,6 +297,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         bool usedShazamForStatus,
         ProviderTagPlan tagPlan)
     {
+        // Capture the provider-native identity before anything below can mutate the
+        // matched track (release-id authority, frozen releases, title/edition/folder
+        // preservation, consensus, lyrics, artwork, or custom tags).
+        match.ProviderIdentity ??= CaptureProviderIdentity(context.Platform, match);
+
+        if (!match.Track.ProviderReleaseIdAuthorityCaptured)
+        {
+            match.Track.ProviderReturnedReleaseId = match.Track.ReleaseId;
+            match.Track.ProviderReleaseIdAuthorityCaptured = true;
+        }
+
+        match.Track.HasAuthoritativeProviderReleaseIdResult = false;
+        match.Track.HasAuthoritativeProviderReleaseIdAbsence = false;
+        match.Track.ReleaseId = match.Track.ProviderReturnedReleaseId;
+        var returnedProviderReleaseId = string.IsNullOrWhiteSpace(match.Track.ProviderReturnedReleaseId)
+            ? null
+            : match.Track.ProviderReturnedReleaseId.Trim();
+        var providerReleaseIdIsValid = returnedProviderReleaseId is null
+            || IsPlatformReleaseIdShapeValid(context.Platform, returnedProviderReleaseId);
         var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
         if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
         {
@@ -261,18 +366,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             frozenRelease.ApplyTo(match.Track);
         }
 
-        var identityIsTrusted = IsTrustedSourceIdentity(validationInfo, context.File, context.Plan.Config);
-        var validationBasis = isManualEnrichment
-            || (usedShazamForStatus
-                && !string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
-            ? info
-            : validationInfo;
+        var validationBasis = HasTrustworthyEmbeddedIdentity(validationInfo, context.File)
+            ? validationInfo
+            : info;
         var mismatchReason = EvaluateGlobalMismatchGuard(
             validationBasis,
             match,
             context.Plan.MatchingConfig,
             context.File,
-            treatSourceAsUntrusted: !identityIsTrusted);
+            treatSourceAsUntrusted: !HasTrustworthyEmbeddedIdentity(validationInfo, context.File));
         if (!string.IsNullOrWhiteSpace(mismatchReason))
         {
             if (string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
@@ -322,7 +424,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             PreserveSourceTitleWording(validationBasis, match.Track);
             PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
             ApplyFolderContextGuards(context.File, context.Plan.TargetPath, match.Track);
-            ApplyAlbumIdentityConsensus(context, validationBasis, match.Track);
+            ApplyAlbumIdentityConsensus(
+                context,
+                validationBasis,
+                match.Track,
+                returnedProviderReleaseId,
+                hasAuthoritativeProviderResult: !editionConflict && providerReleaseIdIsValid);
             if (isManualEnrichment && frozenRelease == null)
             {
                 frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
@@ -336,7 +443,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     match.Track,
                     context.Plan.Config,
                     context.Plan.Settings,
-                    context.Plan.TagSettings);
+                    context.Plan.TagSettings,
+                    context.Plan.AlbumReleaseContexts.TryGetValue(context.FileIndex, out var albumContext)
+                        ? albumContext.AlbumRoot
+                        : null);
                 if (isManualEnrichment)
                 {
                     context.Plan.MaterializedManualPaths[context.FileIndex] = materializedPath;
@@ -481,16 +591,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return "match rejected by quality guard (version drift)";
         }
 
-        if (IsAuthoritativeIdMatch(match.MatchStrategy))
-        {
-            return null;
-        }
-
-        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
-        {
-            return null;
-        }
-
         if (!TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, incomingFullTitle))
         {
             return "match rejected by quality guard (title identity)";
@@ -519,6 +619,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         if (!artistCompatible)
         {
             return "match rejected by quality guard (artist mismatch)";
+        }
+
+        if (IsAuthoritativeIdMatch(match.MatchStrategy))
+        {
+            return null;
+        }
+
+        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
+        {
+            return null;
         }
 
         var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
@@ -1028,9 +1138,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         // GUID-shaped (MusicBrainz) values may be written there. Platform-local ids
         // (Deezer numeric ids, Spotify ids, …) keep their own <PLATFORM>_… tags, so
         // files of one album cannot end up with mixed id namespaces.
-        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.AlbumArtistId));
-        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.ReleaseGroupId));
-        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, ToMusicBrainzShapedId(context.SourceTrack.AlbumId));
+        var albumArtistId = ToMusicBrainzShapedId(context.SourceTrack.AlbumArtistId);
+        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, albumArtistId);
+        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, AlbumArtistIdTag, "MUSICBRAINZ_ALBUMARTISTID", albumArtistId);
+
+        var releaseGroupId = ToMusicBrainzShapedId(context.SourceTrack.ReleaseGroupId);
+        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, releaseGroupId);
+        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, ReleaseGroupIdTag, "MUSICBRAINZ_RELEASEGROUPID", releaseGroupId);
+
+        var albumId = ToMusicBrainzShapedId(context.SourceTrack.AlbumId);
+        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, albumId);
+        WriteMusicBrainzAlbumIdentityAlias(tagWriteContext, context, AlbumIdTag, "MUSICBRAINZ_ALBUMID", albumId);
         WriteSingleRawTag(tagWriteContext, context, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, context.SourceTrack.ReleaseStatus);
         WriteSingleRawTag(tagWriteContext, context, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, context.SourceTrack.ReleaseCountry);
         WriteSingleRawTag(tagWriteContext, context, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, context.SourceTrack.Barcode);
@@ -1038,6 +1156,21 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);
         }
+    }
+
+    private static void WriteMusicBrainzAlbumIdentityAlias(
+        TagWriteContext tagWriteContext,
+        TagWriteExecutionContext context,
+        string configTagKey,
+        string rawName,
+        string? value)
+    {
+        if (!context.EnabledTags.Contains(configTagKey) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        SetRawIfAllowed(tagWriteContext, configTagKey, rawName, new List<string> { value });
     }
 
     private static string? ToMusicBrainzShapedId(string? value)

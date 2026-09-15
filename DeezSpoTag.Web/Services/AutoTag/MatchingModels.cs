@@ -34,6 +34,11 @@ public sealed class AutoTagMatchResult
     public double Accuracy { get; set; }
     public AutoTagTrack Track { get; set; } = new();
     public string? MatchStrategy { get; set; }
+
+    /// <summary>Immutable provider-native identity snapshot captured immediately after
+    /// the matcher returned, before any later pipeline step mutates <see cref="Track"/>.
+    /// Null means the caller did not capture identity for this match.</summary>
+    internal ProviderIdentityPayload? ProviderIdentity { get; set; }
 }
 
 public sealed class AutoTagTrack : AudioFeaturesBase
@@ -45,6 +50,10 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public string? Url { get; set; }
     public string? TrackId { get; set; }
     public string? ReleaseId { get; set; }
+    public string? ProviderReturnedReleaseId { get; set; }
+    public bool ProviderReleaseIdAuthorityCaptured { get; set; }
+    public bool HasAuthoritativeProviderReleaseIdResult { get; set; }
+    public bool HasAuthoritativeProviderReleaseIdAbsence { get; set; }
     public string? RecordingId { get; set; }
     public string? ArtistId { get; set; }
     public string? AlbumArtistId { get; set; }

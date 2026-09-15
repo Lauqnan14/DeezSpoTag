@@ -107,6 +107,70 @@ public sealed class AutoTagSpotifyUrlIsolationTest
         Assert.Contains("SetRaw(tagWriteContext, SpotifyUrlTag, SupportedTag.URL", method, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ShazamFallbackThroughDeezer_DoesNotAttributeResolverIdentityToShazam()
+    {
+        var match = new AutoTagMatchResult
+        {
+            Track = new AutoTagTrack
+            {
+                Url = CanonicalSpotifyUrl,
+                TrackId = SpotifyTrackId,
+                ReleaseId = "spotify-album-id",
+                Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["SHAZAM_MATCH_PROVIDER"] = ["DEEZER"],
+                    ["SPOTIFY_URL"] = [CanonicalSpotifyUrl],
+                    ["SPOTIFY_TRACK_ID"] = [SpotifyTrackId]
+                }
+            }
+        };
+
+        var payload = CaptureProviderIdentity("shazam", match);
+
+        Assert.False(payload.IsNativeProviderResult);
+        Assert.Null(payload.TrackId);
+        Assert.Null(payload.ReleaseId);
+        Assert.Null(payload.Url);
+    }
+
+    [Fact]
+    public void SpotifyMatch_CapturesOnlySpotifyIdentity()
+    {
+        var match = new AutoTagMatchResult
+        {
+            Track = new AutoTagTrack
+            {
+                Url = CanonicalSpotifyUrl,
+                TrackId = SpotifyTrackId,
+                AlbumId = "spotify-album-id",
+                ReleaseId = "spotify-album-id",
+                ArtistId = "spotify-artist-id",
+                AlbumArtistId = "spotify-album-artist-id"
+            }
+        };
+
+        var payload = CaptureProviderIdentity("spotify", match);
+
+        Assert.True(payload.IsNativeProviderResult);
+        Assert.Equal("spotify", payload.ProviderId);
+        Assert.Equal(SpotifyTrackId, payload.TrackId);
+        Assert.Equal("spotify-album-id", payload.AlbumId);
+        Assert.Equal("spotify-album-id", payload.ReleaseId);
+        Assert.Equal("spotify-artist-id", payload.ArtistId);
+        Assert.Equal("spotify-album-artist-id", payload.AlbumArtistId);
+        Assert.Equal(CanonicalSpotifyUrl, payload.Url);
+    }
+
+    private static ProviderIdentityPayload CaptureProviderIdentity(string platform, AutoTagMatchResult match)
+    {
+        var method = typeof(LocalAutoTagRunner).GetMethod(
+            "CaptureProviderIdentity",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+        return Assert.IsType<ProviderIdentityPayload>(method!.Invoke(null, [platform, match]));
+    }
+
     private static string? NormalizeSpotifyTrackUrl(string value)
         => (string?)RunnerMethod("NormalizeSpotifyTrackUrl").Invoke(null, [value]);
 
