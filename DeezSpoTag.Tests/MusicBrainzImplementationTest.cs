@@ -76,9 +76,14 @@ public sealed class MusicBrainzImplementationTest
         Assert.Contains("track.Media = release.Media", matcher, StringComparison.Ordinal);
 
         Assert.Contains("private const string RecordingIdRawTag = \"RECORDINGID\";", runner, StringComparison.Ordinal);
-        Assert.Contains("WriteSingleRawTag(tagWriteContext, context, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag", runner, StringComparison.Ordinal);
-        Assert.Contains("WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag", runner, StringComparison.Ordinal);
-        Assert.Contains("SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);", runner, StringComparison.Ordinal);
+        // The generic compatibility fields are preserved, never written by a provider pass:
+        // MusicBrainz publishes its recording identity through its own provider family, and
+        // the release-group/media writes keep their own descriptive pipeline.
+        Assert.DoesNotContain("WriteSingleRawTag(tagWriteContext, context, RecordingIdTag", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddSingleValueCustomTagWrite(writes, RecordingIdTag", runner, StringComparison.Ordinal);
+        Assert.Contains("MUSICBRAINZ_TRACK_ID", runner, StringComparison.Ordinal);
+        Assert.Contains("AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);", runner, StringComparison.Ordinal);
+        Assert.Contains("new CustomTagWrite(MediaTag, SupportedTag.Media, MediaRawTag, track.Media.ToList())", runner, StringComparison.Ordinal);
         Assert.Contains("FirstClassRawOtherTags", runner, StringComparison.Ordinal);
 
         Assert.Contains("RecordingId = UsesDownload(config.RecordingId)", downloadConverter, StringComparison.Ordinal);
