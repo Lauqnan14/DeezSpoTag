@@ -1766,6 +1766,11 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Library artist image queue after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataQueueService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryArtistMetadataQueueService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Library artist metadata queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.LyricsRefreshQueueService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(
             services,
@@ -1788,6 +1793,7 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Spotify artist metadata queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistArtworkCatalogService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistMediaExtrasCacheService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataCacheRefreshService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataAutomationCoordinator>();

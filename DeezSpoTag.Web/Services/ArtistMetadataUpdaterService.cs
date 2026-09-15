@@ -5,12 +5,15 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
@@ -48,6 +51,7 @@ public sealed partial class ArtistMetadataUpdaterService
     private readonly ArtistArtworkCatalogService _artistArtworkCatalog;
     private readonly LibraryConfigStore _configStore;
     private readonly ISettingsService _settingsService;
+    private readonly IDownloadTagSettingsResolver _profileSettingsResolver;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<ArtistMetadataUpdaterService> _logger;
     private readonly SemaphoreSlim _runGate = new(1, 1);
@@ -77,6 +81,8 @@ public sealed partial class ArtistMetadataUpdaterService
         _artistArtworkCatalog = serviceProvider.GetRequiredService<ArtistArtworkCatalogService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+        _profileSettingsResolver = serviceProvider.GetService<IDownloadTagSettingsResolver>()
+            ?? new NullDownloadTagSettingsResolver();
         _environment = environment;
         _logger = logger;
         _statePath = Path.Join(
@@ -627,11 +633,21 @@ public sealed partial class ArtistMetadataUpdaterService
             artist.Name,
             cancellationToken);
         var source = NormalizeMetadataSource(tracked.Source);
+        await _artistArtworkCatalog.RefreshAsync(
+            artist.Id,
+            artist.Name,
+            artist.PreferredImagePath,
+            cancellationToken,
+            onlyProvider: source == MetadataSourceAuto ? null : source,
+            forceProviderRefresh: false,
+            includeGallery: true,
+            allowArtistPageScrape: false);
         var resolved = await ResolveArtistMetadataAsync(
             artist.Id,
             artist.Name,
             source,
             tracked.IncludeBio,
+            tracked.OcrTextArtBlockingEnabled,
             cancellationToken);
         if (resolved is null)
         {
@@ -642,7 +658,11 @@ public sealed partial class ArtistMetadataUpdaterService
             return popularSongsSynced;
         }
 
-        var prepared = await PrepareVisualsAsync(tracked, resolved.Candidates, cancellationToken);
+        var prepared = await PrepareVisualsAsync(
+            tracked,
+            resolved.Candidates,
+            cancellationToken,
+            preferExistingSlots: !tracked.OcrTextArtBlockingEnabled);
         await UpdateManagedArtistVisualsAsync(artist.Id, prepared, cancellationToken);
 
         if (policy.SyncBlocked)
@@ -791,12 +811,12 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
-        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var directories = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         foreach (var linkedArtistId in await ResolveLinkedArtistIdsAsync(artistId, cancellationToken))
         {
-            foreach (var directory in await ResolveArtistDirectoriesAsync(linkedArtistId, folderId, cancellationToken))
+            foreach (var (directory, destinationFolderId) in await ResolveArtistDirectoriesAsync(linkedArtistId, folderId, cancellationToken))
             {
-                directories.Add(directory);
+                directories[directory] = destinationFolderId;
             }
         }
 
@@ -810,78 +830,129 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
-        DeezSpoTagSettings settings;
-        try
-        {
-            settings = _settingsService.LoadSettings();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Could not load download settings for artist-folder image save. artist={ArtistId}", artistId);
-            return;
-        }
-
-        var template = string.IsNullOrWhiteSpace(settings.ArtistImageTemplate)
-            ? "folder"
-            : settings.ArtistImageTemplate.Trim();
-        var stem = PathTemplateGenerator.GenerateArtistName(
-            template,
-            new DeezSpoTag.Core.Models.Artist(artistId, artistName),
-            settings,
-            rootArtist: null);
-        stem = Path.GetFileName(stem.Replace('\\', '/').Trim('/'));
-        if (string.IsNullOrWhiteSpace(stem))
-        {
-            stem = "folder";
-        }
-
-        // The folder image must always be folder.jpg (media servers use it as the artist
-        // fallback), so non-JPEG avatars are transcoded instead of keeping their source
-        // extension and leaving a stale folder.jpg behind.
-        const string destinationExtension = ".jpg";
-        var sourceIsJpeg = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(avatarPath)) == ".jpg";
-        foreach (var directory in directories)
+        foreach (var (directory, destinationFolderId) in directories)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var settings = await ResolveArtistFolderImageSettingsAsync(destinationFolderId, cancellationToken);
+            if (settings is null)
+            {
+                continue;
+            }
+
+            var template = string.IsNullOrWhiteSpace(settings.ArtistImageTemplate)
+                ? "folder"
+                : settings.ArtistImageTemplate.Trim();
+            var stem = PathTemplateGenerator.GenerateArtistName(
+                template,
+                new DeezSpoTag.Core.Models.Artist(artistId, artistName),
+                settings,
+                rootArtist: null);
+            stem = Path.GetFileName(stem.Replace('\\', '/').Trim('/'));
+            if (string.IsNullOrWhiteSpace(stem))
+            {
+                stem = "folder";
+            }
+
+            var formats = AppleQueueHelpers.GetArtworkOutputFormats(settings);
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                var destination = Path.Join(directory, stem + destinationExtension);
-                if (sourceIsJpeg)
+                foreach (var format in formats)
                 {
-                    await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    await using var destinationStream = File.Create(destination);
-                    await sourceStream.CopyToAsync(destinationStream, cancellationToken);
-                }
-                else
-                {
-                    await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    using var image = await Image.LoadAsync(sourceStream, cancellationToken);
-                    await image.SaveAsJpegAsync(
-                        destination,
-                        new JpegEncoder { Quality = Math.Clamp(settings.JpegImageQuality, 1, 100) },
-                        cancellationToken);
+                    var destination = Path.Join(directory, $"{stem}.{format}");
+                    await WriteArtistFolderImageAsync(avatarPath, destination, format, settings, cancellationToken);
+                    written.Add(Path.GetFullPath(destination));
                 }
 
-                DeleteArtistFolderImageVariants(directory, stem, destination);
+                DeleteArtistFolderImageVariants(directory, stem, written);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(
                     ex,
-                    "Failed to write artist-folder image. artist={ArtistId} directory={Directory}",
+                    "Failed to write artist-folder image. artist={ArtistId} directory={Directory} template={Template}",
                     artistId,
-                    directory);
+                    directory,
+                    template);
             }
         }
     }
 
-    private async Task<IReadOnlyCollection<string>> ResolveArtistDirectoriesAsync(
+    private async Task<DeezSpoTagSettings?> ResolveArtistFolderImageSettingsAsync(
+        long destinationFolderId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var settings = _settingsService.LoadSettings();
+            if (destinationFolderId <= 0)
+            {
+                return settings;
+            }
+
+            var profile = await _profileSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
+            if (profile is not null)
+            {
+                DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile);
+            }
+
+            return settings;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not load artist-artwork template settings for folder {FolderId}.", destinationFolderId);
+            return null;
+        }
+    }
+
+    private static async Task WriteArtistFolderImageAsync(
+        string avatarPath,
+        string destination,
+        string format,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var sourceExtension = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(avatarPath));
+        var wantsJpeg = string.Equals(format, "jpg", StringComparison.OrdinalIgnoreCase);
+        if (wantsJpeg && sourceExtension == ".jpg")
+        {
+            await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            await using var destinationStream = File.Create(destination);
+            await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+            return;
+        }
+
+        if (!wantsJpeg && sourceExtension == ".png")
+        {
+            await using var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            await using var destinationStream = File.Create(destination);
+            await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+            return;
+        }
+
+        await using (var sourceStream = File.Open(avatarPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var image = await Image.LoadAsync(sourceStream, cancellationToken))
+        {
+            if (wantsJpeg)
+            {
+                await image.SaveAsJpegAsync(
+                    destination,
+                    new JpegEncoder { Quality = Math.Clamp(settings.JpegImageQuality, 1, 100) },
+                    cancellationToken);
+                return;
+            }
+
+            await image.SaveAsPngAsync(destination, new PngEncoder(), cancellationToken);
+        }
+    }
+
+    private async Task<IReadOnlyCollection<(string Directory, long FolderId)>> ResolveArtistDirectoriesAsync(
         long artistId,
         long? folderId,
         CancellationToken cancellationToken)
     {
         var paths = await _libraryRepository.GetArtistLocalAudioPathsAsync(artistId, cancellationToken, folderId);
-        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var directories = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in paths)
         {
             if (string.IsNullOrWhiteSpace(item.FilePath) || string.IsNullOrWhiteSpace(item.RootPath))
@@ -919,14 +990,17 @@ public sealed partial class ArtistMetadataUpdaterService
             var artistDirectory = Path.Join(rootPath, firstSegment);
             if (Directory.Exists(artistDirectory))
             {
-                directories.Add(artistDirectory);
+                directories[artistDirectory] = item.FolderId;
             }
         }
 
-        return directories;
+        return directories.Select(pair => (pair.Key, pair.Value)).ToList();
     }
 
-    private static void DeleteArtistFolderImageVariants(string directory, string stem, string keepPath)
+    private static void DeleteArtistFolderImageVariants(
+        string directory,
+        string stem,
+        IReadOnlySet<string> keepPaths)
     {
         if (!Directory.Exists(directory) || string.IsNullOrWhiteSpace(stem))
         {
@@ -935,7 +1009,7 @@ public sealed partial class ArtistMetadataUpdaterService
 
         foreach (var path in Directory.GetFiles(directory, stem + ".*", SearchOption.TopDirectoryOnly))
         {
-            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(keepPath), StringComparison.OrdinalIgnoreCase))
+            if (keepPaths.Contains(Path.GetFullPath(path)))
             {
                 continue;
             }
@@ -1358,10 +1432,11 @@ public sealed partial class ArtistMetadataUpdaterService
         string artistName,
         string source,
         bool includeBiography,
+        bool excludeTextArt,
         CancellationToken cancellationToken)
     {
         var normalizedSource = NormalizeMetadataSource(source);
-        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken);
+        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, excludeTextArt);
         var candidates = artwork.Visuals
             .Where(item => normalizedSource == MetadataSourceAuto
                 || string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
@@ -1395,7 +1470,7 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
-        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken);
+        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, ocrTextArtBlockingEnabled);
         var candidates = artwork.Visuals
             .Where(item => !IsNameOnlyItunesIdentity(item.Identity))
             .OrderBy(item => RankArtworkSource(item.Source, item.Identity))
@@ -2450,7 +2525,7 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             await using var stream = File.OpenRead(imagePath);
             using var image = await Image.LoadAsync<Rgba32>(stream, cancellationToken);
-            return !LikelyContainsOverlayText(image);
+            return !ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2458,166 +2533,9 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 _logger.LogDebug(ex, "Artwork text inspection failed for {Path}", imagePath);
             }
-            return true;
-        }
-    }
-
-    private static bool LikelyContainsOverlayText(Image<Rgba32> image)
-    {
-        const int maxWidth = 384;
-        using var sampled = image.CloneAs<Rgba32>();
-        if (sampled.Width > maxWidth)
-        {
-            var resizedHeight = Math.Max(1, (int)Math.Round(sampled.Height * (maxWidth / (double)sampled.Width)));
-            sampled.Mutate(ctx => ctx.Resize(maxWidth, resizedHeight));
-        }
-
-        if (sampled.Width < 48 || sampled.Height < 48)
-        {
             return false;
         }
-
-        var topBandHeight = Math.Max(8, (int)Math.Round(sampled.Height * 0.22));
-        var bottomBandStart = Math.Max(0, sampled.Height - topBandHeight);
-        var middleStart = topBandHeight;
-        var middleHeight = Math.Max(8, bottomBandStart - middleStart);
-
-        var top = AnalyzeBand(sampled, 0, topBandHeight);
-        var middle = AnalyzeBand(sampled, middleStart, middleHeight);
-        var bottom = AnalyzeBand(sampled, bottomBandStart, sampled.Height - bottomBandStart);
-
-        if (IsTextHeavyBand(top, middle) || IsTextHeavyBand(bottom, middle))
-        {
-            return true;
-        }
-
-        return IsLikelyAlbumCoverWithTitle(sampled);
     }
-
-    private static bool IsLikelyAlbumCoverWithTitle(Image<Rgba32> image)
-    {
-        if (image.Height <= 0)
-        {
-            return false;
-        }
-
-        var aspect = image.Width / (double)image.Height;
-        if (aspect < 0.85 || aspect > 1.15)
-        {
-            return false;
-        }
-
-        var start = (int)Math.Round(image.Height * 0.28);
-        var height = Math.Max(8, (int)Math.Round(image.Height * 0.44));
-        var rates = RowJumpRates(image, start, height);
-        if (rates.Count == 0)
-        {
-            return false;
-        }
-
-        var ordered = rates.OrderBy(static rate => rate).ToList();
-        var median = ordered[ordered.Count / 2];
-        var max = ordered[^1];
-        return (median < 0.10 && max >= 0.16)
-               || (median < 0.18 && max >= 0.25 && max >= median * 1.8);
-    }
-
-    private static List<double> RowJumpRates(Image<Rgba32> image, int startRow, int height)
-    {
-        const double jumpThreshold = 20d;
-        var yStart = Math.Max(0, startRow);
-        var yEnd = Math.Min(image.Height, startRow + Math.Max(1, height));
-        var rates = new List<double>(Math.Max(0, yEnd - yStart));
-        if (yEnd <= yStart || image.Width < 2)
-        {
-            return rates;
-        }
-
-        for (var y = yStart; y < yEnd; y++)
-        {
-            var jumps = 0;
-            var previous = GetLuminance(image[0, y]);
-            for (var x = 1; x < image.Width; x++)
-            {
-                var current = GetLuminance(image[x, y]);
-                if (Math.Abs(current - previous) >= jumpThreshold)
-                {
-                    jumps++;
-                    previous = current;
-                }
-            }
-
-            rates.Add(jumps / (double)image.Width);
-        }
-
-        return rates;
-    }
-
-    private static ArtworkBandAnalysis AnalyzeBand(Image<Rgba32> image, int startRow, int height)
-    {
-        var yStart = Math.Max(1, startRow);
-        var yEnd = Math.Min(image.Height - 1, startRow + Math.Max(1, height));
-        if (yEnd <= yStart)
-        {
-            return new ArtworkBandAnalysis(0, 0);
-        }
-
-        var totalPixels = 0;
-        var edgePixels = 0;
-        var transitions = 0;
-        var rows = 0;
-
-        for (var y = yStart; y < yEnd; y++)
-        {
-            rows++;
-            var previousEdge = false;
-            var rowTransitions = 0;
-
-            for (var x = 1; x < image.Width - 1; x++)
-            {
-                var current = image[x, y];
-                var right = image[x + 1, y];
-                var down = image[x, y + 1];
-                var edge = Math.Abs(GetLuminance(current) - GetLuminance(right))
-                           + Math.Abs(GetLuminance(current) - GetLuminance(down)) >= 95;
-
-                totalPixels++;
-                if (edge)
-                {
-                    edgePixels++;
-                }
-
-                if (x > 1 && edge != previousEdge)
-                {
-                    rowTransitions++;
-                }
-
-                previousEdge = edge;
-            }
-
-            transitions += rowTransitions;
-        }
-
-        if (totalPixels <= 0 || rows <= 0)
-        {
-            return new ArtworkBandAnalysis(0, 0);
-        }
-
-        return new ArtworkBandAnalysis(
-            edgePixels / (double)totalPixels,
-            transitions / ((double)rows * Math.Max(1, image.Width - 2)));
-    }
-
-    private static bool IsTextHeavyBand(ArtworkBandAnalysis band, ArtworkBandAnalysis middle)
-    {
-        return band.EdgeDensity >= 0.135
-            && band.TransitionDensity >= 0.18
-            && band.EdgeDensity >= Math.Max(0.04, middle.EdgeDensity) * 1.45
-            && band.TransitionDensity >= Math.Max(0.06, middle.TransitionDensity) * 1.35;
-    }
-
-    private static double GetLuminance(Rgba32 pixel)
-        => (pixel.R * 0.299) + (pixel.G * 0.587) + (pixel.B * 0.114);
 
     private static string? ResolveSlotCandidate(string managedRoot, string slot)
         => ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints: null);
@@ -2994,7 +2912,6 @@ public sealed partial class ArtistMetadataUpdaterService
     }
 
     private sealed record PreparedVisuals(string? AvatarPath, string? BackgroundPath, int NextAvatarIndex, int NextBackgroundIndex);
-    private sealed record ArtworkBandAnalysis(double EdgeDensity, double TransitionDensity);
     private sealed record MissingArtistArtworkPlan(
         string DriverTarget,
         IReadOnlyDictionary<string, int> MissingCounts,

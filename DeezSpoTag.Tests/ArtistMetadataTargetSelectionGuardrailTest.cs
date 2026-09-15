@@ -396,6 +396,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
     {
         var root = RepositoryRoot();
         var cacheRefresh = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataCacheRefreshService.cs"));
+        var catalog = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.cs"));
         var targetUpdate = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
         var popularSongs = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistPopularSongsSyncService.cs"));
         var spotifyArtist = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "SpotifyArtistService.cs"));
@@ -412,11 +413,17 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("ApplyCatalogVisualsToSlotsAsync", cacheRefresh);
         Assert.Contains("request.OcrTextArtBlockingEnabled", cacheRefresh);
         Assert.Contains("FilterUsableArtworkCandidatesAsync", targetUpdate);
+        Assert.Contains("_artistArtworkCatalog.RefreshAsync(", targetUpdate);
+        Assert.Contains("preferExistingSlots: !tracked.OcrTextArtBlockingEnabled", targetUpdate);
+        Assert.Contains("ArtistArtworkTextInspector.LikelyContainsOverlayText", catalog);
+        Assert.Contains("textArtBlocked", catalog);
         Assert.Contains("SelectArtistBiographySourceAsync", cacheRefresh);
         Assert.Contains("GetUsedVisualHashesAsync", targetUpdate);
         Assert.Contains("RecordVisualUsageAsync", targetUpdate);
         Assert.Contains("ClearVisualUsageAsync", targetUpdate);
         Assert.Contains("SaveAvatarIntoArtistFoldersAsync", targetUpdate);
+        Assert.Contains("ArtistImageTemplate", targetUpdate);
+        Assert.Contains("GetArtworkOutputFormats", targetUpdate);
         Assert.Contains("GetArtistLocalAudioPathsAsync", targetUpdate);
         Assert.Contains("SaveArtistFolderImage", coordinator);
         Assert.Contains("EnsureMatchedSourceIdsAsync", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.Matching.cs")));
@@ -427,13 +434,20 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("GetArtistAsync(qobuzId, \"us-en\", cancellationToken)", cacheRefresh);
         Assert.Contains("ArtistMetadataProviderGate", cacheRefresh);
         Assert.Contains("UpsertArtistBiographyCacheAsync", cacheRefresh);
+        Assert.Contains("RefreshAppleAsync", cacheRefresh);
+        Assert.Contains("RefreshTidalAsync", cacheRefresh);
+        Assert.Contains("EnqueueArtistMetadataCacheAsync", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryScanRunner.cs")));
+        Assert.Contains("EnqueueNewlyIndexedArtistMetadata", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryScanRunner.cs")));
+        Assert.Contains("LibraryArtistMetadataQueueService", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Program.cs")));
+        Assert.Contains("cacheOnly || (!refresh && !rematch)", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Controllers", "Api", "LibraryArtistSourceMetadataApiController.cs")));
+        Assert.Contains("media-extras", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Controllers", "Api", "LibraryArtistMediaExtrasApiController.cs")));
         Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataProviderService.cs")));
         Assert.DoesNotContain("PlexApiClient", cacheRefresh);
         Assert.DoesNotContain("JellyfinApiClient", cacheRefresh);
         Assert.DoesNotContain("NavidromeApiClient", cacheRefresh);
 
         Assert.Contains("GetArtistBiographyCacheAsync", targetUpdate);
-        Assert.Contains("_artistArtworkCatalog.GetAsync(artistId, cancellationToken)", targetUpdate);
+        Assert.Contains("_artistArtworkCatalog.GetAsync(artistId, cancellationToken, excludeTextArt)", targetUpdate);
         Assert.DoesNotContain("forceRefresh: true", targetUpdate);
         Assert.DoesNotContain("ITidalAccessTokenProvider", targetUpdate);
         Assert.DoesNotContain("QobuzArtistService", targetUpdate);

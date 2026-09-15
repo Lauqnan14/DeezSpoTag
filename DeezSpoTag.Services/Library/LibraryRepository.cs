@@ -7876,7 +7876,7 @@ LIMIT @limit;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string baseSql = @"
-SELECT af.path, af.relative_path, f.root_path
+SELECT af.path, af.relative_path, f.root_path, f.id
 FROM album al
 JOIN track t ON t.album_id = al.id
 JOIN track_local tl ON tl.track_id = t.id
@@ -7903,6 +7903,7 @@ WHERE al.artist_id = @artistId
             var storedPath = await reader.IsDBNullAsync(0, cancellationToken) ? null : reader.GetString(0);
             var relativePath = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
             var rootPath = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+            var pathFolderId = await reader.IsDBNullAsync(3, cancellationToken) ? 0 : reader.GetInt64(3);
             var filePath = BuildAbsolutePath(rootPath, relativePath, storedPath);
             if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(rootPath))
             {
@@ -7915,7 +7916,7 @@ WHERE al.artist_id = @artistId
                 continue;
             }
 
-            paths.Add(new ArtistLocalAudioPathDto(filePath, rootPath));
+            paths.Add(new ArtistLocalAudioPathDto(filePath, rootPath, pathFolderId));
         }
 
         return paths;
@@ -17438,7 +17439,7 @@ SELECT f.root_path, af.relative_path, af.path
         };
     }
 
-    public async Task IngestLocalScanAsync(
+    public async Task<IReadOnlyList<NewlyIndexedArtist>> IngestLocalScanAsync(
         IReadOnlyList<FolderDto> folders,
         IReadOnlyList<LocalArtistScanDto> artists,
         IReadOnlyList<LocalAlbumScanDto> albums,
@@ -17455,7 +17456,7 @@ SELECT f.root_path, af.relative_path, af.path
 
         var folderByDisplay = folders.ToDictionary(folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase);
         var folderRoots = BuildFolderRoots(folders);
-        var artistIdByName = await BuildArtistIdMapAsync(connection, transaction, artists, cancellationToken);
+        var (artistIdByName, newlyIndexedArtists) = await BuildArtistIdMapAsync(connection, transaction, artists, cancellationToken);
         var albumIdByKey = await BuildAlbumIdMapAsync(
             connection,
             transaction,
@@ -17484,6 +17485,8 @@ SELECT f.root_path, af.relative_path, af.path
         {
             await ReconcilePlaylistWatchMissingTracksWithLibraryAsync(cancellationToken);
         }
+
+        return newlyIndexedArtists;
     }
 
     private static List<FolderRoot> BuildFolderRoots(IReadOnlyList<FolderDto> folders)
@@ -17494,20 +17497,25 @@ SELECT f.root_path, af.relative_path, af.path
             .ToList();
     }
 
-    private static async Task<Dictionary<string, long>> BuildArtistIdMapAsync(
+    private static async Task<(Dictionary<string, long> ArtistIds, List<NewlyIndexedArtist> Created)> BuildArtistIdMapAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         IReadOnlyList<LocalArtistScanDto> artists,
         CancellationToken cancellationToken)
     {
         var artistIdByName = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var created = new List<NewlyIndexedArtist>();
         foreach (var artist in artists)
         {
-            var artistId = await GetOrCreateArtistAsync(connection, transaction, artist, cancellationToken);
+            var (artistId, isNew) = await GetOrCreateArtistAsync(connection, transaction, artist, cancellationToken);
             artistIdByName[artist.Name] = artistId;
+            if (isNew)
+            {
+                created.Add(new NewlyIndexedArtist(artistId, artist.Name));
+            }
         }
 
-        return artistIdByName;
+        return (artistIdByName, created);
     }
 
     private static async Task<Dictionary<string, long>> BuildAlbumIdMapAsync(
@@ -18302,7 +18310,7 @@ WHERE source = @source
         return relative.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/');
     }
 
-    private static async Task<long> GetOrCreateArtistAsync(
+    private static async Task<(long Id, bool Created)> GetOrCreateArtistAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         LocalArtistScanDto artist,
@@ -18328,7 +18336,7 @@ WHERE source = @source
                 await updateCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            return id;
+            return (id, false);
         }
 
         await reader.DisposeAsync();
@@ -18341,7 +18349,7 @@ RETURNING id;";
         insertCommand.Parameters.AddWithValue("name", artist.Name);
         insertCommand.Parameters.AddWithValue("path", (object?)artist.ImagePath ?? DBNull.Value);
         var insertedId = await insertCommand.ExecuteScalarAsync(cancellationToken);
-        return Convert.ToInt64(insertedId);
+        return (Convert.ToInt64(insertedId), true);
     }
 
     private static async Task<long> GetOrCreateAlbumAsync(
@@ -19847,15 +19855,17 @@ ON CONFLICT(artist_id, role, identity) DO UPDATE SET
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT user_blocked
+SELECT 1
 FROM artist_artwork_cache
-WHERE artist_id = @artistId AND role = @role AND identity = @identity;";
+WHERE artist_id = @artistId
+  AND identity = @identity
+  AND (user_blocked = 1 OR text_art_blocked = 1)
+LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue("role", role);
         command.Parameters.AddWithValue("identity", identity);
         var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null and not DBNull && Convert.ToInt64(result, CultureInfo.InvariantCulture) != 0;
+        return result is not null and not DBNull;
     }
 
     public async Task UpsertArtistBiographyCacheAsync(

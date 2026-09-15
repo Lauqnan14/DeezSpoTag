@@ -368,14 +368,7 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        if (allowStale)
-        {
-            if (!_cacheRepository.IsUsable(cached.FetchedUtc))
-            {
-                return null;
-            }
-        }
-        else if (!_cacheRepository.IsFresh(cached.FetchedUtc))
+        if (!allowStale && !_cacheRepository.IsFresh(cached.FetchedUtc))
         {
             return null;
         }
@@ -500,14 +493,8 @@ public sealed class SpotifyArtistService
             return (normalizedCachedPayload, normalizedCachedPayload);
         }
 
-        if (_cacheRepository.IsUsable(cached.FetchedUtc))
-        {
-            AddActivity("info", $"[spotify] cache hit (stale, serving cached): {artistName}.");
-            return (normalizedCachedPayload, normalizedCachedPayload);
-        }
-
-        AddActivity("info", $"[spotify] cache expired beyond usable window; refreshing: {artistName}.");
-        return (null, normalizedCachedPayload);
+        AddActivity("info", $"[spotify] cache hit (serving cached until updater): {artistName}.");
+        return (normalizedCachedPayload, normalizedCachedPayload);
     }
 
     private async Task UpsertNormalizedCachePayloadIfChangedAsync(
@@ -533,60 +520,13 @@ public sealed class SpotifyArtistService
             cancellationToken);
     }
 
-    private async Task<SpotifyArtistPageResult> TryHydrateCachedBiographyAsync(
+    private static Task<SpotifyArtistPageResult> TryHydrateCachedBiographyAsync(
         string spotifyId,
         string artistName,
         SpotifyArtistPageResult cachedPayload,
         DateTimeOffset fetchedUtc,
         CancellationToken cancellationToken)
-    {
-        if (!IsPlaceholderBiography(cachedPayload.Artist?.Biography))
-        {
-            return cachedPayload;
-        }
-
-        SpotifyArtistExtras? extras = await TryFetchSpotifyAsync(
-            ct => _pathfinderMetadataClient.FetchArtistExtrasAsync(spotifyId, ct),
-            artistName,
-            "artist biography",
-            cancellationToken);
-        if (extras is null || IsPlaceholderBiography(extras.Biography))
-        {
-            return cachedPayload;
-        }
-
-        var currentArtist = cachedPayload.Artist;
-        if (currentArtist is null)
-        {
-            return cachedPayload;
-        }
-        var hydratedPayload = cachedPayload with
-        {
-            Artist = currentArtist with
-            {
-                Biography = extras.Biography,
-                Verified = currentArtist.Verified ?? extras.Verified,
-                MonthlyListeners = currentArtist.MonthlyListeners ?? extras.MonthlyListeners,
-                Rank = currentArtist.Rank ?? extras.Rank
-            }
-        };
-
-        if (CachePayloadChanged(cachedPayload, hydratedPayload))
-        {
-            var payloadJson = JsonSerializer.Serialize(
-                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, hydratedPayload),
-                _jsonOptions);
-            await _cacheRepository.UpsertAsync(
-                SpotifySource,
-                spotifyId,
-                payloadJson,
-                fetchedUtc,
-                cancellationToken);
-            AddActivity("info", $"[spotify] cache biography rehydrated: {artistName}.");
-        }
-
-        return hydratedPayload;
-    }
+        => Task.FromResult(cachedPayload);
 
     private async Task<SpotifyArtistPageResult> BuildArtistPageResultAsync(
         string spotifyId,

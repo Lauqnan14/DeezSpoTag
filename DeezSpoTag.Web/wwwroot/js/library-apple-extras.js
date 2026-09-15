@@ -267,7 +267,6 @@ async function loadAppleArtistVideos(appleArtistId, data, term, termParam) {
 async function fetchAppleArtistExtras() {
     const term = libraryState.appleExtras.term;
     if (!term) return;
-    const storedId = libraryState.appleExtras.storedAppleId;
     const atmosContainer = document.getElementById('appleAtmosGrid');
     const videoContainer = document.getElementById('appleVideosGrid');
     const artistId = getCurrentLibraryArtistId();
@@ -278,35 +277,25 @@ async function fetchAppleArtistExtras() {
     updateArtistMediaPanelTitles();
     setAppleArtistExtrasLoading(term, atmosContainer, videoContainer);
 
-    const normalizedTerm = normalizeArtistName(term);
-    const termParam = encodeURIComponent(term);
-    let appleArtistId = storedId || null;
-    const searchResult = (atmosSource === 'apple' || videoSource === 'apple')
-        ? await fetchAppleArtistSearch(termParam, normalizedTerm)
-        : { data: null, artistCandidates: [], atmos: [] };
-    let { data, artistCandidates } = searchResult;
-    libraryState.appleExtras.atmos = atmosSource === 'tidal'
-        ? await fetchTidalArtistMedia(termParam, 'atmos')
-        : searchResult.atmos;
+    const loadProvider = async (provider) => artistId
+        ? await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/media-extras?provider=${encodeURIComponent(provider)}`)
+        : null;
+    const appleExtras = atmosSource === 'apple' || videoSource === 'apple'
+        ? await loadProvider('apple')
+        : null;
+    const tidalExtras = atmosSource === 'tidal' || videoSource === 'tidal'
+        ? await loadProvider('tidal')
+        : null;
 
-    if (!appleArtistId) {
-        artistCandidates = await ensureAppleArtistCandidates(termParam, artistCandidates);
-        if (artistCandidates.length > 0) {
-            appleArtistId = await resolveAppleArtistIdWithLibrary(artistCandidates, term);
-        }
-    }
-
-    if (atmosSource === 'apple' && !data) {
-        libraryState.appleExtras.atmos = await backfillAppleAtmos(termParam, normalizedTerm);
-    }
-
-    libraryState.appleExtras.appleArtistId = appleArtistId;
-    const videoResult = videoSource === 'tidal'
-        ? { videos: await fetchTidalArtistMedia(termParam, 'video'), hasMoreVideos: false }
-        : await loadAppleArtistVideos(appleArtistId, data, term, termParam);
-    libraryState.appleExtras.videos = videoResult.videos;
-    libraryState.appleExtras.videoOffset = videoResult.videos.length;
-    libraryState.appleExtras.hasMoreVideos = videoResult.hasMoreVideos;
+    libraryState.appleExtras.appleArtistId = appleExtras?.appleId || libraryState.appleExtras.storedAppleId || null;
+    libraryState.appleExtras.atmos = Array.isArray((atmosSource === 'tidal' ? tidalExtras : appleExtras)?.atmos)
+        ? (atmosSource === 'tidal' ? tidalExtras : appleExtras).atmos
+        : [];
+    libraryState.appleExtras.videos = Array.isArray((videoSource === 'tidal' ? tidalExtras : appleExtras)?.videos)
+        ? (videoSource === 'tidal' ? tidalExtras : appleExtras).videos
+        : [];
+    libraryState.appleExtras.videoOffset = libraryState.appleExtras.videos.length;
+    libraryState.appleExtras.hasMoreVideos = false;
 
     updateAppleExtrasPanelVisibility();
     renderAppleAtmos();

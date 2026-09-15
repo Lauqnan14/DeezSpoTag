@@ -1703,12 +1703,13 @@ WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
             spotifyTrackId: "sp-cached",
             appleTrackId: "ap-cached");
 
-        await _repository.IngestLocalScanAsync(
+        var firstIngest = await _repository.IngestLocalScanAsync(
             await _repository.GetFoldersAsync(),
             artists,
             albums,
             new[] { track },
             pruneMissingArtists: false);
+        Assert.Contains(firstIngest, artist => artist.Name == "Artist One");
 
         var states = await _repository.GetLocalScanFileStatesAsync(folder.Id);
         var state = Assert.Single(states.Values);
@@ -1720,12 +1721,13 @@ WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
         var updatedAt = await ReadAudioFileUpdatedAtAsync(filePath);
         await Task.Delay(1100);
 
-        await _repository.IngestLocalScanAsync(
+        var secondIngest = await _repository.IngestLocalScanAsync(
             await _repository.GetFoldersAsync(),
             artists,
             albums,
             new[] { track with { IsUnchanged = true } },
             pruneMissingArtists: false);
+        Assert.Empty(secondIngest);
 
         Assert.Equal(updatedAt, await ReadAudioFileUpdatedAtAsync(filePath));
     }

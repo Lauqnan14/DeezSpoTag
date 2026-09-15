@@ -2032,6 +2032,15 @@ namespace DeezSpoTag.Web.Controllers
                 return cachedResponse;
             }
 
+            if (!refreshRequested)
+            {
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Artist page cache miss; not fetching on request.");
+                }
+                return NotFound("Artist not found");
+            }
+
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Artist page cache miss. refresh={Refresh}", refreshRequested);
@@ -2130,17 +2139,12 @@ namespace DeezSpoTag.Web.Controllers
             ArtistCacheEntry? existingCache,
             CancellationToken cancellationToken)
         {
-            if (refreshRequested || existingCache == null || !_artistPageCache.IsUsable(existingCache.FetchedUtc) || !HasArtistPageExtras(existingCache.PayloadJson))
+            if (refreshRequested || existingCache == null)
             {
                 return null;
             }
 
-            if (!_artistPageCache.IsFresh(existingCache.FetchedUtc))
-            {
-                _ = RefreshArtistPageCacheAsync(id, normalizedSource);
-            }
-
-            var payloadJson = await TryAttachLocationToCachedPayloadAsync(existingCache.PayloadJson, cancellationToken);
+            var payloadJson = existingCache.PayloadJson;
 
             var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
             if (_logger.IsEnabled(LogLevel.Information))
@@ -2272,6 +2276,21 @@ namespace DeezSpoTag.Web.Controllers
         {
             try
             {
+                if (!refreshRequested)
+                {
+                    var cached = await _spotifyArtistService.TryGetCachedArtistPageAsync(
+                        id,
+                        id,
+                        allowStale: true,
+                        cancellationToken);
+                    if (cached is { Available: true })
+                    {
+                        return Ok(DeezSpoTag.Web.Services.SpotifyArtistPagePayloadMapper.Build(cached));
+                    }
+
+                    return NotFound("Artist not found");
+                }
+
                 var payload = await BuildSpotifyArtistPageAsync(id, refreshRequested, cancellationToken);
                 if (payload == null)
                 {

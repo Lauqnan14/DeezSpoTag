@@ -531,6 +531,8 @@ public sealed record ArtistDto(
     DateTimeOffset? LastFmImagesCheckedAt = null);
 public sealed record ArtistPageDto(IReadOnlyList<ArtistDto> Items, int TotalCount, int Page, int PageSize);
 
+public sealed record NewlyIndexedArtist(long Id, string Name);
+
 public sealed record ArtistExternalMetadataBackfillDto(
     long Id,
     string Name,
@@ -539,7 +541,7 @@ public sealed record ArtistExternalMetadataBackfillDto(
     DateTimeOffset? LastFmImagesCheckedAt,
     string? AppleId);
 
-public sealed record ArtistLocalAudioPathDto(string FilePath, string RootPath);
+public sealed record ArtistLocalAudioPathDto(string FilePath, string RootPath, long FolderId);
 
 public sealed record AlbumDto(
     long Id,

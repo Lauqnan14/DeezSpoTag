@@ -4574,35 +4574,6 @@ function renderSpotifyArtistPayload(artistId, payloadForRender, effectiveAlbums,
     });
 }
 
-function scheduleSpotifyArtistSupplementaryFetches(payloadForRender) {
-    const spotifyArtistId = payloadForRender?.artist?.id;
-    if (!spotifyArtistId) {
-        return;
-    }
-
-    if (!payloadForRender.relatedArtists || payloadForRender.relatedArtists.length === 0) {
-        fetchJsonOptional(`/api/spotify/artist/${encodeURIComponent(spotifyArtistId)}/related`)
-            .then(result => {
-                const related = result?.relatedArtists || [];
-                if (related.length) {
-                    renderSpotifyRelatedArtists(related);
-                }
-            })
-            .catch(() => {});
-    }
-
-    if (!payloadForRender.appearsOn || payloadForRender.appearsOn.length === 0) {
-        fetchJsonOptional(`/api/spotify/artist/${encodeURIComponent(spotifyArtistId)}/appears-on`)
-            .then(result => {
-                const appears = result?.appearsOn || [];
-                if (appears.length) {
-                    renderSpotifyAppearsOn(appears);
-                }
-            })
-            .catch(() => {});
-    }
-}
-
 async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = false, cacheOnly = false) {
     if (forceRematch) {
         clearLibrarySpotifyArtistState(artistId);
@@ -4658,7 +4629,7 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
             renderState.topTracks,
             renderState.preserveExistingAlbums
         );
-        scheduleSpotifyArtistSupplementaryFetches(renderState.payloadForRender);
+
     } catch (error) {
         handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly);
     }
@@ -11429,7 +11400,7 @@ async function initializeArtistAlbumsPage(shouldLoadArtistAlbums) {
     const artistIdValue = document.querySelector('[data-artist-id]')?.dataset.artistId;
     const artistNameValue = document.getElementById('artistName')?.textContent?.trim();
     if (artistIdValue) {
-        await loadSpotifyArtist(artistIdValue, false, false, false);
+        await loadSpotifyArtist(artistIdValue, false, false, true);
     }
     if (artistIdValue && artistNameValue) {
         await logLibraryActivity(`Artist page initialized for ${artistIdValue} (${artistNameValue}).`);

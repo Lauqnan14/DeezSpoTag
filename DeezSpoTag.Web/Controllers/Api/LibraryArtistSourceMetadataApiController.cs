@@ -311,7 +311,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             resolvedArtistName = NormalizeArtistNameInput(artistName);
         }
 
-        if (cacheOnly)
+        if (cacheOnly || (!refresh && !rematch))
         {
             return await GetCachedSpotifyArtistPageResultAsync(id, spotifyId, resolvedArtistName, cancellationToken);
         }

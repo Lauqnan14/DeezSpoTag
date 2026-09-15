@@ -74,7 +74,10 @@ public sealed partial class ArtistArtworkCatalogService
         _cacheRoot = Path.Join(AppDataPaths.GetDataRoot(environment), "library-artist-images", "providers");
     }
 
-    public async Task<ArtistArtworkCatalogResult> GetAsync(long artistId, CancellationToken cancellationToken)
+    public async Task<ArtistArtworkCatalogResult> GetAsync(
+        long artistId,
+        CancellationToken cancellationToken,
+        bool excludeTextArt = true)
     {
         var artist = await _repository.GetArtistAsync(artistId, cancellationToken);
         if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
@@ -86,7 +89,10 @@ public sealed partial class ArtistArtworkCatalogService
 
         var cached = await _repository.GetArtistArtworkCacheAsync(artist.Id, cancellationToken);
         var visuals = cached
-            .Where(item => !item.UserBlocked && !item.TextArtBlocked && !string.IsNullOrWhiteSpace(item.LocalPath) && File.Exists(item.LocalPath))
+            .Where(item => !item.UserBlocked
+                && (!excludeTextArt || !item.TextArtBlocked)
+                && !string.IsNullOrWhiteSpace(item.LocalPath)
+                && File.Exists(item.LocalPath))
             .GroupBy(item => item.ContentHash ?? item.Identity, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .Select(item => new ArtistArtworkVisual(
@@ -104,7 +110,7 @@ public sealed partial class ArtistArtworkCatalogService
         // of what the metadata rotation or a platform refresh did to the catalog
         // rows. Merge every cached file under the artist's provider folders that
         // the catalog does not already list. Explicitly blocked images stay out.
-        visuals.AddRange(ScanUncataloguedVisuals(artist.Id, visuals, cached));
+        visuals.AddRange(ScanUncataloguedVisuals(artist.Id, visuals, cached, excludeTextArt));
         return new ArtistArtworkCatalogResult(artist.Id, artist.Name, visuals, providerResults);
     }
 
@@ -113,7 +119,8 @@ public sealed partial class ArtistArtworkCatalogService
     private List<ArtistArtworkVisual> ScanUncataloguedVisuals(
         long artistId,
         List<ArtistArtworkVisual> existing,
-        IReadOnlyList<ArtistArtworkCacheDto> catalogEntries)
+        IReadOnlyList<ArtistArtworkCacheDto> catalogEntries,
+        bool excludeTextArt)
     {
         var knownPaths = existing
             .Select(item => string.IsNullOrWhiteSpace(item.Path) ? string.Empty : Path.GetFullPath(item.Path))
@@ -123,7 +130,7 @@ public sealed partial class ArtistArtworkCatalogService
         // Honour blocks recorded against a hash, identity or path even when the
         // catalog row itself is no longer listed.
         var blockedKeys = catalogEntries
-            .Where(item => item.UserBlocked || item.TextArtBlocked)
+            .Where(item => item.UserBlocked || (excludeTextArt && item.TextArtBlocked))
             .SelectMany(item =>
             {
                 var localPath = string.IsNullOrWhiteSpace(item.LocalPath)
@@ -166,7 +173,8 @@ public sealed partial class ArtistArtworkCatalogService
                     || knownPaths.Contains(fullPath)
                     || blockedKeys.Contains(fileName)
                     || blockedKeys.Contains(Path.GetFileName(file))
-                    || blockedKeys.Contains(fullPath))
+                    || blockedKeys.Contains(fullPath)
+                    || BlockedByContentHash(fullPath, blockedKeys))
                 {
                     continue;
                 }
@@ -187,6 +195,20 @@ public sealed partial class ArtistArtworkCatalogService
             .OrderBy(item => item.Source, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Identity, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static bool BlockedByContentHash(string fullPath, HashSet<string> blockedKeys)
+    {
+        try
+        {
+            using var stream = File.OpenRead(fullPath);
+            var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            return blockedKeys.Contains(hash);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     public async Task<IReadOnlyList<ArtistArtworkProviderResult>> RefreshAsync(
@@ -577,9 +599,10 @@ public sealed partial class ArtistArtworkCatalogService
             if (image.Width < 128 || image.Height < 128) return null;
             await using var hashStream = File.OpenRead(path);
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(hashStream, token)).ToLowerInvariant();
+            var textArtBlocked = ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
             await _repository.UpsertArtistArtworkCacheAsync(new ArtistArtworkCacheUpsertInput(
                 artistId, CandidateRole, identity, provider, originalUrl, Path.GetFullPath(path), hash,
-                image.Width, image.Height, "not_scanned", null, false, false), token);
+                image.Width, image.Height, "heuristic", null, textArtBlocked, false), token);
             return path;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

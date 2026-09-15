@@ -107,13 +107,14 @@ public sealed class KnownLibraryFileIngestionService
                 continue;
             }
 
-            await _repository.IngestLocalScanAsync(
+            var newlyIndexed = await _repository.IngestLocalScanAsync(
                 [folder],
                 payload.Artists,
                 payload.Albums,
                 payload.Tracks,
                 pruneMissingArtists: false,
                 cancellationToken);
+            _serviceProvider.GetService<LibraryArtistMetadataQueueService>()?.EnqueueArtists(newlyIndexed);
             ingestedFolderIds.Add(folder.Id);
             AddInfoLog($"Known-file library ingestion completed for folder {folder.DisplayName} ({payload.Tracks.Count} track(s)).");
         }

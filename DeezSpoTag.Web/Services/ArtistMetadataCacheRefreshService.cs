@@ -38,6 +38,7 @@ public sealed class ArtistMetadataCacheRefreshService
     private readonly LastFmArtistImageService _lastFm;
     private readonly AudiomackArtistLocationService _audiomack;
     private readonly ArtistMetadataUpdaterService _visualSlots;
+    private readonly ArtistMediaExtrasCacheService _mediaExtras;
     private readonly UserPreferencesStore _preferences;
     private readonly IHttpClientFactory _httpClients;
     private readonly ILogger<ArtistMetadataCacheRefreshService> _logger;
@@ -52,6 +53,7 @@ public sealed class ArtistMetadataCacheRefreshService
         LastFmArtistImageService lastFm,
         AudiomackArtistLocationService audiomack,
         ArtistMetadataUpdaterService visualSlots,
+        ArtistMediaExtrasCacheService mediaExtras,
         UserPreferencesStore preferences,
         IHttpClientFactory httpClients,
         ILogger<ArtistMetadataCacheRefreshService> logger)
@@ -65,6 +67,7 @@ public sealed class ArtistMetadataCacheRefreshService
         _lastFm = lastFm;
         _audiomack = audiomack;
         _visualSlots = visualSlots;
+        _mediaExtras = mediaExtras;
         _preferences = preferences;
         _httpClients = httpClients;
         _logger = logger;
@@ -241,6 +244,16 @@ public sealed class ArtistMetadataCacheRefreshService
             artistId,
             selectedProvider.HasValue ? ProviderName(selectedProvider.Value) : null,
             cancellationToken);
+
+        try
+        {
+            await _mediaExtras.RefreshAppleAsync(artistId, artistName, cancellationToken);
+            await _mediaExtras.RefreshTidalAsync(artistId, artistName, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Artist media extras cache refresh failed for artist {ArtistId}.", artistId);
+        }
 
         return true;
     }

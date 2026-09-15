@@ -662,6 +662,7 @@ public sealed class LibraryScanRunner
                 if (!skipSpotifyFetch)
                 {
                     await EnqueueSpotifyArtistMetadataAsync(activeCts.Token);
+                    await EnqueueArtistMetadataCacheAsync(activeCts.Token);
                 }
 
                 await PersistScanInfoAsync(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks);
@@ -1403,6 +1404,7 @@ public sealed class LibraryScanRunner
         if (!skipSpotifyFetch)
         {
             await EnqueueSpotifyArtistMetadataAsync(cancellationToken);
+            await EnqueueArtistMetadataCacheAsync(cancellationToken);
         }
 
         if (refreshImages)
@@ -1425,13 +1427,14 @@ public sealed class LibraryScanRunner
         CancellationToken cancellationToken)
     {
         var ingestPayload = LocalLibrarySnapshotMapper.BuildIngestPayload(snapshot);
-        await _repository.IngestLocalScanAsync(
+        var newlyIndexed = await _repository.IngestLocalScanAsync(
             enabledFolders,
             ingestPayload.Artists,
             ingestPayload.Albums,
             ingestPayload.Tracks,
             reset,
             cancellationToken);
+        EnqueueNewlyIndexedArtistMetadata(newlyIndexed);
         if (logCompletion)
         {
             AddInfoLog($"SQLite ingest completed ({ingestPayload.Artists.Count} artists, {ingestPayload.Albums.Count} albums, {ingestPayload.Tracks.Count} tracks).");
@@ -1501,6 +1504,36 @@ public sealed class LibraryScanRunner
         }
 
         await spotifyQueueService.EnqueueMissingAsync(cancellationToken);
+    }
+
+    private async Task EnqueueArtistMetadataCacheAsync(CancellationToken cancellationToken)
+    {
+        var metadataQueue = _serviceProvider.GetService<LibraryArtistMetadataQueueService>();
+        if (metadataQueue is null)
+        {
+            AddWarnLog("Artist metadata queue not registered; skipping artist metadata cache enqueue.");
+            return;
+        }
+
+        await metadataQueue.EnqueueMissingAsync(cancellationToken);
+        AddInfoLog("Artist metadata fetch queued after library scan.");
+    }
+
+    private void EnqueueNewlyIndexedArtistMetadata(IReadOnlyList<NewlyIndexedArtist> artists)
+    {
+        if (artists.Count == 0)
+        {
+            return;
+        }
+
+        var metadataQueue = _serviceProvider.GetService<LibraryArtistMetadataQueueService>();
+        if (metadataQueue is null)
+        {
+            AddWarnLog("Artist metadata queue not registered; skipping newly indexed artist metadata enqueue.");
+            return;
+        }
+
+        metadataQueue.EnqueueArtists(artists);
     }
 
     private async Task EnqueueArtistImagesAsync(CancellationToken cancellationToken)
