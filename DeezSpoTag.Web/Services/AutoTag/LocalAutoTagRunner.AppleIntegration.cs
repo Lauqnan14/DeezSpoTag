@@ -54,7 +54,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
-        CancellationToken token)
+        CancellationToken token,
+        ProviderIdentityPayload? confirmedIdentity = null)
     {
         var itunesConfig = LoadConfig(config.Custom, ItunesPlatform, new ItunesMatchConfig());
         var saveAnimatedArtwork = itunesConfig.AnimatedArtwork ?? settings.SaveAnimatedArtwork;
@@ -80,7 +81,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
             ? "us"
             : settings.AppleMusic.Storefront;
-        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token);
+        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token, confirmedIdentity);
 
         if (wantsCatalogMetadata && !string.IsNullOrWhiteSpace(appleIdentity?.AppleId))
         {
@@ -327,17 +328,23 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         string storefront,
         DeezSpoTagSettings settings,
-        CancellationToken token)
+        CancellationToken token,
+        ProviderIdentityPayload? confirmedIdentity = null)
     {
         try
         {
             var artist = track.Artists.FirstOrDefault();
-            var persistedAppleId = TryGetFirstOtherValue(track.Other, AutoTagIdentityTags.AppleTrackIdAliases)
-                ?? (track.Other.ContainsKey(AutoTagIdentityTags.AppleTrackId) ? track.TrackId : null);
+            // Only an Apple-confirmed payload may preseed the Apple identity lookup: raw
+            // tags and mutated track values are never trusted provenance.
+            var appleConfirmed = confirmedIdentity is { IsNativeProviderResult: true }
+                && AutoTagIdentityTags.NormalizeProviderId(confirmedIdentity.ProviderId) == "itunes"
+                        ? confirmedIdentity
+                        : null;
+            var persistedAppleId = appleConfirmed?.TrackId;
             var identity = await _trackIdentityResolver.ResolveAsync(
                 new TrackIdentityResolutionRequest(
                     SourcePlatform: null,
-                    SourceUrl: track.Url,
+                    SourceUrl: appleConfirmed?.Url,
                     Title: track.Title,
                     Artist: artist,
                     Album: track.Album,

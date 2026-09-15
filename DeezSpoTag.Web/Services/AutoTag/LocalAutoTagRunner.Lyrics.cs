@@ -42,7 +42,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
         CancellationToken token,
-        string? providerTrackId = null)
+        string? providerTrackId = null,
+        ProviderIdentityPayload? confirmedIdentity = null)
     {
         var provider = NormalizeLyricsLookupSource(platform.Trim().ToLowerInvariant());
         if (!LyricsProviderRegistry.IsRegistered(provider))
@@ -63,16 +64,18 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        // Only a confirmed provider identity may seed a provider-scoped lookup; the
+        // mutated track values and raw file tags are never trusted.
         if (provider is not LyricsProviderRegistry.YouLyPlus and not LyricsProviderRegistry.BetterLyrics
             && string.IsNullOrWhiteSpace(providerTrackId)
-            && string.IsNullOrWhiteSpace(track.TrackId) &&
-            string.IsNullOrWhiteSpace(track.Url) &&
-            string.IsNullOrWhiteSpace(track.Isrc))
+            && string.IsNullOrWhiteSpace(confirmedIdentity?.TrackId)
+            && string.IsNullOrWhiteSpace(confirmedIdentity?.Url)
+            && string.IsNullOrWhiteSpace(track.Isrc))
         {
             return;
         }
 
-        var lookupTrack = BuildLyricsLookupTrack(track, provider);
+        var lookupTrack = BuildLyricsLookupTrack(track, provider, confirmedIdentity);
         if (!string.IsNullOrWhiteSpace(providerTrackId))
         {
             lookupTrack.Id = providerTrackId;
@@ -122,18 +125,21 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return request with { WantsTtml = request.WantsTtml && supportsTtml };
     }
 
-    private static Track BuildLyricsLookupTrack(AutoTagTrack track, string platformId)
+    private static Track BuildLyricsLookupTrack(
+        AutoTagTrack track,
+        string platformId,
+        ProviderIdentityPayload? confirmedIdentity = null)
     {
         var normalizedPlatform = NormalizeLyricsLookupSource(platformId);
         var lookupTrack = new Track
         {
-            Id = track.TrackId ?? string.Empty,
+            Id = confirmedIdentity?.TrackId ?? string.Empty,
             Source = normalizedPlatform,
-            SourceId = track.TrackId,
+            SourceId = confirmedIdentity?.TrackId,
             Title = track.Title ?? string.Empty,
             Album = new Album(track.Album ?? string.Empty),
             ISRC = track.Isrc ?? string.Empty,
-            DownloadURL = track.Url ?? string.Empty,
+            DownloadURL = confirmedIdentity?.Url ?? string.Empty,
             Duration = track.Duration.HasValue ? (int)Math.Max(0, track.Duration.Value.TotalSeconds) : 0
         };
 
@@ -150,37 +156,30 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             lookupTrack.Artist["Main"] = new List<string> { primaryArtist };
         }
 
-        if (!string.IsNullOrWhiteSpace(track.Url))
-        {
-            lookupTrack.Urls[normalizedPlatform] = track.Url;
-        }
-
-        if (string.Equals(normalizedPlatform, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            AddLookupUrl(lookupTrack.Urls, "deezer_track_id", track.TrackId);
-        }
-        else if (string.Equals(normalizedPlatform, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            AddLookupUrl(lookupTrack.Urls, "spotify_track_id", track.TrackId);
-        }
-        else if (string.Equals(normalizedPlatform, AppleProvider, StringComparison.OrdinalIgnoreCase))
-        {
-            AddLookupUrl(lookupTrack.Urls, "apple_track_id", track.TrackId);
-        }
-
         var other = track.Other ?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        AddLookupUrl(lookupTrack.Urls, "deezer_track_id", TryGetFirstOtherValue(other, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
-        AddLookupUrl(lookupTrack.Urls, "spotify_track_id", TryGetFirstOtherValue(other, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
-        AddLookupUrl(lookupTrack.Urls, "apple_track_id", TryGetFirstOtherValue(other, "APPLE_TRACK_ID", "APPLEID", "ITUNES_TRACK_ID", "ITUNESCATALOGID"));
+        if (confirmedIdentity is { IsNativeProviderResult: true })
+        {
+            var confirmedProvider = NormalizeLyricsLookupSource(confirmedIdentity.ProviderId);
+            if (!string.IsNullOrWhiteSpace(confirmedIdentity.Url))
+            {
+                lookupTrack.Urls[confirmedProvider] = confirmedIdentity.Url;
+            }
 
-        AddLookupUrl(lookupTrack.Urls, DeezerPlatform, TryGetFirstOtherValue(other, "DEEZER_URL"));
-        AddLookupUrl(lookupTrack.Urls, SpotifyPlatform, TryGetFirstOtherValue(other, SpotifyUrlTag));
-        AddLookupUrl(lookupTrack.Urls, AppleProvider, TryGetFirstOtherValue(other, "APPLE_URL", "ITUNES_URL"));
+            if (!string.IsNullOrWhiteSpace(confirmedIdentity.TrackId))
+            {
+                AddLookupUrl(lookupTrack.Urls, $"{confirmedProvider}_track_id", confirmedIdentity.TrackId);
+            }
 
+            if (string.IsNullOrWhiteSpace(lookupTrack.DownloadURL))
+            {
+                lookupTrack.DownloadURL = confirmedIdentity.Url ?? string.Empty;
+            }
+        }
+
+        // Non-identity lookup context may still come from ordinary tags.
         if (string.IsNullOrWhiteSpace(lookupTrack.DownloadURL))
         {
-            lookupTrack.DownloadURL = TryGetFirstOtherValue(other, "source_url", "URL", WwwAudioFileTag)
-                ?? TryGetFirstOtherValue(other, "DEEZER_URL", SpotifyUrlTag, "APPLE_URL", "ITUNES_URL")
+            lookupTrack.DownloadURL = TryGetFirstOtherValue(other, "source_url")
                 ?? string.Empty;
         }
 

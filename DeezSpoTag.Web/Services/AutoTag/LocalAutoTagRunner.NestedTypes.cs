@@ -180,6 +180,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string? AlbumArtist,
         AlbumIdentity Identity);
 
+    private sealed record AlbumReleaseContext(
+        string ReleaseKey,
+        string? AlbumRoot,
+        string AlbumTitle,
+        string? AlbumArtist,
+        AlbumIdentity Identity);
+
     private sealed class TagWriteRequest
     {
         public required string FilePath { get; init; }
@@ -470,11 +477,53 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public HashSet<string> SeededAlbumIdentityKeys { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, ArtistSortMeta> ArtistSortMeta { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, FolderAlbumIdentity> AlbumFolderIdentities { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<int, AlbumReleaseContext> AlbumReleaseContexts { get; } = new();
         public Dictionary<int, string> MaterializedManualPaths { get; } = new();
         public HashSet<string> AttemptedArtistArtworkPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<int> AttemptedAppleExtras { get; } = new();
+        public Dictionary<int, Dictionary<string, ProviderIdentityPayload>> ConfirmedProviderIdentities { get; } = new();
         public int PlatformCount => EffectivePlatforms.Count;
         public int FileCount => Files.Count;
+
+        public bool TryGetConfirmedProviderIdentity(
+            int fileIndex,
+            string? providerId,
+            out ProviderIdentityPayload payload)
+        {
+            payload = new ProviderIdentityPayload(string.Empty, null, null, null, null, null, null, false);
+            var provider = AutoTagIdentityTags.NormalizeProviderId(providerId);
+            if (provider.Length == 0
+                || !ConfirmedProviderIdentities.TryGetValue(fileIndex, out var byProvider)
+                || !byProvider.TryGetValue(provider, out var confirmed))
+            {
+                return false;
+            }
+
+            payload = confirmed;
+            return true;
+        }
+
+        public void RecordConfirmedProviderIdentity(int fileIndex, ProviderIdentityPayload payload)
+        {
+            if (!payload.IsNativeProviderResult)
+            {
+                return;
+            }
+
+            var provider = AutoTagIdentityTags.NormalizeProviderId(payload.ProviderId);
+            if (provider.Length == 0)
+            {
+                return;
+            }
+
+            if (!ConfirmedProviderIdentities.TryGetValue(fileIndex, out var byProvider))
+            {
+                byProvider = new Dictionary<string, ProviderIdentityPayload>(StringComparer.OrdinalIgnoreCase);
+                ConfirmedProviderIdentities[fileIndex] = byProvider;
+            }
+
+            byProvider[provider] = payload;
+        }
     }
 
     private sealed class ManualReleaseIdentity

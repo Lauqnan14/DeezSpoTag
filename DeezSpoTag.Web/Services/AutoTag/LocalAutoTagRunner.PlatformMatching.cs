@@ -300,9 +300,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         // Capture the provider-native identity before anything below can mutate the
         // matched track (release-id authority, frozen releases, title/edition/folder
         // preservation, consensus, lyrics, artwork, or custom tags).
-        match.ProviderIdentity ??= CaptureProviderIdentity(context.Platform, match);
+        var capturedIdentity = match.ProviderIdentity ?? CaptureProviderIdentity(context.Platform, match);
+        match.ProviderIdentity = capturedIdentity;
 
-        var returnedProviderReleaseId = match.ProviderIdentity.ValueFor(ProviderIdentityField.ReleaseId);
+        var returnedProviderReleaseId = capturedIdentity.ValueFor(ProviderIdentityField.ReleaseId);
         var providerReleaseIdIsValid = returnedProviderReleaseId is null
             || IsPlatformReleaseIdShapeValid(context.Platform, returnedProviderReleaseId);
         var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
@@ -417,9 +418,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 context,
                 validationBasis,
                 match.Track,
-                returnedProviderReleaseId,
+                capturedIdentity,
                 hasAuthoritativeProviderResult: !editionConflict && providerReleaseIdIsValid);
-            match.ProviderIdentity = MergeEstablishedIdentity(match.Track, match.ProviderIdentity, context.Platform);
+            match.ProviderIdentity = MergeEstablishedIdentity(match.Track, capturedIdentity, context.Platform);
             if (isManualEnrichment && frozenRelease == null)
             {
                 frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
@@ -448,6 +449,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
             context.File = materializedPath;
             context.Plan.Files[context.FileIndex] = context.File;
+            // The captured payload only becomes a confirmed identity once the match passed
+            // validation: fallback, inherited, shape-only and rejected matches never do.
+            context.Plan.RecordConfirmedProviderIdentity(context.FileIndex, capturedIdentity);
             var presentBefore = CapturePresentTags(context.File, context.Plan.Config, context.Platform, tagPlan.Eligible);
             await RunBoundedOptionalStepAsync(
                 context,
@@ -471,7 +475,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         match.Track,
                         context.Plan.Config,
                         context.Plan.Settings,
-                        stepToken));
+                        stepToken,
+                        providerTrackId: null,
+                        confirmedIdentity: context.Plan.TryGetConfirmedProviderIdentity(
+                            context.FileIndex,
+                            context.Platform,
+                            out var confirmed)
+                                ? confirmed
+                                : null));
             }
             if (context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
             {
@@ -485,7 +496,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         match.Track,
                         context.Plan.Config,
                         context.Plan.Settings,
-                        stepToken));
+                        stepToken,
+                        confirmedIdentity: context.Plan.TryGetConfirmedProviderIdentity(
+                            context.FileIndex,
+                            AppleProvider,
+                            out var confirmedApple)
+                                ? confirmedApple
+                                : null));
             }
             var writeResult = await TagFileAsync(
                 context.File,

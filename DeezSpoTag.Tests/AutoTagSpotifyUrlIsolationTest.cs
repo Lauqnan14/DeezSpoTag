@@ -112,6 +112,16 @@ public sealed class AutoTagSpotifyUrlIsolationTest
     }
 
     [Fact]
+    public void ProviderIdentityConsumers_TrustOnlyConfirmedRunPlanIdentity()
+    {
+        var source = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.Lyrics.cs");
+        Assert.Contains("ProviderIdentityPayload? confirmedIdentity = null", source, StringComparison.Ordinal);
+        var matching = PartialSourceReader.ReadTypeSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.PlatformMatching.cs");
+        Assert.Contains("context.Plan.TryGetConfirmedProviderIdentity(", matching, StringComparison.Ordinal);
+        Assert.Contains("RecordConfirmedProviderIdentity(context.FileIndex, capturedIdentity)", matching, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShazamFallbackThroughDeezer_DoesNotAttributeResolverIdentityToShazam()
     {
         var match = new AutoTagMatchResult

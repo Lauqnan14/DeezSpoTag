@@ -40,6 +40,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
            || settings.SaveArtwork
            || settings.EmbedMaxQualityCover;
 
+    /// <summary>The identity a native payload confirmed for one provider on this file,
+    /// or null when the provider never confirmed anything for it.</summary>
+    private static ProviderIdentityPayload? ConfirmedProviderIdentity(
+        AutoTagFileRunContext context,
+        string providerId)
+        => context.Plan.TryGetConfirmedProviderIdentity(context.FileIndex, providerId, out var confirmed)
+            ? confirmed
+            : null;
+
     private async Task EnsureManualArtistArtworkAsync(
         AutoTagFileRunContext context,
         AutoTagAudioInfo identity,
@@ -70,6 +79,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         using var scope = _serviceScopeFactory.CreateScope();
         var provider = scope.ServiceProvider;
         var artist = track.Artists.FirstOrDefault();
+        // Artwork providers are only fed identities confirmed by a native payload; raw
+        // tags and mutated track values are never trusted provenance.
+        var appleConfirmed = ConfirmedProviderIdentity(context, "itunes");
+        var deezerConfirmed = ConfirmedProviderIdentity(context, "deezer");
+        var spotifyConfirmed = ConfirmedProviderIdentity(context, "spotify");
         var artistArtwork = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
                 _appleMusicCatalogService,
@@ -78,20 +92,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 provider.GetService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 provider.GetService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
                 provider.GetService<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(),
-                AutoTagIdentityTags.ReadAppleTrackId(identity),
-                AutoTagTagValueReader.ReadFirstTagValue(identity, DeezerTrackIdTag),
-                AutoTagTagValueReader.ReadFirstTagValue(identity, SpotifyTrackIdTag),
+                appleConfirmed?.TrackId,
+                deezerConfirmed?.TrackId,
+                spotifyConfirmed?.TrackId,
                 artist,
                 _logger)
             {
-                AppleArtistId = AutoTagIdentityTags.ReadAppleArtistId(identity)
-                    ?? (context.Platform is "itunes" or "apple" or "applemusic" ? track.ArtistId : null),
-                DeezerArtistId = string.Equals(context.Platform, "deezer", StringComparison.OrdinalIgnoreCase)
-                    ? track.ArtistId
-                    : null,
-                SpotifyArtistId = string.Equals(context.Platform, "spotify", StringComparison.OrdinalIgnoreCase)
-                    ? track.ArtistId
-                    : null
+                AppleArtistId = appleConfirmed?.ArtistId,
+                DeezerArtistId = deezerConfirmed?.ArtistId,
+                SpotifyArtistId = spotifyConfirmed?.ArtistId
             },
             context.Token);
         if (artistArtwork == null)
@@ -387,7 +396,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
-        TagSettings tagSettings)
+        TagSettings tagSettings,
+        string? establishedAlbumRoot = null)
     {
         if (config.MaterializeToTemplatePath != true)
         {
@@ -403,13 +413,30 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return sourcePath;
         }
 
-        var destinationPath = Path.Join(pathInfo.FilePath, $"{pathInfo.Filename}{Path.GetExtension(sourcePath)}");
+        var destinationDirectory = pathInfo.FilePath;
+        if (!string.IsNullOrWhiteSpace(establishedAlbumRoot))
+        {
+            var discRelativePath = string.IsNullOrWhiteSpace(pathInfo.CoverPath)
+                ? "."
+                : Path.GetRelativePath(pathInfo.CoverPath, pathInfo.FilePath);
+            if (discRelativePath == "."
+                || (!Path.IsPathRooted(discRelativePath)
+                    && discRelativePath != ".."
+                    && !discRelativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
+            {
+                destinationDirectory = discRelativePath == "."
+                    ? establishedAlbumRoot
+                    : Path.Combine(establishedAlbumRoot, discRelativePath);
+            }
+        }
+
+        var destinationPath = Path.Join(destinationDirectory, $"{pathInfo.Filename}{Path.GetExtension(sourcePath)}");
         if (PathsReferToSameFile(sourcePath, destinationPath))
         {
             return sourcePath;
         }
 
-        Directory.CreateDirectory(pathInfo.FilePath);
+        Directory.CreateDirectory(destinationDirectory);
         destinationPath = ResolveTemplateMaterializationDestination(sourcePath, destinationPath, settings);
         FileMoveFallbackHelper.MoveWithFallback(sourcePath, destinationPath);
         MoveAdjacentSidecars(sourcePath, destinationPath);
