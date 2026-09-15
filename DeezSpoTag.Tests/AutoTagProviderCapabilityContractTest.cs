@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Web.Services.Audiomack;
 using DeezSpoTag.Web.Services.AutoTag;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
@@ -530,6 +531,27 @@ public sealed class AutoTagProviderCapabilityContractTest
         Assert.Equal("bandcamp-album", bandcamp.AlbumId);
         Assert.Equal("Bandcamp description", bandcamp.Description);
         AssertReturnedTagsAreOffered(new BandcampPlatform(new StubWebHostEnvironment()).Describe(), bandcamp);
+
+        var audiomack = InvokeMapper<AudiomackMatcher, AudiomackSongCandidate>(new AudiomackSongCandidate(
+            Id: "78139729", Title: "Audiomack Track", Artist: "Audiomack Artist", Album: "Audiomack Album",
+            Genre: "afrobeats", Mood: "party", Isrc: "ZA40S2401187", Label: "Audiomack Label",
+            DurationSeconds: 180, ArtworkUrl: "https://example.test/audiomack.jpg",
+            ReleasedDate: "2024-01-01T00:00:00Z", Url: "https://audiomack.com/artist/song/track",
+            UrlSlug: "track", ArtistSlug: "artist", UploaderName: "Audiomack Artist", AlbumId: "55501")
+        {
+            UploaderId = "16579133",
+            Subgenres = new[] { "amapiano" },
+            Upc = "085365330924",
+            Explicit = "no"
+        });
+        Assert.Equal("16579133", audiomack.ArtistId);
+        Assert.Equal("ZA40S2401187", audiomack.Isrc);
+        Assert.Equal("55501", audiomack.AlbumId);
+        Assert.Equal("085365330924", audiomack.Barcode);
+        Assert.False(audiomack.Explicit);
+        Assert.Null(audiomack.ReleaseId);
+        // The net that catches a fetched-but-unclaimed tag (isrc was one).
+        AssertReturnedTagsAreOffered(new AudiomackPlatform(new StubWebHostEnvironment()).Describe(), audiomack);
 
         var discogs = InvokeMapper<DiscogsMatcher, DiscogsTrackInfo>(new DiscogsTrackInfo
         {

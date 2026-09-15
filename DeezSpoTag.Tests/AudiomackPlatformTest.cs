@@ -101,10 +101,37 @@ public sealed class AudiomackPlatformTest
         Assert.Equal(TimeSpan.FromSeconds(203), track.Duration);
         Assert.Equal("https://images.audiomack.com/cover.jpg", track.Art);
         Assert.Equal("40123", track.TrackId);
+        // The fixture's uploader carries no id, so there is nothing to write.
+        Assert.Null(track.ArtistId);
         Assert.Null(track.Isrc);
         Assert.Null(track.Bpm);
         Assert.Null(track.Key);
         Assert.Equal(DateTimeKind.Utc, track.ReleaseDate!.Value.Kind);
+    }
+
+    [Fact]
+    public void ToAutoTagTrack_MapsUploaderArtistIdAndAlbumIdWithoutReleaseAlias()
+    {
+        // Audiomack's own payload: the uploader object carries the artist id, and the
+        // album id is an album-scoped id only — it is not aliased into the release slot.
+        const string json = """
+        {"results":[{"id":78139729,"title":"Fallen Angel","artist":"Alikiba","album":"Only One","album_id":"55501","isrc":"ZA40S2401187","upc":"085365330924","explicit":"yes","genre":"electronic","label":"Sony","duration":261,"released_date":"2024-06-14","url":"https://audiomack.com/alikiba/song/fallen-angel","url_slug":"fallen-angel","uploader":{"id":"16579133","name":"Alikiba","url_slug":"alikiba"}}]}
+        """;
+
+        var song = AudiomackApiClient.ParseSongSearchResponse(json, 12)[0];
+        var track = AudiomackMatcher.ToAutoTagTrack(song);
+
+        Assert.NotNull(track);
+        Assert.Equal("16579133", track!.ArtistId);
+        // No separate album-artist id is exposed, so none is invented.
+        Assert.Null(track.AlbumArtistId);
+        Assert.Equal("55501", track.AlbumId);
+        Assert.Null(track.ReleaseId);
+        Assert.Equal("ZA40S2401187", track.Isrc);
+        Assert.Equal("Sony", track.Label);
+        Assert.Equal("085365330924", track.Barcode);
+        Assert.True(track.Explicit);
+        Assert.Equal(TimeSpan.FromSeconds(261), track.Duration);
     }
 
     [Fact]
@@ -143,11 +170,29 @@ public sealed class AudiomackPlatformTest
         Assert.Contains(SupportedTag.Genre.ToString(), claimed);
         Assert.Contains(SupportedTag.Style.ToString(), claimed);
         Assert.Contains(SupportedTag.Mood.ToString(), claimed);
+        Assert.Contains(SupportedTag.Label.ToString(), claimed);
+        // The payload carries isrc (the real captured fixture does) and the matcher
+        // maps it, so the descriptor must claim it — it used to be fetched and dropped.
+        Assert.Contains(SupportedTag.ISRC.ToString(), claimed);
+        Assert.Contains("isrc", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
+        // Audiomack's own uploader id is the artist id now mapped to file tags.
+        Assert.Contains(SupportedTag.ArtistId.ToString(), claimed);
+        Assert.Contains("artistId", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
+        // The real payload carries UPC and an explicit flag; both are mapped now.
+        Assert.Contains(SupportedTag.Barcode.ToString(), claimed);
+        Assert.Contains("barcode", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains(SupportedTag.Explicit.ToString(), claimed);
+        Assert.Contains("explicit", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
+        // Audiomack exposes no separate recording id or release entity, so those must
+        // not be claimed (they would be claimed-but-never-mapped).
+        Assert.DoesNotContain(SupportedTag.RecordingId.ToString(), claimed);
+        Assert.DoesNotContain(SupportedTag.ReleaseId.ToString(), claimed);
+        Assert.DoesNotContain("recordingId", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("releaseId", platform.DownloadTags!, StringComparer.OrdinalIgnoreCase);
         // Audiomack does not provide these; the descriptor must not claim them.
         Assert.DoesNotContain(SupportedTag.BPM.ToString(), claimed);
         Assert.DoesNotContain(SupportedTag.Key.ToString(), claimed);
         Assert.DoesNotContain(SupportedTag.SyncedLyrics.ToString(), claimed);
-        Assert.DoesNotContain(SupportedTag.ISRC.ToString(), claimed);
     }
 
     [Fact]
@@ -312,10 +357,21 @@ public sealed class AudiomackPlatformTest
         Assert.Equal("electronic", candidate.Genre);
         Assert.Equal("song", candidate.ContentType);
         Assert.Contains("Amapiano", candidate.TagDisplay);
+        // The real payload identifies the artist through the uploader's own id.
+        Assert.Equal("16579133", candidate.UploaderId);
         var track = AudiomackMatcher.ToAutoTagTrack(candidate);
         Assert.Equal("Electronic", Assert.Single(track!.Genres));
         Assert.Equal("Amapiano", Assert.Single(track.Styles));
         Assert.Contains("Billnass", track.Artists);
+        Assert.Equal("16579133", track.ArtistId);
+        // The real payload carries an ISRC the pipeline used to drop.
+        Assert.Equal("ZA40S2401187", track.Isrc);
+        // Label, barcode and explicitness are all in the real payload; label lives on
+        // the uploader, UPC and explicit on the song row.
+        Assert.Equal("Kings Music Records Label", track.Label);
+        Assert.Equal("085365330924", track.Barcode);
+        Assert.False(track.Explicit);
+        Assert.Null(track.AlbumId);
     }
 
     [Fact]

@@ -56,6 +56,20 @@ public sealed record AudiomackSongCandidate(
     /// <summary>Audiomack entity type (<c>song</c>, <c>audiobook</c>, <c>podcast</c>).</summary>
     public string? ContentType { get; init; }
 
+    /// <summary>
+    /// Audiomack's own uploader/artist id (<c>uploader.id</c>). Audiomack exposes a
+    /// single artist entity on a track — the uploader — so this is the artist id and
+    /// there is no separate album-artist id to capture; it is never derived from
+    /// another provider's id.
+    /// </summary>
+    public string? UploaderId { get; init; }
+
+    /// <summary>Song UPC (<c>upc</c>) — the barcode tag, when the payload carries one.</summary>
+    public string? Upc { get; init; }
+
+    /// <summary>Raw explicitness flag (<c>explicit</c>): Audiomack sends "yes"/"no".</summary>
+    public string? Explicit { get; init; }
+
     /// <summary>Alternate typed-tags container: (name, audiomack-declared type). Null unless the payload uses it.</summary>
     public IReadOnlyList<(string Name, string? Type)>? TypedTags { get; init; }
 
@@ -82,10 +96,18 @@ public sealed record AudiomackSongCandidate(
         var artist = GetStringOrNull(element, "artist");
         var uploaderName = null as string;
         var uploaderUrlSlug = null as string;
+        var uploaderId = null as string;
+        var uploaderLabel = null as string;
+        var uploaderGenre = null as string;
         if (element.TryGetProperty("uploader", out var uploader) && uploader.ValueKind == JsonValueKind.Object)
         {
             uploaderName = GetStringOrNull(uploader, "name") ?? GetStringOrNull(uploader, "url_slug");
             uploaderUrlSlug = GetStringOrNull(uploader, "url_slug");
+            uploaderId = GetNumberOrStringOrNull(uploader, "id");
+            // The real captured payload carries the label on the uploader, not on the
+            // song row, so without this fallback a fetched label was dropped.
+            uploaderLabel = GetStringOrNull(uploader, "label") ?? GetStringOrNull(uploader, "label_name");
+            uploaderGenre = GetNameOrStringOrNull(uploader, "genre");
         }
 
         return new AudiomackSongCandidate(
@@ -93,10 +115,10 @@ public sealed record AudiomackSongCandidate(
             Title: title,
             Artist: artist,
             Album: GetStringOrNull(element, "album"),
-            Genre: GetNameOrStringOrNull(element, "genre"),
+            Genre: GetNameOrStringOrNull(element, "genre") ?? uploaderGenre,
             Mood: GetStringOrNull(element, "mood"),
             Isrc: GetStringOrNull(element, "isrc") ?? GetStringOrNull(element, "isrcCode"),
-            Label: GetStringOrNull(element, "label"),
+            Label: GetStringOrNull(element, "label") ?? uploaderLabel,
             DurationSeconds: GetIntOrNull(element, "duration") ?? GetIntOrNull(element, "duration_seconds"),
             ArtworkUrl: GetHttpUrlOrNull(element, "image") ?? GetHttpUrlOrNull(element, "artwork") ?? GetHttpUrlOrNull(element, "artwork_url"),
             ReleasedDate: GetStringOrNull(element, "released_date")
@@ -119,6 +141,9 @@ public sealed record AudiomackSongCandidate(
             Artists = GetStringArrayOrNull(element, "artists"),
             Featuring = GetStringOrNull(element, "featuring"),
             ContentType = GetStringOrNull(element, "type"),
+            UploaderId = uploaderId,
+            Upc = GetStringOrNull(element, "upc"),
+            Explicit = GetNumberOrStringOrNull(element, "explicit"),
             TypedTags = GetTypedTagsOrNull(element)
         };
     }

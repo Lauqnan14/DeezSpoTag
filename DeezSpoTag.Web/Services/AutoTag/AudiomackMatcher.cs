@@ -10,7 +10,9 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 /// entry. Matching is id/URL-first (embedded AUDIOMACK id/url tags, mirroring
 /// Boomplay's match_by_id) and falls back to text search scored through the shared
 /// OneTagger matching core. Only metadata Audiomack reliably provides is written;
-/// the descriptor intentionally does not claim ISRC, BPM or key.
+/// the descriptor deliberately does not claim BPM, key or lyrics (Audiomack
+/// exposes none), but it does claim ISRC — the payload carries <c>isrc</c> and the
+/// matcher maps it.
 /// </summary>
 public sealed class AudiomackMatcher
 {
@@ -233,10 +235,17 @@ public sealed class AudiomackMatcher
             Mood = moods.Count == 0 ? null : string.Join(", ", moods),
             Label = string.IsNullOrWhiteSpace(song.Label) ? null : song.Label.Trim(),
             Isrc = string.IsNullOrWhiteSpace(song.Isrc) ? null : song.Isrc.Trim(),
+            Barcode = string.IsNullOrWhiteSpace(song.Upc) ? null : song.Upc.Trim(),
+            Explicit = ParseExplicit(song.Explicit),
             Art = song.ArtworkUrl,
             Url = song.Url,
             TrackId = song.Id,
-            ReleaseId = song.AlbumId,
+            // Audiomack's own uploader id is the artist id. There is no distinct
+            // album-artist id in its payload, so none is aliased into that field.
+            ArtistId = string.IsNullOrWhiteSpace(song.UploaderId) ? null : song.UploaderId.Trim(),
+            // Audiomack exposes a single album-scoped id (album_id); it is carried in
+            // AlbumId only. It is not aliased into ReleaseId, because Audiomack has no
+            // separate release entity to identify.
             AlbumId = song.AlbumId
         };
 
@@ -372,8 +381,26 @@ public sealed class AudiomackMatcher
         return artists;
     }
 
-    private static DateTime? ParseReleasedDate(string raw)
+    /// <summary>
+    /// Audiomack sends explicitness as "yes"/"no" (sometimes 1/0). Unknown shapes
+    /// yield null so no explicit tag is written on a guess.
+    /// </summary>
+    private static bool? ParseExplicit(string? raw)
     {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return raw.Trim().ToLowerInvariant() switch
+        {
+            "yes" or "true" or "1" or "explicit" => true,
+            "no" or "false" or "0" or "clean" or "none" => false,
+            _ => null
+        };
+    }
+
+    private static DateTime? ParseReleasedDate(string raw)    {
         if (DateTime.TryParse(
                 raw,
                 CultureInfo.InvariantCulture,
