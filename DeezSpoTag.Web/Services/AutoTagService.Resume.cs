@@ -44,6 +44,10 @@ public partial class AutoTagService
         target.TargetReason ??= source.TargetReason;
         target.TargetRequested = source.TargetRequested > 0 ? source.TargetRequested : target.TargetRequested;
         target.TargetUsable = source.TargetUsable > 0 ? source.TargetUsable : target.TargetUsable;
+        target.EnhancementFoundCount = source.EnhancementFoundCount > 0 ? source.EnhancementFoundCount : target.EnhancementFoundCount;
+        target.EnhancementGapFilledCount = source.EnhancementGapFilledCount > 0 ? source.EnhancementGapFilledCount : target.EnhancementGapFilledCount;
+        target.EnhancementSidecarredCount = source.EnhancementSidecarredCount > 0 ? source.EnhancementSidecarredCount : target.EnhancementSidecarredCount;
+        target.EnhancementTidiedCount = source.EnhancementTidiedCount > 0 ? source.EnhancementTidiedCount : target.EnhancementTidiedCount;
         target.EnhancementManifestPath ??= source.EnhancementManifestPath;
         target.ExitCode = null;
         target.Error = null;

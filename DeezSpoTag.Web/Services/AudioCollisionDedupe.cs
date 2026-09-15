@@ -65,6 +65,43 @@ internal static class AudioCollisionDedupe
         return MatchesByAudioHash(existingIo, incomingIo);
     }
 
+    /// <summary>
+    /// Content identity only: the file bytes (or the decoded audio) are the same. This is the
+    /// strong identity mashup-style files may be clustered on — unlike <see cref="IsDuplicate"/>,
+    /// it never falls back to tag/title similarity, which is exactly what an unofficial mashup
+    /// cannot be trusted on.
+    /// </summary>
+    public static bool IsContentDuplicate(string existingPath, string incomingPath)
+    {
+        if (string.IsNullOrWhiteSpace(existingPath) || string.IsNullOrWhiteSpace(incomingPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            existingPath = Path.GetFullPath(existingPath);
+            incomingPath = Path.GetFullPath(incomingPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (string.Equals(existingPath, incomingPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!IOFile.Exists(existingPath) || !IOFile.Exists(incomingPath))
+        {
+            return false;
+        }
+
+        return MatchesByBinaryProbe(existingPath, incomingPath)
+            || MatchesByAudioHash(existingPath, incomingPath);
+    }
+
     public static bool ShouldPreferIncoming(string existingPath, string incomingPath)
     {
         if (!TryReadIdentity(existingPath, out var existingIdentity))

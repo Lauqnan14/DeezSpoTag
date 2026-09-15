@@ -80,7 +80,8 @@ public sealed class AutoTagJobsControllerRequestNormalizationTest
             Error = status == "running" ? null : "not started"
         };
 
-        var result = Assert.IsAssignableFrom<IActionResult>(CreateStartJobResponseMethod.Invoke(null, new object[] { job }));
+        var result = Assert.IsAssignableFrom<IActionResult>(
+            CreateStartJobResponseMethod.Invoke(null, new object[] { job, false }));
 
         Assert.IsType(expectedResultType, result);
     }

@@ -142,6 +142,17 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("No enabled music library folders are available in the selected enhancement scope.");
         }
 
+        // A checks run is strictly per library: "all libraries" is a queue of one run per library,
+        // each sent as its own request. A single request may never span two libraries, otherwise
+        // one job would cover several libraries and the per-library sequencing guarantee breaks.
+        var isQualityChecksRun = selectedFeatures.Contains(AutoTagLiterals.EnhancementFeatureQualityChecks)
+            && selectedFeatures.Count == 1;
+        if (isQualityChecksRun && QualityChecksLibraryScope.SpansMultipleLibraries(scopedFolders))
+        {
+            return BadRequest(
+                "A Quality Checks run covers exactly one library. Choose one library, or run all libraries one at a time.");
+        }
+
         var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
             includeFolders: true,
             cancellationToken);
@@ -198,6 +209,11 @@ public class AutoTagJobsController : ControllerBase
             : Path.GetFullPath(scopedFolders[0].RootPath);
         configNode["path"] = rootPath;
 
+        // A checks run whose profile has gap filling, sidecars and folder tidy-up all off can only
+        // report on files. The response tells the UI so it can warn before the run starts.
+        var checksReportOnly = isQualityChecksRun
+            && !EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(configNode);
+
         var job = await _autoTagService.StartJob(
             rootPath,
             SerializeConfig(configNode),
@@ -207,8 +223,9 @@ public class AutoTagJobsController : ControllerBase
                 RunIntent: runIntent,
                 FolderStructureOverride: selectedProfile.FolderStructure,
                 EnhancementFeature: selectedForJob.Count == 1 ? selectedForJob.Single() : null,
+                SelectedEnhancementFeatures: EnhancementWorkflowSelection.OrderSelectedFeatures(selectedForJob),
                 EnhancementGroupId: request.GroupId));
-        return CreateStartJobResponse(job);
+        return CreateStartJobResponse(job, checksReportOnly);
     }
 
     internal static HashSet<string> ApplyEnhancementRunSelection(
@@ -487,7 +504,7 @@ public class AutoTagJobsController : ControllerBase
         return true;
     }
 
-    private static IActionResult CreateStartJobResponse(AutoTagJob? job)
+    private static IActionResult CreateStartJobResponse(AutoTagJob? job, bool checksReportOnly = false)
     {
         if (job == null)
         {
@@ -495,6 +512,7 @@ public class AutoTagJobsController : ControllerBase
             {
                 jobId = string.Empty,
                 status = AutoTagLiterals.SkippedStatus,
+                checksReportOnly,
                 error = "Downloads are active. AutoTag did not start."
             };
             return new ConflictObjectResult(skippedPayload);
@@ -505,6 +523,7 @@ public class AutoTagJobsController : ControllerBase
             jobId = job.Id,
             status = job.Status,
             error = job.Error,
+            checksReportOnly,
             target = job.TargetUsable > 0 || !string.IsNullOrWhiteSpace(job.TargetReason)
                 ? new
                 {
@@ -823,6 +842,10 @@ public class AutoTagJobsController : ControllerBase
             job.BatchSize,
             job.ProcessedItems,
             job.TotalItems,
+            job.EnhancementFoundCount,
+            job.EnhancementGapFilledCount,
+            job.EnhancementSidecarredCount,
+            job.EnhancementTidiedCount,
             job.AutoMoveSummary,
             job.EnhancementWorkflows,
             job.CurrentPlatform,

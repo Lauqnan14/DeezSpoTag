@@ -268,7 +268,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
 
         Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
         Assert.Contains("const features = [\"quality-checks\"];", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("startCentralEnhancementFeature(features, scopes[index], \"enhancementQualityChecksStatus\")", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("startCentralEnhancementFeature(features, scope.folderIds, \"enhancementQualityChecksStatus\")", scriptSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementWorkflowSelection.ApplyFeatureSelection", controllerSource, StringComparison.Ordinal);
         Assert.Contains("var runQualityUpgradeStage = queueTechnicalProfileUpgrades", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementAdmissionLimit = EnhancementBatchSize", workflowSource, StringComparison.Ordinal);

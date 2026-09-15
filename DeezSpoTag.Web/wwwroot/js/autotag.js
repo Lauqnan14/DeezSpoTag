@@ -1184,10 +1184,6 @@
         updateFolderSelectionSummary("enhancementFolderUniformityFolderTrigger", "enhancementFolderUniformityFolder", selectedIds);
     }
 
-    function updateQualityChecksFolderSummary(selectedIds) {
-        updateFolderSelectionSummary("enhancementQualityFolderTrigger", "enhancementQualityFolder", selectedIds);
-    }
-
     function setupSimpleDropdown(dropdownId, triggerId, menuId) {
         const dropdown = el(dropdownId);
         const trigger = el(triggerId);
@@ -1216,10 +1212,6 @@
 
     function setupGapFillingFolderDropdown() {
         setupSimpleDropdown("enhancementGapFillFolderDropdown", "enhancementGapFillFolderTrigger", "enhancementGapFillFolderMenu");
-    }
-
-    function setupQualityChecksFolderDropdown() {
-        setupSimpleDropdown("enhancementQualityFolderDropdown", "enhancementQualityFolderTrigger", "enhancementQualityFolderMenu");
     }
 
     function setupFolderUniformityFolderDropdown() {
@@ -1324,43 +1316,91 @@
             setupCoverMaintenanceFolderDropdown();
         }
 
-        const qualityFolderOptions = el("enhancementQualityFolderOptions");
-        if (qualityFolderOptions) {
-            const selectedIds = parseFolderIdList(state.config.enhancement.qualityChecks.folderIds);
-            qualityFolderOptions.innerHTML = "";
-            state.libraryFolders
-                .filter(isMusicEnhancementEligibleFolder)
-                .forEach((folder) => {
-                    const label = document.createElement("label");
-                    label.className = "fallback-source-toggle";
-
-                    const checkbox = document.createElement("input");
-                    checkbox.type = "checkbox";
-                    checkbox.dataset.qualityFolderId = String(folder.id);
-                    checkbox.checked = selectedIds.includes(folder.id);
-                    checkbox.addEventListener("change", () => {
-                        const ids = collectCheckedFolderIds(
-                            qualityFolderOptions,
-                            "input[data-quality-folder-id]:checked",
-                            "qualityFolderId"
-                        );
-                        updateQualityChecksFolderSummary(ids);
-                        state.config.enhancement.qualityChecks.folderIds = parseFolderIdList(ids);
-                        void refreshEnhancementTechnicalProfiles();
-                        scheduleProfileAutoSave();
-                    });
-
-                    label.appendChild(checkbox);
-                    label.append(` ${folder.displayName || folder.libraryName || folder.rootPath || "Unnamed library"}`);
-                    qualityFolderOptions.appendChild(label);
-                });
-
-            updateQualityChecksFolderSummary(selectedIds);
-            setupQualityChecksFolderDropdown();
-        }
-
+        refreshQualityChecksLibraryPicker();
         setupTechnicalProfilesDropdown();
         void refreshEnhancementTechnicalProfiles();
+    }
+
+    // The checks card picks ONE library, or "all libraries" to run them in turn. The choice is
+    // never restored from the profile: every run starts with no library selected so the user
+    // makes a fresh choice, and the picker is rebuilt from the current folder list.
+    function refreshQualityChecksLibraryPicker() {
+        const select = el("enhancementQualityLibrary");
+        if (!select) {
+            return;
+        }
+
+        const groups = new Map();
+        state.libraryFolders
+            .filter(isMusicEnhancementEligibleFolder)
+            .forEach((folder) => {
+                const key = qualityChecksLibraryKey(folder);
+                if (!groups.has(key)) {
+                    groups.set(key, {
+                        value: key,
+                        label: String(folder.libraryName || folder.displayName || folder.rootPath || `Library ${folder.id}`)
+                    });
+                }
+            });
+
+        select.innerHTML = "";
+        const all = document.createElement("option");
+        all.value = "";
+        all.textContent = "All libraries";
+        select.appendChild(all);
+        [...groups.values()]
+            .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" }))
+            .forEach((group) => {
+                const option = document.createElement("option");
+                option.value = group.value;
+                option.textContent = group.label;
+                select.appendChild(option);
+            });
+        select.value = "";
+
+        if (select.dataset.qualityLibraryBound !== "true") {
+            select.dataset.qualityLibraryBound = "true";
+            select.addEventListener("change", () => {
+                void refreshEnhancementTechnicalProfiles();
+                void refreshEnhancementAtmosDestinationPicker();
+            });
+        }
+    }
+
+    function qualityChecksLibraryKey(folder) {
+        const libraryId = Number(folder?.libraryId);
+        return Number.isFinite(libraryId) && libraryId > 0 ? `library:${libraryId}` : `folder:${folder?.id}`;
+    }
+
+    // The library scopes for a checks run, in a deterministic order. A library is one scope; a
+    // folder that has no library row is its own single-folder scope. "all libraries" returns every
+    // scope, and the caller runs them one at a time.
+    function resolveQualityChecksLibraryScopes(folders, selectedLibraryKey) {
+        const groups = new Map();
+        folders
+            .filter(isMusicEnhancementEligibleFolder)
+            .forEach((folder) => {
+                const key = qualityChecksLibraryKey(folder);
+                if (!groups.has(key)) {
+                    groups.set(key, {
+                        key,
+                        libraryName: String(folder.libraryName || folder.displayName || folder.rootPath || `Library ${folder.id}`),
+                        folderIds: []
+                    });
+                }
+                const folderId = Number(folder.id);
+                if (Number.isFinite(folderId) && folderId > 0 && !groups.get(key).folderIds.includes(folderId)) {
+                    groups.get(key).folderIds.push(folderId);
+                }
+            });
+
+        let scopes = [...groups.values()].sort((left, right) =>
+            left.libraryName.localeCompare(right.libraryName, undefined, { sensitivity: "base" }));
+        if (selectedLibraryKey) {
+            scopes = scopes.filter((scope) => scope.key === selectedLibraryKey);
+        }
+
+        return scopes.filter((scope) => scope.folderIds.length > 0);
     }
 
     function renderEnhancementTechnicalProfilesCatalog() {
@@ -1486,10 +1526,10 @@
         state.technicalProfilesLoading = true;
         renderEnhancementTechnicalProfilesCatalog();
 
-        const qualityFolderInput = el("enhancementQualityFolder");
-        const folderIds = parseFolderIdList(
-            qualityFolderInput?.value ?? (state.config.enhancement.qualityChecks.folderIds ?? []).join(",")
-        );
+        const librarySelect = el("enhancementQualityLibrary");
+        const selectedLibraryKey = librarySelect ? String(librarySelect.value || "") : "";
+        const folderIds = resolveQualityChecksLibraryScopes(state.libraryFolders, selectedLibraryKey)
+            .flatMap((scope) => scope.folderIds);
         const scope = "all";
 
         const query = new URLSearchParams();
@@ -2206,7 +2246,13 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = enhancement.qualityChecks;
-        const qualityChecksHasEnabledFlag = Object.hasOwn(qualityChecks, "enabled");
+        // Legacy flag: a stored qualityChecks.enabled value is honoured for profiles written by
+        // older versions (the sidecars migration below still consults it), but it is never
+        // synthesized or written any more — a checks run is identified by the "quality-checks"
+        // feature on the job, not by this flag.
+        if (Object.hasOwn(qualityChecks, "enabled")) {
+            qualityChecks.enabled = qualityChecks.enabled === true;
+        }
         qualityChecks.folderIds = parseFolderIdList(qualityChecks.folderIds);
         delete qualityChecks.folderId;
         qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";
@@ -2216,13 +2262,6 @@
         qualityChecks.flagDuplicates = qualityChecks.flagDuplicates === true;
         qualityChecks.flagMissingTags = qualityChecks.flagMissingTags === true;
         qualityChecks.flagMismatchedMetadata = qualityChecks.flagMismatchedMetadata === true;
-        qualityChecks.enabled = qualityChecksHasEnabledFlag
-            ? qualityChecks.enabled === true
-            : qualityChecks.flagDuplicates
-                || qualityChecks.flagMissingTags
-                || qualityChecks.flagMismatchedMetadata
-                || qualityChecks.queueAtmosAlternatives
-                || qualityChecks.queueTechnicalProfileUpgrades;
         qualityChecks.useDuplicatesFolder = qualityChecks.useDuplicatesFolder !== false;
         qualityChecks.useShazamForDedupe = qualityChecks.useShazamForDedupe === true;
         qualityChecks.duplicatesFolderName = String(
@@ -3077,7 +3116,8 @@
         setChecked("flagMismatchedMetadata", state.config.enhancement.qualityChecks.flagMismatchedMetadata);
         setChecked("qualityChecksUseShazamForDedupe", state.config.enhancement.qualityChecks.useShazamForDedupe);
         setValue("qualityChecksDuplicatesFolderName", state.config.enhancement.qualityChecks.duplicatesFolderName || "%duplicates%");
-        updateQualityChecksFolderSummary(state.config.enhancement.qualityChecks.folderIds ?? []);
+        // The checks target library is never restored: each run starts with no library selected.
+        refreshQualityChecksLibraryPicker();
         state.config.enhancement.qualityChecks.technicalProfiles = normalizeTechnicalProfiles(
             state.config.enhancement.qualityChecks.technicalProfiles
         );
@@ -4183,9 +4223,9 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = state.config.enhancement.qualityChecks;
-        // Quality Checks is manual-only: it has no "include in scheduled enhancement" tick, so the
-        // config flag is left untouched rather than being read from a control that no longer exists.
-        qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
+        // Quality Checks is manual-only and its target library is a per-run choice that is never
+        // remembered, so the card does not write qualityChecks.folderIds from any control; the
+        // request carries the chosen library's folder scope instead.
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
         // Only carried when the picker is actually showing, so one Atmos folder keeps using the
         // folder typed Atmos on the Folder tab without storing a redundant choice.
@@ -4709,10 +4749,14 @@
                 statusElementId,
                 `Targeting ${usable} file${usable === 1 ? "" : "s"} (${reason}${stale > 0 ? `, ${stale} stale` : ""}).`);
         }
-        return pollCentralEnhancementJob(
+        const job = await pollCentralEnhancementJob(
             payload.jobId,
             statusElementId,
             features.length === 1 ? features[0] : null);
+        if (job && typeof job === "object") {
+            job.checksReportOnly = payload?.checksReportOnly === true;
+        }
+        return job;
     }
 
     function collectEnhancementRunSections(config) {
@@ -5062,32 +5106,49 @@
         }
 
         try {
-            const config = readConfigFromUI();
+            readConfigFromUI();
             await flushProfileAutoSave();
             const features = ["quality-checks"];
-            const folderIds = [];
-            for (const folderId of parseFolderIdList(config.enhancement.qualityChecks.folderIds)) {
-                if (!folderIds.includes(folderId)) {
-                    folderIds.push(folderId);
-                }
-            }
-            setEnhancementStatus("enhancementQualityChecksStatus", "Running selected quality checks...");
-            const scopes = await resolveEnhancementFolderScopes(folderIds);
+            const librarySelect = el("enhancementQualityLibrary");
+            const selectedLibraryKey = librarySelect ? String(librarySelect.value || "") : "";
+            const folders = state.libraryFolders.length > 0
+                ? state.libraryFolders
+                : await fetchEnhancementEligibleFolders();
+            // One library per run; "all libraries" queues every library and runs them one at a
+            // time. The choice is read fresh from the picker every time — never remembered.
+            const scopes = resolveQualityChecksLibraryScopes(folders, selectedLibraryKey);
             if (scopes.length === 0) {
                 throw new Error("No enabled music folders are available for enhancement.");
             }
-            for (let index = 0; index < scopes.length; index += 1) {
-                setEnhancementStatus("enhancementQualityChecksStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
-                const job = await startCentralEnhancementFeature(features, scopes[index], "enhancementQualityChecksStatus");
-                const expected = features.length === 1 ? "quality-checks" : null;
-                const workflow = expected ? findEnhancementWorkflow(job, expected) : null;
+
+            const total = scopes.length;
+            const summaries = [];
+            for (let index = 0; index < total; index += 1) {
+                const scope = scopes[index];
+                const position = `Library ${index + 1}/${total}: ${scope.libraryName}`;
+                setEnhancementStatus("enhancementQualityChecksStatus", `${position} — starting...`);
+                const job = await startCentralEnhancementFeature(features, scope.folderIds, "enhancementQualityChecksStatus");
+                const workflow = findEnhancementWorkflow(job, "quality-checks");
                 const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
                     || String(workflow?.status || "").toLowerCase() === "failed";
                 if (failed) {
-                    throw new Error(workflow?.message || job?.error || `Folder ${index + 1} failed.`);
+                    // A failed library stops the queue: the remaining libraries are not started.
+                    throw new Error(`${position} failed: ${workflow?.message || job?.error || "quality checks failed"}`);
                 }
+
+                if (job?.checksReportOnly === true) {
+                    const warning = `${position}: this profile has gap filling, sidecars and folder tidy-up all off, so files are only reported on, not repaired.`;
+                    setEnhancementStatus("enhancementQualityChecksStatus", warning);
+                    showToast(warning, "warning");
+                }
+
+                summaries.push(describeQualityCheckStageCounts(scope, job));
+                await waitForEnhancementDownloadsToSettle(job, "enhancementQualityChecksStatus");
             }
-            const message = `Enhancement quality checks completed for ${scopes.length} music folders.`;
+
+            const message = total === 1
+                ? `Quality checks completed for ${scopes[0].libraryName}. ${summaries[0]}`
+                : `Quality checks completed for ${total} libraries. ${summaries.join(" ")}`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
             showToast(message, "success");
         } catch (error) {
@@ -5098,6 +5159,49 @@
             if (button) {
                 button.disabled = false;
             }
+        }
+    }
+
+    // Per-stage counts reported by the job: found / gap-filled / sidecarred / tidied.
+    function describeQualityCheckStageCounts(scope, job) {
+        const found = Number(job?.enhancementFoundCount ?? 0);
+        const gapFilled = Number(job?.enhancementGapFilledCount ?? 0);
+        const sidecarred = Number(job?.enhancementSidecarredCount ?? 0);
+        const tidied = Number(job?.enhancementTidiedCount ?? 0);
+        return `${scope.libraryName}: found ${found}, gap-filled ${gapFilled}, sidecars ${sidecarred}, tidied ${tidied}.`;
+    }
+
+    function isActiveDownloadQueueStatus(status) {
+        const normalized = String(status || "").trim().toLowerCase();
+        return ["resolving", "queued", "in_queue", "inqueue", "running", "downloading", "paused", "retrying", "retry_waiting"]
+            .includes(normalized);
+    }
+
+    // A library's run only ends at the download batch boundary; when it staged Atmos or upgrade
+    // downloads the next library must not start until those settle. Bounded and fail-open so a
+    // queue we cannot read never blocks the run.
+    async function waitForEnhancementDownloadsToSettle(job, statusElementId) {
+        const staged = Number(job?.enhancementDownloadItemCount ?? job?.EnhancementDownloadItemCount ?? 0);
+        if (!(staged > 0)) {
+            return;
+        }
+
+        const deadline = Date.now() + 30 * 60 * 1000;
+        while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            const response = await fetch("/Activities/GetDownloadQueue");
+            const payload = await response.json().catch(() => null);
+            const queue = payload?.data?.queue;
+            if (!queue || typeof queue !== "object") {
+                return;
+            }
+            const active = Object.values(queue).filter((item) => isActiveDownloadQueueStatus(item?.status));
+            if (active.length === 0) {
+                return;
+            }
+            setEnhancementStatus(
+                statusElementId,
+                `Waiting for ${active.length} download(s) to settle before the next library...`);
         }
     }
 

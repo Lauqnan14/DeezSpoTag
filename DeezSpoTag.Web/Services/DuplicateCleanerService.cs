@@ -71,7 +71,15 @@ public class DuplicateCleanerService
         string ShazamTrackId,
         string ShazamIsrc,
         string ShazamTitle,
-        IReadOnlyList<string> ShazamArtists);
+        IReadOnlyList<string> ShazamArtists)
+    {
+        /// <summary>
+        /// Mashup-style release (mashup / DJ mix / bootleg / medley / "vs" / "×"). Such files are
+        /// typically unofficial, so they may only be clustered and quarantined on a strong identity
+        /// — never on basename or duration-bucket keys alone.
+        /// </summary>
+        public bool IsMashup { get; init; }
+    }
 
     private sealed class DisjointSet
     {
@@ -486,7 +494,12 @@ public class DuplicateCleanerService
             ShazamTrackId: shazamData.TrackId,
             ShazamIsrc: shazamData.Isrc,
             ShazamTitle: shazamData.Title,
-            ShazamArtists: shazamData.Artists);
+            ShazamArtists: shazamData.Artists)
+        {
+            IsMashup = MashupClassifier.IsMashupTitle(title)
+                || MashupClassifier.IsMashupTitle(shazamData.Title)
+                || MashupClassifier.IsMashupTitle(baseName)
+        };
     }
 
     private (string TrackId, string Isrc, string Title, string[] Artists, bool UsedLookup) ResolveShazamIdentity(
@@ -679,6 +692,20 @@ public class DuplicateCleanerService
             yield return $"isrc:{candidate.Isrc}";
         }
 
+        // A mashup-style release is unofficial and often mistagged: it may only cluster on the
+        // strong identities above, plus an identical content signature (same name and size, which
+        // the duplicate decision then confirms by file/audio hash). The meta, album-track and
+        // bare basename keys are weak and would otherwise sweep an unmatched mashup into a cluster.
+        if (candidate.IsMashup)
+        {
+            if (candidate.FileSize > 0)
+            {
+                yield return $"basename-size:{candidate.BaseName}|{candidate.FileSize}";
+            }
+
+            yield break;
+        }
+
         var identityTitle = !string.IsNullOrWhiteSpace(candidate.ShazamTitle) ? candidate.ShazamTitle : candidate.Title;
         var identityArtists = candidate.ShazamArtists.Count > 0 ? candidate.ShazamArtists : candidate.Artists;
         if (!string.IsNullOrWhiteSpace(identityTitle) && identityArtists.Count > 0 && candidate.DurationMs.HasValue)
@@ -717,6 +744,14 @@ public class DuplicateCleanerService
             && DurationMatches(left.DurationMs, right.DurationMs))
         {
             return true;
+        }
+
+        // A mashup may only be treated as a duplicate on the strong identities above (Shazam track
+        // id, ISRC) or on identical content. The tag/title fallbacks must never move one: it is
+        // exactly those tags an unofficial mashup cannot be trusted on.
+        if (left.IsMashup || right.IsMashup)
+        {
+            return AudioCollisionDedupe.IsContentDuplicate(left.FullPath, right.FullPath);
         }
 
         if (AudioCollisionDedupe.IsDuplicate(left.FullPath, right.FullPath))

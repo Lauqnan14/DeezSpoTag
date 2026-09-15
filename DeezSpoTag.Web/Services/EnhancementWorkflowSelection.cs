@@ -121,17 +121,15 @@ internal static class EnhancementWorkflowSelection
 
         // A checks run is not a feature selection: the profile decides what is switched on.
         // Its request carries the checks marker alone, so the other sections keep whatever
-        // enablement the profile stored instead of being switched off by the request, and
-        // qualityChecks.enabled is written only as the run marker.
+        // enablement the profile stored instead of being switched off by the request. The
+        // legacy qualityChecks.enabled flag is no longer written as a run marker — the run is
+        // identified by the "quality-checks" feature on the job, and a stored value is left
+        // untouched so profiles written by older versions keep working.
         var isChecksRun = selected.Contains(QualityChecks)
             && !selected.Contains(GapFill)
             && !selected.Contains(Sidecars)
             && !selected.Contains(FolderUniformity);
-        if (isChecksRun)
-        {
-            SetSectionEnabled(enhancement, "qualityChecks", true);
-        }
-        else if (selected.Count > 0)
+        if (!isChecksRun && selected.Count > 0)
         {
             SetSectionEnabled(enhancement, "folderUniformity", selected.Contains(FolderUniformity));
             SetSectionEnabled(enhancement, "sidecars", selected.Contains(Sidecars));
@@ -345,12 +343,23 @@ internal static class EnhancementWorkflowSelection
             || ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true;
     }
 
-    public static bool IsMissingCoreMetadataScanEnabled(JsonObject configNode)
+    /// <summary>
+    /// True when the profile has at least one repair section switched on, so a checks run over
+    /// the library can actually rewrite files. When every repair section is off the run can only
+    /// report; the checks path warns about that before it starts instead of silently doing nothing.
+    /// Takes the config root because the gap-fill tag selection lives at the root, not under
+    /// <c>enhancement</c>.
+    /// </summary>
+    public static bool HasAnyRepairSectionsEnabled(JsonObject configRoot)
     {
-        return configNode[AutoTagLiterals.EnhancementStage] is JsonObject enhancement
-            && enhancement["qualityChecks"] is JsonObject qualityChecks
-            && ReadBool(qualityChecks, "enabled") == true
-            && ReadBool(qualityChecks, "flagMissingTags") == true;
+        if (configRoot[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        {
+            return false;
+        }
+
+        return IsGapFillRunnable(configRoot)
+            || IsSidecarsRunnable(enhancementRoot)
+            || IsFolderUniformityRunnable(enhancementRoot);
     }
 
     /// <summary>

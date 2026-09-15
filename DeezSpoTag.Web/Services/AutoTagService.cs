@@ -100,7 +100,6 @@ internal static class AutoTagLiterals
     internal const string ManualForceFingerprintKey = "manualForceFingerprint";
     internal const string EnhancementForceFingerprintKey = "enhancementForceFingerprint";
     internal const string EnhancementUntrustedTargetsKey = "enhancementUntrustedTargets";
-    internal const string PriorityTargetFilesKey = "priorityTargetFiles";
     internal const string EditionConflictReviewKey = "editionConflictReview";
 }
 
@@ -134,6 +133,14 @@ public abstract class AutoTagRunState
     public string? TargetReason { get; set; }
     public int TargetRequested { get; set; }
     public int TargetUsable { get; set; }
+    /// <summary>Files the missing-metadata audit / scope found for this run.</summary>
+    public int EnhancementFoundCount { get; set; }
+    /// <summary>Files that survived gap filling (the repair stage processed them).</summary>
+    public int EnhancementGapFilledCount { get; set; }
+    /// <summary>Files sidecars were produced for.</summary>
+    public int EnhancementSidecarredCount { get; set; }
+    /// <summary>Files folder tidy-up enforced the structure over.</summary>
+    public int EnhancementTidiedCount { get; set; }
     public string? EnhancementManifestPath { get; set; }
     public string? EnhancementDownloadBatchId { get; set; }
     public string? EnhancementDownloadOperation { get; set; }

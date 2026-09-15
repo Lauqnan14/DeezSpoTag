@@ -56,7 +56,7 @@ public sealed class EnhancementWorkflowSelectionTest
     }
 
     [Fact]
-    public void QualityChecksRun_KeepsTheProfilesSectionsAndTheRunMarker()
+    public void QualityChecksRun_KeepsTheProfilesSectionsAndLeavesTheLegacyFlagUntouched()
     {
         var config = Parse("""
             {
@@ -64,7 +64,7 @@ public sealed class EnhancementWorkflowSelectionTest
               "enhancement": {
                 "folderUniformity": { "enabled": true },
                 "coverMaintenance": { "enabled": true },
-                "qualityChecks": { "enabled": true, "flagMissingTags": true }
+                "qualityChecks": { "enabled": false, "flagMissingTags": true }
               }
             }
             """);
@@ -77,11 +77,12 @@ public sealed class EnhancementWorkflowSelectionTest
             ["/tmp/music/track.flac"]);
 
         // The profile decides what is switched on: a checks run carries the profile's own
-        // configuration and only writes the checks marker, so no section is switched off
-        // and the stored gap-fill tag selection survives.
+        // configuration and no section is switched off. The legacy qualityChecks.enabled flag is
+        // no longer written as a run marker — its stored value is left exactly as it was.
         Assert.True(config["enhancement"]!["folderUniformity"]!["enabled"]!.GetValue<bool>());
         Assert.True(config["enhancement"]!["coverMaintenance"]!["enabled"]!.GetValue<bool>());
-        Assert.True(config["enhancement"]!["qualityChecks"]!["enabled"]!.GetValue<bool>());
+        Assert.False(config["enhancement"]!["qualityChecks"]!["enabled"]!.GetValue<bool>());
+        Assert.True(EnhancementWorkflowSelection.HasConfiguredQualityChecks(config["enhancement"]!.AsObject()));
         Assert.Equal(3, config["gapFillTags"]!.AsArray().Count);
         Assert.Equal("/tmp/music/track.flac", config["targetFiles"]![0]!.GetValue<string>());
     }
@@ -173,22 +174,42 @@ public sealed class EnhancementWorkflowSelectionTest
     }
 
     [Fact]
-    public void MissingCoreMetadataScan_RequiresQualityChecksEnabled()
+    public void HasAnyRepairSectionsEnabled_DetectsWhetherAChecksRunCanRepair()
     {
+        // All repair sections off: the run can only report, and the checks path warns about it.
         var config = Parse("""
             {
+              "enhancement": { "qualityChecks": { "enabled": false, "flagMissingTags": true } }
+            }
+            """);
+        Assert.False(EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(config));
+
+        // Any one of gap filling / sidecars / folder tidy-up makes the run able to repair.
+        config["enhancement"]!["sidecars"] = new JsonObject { ["enabled"] = true, ["queueLyricsRefresh"] = true };
+        Assert.True(EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(config));
+
+        config["enhancement"]!["sidecars"]!["enabled"] = false;
+        config["enhancement"]!["folderUniformity"] = new JsonObject { ["enabled"] = true, ["enforceFolderStructure"] = true };
+        Assert.True(EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(config));
+
+        var configWithGapFillTags = Parse("""
+            {
+              "gapFillTags": ["title", "artist"],
+              "enhancement": { "gapFilling": { "enabled": true } }
+            }
+            """);
+        Assert.True(EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(configWithGapFillTags));
+
+        // A section that is switched on but has nothing to do does not count.
+        var inert = Parse("""
+            {
               "enhancement": {
-                "qualityChecks": {
-                  "enabled": false,
-                  "flagMissingTags": true
-                }
+                "sidecars": { "enabled": true },
+                "folderUniformity": { "enabled": true, "enforceFolderStructure": false, "runDedupe": false }
               }
             }
             """);
-        Assert.False(EnhancementWorkflowSelection.IsMissingCoreMetadataScanEnabled(config));
-
-        config["enhancement"]!["qualityChecks"]!["enabled"] = true;
-        Assert.True(EnhancementWorkflowSelection.IsMissingCoreMetadataScanEnabled(config));
+        Assert.False(EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(inert));
     }
 
     [Fact]

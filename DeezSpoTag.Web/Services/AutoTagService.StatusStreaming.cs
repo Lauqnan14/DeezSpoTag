@@ -249,11 +249,16 @@ public partial class AutoTagService
             TargetReason = source.TargetReason,
             TargetRequested = source.TargetRequested,
             TargetUsable = source.TargetUsable,
+            EnhancementFoundCount = source.EnhancementFoundCount,
+            EnhancementGapFilledCount = source.EnhancementGapFilledCount,
+            EnhancementSidecarredCount = source.EnhancementSidecarredCount,
+            EnhancementTidiedCount = source.EnhancementTidiedCount,
             EnhancementManifestPath = source.EnhancementManifestPath,
             AutoMoveSummary = source.AutoMoveSummary,
             CurrentPlatform = source.CurrentPlatform,
             LastStatus = source.LastStatus,
             ResumeCheckpoint = source.ResumeCheckpoint,
+            EnhancementBatchState = CloneEnhancementBatchState(source.EnhancementBatchState),
             ResumeFromJobId = source.ResumeFromJobId,
             LastActivityAt = source.LastActivityAt
         };

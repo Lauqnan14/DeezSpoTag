@@ -105,7 +105,15 @@ public partial class AutoTagService
             var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
                 scopedFolders.Select(folder => folder.Id).ToList(),
                 cancellationToken);
-            var missingTargets = missingFiles
+            var (repairableFiles, unofficialCount) = PartitionUnofficialMashups(missingFiles);
+            if (unofficialCount > 0)
+            {
+                AppendLog(
+                    job,
+                    $"enhancement missing core metadata DB audit: {unofficialCount} mashup/unofficial file(s) classified as unofficial and left out of the repair targets.");
+            }
+
+            var missingTargets = repairableFiles
                 .Select(file => file.FilePath)
                 .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -114,7 +122,7 @@ public partial class AutoTagService
             SetEnhancementPhase(job, "missing-core-metadata-db-audit", 1, 1);
             if (missingTargets.Count > 0)
             {
-                requestedCount = missingFiles.Count;
+                requestedCount = repairableFiles.Count;
                 reason = EnhancementTargetReasons.MissingCoreMetadata;
                 existingTargets = missingTargets;
                 WriteStringList(root, AutoTagLiterals.TargetFilesKey, existingTargets);
@@ -167,6 +175,30 @@ public partial class AutoTagService
             && EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancementRoot)
             && enhancementRoot["qualityChecks"] is JsonObject qualityChecks
             && ReadBool(qualityChecks, "flagMissingTags") == true;
+    }
+
+    /// <summary>
+    /// Splits the missing-metadata audit into files the run can repair and mashup/unofficial files
+    /// it should not aim at. A mashup or DJ mix matches no database release, so counting it as an
+    /// orphan needing repair would send the run after tags no provider can supply.
+    /// </summary>
+    internal static (List<MissingCoreMetadataFileDto> Repairable, int Unofficial) PartitionUnofficialMashups(
+        IReadOnlyList<MissingCoreMetadataFileDto> files)
+    {
+        var repairable = new List<MissingCoreMetadataFileDto>(files.Count);
+        var unofficial = 0;
+        foreach (var file in files)
+        {
+            if (MashupClassifier.IsMashupFile(file.FilePath))
+            {
+                unofficial++;
+                continue;
+            }
+
+            repairable.Add(file);
+        }
+
+        return (repairable, unofficial);
     }
 
     private async Task<EnhancementRunManifest> BuildEnhancementRunManifestAsync(
@@ -269,6 +301,7 @@ public partial class AutoTagService
         job.TargetReason = manifest.Reason;
         job.TargetRequested = manifest.RequestedCount;
         job.TargetUsable = manifest.UsableCount;
+        job.EnhancementFoundCount = manifest.RequestedCount;
         job.TotalItems = manifest.UsableCount;
     }
 
@@ -645,9 +678,10 @@ public partial class AutoTagService
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The independent Quality Checks execution path. Runs the configured checks and nothing
-    /// else: no gap filling, no sidecars, no folder uniformity, and no auto-move, because the
-    /// checks only report on files rather than rewriting them.
+    /// The Quality Checks executor. The run's repair work (gap filling, sidecars, folder tidy-up)
+    /// has already been applied over the narrowed target list by the stage pipeline, so this only
+    /// runs the checks themselves — the missing-metadata audit, duplicate scan, Atmos and
+    /// technical-profile queues — against the single scoped library.
     /// </summary>
     private async Task RunQualityChecksOnlyAsync(
         AutoTagJob job,
@@ -663,6 +697,17 @@ public partial class AutoTagService
         if (!EnhancementWorkflowSelection.HasConfiguredQualityChecks(enhancementRoot))
         {
             return;
+        }
+
+        // The profile decides whether the run can repair the files it finds. When gap filling,
+        // sidecars and folder tidy-up are all off it can only report, so warn up front rather than
+        // letting the user believe files were repaired.
+        var checksConfigRoot = LoadConfigRoot(configPath);
+        if (checksConfigRoot == null || !EnhancementWorkflowSelection.HasAnyRepairSectionsEnabled(checksConfigRoot))
+        {
+            AppendLog(
+                job,
+                "warning: quality checks run: this library's profile has gap filling, sidecars and folder tidy-up all off, so files will only be reported on, not repaired.");
         }
 
         await RunEnhancementWorkflowAsync(
@@ -725,6 +770,8 @@ public partial class AutoTagService
             return;
         }
 
+        job.EnhancementGapFilledCount += currentFiles.Count;
+
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         if (selected.Contains(EnhancementWorkflowSelection.Sidecars, StringComparer.OrdinalIgnoreCase)
             && !pending.CompletedFeatures.Contains(EnhancementWorkflowSelection.Sidecars, StringComparer.OrdinalIgnoreCase))
@@ -744,6 +791,7 @@ public partial class AutoTagService
                     currentFiles),
                 cancellationToken);
             pending.CompletedFeatures.Add(EnhancementWorkflowSelection.Sidecars);
+            job.EnhancementSidecarredCount += currentFiles.Count;
             SaveJob(job);
         }
 
@@ -762,6 +810,7 @@ public partial class AutoTagService
                 cancellationToken);
             pending.CurrentPaths = context.CurrentFiles.ToList();
             pending.CompletedFeatures.Add(EnhancementWorkflowSelection.FolderUniformity);
+            job.EnhancementTidiedCount += context.CurrentFiles.Count;
             SaveJob(job);
         }
 
@@ -2295,8 +2344,7 @@ public partial class AutoTagService
         string configPath,
         CancellationToken cancellationToken)
     {
-        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
-            || ReadBool(qualityChecks, EnabledField) != true)
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks)
         {
             return EnhancementWorkflowOutcome.Skipped("quality checks are not configured.");
         }
@@ -2323,6 +2371,11 @@ public partial class AutoTagService
             job,
             AutoTagLiterals.EnhancementFeatureQualityChecks,
             $"quality checks starting ({scopedFolderIds.Count} folder scope(s)).");
+        AppendLog(
+            job,
+            $"enhancement workflow: quality checks per-stage counts: found={job.EnhancementFoundCount} "
+            + $"gap-filled={job.EnhancementGapFilledCount} sidecarred={job.EnhancementSidecarredCount} "
+            + $"tidied={job.EnhancementTidiedCount}.");
         await ReportMissingCoreMetadataAuditIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
         await RunFolderTagAlignmentIfRequestedAsync(job, configPath, options, scopedFolders, cancellationToken);
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
@@ -2506,7 +2559,8 @@ public partial class AutoTagService
         }
 
         var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(scopedFolderIds, cancellationToken);
-        var missingFieldSummary = missingFiles
+        var (repairableFiles, unofficialCount) = PartitionUnofficialMashups(missingFiles);
+        var missingFieldSummary = repairableFiles
             .SelectMany(file => file.MissingFields)
             .GroupBy(field => field, StringComparer.OrdinalIgnoreCase)
             .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
@@ -2516,7 +2570,7 @@ public partial class AutoTagService
             ? "none"
             : string.Join(", ", missingFieldSummary);
         AppendLog(job,
-            $"enhancement workflow: missing core metadata DB audit finished (files={missingFiles.Count}, fields={summary}).");
+            $"enhancement workflow: missing core metadata DB audit finished (files={repairableFiles.Count}, unofficial={unofficialCount}, fields={summary}).");
     }
 
     private static long? ResolveAtmosDestinationFolderId(JsonObject qualityChecks)
