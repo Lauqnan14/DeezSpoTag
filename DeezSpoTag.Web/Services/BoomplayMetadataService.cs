@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Security;
 using HtmlAgilityPack;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -318,7 +319,11 @@ public sealed class BoomplayMetadataService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed to read Boomplay slug mapping for {Type} {Slug}", normalizedType, slug);
+                _logger.LogWarning(
+                    ex,
+                    "Failed to read Boomplay slug mapping for {Type} {Slug}",
+                    LogSanitizer.OneLine(normalizedType),
+                    LogSanitizer.OneLine(slug));
             }
         }
 
@@ -347,7 +352,11 @@ public sealed class BoomplayMetadataService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed to persist Boomplay slug mapping for {Type} {Slug}", normalizedType, slug);
+                _logger.LogWarning(
+                    ex,
+                    "Failed to persist Boomplay slug mapping for {Type} {Slug}",
+                    LogSanitizer.OneLine(normalizedType),
+                    LogSanitizer.OneLine(slug));
             }
         }
 

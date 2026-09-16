@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using DeezSpoTag.Core.Security;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -74,7 +75,7 @@ public sealed class AcoustIdFingerprintService
             cancellationToken.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
             {
-                _logger.LogWarning("fpcalc exited with code {ExitCode} for {FilePath}", process.ExitCode, filePath);
+                _logger.LogWarning("fpcalc exited with code {ExitCode} for {FilePath}", process.ExitCode, LogSanitizer.OneLine(filePath));
                 return null;
             }
 
@@ -86,7 +87,7 @@ public sealed class AcoustIdFingerprintService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "fpcalc fingerprint calculation failed for {FilePath}", filePath);
+            _logger.LogWarning(ex, "fpcalc fingerprint calculation failed for {FilePath}", LogSanitizer.OneLine(filePath));
             return null;
         }
     }
@@ -165,7 +166,7 @@ public sealed class AcoustIdFingerprintService
                 : null;
             if (!hasDuration || string.IsNullOrWhiteSpace(fingerprint))
             {
-                _logger.LogWarning("fpcalc produced an unusable fingerprint document for {FilePath}", filePath);
+                _logger.LogWarning("fpcalc produced an unusable fingerprint document for {FilePath}", LogSanitizer.OneLine(filePath));
                 return null;
             }
 
@@ -173,7 +174,7 @@ public sealed class AcoustIdFingerprintService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to parse fpcalc output for {FilePath}", filePath);
+            _logger.LogWarning(ex, "Failed to parse fpcalc output for {FilePath}", LogSanitizer.OneLine(filePath));
             return null;
         }
     }

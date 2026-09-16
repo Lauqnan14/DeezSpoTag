@@ -9,6 +9,7 @@ using System.Linq;
 using Microsoft.AspNetCore.Hosting;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
@@ -392,9 +393,9 @@ public partial class AutoTagService
             _logger.LogWarning(
                 "Resume of job {JobId} produced a '{Status}' successor job {SuccessorJobId}: {Error}",
                 id,
-                resumed.Status,
+                LogSanitizer.OneLine(resumed.Status),
                 resumed.Id,
-                resumed.Error);
+                LogSanitizer.OneLine(resumed.Error));
             return new ResumeJobOutcome(
                 false,
                 resumed.Error ?? $"Resume successor job was '{resumed.Status}' and will not run.",

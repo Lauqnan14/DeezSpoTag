@@ -155,7 +155,7 @@ public sealed class AudiomackArtistLocationService
                 "Audiomack artist candidate rejected for {ArtistName} (slug={Slug}): {Reason}",
                 LogSanitizer.OneLine(artistName),
                 LogSanitizer.OneLine(candidate.UrlSlug),
-                decision.Reason);
+                LogSanitizer.OneLine(decision.Reason));
             return null;
         }
 
@@ -164,7 +164,7 @@ public sealed class AudiomackArtistLocationService
             _logger.LogInformation(
                 "Audiomack artist candidate for {ArtistName} accepted by name only: {Reason}",
                 LogSanitizer.OneLine(artistName),
-                decision.Reason);
+                LogSanitizer.OneLine(decision.Reason));
         }
 
         var resolved = await ResolveProfileBySlugAsync(candidate.UrlSlug, artistName, candidate, cancellationToken).ConfigureAwait(false);
