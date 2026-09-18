@@ -254,15 +254,15 @@ public sealed class ActivitiesControllerContractTest
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
 
-        Assert.Contains(">TTML lyrics</span>", historySource, StringComparison.Ordinal);
-        Assert.Contains(">TTML lyrics</span>", viewSource, StringComparison.Ordinal);
+        Assert.Contains(">Word Synced Lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.Contains(">Word Synced Lyrics</span>", viewSource, StringComparison.Ordinal);
         Assert.Contains(">Enhanced lyrics</span>", historySource, StringComparison.Ordinal);
         Assert.Contains(">Enhanced lyrics</span>", viewSource, StringComparison.Ordinal);
         Assert.Contains(">Synced lyrics</span>", historySource, StringComparison.Ordinal);
         Assert.Contains(">Synced lyrics</span>", viewSource, StringComparison.Ordinal);
         Assert.Contains(">Unsynced lyrics</span>", historySource, StringComparison.Ordinal);
-        Assert.DoesNotContain("Word Synced Lyrics", historySource, StringComparison.Ordinal);
-        Assert.DoesNotContain("Word Synced Lyrics", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(">TTML lyrics</span>", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain(">TTML lyrics</span>", viewSource, StringComparison.Ordinal);
     }
 
     [Fact]

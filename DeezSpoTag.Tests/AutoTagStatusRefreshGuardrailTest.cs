@@ -220,11 +220,14 @@ public sealed class AutoTagStatusRefreshGuardrailTest
             "autotag-status.js"));
         var folderPhaseMethod = ExtractFunction(script, "function isFolderUniformityPhase");
         var autoSwitchMethod = ExtractFunction(script, "function autoSwitchHistoryView");
+        var bindFilterMethod = ExtractFunction(script, "function bindFilterButtons");
 
         Assert.Contains("folder-uniformity", folderPhaseMethod, StringComparison.Ordinal);
         Assert.Contains("job?.lastStatus?.platform", folderPhaseMethod, StringComparison.Ordinal);
         Assert.Contains("job?.currentPhase", folderPhaseMethod, StringComparison.Ordinal);
         Assert.Contains("state.manualHistorySelection", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("state.manualHistoryViewSelection", autoSwitchMethod, StringComparison.Ordinal);
+        Assert.Contains("state.manualHistoryViewSelection = true;", bindFilterMethod, StringComparison.Ordinal);
         Assert.Contains("setHistoryView(\"folder-uniformity\")", autoSwitchMethod, StringComparison.Ordinal);
         Assert.Contains("setHistoryView(\"sidecar\")", autoSwitchMethod, StringComparison.Ordinal);
         Assert.Contains("setHistoryView(\"tags\")", autoSwitchMethod, StringComparison.Ordinal);

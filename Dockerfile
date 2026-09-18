@@ -136,6 +136,7 @@ RUN set -eux; \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
     /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
     /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; \
+    /opt/venv/bin/python3 -m pip uninstall --yes pip; \
     /opt/venv/bin/python3 - <<'PY'
 import essentia.standard as es
 
@@ -196,6 +197,7 @@ RUN set -eux; \
     python3 -m venv /opt/shazam-venv; \
     /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
     /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt; \
+    /opt/shazam-venv/bin/python3 -m pip uninstall --yes pip; \
     models_dir=/app/Tools/models; \
     mkdir -p "${models_dir}"; \
     if [ "${DEEZSPOTAG_FETCH_MODELS_DURING_BUILD}" = "1" ]; then \

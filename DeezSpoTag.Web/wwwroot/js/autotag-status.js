@@ -26,6 +26,7 @@
         historyStatus: [],
         historyView: "tags",
         autoSwitchedHistoryView: null,
+        manualHistoryViewSelection: false,
         liveJobId: null,
         liveJobPath: null,
         liveJobSummary: null,
@@ -193,7 +194,7 @@
     }
 
     function autoSwitchHistoryView(job) {
-        if (state.manualHistorySelection) {
+        if (state.manualHistorySelection || state.manualHistoryViewSelection) {
             state.autoSwitchedHistoryView = null;
             return;
         }
@@ -888,7 +889,7 @@
     function lyricsBadgeMarkup(kind) {
         const normalized = String(kind || "").toLowerCase();
         if (normalized === "ttml" || normalized === "time-synced") {
-            return '<span class="badge badge-lyrics-timesynced">TTML lyrics</span>';
+            return '<span class="badge badge-lyrics-timesynced">Word Synced Lyrics</span>';
         }
         if (normalized === "enhanced" || normalized === "enhanced-synchronized") {
             return '<span class="badge badge-lyrics-enhanced">Enhanced lyrics</span>';
@@ -1964,6 +1965,7 @@
         });
         document.querySelectorAll(".autotag-view-toggle button[data-view]").forEach((btn) => {
             btn.addEventListener("click", () => {
+                state.manualHistoryViewSelection = true;
                 state.autoSwitchedHistoryView = null;
                 setHistoryView(btn.dataset.view || "tags");
             });
