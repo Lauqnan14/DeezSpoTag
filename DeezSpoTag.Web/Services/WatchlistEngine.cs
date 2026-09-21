@@ -2530,8 +2530,12 @@ internal sealed class WatchlistEngine
         return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
     }
 
-    private static bool IsPendingWatchClaimStillOwnedByQueue(DownloadQueueItem? queueItem)
-        => DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(queueItem, DateTimeOffset.UtcNow);
+    internal static bool IsPendingWatchClaimStillOwnedByQueue(
+        DownloadQueueItem? queueItem,
+        DateTimeOffset? nowUtc = null)
+        => DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
+            queueItem,
+            nowUtc ?? DateTimeOffset.UtcNow);
 
     private static bool IsCompletedQueueStatus(string? status)
     {

@@ -49,6 +49,15 @@ public sealed record WatchlistRuntimeResetResult(
     LibraryRepository.WatchlistRuntimeCleanupResult Cleanup,
     WatchlistTriggerStatus TriggerStatus);
 
+public readonly record struct WatchlistBatchGate(
+    bool HasActiveDownloads,
+    DateTimeOffset? LastBatchCompletedUtc,
+    DateTimeOffset? NextRunUtc)
+{
+    public bool CanRun(DateTimeOffset nowUtc)
+        => !HasActiveDownloads && (!NextRunUtc.HasValue || NextRunUtc.Value <= nowUtc);
+}
+
 public sealed class WatchlistRunCoordinator : BackgroundService
 {
     private const string ArtistKind = "artist";
@@ -233,49 +242,142 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
     private async Task WaitForFullRunDeadlineAsync(CancellationToken cancellationToken)
     {
-        using var scope = _serviceProvider.CreateScope();
-        var repository = scope.ServiceProvider.GetService<LibraryRepository>();
-        if (repository == null || !repository.IsConfigured)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            await Task.Delay(GetWatchInterval(), cancellationToken);
-            return;
-        }
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetService<LibraryRepository>();
+            if (repository == null || !repository.IsConfigured)
+            {
+                await Task.Delay(GetWatchInterval(), cancellationToken);
+                return;
+            }
 
-        var scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
-        if (scheduler is null
-            || string.Equals(scheduler.CycleStatus, "running", StringComparison.OrdinalIgnoreCase)
-            || !scheduler.NextCycleUtc.HasValue
-            || scheduler.NextCycleUtc.Value <= DateTimeOffset.UtcNow)
-        {
-            return;
-        }
+            var scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
+            var gate = await EvaluateBatchGateAsync(repository, scheduler?.CycleStartedUtc, cancellationToken);
+            if (gate.HasActiveDownloads)
+            {
+                if (scheduler is not null
+                    && !string.Equals(scheduler.CycleStatus, "waiting_downloads", StringComparison.OrdinalIgnoreCase))
+                {
+                    await repository.UpdateWatchlistCycleStateAsync(
+                        PlaylistWatchType,
+                        "waiting_downloads",
+                        scheduler.CycleStartedUtc,
+                        cycleCompletedUtc: null,
+                        nextCycleUtc: null,
+                        cancellationToken);
+                }
 
-        var deadlineUtc = scheduler.NextCycleUtc.Value;
-        while (deadlineUtc > DateTimeOffset.UtcNow)
-        {
-            var nextTargetSyncUtc = await repository.GetNextWatchlistSyncJobDueUtcAsync(cancellationToken);
-            var wakeUtc = nextTargetSyncUtc.HasValue && nextTargetSyncUtc.Value < deadlineUtc
-                ? nextTargetSyncUtc.Value
-                : deadlineUtc;
-            var scheduledReason = wakeUtc < deadlineUtc
-                ? WatchlistWakeReason.TargetSync
-                : WatchlistWakeReason.ScheduledRefresh;
-            var reason = await _runSignal.WaitAsync(
-                Max(TimeSpan.Zero, wakeUtc - DateTimeOffset.UtcNow),
-                cancellationToken,
-                scheduledReason);
-            if (reason.HasFlag(WatchlistWakeReason.Reset)
-                || reason.HasFlag(WatchlistWakeReason.ScheduledRefresh))
+                await ProcessWaitSignalAsync(
+                    DateTimeOffset.UtcNow.AddSeconds(15),
+                    TimeSpan.FromSeconds(15),
+                    cancellationToken);
+                continue;
+            }
+
+            if (scheduler is not null
+                && string.Equals(scheduler.CycleStatus, "waiting_downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                var completedUtc = gate.LastBatchCompletedUtc ?? DateTimeOffset.UtcNow;
+                var nextRunUtc = completedUtc + GetWatchInterval();
+                await repository.UpdateWatchlistCycleStateAsync(
+                    PlaylistWatchType,
+                    "completed",
+                    scheduler.CycleStartedUtc,
+                    completedUtc,
+                    nextRunUtc,
+                    cancellationToken);
+                scheduler = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
+            }
+
+            if (scheduler is null
+                || string.Equals(scheduler.CycleStatus, "running", StringComparison.OrdinalIgnoreCase)
+                || !scheduler.NextCycleUtc.HasValue
+                || scheduler.NextCycleUtc.Value <= DateTimeOffset.UtcNow)
             {
                 return;
             }
 
-            if (reason.HasFlag(WatchlistWakeReason.Finalization)
-                || reason.HasFlag(WatchlistWakeReason.TargetSync))
+            var deadlineUtc = scheduler.NextCycleUtc.Value;
+            var nextTargetSyncUtc = await repository.GetNextWatchlistSyncJobDueUtcAsync(cancellationToken);
+            var wakeUtc = nextTargetSyncUtc.HasValue && nextTargetSyncUtc.Value < deadlineUtc
+                ? nextTargetSyncUtc.Value
+                : deadlineUtc;
+            await ProcessWaitSignalAsync(
+                deadlineUtc,
+                Max(TimeSpan.Zero, wakeUtc - DateTimeOffset.UtcNow),
+                cancellationToken,
+                wakeUtc < deadlineUtc ? WatchlistWakeReason.TargetSync : WatchlistWakeReason.ScheduledRefresh);
+        }
+    }
+
+    private async Task ProcessWaitSignalAsync(
+        DateTimeOffset workDeadlineUtc,
+        TimeSpan delay,
+        CancellationToken cancellationToken,
+        WatchlistWakeReason timeoutReason = WatchlistWakeReason.Finalization)
+    {
+        var reason = await _runSignal.WaitAsync(delay, cancellationToken, timeoutReason);
+        if (reason.HasFlag(WatchlistWakeReason.Finalization)
+            || reason.HasFlag(WatchlistWakeReason.TargetSync))
+        {
+            await ProcessCountdownTargetWorkAsync(workDeadlineUtc, cancellationToken);
+        }
+    }
+
+    private async Task<WatchlistBatchGate> EvaluateBatchGateAsync(
+        LibraryRepository repository,
+        DateTimeOffset? batchStartedUtc,
+        CancellationToken cancellationToken)
+    {
+        var claims = await repository.GetAllPlaylistWatchDownloadClaimsAsync(status: null, cancellationToken);
+        var queueRepository = _serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        var queueItems = await queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        return EvaluateBatchGate(claims, queueItems, batchStartedUtc, DateTimeOffset.UtcNow, GetWatchInterval());
+    }
+
+    internal static WatchlistBatchGate EvaluateBatchGate(
+        IReadOnlyList<PlaylistWatchDownloadClaimDto> claims,
+        IReadOnlyList<DownloadQueueItem> queueItems,
+        DateTimeOffset? batchStartedUtc,
+        DateTimeOffset nowUtc,
+        TimeSpan watchInterval)
+    {
+        var queueByUuid = queueItems.ToDictionary(static item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
+        var active = claims.Any(claim =>
+            queueByUuid.TryGetValue(claim.QueueUuid, out var item)
+            && WatchlistEngine.IsPendingWatchClaimStillOwnedByQueue(item, nowUtc));
+        if (active)
+        {
+            return new WatchlistBatchGate(true, null, null);
+        }
+
+        if (!batchStartedUtc.HasValue)
+        {
+            return new WatchlistBatchGate(false, null, null);
+        }
+
+        var completionCandidates = new List<DateTimeOffset>();
+        foreach (var claim in claims)
+        {
+            if (queueByUuid.TryGetValue(claim.QueueUuid, out var item)
+                && item.CreatedAt >= batchStartedUtc.Value)
             {
-                await ProcessCountdownTargetWorkAsync(deadlineUtc, cancellationToken);
+                completionCandidates.Add(item.UpdatedAt);
+            }
+            else if (claim.UpdatedAt >= batchStartedUtc.Value)
+            {
+                completionCandidates.Add(claim.UpdatedAt);
             }
         }
+
+        if (completionCandidates.Count == 0)
+        {
+            return new WatchlistBatchGate(false, null, null);
+        }
+
+        var completedUtc = completionCandidates.Max();
+        return new WatchlistBatchGate(false, completedUtc, completedUtc + watchInterval);
     }
 
     private static TimeSpan Max(TimeSpan left, TimeSpan right)
@@ -637,12 +739,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
                 if (repository.IsConfigured)
                 {
+                    var batchGate = await EvaluateBatchGateAsync(repository, cycleStartedUtc, stoppingToken);
+                    var completionAnchorUtc = batchGate.LastBatchCompletedUtc ?? cycleCompletedUtc;
+                    var nextCycleUtc = batchGate.LastBatchCompletedUtc.HasValue
+                        ? completionAnchorUtc + GetWatchInterval()
+                        : cycleCompletedUtc + GetWatchInterval();
                     await repository.UpdateWatchlistCycleStateAsync(
                         PlaylistWatchType,
-                        cycleCompleted ? "completed" : "failed",
+                        batchGate.HasActiveDownloads
+                            ? "waiting_downloads"
+                            : cycleCompleted ? "completed" : "failed",
                         cycleStartedUtc,
-                        cycleCompletedUtc,
-                        cycleCompletedUtc + GetWatchInterval(),
+                        batchGate.HasActiveDownloads ? null : completionAnchorUtc,
+                        batchGate.HasActiveDownloads ? null : nextCycleUtc,
                         stoppingToken);
                 }
             }

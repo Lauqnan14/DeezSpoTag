@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
@@ -1036,6 +1037,109 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         Assert.Equal(nextCycleUtc, scheduler.NextCycleUtc);
     }
 
+    [Theory]
+    [InlineData("queued")]
+    [InlineData("running")]
+    [InlineData("paused")]
+    [InlineData("retrying")]
+    public void BatchGate_LiveWatchlistClaimBlocksAnotherRun(string status)
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var queueItem = CreateQueueItem("watch-owned", status, "{}", startedUtc.AddSeconds(1), startedUtc.AddMinutes(1));
+        var claims = new[] { CreateClaim(queueItem.QueueUuid, "pending", startedUtc.AddSeconds(1)) };
+
+        var gate = WatchlistRunCoordinator.EvaluateBatchGate(
+            claims, [queueItem], startedUtc, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5));
+
+        Assert.True(gate.HasActiveDownloads);
+        Assert.Null(gate.LastBatchCompletedUtc);
+        Assert.Null(gate.NextRunUtc);
+    }
+
+    [Fact]
+    public void BatchGate_ManualQueueItemDoesNotBlockWatchlist()
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var manual = CreateQueueItem("manual", "running", "{}", startedUtc.AddSeconds(1), startedUtc.AddMinutes(1));
+
+        var gate = WatchlistRunCoordinator.EvaluateBatchGate(
+            [], [manual], startedUtc, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5));
+
+        Assert.False(gate.HasActiveDownloads);
+    }
+
+    [Fact]
+    public void BatchGate_TerminalBatchStartsIntervalAtLastDownloadCompletion()
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddMinutes(-20);
+        var firstCompleted = startedUtc.AddMinutes(8);
+        var lastCompleted = startedUtc.AddMinutes(10);
+        var items = new[]
+        {
+            CreateQueueItem("watch-1", "completed", "{}", startedUtc.AddSeconds(1), firstCompleted),
+            CreateQueueItem("watch-2", "failed", "{}", startedUtc.AddSeconds(2), lastCompleted)
+        };
+        var claims = new[]
+        {
+            CreateClaim("watch-1", "completed", firstCompleted),
+            CreateClaim("watch-2", "failed", lastCompleted)
+        };
+
+        var gate = WatchlistRunCoordinator.EvaluateBatchGate(
+            claims, items, startedUtc, startedUtc.AddMinutes(12), TimeSpan.FromMinutes(5));
+
+        Assert.False(gate.HasActiveDownloads);
+        Assert.Equal(lastCompleted, gate.LastBatchCompletedUtc);
+        Assert.Equal(lastCompleted.AddMinutes(5), gate.NextRunUtc);
+        Assert.False(gate.CanRun(startedUtc.AddMinutes(12)));
+        Assert.True(gate.CanRun(startedUtc.AddMinutes(15)));
+    }
+
+    [Fact]
+    public void BatchGate_RestartUsesPersistedClaimsAndQueueOwnership()
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddHours(-1);
+        var queueItem = CreateQueueItem("persisted", "retrying", "{}", startedUtc.AddMinutes(1), DateTimeOffset.UtcNow);
+
+        var gate = WatchlistRunCoordinator.EvaluateBatchGate(
+            [CreateClaim("persisted", "pending", DateTimeOffset.UtcNow)],
+            [queueItem],
+            startedUtc,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(1));
+
+        Assert.True(gate.HasActiveDownloads);
+    }
+
+    [Fact]
+    public async Task WaitingBatch_ReconciliationSignalDoesNotStartAnotherRunOrConsumeRequest()
+    {
+        var startedUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var queueItem = CreateQueueItem("waiting-batch", "queued", "{}", startedUtc, DateTimeOffset.UtcNow);
+        await _queueRepository.EnqueueAsync(queueItem);
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
+            "spotify", "playlist", "track", [queueItem.QueueUuid], 1);
+        await _repository.UpdateWatchlistCycleStateAsync(
+            "playlist", "waiting_downloads", startedUtc, null, null);
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null);
+        var signal = new WatchlistRunSignal();
+        var hosted = new WatchlistRunCoordinator(
+            _provider,
+            new BackgroundWorkCoordinator(),
+            signal,
+            NullLogger<WatchlistRunCoordinator>.Instance);
+        using var cancellation = new CancellationTokenSource();
+
+        var waitTask = InvokeWaitForFullRunDeadlineAsync(hosted, cancellation.Token);
+        signal.Request(WatchlistWakeReason.Reconciliation);
+        await Task.Delay(100);
+
+        Assert.False(waitTask.IsCompleted);
+        Assert.Equal(1, await _repository.GetWatchlistReconciliationRequestCountAsync());
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waitTask);
+    }
+
 
     [Fact]
     public void HeartbeatAndProgress_DoNotOverwriteCurrentPhase()
@@ -1080,7 +1184,18 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         await (Task)result!;
     }
 
-    private static DownloadQueueItem CreateQueueItem(string queueUuid, string status, string payloadJson)
+    private static PlaylistWatchDownloadClaimDto CreateClaim(
+        string queueUuid,
+        string status,
+        DateTimeOffset updatedAt)
+        => new("spotify", "playlist", queueUuid, queueUuid, 1, status, updatedAt);
+
+    private static DownloadQueueItem CreateQueueItem(
+        string queueUuid,
+        string status,
+        string payloadJson,
+        DateTimeOffset? createdAt = null,
+        DateTimeOffset? updatedAt = null)
         => new(
             Id: 0,
             QueueUuid: queueUuid,
@@ -1108,8 +1223,8 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             Downloaded: 0,
             Failed: 0,
             Error: null,
-            CreatedAt: DateTimeOffset.UtcNow,
-            UpdatedAt: DateTimeOffset.UtcNow);
+            CreatedAt: createdAt ?? DateTimeOffset.UtcNow,
+            UpdatedAt: updatedAt ?? DateTimeOffset.UtcNow);
 
     private static ConcurrentDictionary<string, int> GetFailureMap(WatchlistRunCoordinator hosted)
         => (ConcurrentDictionary<string, int>)GetPrivateField(hosted, "_consecutiveFailures");
@@ -1138,6 +1253,19 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         var result = method!.Invoke(hosted, new object[] { CancellationToken.None });
+        Assert.NotNull(result);
+        await (Task)result!;
+    }
+
+    private static async Task InvokeWaitForFullRunDeadlineAsync(
+        WatchlistRunCoordinator hosted,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(WatchlistRunCoordinator).GetMethod(
+            "WaitForFullRunDeadlineAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(hosted, new object[] { cancellationToken });
         Assert.NotNull(result);
         await (Task)result!;
     }

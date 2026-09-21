@@ -91,6 +91,19 @@ public sealed class WatchlistQueueAdmissionServiceTest
     }
 
     [Fact]
+    public void SelectAdmissionBatch_DistinctPlaylistAlbumsDoNotExceedLimit()
+    {
+        var rows = CreateMissingRows(
+            ("playlist-a", "one", 1, "Album One"),
+            ("playlist-a", "two", 2, "Album Two"),
+            ("playlist-a", "three", 3, "Album Three"));
+
+        var selected = WatchlistEngine.SelectAdmissionBatch(rows, remainingQuota: 2, allowBelowQuota: false);
+
+        Assert.Equal(["one", "two"], selected.Select(static row => row.TrackSourceId));
+    }
+
+    [Fact]
     public void AllowQuotaOverflow_LetsAlbumRemainderReserveBeyondTheOriginalBudget()
     {
         var service = new WatchlistQueueAdmissionService();
