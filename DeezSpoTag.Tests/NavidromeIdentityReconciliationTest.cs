@@ -72,6 +72,48 @@ public sealed class NavidromeIdentityReconciliationTest : IAsyncLifetime
         Assert.Equal(0, MediaServerRefreshOutboxService.CountChangedMappings(after, after));
     }
 
+    [Fact]
+    public async Task ReconciliationImportsCanonicalIdentityFromRequestedFolderOnly()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+PRAGMA foreign_keys=OFF;
+INSERT INTO folder(id,root_path,display_name,enabled,desired_quality_value) VALUES
+    (7,'/music/stereo','Stereo',1,'flac'),
+    (8,'/music/atmos','Atmos',1,'atmos');
+INSERT INTO artist(id,name) VALUES(1,'Artist');
+INSERT INTO album(id,artist_id,title) VALUES(1,1,'Album');
+INSERT INTO track(id,album_id,title,duration_ms) VALUES(1902,1,'Song',120000);
+INSERT INTO audio_file(id,path,relative_path,folder_id,size,duration_ms,quality_rank,audio_variant) VALUES
+    (1,'/music/stereo/Artist/Album/old.flac','Artist/Album/old.flac',7,1000,120000,10,'stereo'),
+    (2,'/music/stereo/Artist/Album/preferred.flac','Artist/Album/preferred.flac',7,2000,120000,20,'stereo'),
+    (3,'/music/atmos/Artist/Album/song.m4a','Artist/Album/song.m4a',8,3000,120000,30,'atmos');
+INSERT INTO track_local(track_id,audio_file_id) VALUES(1902,1),(1902,2),(1902,3);";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var scopedTracks = await _repository.GetTargetServerIdentityLocalTracksAsync("navidrome", 7);
+        var selected = Assert.Single(scopedTracks);
+        Assert.Equal("/music/stereo/Artist/Album/preferred.flac", selected.AbsolutePath);
+        var before = await _repository.GetMediaServerItemIdsByTrackIdsAsync("navidrome", [1902]);
+        var index = BuildIndex(scopedTracks);
+        var service = new MediaServerLibraryRefreshService(null!, null!, null!, null!, _repository,
+            NullLogger<MediaServerLibraryRefreshService>.Instance);
+        var candidateType = typeof(MediaServerLibraryRefreshService).GetNestedType("TargetTrackIdentityCandidate", BindingFlags.NonPublic)!;
+        var candidates = Array.CreateInstance(candidateType, 1);
+        candidates.SetValue(Candidate(candidateType, "navidrome-1902", "/music/stereo/Artist/Album/preferred.flac", "Song"), 0);
+        var ingest = typeof(MediaServerLibraryRefreshService).GetMethod("IngestTargetTracksAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)ingest.Invoke(service, ["navidrome", 7L, candidates, index, CancellationToken.None])!;
+
+        var after = await _repository.GetMediaServerItemIdsByTrackIdsAsync("navidrome", [1902]);
+        Assert.Equal("navidrome-1902", after[1902]);
+        Assert.Equal(1, MediaServerRefreshOutboxService.CountChangedMappings(before, after));
+    }
+
     private async Task SeedIdAsync(long trackId, string targetId)
     {
         await using var connection = new SqliteConnection($"Data Source={_dbPath}");

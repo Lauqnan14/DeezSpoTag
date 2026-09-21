@@ -4134,30 +4134,44 @@ ORDER BY services.service;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT DISTINCT
-       tl.track_id,
-       af.path,
-       af.relative_path,
-       f.root_path,
+WITH ranked_local AS (
+    SELECT tl.track_id,
+           af.path,
+           af.relative_path,
+           f.root_path,
+           af.size,
+           af.duration_ms,
+           ROW_NUMBER() OVER (
+               PARTITION BY tl.track_id
+               ORDER BY af.quality_rank DESC NULLS LAST,
+                        af.size DESC,
+                        af.id DESC) AS rn
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
+      AND (@folderId IS NULL OR f.id = @folderId)
+)
+SELECT ranked_local.track_id,
+       ranked_local.path,
+       ranked_local.relative_path,
+       ranked_local.root_path,
        COALESCE(NULLIF(t.tag_title, ''), t.title, '') AS title,
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name, '') AS artist,
        COALESCE(NULLIF(t.tag_album, ''), al.title, '') AS album,
-       COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS duration_ms,
+       COALESCE(t.tag_duration_ms, t.duration_ms, ranked_local.duration_ms) AS duration_ms,
        m.target_item_id,
-       af.size
-FROM track_local tl
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-JOIN track t ON t.id = tl.track_id
+       ranked_local.size
+FROM ranked_local
+JOIN track t ON t.id = ranked_local.track_id
 JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
 LEFT JOIN media_server_track_metadata m
-  ON m.track_id = tl.track_id
+  ON m.track_id = ranked_local.track_id
  AND m.service = @service
  AND m.target_item_id IS NOT NULL
  AND TRIM(m.target_item_id) <> ''
-WHERE f.enabled = TRUE
-  AND (@folderId IS NULL OR f.id = @folderId);";
+WHERE ranked_local.rn = 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("service", normalizedService);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);

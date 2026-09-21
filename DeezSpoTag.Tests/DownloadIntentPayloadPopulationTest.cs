@@ -128,6 +128,12 @@ public sealed class DownloadIntentPayloadPopulationTest
         Assert.Equal(intent.TidalId, payload.TidalId);
         Assert.Equal(intent.QobuzId, payload.QobuzId);
         Assert.Equal(intent.AmazonId, payload.AmazonId);
+        Assert.Equal(intent.Isrc, payload.LyricsIdentityIsrc);
+        Assert.Equal(intent.SpotifyId, payload.LyricsIdentitySpotifyId);
+        Assert.Equal(intent.DeezerId, payload.LyricsIdentityDeezerId);
+        Assert.Equal(intent.AppleId, payload.LyricsIdentityAppleId);
+        Assert.Equal(intent.Title, payload.LyricsIdentityTitle);
+        Assert.Equal(intent.Artist, payload.LyricsIdentityArtist);
     }
 
     [Theory]

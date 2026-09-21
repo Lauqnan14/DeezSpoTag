@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -39,6 +40,33 @@ public sealed class DownloadQueueLyricsArtifactPersistenceTest
         Assert.Equal(10, artifacts.GetProperty("revision").GetInt64());
         Assert.Equal("completed", artifacts.GetProperty("status").GetString());
         Assert.Equal(["ttml", "lrc"], artifacts.GetProperty("resolvedFormats").EnumerateArray().Select(value => value.GetString()));
+    }
+
+    [Fact]
+    public async Task UpdateLyricsArtifactsAsync_PersistsIncompleteProviderEvidence()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-incomplete-1";
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+        await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, new LyricsArtifactState
+        {
+            Revision = 11,
+            Status = "incomplete",
+            Error = "Requested lyrics formats were incomplete because a provider failed operationally.",
+            ProviderOutcomes =
+            [
+                new LyricsProviderOutcome("apple", "transient-failure", "timeout"),
+                new LyricsProviderOutcome("spotify", "resolved")
+            ]
+        }, CancellationToken.None);
+
+        using var payload = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
+        var artifacts = payload.RootElement.GetProperty("lyricsArtifacts");
+        Assert.Equal("incomplete", artifacts.GetProperty("status").GetString());
+        var outcomes = artifacts.GetProperty("providerOutcomes").EnumerateArray().ToArray();
+        Assert.Equal("apple", outcomes[0].GetProperty("provider").GetString());
+        Assert.Equal("transient-failure", outcomes[0].GetProperty("status").GetString());
+        Assert.Equal("timeout", outcomes[0].GetProperty("detail").GetString());
     }
 
     [Fact]

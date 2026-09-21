@@ -7,6 +7,7 @@ using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Utils;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -180,6 +181,69 @@ public sealed class EngineAudioPostDownloadHelperLyricsTest
 
         Assert.Equal(158, track.Duration);
         Assert.Equal("USUYG1440436", track.ISRC);
+    }
+
+    [Fact]
+    public void CreateLyricsLookupTrack_UsesCanonicalIdentityWithoutMutatingAtmosTrack()
+    {
+        var payload = new TestQueueItem
+        {
+            Id = "atmos-queue-track",
+            Title = "Atmos title",
+            Artist = "Atmos artist",
+            Album = "Atmos album",
+            Isrc = "ATMOS-ISRC",
+            TidalId = "atmos-tidal-id",
+            DurationSeconds = 159,
+            LyricsIdentityTitle = "Canonical title",
+            LyricsIdentityArtist = "Canonical artist",
+            LyricsIdentityAlbum = "Canonical album",
+            LyricsIdentityIsrc = "CANONICAL-ISRC",
+            LyricsIdentityTidalId = "canonical-tidal-id",
+            LyricsIdentityDurationSeconds = 158
+        };
+        var variantTrack = new Track
+        {
+            Id = "atmos-queue-track",
+            Title = "Atmos title",
+            MainArtist = new Artist("0", "Atmos artist"),
+            Album = new Album("0", "Atmos album"),
+            ISRC = "ATMOS-ISRC",
+            Duration = 159,
+            Urls = new Dictionary<string, string> { ["tidal_track_id"] = "atmos-tidal-id" }
+        };
+
+        var lookupTrack = Assert.IsType<Track>(GetStaticMethod("CreateLyricsLookupTrack").Invoke(null, [variantTrack, payload]));
+
+        Assert.Equal("Canonical title", lookupTrack.Title);
+        Assert.Equal("Canonical artist", lookupTrack.MainArtist.Name);
+        Assert.Equal("Canonical album", lookupTrack.Album.Title);
+        Assert.Equal("CANONICAL-ISRC", lookupTrack.ISRC);
+        Assert.Equal(158, lookupTrack.Duration);
+        Assert.Equal("canonical-tidal-id", lookupTrack.Urls["tidal_track_id"]);
+        Assert.Equal("Atmos title", variantTrack.Title);
+        Assert.Equal("ATMOS-ISRC", variantTrack.ISRC);
+        Assert.Equal("atmos-tidal-id", variantTrack.Urls["tidal_track_id"]);
+    }
+
+    [Fact]
+    public void ShouldPersistLyricsResolution_RejectsIncompleteLineOnlyFallback()
+    {
+        var lyrics = new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric { Text = "Line only", Milliseconds = 1000 }]
+        };
+        var result = new LyricsResolutionResult(
+            lyrics,
+            new LyricsResolutionPlan(["lrc"], ["apple", "spotify"], true),
+            ["apple", "spotify"],
+            ["lrc"],
+            new Dictionary<string, string> { ["lrc"] = "spotify" },
+            "Word timing provider timed out.",
+            [new LyricsProviderOutcome("apple", "transient-failure", "timeout")],
+            Incomplete: true);
+
+        Assert.False(Assert.IsType<bool>(GetStaticMethod("ShouldPersistLyricsResolution").Invoke(null, [result])));
     }
 
     [Fact]

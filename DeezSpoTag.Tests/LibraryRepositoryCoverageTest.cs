@@ -1671,6 +1671,52 @@ WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
     }
 
     [Fact]
+    public async Task TargetServerIdentityLocalTracks_SelectsOneCanonicalFileInsideRequestedFolder()
+    {
+        var seeded = await SeedLibraryAsync(("Scoped Variant", "dz-variant", "sp-variant", "ap-variant"));
+        var trackId = seeded.TrackIdsByTitle["Scoped Variant"];
+        var atmosphereFolder = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            RootPath: Path.Join(_tempRoot, "atmos-library"),
+            DisplayName: "Atmos",
+            Enabled: true,
+            LibraryName: "Atmos",
+            DesiredQuality: "atmos",
+            ConvertEnabled: false,
+            ConvertFormat: null,
+            ConvertBitrate: null,
+            AutoTagProfileId: "profile-default"));
+        var preferredPath = Path.Join(seeded.Folder.RootPath, "Artist One", "Album One", "preferred.flac");
+        var atmospherePath = Path.Join(atmosphereFolder.RootPath, "Artist One", "Album One", "track.m4a");
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO audio_file(path,relative_path,folder_id,size,duration_ms,quality_rank,audio_variant)
+VALUES(@preferredPath,'Artist One/Album One/preferred.flac',@targetFolder,5000,180000,99,'stereo');
+INSERT INTO track_local(track_id,audio_file_id) VALUES(@trackId,last_insert_rowid());
+INSERT INTO audio_file(path,relative_path,folder_id,size,duration_ms,quality_rank,audio_variant)
+VALUES(@atmosPath,'Artist One/Album One/track.m4a',@atmosFolder,9000,180000,100,'atmos');
+INSERT INTO track_local(track_id,audio_file_id) VALUES(@trackId,last_insert_rowid());";
+            command.Parameters.AddWithValue("preferredPath", preferredPath);
+            command.Parameters.AddWithValue("targetFolder", seeded.Folder.Id);
+            command.Parameters.AddWithValue("atmosPath", atmospherePath);
+            command.Parameters.AddWithValue("atmosFolder", atmosphereFolder.Id);
+            command.Parameters.AddWithValue("trackId", trackId);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var tracks = await _repository.GetTargetServerIdentityLocalTracksAsync(
+            "navidrome",
+            seeded.Folder.Id);
+
+        var selected = Assert.Single(tracks.Where(track => track.TrackId == trackId));
+        Assert.Equal(preferredPath, selected.AbsolutePath);
+        Assert.DoesNotContain(tracks, track => string.Equals(track.AbsolutePath, atmospherePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task LocalScanFileStates_RoundTrip_And_UnchangedIngestPreservesAudioTimestamp()
     {
         var root = Path.Join(_tempRoot, "music-library");

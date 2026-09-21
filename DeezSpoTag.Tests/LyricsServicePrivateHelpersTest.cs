@@ -715,6 +715,28 @@ public sealed class LyricsServicePrivateHelpersTest
         Assert.True(InvokeShouldReturnResolvedLyrics(state, requirements, requireAllRequestedRichLyrics: false));
     }
 
+    [Fact]
+    public void ShouldReturnResolvedLyrics_WordEnhancedRejectsLineOnlyAtFinalProvider()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = false,
+            LrcType = "lyrics,syllable-lyrics",
+            LrcFormat = "lrc",
+            PreferEnhancedLrc = true,
+            LrcTimingPreference = LrcTimingModes.WordEnhanced
+        };
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+        var state = CreateLyricsResolutionState(new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric { Text = "Line only", Milliseconds = 1000 }],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        });
+
+        Assert.False(InvokeShouldReturnResolvedLyrics(state, requirements, requireAllRequestedRichLyrics: false));
+    }
+
     [Theory]
     [InlineData("ttml", true)]
     [InlineData("both", true)]
@@ -1923,6 +1945,41 @@ public sealed class LyricsServicePrivateHelpersTest
         var resolved = await task;
 
         Assert.Null(resolved);
+    }
+
+    [Fact]
+    public void HasBlockingProviderFailure_WordProviderTimeoutBlocksLineOnlyCompletion()
+    {
+        var outcomes = new[]
+        {
+            new LyricsProviderOutcome("apple", "transient-failure", "timeout"),
+            new LyricsProviderOutcome("spotify", "resolved")
+        };
+
+        Assert.True(InvokeStatic<bool>(
+            "HasBlockingProviderFailure", outcomes, true, true, false));
+    }
+
+    [Fact]
+    public void HasBlockingProviderFailure_VerifiedWordTimingAbsenceAllowsLineFallback()
+    {
+        var outcomes = new[]
+        {
+            new LyricsProviderOutcome("apple", "verified-unavailable"),
+            new LyricsProviderOutcome("spotify", "resolved")
+        };
+
+        Assert.False(InvokeStatic<bool>(
+            "HasBlockingProviderFailure", outcomes, true, true, false));
+    }
+
+    [Fact]
+    public void ClassifyProviderOutcome_ReportsIdentityRejectionSeparately()
+    {
+        var state = CreateLyricsResolutionState(LyricsNew.CreateError("unused"));
+        var rejected = LyricsNew.CreateError("Musixmatch lyrics identity rejected: title mismatch");
+
+        Assert.Equal("identity-rejected", InvokeStatic<string>("ClassifyProviderOutcome", "musixmatch", rejected, state));
     }
 
     private static void AssertRequirement(object requirements, string propertyName, bool expected)

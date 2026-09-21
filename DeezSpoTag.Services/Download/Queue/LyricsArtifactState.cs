@@ -32,6 +32,9 @@ public sealed class LyricsArtifactState
     [JsonPropertyName("providersAttempted")]
     public List<string> ProvidersAttempted { get; set; } = new();
 
+    [JsonPropertyName("providerOutcomes")]
+    public List<LyricsProviderOutcome> ProviderOutcomes { get; set; } = new();
+
     [JsonPropertyName("resolvedFormats")]
     public List<string> ResolvedFormats { get; set; } = new();
 
@@ -111,6 +114,7 @@ public sealed class LyricsArtifactState
     {
         Revision++;
         ProvidersAttempted = NormalizeTokens(result.ProvidersAttempted);
+        ProviderOutcomes = result.ProviderOutcomes?.ToList() ?? new List<LyricsProviderOutcome>();
         foreach (var format in NormalizeFormats(result.ResolvedFormats))
         {
             if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
@@ -125,7 +129,9 @@ public sealed class LyricsArtifactState
         }
         Error = result.Error;
         SuppressPlainWhenRichExists();
-        Status = ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
+        Status = result.Incomplete
+            ? "incomplete"
+            : ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
     }
 
     public void ApplyDownloadedFiles(IReadOnlyDictionary<string, string> filesByFormat)

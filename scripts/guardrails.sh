@@ -79,7 +79,19 @@ BASE_SHA="$(resolve_diff_base)"
 if [[ "$MODE" == "full" ]]; then
   CHANGED_FILES="$(git ls-files)"
 else
-  CHANGED_FILES="$(git diff --name-only "$BASE_SHA"...HEAD)"
+  committed_changes="$(git diff --name-only "$BASE_SHA"...HEAD)"
+  unstaged_changes="$(git diff --name-only)"
+  staged_changes="$(git diff --cached --name-only)"
+  untracked_changes="$(git ls-files --others --exclude-standard)"
+  CHANGED_FILES="$(
+    printf '%s\n%s\n%s\n%s\n' \
+      "$committed_changes" \
+      "$unstaged_changes" \
+      "$staged_changes" \
+      "$untracked_changes" \
+      | sed '/^$/d' \
+      | sort -u
+  )"
 fi
 
 if [[ -z "$CHANGED_FILES" ]]; then

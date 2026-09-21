@@ -44,6 +44,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Run full guardrails
+        run: |
+          chmod +x scripts/guardrails.sh
+          GUARDRAILS_MODE=full ./scripts/guardrails.sh
+
   release-context:
     runs-on: ubuntu-latest
     outputs:
@@ -117,7 +138,7 @@ jobs:
           echo "apple_wrapper_changed=${apple_wrapper_changed}"
 
   bump-version:
-    needs: [change-scope]
+    needs: [validate, change-scope]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]') && needs.change-scope.outputs.app_changed == 'true' }}
     runs-on: ubuntu-latest
     outputs:
@@ -162,8 +183,8 @@ jobs:
           git push origin HEAD:main
 
   publish:
-    needs: [release-context, change-scope, bump-version]
-    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
+    needs: [validate, release-context, change-scope, bump-version]
+    if: ${{ always() && needs.validate.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

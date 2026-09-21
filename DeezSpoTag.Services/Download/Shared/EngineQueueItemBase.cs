@@ -37,6 +37,17 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string QobuzId { get; set; } = "";
     public string TidalId { get; set; } = "";
     public string AmazonId { get; set; } = "";
+    public string LyricsIdentityTitle { get; set; } = "";
+    public string LyricsIdentityArtist { get; set; } = "";
+    public string LyricsIdentityAlbum { get; set; } = "";
+    public string LyricsIdentityIsrc { get; set; } = "";
+    public int LyricsIdentityDurationSeconds { get; set; }
+    public string LyricsIdentitySpotifyId { get; set; } = "";
+    public string LyricsIdentityDeezerId { get; set; } = "";
+    public string LyricsIdentityAppleId { get; set; } = "";
+    public string LyricsIdentityQobuzId { get; set; } = "";
+    public string LyricsIdentityTidalId { get; set; } = "";
+    public string LyricsIdentityAmazonId { get; set; } = "";
     public string ContentType { get; set; } = "";
     public string WatchlistSource { get; set; } = "";
     public string WatchlistPlaylistId { get; set; } = "";
@@ -149,6 +160,17 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["qobuzId"] = QobuzId,
             ["tidalId"] = TidalId,
             ["amazonId"] = AmazonId,
+            ["lyricsIdentityTitle"] = LyricsIdentityTitle,
+            ["lyricsIdentityArtist"] = LyricsIdentityArtist,
+            ["lyricsIdentityAlbum"] = LyricsIdentityAlbum,
+            ["lyricsIdentityIsrc"] = LyricsIdentityIsrc,
+            ["lyricsIdentityDurationSeconds"] = LyricsIdentityDurationSeconds,
+            ["lyricsIdentitySpotifyId"] = LyricsIdentitySpotifyId,
+            ["lyricsIdentityDeezerId"] = LyricsIdentityDeezerId,
+            ["lyricsIdentityAppleId"] = LyricsIdentityAppleId,
+            ["lyricsIdentityQobuzId"] = LyricsIdentityQobuzId,
+            ["lyricsIdentityTidalId"] = LyricsIdentityTidalId,
+            ["lyricsIdentityAmazonId"] = LyricsIdentityAmazonId,
             ["expectedFinalOutputPath"] = ExpectedFinalOutputPath,
             ["watchlistUnavailableSettingsFingerprint"] = WatchlistUnavailableSettingsFingerprint,
             ["lyricsArtifacts"] = LyricsArtifacts,

@@ -1293,6 +1293,60 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
+    private static Track CreateLyricsLookupTrack(Track variantTrack, EngineQueueItemBase payload)
+    {
+        var artistName = FirstNonEmpty(payload.LyricsIdentityArtist, variantTrack.MainArtist?.Name, payload.Artist, UnknownArtist)
+            ?? UnknownArtist;
+        var albumTitle = FirstNonEmpty(payload.LyricsIdentityAlbum, variantTrack.Album?.Title, payload.Album, "Unknown Album")
+            ?? "Unknown Album";
+        var lookupTrack = new Track
+        {
+            Id = FirstNonEmpty(payload.LyricsIdentityIsrc, variantTrack.Id, payload.Id) ?? payload.Id,
+            Title = FirstNonEmpty(payload.LyricsIdentityTitle, variantTrack.Title, payload.Title) ?? string.Empty,
+            MainArtist = new Artist("0", artistName),
+            Album = new Album("0", albumTitle),
+            ISRC = FirstNonEmpty(payload.LyricsIdentityIsrc, variantTrack.ISRC, payload.Isrc) ?? string.Empty,
+            Duration = Math.Max(0, payload.LyricsIdentityDurationSeconds > 0
+                ? payload.LyricsIdentityDurationSeconds
+                : variantTrack.Duration),
+            Source = variantTrack.Source,
+            SourceId = variantTrack.SourceId,
+            DownloadURL = variantTrack.DownloadURL,
+            Artists = new List<string> { artistName },
+            Urls = new Dictionary<string, string>(variantTrack.Urls, StringComparer.OrdinalIgnoreCase)
+        };
+        lookupTrack.Artist["Main"] = new List<string> { artistName };
+        ApplyLyricsIdentityUrls(lookupTrack, payload);
+        return lookupTrack;
+    }
+
+    private static void ApplyLyricsIdentityUrls(Track track, EngineQueueItemBase payload)
+    {
+        ApplyTrackUrl(track, "spotify_track_id", SpotifySource, payload.LyricsIdentitySpotifyId, "https://open.spotify.com/track/");
+        ApplyTrackUrl(track, DeezerTrackIdKey, DeezerSource, payload.LyricsIdentityDeezerId, "https://www.deezer.com/track/");
+        ApplyTrackUrl(track, "qobuz_track_id", QobuzSource, payload.LyricsIdentityQobuzId, "https://play.qobuz.com/track/");
+        ApplyTrackUrl(track, "tidal_track_id", TidalSource, payload.LyricsIdentityTidalId, "https://listen.tidal.com/track/");
+        ApplyTrackUrl(track, "amazon_track_id", AmazonSource, payload.LyricsIdentityAmazonId, "https://music.amazon.com/tracks/");
+        if (!string.IsNullOrWhiteSpace(payload.LyricsIdentityAppleId))
+        {
+            var appleId = payload.LyricsIdentityAppleId;
+            track.Urls["apple_track_id"] = appleId;
+            track.Urls["apple_id"] = appleId;
+            track.Urls[AppleSource] = $"https://music.apple.com/us/song/{appleId}?i={appleId}";
+        }
+    }
+
+    private static void ApplyTrackUrl(Track track, string idKey, string sourceKey, string? id, string urlPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        track.Urls[idKey] = id;
+        track.Urls[sourceKey] = $"{urlPrefix}{id}";
+    }
+
     private static string? NormalizeSourceId(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2806,8 +2860,9 @@ public static partial class EngineAudioPostDownloadHelper
             CoverPath: execution.Paths.CoverPath,
             ArtistPath: execution.Paths.ArtistPath
         );
+        var lyricsTrack = CreateLyricsLookupTrack(execution.Request.Context.Track, execution.Request.Payload);
         var resolution = await execution.Request.LyricsService.ResolveLyricsWithDetailsAsync(
-            execution.Request.Context.Track,
+            lyricsTrack,
             execution.Request.Settings,
             token);
         runState.LyricsArtifacts.ApplyResolution(resolution);
@@ -2821,11 +2876,11 @@ public static partial class EngineAudioPostDownloadHelper
             execution.Paths.QueueUuid,
             runState.LyricsArtifacts);
         var lyrics = resolution.Lyrics;
-        if (lyrics != null && lyrics.IsLoaded())
+        if (ShouldPersistLyricsResolution(resolution))
         {
             var savedLyrics = await execution.Request.LyricsService.SaveLyricsAsync(
-                lyrics,
-                execution.Request.Context.Track,
+                lyrics!,
+                lyricsTrack,
                 paths,
                 execution.Request.Settings,
                 token);
@@ -2841,6 +2896,9 @@ public static partial class EngineAudioPostDownloadHelper
                 runState.LyricsArtifacts);
         }
     }
+
+    private static bool ShouldPersistLyricsResolution(LyricsResolutionResult resolution)
+        => !resolution.Incomplete && resolution.Lyrics?.IsLoaded() == true;
 
     public static PrefetchPathContext BuildPrefetchPathContext(
         string queueUuid,

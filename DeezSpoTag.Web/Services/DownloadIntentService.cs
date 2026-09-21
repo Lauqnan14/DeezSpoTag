@@ -7290,6 +7290,19 @@ public sealed class DownloadIntentService
         payload.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(context.SourceUrl, RegexTimeout)
             ?? string.Empty;
+        payload.LyricsIdentityTitle = intent.Title ?? string.Empty;
+        payload.LyricsIdentityArtist = intent.Artist ?? string.Empty;
+        payload.LyricsIdentityAlbum = intent.Album ?? string.Empty;
+        payload.LyricsIdentityIsrc = intent.Isrc ?? string.Empty;
+        payload.LyricsIdentityDurationSeconds = intent.DurationMs > 0
+            ? (int)Math.Round(intent.DurationMs / 1000d)
+            : context.DurationSeconds;
+        payload.LyricsIdentitySpotifyId = intent.SpotifyId ?? string.Empty;
+        payload.LyricsIdentityDeezerId = payload.DeezerId;
+        payload.LyricsIdentityAppleId = payload.AppleId;
+        payload.LyricsIdentityQobuzId = payload.QobuzId;
+        payload.LyricsIdentityTidalId = payload.TidalId;
+        payload.LyricsIdentityAmazonId = payload.AmazonId;
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
         payload.AutoIndex = Math.Max(0, context.SelectedAutoIndex);

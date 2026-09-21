@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -21,14 +23,7 @@ public sealed class SecurityHardeningGuardrailTest
     {
         var srcRoot = ResolveSrcRoot();
         var taskRunPattern = "Task" + ".Run(";
-        var offenders = Directory
-            .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            // Only exclude nested worktrees *inside* the scan root; when the repo
-            // itself is checked out under a .dsh-worktrees path, the absolute-path
-            // check would exclude every file and the scan would see nothing.
-            .Where(path => !path.Substring(srcRoot.Length).Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        var offenders = EnumerateTrackedFiles(srcRoot, "*.cs")
             .Where(path => !path.EndsWith("SecurityHardeningGuardrailTest.cs", StringComparison.Ordinal))
             .Where(path => File.ReadAllText(path).Contains(taskRunPattern, StringComparison.Ordinal))
             .ToList();
@@ -42,14 +37,7 @@ public sealed class SecurityHardeningGuardrailTest
     public void SourceCode_MustNotUseBlockingWaitPrimitives()
     {
         var srcRoot = ResolveSrcRoot();
-        var offenders = Directory
-            .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            // Only exclude nested worktrees *inside* the scan root; when the repo
-            // itself is checked out under a .dsh-worktrees path, the absolute-path
-            // check would exclude every file and the scan would see nothing.
-            .Where(path => !path.Substring(srcRoot.Length).Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        var offenders = EnumerateTrackedFiles(srcRoot, "*.cs")
             .Where(path =>
             {
                 var source = File.ReadAllText(path);
@@ -184,6 +172,34 @@ public sealed class SecurityHardeningGuardrailTest
         }
 
         throw new InvalidOperationException("Could not resolve src root.");
+    }
+
+    private static IEnumerable<string> EnumerateTrackedFiles(string srcRoot, string pattern)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = srcRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("ls-files");
+        startInfo.ArgumentList.Add("-z");
+        startInfo.ArgumentList.Add("--");
+        startInfo.ArgumentList.Add(pattern);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Could not start git to enumerate tracked files.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, "git ls-files failed: " + error);
+
+        return output
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => Path.GetFullPath(Path.Combine(srcRoot, path)))
+            .Where(File.Exists);
     }
 
     private static void AssertPostRequiresAntiforgery(Type controllerType, string methodName)

@@ -92,6 +92,33 @@ public sealed class LyricsArtifactStateTest
     }
 
     [Fact]
+    public void ApplyResolution_OperationallyDegradedRichLyricsRemainIncomplete()
+    {
+        var plan = new LyricsResolutionPlan(["ttml", "lrc"], ["apple", "spotify"], true);
+        var state = LyricsArtifactState.Fetching(plan);
+        var outcomes = new[]
+        {
+            new LyricsProviderOutcome("apple", "transient-failure", "timeout"),
+            new LyricsProviderOutcome("spotify", "resolved")
+        };
+        var result = new LyricsResolutionResult(
+            null,
+            plan,
+            ["apple", "spotify"],
+            ["lrc"],
+            new Dictionary<string, string> { ["lrc"] = "spotify" },
+            "Requested lyrics formats were incomplete because a provider failed operationally.",
+            outcomes,
+            Incomplete: true);
+
+        state.ApplyResolution(result);
+
+        Assert.Equal("incomplete", state.Status);
+        Assert.Equal(outcomes, state.ProviderOutcomes);
+        Assert.Equal(["lrc"], state.ResolvedFormats);
+    }
+
+    [Fact]
     public void ApplyDownloadedFiles_RecordsWrittenSidecarsAndSuppressesTxt()
     {
         var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["lrclib"], true));

@@ -48,13 +48,23 @@ public sealed record LyricsResolutionPlan(
     IReadOnlyList<string> Providers,
     bool PlainFallbackAllowed);
 
+public sealed record LyricsProviderOutcome(
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("detail")] string? Detail = null)
+{
+    public bool IsOperationalFailure => Status is "transient-failure" or "authentication-failure";
+}
+
 public sealed record LyricsResolutionResult(
     LyricsBase? Lyrics,
     LyricsResolutionPlan Plan,
     IReadOnlyList<string> ProvidersAttempted,
     IReadOnlyList<string> ResolvedFormats,
     IReadOnlyDictionary<string, string> SourcesByFormat,
-    string? Error);
+    string? Error,
+    IReadOnlyList<LyricsProviderOutcome>? ProviderOutcomes = null,
+    bool Incomplete = false);
 
 public sealed record LyricsSaveResult(IReadOnlyDictionary<string, string> FilesByFormat)
 {
@@ -159,6 +169,7 @@ public class LyricsService
         public bool DeezerAttempted { get; set; }
         public bool DeezerMissingAuth { get; set; }
         public List<string> ProvidersAttempted { get; } = new();
+        public List<LyricsProviderOutcome> ProviderOutcomes { get; } = new();
         public Dictionary<string, string> SourcesByFormat { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -336,13 +347,16 @@ public class LyricsService
         var sources = state.SourcesByFormat
             .Where(pair => resolved.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        var incomplete = IsResolutionIncomplete(state.ProviderOutcomes, requirements, lyrics);
         return new LyricsResolutionResult(
             lyrics,
             plan,
             state.ProvidersAttempted.ToArray(),
             resolved,
             sources,
-            error);
+            incomplete ? "Requested lyrics formats were incomplete because a provider failed operationally." : error,
+            state.ProviderOutcomes.ToArray(),
+            incomplete);
     }
 
     private async Task<LyricsBase?> TryResolveProviderSafelyAsync(
@@ -367,6 +381,10 @@ public class LyricsService
                 lyrics.ProviderId = provider;
                 lyrics.NativeSourceFormat ??= ResolveNativeSourceFormat(lyrics);
             }
+            state.ProviderOutcomes.Add(new LyricsProviderOutcome(
+                provider,
+                ClassifyProviderOutcome(provider, lyrics, state),
+                lyrics?.ErrorMessage));
             return lyrics;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -375,6 +393,7 @@ public class LyricsService
         }
         catch (OperationCanceledException ex)
         {
+            state.ProviderOutcomes.Add(new LyricsProviderOutcome(provider, "transient-failure", ex.Message));
             _logger.LogWarning(
                 ex,
                 "Lyrics provider {Provider} timed out for track {TrackId}, advancing to next provider",
@@ -384,6 +403,7 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            state.ProviderOutcomes.Add(new LyricsProviderOutcome(provider, "transient-failure", ex.Message));
             _logger.LogWarning(
                 ex,
                 "Lyrics provider {Provider} threw an exception for track {TrackId}, advancing to next provider",
@@ -391,6 +411,73 @@ public class LyricsService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
             return null;
         }
+    }
+
+    private static string ClassifyProviderOutcome(
+        string provider,
+        LyricsBase? lyrics,
+        LyricsResolutionState state)
+    {
+        if (lyrics?.IsLoaded() == true)
+        {
+            return "resolved";
+        }
+
+        var error = lyrics?.ErrorMessage ?? string.Empty;
+        if (error.Contains("identity rejected", StringComparison.OrdinalIgnoreCase))
+        {
+            return "identity-rejected";
+        }
+        if ((provider == DeezerProvider && state.DeezerMissingAuth)
+            || error.Contains("auth", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("token", StringComparison.OrdinalIgnoreCase))
+        {
+            return "authentication-failure";
+        }
+
+        return "verified-unavailable";
+    }
+
+    private static bool IsResolutionIncomplete(
+        IReadOnlyList<LyricsProviderOutcome> outcomes,
+        LyricsOutputRequirements requirements,
+        LyricsBase? lyrics)
+    {
+        var missingTtml = requirements.WantsTtmlLyrics
+            && !AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics);
+        var missingEnhanced = requirements.WantsEnhancedSynchronizedLyrics
+            && lyrics?.HasEnhancedSynchronizedLyrics() != true;
+        var missingLrc = requirements.WantsLrcLyrics
+            && lyrics?.CanSaveLrcSidecar() != true;
+        if (!missingTtml && !missingEnhanced && !missingLrc)
+        {
+            return false;
+        }
+
+        return HasBlockingProviderFailure(outcomes, missingTtml, missingEnhanced, missingLrc);
+    }
+
+    internal static bool HasBlockingProviderFailure(
+        IReadOnlyList<LyricsProviderOutcome> outcomes,
+        bool missingTtml,
+        bool missingEnhanced,
+        bool missingLrc)
+    {
+        foreach (var outcome in outcomes.Where(static outcome => outcome.IsOperationalFailure))
+        {
+            if (!LyricsProviderRegistry.TryGet(outcome.Provider, out var descriptor))
+            {
+                continue;
+            }
+            if ((missingTtml && (descriptor.SupportsNativeTtml || descriptor.SupportsWordSynchronized))
+                || (missingEnhanced && descriptor.SupportsWordSynchronized)
+                || (missingLrc && descriptor.SupportsLineSynchronized))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string ResolveNativeSourceFormat(LyricsBase lyrics)
@@ -413,6 +500,7 @@ public class LyricsService
     private readonly record struct LyricsOutputRequirements(
         bool WantsLrcLyrics,
         bool WantsEnhancedSynchronizedLyrics,
+        bool RequiresEnhancedSynchronizedLyrics,
         bool WantsTtmlLyrics,
         bool WantsPlainLyrics)
     {
@@ -477,6 +565,10 @@ public class LyricsService
 
         if (requirements.WantsRichLyrics)
         {
+            if (requirements.RequiresEnhancedSynchronizedLyrics && !hasEnhanced)
+            {
+                return false;
+            }
             return (requirements.WantsTtmlLyrics && hasTtml)
                 || (requirements.WantsEnhancedSynchronizedLyrics && hasEnhanced)
                 || (requirements.WantsLrcLyrics && hasLrc);
@@ -660,12 +752,19 @@ public class LyricsService
         var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
         var wantsLrcLyrics = wantsTimedLyrics && outputFormats.Contains("lrc");
         var wantsEnhancedSynchronizedLyrics = wantsTimedLyrics && settings.PreferEnhancedLrc && outputFormats.Contains("lrc");
+        var requiresEnhancedSynchronizedLyrics = wantsEnhancedSynchronizedLyrics
+            && LrcTimingModes.RequiresWordTiming(settings.LrcTimingPreference);
         var wantsTtmlLyrics = settings.SyncedLyrics
             && selectedTypes.Contains(TtmlLyricsType)
             && outputFormats.Contains("ttml");
         var wantsPlainLyrics = settings.SaveLyrics
             && selectedTypes.Contains(UnsyncedLyricsType);
-        return new LyricsOutputRequirements(wantsLrcLyrics, wantsEnhancedSynchronizedLyrics, wantsTtmlLyrics, wantsPlainLyrics);
+        return new LyricsOutputRequirements(
+            wantsLrcLyrics,
+            wantsEnhancedSynchronizedLyrics,
+            requiresEnhancedSynchronizedLyrics,
+            wantsTtmlLyrics,
+            wantsPlainLyrics);
     }
 
     /// <summary>

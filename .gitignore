@@ -129,3 +129,8 @@ docs/superpowers/plans/2026-09-07-vibe-audiomack-lastfm-discogs519.md
 docs/superpowers/specs/2026-09-09-enhancement-sidecar-preflight-design.md
 docs/superpowers/specs/2026-09-15-provider-identity-boundaries-design.md
 *.md
+
+# Local implementation plans
+docs/*plan*.md
+docs/**/*plan*.md
+docs/**/plans/
