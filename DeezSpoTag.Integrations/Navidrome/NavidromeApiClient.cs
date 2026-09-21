@@ -636,11 +636,19 @@ public sealed class NavidromeApiClient
             return new TargetPlaylistLookup<string>(playlists.Status, null, playlists.HttpStatusCode);
         }
 
-        var match = (playlists.Value ?? Array.Empty<NavidromePlaylistSummary>()).FirstOrDefault(playlist =>
-            string.Equals(playlist.Name, playlistName, StringComparison.OrdinalIgnoreCase));
-        return string.IsNullOrWhiteSpace(match?.Id)
+        var matches = (playlists.Value ?? Array.Empty<NavidromePlaylistSummary>())
+            .Where(playlist => string.Equals(playlist.Name, playlistName, StringComparison.OrdinalIgnoreCase)
+                               && !string.IsNullOrWhiteSpace(playlist.Id))
+            .ToList();
+        if (matches.Count > 1)
+        {
+            _logger.LogWarning("Navidrome playlist name {PlaylistName} is ambiguous; refusing to bind an arbitrary playlist.", playlistName);
+            return TargetPlaylistLookup<string>.Unavailable(playlists.HttpStatusCode);
+        }
+
+        return matches.Count == 0
             ? TargetPlaylistLookup<string>.Missing(playlists.HttpStatusCode)
-            : TargetPlaylistLookup<string>.Found(match.Id, playlists.HttpStatusCode);
+            : TargetPlaylistLookup<string>.Found(matches[0].Id, playlists.HttpStatusCode);
     }
 
     public async Task<string?> CreateOrUpdatePlaylistAsync(
@@ -865,7 +873,7 @@ public sealed class NavidromeApiClient
             return false;
         }
 
-        var uploaded = await UploadNativeImageAsync(
+        return await UploadNativeImageAsync(
             serverUrl,
             username,
             password,
@@ -873,60 +881,6 @@ public sealed class NavidromeApiClient
             imagePath,
             contentType,
             cancellationToken);
-        return uploaded && await VerifyPlaylistImageFromFileAsync(
-            serverUrl,
-            username,
-            password,
-            playlistId,
-            imagePath,
-            cancellationToken);
-    }
-
-    public async Task<bool> VerifyPlaylistImageFromFileAsync(
-        string serverUrl,
-        string username,
-        string password,
-        string playlistId,
-        string imagePath,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(serverUrl)
-            || string.IsNullOrWhiteSpace(username)
-            || string.IsNullOrWhiteSpace(password)
-            || string.IsNullOrWhiteSpace(playlistId)
-            || string.IsNullOrWhiteSpace(imagePath)
-            || !File.Exists(imagePath))
-        {
-            return false;
-        }
-
-        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Get,
-                BuildNativeUrl(serverUrl,
-                    $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image?v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
-            request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return false;
-            }
-
-            var storedBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-            return storedBytes.Length > 0;
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException
-                                   || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
     }
 
     public async Task<bool> UpdateArtistImageFromFileAsync(
@@ -1128,7 +1082,7 @@ public sealed class NavidromeApiClient
         }
     }
 
-    public async Task<NavidromeNativePlaylistPutResult> ReplaceNativePlaylistTracksAsync(
+    public async Task<bool> ReplacePlaylistTracksInOrderAsync(
         string serverUrl,
         string username,
         string password,
@@ -1143,47 +1097,50 @@ public sealed class NavidromeApiClient
             || string.IsNullOrWhiteSpace(password)
             || string.IsNullOrWhiteSpace(playlistId))
         {
-            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, null);
+            return false;
         }
 
-        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
-        if (string.IsNullOrWhiteSpace(token))
+        var initial = await GetPlaylistResult(serverUrl, username, password, playlistId, cancellationToken);
+        if (initial.Status != TargetLookupStatus.Success || initial.Value is null)
         {
-            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Transient, null);
+            return false;
         }
 
         var orderedIds = trackIds
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Select(static id => id.Trim())
             .ToList();
-        try
+        var currentIds = initial.Value.Entries.Select(static entry => entry.ItemId).ToList();
+        if (currentIds.SequenceEqual(orderedIds, StringComparer.Ordinal))
         {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Put,
-                BuildNativeUrl(serverUrl, $"/api/playlist/{Uri.EscapeDataString(playlistId)}"))
-            {
-                Content = JsonContent.Create(new
-                {
-                    id = playlistId,
-                    name = playlistName,
-                    comment = playlistComment ?? string.Empty,
-                    tracksIds = orderedIds
-                })
-            };
-            request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var statusCode = (int)response.StatusCode;
-            if (response.IsSuccessStatusCode)
-            {
-                return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Updated, statusCode);
-            }
+            return true;
+        }
 
-            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, statusCode);
-        }
-        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        // Remove highest indexes first so subsequent batches retain valid indexes.
+        for (var lastIndex = currentIds.Count - 1; lastIndex >= 0; lastIndex -= PlaylistWriteBatchSize)
         {
-            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Transient, null);
+            var firstIndex = Math.Max(0, lastIndex - PlaylistWriteBatchSize + 1);
+            var indexes = Enumerable.Range(firstIndex, lastIndex - firstIndex + 1).ToList();
+            var update = await SendAsync<NavidromePlaylistUpdateResponse>(
+                serverUrl, username, password, "updatePlaylist",
+                BuildPlaylistUpdateParameters(playlistId, playlistName, [], playlistComment, indexes),
+                cancellationToken);
+            if (update?.SubsonicResponse?.Status is not "ok")
+            {
+                return false;
+            }
         }
+
+        if (!await AppendPlaylistItemsInBatchesAsync(
+                serverUrl, username, password, playlistId, playlistName, orderedIds, playlistComment, cancellationToken))
+        {
+            return false;
+        }
+
+        var verified = await GetPlaylistResult(serverUrl, username, password, playlistId, cancellationToken);
+        return verified.Status == TargetLookupStatus.Success
+            && verified.Value?.Entries.Select(static entry => entry.ItemId)
+                .SequenceEqual(orderedIds, StringComparer.Ordinal) == true;
     }
 
     private async Task<T?> SendAsync<T>(
@@ -1481,17 +1438,6 @@ public sealed record NavidromePlaylistDetails(
     int? TrackCount,
     IReadOnlyList<NavidromePlaylistEntry> Entries);
 public sealed record NavidromePlaylistEntry(string ItemId);
-
-public enum NavidromeNativePlaylistPutStatus
-{
-    Updated,
-    NotSupported,
-    Transient
-}
-
-public sealed record NavidromeNativePlaylistPutResult(
-    NavidromeNativePlaylistPutStatus Status,
-    int? HttpStatusCode);
 
 file class NavidromeBaseResponse
 {

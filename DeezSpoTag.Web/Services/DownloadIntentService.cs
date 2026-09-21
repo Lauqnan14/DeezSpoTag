@@ -763,13 +763,24 @@ public sealed class DownloadIntentService
                 continue;
             }
 
-            var candidate = await ResolveIntentAsync(
-                intent,
-                step.Engine,
-                preferIsrcOnly: false,
-                preResolved: null,
-                effectiveSettings: settings,
-                cancellationToken);
+            (string Engine, string? SourceUrl, string Message, string MappingSource) candidate;
+            try
+            {
+                candidate = await ResolveIntentAsync(
+                    intent,
+                    step.Engine,
+                    preferIsrcOnly: false,
+                    preResolved: null,
+                    effectiveSettings: settings,
+                    cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+                                       && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                _logger.LogWarning(ex, "Saved-plan download source {Engine} failed during candidate resolution; trying the next source.", step.Engine);
+                lastSkipReason = $"{step.Engine} candidate resolution failed.";
+                continue;
+            }
             if (!TryAcceptResolvedCandidate(step.Engine, candidate, out var skipReason))
             {
                 lastSkipReason = skipReason;
@@ -780,7 +791,17 @@ public sealed class DownloadIntentService
                 ?? candidate.SourceUrl
                 ?? intent.SourceUrl;
             intent.SourceUrl = sourceUrl ?? string.Empty;
-            await PopulateIntentMetadataAsync(intent, settings, resolvedDownloadTagSource: null, cancellationToken);
+            try
+            {
+                await PopulateIntentMetadataAsync(intent, settings, resolvedDownloadTagSource: null, cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+                                       && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                _logger.LogWarning(ex, "Saved-plan download source {Engine} failed during metadata resolution; trying the next source.", step.Engine);
+                lastSkipReason = $"{step.Engine} metadata resolution failed.";
+                continue;
+            }
             var qobuzId = FirstNonEmpty(
                 intent.QobuzId,
                 TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));

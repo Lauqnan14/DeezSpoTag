@@ -100,7 +100,6 @@ public sealed class PlaylistSyncService
     private const string JellyfinService = "jellyfin";
     private const string NavidromeService = "navidrome";
     private const string JellyfinPlaylistMoveCapability = "playlist_move";
-    private const string NavidromeNativePlaylistPutCapability = "native_playlist_put";
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
@@ -1636,7 +1635,7 @@ public sealed class PlaylistSyncService
                 NavidromeService,
                 false,
                 storedPlaylistId,
-                "Navidrome playlist lookup timed out.");
+                "Navidrome playlist lookup is unavailable or ambiguous.");
         }
 
         var playlistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
@@ -2535,7 +2534,7 @@ public sealed class PlaylistSyncService
             cancellationToken);
         if (playlistLookup.Status == TargetLookupStatus.Transient)
         {
-            return PlaylistSyncResult.Failed("Navidrome playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+            return PlaylistSyncResult.Failed("Navidrome playlist lookup is unavailable or ambiguous.", PlaylistSyncResultKind.Retry);
         }
 
         existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
@@ -2608,13 +2607,19 @@ public sealed class PlaylistSyncService
         await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
         if (!appendMissingOnly)
         {
-            await TryReorderNavidromePlaylistAsync(
+            var ordered = await TryReorderNavidromePlaylistAsync(
                 navidrome,
                 playlistId,
                 playlistName,
                 playlist.Description,
                 itemIds,
                 cancellationToken);
+            if (!ordered)
+            {
+                return BuildWriteFailureResult(
+                    BuildSyncMessage("Failed to verify Navidrome playlist order.", matchSummary),
+                    matchSummary);
+            }
         }
 
         var metadataSynced = string.IsNullOrWhiteSpace(existingPlaylistId)
@@ -3235,7 +3240,7 @@ public sealed class PlaylistSyncService
         return moved;
     }
 
-    private async Task TryReorderNavidromePlaylistAsync(
+    private async Task<bool> TryReorderNavidromePlaylistAsync(
         NavidromeConnection navidrome,
         string playlistId,
         string playlistName,
@@ -3243,46 +3248,15 @@ public sealed class PlaylistSyncService
         IReadOnlyList<string> intendedItemIds,
         CancellationToken cancellationToken)
     {
-        if (!await IsTargetCapabilitySupportedAsync(NavidromeService, NavidromeNativePlaylistPutCapability, cancellationToken))
-        {
-            return;
-        }
-
-        var entries = await _navidromeApiClient.GetPlaylistEntriesAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
-            playlistId,
-            cancellationToken);
-        var currentIds = entries.Select(static entry => entry.ItemId).ToList();
-        var delta = ComputePlaylistMembershipDelta(currentIds, intendedItemIds, appendMissingOnly: false);
-        if (!delta.NeedsReorder)
-        {
-            return;
-        }
-
-        var put = await _navidromeApiClient.ReplaceNativePlaylistTracksAsync(
+        return await _navidromeApiClient.ReplacePlaylistTracksInOrderAsync(
             navidrome.Url,
             navidrome.Username,
             navidrome.Password,
             playlistId,
             playlistName,
             playlistComment,
-            delta.IntendedOrder,
+            intendedItemIds,
             cancellationToken);
-        if (put.Status == NavidromeNativePlaylistPutStatus.NotSupported && put.HttpStatusCode.HasValue)
-        {
-            _logger.LogInformation(
-                "Navidrome native playlist PUT is unsupported for {PlaylistId}: HTTP {StatusCode}.",
-                SafeLog(playlistId),
-                put.HttpStatusCode);
-            await PersistTargetCapabilityAsync(
-                NavidromeService,
-                NavidromeNativePlaylistPutCapability,
-                supported: false,
-                lastError: $"HTTP {put.HttpStatusCode}",
-                cancellationToken);
-        }
     }
 
     private async Task<bool> IsTargetCapabilitySupportedAsync(
@@ -3549,7 +3523,7 @@ public sealed class PlaylistSyncService
             cancellationToken);
         if (playlistLookup.Status == TargetLookupStatus.Transient)
         {
-            return PlaylistSyncResult.Failed("Navidrome playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+            return PlaylistSyncResult.Failed("Navidrome playlist lookup is unavailable or ambiguous.", PlaylistSyncResultKind.Retry);
         }
 
         if (playlistLookup.Status == TargetLookupStatus.NotFound

@@ -455,11 +455,17 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
 
         return new IdentityVerificationResult(
             IsComplete: remainingTrackIds.Count == 0 && unresolvedPaths.Count == 0,
-            NewMappings: Math.Max(0, mapped.Count - before.Count),
+            NewMappings: CountChangedMappings(before, mapped),
             RemainingPaths: remainingPaths,
             RemainingTrackIds: remainingTrackIds,
             Error: $"{job.TargetService} is still missing {remainingTrackIds.Count} requested track IDs.");
     }
+
+    internal static int CountChangedMappings(
+        IReadOnlyDictionary<long, string> before,
+        IReadOnlyDictionary<long, string> after)
+        => after.Count(entry => !before.TryGetValue(entry.Key, out var previousId)
+            || !string.Equals(previousId, entry.Value, StringComparison.Ordinal));
 
     private async Task RetryAsync(
         MediaServerRefreshOutboxDto job,

@@ -67,6 +67,7 @@ public sealed class MediaServerLibraryRefreshService
         private TargetIdentityLocalIndex(
             IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks,
             HashSet<long> missingTrackIds,
+            HashSet<long> pendingTrackIds,
             Dictionary<string, List<long>> pathMap,
             Dictionary<string, List<long>> suffixMap,
             Dictionary<string, List<long>> parentFileMap,
@@ -75,6 +76,7 @@ public sealed class MediaServerLibraryRefreshService
         {
             Tracks = tracks;
             MissingTrackIds = missingTrackIds;
+            PendingTrackIds = pendingTrackIds;
             _pathMap = pathMap;
             _suffixMap = suffixMap;
             _parentFileMap = parentFileMap;
@@ -85,12 +87,18 @@ public sealed class MediaServerLibraryRefreshService
 
         public IReadOnlyList<TargetServerIdentityLocalTrackDto> Tracks { get; }
         public HashSet<long> MissingTrackIds { get; }
+        public HashSet<long> PendingTrackIds { get; }
         public IReadOnlyDictionary<string, string> PathMappings => _pathMappings;
+
+        public bool HasSameTargetId(long trackId, string targetItemId)
+            => _tracksById.TryGetValue(trackId, out var track)
+               && string.Equals(track.TargetItemId, targetItemId, StringComparison.OrdinalIgnoreCase);
 
         public static TargetIdentityLocalIndex Build(
             IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks,
             IReadOnlyCollection<long>? requestedTrackIds = null,
-            IReadOnlyDictionary<string, string>? pathMappings = null)
+            IReadOnlyDictionary<string, string>? pathMappings = null,
+            bool reconcileExisting = false)
         {
             if (requestedTrackIds is { Count: > 0 })
             {
@@ -105,6 +113,9 @@ public sealed class MediaServerLibraryRefreshService
                 .Where(static track => string.IsNullOrWhiteSpace(track.TargetItemId))
                 .Select(static track => track.TrackId)
                 .ToHashSet();
+            var pendingTrackIds = reconcileExisting
+                ? tracks.Select(static track => track.TrackId).ToHashSet()
+                : new HashSet<long>(missingTrackIds);
 
             foreach (var track in tracks)
             {
@@ -115,6 +126,7 @@ public sealed class MediaServerLibraryRefreshService
             return new TargetIdentityLocalIndex(
                 tracks,
                 missingTrackIds,
+                pendingTrackIds,
                 pathMap,
                 suffixMap,
                 parentFileMap,
@@ -201,7 +213,7 @@ public sealed class MediaServerLibraryRefreshService
             }
 
             tierCandidates = tierCandidates
-                .Where(MissingTrackIds.Contains)
+                .Where(PendingTrackIds.Contains)
                 .Distinct()
                 .ToList();
             if (tierCandidates.Count == 0)
@@ -1268,8 +1280,9 @@ public sealed class MediaServerLibraryRefreshService
             NavidromeService,
             folderId,
             requestedTrackIds,
-            cancellationToken);
-        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+            cancellationToken,
+            reconcileExisting: true);
+        if (localIndex.Tracks.Count == 0 || localIndex.PendingTrackIds.Count == 0)
         {
             return;
         }
@@ -1291,7 +1304,7 @@ public sealed class MediaServerLibraryRefreshService
             var mappedCount = 0;
             var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var offset = 0;
-            while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
+            while (!cancellationToken.IsCancellationRequested && localIndex.PendingTrackIds.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var page = await _navidromeApiClient.GetLibraryTracksAsync(
@@ -1361,17 +1374,20 @@ public sealed class MediaServerLibraryRefreshService
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (localIndex.MissingTrackIds.Count == 0)
+            if (localIndex.PendingTrackIds.Count == 0)
             {
                 break;
             }
 
             var resolution = localIndex.ResolveCandidate(track);
             if (resolution.TrackId is > 0
-                && localIndex.MissingTrackIds.Contains(resolution.TrackId.Value))
+                && localIndex.PendingTrackIds.Remove(resolution.TrackId.Value))
             {
-                mappedTracks.Add((track, resolution.TrackId.Value));
                 localIndex.MissingTrackIds.Remove(resolution.TrackId.Value);
+                if (!localIndex.HasSameTargetId(resolution.TrackId.Value, track.TargetItemId))
+                {
+                    mappedTracks.Add((track, resolution.TrackId.Value));
+                }
                 ReportTargetIdentityProgress(service, folderId, localIndex);
 
                 // Learn the server-root -> local-root transform from this bind so later
@@ -1455,7 +1471,8 @@ public sealed class MediaServerLibraryRefreshService
         string service,
         long? folderId,
         IReadOnlyCollection<long>? requestedTrackIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool reconcileExisting = false)
     {
         await _libraryRepository.DeleteOrphanedMediaServerTrackMetadataAsync(service, cancellationToken);
         var mappings = await _libraryRepository.GetMediaServerPathMappingsAsync(service, cancellationToken);
@@ -1468,7 +1485,8 @@ public sealed class MediaServerLibraryRefreshService
         return TargetIdentityLocalIndex.Build(
             await _libraryRepository.GetTargetServerIdentityLocalTracksAsync(service, folderId, cancellationToken),
             requestedTrackIds,
-            mappingLookup);
+            mappingLookup,
+            reconcileExisting);
     }
 
     private async Task<bool> RetryRefreshAsync(

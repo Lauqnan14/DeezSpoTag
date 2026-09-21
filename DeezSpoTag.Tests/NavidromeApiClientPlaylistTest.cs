@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Navidrome;
 using Xunit;
 
@@ -133,14 +134,14 @@ public sealed class NavidromeApiClientPlaylistTest
     }
 
     [Fact]
-    public async Task UpdatePlaylistImageFromFileAsync_AcceptsSuccessfulUploadWhenTargetServesArtwork()
+    public async Task UpdatePlaylistImageFromFileAsync_AcceptsSuccessfulUploadWithoutUnsupportedGet()
     {
         var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-playlist-{Guid.NewGuid():N}.png");
         await File.WriteAllBytesAsync(imagePath, Convert.FromBase64String(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="));
         try
         {
-            using var handler = new NavidromePlaylistHandler(serveStalePlaylistImage: true);
+            using var handler = new NavidromePlaylistHandler();
             using var httpClient = new HttpClient(handler);
             var client = new NavidromeApiClient(httpClient);
 
@@ -154,6 +155,30 @@ public sealed class NavidromeApiClientPlaylistTest
                 CancellationToken.None);
 
             Assert.True(updated);
+            Assert.Equal(1, handler.RequestedUrls.Count(url => url.Contains("/api/playlist/playlist-1/image", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
+    }
+
+    [Fact]
+    public async Task UpdatePlaylistImageFromFileAsync_ReportsFailedUpload()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-playlist-{Guid.NewGuid():N}.png");
+        await File.WriteAllBytesAsync(imagePath, [0x89, 0x50, 0x4E, 0x47]);
+        try
+        {
+            using var handler = new NavidromePlaylistHandler(imageUploadStatusCode: HttpStatusCode.InternalServerError);
+            using var httpClient = new HttpClient(handler);
+            var client = new NavidromeApiClient(httpClient);
+
+            var updated = await client.UpdatePlaylistImageFromFileAsync(
+                "http://navidrome.local", "user", "pass", "playlist-1", imagePath, "image/png", CancellationToken.None);
+
+            Assert.False(updated);
+            Assert.Equal(1, handler.RequestedUrls.Count(url => url.Contains("/api/playlist/playlist-1/image", StringComparison.Ordinal)));
         }
         finally
         {
@@ -286,97 +311,87 @@ public sealed class NavidromeApiClientPlaylistTest
     }
 
     [Fact]
-    public async Task ReplaceNativePlaylistTracksAsync_LoginFailureIsTransient()
+    public async Task FindPlaylistIdByNameResult_DuplicateNamesDoNotSelectAnArbitraryPlaylist()
     {
-        using var handler = new NavidromePlaylistHandler(loginStatusCode: HttpStatusCode.ServiceUnavailable);
+        using var handler = new NavidromePlaylistHandler(duplicatePlaylistName: true);
+        using var client = new HttpClient(handler);
+        var api = new NavidromeApiClient(client);
+
+        var result = await api.FindPlaylistIdByNameResult(
+            "http://navidrome.local", "user", "pass", "Gold School");
+
+        Assert.Equal(TargetLookupStatus.Transient, result.Status);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task ReplacePlaylistTracksInOrderAsync_UsesSubsonicRemovalAndAddition()
+    {
+        using var handler = new NavidromePlaylistHandler(simulatePlaylistOrder: true);
+        handler.StoredSongIds.Add("song-2");
         using var httpClient = new HttpClient(handler);
         var client = new NavidromeApiClient(httpClient);
 
-        var put = await client.ReplaceNativePlaylistTracksAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
-            "playlist-1",
-            "Gold School",
-            "A reliable playlist description",
-            new[] { "song-2", "song-1" },
-            CancellationToken.None);
+        var ordered = await client.ReplacePlaylistTracksInOrderAsync(
+            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
+            "A reliable playlist description", ["song-2", "song-1"], CancellationToken.None);
 
-        Assert.Equal(NavidromeNativePlaylistPutStatus.Transient, put.Status);
-        Assert.Null(put.HttpStatusCode);
+        Assert.True(ordered);
+        Assert.Equal(["song-2", "song-1"], handler.StoredSongIds);
+        Assert.Contains(handler.RequestedUrls, url => url.Contains("songIndexToRemove=1", StringComparison.Ordinal));
         Assert.DoesNotContain(handler.RequestedUrls, url => url.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task ReplaceNativePlaylistTracksAsync_PutsOrderedTrackIdsWithoutCreate()
+    public async Task ReplacePlaylistTracksInOrderAsync_FailedUpdateDoesNotReportSuccess()
     {
-        using var handler = new NavidromePlaylistHandler();
+        using var handler = new NavidromePlaylistHandler(simulatePlaylistOrder: true,
+            updatePlaylistStatusCode: HttpStatusCode.InternalServerError);
+        handler.StoredSongIds.Add("song-2");
         using var httpClient = new HttpClient(handler);
         var client = new NavidromeApiClient(httpClient);
 
-        var added = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
-            "Gold School",
-            new[] { "song-1", "song-2" },
-            existingPlaylistId: "playlist-1",
-            appendMissingOnly: true,
-            CancellationToken.None,
-            "A reliable playlist description");
-        var put = await client.ReplaceNativePlaylistTracksAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
-            "playlist-1",
-            "Gold School",
-            "A reliable playlist description",
-            new[] { "song-2", "song-1" },
-            CancellationToken.None);
+        var ordered = await client.ReplacePlaylistTracksInOrderAsync(
+            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
+            null, ["song-2", "song-1"], CancellationToken.None);
 
-        Assert.Equal("playlist-1", added);
-        Assert.Equal(NavidromeNativePlaylistPutStatus.Updated, put.Status);
-        Assert.Contains(handler.RequestedUrls, url => url.Contains("/rest/updatePlaylist.view?", StringComparison.Ordinal));
-        Assert.DoesNotContain(handler.RequestedUrls, url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
-        Assert.Equal(1, handler.RequestedUrls.Count(url => url.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal)));
-        Assert.Contains("\"tracksIds\"", handler.LastPutBody, StringComparison.Ordinal);
-        Assert.Contains("song-2", handler.LastPutBody, StringComparison.Ordinal);
-        Assert.Contains("song-1", handler.LastPutBody, StringComparison.Ordinal);
-        Assert.Contains("\"id\":\"playlist-1\"", handler.LastPutBody.Replace(" ", string.Empty), StringComparison.Ordinal);
+        Assert.False(ordered);
+        Assert.Equal(["song-1", "song-2"], handler.StoredSongIds);
     }
 
     [Fact]
-    public async Task ReplaceNativePlaylistTracksAsync_Non2xxKeepsMembership()
+    public async Task ReplacePlaylistTracksInOrderAsync_RejectsAcknowledgedButUnchangedOrder()
     {
-        using var handler = new NavidromePlaylistHandler(nativePutStatusCode: HttpStatusCode.InternalServerError);
+        using var handler = new NavidromePlaylistHandler(simulatePlaylistOrder: true, ignorePlaylistUpdates: true);
+        handler.StoredSongIds.Add("song-2");
         using var httpClient = new HttpClient(handler);
         var client = new NavidromeApiClient(httpClient);
 
-        var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
-            "Gold School",
-            new[] { "song-1", "song-2" },
-            existingPlaylistId: "playlist-1",
-            appendMissingOnly: true,
-            CancellationToken.None,
-            "A reliable playlist description");
-        var put = await client.ReplaceNativePlaylistTracksAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
-            "playlist-1",
-            "Gold School",
-            "A reliable playlist description",
-            new[] { "song-2", "song-1" },
-            CancellationToken.None);
+        var ordered = await client.ReplacePlaylistTracksInOrderAsync(
+            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
+            null, ["song-2", "song-1"], CancellationToken.None);
 
-        Assert.Equal("playlist-1", playlistId);
-        Assert.Equal(NavidromeNativePlaylistPutStatus.NotSupported, put.Status);
-        Assert.Contains(handler.RequestedUrls, url => url.Contains("songIdToAdd=song-2", StringComparison.Ordinal));
-        Assert.DoesNotContain(handler.RequestedUrls, url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+        Assert.False(ordered);
         Assert.Equal(["song-1", "song-2"], handler.StoredSongIds);
+    }
+
+    [Fact]
+    public async Task ReplacePlaylistTracksInOrderAsync_BatchesLargeReorderWithoutShiftingIndexes()
+    {
+        using var handler = new NavidromePlaylistHandler(simulatePlaylistOrder: true);
+        handler.StoredSongIds.Clear();
+        handler.StoredSongIds.AddRange(Enumerable.Range(1, 250).Select(index => $"song-{index}"));
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+        var desired = handler.StoredSongIds.AsEnumerable().Reverse().ToList();
+
+        var ordered = await client.ReplacePlaylistTracksInOrderAsync(
+            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
+            null, desired, CancellationToken.None);
+
+        Assert.True(ordered);
+        Assert.Equal(desired, handler.StoredSongIds);
+        Assert.Equal(6, handler.RequestedUrls.Count(url => url.Contains("/rest/updatePlaylist.view?", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -419,19 +434,20 @@ public sealed class NavidromeApiClientPlaylistTest
     private sealed class NavidromePlaylistHandler(
         bool createReturnsPlaylist = true,
         bool playlistExistsInitially = true,
-        bool serveStalePlaylistImage = false,
-        HttpStatusCode nativePutStatusCode = HttpStatusCode.OK,
         HttpStatusCode getPlaylistStatusCode = HttpStatusCode.OK,
         HttpStatusCode getPlaylistsStatusCode = HttpStatusCode.OK,
-        HttpStatusCode loginStatusCode = HttpStatusCode.OK) : HttpMessageHandler
+        HttpStatusCode loginStatusCode = HttpStatusCode.OK,
+        bool duplicatePlaylistName = false,
+        bool simulatePlaylistOrder = false,
+        HttpStatusCode updatePlaylistStatusCode = HttpStatusCode.OK,
+        HttpStatusCode imageUploadStatusCode = HttpStatusCode.OK,
+        bool ignorePlaylistUpdates = false) : HttpMessageHandler
     {
         private bool _playlistCreated;
-        private byte[] _playlistImageBytes = Array.Empty<byte>();
         public List<string> RequestedUrls { get; } = new();
         public List<string> StoredSongIds { get; } = ["song-1"];
         public string UploadAuthorization { get; private set; } = string.Empty;
         public string UploadBody { get; private set; } = string.Empty;
-        public string LastPutBody { get; private set; } = string.Empty;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -453,35 +469,11 @@ public sealed class NavidromeApiClientPlaylistTest
                     """);
             }
 
-            if (path.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal)
-                && request.Method == HttpMethod.Put)
-            {
-                LastPutBody = request.Content == null
-                    ? string.Empty
-                    : await request.Content.ReadAsStringAsync(cancellationToken);
-                if (nativePutStatusCode == HttpStatusCode.OK)
-                {
-                    StoredSongIds.Clear();
-                    StoredSongIds.AddRange(new[] { "song-2", "song-1" });
-                }
-
-                return new HttpResponseMessage(nativePutStatusCode)
-                {
-                    Content = new StringContent("""{"id":"playlist-1"}""")
-                };
-            }
-
             if (path.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal))
             {
-                if (request.Method == HttpMethod.Get)
-                {
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new ByteArrayContent(serveStalePlaylistImage ? [0x01, 0x02, 0x03] : _playlistImageBytes)
-                    };
-                }
-
-                return await CaptureImageUploadAsync(request, cancellationToken);
+                return imageUploadStatusCode == HttpStatusCode.OK
+                    ? await CaptureImageUploadAsync(request, cancellationToken)
+                    : new HttpResponseMessage(imageUploadStatusCode);
             }
 
             if (path.EndsWith("/api/artist/artist-1/image", StringComparison.Ordinal))
@@ -514,7 +506,12 @@ public sealed class NavidromeApiClientPlaylistTest
                 }
 
                 var playlists = playlistExistsInitially || _playlistCreated
-                    ? """
+                    ? duplicatePlaylistName ? """
+                              "playlist": [
+                                { "id": "playlist-1", "name": "Gold School", "songCount": 1 },
+                                { "id": "playlist-2", "name": "Gold School", "songCount": 1 }
+                              ]
+                      """ : """
                               "playlist": [
                                 { "id": "playlist-1", "name": "Gold School", "songCount": 1 }
                               ]
@@ -539,6 +536,13 @@ public sealed class NavidromeApiClientPlaylistTest
                 if (getPlaylistStatusCode != HttpStatusCode.OK)
                 {
                     return new HttpResponseMessage(getPlaylistStatusCode);
+                }
+
+                if (simulatePlaylistOrder)
+                {
+                    var entries = string.Join(",", StoredSongIds.Select(id =>
+                        System.Text.Json.JsonSerializer.Serialize(new { id, title = id, artist = "Artist" })));
+                    return await Json("{\"subsonic-response\":{\"status\":\"ok\",\"playlist\":{\"id\":\"playlist-1\",\"name\":\"Gold School\",\"entry\":[" + entries + "]}}}");
                 }
 
                 return await Json("""
@@ -595,6 +599,24 @@ public sealed class NavidromeApiClientPlaylistTest
                       """);
             }
 
+            if (path.EndsWith("/updatePlaylist.view", StringComparison.Ordinal) && simulatePlaylistOrder)
+            {
+                if (updatePlaylistStatusCode != HttpStatusCode.OK)
+                {
+                    return new HttpResponseMessage(updatePlaylistStatusCode);
+                }
+                if (!ignorePlaylistUpdates)
+                {
+                    foreach (var index in GetQueryValues(url, "songIndexToRemove")
+                        .Select(int.Parse).OrderDescending())
+                    {
+                        StoredSongIds.RemoveAt(index);
+                    }
+                    StoredSongIds.AddRange(GetQueryValues(url, "songIdToAdd"));
+                }
+                return await Json("""{"subsonic-response":{"status":"ok"}}""");
+            }
+
             if (path.EndsWith("/updatePlaylist.view", StringComparison.Ordinal))
             {
                 var query = request.RequestUri.Query;
@@ -629,11 +651,6 @@ public sealed class NavidromeApiClientPlaylistTest
             UploadBody = request.Content == null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken);
-            if (request.RequestUri!.AbsolutePath.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal)
-                && request.Content is MultipartContent multipart)
-            {
-                _playlistImageBytes = await multipart.First().ReadAsByteArrayAsync(cancellationToken);
-            }
             return await Json("""
                 {
                   "status": "ok"

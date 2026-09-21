@@ -341,6 +341,19 @@ public sealed class EngineFallbackCoordinator
             _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (resolution timeout)");
             return false;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException
+                                   && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            AddFallbackAttempt(
+                context.PayloadForSerialization,
+                step,
+                stepIndex,
+                "skipped",
+                FallbackFailureClassifier.Classify(ex),
+                ex.Message);
+            _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (provider resolution failed: {ex.Message})");
+            return false;
+        }
 
         if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
