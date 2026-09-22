@@ -345,8 +345,24 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             var completed = await run(cts.Token);
             if (!completed)
             {
-                // Cancel and "already running" must not stamp a successful sweep clock.
-                await ClearActiveRunWithoutStampingAsync();
+                // The target updater catches cancellation and returns false, so a shutdown
+                // interrupt never reaches the catch below. Keep that run for resume.
+                // Any other incomplete result (user cancel, updater already running) must
+                // not stamp a successful sweep clock.
+                if (_shutdownToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation(
+                        "Artist metadata {Operation} was interrupted by shutdown; keeping the run for resume ({Completed} artist(s) done).",
+                        operation,
+                        _checkpoint?.CompletedArtistIds.Count ?? 0);
+                    await FlushCheckpointAsync();
+                    await PersistCheckpointAsync();
+                }
+                else
+                {
+                    await ClearActiveRunWithoutStampingAsync();
+                }
+
                 return;
             }
 
@@ -379,6 +395,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                     "Artist metadata {Operation} was interrupted by shutdown; keeping the run for resume ({Completed} artist(s) done).",
                     operation,
                     _checkpoint?.CompletedArtistIds.Count ?? 0);
+                await FlushCheckpointAsync();
                 await PersistCheckpointAsync();
             }
             else
@@ -452,8 +469,24 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private async Task PersistCheckpointAsync()
     {
         var epoch = Volatile.Read(ref _checkpointEpoch);
-        var checkpoint = _checkpoint;
-        if (checkpoint is null)
+        ArtistMetadataActiveRun? snapshot;
+        lock (_checkpointLock)
+        {
+            var checkpoint = _checkpoint;
+            snapshot = checkpoint is null
+                ? null
+                : new ArtistMetadataActiveRun
+                {
+                    Operation = checkpoint.Operation,
+                    Automatic = checkpoint.Automatic,
+                    StartedAtUtc = checkpoint.StartedAtUtc,
+                    CacheRequest = checkpoint.CacheRequest,
+                    TargetRequest = checkpoint.TargetRequest,
+                    CompletedArtistIds = checkpoint.CompletedArtistIds.ToList()
+                };
+        }
+
+        if (snapshot is null)
         {
             return;
         }
@@ -466,7 +499,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 return;
             }
 
-            state.ActiveRun = checkpoint;
+            state.ActiveRun = snapshot;
             await SaveStateAsync(state, CancellationToken.None);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -478,7 +511,11 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private async Task StopCheckpointWritesAsync()
     {
         Interlocked.Increment(ref _checkpointEpoch);
-        _checkpoint = null;
+        lock (_checkpointLock)
+        {
+            _checkpoint = null;
+        }
+
         await FlushCheckpointAsync();
     }
 
@@ -557,7 +594,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         bool automatic,
         CancellationToken cancellationToken)
     {
-        if (request.IncludeDiscography == true)
+        // Discography runs once, before any artist is recorded. A resumed run that
+        // already has completed artists is past that pass and continues at the updater.
+        var completedArtistIds = CheckpointCompletedIds();
+        if (request.IncludeDiscography == true && completedArtistIds is null)
         {
             await _cacheRefresh.RefreshAsync(
                 new ArtistMetadataCacheRefreshRequest(
@@ -581,7 +621,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             request,
             automatic,
             progress,
-            CheckpointCompletedIds(),
+            completedArtistIds,
             cancellationToken);
     }
 
@@ -623,10 +663,17 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             return;
         }
 
-        checkpoint.CompletedArtistIds.Add(artistId.Value);
         lock (_checkpointLock)
         {
-            _checkpointSave = SaveCheckpointAfterAsync(_checkpointSave);
+            checkpoint.CompletedArtistIds.Add(artistId.Value);
+            // Continue asynchronously so this lock is not held when the save snapshots the list.
+            _checkpointSave = _checkpointSave.ContinueWith(
+                static (previous, state) =>
+                    ((ArtistMetadataAutomationCoordinator)state!).SaveCheckpointAfterAsync(previous),
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.RunContinuationsAsynchronously,
+                TaskScheduler.Default).Unwrap();
         }
     }
 

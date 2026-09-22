@@ -25,6 +25,19 @@ public sealed class ArtistMetadataAutomationResilienceTest
         var clearIndex = body.IndexOf("ClearActiveRunWithoutStampingAsync", StringComparison.Ordinal);
         Assert.True(clearIndex > body.IndexOf("else", StringComparison.Ordinal),
             "The clear path must be the user-cancel branch, not the shutdown branch.");
+
+        // Target update reports cancellation as a false result, so the same rule has
+        // to hold before the catch. Otherwise shutdown wipes the checkpoint.
+        var unfinished = source.IndexOf("if (!completed)", methodStart, StringComparison.Ordinal);
+        Assert.True(unfinished > 0 && unfinished < start);
+        var unfinishedBody = source[unfinished..start];
+        Assert.Contains("_shutdownToken.IsCancellationRequested", unfinishedBody, StringComparison.Ordinal);
+        Assert.Contains("keeping the run for resume", unfinishedBody, StringComparison.Ordinal);
+        Assert.Contains("PersistCheckpointAsync", unfinishedBody, StringComparison.Ordinal);
+        Assert.Contains("FlushCheckpointAsync", unfinishedBody, StringComparison.Ordinal);
+        var unfinishedClear = unfinishedBody.IndexOf("ClearActiveRunWithoutStampingAsync", StringComparison.Ordinal);
+        Assert.True(unfinishedClear > unfinishedBody.IndexOf("else", StringComparison.Ordinal),
+            "A false result during shutdown must keep the run.");
     }
 
     [Fact]
@@ -112,7 +125,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
 
         Assert.Contains("CheckpointCompletedIds()", coordinator, StringComparison.Ordinal);
         Assert.Contains("NoteArtistCompleted(value.CompletedArtistId)", coordinator, StringComparison.Ordinal);
-        Assert.Contains("SaveCheckpointAfterAsync(_checkpointSave)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("SaveCheckpointAfterAsync(previous)", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("CheckpointSaveEvery", coordinator, StringComparison.Ordinal);
         Assert.Contains("if (completed.Contains(artist.Id))", cache, StringComparison.Ordinal);
         Assert.Contains("processed, artists.Count", cache, StringComparison.Ordinal);
