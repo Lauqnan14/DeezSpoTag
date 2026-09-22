@@ -21,57 +21,117 @@ public sealed partial class ArtistArtworkCatalogService
         var localAlbumTitles = await GetLocalAlbumTitlesForOverlapAsync(artistId, cancellationToken);
         var resolvableAlbums = ArtistIdentityTextNormalizer.FilterResolvableTitles(localAlbumTitles);
         var requireOverlap = ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(resolvableAlbums);
+        var providerGate = new ArtistMetadataProviderGate(_logger);
 
-        var previousSpotifyId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", cancellationToken);
-        await _spotify.EnsureSpotifyArtistIdAsync(artistId, artistName, cancellationToken);
-        var nextSpotifyId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", cancellationToken);
-        if (!string.Equals(previousSpotifyId, nextSpotifyId, StringComparison.OrdinalIgnoreCase))
+        if (await MatchSourceIdSafelyAsync(
+                artistId,
+                "spotify",
+                async token =>
+                {
+                    var previousId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", token);
+                    await _spotify.EnsureSpotifyArtistIdAsync(artistId, artistName, token);
+                    var nextId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", token);
+                    if (string.Equals(previousId, nextId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, "spotify", token);
+                    return true;
+                },
+                providerGate,
+                cancellationToken))
         {
-            await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, "spotify", cancellationToken);
             changed.Add("spotify");
         }
 
-        if (await ReplaceSourceIdIfChangedAsync(
+        if (await MatchSourceIdSafelyAsync(
                 artistId,
                 "deezer",
-                await MatchDeezerArtistIdAsync(artistName, titles, cancellationToken)
-                ?? await MatchArtistIdByAlbumOverlapAsync("deezer", artistName, resolvableAlbums, requireOverlap, cancellationToken),
+                async token => await ReplaceSourceIdIfChangedAsync(
+                    artistId,
+                    "deezer",
+                    await MatchDeezerArtistIdAsync(artistName, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync("deezer", artistName, resolvableAlbums, requireOverlap, token),
+                    token),
+                providerGate,
                 cancellationToken))
         {
             changed.Add("deezer");
         }
 
-        if (await ReplaceSourceIdIfChangedAsync(
+        if (await MatchSourceIdSafelyAsync(
                 artistId,
                 "apple",
-                await _apple.ResolveArtistIdFromLocalTracksAsync(artistName, titles, cancellationToken),
+                async token => await ReplaceSourceIdIfChangedAsync(
+                    artistId,
+                    "apple",
+                    await _apple.ResolveArtistIdFromLocalTracksAsync(artistName, titles, token),
+                    token),
+                providerGate,
                 cancellationToken))
         {
             changed.Add("apple");
             changed.Add("itunes");
         }
 
-        if (await ReplaceSourceIdIfChangedAsync(
-                artistId,
-                "qobuz",
-                await MatchQobuzArtistIdAsync(artistName, titles, cancellationToken)
-                ?? await MatchArtistIdByAlbumOverlapAsync("qobuz", artistName, resolvableAlbums, requireOverlap, cancellationToken),
-                cancellationToken))
-        {
-            changed.Add("qobuz");
-        }
-
-        if (await ReplaceSourceIdIfChangedAsync(
+        if (await MatchSourceIdSafelyAsync(
                 artistId,
                 "tidal",
-                await MatchTidalArtistIdAsync(artistName, titles, cancellationToken)
-                ?? await MatchArtistIdByAlbumOverlapAsync("tidal", artistName, resolvableAlbums, requireOverlap, cancellationToken),
+                async token => await ReplaceSourceIdIfChangedAsync(
+                    artistId,
+                    "tidal",
+                    await MatchTidalArtistIdAsync(artistName, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync("tidal", artistName, resolvableAlbums, requireOverlap, token),
+                    token),
+                providerGate,
                 cancellationToken))
         {
             changed.Add("tidal");
         }
 
+        if (await MatchSourceIdSafelyAsync(
+                artistId,
+                "qobuz",
+                async token => await ReplaceSourceIdIfChangedAsync(
+                    artistId,
+                    "qobuz",
+                    await MatchQobuzArtistIdAsync(artistName, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync("qobuz", artistName, resolvableAlbums, requireOverlap, token),
+                    token),
+                providerGate,
+                cancellationToken))
+        {
+            changed.Add("qobuz");
+        }
+
         return changed;
+    }
+
+    private async Task<bool> MatchSourceIdSafelyAsync(
+        long artistId,
+        string provider,
+        Func<CancellationToken, Task<bool>> match,
+        ArtistMetadataProviderGate providerGate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await providerGate.RunAsync(provider, match, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Artist source matcher {Provider} failed for artist {ArtistId}.",
+                provider,
+                artistId);
+            return false;
+        }
     }
 
     private async Task<IReadOnlyList<string>> LoadLocalTitlesAsync(long artistId, CancellationToken cancellationToken)

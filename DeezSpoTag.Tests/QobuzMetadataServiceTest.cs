@@ -16,6 +16,26 @@ namespace DeezSpoTag.Tests;
 public sealed class QobuzMetadataServiceTest
 {
     [Fact]
+    public void QobuzTrack_AllowsNullAlbumReleasedAt()
+    {
+        var track = JsonSerializer.Deserialize<QobuzTrack>("""
+            {
+              "id": 123,
+              "title": "Example",
+              "album": {
+                "id": "album-id",
+                "title": "Example Album",
+                "released_at": null
+              }
+            }
+            """);
+
+        Assert.NotNull(track);
+        Assert.NotNull(track.Album);
+        Assert.Null(track.Album.ReleasedAt);
+    }
+
+    [Fact]
     public async Task FindTrackByIsrc_UsesExactCatalogSearchResult()
     {
         var expected = new QobuzTrack { Id = 41904271, ISRC = "USCGH1697037", Title = "Caroline" };

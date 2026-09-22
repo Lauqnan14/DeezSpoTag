@@ -273,6 +273,25 @@ public sealed class ArtistMetadataAutomationResilienceTest
     }
 
     [Fact]
+    public void AutomaticBiographyAndMediaExtrasProvidersAreOrderedAndIsolated()
+    {
+        var cache = ReadCacheRefresh();
+        var spotify = cache.IndexOf("BiographyProvider.Spotify,", StringComparison.Ordinal);
+        var apple = cache.IndexOf("BiographyProvider.Apple,", spotify, StringComparison.Ordinal);
+        var tidal = cache.IndexOf("BiographyProvider.Tidal,", apple, StringComparison.Ordinal);
+        var lastFm = cache.IndexOf("BiographyProvider.LastFm,", tidal, StringComparison.Ordinal);
+        var audiomack = cache.IndexOf("BiographyProvider.Audiomack,", lastFm, StringComparison.Ordinal);
+        var qobuz = cache.IndexOf("BiographyProvider.Qobuz", audiomack, StringComparison.Ordinal);
+
+        Assert.True(spotify >= 0 && apple > spotify && tidal > apple);
+        Assert.True(lastFm > tidal && audiomack > lastFm && qobuz > audiomack);
+        Assert.Contains("RefreshMediaExtrasAsync(\"apple\"", cache, StringComparison.Ordinal);
+        Assert.Contains("RefreshMediaExtrasAsync(\"tidal\"", cache, StringComparison.Ordinal);
+        Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex)", cache, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ProviderOrderStillDecidesTheSelectedBiography()
     {
         var cache = ReadCacheRefresh();

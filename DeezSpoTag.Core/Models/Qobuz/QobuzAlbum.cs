@@ -24,7 +24,7 @@ public sealed class QobuzAlbum
     public QobuzImage? Image { get; set; }
 
     [JsonPropertyName("released_at")]
-    public long ReleasedAt { get; set; }
+    public long? ReleasedAt { get; set; }
 
     [JsonPropertyName("release_date_original")]
     public string? ReleaseDateOriginal { get; set; }

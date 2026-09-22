@@ -383,6 +383,27 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
     }
 
     [Fact]
+    public void AutomaticArtistIdentityMatchersAreIsolatedAndQobuzRunsLast()
+    {
+        var matching = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "ArtistArtworkCatalogService.Matching.cs"));
+        var methodStart = matching.IndexOf("private async Task<HashSet<string>> EnsureMatchedSourceIdsAsync", StringComparison.Ordinal);
+        var methodEnd = matching.IndexOf("private async Task<IReadOnlyList<string>> LoadLocalTitlesAsync", methodStart, StringComparison.Ordinal);
+        var method = matching[methodStart..methodEnd];
+
+        Assert.Contains("MatchSourceIdSafelyAsync", matching, StringComparison.Ordinal);
+        Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", matching, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex)", matching, StringComparison.Ordinal);
+        Assert.Contains("Artist source matcher {Provider} failed for artist {ArtistId}", matching, StringComparison.Ordinal);
+        Assert.Equal(5, method.Split("if (await MatchSourceIdSafelyAsync(").Length - 1);
+        Assert.True(method.LastIndexOf("\"tidal\"", StringComparison.Ordinal)
+                    < method.LastIndexOf("\"qobuz\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ArtistTopTracks_AreLibrespotEnrichedBeforeDeezerLinking()
     {
         var root = RepositoryRoot();

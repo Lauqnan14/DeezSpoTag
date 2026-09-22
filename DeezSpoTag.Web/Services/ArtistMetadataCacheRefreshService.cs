@@ -24,9 +24,9 @@ public sealed class ArtistMetadataCacheRefreshService
         BiographyProvider.Spotify,
         BiographyProvider.Apple,
         BiographyProvider.Tidal,
-        BiographyProvider.Qobuz,
         BiographyProvider.LastFm,
-        BiographyProvider.Audiomack
+        BiographyProvider.Audiomack,
+        BiographyProvider.Qobuz
     ];
     private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
     private readonly LibraryRepository _repository;
@@ -306,7 +306,11 @@ public sealed class ArtistMetadataCacheRefreshService
                 _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (!ArtistMetadataProviderGate.IsRateLimited(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -329,7 +333,11 @@ public sealed class ArtistMetadataCacheRefreshService
         {
             await refresh(artistId, artistName, cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
         {
             _logger.LogWarning(ex, "Artist {Provider} media extras cache refresh failed for artist {ArtistId}.", provider, artistId);
         }
