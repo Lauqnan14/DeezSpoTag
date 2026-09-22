@@ -461,6 +461,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
     public async Task RunOnce_CleansStaleFailureState_WhenWatchItemIsRemoved()
     {
         await _repository.AddPlaylistWatchlistAsync("deezer", "pl-stale", new PlaylistWatchlistMetadataInput("StaleFailing", null, null, null));
+        await ConfigurePlaylistDestinationAsync("deezer", "pl-stale");
 
         var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         var staleKey = "playlist:deezer:pl-stale";
@@ -494,6 +495,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
                     TrackCount: null),
                 CancellationToken.None);
             Assert.IsType<OkObjectResult>(result);
+            await ConfigurePlaylistDestinationAsync("unsupported", $"pl-load-{index:D4}");
         }
 
         var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
@@ -530,6 +532,8 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-circuit-1", new PlaylistWatchlistMetadataInput("Circuit One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-circuit-2", new PlaylistWatchlistMetadataInput("Circuit Two", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-circuit-1");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-circuit-2");
 
         await _repository.UpsertWatchlistSchedulerStateAsync(
             new LibraryRepository.WatchlistSchedulerStateUpsertInput(
@@ -716,6 +720,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         _settingsService.SaveSettings(settings);
 
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", new PlaylistWatchlistMetadataInput("Persisted Delay", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-persisted-delay");
 
         var firstHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(firstHosted);
@@ -737,6 +742,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
     public async Task RunOnce_BackoffWarnings_OnlyLogAtThresholdMilestones()
     {
         await _repository.AddPlaylistWatchlistAsync("deezer", "pl-log-threshold", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
+        await ConfigurePlaylistDestinationAsync("deezer", "pl-log-threshold");
 
         var logger = new ListLogger<WatchlistRunCoordinator>();
         var hosted = new WatchlistRunCoordinator(_provider, logger);
@@ -756,6 +762,33 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         // Canonical monitor flow should keep warning noise low.
         Assert.InRange(warningCount, 1, 4);
         Assert.InRange(debugCount, 1, 3);
+    }
+
+    [Fact]
+    public async Task RunOnce_IgnoresPlaylistUntilExplicitDestinationIsAssigned()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "unsupported",
+            "pl-no-destination",
+            new PlaylistWatchlistMetadataInput("No Destination", null, null, null));
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var ignored = await _repository.GetPlaylistWatchStateAsync(
+            "unsupported",
+            "pl-no-destination",
+            CancellationToken.None);
+        Assert.Null(ignored?.LastCheckedUtc);
+
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-no-destination");
+        await InvokeRunOnceAsync(hosted);
+
+        var eligible = await _repository.GetPlaylistWatchStateAsync(
+            "unsupported",
+            "pl-no-destination",
+            CancellationToken.None);
+        Assert.NotNull(eligible?.LastCheckedUtc);
     }
 
     [Fact]

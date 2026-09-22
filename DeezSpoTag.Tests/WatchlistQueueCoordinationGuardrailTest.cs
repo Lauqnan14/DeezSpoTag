@@ -62,9 +62,30 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.DoesNotContain("GetUnfinishedWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetActiveWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("_queueAdmission.TryAdmitTrack()", watchSource, StringComparison.Ordinal);
-        Assert.Contains("_queueAdmission.HasAnyAdmittedIdentity(identityKeys)", watchSource, StringComparison.Ordinal);
-        Assert.Contains("_queueAdmission.RememberAdmittedIdentities(identityKeys)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.HasAnyAttemptedIdentity(identityKeys)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.RememberAttemptedIdentities(identityKeys)", watchSource, StringComparison.Ordinal);
+        var reserveIndex = watchSource.IndexOf("var admission = _queueAdmission.TryAdmitTrack()", StringComparison.Ordinal);
+        var rememberIndex = watchSource.IndexOf("_queueAdmission.RememberAttemptedIdentities(identityKeys)", reserveIndex, StringComparison.Ordinal);
+        var enqueueIndex = watchSource.IndexOf("await TryQueuePrimaryIntentAsync(", reserveIndex, StringComparison.Ordinal);
+        Assert.True(reserveIndex >= 0 && rememberIndex > reserveIndex && enqueueIndex > rememberIndex);
         Assert.Contains("BuildWatchIdentityKeys", watchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActiveWatchCycle_FiltersItemsWithoutExplicitDestinationsBeforeTraversalAndAccounting()
+    {
+        var coordinator = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var loadIndex = coordinator.IndexOf("GetPlaylistWatchlistAsync", StringComparison.Ordinal);
+        var filterIndex = coordinator.IndexOf("FilterEligibleWatchItemsAsync", loadIndex, StringComparison.Ordinal);
+        var combinedIndex = coordinator.IndexOf("BuildCombinedWatchItems", loadIndex, StringComparison.Ordinal);
+        var playlistTraversalIndex = coordinator.IndexOf("ProcessPlaylistWatchItemsAsync", loadIndex, StringComparison.Ordinal);
+        var artistTraversalIndex = coordinator.IndexOf("ProcessArtistWatchItemsAsync", loadIndex, StringComparison.Ordinal);
+
+        Assert.True(loadIndex >= 0);
+        Assert.True(filterIndex > loadIndex && filterIndex < combinedIndex);
+        Assert.True(filterIndex < playlistTraversalIndex && filterIndex < artistTraversalIndex);
+        Assert.Contains("DestinationFolderId is > 0", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("AtmosDestinationFolderId is > 0", coordinator, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,6 +192,12 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.DoesNotContain(
             "var selection = await SelectMissingPlaylistTracksAsync(\r\n            source,\r\n            sourceId,\r\n            candidates,\r\n            preference?.DestinationFolderId,\r\n            queueOptions,\r\n            cancellationToken);\r\n        var queueResult = await QueueWatchIntentTracksAsync(",
             engineSource,
+            StringComparison.Ordinal);
+        var artistLoopStart = hostedSource.IndexOf("foreach (var item in artistItems)", StringComparison.Ordinal);
+        var artistLoopEnd = hostedSource.IndexOf("private async Task<WatchItemExecutionOutcome> TryProcessItemAsync", artistLoopStart, StringComparison.Ordinal);
+        Assert.Contains(
+            "AdmitDueMissingTracksWhenQuotaReadyAsync",
+            hostedSource[artistLoopStart..artistLoopEnd],
             StringComparison.Ordinal);
     }
 

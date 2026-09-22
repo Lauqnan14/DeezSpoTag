@@ -857,7 +857,7 @@ internal sealed class WatchlistEngine
         var eligibleRows = SelectEarlyAdmissionEligibleRows(
             dueRows,
             destinationKeys,
-            _queueAdmission.HasAnyAdmittedIdentity);
+            _queueAdmission.HasAnyAttemptedIdentity);
         // End-of-run: every monitored playlist and artist has already written to the ledger.
         // Fill the quota when possible; if the whole watchlist is still short, queue it anyway.
         var selectedRows = SelectAdmissionBatch(
@@ -955,40 +955,23 @@ internal sealed class WatchlistEngine
         CancellationToken cancellationToken)
     {
         var remainingQuota = _queueAdmission.GetRemaining();
-        if (playlists.Count == 0 || remainingQuota <= 0)
+        if (remainingQuota <= 0)
         {
             return [];
         }
 
         await ReconcileLedgerOwnershipWithLiveQueueAsync(cancellationToken);
         var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
-        var playlistKeys = playlists
-            .Select(playlist => BuildPlaylistWatchKey(playlist.Source, playlist.SourceId ?? string.Empty))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var destinationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var inspectedPreferenceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in dueRows)
-        {
-            var key = BuildPlaylistWatchKey(row.Source, row.SourceId ?? string.Empty);
-            if (!playlistKeys.Contains(key) || !inspectedPreferenceKeys.Add(key))
-            {
-                continue;
-            }
-
-            var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
-                NormalizeWatchSource(row.Source),
-                (row.SourceId ?? string.Empty).Trim(),
-                cancellationToken);
-            if (HasDownloadDestination(preference))
-            {
-                destinationKeys.Add(key);
-            }
-        }
+        var artistsById = await LoadArtistWatchByIdAsync(cancellationToken);
+        var destinationKeys = await CollectAdmissionDestinationKeysAsync(
+            dueRows,
+            artistsById,
+            cancellationToken);
 
         var eligibleRows = SelectEarlyAdmissionEligibleRows(
             dueRows,
             destinationKeys,
-            _queueAdmission.HasAnyAdmittedIdentity);
+            _queueAdmission.HasAnyAttemptedIdentity);
         if (!WatchlistQueueAdmissionService.ShouldAdmitBeforeRunEnd(eligibleRows.Count, remainingQuota))
         {
             return [];
@@ -1004,7 +987,24 @@ internal sealed class WatchlistEngine
         }
 
         GrantAdmissionOverflow(selectedRows.Count);
-        return await AdmitDueMissingTrackRowsAsync(playlists, selectedRows, cancellationToken);
+        var playlistRows = selectedRows
+            .Where(static row => !IsArtistWatchContainerKey(row.SourceId))
+            .ToList();
+        var artistRows = selectedRows
+            .Where(static row => IsArtistWatchContainerKey(row.SourceId))
+            .ToList();
+        var results = new List<PlaylistReconciliationResult>();
+        if (playlistRows.Count > 0 && playlists.Count > 0)
+        {
+            results.AddRange(await AdmitDueMissingTrackRowsAsync(playlists, playlistRows, cancellationToken));
+        }
+
+        if (artistRows.Count > 0)
+        {
+            results.AddRange(await AdmitArtistWatchMissingTrackRowsAsync(artistRows, artistsById, cancellationToken));
+        }
+
+        return results;
     }
 
     /// <summary>
@@ -1031,7 +1031,7 @@ internal sealed class WatchlistEngine
         var artistRows = SelectEarlyAdmissionEligibleRows(
                 dueRows,
                 destinationKeys,
-                _queueAdmission.HasAnyAdmittedIdentity)
+                _queueAdmission.HasAnyAttemptedIdentity)
             .Where(static row => IsArtistWatchContainerKey(row.SourceId))
             .ToList();
         var selectedRows = SelectAdmissionBatch(
@@ -1142,7 +1142,7 @@ internal sealed class WatchlistEngine
     internal static IReadOnlyList<PlaylistWatchMissingTrackDto> SelectEarlyAdmissionEligibleRows(
         IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
         IReadOnlySet<string> playlistKeysWithDownloadDestination,
-        Func<IReadOnlyList<string>, bool> hasAlreadyAdmittedIdentity)
+        Func<IReadOnlyList<string>, bool> hasAlreadyAttemptedIdentity)
     {
         var eligibleIdentityKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var eligibleRows = new List<PlaylistWatchMissingTrackDto>();
@@ -1160,7 +1160,7 @@ internal sealed class WatchlistEngine
             }
 
             var identityKeys = BuildWatchIdentityKeys(track.TrackId, track.Isrc, track.Intent);
-            if (hasAlreadyAdmittedIdentity(identityKeys)
+            if (hasAlreadyAttemptedIdentity(identityKeys)
                 || identityKeys.Any(eligibleIdentityKeys.Contains))
             {
                 continue;
@@ -5246,7 +5246,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 cancellationToken.ThrowIfCancellationRequested();
                 var track = trackList[index];
                 var identityKeys = BuildWatchIdentityKeys(track.TrackId, track.Isrc, track.Intent);
-                if (_queueAdmission.HasAnyAdmittedIdentity(identityKeys))
+                if (_queueAdmission.HasAnyAttemptedIdentity(identityKeys))
                 {
                     continue;
                 }
@@ -5259,6 +5259,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     stopReason = admission.Reason;
                     break;
                 }
+
+                _queueAdmission.RememberAttemptedIdentities(identityKeys);
 
                 var intent = PrepareWatchIntent(
                     track.Intent,
@@ -5296,11 +5298,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
                 var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
                 _queueAdmission.Release(1 - primaryQueuedCount);
-                if (result.Success)
-                {
-                    _queueAdmission.RememberAdmittedIdentities(identityKeys);
-                }
-
                 if (ShouldDeferWatchTrack(result))
                 {
                     LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);

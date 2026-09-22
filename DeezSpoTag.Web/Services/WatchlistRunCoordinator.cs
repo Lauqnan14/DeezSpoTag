@@ -1083,8 +1083,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             profileResolutionService,
             stoppingToken);
         ThrowIfWatchlistStopped(stoppingToken);
-        var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
-        var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
+        var playlistItems = await FilterEligibleWatchItemsAsync(
+            BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken)),
+            repository,
+            stoppingToken);
+        var artistItems = await FilterEligibleWatchItemsAsync(
+            BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken)),
+            repository,
+            stoppingToken);
         var allItems = BuildCombinedWatchItems(playlistItems, artistItems);
         if (allItems.Count == 0)
         {
@@ -1114,6 +1120,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         ThrowIfWatchlistStopped(stoppingToken);
         var processedArtistIds = await ProcessArtistWatchItemsAsync(
             artistItems,
+            playlistItems,
             settings,
             serviceProvider,
             stoppingToken);
@@ -1440,6 +1447,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
     private async Task<IReadOnlySet<long>> ProcessArtistWatchItemsAsync(
         IReadOnlyList<WatchItem> artistItems,
+        IReadOnlyList<WatchItem> playlistItems,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken)
@@ -1450,6 +1458,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         var processedArtistIds = new HashSet<long>();
+        var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+        var playlists = playlistItems
+            .Select(static item => item.Playlist)
+            .Where(static playlist => playlist is not null)
+            .Select(static playlist => playlist!)
+            .ToList();
         foreach (var item in artistItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
@@ -1487,6 +1501,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 processedArtistIds.Add(item.Artist.ArtistId);
             }
+            await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, stoppingToken);
 
             if (execution.Outcome == WatchItemRunOutcome.Failure
                 && execution.SystemicFailure
@@ -1745,6 +1760,40 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         return items;
     }
+
+    private static async Task<List<WatchItem>> FilterEligibleWatchItemsAsync(
+        IReadOnlyList<WatchItem> items,
+        LibraryRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var eligible = new List<WatchItem>(items.Count);
+        foreach (var item in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PlaylistWatchPreferenceDto? playlistPreference = null;
+            if (item.Playlist is not null)
+            {
+                playlistPreference = await repository.GetPlaylistWatchPreferenceAsync(
+                    NormalizeSource(item.Playlist.Source),
+                    item.Playlist.SourceId,
+                    cancellationToken);
+            }
+
+            if (HasExplicitDestination(item, playlistPreference))
+            {
+                eligible.Add(item);
+            }
+        }
+
+        return eligible;
+    }
+
+    private static bool HasExplicitDestination(
+        WatchItem item,
+        PlaylistWatchPreferenceDto? playlistPreference)
+        => item.Playlist is not null
+            ? playlistPreference?.DestinationFolderId is > 0
+            : item.Artist?.DestinationFolderId is > 0;
 
     private static string NormalizeStatus(string? status)
         => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();

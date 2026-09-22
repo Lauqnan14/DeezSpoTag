@@ -216,7 +216,7 @@ public sealed class WatchlistQueueAdmissionService
     private readonly WatchlistPublicApiReadinessService? _publicApiReadiness;
     private readonly object _gate = new();
     private readonly AsyncLocal<long> _executionGeneration = new();
-    private readonly HashSet<string> _admittedIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _attemptedIdentities = new(StringComparer.OrdinalIgnoreCase);
     private long _generation;
     private long _activeGeneration;
     private int _limit;
@@ -332,7 +332,7 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
-            _admittedIdentities.Clear();
+            _attemptedIdentities.Clear();
             return _activeGeneration;
         }
     }
@@ -350,11 +350,11 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = 0;
             _limit = 0;
             _remaining = 0;
-            _admittedIdentities.Clear();
+            _attemptedIdentities.Clear();
         }
     }
 
-    public bool HasAnyAdmittedIdentity(IEnumerable<string> identityKeys)
+    public bool HasAnyAttemptedIdentity(IEnumerable<string> identityKeys)
     {
         if (identityKeys == null)
         {
@@ -370,7 +370,7 @@ public sealed class WatchlistQueueAdmissionService
 
             foreach (var key in identityKeys)
             {
-                if (!string.IsNullOrWhiteSpace(key) && _admittedIdentities.Contains(key.Trim()))
+                if (!string.IsNullOrWhiteSpace(key) && _attemptedIdentities.Contains(key.Trim()))
                 {
                     return true;
                 }
@@ -380,7 +380,7 @@ public sealed class WatchlistQueueAdmissionService
         return false;
     }
 
-    public void RememberAdmittedIdentities(IEnumerable<string> identityKeys)
+    public void RememberAttemptedIdentities(IEnumerable<string> identityKeys)
     {
         if (identityKeys == null)
         {
@@ -398,7 +398,7 @@ public sealed class WatchlistQueueAdmissionService
             {
                 if (!string.IsNullOrWhiteSpace(key))
                 {
-                    _admittedIdentities.Add(key.Trim());
+                    _attemptedIdentities.Add(key.Trim());
                 }
             }
         }

@@ -275,7 +275,7 @@ public sealed class WatchlistQueueAdmissionServiceTest
     }
 
     [Fact]
-    public void AdmittedIdentities_SkipDuplicatesWithoutConsumingBudget()
+    public void AttemptedIdentities_SkipDuplicatesForTheWholeRun()
     {
         var service = new WatchlistQueueAdmissionService();
         var token = service.BeginRun(2);
@@ -283,22 +283,26 @@ public sealed class WatchlistQueueAdmissionServiceTest
         var sameFileDifferentPlaylist = new[] { "isrc:usrc17600001", "spotify:abc" };
         var uniqueFile = new[] { "isrc:usrc17600002" };
 
-        Assert.False(service.HasAnyAdmittedIdentity(firstKeys));
+        Assert.False(service.HasAnyAttemptedIdentity(firstKeys));
         Assert.True(service.TryReserve(1));
-        service.RememberAdmittedIdentities(firstKeys);
+        service.RememberAttemptedIdentities(firstKeys);
 
-        Assert.True(service.HasAnyAdmittedIdentity(sameFileDifferentPlaylist));
+        Assert.True(service.HasAnyAttemptedIdentity(sameFileDifferentPlaylist));
         Assert.Equal(1, service.GetRemaining());
-        Assert.False(service.HasAnyAdmittedIdentity(uniqueFile));
+        Assert.False(service.HasAnyAttemptedIdentity(uniqueFile));
 
         Assert.True(service.TryReserve(1));
-        service.RememberAdmittedIdentities(uniqueFile);
+        service.RememberAttemptedIdentities(uniqueFile);
         Assert.Equal(0, service.GetRemaining());
         Assert.False(service.TryReserve(1));
 
         service.EndRun(token);
-        Assert.False(service.HasAnyAdmittedIdentity(firstKeys));
+        Assert.False(service.HasAnyAttemptedIdentity(firstKeys));
         Assert.Equal(0, service.GetRemaining());
+
+        var nextRun = service.BeginRun(2);
+        Assert.False(service.HasAnyAttemptedIdentity(firstKeys));
+        service.EndRun(nextRun);
     }
 
     [Fact]
@@ -326,10 +330,10 @@ public sealed class WatchlistQueueAdmissionServiceTest
 
         var service = new WatchlistQueueAdmissionService();
         _ = service.BeginRun(50);
-        service.RememberAdmittedIdentities(deezerKeys);
+        service.RememberAttemptedIdentities(deezerKeys);
 
         Assert.Contains("isrc:USRC17600001", deezerKeys, StringComparer.OrdinalIgnoreCase);
-        Assert.True(service.HasAnyAdmittedIdentity(spotifyKeys));
+        Assert.True(service.HasAnyAttemptedIdentity(spotifyKeys));
         Assert.Contains(deezerKeys, key => key.StartsWith("meta:", StringComparison.Ordinal));
     }
 

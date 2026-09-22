@@ -465,7 +465,7 @@ public sealed class LibraryScanTriggerGuardrailTest
         Assert.DoesNotContain("RunChangedFoldersAsync", coordinator, StringComparison.Ordinal);
         Assert.True(
             coordinator.IndexOf("await RefreshWatchlistIdentityIndexAsync(", StringComparison.Ordinal)
-            < coordinator.IndexOf("var playlistItems = BuildPlaylistWatchItems", StringComparison.Ordinal),
+            < coordinator.IndexOf("var playlistItems = await FilterEligibleWatchItemsAsync", StringComparison.Ordinal),
             "The canonical library index must be refreshed before watchlist missing-track selection.");
         var identityIndexBody = ExtractMethodBody(coordinator, "private async Task RefreshWatchlistIdentityIndexAsync");
         Assert.DoesNotContain("IngestConfiguredTargetIdentitiesAsync", identityIndexBody, StringComparison.Ordinal);
