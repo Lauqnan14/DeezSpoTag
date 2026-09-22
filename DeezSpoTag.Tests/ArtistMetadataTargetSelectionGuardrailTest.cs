@@ -396,7 +396,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
 
         Assert.Contains("MatchSourceIdSafelyAsync", matching, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", matching, StringComparison.Ordinal);
-        Assert.Contains("catch (Exception ex)", matching, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", matching, StringComparison.Ordinal);
         Assert.Contains("Artist source matcher {Provider} failed for artist {ArtistId}", matching, StringComparison.Ordinal);
         Assert.Equal(5, method.Split("if (await MatchSourceIdSafelyAsync(").Length - 1);
         Assert.True(method.LastIndexOf("\"tidal\"", StringComparison.Ordinal)

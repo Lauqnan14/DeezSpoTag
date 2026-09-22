@@ -101,6 +101,22 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTest
     }
 
     [Fact]
+    public void AutomaticAndManualRunsShareStableLibraryPassesAndAttemptTracking()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+        var repository = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+
+        Assert.Equal(2, service.Split("await AnalyzeStablePassesAsync(").Length - 1);
+        Assert.Contains("var attemptedTrackIds = new HashSet<long>();", service, StringComparison.Ordinal);
+        Assert.Contains("excludedTrackIds: attemptedTrackIds", service, StringComparison.Ordinal);
+        Assert.Contains("BuildStablePassRanges(snapshot", service, StringComparison.Ordinal);
+        Assert.Contains("attemptedTrackIds.Add(track.TrackId)", service, StringComparison.Ordinal);
+        Assert.Contains("ArtistOrderKey.ResolveMainArtistKey", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("ORDER BY library_sort_order, id\n    LIMIT @limit", repository, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void VibeAnalyzer_UsesFfmpegDecodeFallbackForEssentiaUnsupportedCodecs()
     {
         var repoRoot = ResolveRepoRoot();

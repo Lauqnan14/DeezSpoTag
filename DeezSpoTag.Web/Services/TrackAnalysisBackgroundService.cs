@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services.AutoTag;
 using DeezSpoTag.Web.Services.Audiomack;
 using DeezSpoTag.Web.Services.Vibe;
 using System.Diagnostics;
@@ -394,7 +395,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             if (settings.Enabled)
             {
                 using var run = BeginRuntimeRun(stoppingToken);
-                await AnalyzeBatchAsync(settings, stopWhenDisabled: true, run.Token);
+                await AnalyzeStablePassesAsync(settings, stopWhenDisabled: true, run.Token);
             }
         }
         finally
@@ -427,23 +428,14 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             using var run = BeginRuntimeRun(cancellationToken);
             try
             {
-                while (!run.Token.IsCancellationRequested)
+                var settings = await _settingsStore.LoadAsync();
+                if (forceWhenDisabled || settings.Enabled)
                 {
-                    var settings = await _settingsStore.LoadAsync();
-                    if (!forceWhenDisabled && !settings.Enabled)
-                    {
-                        break;
-                    }
-
                     var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
-                    var outcome = await AnalyzeBatchAsync(
+                    await AnalyzeStablePassesAsync(
                         settings with { BatchSize = Math.Clamp(effectiveBatch, 10, 500) },
                         stopWhenDisabled: !forceWhenDisabled,
                         run.Token);
-                    if (outcome.Processed == 0 || outcome.Completed == 0)
-                    {
-                        break;
-                    }
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -521,19 +513,121 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<AnalysisBatchOutcome> AnalyzeBatchAsync(
+    private async Task AnalyzeStablePassesAsync(
         VibeAnalysisSettingsDto settings,
         bool stopWhenDisabled,
         CancellationToken cancellationToken)
     {
+        var attemptedTrackIds = new HashSet<long>();
+        var folders = await _repository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken);
+        var orderedFolderIds = ResolveAnalysisFolderOrder(settings, folders);
+        if (orderedFolderIds.Count == 0)
+        {
+            return;
+        }
+
         var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
-        var orderedLibraryIds = settings.UseLibraryOrder ? settings.LibraryOrder : Array.Empty<long>();
-        var tracks = await _repository.GetTracksForAnalysisAsync(
-            Math.Clamp(settings.BatchSize, 10, 500),
-            includeCompletedStandard: includeCompletedStandard,
-            completedStandardRetryBeforeUtc: includeCompletedStandard ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay) : null,
-            orderedLibraryIds: orderedLibraryIds,
-            cancellationToken: cancellationToken);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var foundAny = false;
+            foreach (var folderId in orderedFolderIds)
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    if (stopWhenDisabled && await ShouldStopForDisabledAnalysisAsync(cancellationToken))
+                    {
+                        return;
+                    }
+
+                    var snapshot = await _repository.GetTracksForAnalysisAsync(
+                        int.MaxValue,
+                        includeCompletedStandard: includeCompletedStandard,
+                        completedStandardRetryBeforeUtc: includeCompletedStandard
+                            ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay)
+                            : null,
+                        orderedLibraryIds: [folderId],
+                        excludedTrackIds: attemptedTrackIds,
+                        cancellationToken: cancellationToken);
+                    if (snapshot.Count == 0)
+                    {
+                        break;
+                    }
+
+                    foundAny = true;
+                    await AnalyzeFrozenSnapshotAsync(
+                        snapshot,
+                        Math.Clamp(settings.BatchSize, 10, 500),
+                        attemptedTrackIds,
+                        stopWhenDisabled,
+                        cancellationToken);
+                }
+            }
+
+            if (!foundAny)
+            {
+                return;
+            }
+        }
+    }
+
+    internal static IReadOnlyList<long> ResolveAnalysisFolderOrder(
+        VibeAnalysisSettingsDto settings,
+        IReadOnlyList<FolderDto> enabledAudioFolders)
+    {
+        var enabledIds = enabledAudioFolders.Select(static folder => folder.Id).ToHashSet();
+        if (settings.UseLibraryOrder && settings.LibraryOrder.Count > 0)
+        {
+            return settings.LibraryOrder
+                .Where(enabledIds.Contains)
+                .Distinct()
+                .ToList();
+        }
+
+        return enabledAudioFolders
+            .OrderBy(static folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static folder => folder.Id)
+            .Select(static folder => folder.Id)
+            .ToList();
+    }
+
+    internal static IReadOnlyList<(int Start, int End)> BuildStablePassRanges(
+        IReadOnlyList<TrackAnalysisInputDto> snapshot,
+        int batchSize)
+        => EnhancementBatchPlanner.BuildRanges(
+            snapshot.Select(static track => track.FilePath).ToList(),
+            snapshot.Count,
+            batchSize);
+
+    private async Task AnalyzeFrozenSnapshotAsync(
+        IReadOnlyList<TrackAnalysisInputDto> snapshot,
+        int batchSize,
+        HashSet<long> attemptedTrackIds,
+        bool stopWhenDisabled,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (start, end) in BuildStablePassRanges(snapshot, batchSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (stopWhenDisabled && await ShouldStopForDisabledAnalysisAsync(cancellationToken))
+            {
+                return;
+            }
+
+            var batch = snapshot.Skip(start).Take(end - start).ToList();
+            foreach (var track in batch)
+            {
+                attemptedTrackIds.Add(track.TrackId);
+            }
+
+            await AnalyzeBatchAsync(batch, stopWhenDisabled, cancellationToken);
+        }
+    }
+
+    private async Task<AnalysisBatchOutcome> AnalyzeBatchAsync(
+        IReadOnlyList<TrackAnalysisInputDto> tracks,
+        bool stopWhenDisabled,
+        CancellationToken cancellationToken)
+    {
         if (tracks.Count == 0)
         {
             return new AnalysisBatchOutcome(0, 0);

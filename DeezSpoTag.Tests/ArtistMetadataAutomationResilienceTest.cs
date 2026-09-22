@@ -288,7 +288,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         Assert.Contains("RefreshMediaExtrasAsync(\"apple\"", cache, StringComparison.Ordinal);
         Assert.Contains("RefreshMediaExtrasAsync(\"tidal\"", cache, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
-        Assert.Contains("catch (Exception ex)", cache, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
     }
 
     [Fact]

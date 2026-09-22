@@ -123,7 +123,7 @@ public sealed partial class ArtistArtworkCatalogService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 ex,

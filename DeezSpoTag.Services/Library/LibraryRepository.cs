@@ -5445,6 +5445,7 @@ ORDER BY sort_group, sort_utc DESC;";
         bool includeCompletedStandard = false,
         DateTimeOffset? completedStandardRetryBeforeUtc = null,
         IReadOnlyList<long>? orderedLibraryIds = null,
+        IReadOnlySet<long>? excludedTrackIds = null,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -5461,6 +5462,11 @@ WITH candidate_files AS (
            af.relative_path,
            af.path,
            t.duration_ms,
+           ar.name AS album_artist_name,
+           t.tag_artist,
+           COALESCE(NULLIF(TRIM(t.tag_album), ''), al.title) AS album_title,
+           COALESCE(t.tag_disc, t.disc, 1) AS disc_number,
+           COALESCE(t.tag_track_no, t.track_no, 2147483647) AS track_number,
            COALESCE(
                (SELECT scope.sort_order FROM temp_analysis_library_scope scope WHERE scope.library_id = f.id),
                999999) AS library_sort_order,
@@ -5478,6 +5484,8 @@ WITH candidate_files AS (
            af.size,
            af.id AS audio_file_id
     FROM track t
+    JOIN album al ON al.id = t.album_id
+    JOIN artist ar ON ar.id = al.artist_id
     JOIN track_local tl ON tl.track_id = t.id
     JOIN audio_file af ON af.id = tl.audio_file_id
     JOIN folder f ON f.id = af.folder_id
@@ -5494,6 +5502,10 @@ WITH candidate_files AS (
               FROM temp_analysis_library_scope scope
               WHERE scope.library_id = f.id
           )
+      )
+      AND (
+          @excludedTrackIdsJson IS NULL
+          OR t.id NOT IN (SELECT value FROM json_each(@excludedTrackIdsJson))
       )
       AND (
           ta.status IS NULL
@@ -5526,15 +5538,19 @@ selected_tracks AS (
     SELECT id, library_sort_order
     FROM ranked_primary
     WHERE variant_rank = 1
-    ORDER BY library_sort_order, id
-    LIMIT @limit
 )
 SELECT candidate_files.id,
        candidate_files.library_id,
        candidate_files.root_path,
        candidate_files.relative_path,
        candidate_files.path,
-       candidate_files.duration_ms
+       candidate_files.duration_ms,
+       selected_tracks.library_sort_order,
+       candidate_files.album_artist_name,
+       candidate_files.tag_artist,
+       candidate_files.album_title,
+       candidate_files.disc_number,
+       candidate_files.track_number
 FROM candidate_files
 JOIN selected_tracks ON selected_tracks.id = candidate_files.id
 ORDER BY selected_tracks.library_sort_order,
@@ -5549,8 +5565,86 @@ ORDER BY selected_tracks.library_sort_order,
         command.Parameters.AddWithValue(
             "completedStandardRetryBeforeUtc",
             completedStandardRetryBeforeUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue(
+            "excludedTrackIdsJson",
+            excludedTrackIds is { Count: > 0 }
+                ? SerializeJsonArray(excludedTrackIds.Where(static id => id > 0).OrderBy(static id => id))
+                : DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await ReadTrackAnalysisInputsAsync(reader, cancellationToken);
+        return await ReadOrderedTrackAnalysisInputsAsync(reader, Math.Max(0, limit), cancellationToken);
+    }
+
+    private sealed record OrderedTrackAnalysisCandidate(
+        TrackAnalysisInputDto Input,
+        int LibrarySortOrder,
+        string ArtistOrder,
+        string AlbumOrder,
+        int DiscNumber,
+        int TrackNumber);
+
+    private static async Task<IReadOnlyList<TrackAnalysisInputDto>> ReadOrderedTrackAnalysisInputsAsync(
+        SqliteDataReader reader,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<OrderedTrackAnalysisCandidate>();
+        var indexes = new Dictionary<long, int>();
+        var alternatePaths = new Dictionary<long, List<string>>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackId = reader.GetInt64(0);
+            var filePath = await ReadAudioFilePathAsync(reader, 2, 3, 4, cancellationToken);
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                continue;
+            }
+
+            if (indexes.TryGetValue(trackId, out var existingIndex))
+            {
+                var existing = candidates[existingIndex];
+                var alternates = alternatePaths[trackId];
+                if (!PathEquals(existing.Input.FilePath, filePath)
+                    && !alternates.Any(path => PathEquals(path, filePath)))
+                {
+                    alternates.Add(filePath);
+                    candidates[existingIndex] = existing with
+                    {
+                        Input = existing.Input with { AlternateFilePaths = alternates.ToArray() }
+                    };
+                }
+                continue;
+            }
+
+            var inputAlternates = new List<string>();
+            alternatePaths[trackId] = inputAlternates;
+            indexes[trackId] = candidates.Count;
+            var albumArtist = await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7);
+            var trackArtist = await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8);
+            candidates.Add(new OrderedTrackAnalysisCandidate(
+                new TrackAnalysisInputDto(
+                    trackId,
+                    await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetInt64(1),
+                    filePath,
+                    await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5),
+                    inputAlternates),
+                reader.GetInt32(6),
+                ArtistOrderKey.ResolveMainArtistKey([trackArtist ?? string.Empty], albumArtist),
+                await reader.IsDBNullAsync(9, cancellationToken) ? string.Empty : reader.GetString(9).Trim(),
+                await reader.IsDBNullAsync(10, cancellationToken) ? 1 : reader.GetInt32(10),
+                await reader.IsDBNullAsync(11, cancellationToken) ? int.MaxValue : reader.GetInt32(11)));
+        }
+
+        return candidates
+            .OrderBy(static item => item.LibrarySortOrder)
+            .ThenBy(static item => item.Input.LibraryId ?? long.MaxValue)
+            .ThenBy(static item => item.ArtistOrder, StringComparer.Ordinal)
+            .ThenBy(static item => item.AlbumOrder, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static item => item.DiscNumber)
+            .ThenBy(static item => item.TrackNumber)
+            .ThenBy(static item => item.Input.TrackId)
+            .Take(limit)
+            .Select(static item => item.Input)
+            .ToList();
     }
 
     private static bool PathEquals(string left, string right)

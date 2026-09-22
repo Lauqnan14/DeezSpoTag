@@ -83,6 +83,7 @@ public sealed class MusicBrainzImplementationTest
         Assert.DoesNotContain("AddSingleValueCustomTagWrite(writes, RecordingIdTag", runner, StringComparison.Ordinal);
         Assert.Contains("MUSICBRAINZ_TRACK_ID", runner, StringComparison.Ordinal);
         Assert.Contains("AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);", runner, StringComparison.Ordinal);
+        Assert.Contains("AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, \"MUSICBRAINZ_RELEASEGROUPID\", track.ReleaseGroupId);", runner, StringComparison.Ordinal);
         Assert.Contains("new CustomTagWrite(MediaTag, SupportedTag.Media, MediaRawTag, track.Media.ToList())", runner, StringComparison.Ordinal);
         Assert.Contains("FirstClassRawOtherTags", runner, StringComparison.Ordinal);
 

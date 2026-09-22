@@ -337,7 +337,7 @@ public sealed class ArtistMetadataCacheRefreshService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Artist {Provider} media extras cache refresh failed for artist {ArtistId}.", provider, artistId);
         }

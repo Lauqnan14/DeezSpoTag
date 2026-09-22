@@ -656,6 +656,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         // Provider identity tags (track/album/release/artist/album-artist id and URL)
         // are written by the single provider identity writer, never here.
         AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);
+        if (string.Equals(platformId, "musicbrainz", StringComparison.OrdinalIgnoreCase))
+        {
+            AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, "MUSICBRAINZ_RELEASEGROUPID", track.ReleaseGroupId);
+        }
         AddSingleValueCustomTagWrite(writes, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, track.ReleaseStatus);
         AddSingleValueCustomTagWrite(writes, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, track.ReleaseCountry);
         AddSingleValueCustomTagWrite(writes, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, track.Barcode);
