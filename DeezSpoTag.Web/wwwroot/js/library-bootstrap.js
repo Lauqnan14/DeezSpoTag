@@ -43,6 +43,9 @@ function initializeLibraryBootstrapState(targets) {
 
 async function initializeLibraryBootstrapData(targets) {
     bindIndexActionsDropdown();
+    if (targets.shouldLoadArtistAlbums && typeof initArtistActionsDropdown === 'function') {
+        initArtistActionsDropdown();
+    }
     await runInitialLibraryLoads(targets);
     bindSavedPreferenceButtons();
     await initializeArtistAlbumsPage(targets.shouldLoadArtistAlbums);
@@ -51,9 +54,6 @@ async function initializeLibraryBootstrapData(targets) {
         await initWatchlistToggle();
     }
     await initSpotifyIdEditor();
-    if (targets.shouldLoadArtistAlbums && typeof initArtistActionsDropdown === 'function') {
-        initArtistActionsDropdown();
-    }
     initDiscographyFilters();
 }
 

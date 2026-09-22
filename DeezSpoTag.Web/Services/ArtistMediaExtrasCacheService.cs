@@ -121,9 +121,9 @@ public sealed class ArtistMediaExtrasCacheService
             var tidalId = await _repository.GetArtistSourceIdAsync(artistId, TidalProvider, cancellationToken);
             var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
             var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken) ?? "US";
-            var tracks = await SearchTidalAsync("tracks", artistName, 50, token, country, cancellationToken);
-            var albums = await SearchTidalAsync("albums", artistName, 50, token, country, cancellationToken);
-            var videos = await SearchTidalAsync("videos", artistName, 50, token, country, cancellationToken);
+            var tracks = await SearchTidalSafelyAsync("tracks", artistId, artistName, 50, token, country, cancellationToken);
+            var albums = await SearchTidalSafelyAsync("albums", artistId, artistName, 50, token, country, cancellationToken);
+            var videos = await SearchTidalSafelyAsync("videos", artistId, artistName, 50, token, country, cancellationToken);
 
             var atmosTracks = MapTidalAtmos(tracks, "track", tidalId, artistName);
             var atmosAlbums = MapTidalAtmos(albums, "album", tidalId, artistName);
@@ -291,6 +291,30 @@ public sealed class ArtistMediaExtrasCacheService
         }
 
         return [];
+    }
+
+    private async Task<List<JsonElement>> SearchTidalSafelyAsync(
+        string endpointType,
+        long artistId,
+        string query,
+        int limit,
+        string token,
+        string country,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await SearchTidalAsync(endpointType, query, limit, token, country, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Tidal {EndpointType} extras lookup failed for artist {ArtistId}.",
+                endpointType,
+                artistId);
+            return [];
+        }
     }
 
     private static List<JsonElement> ExtractTidalItems(JsonElement root, string endpointType)

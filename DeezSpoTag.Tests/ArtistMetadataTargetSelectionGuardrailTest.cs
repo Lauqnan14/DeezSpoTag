@@ -131,6 +131,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("includeBackground: includeBackgroundCheckbox?.checked !== false", activities);
         Assert.Contains("includeBio: includeBioCheckbox?.checked === true", activities);
         Assert.Contains("includePopularSongs: popularSongsCheckbox?.checked === true", activities);
+        Assert.Contains("includeDiscography: discographyCheckbox?.checked === true", activities);
         Assert.Contains("saveArtistFolderImage: saveArtistFolderImageCheckbox?.checked === true", activities);
         Assert.Contains("loadMetadataUpdaterFolders", activities);
         Assert.Contains("/api/library/folders?contentType=music", activities);
@@ -169,6 +170,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("public bool MetadataUpdaterIncludeBackground", preferences);
         Assert.Contains("public bool MetadataUpdaterIncludeBio", preferences);
         Assert.Contains("public bool MetadataUpdaterIncludePopularSongs", preferences);
+        Assert.Contains("public bool MetadataUpdaterIncludeDiscography", preferences);
         Assert.Contains("public bool MetadataUpdaterMissingArtistArtworkOnly", preferences);
         Assert.Contains("public bool MetadataUpdaterOcrTextArtBlocking", preferences);
         Assert.Contains("public bool MetadataUpdaterSaveArtistFolderImage", preferences);
@@ -193,6 +195,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
             "Activities",
             "Index.cshtml"));
         Assert.Contains("window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox.checked);", activities);
+        Assert.Contains("window.UserPrefs.set('metadataUpdaterIncludeDiscography', discographyCheckbox.checked);", activities);
         Assert.Contains("window.UserPrefs.set('metadataUpdaterSaveArtistFolderImage', saveArtistFolderImageCheckbox.checked);", activities);
         Assert.Contains("'deezspotag-metadata-updater-save-artist-folder-image': 'metadataUpdaterSaveArtistFolderImage'", layout);
         Assert.Contains("'deezspotag-metadata-updater-save-artist-folder-image': 'metadataUpdaterSaveArtistFolderImage'", userPreferencesJs);
@@ -427,7 +430,10 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("GetArtistLocalAudioPathsAsync", targetUpdate);
         Assert.Contains("SaveArtistFolderImage", coordinator);
         Assert.Contains("EnsureMatchedSourceIdsAsync", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.Matching.cs")));
-        Assert.Contains("includeDiscography: false", cacheRefresh);
+        Assert.Contains("forceRefresh: includeDiscography", cacheRefresh);
+        Assert.Contains("includeDiscography: includeDiscography", cacheRefresh);
+        Assert.Contains("if (includeDiscography)", cacheRefresh);
+        Assert.DoesNotContain("includeDiscography && normalizedCachedPayload.Albums.Count == 0", spotifyArtist);
         Assert.Contains("includeDeezerLinking: false", cacheRefresh);
         Assert.Contains("includeGallery: false", cacheRefresh);
         Assert.DoesNotContain("GetArtistWithDiscographyAsync", cacheRefresh);
@@ -436,6 +442,11 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("UpsertArtistBiographyCacheAsync", cacheRefresh);
         Assert.Contains("RefreshAppleAsync", cacheRefresh);
         Assert.Contains("RefreshTidalAsync", cacheRefresh);
+        var mediaExtras = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMediaExtrasCacheService.cs"));
+        Assert.Contains("SearchTidalSafelyAsync(\"tracks\"", mediaExtras);
+        Assert.Contains("SearchTidalSafelyAsync(\"albums\"", mediaExtras);
+        Assert.Contains("SearchTidalSafelyAsync(\"videos\"", mediaExtras);
+        Assert.Contains("Tidal {EndpointType} extras lookup failed for artist {ArtistId}", mediaExtras);
         Assert.Contains("EnqueueArtistMetadataCacheAsync", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryScanRunner.cs")));
         Assert.Contains("EnqueueNewlyIndexedArtistMetadata", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryScanRunner.cs")));
         Assert.Contains("LibraryArtistMetadataQueueService", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Program.cs")));

@@ -47,6 +47,7 @@ globalThis.UserPrefs = (function () {
         'deezspotag-metadata-updater-include-background': 'metadataUpdaterIncludeBackground',
         'deezspotag-metadata-updater-include-bio': 'metadataUpdaterIncludeBio',
         'deezspotag-metadata-updater-popular-songs': 'metadataUpdaterIncludePopularSongs',
+        'deezspotag-metadata-updater-discography': 'metadataUpdaterIncludeDiscography',
         'deezspotag-metadata-updater-missing-artist-art-only': 'metadataUpdaterMissingArtistArtworkOnly',
         'deezspotag-metadata-updater-ocr-text-art-blocking': 'metadataUpdaterOcrTextArtBlocking',
         'deezspotag-metadata-updater-save-artist-folder-image': 'metadataUpdaterSaveArtistFolderImage',

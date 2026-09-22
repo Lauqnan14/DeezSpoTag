@@ -37,7 +37,13 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
         {
             return NotFound("Artist not found.");
         }
-        var refreshed = await _cacheRefreshService.RefreshArtistAsync(id, artist.Name, "auto", false, cancellationToken);
+        var refreshed = await _cacheRefreshService.RefreshArtistAsync(
+            id,
+            artist.Name,
+            "auto",
+            includePopularSongs: false,
+            includeDiscography: true,
+            cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,

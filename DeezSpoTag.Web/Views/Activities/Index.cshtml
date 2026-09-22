@@ -5022,6 +5022,7 @@ function initMetadataUpdater() {
     const includeBackgroundCheckbox = document.getElementById('metadata-include-background');
     const includeBioCheckbox = document.getElementById('metadata-include-bio');
     const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
+    const discographyCheckbox = document.getElementById('metadata-include-discography');
     const missingArtistArtOnlyCheckbox = document.getElementById('metadata-missing-artist-art-only');
     const ocrTextArtBlockingCheckbox = document.getElementById('metadata-ocr-text-art-blocking');
     const saveArtistFolderImageCheckbox = document.getElementById('metadata-save-artist-folder-image');
@@ -5039,6 +5040,7 @@ function initMetadataUpdater() {
     const includeBackgroundKey = 'deezspotag-metadata-updater-include-background';
     const includeBioKey = 'deezspotag-metadata-updater-include-bio';
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
+    const discographyKey = 'deezspotag-metadata-updater-discography';
     const missingArtistArtOnlyKey = 'deezspotag-metadata-updater-missing-artist-art-only';
     const folderKey = 'deezspotag-metadata-updater-folder';
     const legacyIntervalKey = 'deezspotag-metadata-updater-interval-days';
@@ -5060,6 +5062,7 @@ function initMetadataUpdater() {
         localStorage.setItem(includeBackgroundKey, includeBackgroundCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(includeBioKey, includeBioCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(popularSongsKey, popularSongsCheckbox?.checked === true ? 'true' : 'false');
+        localStorage.setItem(discographyKey, discographyCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(missingArtistArtOnlyKey, missingArtistArtOnlyCheckbox?.checked === true ? 'true' : 'false');
         localStorage.setItem(ocrTextArtBlockingKey, ocrTextArtBlockingCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(saveArtistFolderImageKey, saveArtistFolderImageCheckbox?.checked === true ? 'true' : 'false');
@@ -5074,6 +5077,7 @@ function initMetadataUpdater() {
             window.UserPrefs.set('metadataUpdaterIncludeBackground', includeBackgroundCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterIncludeBio', includeBioCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox?.checked === true);
+            window.UserPrefs.set('metadataUpdaterIncludeDiscography', discographyCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterMissingArtistArtworkOnly', missingArtistArtOnlyCheckbox?.checked === true);
             window.UserPrefs.set('metadataUpdaterOcrTextArtBlocking', ocrTextArtBlockingCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterSaveArtistFolderImage', saveArtistFolderImageCheckbox?.checked === true);
@@ -5101,6 +5105,7 @@ function initMetadataUpdater() {
             includeBackground: includeBackgroundCheckbox?.checked !== false,
             includeBio: includeBioCheckbox?.checked === true,
             includePopularSongs: popularSongsCheckbox?.checked === true,
+            includeDiscography: discographyCheckbox?.checked === true,
             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
             saveArtistFolderImage: saveArtistFolderImageCheckbox?.checked === true,
             includeAllArtists: true,
@@ -5144,6 +5149,7 @@ function initMetadataUpdater() {
                             folderId: folderId > 0 ? folderId : null,
                             source: sourceSelect?.value || 'auto',
                             includePopularSongs: popularSongsCheckbox?.checked === true,
+                            includeDiscography: discographyCheckbox?.checked === true,
                             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false
                         }),
                         keepalive: true
@@ -5266,6 +5272,14 @@ function initMetadataUpdater() {
         popularSongsCheckbox.addEventListener('change', () => {
             localStorage.setItem(popularSongsKey, popularSongsCheckbox.checked ? 'true' : 'false');
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox.checked);
+        });
+    }
+
+    if (discographyCheckbox) {
+        discographyCheckbox.checked = localStorage.getItem(discographyKey) === 'true';
+        discographyCheckbox.addEventListener('change', () => {
+            localStorage.setItem(discographyKey, discographyCheckbox.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterIncludeDiscography', discographyCheckbox.checked);
         });
     }
 

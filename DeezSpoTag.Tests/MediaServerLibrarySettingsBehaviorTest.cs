@@ -107,6 +107,19 @@ public sealed class MediaServerLibrarySettingsBehaviorTest
     }
 
     [Fact]
+    public void ArtistHeroActions_AreBoundBeforeMetadataLoads()
+    {
+        var bootstrapSource = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library-bootstrap.js");
+        var initializeData = bootstrapSource.IndexOf("async function initializeLibraryBootstrapData", StringComparison.Ordinal);
+        var bindActions = bootstrapSource.IndexOf("initArtistActionsDropdown();", initializeData, StringComparison.Ordinal);
+        var loadData = bootstrapSource.IndexOf("await runInitialLibraryLoads(targets);", initializeData, StringComparison.Ordinal);
+
+        Assert.True(initializeData >= 0);
+        Assert.True(bindActions > initializeData);
+        Assert.True(loadData > bindActions);
+    }
+
+    [Fact]
     public void SoundtrackAlphabetNavigation_AllowsWheelAndTouchScrollingWhenVisible()
     {
         var libraryStyles = ReadSource("DeezSpoTag.Web", "wwwroot", "css", "library.css");

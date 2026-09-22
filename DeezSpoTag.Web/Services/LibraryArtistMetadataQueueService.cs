@@ -106,6 +106,7 @@ public sealed class LibraryArtistMetadataQueueService : BackgroundService
                     item.ArtistName,
                     "auto",
                     includePopularSongs: true,
+                    includeDiscography: true,
                     stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

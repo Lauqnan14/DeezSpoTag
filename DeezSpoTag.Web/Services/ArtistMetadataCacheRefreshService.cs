@@ -117,6 +117,7 @@ public sealed class ArtistMetadataCacheRefreshService
                     artist.Name,
                     request.Source,
                     request.IncludePopularSongs,
+                    request.IncludeDiscography,
                     cancellationToken,
                     gate,
                     request.ForceProviderRefresh,
@@ -145,13 +146,23 @@ public sealed class ArtistMetadataCacheRefreshService
         string? source,
         bool includePopularSongs,
         CancellationToken cancellationToken)
-        => RefreshArtistAsync(artistId, artistName, source, includePopularSongs, cancellationToken, providerGate: null);
+        => RefreshArtistAsync(artistId, artistName, source, includePopularSongs, includeDiscography: false, cancellationToken, providerGate: null);
+
+    public Task<bool> RefreshArtistAsync(
+        long artistId,
+        string artistName,
+        string? source,
+        bool includePopularSongs,
+        bool includeDiscography,
+        CancellationToken cancellationToken)
+        => RefreshArtistAsync(artistId, artistName, source, includePopularSongs, includeDiscography, cancellationToken, providerGate: null);
 
     public async Task<bool> RefreshArtistAsync(
         long artistId,
         string artistName,
         string? source,
         bool includePopularSongs,
+        bool includeDiscography,
         CancellationToken cancellationToken,
         ArtistMetadataProviderGate? providerGate,
         bool forceProviderRefresh = false,
@@ -191,6 +202,21 @@ public sealed class ArtistMetadataCacheRefreshService
         IReadOnlyList<BiographyProvider> requestedProviders = selectedProvider.HasValue
             ? [selectedProvider.Value]
             : BiographyProviders;
+
+        if (includeDiscography && !gate.IsUnavailable(ProviderName(BiographyProvider.Spotify)))
+        {
+            await gate.RunAsync(
+                ProviderName(BiographyProvider.Spotify),
+                token => _spotify.GetArtistPageAsync(
+                    artistId,
+                    artistName,
+                    forceRefresh: includeDiscography,
+                    forceRematch: false,
+                    token,
+                    includeDeezerLinking: false,
+                    includeDiscography: includeDiscography),
+                cancellationToken);
+        }
 
         var biographies = new List<(BiographyProvider Provider, string Biography)>();
         foreach (var provider in requestedProviders)
@@ -245,14 +271,10 @@ public sealed class ArtistMetadataCacheRefreshService
             selectedProvider.HasValue ? ProviderName(selectedProvider.Value) : null,
             cancellationToken);
 
-        try
+        if (includeDiscography)
         {
-            await _mediaExtras.RefreshAppleAsync(artistId, artistName, cancellationToken);
-            await _mediaExtras.RefreshTidalAsync(artistId, artistName, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Artist media extras cache refresh failed for artist {ArtistId}.", artistId);
+            await RefreshMediaExtrasAsync("apple", artistId, artistName, _mediaExtras.RefreshAppleAsync, cancellationToken);
+            await RefreshMediaExtrasAsync("tidal", artistId, artistName, _mediaExtras.RefreshTidalAsync, cancellationToken);
         }
 
         return true;
@@ -293,6 +315,23 @@ public sealed class ArtistMetadataCacheRefreshService
                 artistId,
                 artistName);
             return null;
+        }
+    }
+
+    private async Task RefreshMediaExtrasAsync(
+        string provider,
+        long artistId,
+        string artistName,
+        Func<long, string, CancellationToken, Task> refresh,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await refresh(artistId, artistName, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Artist {Provider} media extras cache refresh failed for artist {ArtistId}.", provider, artistId);
         }
     }
 
@@ -412,6 +451,7 @@ public sealed record ArtistMetadataCacheRefreshRequest(
     long? FolderId,
     string? Source,
     bool IncludePopularSongs = false,
+    bool IncludeDiscography = false,
     bool ForceProviderRefresh = false,
     bool? OcrTextArtBlockingEnabled = null);
 public sealed record ArtistMetadataCacheRefreshResult(int Total, int Succeeded, int Failed, string? Error);

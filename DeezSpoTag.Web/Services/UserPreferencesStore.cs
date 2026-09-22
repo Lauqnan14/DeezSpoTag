@@ -211,6 +211,7 @@ public sealed class UserPreferencesDto
     public bool MetadataUpdaterIncludeBackground { get; set; } = true;
     public bool MetadataUpdaterIncludeBio { get; set; } = false;
     public bool MetadataUpdaterIncludePopularSongs { get; set; } = false;
+    public bool MetadataUpdaterIncludeDiscography { get; set; } = false;
     public bool MetadataUpdaterMissingArtistArtworkOnly { get; set; } = false;
     public bool MetadataUpdaterOcrTextArtBlocking { get; set; } = true;
     public bool MetadataUpdaterSaveArtistFolderImage { get; set; } = false;

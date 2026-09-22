@@ -2970,6 +2970,7 @@ public sealed class MetadataUpdaterRunRequest
     public bool? IncludeBackground { get; set; }
     public bool? IncludeBio { get; set; }
     public bool? IncludePopularSongs { get; set; }
+    public bool? IncludeDiscography { get; set; }
     public bool? OcrTextArtBlockingEnabled { get; set; }
     public bool? SaveArtistFolderImage { get; set; }
     public bool? IncludeAllArtists { get; set; }

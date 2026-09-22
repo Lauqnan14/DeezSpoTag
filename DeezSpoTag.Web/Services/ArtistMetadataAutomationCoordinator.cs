@@ -557,6 +557,21 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         bool automatic,
         CancellationToken cancellationToken)
     {
+        if (request.IncludeDiscography == true)
+        {
+            await _cacheRefresh.RefreshAsync(
+                new ArtistMetadataCacheRefreshRequest(
+                    request.ArtistId,
+                    request.FolderId,
+                    request.Source,
+                    request.IncludePopularSongs ?? false,
+                    IncludeDiscography: true,
+                    ForceProviderRefresh: false,
+                    request.OcrTextArtBlockingEnabled),
+                progress: null,
+                completedArtistIds: null,
+                cancellationToken);
+        }
         lock (_statusLock)
         {
             _status = _status with { ActiveOperation = "target-update" };
@@ -646,6 +661,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             ParseFolderId(preferences.MetadataUpdaterFolderId),
             preferences.MetadataUpdaterSource,
             preferences.MetadataUpdaterIncludePopularSongs,
+            preferences.MetadataUpdaterIncludeDiscography,
             ForceProviderRefresh: false,
             OcrTextArtBlockingEnabled: preferences.MetadataUpdaterOcrTextArtBlocking);
 
@@ -659,6 +675,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             IncludeBackground = preferences.MetadataUpdaterIncludeBackground,
             IncludeBio = preferences.MetadataUpdaterIncludeBio,
             IncludePopularSongs = preferences.MetadataUpdaterIncludePopularSongs,
+            IncludeDiscography = preferences.MetadataUpdaterIncludeDiscography,
             MissingArtistArtworkOnly = preferences.MetadataUpdaterMissingArtistArtworkOnly,
             OcrTextArtBlockingEnabled = preferences.MetadataUpdaterOcrTextArtBlocking,
             SaveArtistFolderImage = preferences.MetadataUpdaterSaveArtistFolderImage,
