@@ -112,10 +112,15 @@ public sealed class LyricsArtifactStateTest
             Incomplete: true);
 
         state.ApplyResolution(result);
+        state.ApplyDownloadedFiles(new Dictionary<string, string>
+        {
+            ["lrc"] = "/music/track.lrc"
+        });
 
         Assert.Equal("incomplete", state.Status);
         Assert.Equal(outcomes, state.ProviderOutcomes);
         Assert.Equal(["lrc"], state.ResolvedFormats);
+        Assert.Equal(["lrc"], state.DownloadedFormats);
     }
 
     [Fact]

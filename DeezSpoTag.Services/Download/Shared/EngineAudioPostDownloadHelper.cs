@@ -2898,7 +2898,7 @@ public static partial class EngineAudioPostDownloadHelper
     }
 
     private static bool ShouldPersistLyricsResolution(LyricsResolutionResult resolution)
-        => !resolution.Incomplete && resolution.Lyrics?.IsLoaded() == true;
+        => resolution.Lyrics?.IsLoaded() == true;
 
     public static PrefetchPathContext BuildPrefetchPathContext(
         string queueUuid,

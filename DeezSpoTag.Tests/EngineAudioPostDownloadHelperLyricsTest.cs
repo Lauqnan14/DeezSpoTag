@@ -227,7 +227,7 @@ public sealed class EngineAudioPostDownloadHelperLyricsTest
     }
 
     [Fact]
-    public void ShouldPersistLyricsResolution_RejectsIncompleteLineOnlyFallback()
+    public void ShouldPersistLyricsResolution_PreservesSuccessfulLyricsWhenAnotherProviderFails()
     {
         var lyrics = new LyricsSource
         {
@@ -243,7 +243,7 @@ public sealed class EngineAudioPostDownloadHelperLyricsTest
             [new LyricsProviderOutcome("apple", "transient-failure", "timeout")],
             Incomplete: true);
 
-        Assert.False(Assert.IsType<bool>(GetStaticMethod("ShouldPersistLyricsResolution").Invoke(null, [result])));
+        Assert.True(Assert.IsType<bool>(GetStaticMethod("ShouldPersistLyricsResolution").Invoke(null, [result])));
     }
 
     [Fact]

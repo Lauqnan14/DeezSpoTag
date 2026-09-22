@@ -148,6 +148,30 @@ internal static class AutoTagIdentityTags
         return ResolveDefaultFamily(provider, field);
     }
 
+    public static string? ResolveOwningProvider(string? tagName)
+    {
+        if (string.IsNullOrWhiteSpace(tagName))
+        {
+            return null;
+        }
+
+        var normalizedTagName = tagName.Trim();
+        foreach (var provider in KnownProviders)
+        {
+            foreach (var field in Enum.GetValues<ProviderIdentityField>())
+            {
+                if (ResolveFamily(provider, field).CleanupNames.Contains(
+                        normalizedTagName,
+                        StringComparer.OrdinalIgnoreCase))
+                {
+                    return NormalizeProviderId(provider);
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static ProviderIdentityTagFamily ResolveMusicBrainzFamily(ProviderIdentityField field) => field switch
     {
         ProviderIdentityField.TrackId => Family(

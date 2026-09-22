@@ -177,6 +177,47 @@ public sealed class ProviderIdentityRunModeCoverageTest
         Assert.Empty(offenders);
     }
 
+    [Theory]
+    [InlineData("MUSICBRAINZ_TRACK_ID", "musicbrainz")]
+    [InlineData("DISCOGS_RELEASE_ID", "discogs")]
+    [InlineData("APPLE_MUSIC_TRACK_ID", "itunes")]
+    [InlineData("ITUNES_ARTIST_ID", "itunes")]
+    [InlineData("GENRE", null)]
+    public void ProviderIdentityTagOwner_UsesTheRegisteredProviderNamespace(string tagName, string? expected)
+    {
+        var method = typeof(AutoTagIdentityTags).GetMethod(
+            "ResolveOwningProvider",
+            BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AutoTagIdentityTags.ResolveOwningProvider not found.");
+
+        Assert.Equal(expected, method.Invoke(null, [tagName]));
+    }
+
+    [Fact]
+    public void RetainedSource_MusicBrainzIdentityCannotBeAttributedToDiscogs()
+    {
+        const string tagName = "MUSICBRAINZ_TRACK_ID";
+        const string recordingId = "cb91b696-c25a-42e4-9338-4ce493b401c6";
+        var baseline = Snapshot();
+        var inherited = Snapshot((tagName, recordingId));
+        var discogsStep = new AutoTagPlatformDiffSnapshot
+        {
+            Platform = "discogs",
+            Before = inherited,
+            After = inherited
+        };
+        var method = typeof(AutoTagService).GetMethod(
+            "ComputeRetainedSources",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AutoTagService.ComputeRetainedSources not found.");
+
+        var retained = Assert.IsType<Dictionary<string, string>>(method.Invoke(
+            null,
+            [baseline, inherited, new List<AutoTagPlatformDiffSnapshot> { discogsStep }]));
+
+        Assert.Equal("musicbrainz", retained[$"tag:{tagName.ToLowerInvariant()}"]);
+    }
+
     [Fact]
     public void ManualEnrichmentCentralIdentityResolution_StaysConfinedToTheManualPass()
     {
@@ -240,6 +281,17 @@ public sealed class ProviderIdentityRunModeCoverageTest
     }
 
     private static JsonObject Config(string json) => JsonNode.Parse(json)!.AsObject();
+
+    private static AutoTagTagSnapshot Snapshot(params (string Name, string Value)[] tags)
+    {
+        return new AutoTagTagSnapshot
+        {
+            Tags = tags.ToDictionary(
+                tag => tag.Name,
+                tag => new List<string> { tag.Value },
+                StringComparer.OrdinalIgnoreCase)
+        };
+    }
 
     private static string InvokeString(string name, string? value)
     {

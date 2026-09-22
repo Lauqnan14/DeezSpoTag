@@ -70,12 +70,13 @@ public partial class AutoTagService
             var baselineTagValue = baseline?.Tags != null && baseline.Tags.TryGetValue(key, out var value)
                 ? value
                 : null;
-            var source = ResolveValueSource(
-                finalTagValue,
-                baselineTagValue,
-                completed,
-                step => step.After != null && step.After.Tags.TryGetValue(key, out var stepValue) ? stepValue : null,
-                step => step.Before != null && step.Before.Tags.TryGetValue(key, out var stepValue) ? stepValue : null);
+            var source = AutoTagIdentityTags.ResolveOwningProvider(key)
+                ?? ResolveValueSource(
+                    finalTagValue,
+                    baselineTagValue,
+                    completed,
+                    step => step.After != null && step.After.Tags.TryGetValue(key, out var stepValue) ? stepValue : null,
+                    step => step.Before != null && step.Before.Tags.TryGetValue(key, out var stepValue) ? stepValue : null);
             if (!string.IsNullOrWhiteSpace(source))
             {
                 retained[$"tag:{key.ToLowerInvariant()}"] = source;

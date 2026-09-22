@@ -1,4 +1,5 @@
 using DeezSpoTag.Integrations;
+using DeezSpoTag.Core.Security;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -642,7 +643,9 @@ public sealed class NavidromeApiClient
             .ToList();
         if (matches.Count > 1)
         {
-            _logger.LogWarning("Navidrome playlist name {PlaylistName} is ambiguous; refusing to bind an arbitrary playlist.", playlistName);
+            _logger.LogWarning(
+                "Navidrome playlist name {PlaylistName} is ambiguous; refusing to bind an arbitrary playlist.",
+                LogSanitizer.OneLine(playlistName));
             return TargetPlaylistLookup<string>.Unavailable(playlists.HttpStatusCode);
         }
 

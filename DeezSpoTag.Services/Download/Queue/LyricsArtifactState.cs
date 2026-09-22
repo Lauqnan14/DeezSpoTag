@@ -161,7 +161,10 @@ public sealed class LyricsArtifactState
         }
         LrcTiming = ResolveLrcTiming();
         SuppressPlainWhenRichExists();
-        Status = ResolvedFormats.Count > 0 ? "completed" : Status;
+        if (!string.Equals(Status, "incomplete", StringComparison.OrdinalIgnoreCase))
+        {
+            Status = ResolvedFormats.Count > 0 ? "completed" : Status;
+        }
     }
 
     private string? ResolveLrcTiming()

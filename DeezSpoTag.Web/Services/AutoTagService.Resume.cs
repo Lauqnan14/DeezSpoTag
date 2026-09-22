@@ -354,7 +354,10 @@ public partial class AutoTagService
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    _logger.LogWarning(ex, "Failed reading runtime config for resume of job {JobId}.", id);
+                    _logger.LogWarning(
+                        ex,
+                        "Failed reading runtime config for resume of job {JobId}.",
+                        LogSanitizer.OneLine(id));
                 }
             }
         }
@@ -392,7 +395,7 @@ public partial class AutoTagService
         {
             _logger.LogWarning(
                 "Resume of job {JobId} produced a '{Status}' successor job {SuccessorJobId}: {Error}",
-                id,
+                LogSanitizer.OneLine(id),
                 LogSanitizer.OneLine(resumed.Status),
                 resumed.Id,
                 LogSanitizer.OneLine(resumed.Error));

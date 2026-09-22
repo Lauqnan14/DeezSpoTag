@@ -137,6 +137,27 @@ public sealed class SecurityHardeningGuardrailTest
     }
 
     [Fact]
+    public void SecuritySensitiveLogArguments_MustBeSanitizedAtTheFlaggedSinks()
+    {
+        var root = ResolveSrcRoot();
+        var navidromeSource = File.ReadAllText(Path.Combine(
+            root,
+            "DeezSpoTag.Integrations",
+            "Navidrome",
+            "NavidromeApiClient.cs"));
+        var resumeSource = File.ReadAllText(Path.Combine(
+            root,
+            "DeezSpoTag.Web",
+            "Services",
+            "AutoTagService.Resume.cs"));
+
+        Assert.Contains("LogSanitizer.OneLine(playlistName)", navidromeSource, StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            resumeSource.Split("LogSanitizer.OneLine(id)", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void WebProgram_MustApplyDefaultApiRateLimitToControllersWithoutLimitingLibraryBrowsing()
     {
         var webProgramPath = Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Program.cs");
