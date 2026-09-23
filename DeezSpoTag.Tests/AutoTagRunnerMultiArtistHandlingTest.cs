@@ -2,8 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services.AutoTag;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using CoreTrack = DeezSpoTag.Core.Models.Track;
 
@@ -347,6 +351,94 @@ public sealed class AutoTagRunnerMultiArtistHandlingTest
             });
 
         Assert.Equal("match rejected by quality guard (artist mismatch)", reason);
+    }
+
+    [Fact]
+    public async Task EvaluateGlobalMismatchGuard_AllowsUserAliasButStillRejectsUnrelatedArtists()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"alias-guard-{Guid.NewGuid():N}.db");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+            })
+            .Build();
+        var previous = typeof(ArtistAliasGateway)
+            .GetField("_service", BindingFlags.Static | BindingFlags.NonPublic)
+            ?.GetValue(null);
+        try
+        {
+            var aliases = new ArtistAliasService(configuration, NullLogger<ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync("Abbas Doobeez", new[] { "Abbas", "Abbas Kubaff" });
+            ArtistAliasGateway.Configure(aliases);
+            await aliases.GetAliasMapAsync();
+
+            var aliasReason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+                null,
+                new object?[]
+                {
+                    new AutoTagAudioInfo
+                    {
+                        Title = "Chapaa Remix",
+                        Artist = "Abbas",
+                        Artists = new List<string> { "Abbas" },
+                        HasEmbeddedTitle = true,
+                        HasEmbeddedArtist = true
+                    },
+                    new AutoTagMatchResult
+                    {
+                        Track = new AutoTagTrack
+                        {
+                            Title = "Chapaa Remix",
+                            Artists = new List<string> { "Abbas Doobeez" },
+                            AlbumArtists = new List<string> { "Abbas Doobeez" }
+                        }
+                    },
+                    new AutoTagMatchingConfig { Strictness = 0.7 }
+                });
+            Assert.Null(aliasReason);
+
+            var unrelated = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+                null,
+                new object?[]
+                {
+                    new AutoTagAudioInfo
+                    {
+                        Title = "All Over You",
+                        Artist = "Deobi",
+                        Artists = new List<string> { "Deobi" },
+                        HasEmbeddedTitle = true,
+                        HasEmbeddedArtist = true
+                    },
+                    new AutoTagMatchResult
+                    {
+                        Track = new AutoTagTrack
+                        {
+                            Title = "All Over You",
+                            Artists = new List<string> { "O.B.I" },
+                            AlbumArtists = new List<string> { "O.B.I" }
+                        }
+                    },
+                    new AutoTagMatchingConfig { Strictness = 0.7 }
+                });
+            Assert.Equal("match rejected by quality guard (artist mismatch)", unrelated);
+        }
+        finally
+        {
+            typeof(ArtistAliasGateway)
+                .GetField("_service", BindingFlags.Static | BindingFlags.NonPublic)
+                ?.SetValue(null, previous);
+            try
+            {
+                if (File.Exists(dbPath))
+                {
+                    File.Delete(dbPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+        }
     }
 
     [Fact]

@@ -18,10 +18,10 @@ public sealed class LibraryAnalysisRunApiController : ControllerBase
     }
 
     [HttpPost("run")]
-    public IActionResult Run([FromQuery] int batchSize = 100)
+    public async Task<IActionResult> Run([FromQuery] int batchSize = 100)
     {
         batchSize = Math.Clamp(batchSize, 10, 500);
-        var started = _analysisService.TryStartManualAnalysis(batchSize);
-        return Ok(new { queued = started, running = true, batchSize, fullScan = true });
+        var started = await _analysisService.TryStartManualAnalysisAsync(batchSize);
+        return Ok(new { queued = started, running = started, batchSize, fullScan = true });
     }
 }

@@ -121,11 +121,12 @@ public static partial class ArtistIdentityTextNormalizer
     }
 
     /// <summary>
-    /// Overlap is required when at least two resolvable local album titles exist
-    /// (single-track libraries and compilation-only sets never hard-block).
+    /// Overlap is required when the library has any resolvable album title.
+    /// A name hit with no album in common is not a match, including for a one-album artist.
+    /// An artist with no resolvable albums is not blocked here.
     /// </summary>
     public static bool ShouldRequireAlbumOverlap(IReadOnlyCollection<string> filteredLocalAlbumTitles)
-        => filteredLocalAlbumTitles.Count >= 2;
+        => filteredLocalAlbumTitles.Count >= 1;
 
     /// <summary>
     /// Counts how many normalized local album titles appear in the candidate's

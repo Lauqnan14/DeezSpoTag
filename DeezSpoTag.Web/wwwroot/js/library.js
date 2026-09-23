@@ -174,7 +174,7 @@ const soundtrackState = {
     searchTimer: 0
 };
 
-const librarySpotifyArtistCacheTtlMs = 2 * 60 * 60 * 1000;
+
 let activeFolderQualityDropdown = null;
 let activeFolderQualityPanel = null;
 let activeFolderQualitySummary = null;
@@ -482,12 +482,7 @@ function loadLibrarySpotifyArtistCache(artistId) {
             return null;
         }
         const parsed = JSON.parse(raw);
-        if (!parsed?.savedAtUtc || !parsed?.payload) {
-            return null;
-        }
-        const ageMs = Date.now() - Number(parsed.savedAtUtc);
-        if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > librarySpotifyArtistCacheTtlMs) {
-            localStorage.removeItem(key);
+        if (!parsed?.payload || typeof parsed.payload !== 'object') {
             return null;
         }
         return parsed.payload;
@@ -2793,13 +2788,13 @@ function handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly) {
 }
 
 function setAppleArtistExtrasLoading(term, atmosContainer, videoContainer) {
-    const loadingMarkup = `<div class="apple-loading">Searching Apple Music for ${escapeHtml(term)}…</div>`;
-    if (atmosContainer) {
-        atmosContainer.innerHTML = loadingMarkup;
-    }
-    if (videoContainer) {
-        videoContainer.innerHTML = loadingMarkup;
-    }
+    const loadingMarkup = `<div class="apple-loading">Loading saved catalogue…</div>`;
+    [atmosContainer, videoContainer].forEach((container) => {
+        if (!container || container.dataset.fromCache === '1') {
+            return;
+        }
+        container.innerHTML = loadingMarkup;
+    });
 }
 
 function buildAppleAtmosList(payload, normalizedTerm) {
@@ -4580,18 +4575,20 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
     }
     const { browserCached, hasBrowserCached } = getLibrarySpotifyBrowserCacheState(artistId, forceRefresh, forceRematch);
 
-    try {
-        await ensureLocalArtistIndex();
-        setSpotifyCacheStatus(forceRefresh ? 'Spotify refresh: requested' : 'Spotify refresh: cache');
-
-        if (hasBrowserCached) {
-            try {
-                renderCachedSpotifyArtistPayload(browserCached);
-                setSpotifyCacheStatus('Spotify refresh: loaded (cached)');
-            } catch (cachedRenderError) {
-                console.warn('Cached Spotify payload render failed; continuing with API payload.', cachedRenderError);
-            }
+    if (hasBrowserCached) {
+        try {
+            renderCachedSpotifyArtistPayload(browserCached);
+            setSpotifyCacheStatus('Spotify refresh: loaded (cached)');
+        } catch (cachedRenderError) {
+            console.warn('Cached Spotify payload render failed; continuing with API payload.', cachedRenderError);
         }
+    }
+
+    try {
+        void ensureLocalArtistIndex();
+        setSpotifyCacheStatus(hasBrowserCached
+            ? 'Spotify refresh: loaded (cached)'
+            : (forceRefresh ? 'Spotify refresh: requested' : 'Spotify refresh: cache'));
 
         const query = buildSpotifyArtistRequestQuery(artistId, {
             cacheOnly,
@@ -4632,6 +4629,10 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
 
     } catch (error) {
         handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly);
+    } finally {
+        if (cacheOnly && !forceRefresh && !forceRematch) {
+            queueDiscographyBackgroundRefresh(artistId);
+        }
     }
 }
 
@@ -5196,12 +5197,7 @@ async function resolveArtistPageAvailabilityAsync() {
 }
 
 function refreshDiscographyAvailabilityFromResolvedMatches() {
-    if (!libraryState.artistDataReady.local || !document.getElementById('discographyGrid')) {
-        return;
-    }
-
-    buildDiscography(libraryState.localAlbums, libraryState.spotifyAlbums || []);
-    renderDiscography();
+    tryRenderDiscography();
 }
 
 function invalidateArtistPageAvailability() {
@@ -7735,12 +7731,59 @@ function renderDiscographyAlbumCard(album, availabilityFilter) {
     `;
 }
 
-function tryRenderDiscography() {
-    if (libraryState.artistDataReady.local) {
-        buildDiscography(libraryState.localAlbums, libraryState.spotifyAlbums || []);
-        renderDiscography();
-        renderAppleAtmos();
+const discographyBackgroundRefreshIds = new Set();
+
+function queueDiscographyBackgroundRefresh(artistId) {
+    const id = String(artistId || '').trim();
+    if (!id || discographyBackgroundRefreshIds.has(id) || !document.getElementById('discographyGrid')) {
+        return;
     }
+
+    discographyBackgroundRefreshIds.add(id);
+    fetchJson(`/api/library/artists/${encodeURIComponent(id)}/spotify/discography/refresh`, { method: 'POST' })
+        .then((payload) => {
+            const currentArtistId = document.querySelector('[data-artist-id]')?.dataset.artistId || '';
+            if (String(currentArtistId) !== id || !payload || isSpotifyPayloadUnavailable(payload)) {
+                return;
+            }
+
+            const normalized = safeNormalizeLibrarySpotifyPayload(payload, 'discography-refresh');
+            const payloadForRender = selectSpotifyPayloadForRender(normalized, loadLibrarySpotifyArtistCache(id));
+            const renderState = prepareSpotifyArtistRenderPayload(payloadForRender);
+            if (!renderState) {
+                return;
+            }
+
+            renderSpotifyArtistPayload(
+                id,
+                renderState.payloadForRender,
+                renderState.effectiveAlbums,
+                renderState.topTracks,
+                renderState.preserveExistingAlbums
+            );
+        })
+        .catch((error) => {
+            console.warn('Background discography refresh failed.', error);
+        })
+        .finally(() => {
+            discographyBackgroundRefreshIds.delete(id);
+        });
+}
+
+function tryRenderDiscography() {
+    if (!document.getElementById('discographyGrid')) {
+        return;
+    }
+
+    const spotifyReady = libraryState.artistDataReady.spotify;
+    const localReady = libraryState.artistDataReady.local;
+    if (!spotifyReady && !localReady) {
+        return;
+    }
+
+    buildDiscography(localReady ? (libraryState.localAlbums || []) : [], libraryState.spotifyAlbums || []);
+    renderDiscography();
+    renderAppleAtmos();
 }
 
 function initDiscographyFilters() {
@@ -7768,19 +7811,9 @@ function initDiscographyFilters() {
 }
 
 function initAppleLazyLoad(artistName, storedAppleId) {
-    const sections = document.querySelectorAll('[data-lazy-apple]');
-    if (!sections.length) {
-        return;
+    if (typeof initAppleArtistExtras === 'function') {
+        initAppleArtistExtras(artistName, storedAppleId);
     }
-    const observer = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                observer.disconnect();
-                initAppleArtistExtras(artistName, storedAppleId);
-            }
-        });
-    }, { rootMargin: '200px' });
-    sections.forEach(section => observer.observe(section));
 }
 
 function getTrackSourceForTrack(track) {
@@ -11400,7 +11433,13 @@ async function initializeArtistAlbumsPage(shouldLoadArtistAlbums) {
     const artistIdValue = document.querySelector('[data-artist-id]')?.dataset.artistId;
     const artistNameValue = document.getElementById('artistName')?.textContent?.trim();
     if (artistIdValue) {
-        await loadSpotifyArtist(artistIdValue, false, false, true);
+        const mediaTask = typeof startCachedArtistMediaExtras === 'function'
+            ? startCachedArtistMediaExtras(artistIdValue)
+            : null;
+        await Promise.all([
+            loadSpotifyArtist(artistIdValue, false, false, true),
+            mediaTask
+        ]);
     }
     if (artistIdValue && artistNameValue) {
         await logLibraryActivity(`Artist page initialized for ${artistIdValue} (${artistNameValue}).`);

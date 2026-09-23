@@ -2802,10 +2802,10 @@ public sealed partial class ArtistMetadataUpdaterService
     }
 
     /// <summary>
-    /// Picks which server-side candidates receive the push: when the library has at
-    /// least two resolvable albums, only candidates whose own album list overlaps the
-    /// library are kept. If none overlap, the original candidates are kept and a
-    /// warning is surfaced so pushes never silently break.
+    /// Picks which server-side candidates receive the push: when the library has a
+    /// resolvable album, only candidates whose own album list overlaps the library
+    /// are kept. If none overlap, the original candidates are kept and a warning is
+    /// surfaced so pushes never silently break.
     /// </summary>
     private static List<int> SelectServerCandidatesByAlbumOverlap(
         IReadOnlyList<string> localAlbumTitles,

@@ -94,10 +94,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly object _runtimeLock = new();
     private readonly List<VibeAnalysisRecentItemDto> _recentAnalyses = new();
     private readonly object _mlCapabilityLock = new();
+    private VibeAnalyzerWorker? _analyzerWorker;
     private CancellationTokenSource? _activeRunCancellation;
     private bool _manualRunPending;
     private int _manualRunBatchSize;
-    private bool _manualRunForceWhenDisabled;
     private string _runtimeState = VibeAnalysisRuntimeStates.Idle;
     private LatestTrackAnalysisDto? _currentAnalysis;
     private LatestTrackAnalysisDto? _latestAnalysis;
@@ -106,6 +106,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private DateTimeOffset _mlCapabilityLastCheckedAt = DateTimeOffset.MinValue;
     private DateTimeOffset _mlBootstrapLastAttemptAt = DateTimeOffset.MinValue;
     private DateTimeOffset _mlLastWarningLoggedAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _analyzerLastFallbackLoggedAt = DateTimeOffset.MinValue;
+    private string? _analyzerLastFallbackReason;
     private static readonly string? FfmpegExecutablePath = FfmpegPathResolver.ResolveExecutable();
     private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new()
     {
@@ -140,20 +142,39 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         if (settings.Enabled)
         {
+            lock (_runtimeLock)
+            {
+                if (string.Equals(_runtimeState, VibeAnalysisRuntimeStates.Paused, StringComparison.OrdinalIgnoreCase))
+                {
+                    _runtimeState = VibeAnalysisRuntimeStates.Idle;
+                    _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+                }
+            }
+            WakeAnalysisLoop();
             return;
         }
 
         PauseActiveRun();
-        await Task.CompletedTask;
+        ClearPendingRunSignal();
+        await _analysisLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await ResetInterruptedProcessingRowsAsync(CancellationToken.None).ConfigureAwait(false);
+            await StopAnalyzerWorkerAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _analysisLock.Release();
+        }
     }
 
-    public bool TryStartManualAnalysis(int batchSize)
-        => TryQueueAnalysisRun(batchSize, forceWhenDisabled: true);
+    public async Task<bool> TryStartManualAnalysisAsync(int batchSize)
+        => await IsAnalysisEnabledAsync().ConfigureAwait(false) && TryQueueAnalysisRun(batchSize);
 
-    public bool TrySignalBackgroundAnalysis(int batchSize)
-        => TryQueueAnalysisRun(batchSize, forceWhenDisabled: false);
+    public async Task<bool> TrySignalBackgroundAnalysisAsync(int batchSize)
+        => await IsAnalysisEnabledAsync().ConfigureAwait(false) && TryQueueAnalysisRun(batchSize);
 
-    private bool TryQueueAnalysisRun(int batchSize, bool forceWhenDisabled)
+    private bool TryQueueAnalysisRun(int batchSize)
     {
         var shouldSignal = false;
         lock (_runtimeLock)
@@ -164,7 +185,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
 
             _manualRunBatchSize = Math.Clamp(batchSize, 10, 500);
-            _manualRunForceWhenDisabled = forceWhenDisabled;
             _manualRunPending = true;
             _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
             shouldSignal = true;
@@ -178,6 +198,34 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return true;
     }
 
+    private async Task<bool> IsAnalysisEnabledAsync()
+        => (await _settingsStore.LoadAsync().ConfigureAwait(false)).Enabled;
+
+    private void ClearPendingRunSignal()
+    {
+        lock (_runtimeLock)
+        {
+            _manualRunPending = false;
+            _manualRunBatchSize = 0;
+        }
+
+        while (_manualRunSignal.Wait(0))
+        {
+        }
+    }
+
+    private void WakeAnalysisLoop()
+    {
+        try
+        {
+            _manualRunSignal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // A wake is already pending.
+        }
+    }
+
     public VibeAnalysisRuntimeDto GetRuntimeSnapshot()
     {
         lock (_runtimeLock)
@@ -188,7 +236,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 _currentAnalysis,
                 _latestAnalysis,
                 _recentAnalyses.ToArray(),
-                _runtimeUpdatedAtUtc);
+                _runtimeUpdatedAtUtc,
+                _analyzerWorker?.GetSnapshot() ?? new VibeAnalyzerWorkerSnapshot(
+                    VibeAnalyzerWorkerStates.Stopped,
+                    null,
+                    null,
+                    0));
         }
     }
 
@@ -324,9 +377,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             try
             {
-                if (TryConsumeManualRun(out var manualBatchSize, out var forceWhenDisabled))
+                if (TryConsumeManualRun(out var manualBatchSize))
                 {
-                    await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled);
+                    await AnalyzeNowAsync(manualBatchSize, stoppingToken);
                     continue;
                 }
 
@@ -366,22 +419,35 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private bool TryConsumeManualRun(out int batchSize, out bool forceWhenDisabled)
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        await StopAnalyzerWorkerAsync().ConfigureAwait(false);
+    }
+
+    private async Task StopAnalyzerWorkerAsync()
+    {
+        var worker = _analyzerWorker;
+        _analyzerWorker = null;
+        if (worker is not null)
+        {
+            await worker.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private bool TryConsumeManualRun(out int batchSize)
     {
         lock (_runtimeLock)
         {
             if (!_manualRunPending)
             {
                 batchSize = 0;
-                forceWhenDisabled = false;
                 return false;
             }
 
             batchSize = _manualRunBatchSize;
-            forceWhenDisabled = _manualRunForceWhenDisabled;
             _manualRunPending = false;
             _manualRunBatchSize = 0;
-            _manualRunForceWhenDisabled = false;
             return true;
         }
     }
@@ -420,7 +486,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         await delayTask;
     }
 
-    public async Task AnalyzeNowAsync(int batchSize, CancellationToken cancellationToken, bool forceWhenDisabled = false)
+    public async Task AnalyzeNowAsync(int batchSize, CancellationToken cancellationToken)
     {
         await _analysisLock.WaitAsync(cancellationToken);
         try
@@ -429,12 +495,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             try
             {
                 var settings = await _settingsStore.LoadAsync();
-                if (forceWhenDisabled || settings.Enabled)
+                if (settings.Enabled)
                 {
-                    var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
                     await AnalyzeStablePassesAsync(
-                        settings with { BatchSize = Math.Clamp(effectiveBatch, 10, 500) },
-                        stopWhenDisabled: !forceWhenDisabled,
+                        settings with { BatchSize = Math.Clamp(batchSize, 10, 500) },
+                        stopWhenDisabled: true,
                         run.Token);
                 }
             }
@@ -455,7 +520,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     public async Task<bool> AnalyzeTrackByIdAsync(long trackId, CancellationToken cancellationToken)
     {
-        if (trackId <= 0)
+        if (trackId <= 0 || !await IsAnalysisEnabledAsync().ConfigureAwait(false))
         {
             return false;
         }
@@ -463,6 +528,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         await _analysisLock.WaitAsync(cancellationToken);
         try
         {
+            if (!await IsAnalysisEnabledAsync().ConfigureAwait(false))
+            {
+                return false;
+            }
+
             using var run = BeginRuntimeRun(cancellationToken);
             var track = await _repository.GetTrackForAnalysisAsync(trackId, cancellationToken);
             if (track is null)
@@ -484,6 +554,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             RecordCompletedAnalysis(summary, result);
 
             return isComplete;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await ResetInterruptedProcessingRowsAsync(CancellationToken.None).ConfigureAwait(false);
+            return false;
         }
         finally
         {
@@ -830,6 +905,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     && !string.IsNullOrWhiteSpace(predictionFailure))
                 {
                     _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidate.Track.FilePath, predictionFailure);
+                    LogAnalyzerFallback(predictionFailure);
                 }
 
                 var storedAnalysis = await _repository
@@ -1660,66 +1736,16 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         try
         {
             var analysisTimeout = ResolveAnalyzerTimeout();
-            var startInfo = new ProcessStartInfo
+            _analyzerWorker ??= new VibeAnalyzerWorker(
+                () => CreatePersistentAnalyzerStartInfo(context.ScriptPath!, context.ModelsDir!),
+                analysisTimeout);
+            var workerResult = await _analyzerWorker.AnalyzeAsync(filePath, cancellationToken).ConfigureAwait(false);
+            if (!workerResult.Succeeded || string.IsNullOrWhiteSpace(workerResult.PayloadJson))
             {
-                FileName = ResolvePythonExecutable(),
-                Arguments = $"\"{context.ScriptPath}\" --file \"{filePath}\" --models \"{context.ModelsDir}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            ConfigurePythonEnvironment(startInfo);
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return (null, "Failed to start vibe analyzer process.");
+                return (null, workerResult.FailureReason ?? "Vibe analyzer worker failed.");
             }
 
-            using var timeout = new CancellationTokenSource(analysisTimeout);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-            try
-            {
-                await process.WaitForExitAsync(linked.Token);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                TryTerminate(process);
-                throw;
-            }
-            catch (OperationCanceledException ex)
-            {
-                TryTerminate(process);
-                _logger.LogWarning(
-                    ex,
-                    "Vibe analysis ML timed out for {FilePath} after {TimeoutSeconds}s",
-                    filePath,
-                    (int)analysisTimeout.TotalSeconds);
-                return (null, "Vibe analysis ML timed out.");
-            }
-
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var errorOutput = await process.StandardError.ReadToEndAsync(cancellationToken);
-
-            if (process.ExitCode != 0)
-            {
-                _logger.LogWarning("Vibe analysis ML failed for {FilePath}: {Error}", filePath, errorOutput);
-                return (null, string.IsNullOrWhiteSpace(errorOutput) ? "Vibe analyzer process failed." : errorOutput.Trim());
-            }
-
-            if (TryReadAnalyzerFailure(output, out var analyzerFailure))
-            {
-                if (IsMlCapabilityFailure(analyzerFailure.ErrorCode))
-                {
-                    SetMlCapabilityUnavailable(analyzerFailure.Reason);
-                    LogMlUnavailable(analyzerFailure.Reason);
-                }
-
-                return (null, analyzerFailure.Reason);
-            }
-
-            var parsed = JsonSerializer.Deserialize<AnalysisOutput>(output, CaseInsensitiveJsonOptions);
+            var parsed = JsonSerializer.Deserialize<AnalysisOutput>(workerResult.PayloadJson, CaseInsensitiveJsonOptions);
             if (parsed is null)
             {
                 return (null, "Vibe analyzer returned an empty payload.");
@@ -1732,6 +1758,25 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             _logger.LogWarning(ex, "Vibe analysis ML failed for {FilePath}", filePath);
             return (null, ex.Message);
         }
+    }
+
+    private static ProcessStartInfo CreatePersistentAnalyzerStartInfo(string scriptPath, string modelsDir)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ResolvePythonExecutable(),
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add("--worker");
+        startInfo.ArgumentList.Add("--models");
+        startInfo.ArgumentList.Add(modelsDir);
+        ConfigurePythonEnvironment(startInfo);
+        return startInfo;
     }
 
     private sealed record AnalyzerExecutionContext(
@@ -2441,6 +2486,36 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             now,
             "warning",
             $"Vibe analysis ML unavailable: {reason}"));
+    }
+
+    internal static string SanitizeAnalyzerFailure(string? reason)
+        => DeezSpoTag.Core.Security.LogSanitizer.OneLine(reason, 256);
+
+    private void LogAnalyzerFallback(string reason)
+    {
+        var sanitized = SanitizeAnalyzerFailure(reason);
+        if (string.IsNullOrWhiteSpace(sanitized))
+        {
+            sanitized = "Unknown Essentia failure.";
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        lock (_runtimeLock)
+        {
+            if (string.Equals(_analyzerLastFallbackReason, sanitized, StringComparison.Ordinal)
+                && now - _analyzerLastFallbackLoggedAt < MlWarningThrottle)
+            {
+                return;
+            }
+
+            _analyzerLastFallbackReason = sanitized;
+            _analyzerLastFallbackLoggedAt = now;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            now,
+            "warning",
+            $"Essentia analysis failed; standard analysis was used: {sanitized}"));
     }
 
     private void SetMlCapabilityUnavailable(string reason)
@@ -3266,4 +3341,5 @@ public sealed record VibeAnalysisRuntimeDto(
     LatestTrackAnalysisDto? Current,
     LatestTrackAnalysisDto? Latest,
     IReadOnlyList<VibeAnalysisRecentItemDto> Recent,
-    DateTimeOffset? UpdatedAtUtc);
+    DateTimeOffset? UpdatedAtUtc,
+    VibeAnalyzerWorkerSnapshot Analyzer);

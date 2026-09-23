@@ -924,6 +924,7 @@ def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "ok": True,
         "retryable": False,
         "AnalysisMode": result.get("analysisMode", "standard"),
+        "AnalysisVersion": "musicnn-1" if result.get("analysisMode") == "enhanced" else "ffmpeg-basic-2",
         "Bpm": result.get("bpm"),
         "BeatsCount": result.get("beatsCount"),
         "Key": result.get("key"),
@@ -934,6 +935,8 @@ def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "Instrumentalness": result.get("instrumentalness"),
         "Speechiness": result.get("speechiness"),
         "Genres": result.get("essentiaGenres", []),
+        "EssentiaGenreEvidence": result.get("essentiaGenreEvidence", []),
+        "GenreModel": result.get("genreModel"),
         "MoodTags": result.get("moodTags", []),
         "Happy": result.get("moodHappy"),
         "Sad": result.get("moodSad"),
@@ -1186,6 +1189,101 @@ def _analyze_single_track(models_dir: str, file_path: str) -> Dict[str, Any]:
     return build_payload(result)
 
 
+def _write_worker_response(payload: Dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def run_worker(models_dir: str) -> int:
+    try:
+        analyzer = AudioAnalyzer(models_dir)
+        if not analyzer.enhanced_mode:
+            raise RuntimeError("Required enhanced analysis models did not initialize.")
+    except Exception as exc:
+        sys.stderr.write(f"vibe analyzer worker initialization failed: {exc}\n")
+        sys.stderr.flush()
+        request_id = None
+        request_line = sys.stdin.readline().strip()
+        if request_line:
+            try:
+                request = json.loads(request_line)
+                if isinstance(request, dict):
+                    request_id = request.get("requestId")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        _write_worker_response({
+            "requestId": request_id,
+            "ok": False,
+            "retryable": True,
+            "errorCode": "VIBE_ANALYZER_NOT_INITIALIZED",
+            "message": str(exc),
+        })
+        return 1
+
+    for request_line in sys.stdin:
+        request_line = request_line.strip()
+        if not request_line:
+            continue
+
+        request_id = None
+        try:
+            request = json.loads(request_line)
+            if not isinstance(request, dict):
+                raise ValueError("Worker request must be a JSON object.")
+
+            request_id = request.get("requestId")
+            file_path = request.get("filePath")
+            if request_id is None:
+                raise ValueError("requestId is required.")
+            if not isinstance(file_path, str) or not file_path.strip():
+                raise ValueError("filePath is required.")
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+            result = analyzer.analyze(file_path)
+            if "_error" in result:
+                _write_worker_response({
+                    "requestId": request_id,
+                    "ok": False,
+                    "retryable": True,
+                    "errorCode": "VIBE_ANALYZER_FAILED",
+                    "message": str(result.get("_error")),
+                })
+                continue
+
+            response = build_payload(result)
+            response["requestId"] = request_id
+            _write_worker_response(response)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            _write_worker_response({
+                "requestId": request_id,
+                "ok": False,
+                "retryable": False,
+                "errorCode": "VIBE_ANALYZER_INVALID_INPUT",
+                "message": str(exc),
+            })
+        except FileNotFoundError as exc:
+            _write_worker_response({
+                "requestId": request_id,
+                "ok": False,
+                "retryable": False,
+                "errorCode": "VIBE_ANALYZER_FILE_MISSING",
+                "message": str(exc),
+            })
+        except Exception as exc:
+            sys.stderr.write(f"vibe analyzer worker request failed: {exc}\n")
+            sys.stderr.flush()
+            _write_worker_response({
+                "requestId": request_id,
+                "ok": False,
+                "retryable": True,
+                "errorCode": "VIBE_ANALYZER_FAILED",
+                "message": str(exc),
+            })
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Vibe Analyzer - lidify parity")
     parser.add_argument("--probe", action="store_true", help="Probe available Essentia capabilities")
@@ -1195,6 +1293,7 @@ def main():
     parser.add_argument("--workers", type=int, default=_default_worker_count(), help="Batch worker count")
     parser.add_argument("--per-track-timeout-seconds", type=int, default=60, help="Per-track timeout in batch mode")
     parser.add_argument("--batch-timeout-seconds", type=int, default=300, help="Overall batch timeout")
+    parser.add_argument("--worker", action="store_true", help="Run persistent JSON Lines worker mode")
     args = parser.parse_args()
 
     if args.probe:
@@ -1207,6 +1306,9 @@ def main():
 
         if not os.path.isdir(args.models):
             raise FileNotFoundError(f"Models directory not found: {args.models}")
+
+        if args.worker:
+            raise SystemExit(run_worker(args.models))
 
         if args.batch_json:
             batch_items = _load_batch_items(args.batch_json)

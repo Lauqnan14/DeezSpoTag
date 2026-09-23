@@ -91,7 +91,8 @@ public partial class AutoTagService
             return blockedByTriggerPolicy;
         }
 
-        if (await ShouldSkipForActiveDownloadsAsync())
+        if (await ShouldSkipForActiveDownloadsAsync()
+            && !string.Equals(normalizedRunIntent, AutoTagLiterals.RunIntentAliasMerge, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation("AutoTag skipped: downloads active.");
             return null;

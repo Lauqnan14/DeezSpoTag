@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${DATA_DIR:-"$ROOT_DIR/DeezSpoTag.Workers/Data"}"
 VENV_DIR="${VENV_DIR:-"$DATA_DIR/analysis/vibe/.venv"}"
 MODELS_DIR="${MODELS_DIR:-"$DATA_DIR/analysis/models"}"
-ESSENTIA_TF_PACKAGE="${ESSENTIA_TF_PACKAGE:-essentia-tensorflow==2.1b6.dev1389}"
 
 echo "Data dir:    $DATA_DIR"
 echo "Venv dir:    $VENV_DIR"
@@ -22,8 +21,8 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   python3 -m venv "$VENV_DIR"
 fi
 
-"$VENV_DIR/bin/python" -m pip install --upgrade pip
-"$VENV_DIR/bin/python" -m pip install "$ESSENTIA_TF_PACKAGE"
+"$VENV_DIR/bin/python" -m pip install --requirement "$ROOT_DIR/scripts/vibe-runtime-requirements.txt"
+"$VENV_DIR/bin/python" -m pip check
 
 MODELS_DIR="$MODELS_DIR" "$ROOT_DIR/scripts/fetch-vibe-models.sh"
 

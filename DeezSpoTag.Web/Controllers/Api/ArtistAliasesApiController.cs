@@ -142,9 +142,11 @@ public sealed class ArtistAliasesApiController : ControllerBase
             });
         }
 
+        var enhancementSubmitted = mergeResult.AffectedFilePaths.Count == 0 || jobIds.Count > 0;
         return Ok(new
         {
             group,
+            status = enhancementSubmitted ? "completed" : "partial",
             merge = new
             {
                 filesScanned = mergeResult.FilesScanned,

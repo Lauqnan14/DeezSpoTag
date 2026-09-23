@@ -3,7 +3,7 @@
 ARG DOTNET_VERSION=10.0
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 
-FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29 AS build
 WORKDIR /src
 
 COPY . .
@@ -13,9 +13,9 @@ RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publi
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
-FROM docker:cli AS docker-cli
+FROM docker:cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS docker-cli
 
-FROM golang:1.26.6-bookworm AS apple-wrapper-build
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
 
@@ -26,21 +26,19 @@ RUN set -eux; \
     target_arch="${TARGETARCH:-amd64}"; \
     CGO_ENABLED=0 GOOS=linux GOARCH="${target_arch}" go build -trimpath -ldflags "-s -w" -o /out/apple-wrapper-runv2 .
 
-FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS runtime
 WORKDIR /app
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 ARG DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=1
 ARG TARGETARCH
 ARG BENTO4_URL_X86_64=https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip
 ARG BENTO4_SHA256=
-ARG ESSENTIA_TF_PACKAGE=essentia-tensorflow==2.1b6.dev1389
 LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" \
       org.opencontainers.image.title="deezspotag"
 
 COPY scripts/mp4decrypt /usr/local/bin/mp4decrypt
 
 RUN apt-get update -o Acquire::Retries=5 \
-    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
        perl-base \
        tar \
@@ -131,11 +129,15 @@ RUN apt-get update -o Acquire::Retries=5 \
       > /etc/ssl/openssl-legacy.cnf \
     && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/vibe-runtime-requirements.txt /app/scripts/vibe-runtime-requirements.txt
+
 RUN set -eux; \
     python3 -m venv /opt/venv; \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel; \
-    /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
-    /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; \
+    /opt/venv/bin/pip install --no-cache-dir --requirement /app/scripts/vibe-runtime-requirements.txt; \
+    /opt/venv/bin/pip check; \
+    /opt/venv/bin/pip freeze | sort > /tmp/vibe-installed.txt; \
+    sort /app/scripts/vibe-runtime-requirements.txt > /tmp/vibe-expected.txt; \
+    diff -u /tmp/vibe-expected.txt /tmp/vibe-installed.txt; \
     /opt/venv/bin/python3 -m pip uninstall --yes pip; \
     /opt/venv/bin/python3 - <<'PY'
 import essentia.standard as es

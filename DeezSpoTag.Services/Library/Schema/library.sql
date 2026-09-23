@@ -72,9 +72,17 @@ CREATE TABLE IF NOT EXISTS artist_source (
     source_id TEXT NOT NULL,
     url TEXT,
     data TEXT,
-    PRIMARY KEY (artist_id, source),
-    UNIQUE (source, source_id)
+    native_name TEXT,
+    alias_name TEXT,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    verification_state TEXT NOT NULL DEFAULT 'verified',
+    evidence TEXT,
+    verified_at TEXT,
+    PRIMARY KEY (source, source_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_artist_source_artist_provider
+ON artist_source (artist_id, source);
 
 CREATE TABLE IF NOT EXISTS artist_metadata_policy (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
@@ -111,11 +119,15 @@ ON artist_artwork_cache (artist_id, role);
 CREATE TABLE IF NOT EXISTS artist_biography_cache (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
+    source_id TEXT NOT NULL DEFAULT '',
     biography TEXT,
     language TEXT,
     selected INTEGER NOT NULL DEFAULT 0,
     fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (artist_id, source)
+    native_name TEXT,
+    alias_name TEXT,
+    diagnostic TEXT,
+    PRIMARY KEY (artist_id, source, source_id)
 );
 
 CREATE TABLE IF NOT EXISTS artist_server_sync_state (

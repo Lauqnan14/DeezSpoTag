@@ -2099,7 +2099,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var vibeSettings = await _vibeSettingsStore.LoadAsync();
         if (vibeSettings.Enabled)
         {
-            var signaled = _analysisService.TrySignalBackgroundAnalysis(Math.Clamp(vibeSettings.BatchSize, 10, 500));
+            var signaled = await _analysisService.TrySignalBackgroundAnalysisAsync(Math.Clamp(vibeSettings.BatchSize, 10, 500));
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 signaled ? "info" : "warning",

@@ -330,7 +330,26 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return CreateSpotifyUnavailableResult();
         }
 
-        return await CreateSpotifyArtistResultAsync(id, result);
+        return await CreateSpotifyArtistResultAsync(id, result, cancellationToken: cancellationToken);
+    }
+
+    [HttpPost("{id:long}/spotify/discography/refresh")]
+    public async Task<IActionResult> RefreshSpotifyDiscography(long id, CancellationToken cancellationToken)
+    {
+        var resolvedArtistName = await ResolveArtistNameAsync(id, cancellationToken);
+        var spotifyId = await _repository.GetArtistSourceIdAsync(id, SpotifySource, cancellationToken);
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return CreateSpotifyUnavailableResult();
+        }
+
+        var refreshed = await _spotifyArtistService.RefreshLatestDiscographyAsync(
+            spotifyId,
+            string.IsNullOrWhiteSpace(resolvedArtistName) ? spotifyId : resolvedArtistName,
+            cancellationToken);
+        return refreshed is null
+            ? CreateSpotifyUnavailableResult()
+            : await CreateSpotifyArtistResultAsync(id, refreshed, attachLocation: false, cancellationToken: cancellationToken);
     }
 
     [HttpPost("{id:long}/spotify-reset")]
@@ -347,15 +366,14 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return NotFound();
         }
 
-        var existingSpotifyId = await _repository.GetArtistSourceIdAsync(id, SpotifySource, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(existingSpotifyId))
+        var existingSpotifyIds = await _repository.GetArtistSourceIdsAsync(id, SpotifySource, cancellationToken);
+        foreach (var existingSpotifyId in existingSpotifyIds)
         {
             await _artistPageCache.ClearEntryAsync(SpotifySource, existingSpotifyId, cancellationToken);
             await _spotifyMetadataCache.ClearEntryAsync("artist", existingSpotifyId, cancellationToken);
-            await PurgeSpotifyVisualFilesAsync(id, existingSpotifyId, cancellationToken);
         }
 
-        await _repository.RemoveArtistSourceAsync(id, SpotifySource, cancellationToken);
+        await _spotifyArtistService.EnsureAliasSpotifyIdentitiesAsync(id, artist.Name, cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -702,7 +720,11 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             effectiveArtistName,
             allowStale: true,
             cancellationToken);
-        return cached is null ? CreateSpotifyUnavailableResult() : await CreateSpotifyArtistResultAsync(id, cached);
+        // Location has its own route. Keeping it off this read lets the cached
+        // catalogue return without an Audiomack lookup.
+        return cached is null
+            ? CreateSpotifyUnavailableResult()
+            : await CreateSpotifyArtistResultAsync(id, cached, attachLocation: false, cancellationToken: cancellationToken);
     }
 
     private async Task<SpotifyArtistPageResult?> ResolveSpotifyArtistPageResultAsync(
@@ -761,10 +783,17 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return Ok(new { available = false });
     }
 
-    private async Task<OkObjectResult> CreateSpotifyArtistResultAsync(long artistId, SpotifyArtistPageResult result)
+    private async Task<OkObjectResult> CreateSpotifyArtistResultAsync(
+        long artistId,
+        SpotifyArtistPageResult result,
+        bool attachLocation = true,
+        CancellationToken cancellationToken = default)
     {
+        result = await _spotifyArtistService.MergeAliasVisualsAsync(artistId, result, cancellationToken);
         var artistPagePayload = SpotifyArtistPagePayloadMapper.Build(result);
-        var artistNode = await AttachArtistLocationToArtistNodeAsync(artistId, result);
+        var artistNode = attachLocation
+            ? await AttachArtistLocationToArtistNodeAsync(artistId, result)
+            : JsonSerializer.SerializeToNode(result.Artist, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         return Ok(new
         {
             available = result.Available,

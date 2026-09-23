@@ -331,7 +331,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: DeezSpoTag.Web/Tools/models
-          key: vibe-analysis-models-v1
+          key: vibe-analysis-models-${{ hashFiles('scripts/fetch-vibe-models.sh') }}
 
       - name: Prime vibe analysis models
         if: matrix.image_name == 'deezspotag'
@@ -367,9 +367,27 @@ jobs:
             --network host \
             --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
             --build-arg DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=0 \
+            --cache-from type=gha,scope=deezspotag \
+            --cache-to type=gha,mode=max,scope=deezspotag \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ steps.commit.outputs.full_sha }} \
+            --label org.opencontainers.image.version=${{ steps.version.outputs.app_release_tag }} \
+            --label org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }} \
             --load \
             -t deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
             .
+
+      - name: Report pinned app runtime inputs
+        if: matrix.image_name == 'deezspotag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Pinned base images:"
+          grep '^FROM ' Dockerfile
+          docker run --rm --platform linux/amd64 \
+            --entrypoint /bin/sh \
+            deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
+            -lc 'python3 --version; ffmpeg -version | head -n1; openssl version; ldd --version | head -n1; MP4Box -version 2>&1 | head -n1'
 
       - name: Log in to GHCR
         if: steps.image_scope.outputs.publish == 'true'
@@ -448,7 +466,7 @@ jobs:
             org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }}
 
       - name: Build and push
-        if: steps.image_scope.outputs.publish == 'true'
+        if: matrix.image_name == 'deezspotag-apple-wrapper' && steps.image_scope.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -464,6 +482,55 @@ jobs:
             DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=0
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
+
+      - name: Push parity-tested app image
+        if: matrix.image_name == 'deezspotag' && steps.image_scope.outputs.publish == 'true'
+        id: push_tested_app
+        shell: bash
+        env:
+          PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          audit_image="deezspotag-audit:${{ steps.commit.outputs.full_sha }}"
+          tested_digest=""
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            docker tag "$audit_image" "$tag"
+            docker push "$tag"
+            published_digest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if [[ -z "$tested_digest" ]]; then
+              tested_digest="$published_digest"
+            elif [[ "$published_digest" != "$tested_digest" ]]; then
+              echo "Published tag $tag resolved to $published_digest instead of $tested_digest" >&2
+              exit 1
+            fi
+          done <<< "$PUBLISH_TAGS"
+          [[ -n "$tested_digest" ]]
+          echo "tested_digest=$tested_digest" >> "$GITHUB_OUTPUT"
+          echo "Published digest matches parity-tested digest: $tested_digest" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run published app parity smoke audit
+        if: matrix.image_name == 'deezspotag' && steps.image_scope.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ steps.vars.outputs.image }}:${{ steps.commit.outputs.full_sha }}"
+          published_digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ "$published_digest" != "${{ steps.push_tested_app.outputs.tested_digest }}" ]]; then
+            echo "Published digest $published_digest differs from tested digest ${{ steps.push_tested_app.outputs.tested_digest }}" >&2
+            exit 1
+          fi
+          docker image rm "$ref" >/dev/null 2>&1 || true
+          docker pull --platform linux/amd64 "$ref"
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          wrapper_tag="prerelease"
+          if [[ "${{ needs.release-context.outputs.channel }}" == "stable" ]]; then
+            wrapper_tag="latest"
+          fi
+          PARITY_TEST_PLATFORM=linux/amd64 \
+          PARITY_EXPECTED_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
+          PARITY_APPLE_WRAPPER_IMAGE=ghcr.io/${owner}/deezspotag-apple-wrapper:${wrapper_tag} \
+            ./scripts/docker-parity-smoke.sh "$ref"
 
       - name: Verify published manifest platforms
         if: steps.image_scope.outputs.publish == 'true'

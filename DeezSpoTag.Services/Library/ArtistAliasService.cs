@@ -428,6 +428,35 @@ VALUES ($group_id, $name, $normalized);";
             : trimmed;
     }
 
+    /// <summary>
+    /// Preferred name plus every alias in the same group. The name itself when it is not in a group.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetGroupNamesAsync(string? artistName, CancellationToken cancellationToken = default)
+    {
+        var trimmed = (artistName ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var normalized = NormalizeName(trimmed);
+        var groups = await GetAllGroupsAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var group in groups)
+        {
+            var names = new[] { group.PreferredName }.Concat(group.Aliases)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Select(name => name.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (names.Any(name => string.Equals(NormalizeName(name), normalized, StringComparison.Ordinal)))
+            {
+                return names;
+            }
+        }
+
+        return new[] { trimmed };
+    }
+
     /// <summary>Awaitable variant of <see cref="ResolvePreferred"/> that guarantees a loaded snapshot.</summary>
     public async Task<string> ResolvePreferredAsync(string? name, CancellationToken cancellationToken = default)
     {

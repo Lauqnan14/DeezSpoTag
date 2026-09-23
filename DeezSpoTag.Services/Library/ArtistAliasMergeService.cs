@@ -162,6 +162,12 @@ WHERE artist_id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
                     }
 
                     artistRowsMerged = await rePoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await MigrateAbsorbedArtistMetadataAsync(
+                        connection,
+                        transaction,
+                        preferredArtistId,
+                        absorbedArtistIds,
+                        cancellationToken).ConfigureAwait(false);
 
                     await using var deleteArtists = connection.CreateCommand();
                     deleteArtists.Transaction = transaction;
@@ -392,6 +398,202 @@ UPDATE album SET preferred_cover_path = $new WHERE preferred_cover_path = $old;"
     }
 
     // ---- DB resolution -----------------------------------------------------
+
+    private static async Task MigrateAbsorbedArtistMetadataAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long preferredArtistId,
+        IReadOnlyList<long> absorbedArtistIds,
+        CancellationToken cancellationToken)
+    {
+        var absorbed = BuildPlaceholders(absorbedArtistIds.Count, "a");
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_source
+SET artist_id = $preferred
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_biography_cache
+SET biography = CASE
+        WHEN biography IS NULL OR TRIM(biography) = '' THEN COALESCE((
+            SELECT absorbed.biography
+            FROM artist_biography_cache absorbed
+            WHERE absorbed.artist_id IN ({absorbed})
+              AND absorbed.source = artist_biography_cache.source
+              AND absorbed.source_id = artist_biography_cache.source_id
+              AND absorbed.biography IS NOT NULL
+              AND TRIM(absorbed.biography) <> ''
+            LIMIT 1), biography)
+        ELSE biography
+    END,
+    native_name = COALESCE(native_name, (
+        SELECT absorbed.native_name
+        FROM artist_biography_cache absorbed
+        WHERE absorbed.artist_id IN ({absorbed})
+          AND absorbed.source = artist_biography_cache.source
+          AND absorbed.source_id = artist_biography_cache.source_id
+        LIMIT 1)),
+    alias_name = COALESCE(alias_name, (
+        SELECT absorbed.alias_name
+        FROM artist_biography_cache absorbed
+        WHERE absorbed.artist_id IN ({absorbed})
+          AND absorbed.source = artist_biography_cache.source
+          AND absorbed.source_id = artist_biography_cache.source_id
+        LIMIT 1))
+WHERE artist_id = $preferred;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_biography_cache
+WHERE artist_id IN ({absorbed})
+  AND EXISTS (
+      SELECT 1
+      FROM artist_biography_cache preferred
+      WHERE preferred.artist_id = $preferred
+        AND preferred.source = artist_biography_cache.source
+        AND preferred.source_id = artist_biography_cache.source_id);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_biography_cache
+SET artist_id = $preferred
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_artwork_cache
+SET user_blocked = CASE
+        WHEN user_blocked = 1 OR EXISTS (
+            SELECT 1 FROM artist_artwork_cache absorbed
+            WHERE absorbed.artist_id IN ({absorbed})
+              AND absorbed.role = artist_artwork_cache.role
+              AND absorbed.identity = artist_artwork_cache.identity
+              AND absorbed.user_blocked = 1) THEN 1
+        ELSE user_blocked
+    END,
+    text_art_blocked = CASE
+        WHEN text_art_blocked = 1 OR EXISTS (
+            SELECT 1 FROM artist_artwork_cache absorbed
+            WHERE absorbed.artist_id IN ({absorbed})
+              AND absorbed.role = artist_artwork_cache.role
+              AND absorbed.identity = artist_artwork_cache.identity
+              AND absorbed.text_art_blocked = 1) THEN 1
+        ELSE text_art_blocked
+    END
+WHERE artist_id = $preferred;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_artwork_cache
+WHERE artist_id IN ({absorbed})
+  AND rowid NOT IN (
+      SELECT MIN(rowid)
+      FROM artist_artwork_cache
+      WHERE artist_id IN ({absorbed})
+      GROUP BY role, identity);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_artwork_cache
+WHERE artist_id IN ({absorbed})
+  AND EXISTS (
+      SELECT 1 FROM artist_artwork_cache preferred
+      WHERE preferred.artist_id = $preferred
+        AND preferred.role = artist_artwork_cache.role
+        AND preferred.identity = artist_artwork_cache.identity);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_artwork_cache
+SET artist_id = $preferred
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+INSERT INTO artist_metadata_policy (
+    artist_id, sync_blocked, ocr_text_art_blocking_enabled, selected_targets_json, created_at, updated_at)
+SELECT $preferred,
+       MAX(sync_blocked),
+       MAX(ocr_text_art_blocking_enabled),
+       COALESCE(
+           (SELECT selected_targets_json FROM artist_metadata_policy WHERE artist_id = $preferred AND selected_targets_json IS NOT NULL LIMIT 1),
+           (SELECT selected_targets_json FROM artist_metadata_policy WHERE artist_id IN ({absorbed}) AND selected_targets_json IS NOT NULL LIMIT 1)),
+       CURRENT_TIMESTAMP,
+       CURRENT_TIMESTAMP
+FROM artist_metadata_policy
+WHERE artist_id = $preferred OR artist_id IN ({absorbed})
+HAVING COUNT(*) > 0
+ON CONFLICT(artist_id) DO UPDATE SET
+    sync_blocked = excluded.sync_blocked,
+    ocr_text_art_blocking_enabled = excluded.ocr_text_art_blocking_enabled,
+    selected_targets_json = COALESCE(artist_metadata_policy.selected_targets_json, excluded.selected_targets_json),
+    updated_at = CURRENT_TIMESTAMP;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+INSERT OR IGNORE INTO artist_visual_usage (artist_id, slot, content_hash, identity, used_at)
+SELECT $preferred, slot, content_hash, identity, used_at
+FROM artist_visual_usage
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_visual_usage WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+INSERT INTO artist_location_override (artist_id, city, country, country_code, updated_at)
+SELECT $preferred, city, country, country_code, updated_at
+FROM artist_location_override
+WHERE artist_id IN ({absorbed})
+  AND NOT EXISTS (SELECT 1 FROM artist_location_override WHERE artist_id = $preferred)
+LIMIT 1;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_location_override WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_server_sync_state
+WHERE artist_id = $preferred
+  AND EXISTS (
+      SELECT 1 FROM artist_server_sync_state absorbed
+      WHERE absorbed.artist_id IN ({absorbed})
+        AND absorbed.server = artist_server_sync_state.server
+        AND COALESCE(absorbed.updated_at, '') > COALESCE(artist_server_sync_state.updated_at, ''));", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_server_sync_state
+WHERE artist_id IN ({absorbed})
+  AND EXISTS (
+      SELECT 1 FROM artist_server_sync_state preferred
+      WHERE preferred.artist_id = $preferred
+        AND preferred.server = artist_server_sync_state.server);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_server_sync_state
+SET artist_id = $preferred
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, $@"
+DELETE FROM artist_biography_rotation
+WHERE (artist_id = $preferred OR artist_id IN ({absorbed}))
+  AND rowid <> (
+      SELECT rowid
+      FROM artist_biography_rotation
+      WHERE artist_id = $preferred OR artist_id IN ({absorbed})
+      ORDER BY used_at DESC, artist_id DESC
+      LIMIT 1);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_biography_rotation
+SET artist_id = $preferred
+WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ExecuteMergeAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        long preferredArtistId,
+        IReadOnlyList<long> absorbedArtistIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$preferred", preferredArtistId);
+        for (var index = 0; index < absorbedArtistIds.Count; index++)
+        {
+            command.Parameters.AddWithValue($"$a{index}", absorbedArtistIds[index]);
+        }
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     private async Task<(long PreferredArtistId, List<long> AbsorbedArtistIds)> ResolveArtistRowsAsync(
         SqliteConnection connection,
@@ -709,7 +911,18 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
             segments[index] = SanitizeSegment(segments[index]);
         }
 
-        var destinationPath = Path.Combine(root, Path.Combine(segments));
+        var destinationPath = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
+        if (!destinationPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(destinationPath, root, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ArtistAliasMergeFileResult(
+                sourcePath,
+                sourcePath,
+                false,
+                false,
+                $"Refusing to move {sourcePath} outside its library root.");
+        }
+
         if (!changed || string.Equals(destinationPath, sourcePath, StringComparison.OrdinalIgnoreCase))
         {
             return new ArtistAliasMergeFileResult(sourcePath, sourcePath, false, false, null);

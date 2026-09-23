@@ -14861,12 +14861,47 @@ SELECT source_id
 FROM artist_source
 WHERE artist_id = @artistId
   AND source = @source
+ORDER BY is_primary DESC, source_id
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
         command.Parameters.AddWithValue(SourceField, source);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? null : Convert.ToString(result);
+    }
+
+    public async Task<IReadOnlyList<string>> GetArtistSourceIdsAsync(long artistId, string source, CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
+        {
+            return Array.Empty<string>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source_id
+FROM artist_source
+WHERE artist_id = @artistId
+  AND source = @source
+ORDER BY is_primary DESC, source_id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue(SourceField, source);
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!reader.IsDBNull(0))
+            {
+                var value = reader.GetString(0);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    ids.Add(value);
+                }
+            }
+        }
+
+        return ids;
     }
 
     public async Task<long?> FindArtistIdBySourceIdAsync(string source, string sourceId, CancellationToken cancellationToken = default)
@@ -14985,22 +15020,27 @@ SELECT 1
 FROM artist
 WHERE id = @artistId
 LIMIT 1;";
-        const string deleteSql = @"
-DELETE FROM artist_source
-WHERE artist_id = @artistId
-  AND source = @source
-  AND source_id <> @sourceId;";
-        const string moveSql = @"
-UPDATE artist_source
-SET artist_id = @artistId
-WHERE source = @source
-  AND source_id = @sourceId
-  AND artist_id <> @artistId;";
         const string upsertSql = @"
-INSERT INTO artist_source (artist_id, source, source_id)
-VALUES (@artistId, @source, @sourceId)
-ON CONFLICT(artist_id, source) DO UPDATE SET
-    source_id = excluded.source_id;";
+INSERT INTO artist_source (
+    artist_id, source, source_id, is_primary, verification_state, verified_at)
+VALUES (
+    @artistId,
+    @source,
+    @sourceId,
+    CASE WHEN EXISTS (
+        SELECT 1 FROM artist_source existing
+        WHERE existing.artist_id = @artistId
+          AND existing.source = @source
+          AND existing.is_primary = 1
+    ) THEN 0 ELSE 1 END,
+    'verified',
+    CURRENT_TIMESTAMP)
+ON CONFLICT(source, source_id) DO UPDATE SET
+    artist_id = excluded.artist_id,
+    url = COALESCE(artist_source.url, excluded.url),
+    data = COALESCE(artist_source.data, excluded.data),
+    native_name = COALESCE(artist_source.native_name, excluded.native_name),
+    alias_name = COALESCE(artist_source.alias_name, excluded.alias_name);";
 
         await using (var artistExistsCommand = new SqliteCommand(artistExistsSql, connection))
         {
@@ -15013,22 +15053,6 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
         }
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await using (var deleteCommand = new SqliteCommand(deleteSql, connection, (SqliteTransaction)transaction))
-        {
-            deleteCommand.Parameters.AddWithValue("artistId", artistId);
-            deleteCommand.Parameters.AddWithValue(SourceField, source);
-            deleteCommand.Parameters.AddWithValue(SourceIdField, sourceId);
-            await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        await using (var moveCommand = new SqliteCommand(moveSql, connection, (SqliteTransaction)transaction))
-        {
-            moveCommand.Parameters.AddWithValue("artistId", artistId);
-            moveCommand.Parameters.AddWithValue(SourceField, source);
-            moveCommand.Parameters.AddWithValue(SourceIdField, sourceId);
-            await moveCommand.ExecuteNonQueryAsync(cancellationToken);
-        }
-
         await using (var upsertCommand = new SqliteCommand(upsertSql, connection, (SqliteTransaction)transaction))
         {
             upsertCommand.Parameters.AddWithValue("artistId", artistId);
@@ -15098,6 +15122,30 @@ WHERE artist_id = @artistId
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
         command.Parameters.AddWithValue(SourceField, source);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task RemoveArtistSourceIdAsync(
+        long artistId,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM artist_source
+WHERE artist_id = @artistId
+  AND source = @source
+  AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue(SourceField, source);
+        command.Parameters.AddWithValue(SourceIdField, sourceId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -19075,11 +19123,7 @@ WHERE album_id = @entityId
 INSERT INTO album_source (album_id, source, source_id, url, data)
 VALUES (@entityId, @source, @sourceId, @url, @data);"),
             "artist_source" => (
-                DeleteCurrentSql: @"
-DELETE FROM artist_source
-WHERE artist_id = @entityId
-  AND source = @source
-  AND source_id <> @sourceId;",
+                DeleteCurrentSql: "UPDATE artist_source SET source = source WHERE 0;",
                 UpdateBySourceIdSql: @"
 UPDATE artist_source
 SET artist_id = @entityId,
@@ -19087,16 +19131,24 @@ SET artist_id = @entityId,
     data = COALESCE(NULLIF(@data, ''), artist_source.data)
 WHERE source = @source
   AND source_id = @sourceId;",
-                UpdateByEntitySql: @"
-UPDATE artist_source
-SET source_id = @sourceId,
-    url = COALESCE(NULLIF(@url, ''), artist_source.url),
-    data = COALESCE(NULLIF(@data, ''), artist_source.data)
-WHERE artist_id = @entityId
-  AND source = @source;",
+                UpdateByEntitySql: "UPDATE artist_source SET source = source WHERE 0;",
                 InsertSql: @"
-INSERT INTO artist_source (artist_id, source, source_id, url, data)
-VALUES (@entityId, @source, @sourceId, @url, @data);"),
+INSERT INTO artist_source (
+    artist_id, source, source_id, url, data, is_primary, verification_state, verified_at)
+VALUES (
+    @entityId,
+    @source,
+    @sourceId,
+    @url,
+    @data,
+    CASE WHEN EXISTS (
+        SELECT 1 FROM artist_source existing
+        WHERE existing.artist_id = @entityId
+          AND existing.source = @source
+          AND existing.is_primary = 1
+    ) THEN 0 ELSE 1 END,
+    'verified',
+    CURRENT_TIMESTAMP);"),
             _ => throw new InvalidOperationException($"Unsupported source mapping table '{table}'.")
         };
 
@@ -19985,10 +20037,31 @@ LIMIT 1;";
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO artist_biography_cache (artist_id, source, biography, selected, fetched_at)
-VALUES (@artistId, @source, @biography, @selected, CURRENT_TIMESTAMP)
-ON CONFLICT(artist_id, source) DO UPDATE SET
-    biography = excluded.biography,
+INSERT INTO artist_biography_cache (artist_id, source, source_id, biography, selected, fetched_at, diagnostic)
+VALUES (
+    @artistId,
+    @source,
+    COALESCE((
+        SELECT source_id
+        FROM artist_source
+        WHERE artist_id = @artistId
+          AND source = @source
+        ORDER BY is_primary DESC, source_id
+        LIMIT 1
+    ), ''),
+    @biography,
+    @selected,
+    CURRENT_TIMESTAMP,
+    CASE WHEN @biography IS NULL OR TRIM(@biography) = '' THEN 'empty' ELSE NULL END)
+ON CONFLICT(artist_id, source, source_id) DO UPDATE SET
+    biography = CASE
+        WHEN excluded.biography IS NULL OR TRIM(excluded.biography) = '' THEN artist_biography_cache.biography
+        ELSE excluded.biography
+    END,
+    diagnostic = CASE
+        WHEN excluded.biography IS NULL OR TRIM(excluded.biography) = '' THEN 'empty'
+        ELSE NULL
+    END,
     selected = excluded.selected,
     fetched_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);

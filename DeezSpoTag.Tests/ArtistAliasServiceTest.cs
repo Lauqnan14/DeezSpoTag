@@ -383,4 +383,196 @@ WHERE t.title LIKE 'Test Song%' AND (af.path LIKE '%test song.flac' OR af.path L
             }
         }
     }
+
+    [Fact]
+    public async Task MergeGroupAsync_RetainsDistinctProviderIdentitiesAndOwnedMetadata()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"artist-identity-merge-{Guid.NewGuid():N}.db");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+            })
+            .Build();
+        var dbService = new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+        try
+        {
+            await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = @"
+INSERT INTO artist (name) VALUES ('Preferred Artist'), ('Old Alias');
+INSERT INTO artist_source (artist_id, source, source_id, is_primary, verification_state)
+SELECT id, 'spotify', 'spotpreferred111111111', 1, 'verified' FROM artist WHERE name = 'Preferred Artist';
+INSERT INTO artist_source (artist_id, source, source_id, native_name, alias_name, is_primary, verification_state)
+SELECT id, 'spotify', 'spotalias22222222222222', 'Old Alias', 'Old Alias', 1, 'verified' FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_biography_cache (artist_id, source, source_id, biography, selected)
+SELECT id, 'spotify', 'spotpreferred111111111', 'Preferred bio', 1 FROM artist WHERE name = 'Preferred Artist';
+INSERT INTO artist_biography_cache (artist_id, source, source_id, biography, native_name, alias_name, selected)
+SELECT id, 'spotify', 'spotalias22222222222222', 'Alias bio', 'Old Alias', 'Old Alias', 1 FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_metadata_policy (artist_id, sync_blocked, ocr_text_art_blocking_enabled, selected_targets_json)
+SELECT id, 1, 1, '[""plex""]' FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_location_override (artist_id, city, country, country_code)
+SELECT id, 'Accra', 'Ghana', 'GH' FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_artwork_cache (artist_id, role, identity, source, user_blocked)
+SELECT id, 'avatar', 'alias-art', 'spotify', 1 FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_visual_usage (artist_id, slot, content_hash)
+SELECT id, 'avatar', 'hash-alias' FROM artist WHERE name = 'Old Alias';";
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var preferredId = await repository.FindArtistIdByNameAsync("Preferred Artist");
+            Assert.NotNull(preferredId);
+            await repository.UpsertArtistSourceIdAsync(preferredId.Value, "spotify", "spotnew3333333333333333");
+            var identitiesBeforeDelete = await ReadSpotifyIdsAsync(dbPath, preferredId.Value);
+            Assert.Contains("spotpreferred111111111", identitiesBeforeDelete);
+            Assert.Contains("spotnew3333333333333333", identitiesBeforeDelete);
+
+            await repository.UpsertArtistBiographyCacheAsync(preferredId.Value, "spotify", "   ", selected: false);
+            var preferredBio = await ReadBiographyAsync(dbPath, "spotpreferred111111111");
+            Assert.Equal("Preferred bio", preferredBio);
+
+            var (aliasService, mergeService) = CreateServices(dbPath);
+            var group = await aliasService.SaveGroupAsync("Preferred Artist", new[] { "Old Alias" });
+            await mergeService.MergeGroupAsync(group.Id);
+
+            var survivingIds = await ReadSpotifyIdsAsync(dbPath, preferredId.Value);
+            Assert.Contains("spotpreferred111111111", survivingIds);
+            Assert.Contains("spotalias22222222222222", survivingIds);
+            Assert.Contains("spotnew3333333333333333", survivingIds);
+            Assert.Equal("Alias bio", await ReadBiographyAsync(dbPath, "spotalias22222222222222"));
+            Assert.Equal("Preferred bio", await ReadBiographyAsync(dbPath, "spotpreferred111111111"));
+
+            await using var check = new SqliteConnection($"Data Source={dbPath}");
+            await check.OpenAsync();
+            await using var policy = check.CreateCommand();
+            policy.CommandText = "SELECT sync_blocked, selected_targets_json FROM artist_metadata_policy WHERE artist_id = $id;";
+            policy.Parameters.AddWithValue("$id", preferredId.Value);
+            await using var policyReader = await policy.ExecuteReaderAsync();
+            Assert.True(await policyReader.ReadAsync());
+            Assert.Equal(1, policyReader.GetInt32(0));
+            Assert.Equal("[\"plex\"]", policyReader.GetString(1));
+            await policyReader.DisposeAsync();
+
+            await using var location = check.CreateCommand();
+            location.CommandText = "SELECT city FROM artist_location_override WHERE artist_id = $id;";
+            location.Parameters.AddWithValue("$id", preferredId.Value);
+            Assert.Equal("Accra", await location.ExecuteScalarAsync());
+
+            await using var art = check.CreateCommand();
+            art.CommandText = "SELECT user_blocked FROM artist_artwork_cache WHERE artist_id = $id AND identity = 'alias-art';";
+            art.Parameters.AddWithValue("$id", preferredId.Value);
+            Assert.Equal(1L, Convert.ToInt64(await art.ExecuteScalarAsync()));
+
+            await using var usage = check.CreateCommand();
+            usage.CommandText = "SELECT COUNT(*) FROM artist_visual_usage WHERE artist_id = $id AND content_hash = 'hash-alias';";
+            usage.Parameters.AddWithValue("$id", preferredId.Value);
+            Assert.Equal(1L, Convert.ToInt64(await usage.ExecuteScalarAsync()));
+
+            await using var absorbed = check.CreateCommand();
+            absorbed.CommandText = "SELECT COUNT(*) FROM artist WHERE name = 'Old Alias';";
+            Assert.Equal(0L, Convert.ToInt64(await absorbed.ExecuteScalarAsync()));
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(dbPath))
+                {
+                    File.Delete(dbPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MergeGroupAsync_KeepsOneBiographyRotationWhenSeveralAliasesHaveOne()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"artist-rotation-merge-{Guid.NewGuid():N}.db");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+            })
+            .Build();
+        await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        try
+        {
+            await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                await connection.OpenAsync();
+                await using var seed = connection.CreateCommand();
+                seed.CommandText = @"
+INSERT INTO artist (name) VALUES ('Preferred Artist'), ('Old Alias'), ('Second Alias');
+INSERT INTO artist_biography_rotation (artist_id, last_source, used_at)
+SELECT id, 'lastfm', '2026-09-01' FROM artist WHERE name = 'Old Alias';
+INSERT INTO artist_biography_rotation (artist_id, last_source, used_at)
+SELECT id, 'spotify', '2026-09-02' FROM artist WHERE name = 'Second Alias';";
+                await seed.ExecuteNonQueryAsync();
+            }
+
+            var (aliasService, mergeService) = CreateServices(dbPath);
+            var group = await aliasService.SaveGroupAsync("Preferred Artist", new[] { "Old Alias", "Second Alias" });
+            var result = await mergeService.MergeGroupAsync(group.Id);
+            Assert.Empty(result.Errors);
+
+            await using var check = new SqliteConnection($"Data Source={dbPath}");
+            await check.OpenAsync();
+            await using var command = check.CreateCommand();
+            command.CommandText = @"
+SELECT last_source
+FROM artist_biography_rotation
+WHERE artist_id = (SELECT id FROM artist WHERE name = 'Preferred Artist');";
+            Assert.Equal("spotify", await command.ExecuteScalarAsync());
+            command.CommandText = "SELECT COUNT(*) FROM artist_biography_rotation;";
+            Assert.Equal(1L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(dbPath))
+                {
+                    File.Delete(dbPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private static async Task<List<string>> ReadSpotifyIdsAsync(string dbPath, long artistId)
+    {
+        var ids = new List<string>();
+        await using var connection = new SqliteConnection($"Data Source={dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_id FROM artist_source WHERE artist_id = $id AND source = 'spotify' ORDER BY source_id;";
+        command.Parameters.AddWithValue("$id", artistId);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
+    }
+
+    private static async Task<string?> ReadBiographyAsync(string dbPath, string sourceId)
+    {
+        await using var connection = new SqliteConnection($"Data Source={dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT biography FROM artist_biography_cache WHERE source_id = $id;";
+        command.Parameters.AddWithValue("$id", sourceId);
+        var result = await command.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToString(result);
+    }
 }

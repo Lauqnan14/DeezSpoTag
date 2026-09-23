@@ -50,13 +50,14 @@ public sealed class ArtistIdentityTextNormalizerTest
     [Fact]
     public void ShouldRequireAlbumOverlap_UsesResolvableAlbumCount()
     {
-        Assert.False(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(["Album One"]));
+        Assert.True(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(["Album One"]));
         Assert.True(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(["Album One", "Album Two"]));
-        // FilterResolvableTitles keeps originals when everything is compilation-like
-        // (Spotify-parity), so a compilation-only set of two still requires overlap.
+        Assert.False(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap([]));
+        // FilterResolvableTitles keeps originals when everything is compilation-like,
+        // so a compilation-only set still requires one of those titles to overlap.
         Assert.True(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(
             ArtistIdentityTextNormalizer.FilterResolvableTitles(["Greatest Hits", "Best of Something"])));
-        Assert.False(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(
+        Assert.True(ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(
             ArtistIdentityTextNormalizer.FilterResolvableTitles(["Greatest Hits", "Album One"])));
     }
 

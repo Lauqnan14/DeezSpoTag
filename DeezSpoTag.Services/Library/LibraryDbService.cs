@@ -334,6 +334,7 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_artwork_cache_artist_role", "artist_artwork_cache", "artist_id, role", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_server_sync_state_artist", "artist_server_sync_state", "artist_id", unique: false, cancellationToken);
+        await MigrateCanonicalArtistIdentitiesAsync(connection, cancellationToken);
 
         await EnsureColumnAsync(connection, AlbumTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "metadata_json", TextType, cancellationToken);
@@ -1176,6 +1177,188 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
             CommandTimeout = 0
         };
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task MigrateCanonicalArtistIdentitiesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (await TableUsesSourceIdentityKeyAsync(connection, "artist_source", cancellationToken))
+        {
+            await using var index = new SqliteCommand(
+                "CREATE INDEX IF NOT EXISTS idx_artist_source_artist_provider ON artist_source (artist_id, source);",
+                connection);
+            await index.ExecuteNonQueryAsync(cancellationToken);
+        }
+        else if (await TableExistsAsync(connection, "artist_source", cancellationToken))
+        {
+            await RebuildArtistSourceIdentityAsync(connection, cancellationToken);
+        }
+
+        if (!await TableUsesBiographyIdentityKeyAsync(connection, cancellationToken)
+            && await TableExistsAsync(connection, "artist_biography_cache", cancellationToken))
+        {
+            await RebuildArtistBiographyIdentityAsync(connection, cancellationToken);
+        }
+    }
+
+    private static async Task<string> ReadCreateSqlAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $name LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("$name", table);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string sql ? sql : string.Empty;
+    }
+
+    private static async Task<bool> TableUsesSourceIdentityKeyAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        var sql = await ReadCreateSqlAsync(connection, table, cancellationToken);
+        return sql.Contains("PRIMARY KEY (source, source_id)", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> TableUsesBiographyIdentityKeyAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var sql = await ReadCreateSqlAsync(connection, "artist_biography_cache", cancellationToken);
+        return sql.Contains("PRIMARY KEY (artist_id, source, source_id)", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task RebuildArtistSourceIdentityAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var disableForeignKeys = new SqliteCommand("PRAGMA foreign_keys=OFF;", connection);
+        await disableForeignKeys.ExecuteNonQueryAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var create = new SqliteCommand(@"
+CREATE TABLE artist_source_identity (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    url TEXT,
+    data TEXT,
+    native_name TEXT,
+    alias_name TEXT,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    verification_state TEXT NOT NULL DEFAULT 'verified',
+    evidence TEXT,
+    verified_at TEXT,
+    PRIMARY KEY (source, source_id)
+);", connection, (SqliteTransaction)transaction))
+        {
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var copy = new SqliteCommand(@"
+INSERT INTO artist_source_identity (
+    artist_id, source, source_id, url, data, native_name, alias_name, is_primary, verification_state, evidence, verified_at)
+SELECT artist_id, source, source_id, url, data, NULL, NULL, 1, 'verified', NULL, CURRENT_TIMESTAMP
+FROM artist_source;", connection, (SqliteTransaction)transaction))
+        {
+            await copy.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var drop = new SqliteCommand("DROP TABLE artist_source;", connection, (SqliteTransaction)transaction))
+        {
+            await drop.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var rename = new SqliteCommand(
+            "ALTER TABLE artist_source_identity RENAME TO artist_source;",
+            connection,
+            (SqliteTransaction)transaction))
+        {
+            await rename.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var index = new SqliteCommand(
+            "CREATE INDEX IF NOT EXISTS idx_artist_source_artist_provider ON artist_source (artist_id, source);",
+            connection,
+            (SqliteTransaction)transaction))
+        {
+            await index.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        await using var enableForeignKeys = new SqliteCommand("PRAGMA foreign_keys=ON;", connection);
+        await enableForeignKeys.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task RebuildArtistBiographyIdentityAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var disableForeignKeys = new SqliteCommand("PRAGMA foreign_keys=OFF;", connection);
+        await disableForeignKeys.ExecuteNonQueryAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var create = new SqliteCommand(@"
+CREATE TABLE artist_biography_cache_identity (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL DEFAULT '',
+    biography TEXT,
+    language TEXT,
+    selected INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    native_name TEXT,
+    alias_name TEXT,
+    diagnostic TEXT,
+    PRIMARY KEY (artist_id, source, source_id)
+);", connection, (SqliteTransaction)transaction))
+        {
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var copy = new SqliteCommand(@"
+INSERT INTO artist_biography_cache_identity (
+    artist_id, source, source_id, biography, language, selected, fetched_at, native_name, alias_name, diagnostic)
+SELECT artist_id,
+       source,
+       COALESCE((
+           SELECT source_id
+           FROM artist_source
+           WHERE artist_source.artist_id = artist_biography_cache.artist_id
+             AND artist_source.source = artist_biography_cache.source
+           ORDER BY is_primary DESC, source_id
+           LIMIT 1
+       ), ''),
+       biography,
+       language,
+       selected,
+       fetched_at,
+       NULL,
+       NULL,
+       NULL
+FROM artist_biography_cache;", connection, (SqliteTransaction)transaction))
+        {
+            await copy.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var drop = new SqliteCommand("DROP TABLE artist_biography_cache;", connection, (SqliteTransaction)transaction))
+        {
+            await drop.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var rename = new SqliteCommand(
+            "ALTER TABLE artist_biography_cache_identity RENAME TO artist_biography_cache;",
+            connection,
+            (SqliteTransaction)transaction))
+        {
+            await rename.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        await using var enableForeignKeys = new SqliteCommand("PRAGMA foreign_keys=ON;", connection);
+        await enableForeignKeys.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task EnsureTableAsync(

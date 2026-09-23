@@ -20,12 +20,10 @@ namespace DeezSpoTag.Web.Services;
 /// </summary>
 public sealed class AutoTagAliasEnhancementLauncher
 {
-    private static readonly IReadOnlyList<string> MergeFeatures = new[]
+    private static readonly IReadOnlyList<string> RequiredMergeFeatures = new[]
     {
         EnhancementWorkflowSelection.GapFill,
-        EnhancementWorkflowSelection.FolderUniformity,
-        EnhancementWorkflowSelection.QualityChecks,
-        EnhancementWorkflowSelection.Sidecars
+        EnhancementWorkflowSelection.FolderUniformity
     };
 
     private readonly LibraryRepository _libraryRepository;
@@ -155,10 +153,25 @@ public sealed class AutoTagAliasEnhancementLauncher
             try
             {
                 var profileConfigJson = _autoTagConfigBuilder.BuildConfigJson(profile);
+                if (string.IsNullOrWhiteSpace(profileConfigJson))
+                {
+                    _logger.LogWarning(
+                        "Alias merge enhancement: folder {FolderId} ({FolderName}) profile has no AutoTag configuration; its files were skipped.",
+                        folderId,
+                        folderName);
+                    continue;
+                }
+
                 var configNode = JsonNode.Parse(profileConfigJson) as JsonObject ?? new JsonObject();
+                var features = RequiredMergeFeatures.ToList();
+                if (EnhancementWorkflowSelection.IsSidecarsEnabledForFolder(configNode, folderId))
+                {
+                    features.Add(EnhancementWorkflowSelection.Sidecars);
+                }
+
                 EnhancementWorkflowSelection.ApplyFeatureSelection(
                     configNode,
-                    MergeFeatures,
+                    features,
                     new[] { folderId },
                     targetFiles);
                 configNode["path"] = rootPath;
@@ -174,16 +187,21 @@ public sealed class AutoTagAliasEnhancementLauncher
                         ProfileName: profile.Name,
                         RunIntent: AutoTagLiterals.RunIntentAliasMerge,
                         FolderStructureOverride: profile.FolderStructure));
-                if (job != null)
+                if (job == null)
                 {
-                    jobIds.Add(job.Id);
-                    _logger.LogInformation(
-                        "Alias merge enhancement started: job {JobId} for folder {FolderName} (profile {Profile}) with {FileCount} target file(s).",
-                        job.Id,
-                        folderName,
-                        profile.Name,
-                        targetFiles.Count);
+                    _logger.LogWarning(
+                        "Alias merge enhancement was not started for folder {FolderName}.",
+                        folderName);
+                    continue;
                 }
+
+                jobIds.Add(job.Id);
+                _logger.LogInformation(
+                    "Alias merge enhancement started: job {JobId} for folder {FolderName} (profile {Profile}) with {FileCount} target file(s).",
+                    job.Id,
+                    folderName,
+                    profile.Name,
+                    targetFiles.Count);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

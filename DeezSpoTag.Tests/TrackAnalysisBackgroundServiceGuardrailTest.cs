@@ -11,6 +11,65 @@ namespace DeezSpoTag.Tests;
 public sealed class TrackAnalysisBackgroundServiceGuardrailTest
 {
     [Fact]
+    public void VibeAnalyzerWorker_UsesOneAnalyzerAndFlushesOrderedJsonLines()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var analyzer = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Tools", "vibe_analyzer.py"));
+
+        Assert.Contains("def run_worker(models_dir: str)", analyzer, StringComparison.Ordinal);
+        Assert.Contains("analyzer = AudioAnalyzer(models_dir)", analyzer, StringComparison.Ordinal);
+        Assert.Contains("for request_line in sys.stdin", analyzer, StringComparison.Ordinal);
+        Assert.Contains("request_id = request.get(\"requestId\")", analyzer, StringComparison.Ordinal);
+        Assert.Contains("file_path = request.get(\"filePath\")", analyzer, StringComparison.Ordinal);
+        Assert.Contains("sys.stdout.flush()", analyzer, StringComparison.Ordinal);
+        Assert.Contains("parser.add_argument(\"--worker\"", analyzer, StringComparison.Ordinal);
+        Assert.Contains("\"errorCode\": \"VIBE_ANALYZER_NOT_INITIALIZED\"", analyzer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VibeAnalyzerHealth_IsIncludedInRuntimeAndActivities()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+        var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
+
+        Assert.Contains("VibeAnalyzerWorkerSnapshot Analyzer", service, StringComparison.Ordinal);
+        Assert.Contains("_analyzerWorker?.GetSnapshot()", service, StringComparison.Ordinal);
+        Assert.Contains("analysisAnalyzerState", view, StringComparison.Ordinal);
+        Assert.Contains("analysisAnalyzerFailure", view, StringComparison.Ordinal);
+        Assert.Contains("runtime?.analyzer", view, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VibeAnalyzerFallbackReason_IsSanitizedWithoutFailingStandardResult()
+    {
+        var sanitized = TrackAnalysisBackgroundService.SanitizeAnalyzerFailure("failure\r\nsecret\t" + new string('x', 500));
+
+        Assert.DoesNotContain('\r', sanitized);
+        Assert.DoesNotContain('\n', sanitized);
+        Assert.DoesNotContain('\t', sanitized);
+        Assert.True(sanitized.Length <= 259);
+
+        var repoRoot = ResolveRepoRoot();
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+        Assert.Contains("LogAnalyzerFallback", service, StringComparison.Ordinal);
+        Assert.Contains("CreateCompletedAnalysisResult", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DockerParitySmoke_RequiresTwoEnhancedPersistentWorkerResponses()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var smoke = File.ReadAllText(Path.Join(repoRoot, "scripts", "docker-parity-smoke.sh"));
+
+        Assert.Contains("vibe_analyzer.py --worker --models", smoke, StringComparison.Ordinal);
+        Assert.Contains("requestId", smoke, StringComparison.Ordinal);
+        Assert.Contains("AnalysisMode", smoke, StringComparison.Ordinal);
+        Assert.Contains("enhanced", smoke, StringComparison.Ordinal);
+        Assert.Contains("len(responses) != 2", smoke, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PerTrackAnalyzerFailures_DoNotDisableEnhancedCapabilityGlobally()
     {
         var repoRoot = ResolveRepoRoot();
@@ -35,17 +94,18 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTest
     }
 
     [Fact]
-    public void BackgroundAnalysisSignal_UsesExistingWorkerQueueWithoutForcingDisabledAnalysis()
+    public void VibeAnalysisDisable_PausesEveryEntryPointAndStopsTheWorker()
     {
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
 
-        Assert.Contains("public bool TrySignalBackgroundAnalysis(int batchSize)", source, StringComparison.Ordinal);
-        Assert.Contains("=> TryQueueAnalysisRun(batchSize, forceWhenDisabled: false);", source, StringComparison.Ordinal);
-        Assert.Contains("public bool TryStartManualAnalysis(int batchSize)", source, StringComparison.Ordinal);
-        Assert.Contains("=> TryQueueAnalysisRun(batchSize, forceWhenDisabled: true);", source, StringComparison.Ordinal);
-        Assert.Contains("out var forceWhenDisabled", source, StringComparison.Ordinal);
-        Assert.Contains("await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled);", source, StringComparison.Ordinal);
+        Assert.Contains("public async Task<bool> TrySignalBackgroundAnalysisAsync(int batchSize)", source, StringComparison.Ordinal);
+        Assert.Contains("public async Task<bool> TryStartManualAnalysisAsync(int batchSize)", source, StringComparison.Ordinal);
+        Assert.Contains("await IsAnalysisEnabledAsync()", source, StringComparison.Ordinal);
+        Assert.Contains("await StopAnalyzerWorkerAsync()", source, StringComparison.Ordinal);
+        Assert.Contains("ClearPendingRunSignal();", source, StringComparison.Ordinal);
+        Assert.Contains("WakeAnalysisLoop();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("forceWhenDisabled", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -197,6 +257,24 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTest
         {
             tempDirectory.Delete(recursive: true);
         }
+    }
+
+    [Fact]
+    public void DockerParity_ProvesApplicationLevelEnhancedVibeAnalysis()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var parity = File.ReadAllText(Path.Join(repoRoot, "scripts", "docker-parity-smoke.sh"));
+
+        Assert.Contains("Application-level enhanced Vibe analysis", parity, StringComparison.Ordinal);
+        Assert.Contains("library/deezspotag.db", parity, StringComparison.Ordinal);
+        Assert.Contains("track_analysis", parity, StringComparison.Ordinal);
+        Assert.Contains("analysis_mode", parity, StringComparison.Ordinal);
+        Assert.Contains("analysis_version", parity, StringComparison.Ordinal);
+        Assert.Contains("essentia_genres", parity, StringComparison.Ordinal);
+        Assert.Contains("mood_tags", parity, StringComparison.Ordinal);
+        Assert.Contains("worker start count", parity, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("api/library/analysis/runtime", parity, StringComparison.Ordinal);
+        Assert.Contains("Essentia analysis failed; standard analysis was used", parity, StringComparison.Ordinal);
     }
 
     private static void GenerateOpusFixture(string outputPath)

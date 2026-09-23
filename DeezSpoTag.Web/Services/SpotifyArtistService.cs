@@ -43,6 +43,7 @@ public sealed class SpotifyArtistService
     private const string SpotifyEmbedTrackPathPrefix = "/embed/track/";
     private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _latestDiscographyGates = new(StringComparer.Ordinal);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly Regex SpotifyEmbedArtistUriRegex = new(
         @"spotify:artist:(?<id>[A-Za-z0-9]{22})",
@@ -75,6 +76,7 @@ public sealed class SpotifyArtistService
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly BackgroundWorkCoordinator _backgroundWorkCoordinator;
     private readonly TaggingProfileService _taggingProfileService;
+    private readonly ArtistAliasService _aliasService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, HashSet<string> Titles)> _localAlbumTitleSetCache = new();
@@ -101,6 +103,7 @@ public sealed class SpotifyArtistService
         ArtistPageCacheRepository cacheRepository,
         LibraryConfigStore configStore,
         TaggingProfileService taggingProfileService,
+        ArtistAliasService aliasService,
         SpotifyArtistServiceDependencies dependencies,
         ILogger<SpotifyArtistService> logger)
     {
@@ -113,11 +116,13 @@ public sealed class SpotifyArtistService
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
         _backgroundWorkCoordinator = dependencies.BackgroundWorkCoordinator;
         _taggingProfileService = taggingProfileService;
+        _aliasService = aliasService;
         _logger = logger;
     }
 
     public async Task<string?> EnsureSpotifyArtistIdAsync(long artistId, string artistName, CancellationToken cancellationToken)
     {
+        await EnsureAliasSpotifyIdentitiesAsync(artistId, artistName, cancellationToken);
         var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
         if (!string.IsNullOrWhiteSpace(spotifyId)
             && !await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, spotifyId, cancellationToken))
@@ -197,16 +202,18 @@ public sealed class SpotifyArtistService
     {
         var allowCache = !forceRefresh && !forceRematch;
 
-        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
         if (forceRematch)
         {
-            spotifyId = null;
+            await EnsureAliasSpotifyIdentitiesAsync(artistId, artistName, cancellationToken);
         }
-        else if (!string.IsNullOrWhiteSpace(spotifyId)
+
+        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
+        if (!forceRematch && !string.IsNullOrWhiteSpace(spotifyId)
                  && !await HasUsableCachedArtistPageAsync(spotifyId, cancellationToken)
                  && await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, spotifyId, cancellationToken))
         {
             AddActivity("warn", $"[spotify] stored artist id has no local album overlap, rematching: {artistName} ({spotifyId}).");
+            await _libraryRepository.RemoveArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
             spotifyId = null;
         }
         if (string.IsNullOrWhiteSpace(spotifyId))
@@ -233,7 +240,7 @@ public sealed class SpotifyArtistService
             cancellationToken);
         if (result != null || forceRematch)
         {
-            return result;
+            return result is null ? null : await MergeAliasVisualsAsync(artistId, result, cancellationToken);
         }
 
         AddActivity("warn", $"[spotify] stored artist id failed fetch, rematching: {artistName} ({spotifyId}).");
@@ -250,7 +257,7 @@ public sealed class SpotifyArtistService
             AddActivity("info", $"[spotify] rematched artist id: {artistName} -> {rematchedSpotifyId} (was {spotifyId}).");
         }
 
-        return await GetArtistPageBySpotifyIdInternalAsync(
+        var rematched = await GetArtistPageBySpotifyIdInternalAsync(
             rematchedSpotifyId,
             artistName,
             allowCache: false,
@@ -258,6 +265,141 @@ public sealed class SpotifyArtistService
             includeDeezerLinking,
             includeDiscography,
             cancellationToken);
+        return rematched is null ? null : await MergeAliasVisualsAsync(artistId, rematched, cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolves a Spotify id for the preferred name and for every alias in the same group.
+    /// Each id is kept only when its discography shares a local album. Existing sibling ids are not deleted.
+    /// </summary>
+    public async Task EnsureAliasSpotifyIdentitiesAsync(long artistId, string artistName, CancellationToken cancellationToken)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
+        {
+            return;
+        }
+
+        foreach (var existingId in await _libraryRepository.GetArtistSourceIdsAsync(artistId, SpotifySource, cancellationToken))
+        {
+            if (await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, existingId, cancellationToken))
+            {
+                await _libraryRepository.RemoveArtistSourceIdAsync(artistId, SpotifySource, existingId, cancellationToken);
+                AddActivity("warn", $"[spotify] dropped stored id with no album overlap: {existingId}.");
+            }
+        }
+
+        IReadOnlyList<string> names;
+        try
+        {
+            names = await _aliasService.GetGroupNamesAsync(artistName, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            names = new[] { artistName.Trim() };
+        }
+
+        if (names.Count == 0)
+        {
+            names = new[] { artistName.Trim() };
+        }
+
+        foreach (var name in names)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var resolved = await ResolveArtistIdBySpotiflacSearchAsync(name, artistId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolved))
+            {
+                AddActivity("warn", $"[spotify] alias identity not stored; no album overlap for {name}.");
+                continue;
+            }
+
+            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, resolved, cancellationToken);
+            AddActivity("info", $"[spotify] alias identity kept: {name} -> {resolved}.");
+        }
+    }
+
+    public async Task<SpotifyArtistPageResult> MergeAliasVisualsAsync(
+        long artistId,
+        SpotifyArtistPageResult result,
+        CancellationToken cancellationToken)
+    {
+        if (artistId <= 0 || result.Artist is null)
+        {
+            return result;
+        }
+
+        var images = result.Artist.Images?.ToList() ?? new List<SpotifyImage>();
+        var gallery = result.Artist.Gallery?.ToList() ?? new List<string>();
+        var header = result.Artist.HeaderImageUrl;
+        var seen = new HashSet<string>(images.Select(image => image.Url), StringComparer.OrdinalIgnoreCase);
+
+        void AddImage(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url) || !seen.Add(url))
+            {
+                return;
+            }
+
+            images.Add(new SpotifyImage(url, null, null));
+            gallery.Add(url);
+        }
+
+        var ids = await _libraryRepository.GetArtistSourceIdsAsync(artistId, SpotifySource, cancellationToken);
+        foreach (var id in ids)
+        {
+            if (string.Equals(id, result.Artist.Id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var cached = await TryGetCachedArtistPageAsync(id, result.Artist.Name, allowStale: true, cancellationToken);
+            if (cached?.Artist is null)
+            {
+                continue;
+            }
+
+            foreach (var image in cached.Artist.Images ?? new List<SpotifyImage>())
+            {
+                AddImage(image.Url);
+            }
+
+            header ??= cached.Artist.HeaderImageUrl;
+            foreach (var url in cached.Artist.Gallery ?? new List<string>())
+            {
+                AddImage(url);
+            }
+        }
+
+        var artwork = await _libraryRepository.GetArtistArtworkCacheAsync(artistId, cancellationToken);
+        foreach (var item in artwork)
+        {
+            if (item.UserBlocked || item.TextArtBlocked)
+            {
+                continue;
+            }
+
+            if (!string.Equals(item.Source, SpotifySource, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            AddImage(item.OriginalUrl);
+        }
+
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            header = images.FirstOrDefault()?.Url;
+        }
+
+        return result with
+        {
+            Artist = result.Artist with
+            {
+                Images = images,
+                Gallery = gallery.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                HeaderImageUrl = header
+            }
+        };
     }
 
     public async Task<SpotifyArtistPageResult?> GetArtistPageByNameAsync(string artistName, CancellationToken cancellationToken)
@@ -291,8 +433,30 @@ public sealed class SpotifyArtistService
         var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(artistId, cancellationToken);
         var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
         var aliasTargets = BuildArtistAliasTargets(artistName);
+        try
+        {
+            foreach (var aliasName in await _aliasService.GetGroupNamesAsync(artistName, cancellationToken))
+            {
+                aliasTargets.UnionWith(BuildArtistAliasTargets(aliasName));
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Alias names were unavailable for Spotify suggestions.");
+        }
 
-        var results = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, Math.Max(10, safeLimit), cancellationToken);
+        var results = new List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate>();
+        var seenSuggestionIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var query in aliasTargets.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).Take(6))
+        {
+            foreach (var candidate in await _pathfinderMetadataClient.SearchArtistsAsync(query, Math.Max(10, safeLimit), cancellationToken))
+            {
+                if (seenSuggestionIds.Add(candidate.Id))
+                {
+                    results.Add(candidate);
+                }
+            }
+        }
         if (results.Count == 0)
         {
             return Array.Empty<SpotifyArtistMatchSuggestion>();
@@ -380,6 +544,48 @@ public sealed class SpotifyArtistService
         }
 
         return EnsureArtistIdentity(cachedPayload, artistName);
+    }
+
+    public async Task<SpotifyArtistPageResult?> RefreshLatestDiscographyAsync(
+        string spotifyId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return null;
+        }
+
+        var gate = _latestDiscographyGates.GetOrAdd(spotifyId, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var cached = await TryGetCachedArtistPageAsync(spotifyId, artistName, allowStale: true, cancellationToken);
+            if (cached is null)
+            {
+                return null;
+            }
+
+            var latestPage = await _pathfinderMetadataClient.FetchArtistLatestDiscographyPageAsync(spotifyId, cancellationToken);
+            if (latestPage.Count == 0)
+            {
+                return cached;
+            }
+
+            var mergedAlbums = MergeAlbums(MapDiscographySummaries(latestPage), cached.Albums);
+            if (DiscographyAlbumsUnchanged(cached.Albums, mergedAlbums))
+            {
+                return cached;
+            }
+
+            var updated = cached with { Albums = mergedAlbums };
+            await PersistArtistPageResultAsync(spotifyId, artistName, updated, cancellationToken);
+            return updated;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<SpotifyArtistPageResult?> GetArtistPageBySpotifyIdInternalAsync(
@@ -593,6 +799,56 @@ public sealed class SpotifyArtistService
 
         AddActivity("info", $"[spotify] artist genre fallback: {artistName} -> {string.Join(", ", inferredGenres)}.");
         return profile with { Genres = inferredGenres };
+    }
+
+    private static bool DiscographyAlbumsUnchanged(IReadOnlyList<SpotifyAlbum> current, IReadOnlyList<SpotifyAlbum> updated)
+    {
+        if (current.Count != updated.Count)
+        {
+            return false;
+        }
+
+        var currentKeys = current.Select(AlbumDiscographyIdentity).OrderBy(identity => identity, StringComparer.OrdinalIgnoreCase).ToArray();
+        var updatedKeys = updated.Select(AlbumDiscographyIdentity).OrderBy(identity => identity, StringComparer.OrdinalIgnoreCase).ToArray();
+        return currentKeys.SequenceEqual(updatedKeys, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string AlbumDiscographyIdentity(SpotifyAlbum album)
+        => $"{album.Id}\n{album.ReleaseDate}\n{album.Name}";
+
+    private static List<SpotifyAlbum> MapDiscographySummaries(IReadOnlyList<SpotifyAlbumSummary> summaries)
+    {
+        return summaries
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id))
+            .Select(item =>
+            {
+                var albumGroup = ResolveAlbumGroup(item.AlbumGroup, item.ReleaseType);
+                return new SpotifyAlbum(
+                    item.Id,
+                    item.Name,
+                    item.ReleaseDate,
+                    albumGroup,
+                    item.TotalTracks ?? 0,
+                    item.ImageUrl is null ? new List<SpotifyImage>() : new List<SpotifyImage> { new SpotifyImage(item.ImageUrl, null, null) },
+                    item.SourceUrl,
+                    DiscographySection: ResolveDiscographySection(albumGroup, item.ReleaseType))
+                {
+                    Genres = item.Genres,
+                    Label = item.Label,
+                    Popularity = item.Popularity,
+                    ReleaseDatePrecision = item.ReleaseDatePrecision,
+                    AvailableMarkets = item.AvailableMarkets,
+                    Copyrights = item.Copyrights,
+                    CopyrightText = item.CopyrightText,
+                    Review = item.Review,
+                    RelatedAlbumIds = item.RelatedAlbumIds,
+                    OriginalTitle = item.OriginalTitle,
+                    VersionTitle = item.VersionTitle,
+                    SalePeriods = item.SalePeriods,
+                    Availability = item.Availability
+                };
+            })
+            .ToList();
     }
 
     private static List<SpotifyAlbum> BuildArtistAlbums(SpotifyArtistHydratedPage artistPage)
@@ -3226,8 +3482,8 @@ public sealed class SpotifyArtistService
 
     private static bool ShouldRequireLocalAlbumOverlap(HashSet<string> localAlbumTitleSet)
     {
-        // Single-track libraries or compilation-only local albums should not hard-block artist resolution.
-        return localAlbumTitleSet.Count >= 2;
+        // One shared album is enough evidence. A name hit with none is not a match.
+        return localAlbumTitleSet.Count >= 1;
     }
 
     private static bool IsLikelyCompilationAlbumTitle(string normalizedAlbumTitle)

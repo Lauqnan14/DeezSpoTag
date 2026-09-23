@@ -184,8 +184,14 @@ public sealed class LastFmTagService
         CancellationToken cancellationToken = default)
     {
         var normalizedArtist = NormalizeArtistForLookup(artistName);
-        var cacheKey = $"tags:{NormalizeCacheKey(normalizedArtist)}:{NormalizeCacheKey(trackTitle ?? string.Empty)}";
-        await GetTrackTagsAsync(artistName, trackTitle, cancellationToken).ConfigureAwait(false);
+        var normalizedTrack = NormalizeTrackTitleForLookup(trackTitle);
+        if (string.IsNullOrWhiteSpace(normalizedArtist) || string.IsNullOrWhiteSpace(normalizedTrack))
+        {
+            return null;
+        }
+
+        var cacheKey = $"tags:{NormalizeCacheKey(normalizedArtist)}:{NormalizeCacheKey(normalizedTrack)}";
+        await GetTrackTagsAsync(normalizedArtist, normalizedTrack, cancellationToken).ConfigureAwait(false);
         if (_tagCache.TryGetValue(cacheKey, out var cached) && !cached.IsExpired)
         {
             return cached.Value;

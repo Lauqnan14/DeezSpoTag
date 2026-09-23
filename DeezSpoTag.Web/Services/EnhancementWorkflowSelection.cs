@@ -317,6 +317,19 @@ internal static class EnhancementWorkflowSelection
             || ReadBool(coverMaintenance, "removeOldAnimatedArtwork") == true;
     }
 
+    public static bool IsSidecarsEnabledForFolder(JsonObject configNode, long folderId)
+    {
+        if (configNode[AutoTagLiterals.EnhancementStage] is not JsonObject enhancement
+            || enhancement["sidecars"] is not JsonObject sidecars
+            || ReadBool(sidecars, "enabled") != true)
+        {
+            return false;
+        }
+
+        var folderIds = ParseFolderIds(sidecars);
+        return folderIds.Count == 0 || folderIds.Contains(folderId);
+    }
+
     public static bool IsSidecarsRunnable(JsonObject enhancementRoot)
     {
         return enhancementRoot["sidecars"] is JsonObject sidecars

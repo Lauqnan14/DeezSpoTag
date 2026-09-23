@@ -385,6 +385,15 @@ public sealed partial class ArtistArtworkCatalogService
             {
                 rematchedProviders.Add(source);
             }
+            else if (replacement is null)
+            {
+                await _repository.RemoveArtistSourceIdAsync(artistId, source, storedId, cancellationToken);
+                _logger.LogWarning(
+                    "Removed stored {Source} artist id {StoredId}; no candidate shares a local album. artist={ArtistId}",
+                    source,
+                    storedId,
+                    artistId);
+            }
         }
     }
 }

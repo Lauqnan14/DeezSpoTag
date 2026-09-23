@@ -40,8 +40,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         IReadOnlyList<string> incomingArtists,
         double strictness)
     {
-        var sourceCredits = SplitArtistCredits(sourceArtists);
-        var incomingCredits = SplitArtistCredits(incomingArtists);
+        // A user-defined alias and its preferred name are the same artist.
+        // Unrelated names are left unchanged, so the rest of the guard still rejects them.
+        var sourceCredits = SplitArtistCredits(sourceArtists.Select(ArtistAliasGateway.ResolveCredit).ToList());
+        var incomingCredits = SplitArtistCredits(incomingArtists.Select(ArtistAliasGateway.ResolveCredit).ToList());
         if (HasDottedInitialArtistCollapse(sourceCredits, incomingCredits))
         {
             return false;

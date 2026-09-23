@@ -46,9 +46,10 @@ async function initializeLibraryBootstrapData(targets) {
     if (targets.shouldLoadArtistAlbums && typeof initArtistActionsDropdown === 'function') {
         initArtistActionsDropdown();
     }
+    const artistPageTask = initializeArtistAlbumsPage(targets.shouldLoadArtistAlbums);
     await runInitialLibraryLoads(targets);
     bindSavedPreferenceButtons();
-    await initializeArtistAlbumsPage(targets.shouldLoadArtistAlbums);
+    await artistPageTask;
 
     if (typeof initWatchlistToggle === 'function') {
         await initWatchlistToggle();

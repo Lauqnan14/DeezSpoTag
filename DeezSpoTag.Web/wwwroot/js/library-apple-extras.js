@@ -32,30 +32,82 @@ function updateArtistMediaPanelTitles() {
     }
 }
 
+function mediaExtrasBrowserCacheKey(artistId, provider) {
+    return `library-artist-media:${artistId}:${provider}`;
+}
+
+function readMediaExtrasBrowserCache(artistId, provider) {
+    if (!artistId || !provider) {
+        return null;
+    }
+    try {
+        const raw = localStorage.getItem(mediaExtrasBrowserCacheKey(artistId, provider));
+        if (!raw) {
+            return null;
+        }
+        const parsed = JSON.parse(raw);
+        return parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeMediaExtrasBrowserCache(artistId, provider, payload) {
+    if (!artistId || !provider || !payload || payload.available === false) {
+        return;
+    }
+    try {
+        localStorage.setItem(mediaExtrasBrowserCacheKey(artistId, provider), JSON.stringify({ payload }));
+    } catch {
+        // The catalogue still renders from the server row when local storage is full.
+    }
+}
+
+function startCachedArtistMediaExtras(artistId) {
+    const name = document.getElementById('artistName')?.textContent?.trim() || 'Artist';
+    initAppleArtistExtras(name, null);
+    return libraryState.appleExtras.loadPromise || Promise.resolve();
+}
+
 function initAppleArtistExtras(artistName, storedAppleId) {
     const name = (artistName || '').trim();
-    if (!name) return;
+    const artistId = getCurrentLibraryArtistId();
+    if (!name && !artistId) return;
     const state = libraryState.appleExtras;
-    const sameTerm = state.term.toLowerCase() === name.toLowerCase();
-    state.term = name;
-    state.storedAppleId = storedAppleId || null;
-    if (!state.initialized || !sameTerm) {
-        state.initialized = true;
-        state.atmos = [];
-        state.videos = [];
-        state.atmosSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'atmos') || 'apple';
-        state.videoSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'video') || 'apple';
-        state.videoOffset = 0;
-        state.hasMoreVideos = false;
-        state.loadingVideos = false;
-        state.appleArtistId = storedAppleId || null;
-        state.selectedVideoKeys.clear();
-        state.showSelectedOnly = false;
-        updateAppleExtrasPanelVisibility();
-        bindArtistVideoSelectionControls();
-        fetchAppleArtistExtras();
-        bindArtistVideoInfiniteScroll();
+    if (state.initialized && artistId && String(state.loadedArtistId) === String(artistId)) {
+        const nextAtmos = globalThis.getArtistMediaSourcePreference?.(artistId, 'atmos') || state.atmosSource || 'apple';
+        const nextVideo = globalThis.getArtistMediaSourcePreference?.(artistId, 'video') || state.videoSource || 'apple';
+        if (name) {
+            state.term = name;
+        }
+        if (storedAppleId) {
+            state.storedAppleId = storedAppleId;
+        }
+        if (nextAtmos !== state.atmosSource || nextVideo !== state.videoSource) {
+            state.atmosSource = nextAtmos;
+            state.videoSource = nextVideo;
+            state.loadPromise = fetchAppleArtistExtras(artistId);
+        }
+        return;
     }
+    state.term = name || state.term || 'Artist';
+    state.storedAppleId = storedAppleId || null;
+    state.initialized = true;
+    state.loadedArtistId = artistId || '';
+    state.atmos = [];
+    state.videos = [];
+    state.atmosSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'atmos') || 'apple';
+    state.videoSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'video') || 'apple';
+    state.videoOffset = 0;
+    state.hasMoreVideos = false;
+    state.loadingVideos = false;
+    state.appleArtistId = storedAppleId || null;
+    state.selectedVideoKeys.clear();
+    state.showSelectedOnly = false;
+    updateAppleExtrasPanelVisibility();
+    bindArtistVideoSelectionControls();
+    state.loadPromise = fetchAppleArtistExtras(artistId);
+    bindArtistVideoInfiniteScroll();
 }
 
 globalThis.reloadArtistMediaExtras = function reloadArtistMediaExtras() {
@@ -264,42 +316,65 @@ async function loadAppleArtistVideos(appleArtistId, data, term, termParam) {
     return { videos, hasMoreVideos };
 }
 
-async function fetchAppleArtistExtras() {
+function applyCachedMediaExtras(atmosSource, videoSource, appleExtras, tidalExtras) {
+    const atmosPayload = atmosSource === 'tidal' ? tidalExtras : appleExtras;
+    const videoPayload = videoSource === 'tidal' ? tidalExtras : appleExtras;
+    libraryState.appleExtras.appleArtistId = appleExtras?.appleId || libraryState.appleExtras.storedAppleId || null;
+    libraryState.appleExtras.atmos = Array.isArray(atmosPayload?.atmos) ? atmosPayload.atmos : [];
+    libraryState.appleExtras.videos = Array.isArray(videoPayload?.videos) ? videoPayload.videos : [];
+    libraryState.appleExtras.videoOffset = libraryState.appleExtras.videos.length;
+    libraryState.appleExtras.hasMoreVideos = false;
+    updateAppleExtrasPanelVisibility();
+    renderAppleAtmos();
+    renderAppleVideos();
+}
+
+function markMediaExtrasPaintedFromCache() {
+    ['appleAtmosGrid', 'appleVideosGrid'].forEach((id) => {
+        document.getElementById(id)?.setAttribute('data-from-cache', '1');
+    });
+}
+
+async function fetchAppleArtistExtras(explicitArtistId) {
     const term = libraryState.appleExtras.term;
     if (!term) return;
     const atmosContainer = document.getElementById('appleAtmosGrid');
     const videoContainer = document.getElementById('appleVideosGrid');
-    const artistId = getCurrentLibraryArtistId();
+    const artistId = explicitArtistId || getCurrentLibraryArtistId();
     const atmosSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'atmos') || 'apple';
     const videoSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'video') || 'apple';
     libraryState.appleExtras.atmosSource = atmosSource;
     libraryState.appleExtras.videoSource = videoSource;
     updateArtistMediaPanelTitles();
-    setAppleArtistExtrasLoading(term, atmosContainer, videoContainer);
+
+    const needsApple = atmosSource === 'apple' || videoSource === 'apple';
+    const needsTidal = atmosSource === 'tidal' || videoSource === 'tidal';
+    const appleCached = needsApple ? readMediaExtrasBrowserCache(artistId, 'apple') : null;
+    const tidalCached = needsTidal ? readMediaExtrasBrowserCache(artistId, 'tidal') : null;
+    if (appleCached || tidalCached) {
+        applyCachedMediaExtras(atmosSource, videoSource, appleCached, tidalCached);
+        markMediaExtrasPaintedFromCache();
+    } else {
+        setAppleArtistExtrasLoading(term, atmosContainer, videoContainer);
+    }
 
     const loadProvider = async (provider) => artistId
         ? await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/media-extras?provider=${encodeURIComponent(provider)}`)
         : null;
-    const appleExtras = atmosSource === 'apple' || videoSource === 'apple'
-        ? await loadProvider('apple')
-        : null;
-    const tidalExtras = atmosSource === 'tidal' || videoSource === 'tidal'
-        ? await loadProvider('tidal')
-        : null;
+    const appleExtras = needsApple ? await loadProvider('apple') : null;
+    const tidalExtras = needsTidal ? await loadProvider('tidal') : null;
+    if (appleExtras?.available) {
+        writeMediaExtrasBrowserCache(artistId, 'apple', appleExtras);
+    }
+    if (tidalExtras?.available) {
+        writeMediaExtrasBrowserCache(artistId, 'tidal', tidalExtras);
+    }
 
-    libraryState.appleExtras.appleArtistId = appleExtras?.appleId || libraryState.appleExtras.storedAppleId || null;
-    libraryState.appleExtras.atmos = Array.isArray((atmosSource === 'tidal' ? tidalExtras : appleExtras)?.atmos)
-        ? (atmosSource === 'tidal' ? tidalExtras : appleExtras).atmos
-        : [];
-    libraryState.appleExtras.videos = Array.isArray((videoSource === 'tidal' ? tidalExtras : appleExtras)?.videos)
-        ? (videoSource === 'tidal' ? tidalExtras : appleExtras).videos
-        : [];
-    libraryState.appleExtras.videoOffset = libraryState.appleExtras.videos.length;
-    libraryState.appleExtras.hasMoreVideos = false;
-
-    updateAppleExtrasPanelVisibility();
-    renderAppleAtmos();
-    renderAppleVideos();
+    applyCachedMediaExtras(
+        atmosSource,
+        videoSource,
+        appleExtras?.available ? appleExtras : appleCached,
+        tidalExtras?.available ? tidalExtras : tidalCached);
 }
 
 function resolveAppleArtistId(artists, term) {

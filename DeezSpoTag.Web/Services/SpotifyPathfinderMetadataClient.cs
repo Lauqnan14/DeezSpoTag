@@ -941,6 +941,30 @@ public sealed class SpotifyPathfinderMetadataClient
         return await FetchArtistDiscographyAsync(context, artistId, cancellationToken);
     }
 
+    public async Task<List<SpotifyAlbumSummary>> FetchArtistLatestDiscographyPageAsync(string artistId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return new List<SpotifyAlbumSummary>();
+        }
+
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
+        if (context is null)
+        {
+            return new List<SpotifyAlbumSummary>();
+        }
+
+        DiscographyPageResult? page = await QueryArtistDiscographyPageAsync(context, artistId, 0, cancellationToken);
+        if (page is null || page.Items.Count == 0)
+        {
+            return new List<SpotifyAlbumSummary>();
+        }
+
+        List<SpotifyAlbumSummary> albums = new List<SpotifyAlbumSummary>();
+        AppendDiscographyReleases(albums, new HashSet<string>(StringComparer.OrdinalIgnoreCase), page.Items);
+        return albums;
+    }
+
     public async Task<SpotifyArtistExtras?> FetchArtistExtrasAsync(string artistId, CancellationToken cancellationToken)
     {
         (PathfinderAuthContext Context, JsonElement? Artist, JsonElement? Overview)? artistQuery = await QueryArtistAndOverviewAsync(artistId, cancellationToken);
