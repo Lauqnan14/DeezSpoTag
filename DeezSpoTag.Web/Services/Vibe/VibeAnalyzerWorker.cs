@@ -42,7 +42,7 @@ internal sealed class VibeAnalyzerWorker : IAsyncDisposable
         {
             try
             {
-                var process = EnsureStarted();
+                var process = await EnsureStartedAsync().ConfigureAwait(false);
                 var requestId = Guid.NewGuid().ToString("N");
                 var request = JsonSerializer.Serialize(new { requestId, filePath });
                 await process.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken).ConfigureAwait(false);
@@ -138,14 +138,14 @@ internal sealed class VibeAnalyzerWorker : IAsyncDisposable
         }
     }
 
-    private Process EnsureStarted()
+    private async Task<Process> EnsureStartedAsync()
     {
         if (_process is { HasExited: false })
         {
             return _process;
         }
 
-        StopProcessAsync().AsTask().GetAwaiter().GetResult();
+        await StopProcessAsync().ConfigureAwait(false);
         var startInfo = _startInfoFactory();
         startInfo.RedirectStandardInput = true;
         startInfo.RedirectStandardOutput = true;

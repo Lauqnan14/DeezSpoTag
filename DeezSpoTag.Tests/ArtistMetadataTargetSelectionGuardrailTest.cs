@@ -486,9 +486,9 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.DoesNotContain("LastFmArtistImageService", targetUpdate);
         Assert.Contains("TryGetCachedArtistPageAsync", popularSongs);
         Assert.DoesNotContain("GetArtistPageAsync(", popularSongs);
-        var cachedMethodStart = spotifyArtist.IndexOf("public async Task<SpotifyArtistPageResult?> TryGetCachedArtistPageAsync", StringComparison.Ordinal);
-        var cachedMethodEnd = spotifyArtist.IndexOf("private async Task<", cachedMethodStart, StringComparison.Ordinal);
-        var cachedMethod = spotifyArtist[cachedMethodStart..cachedMethodEnd];
+        var cachedMethod = ExtractMethodBody(
+            spotifyArtist,
+            "public async Task<SpotifyArtistPageResult?> TryGetCachedArtistPageAsync");
         Assert.DoesNotContain("_pathfinderMetadataClient", cachedMethod);
         Assert.DoesNotContain("TryHydrateCachedBiographyAsync", cachedMethod);
 
@@ -514,5 +514,23 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         }
 
         return directory?.FullName ?? throw new InvalidOperationException("Repository root was not found.");
+    }
+
+    private static string ExtractMethodBody(string source, string signature)
+    {
+        var methodStart = source.IndexOf(signature, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, $"Method not found: {signature}");
+        var bodyStart = source.IndexOf('{', methodStart);
+        Assert.True(bodyStart >= 0, $"Method body not found: {signature}");
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{') depth++;
+            if (source[index] != '}') continue;
+            depth--;
+            if (depth == 0) return source[methodStart..(index + 1)];
+        }
+
+        throw new InvalidOperationException($"Method body was not closed: {signature}");
     }
 }
