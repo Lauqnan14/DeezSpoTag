@@ -12,6 +12,27 @@ namespace DeezSpoTag.Tests;
 public sealed class JellyfinApiClientArtistLookupTest
 {
     [Fact]
+    public async Task GetSystemInfoAsync_UsesJellyfin12MediaBrowserAuthorization()
+    {
+        using var handler = new StubHandler(request =>
+        {
+            Assert.NotNull(request.Headers.Authorization);
+            Assert.Equal("MediaBrowser", request.Headers.Authorization!.Scheme);
+            Assert.Equal("Token=\"api-key\"", request.Headers.Authorization.Parameter);
+            Assert.False(request.Headers.Contains("X-Emby-Token"));
+            return Json("{\"ServerName\":\"Jellyfin\",\"Version\":\"12.0.0\"}");
+        });
+        var client = new JellyfinApiClient(new HttpClient(handler));
+
+        var systemInfo = await client.GetSystemInfoAsync(
+            "http://jellyfin.local",
+            "api-key",
+            CancellationToken.None);
+
+        Assert.NotNull(systemInfo);
+    }
+
+    [Fact]
     public async Task FindArtistIdsAsync_ReturnsAllExactNameMatches()
     {
         using var handler = new StubHandler(request =>

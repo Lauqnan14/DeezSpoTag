@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -16,11 +15,11 @@ public sealed class JellyfinApiClientHistoryTest
     public async Task GetAudioPlayHistoryAsync_WithLibraryId_AddsParentIdScope()
     {
         Uri? requestUri = null;
-        string? apiToken = null;
+        string? authorization = null;
         using var handler = new StubHandler(request =>
         {
             requestUri = request.RequestUri;
-            apiToken = request.Headers.GetValues("X-Emby-Token").Single();
+            authorization = request.Headers.Authorization?.ToString();
             return Json("""
                 {
                   "Items": [
@@ -49,7 +48,7 @@ public sealed class JellyfinApiClientHistoryTest
             cancellationToken: CancellationToken.None);
 
         Assert.Single(history);
-        Assert.Equal("api-secret", apiToken);
+        Assert.Equal("MediaBrowser Token=\"api-secret\"", authorization);
         Assert.NotNull(requestUri);
         Assert.Contains("ParentId=library%2Fgold", requestUri.Query, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Limit=25", requestUri.Query, StringComparison.Ordinal);

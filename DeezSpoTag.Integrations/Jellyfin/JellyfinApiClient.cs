@@ -12,7 +12,7 @@ namespace DeezSpoTag.Integrations.Jellyfin;
 public class JellyfinApiClient
 {
     private const int PlaylistWriteBatchSize = 100;
-    private const string EmbyTokenHeader = "X-Emby-Token";
+    private const string MediaBrowserAuthorizationScheme = "MediaBrowser";
     private const string OverviewProperty = "Overview";
     private const string RecursiveQuerySegment = "?Recursive=true";
     private const string RecursiveQueryParameter = "&Recursive=true";
@@ -27,7 +27,7 @@ public class JellyfinApiClient
     public async Task<JellyfinSystemInfo?> GetSystemInfoAsync(string serverUrl, string apiKey, CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/System/Info"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -40,7 +40,7 @@ public class JellyfinApiClient
     public async Task<JellyfinUserInfo?> GetCurrentUserAsync(string serverUrl, string apiKey, CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/Users/Me"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -96,7 +96,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, $"/Users/{Uri.EscapeDataString(userId)}"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -118,7 +118,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/Users"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -144,7 +144,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, "/Library/Refresh"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         return response.IsSuccessStatusCode;
     }
@@ -160,7 +160,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/ScheduledTasks"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -204,7 +204,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/Library/VirtualFolders"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -252,7 +252,7 @@ public class JellyfinApiClient
             query.Append($"&StartIndex={startIndex}");
 
             using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -338,7 +338,7 @@ public class JellyfinApiClient
         var normalizedArtistName = artistName.Trim();
         var url = BuildUrl(serverUrl, $"/Artists?SearchTerm={Uri.EscapeDataString(normalizedArtistName)}&Limit=200");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -393,7 +393,7 @@ public class JellyfinApiClient
                 serverUrl,
                 $"/Items?ParentId={Uri.EscapeDataString(artistId.Trim())}&IncludeItemTypes=MusicAlbum&Recursive=true&Limit=200&Fields=Name");
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -449,7 +449,7 @@ public class JellyfinApiClient
         query.Append($"&SearchTerm={Uri.EscapeDataString(searchTerm)}");
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -503,7 +503,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -591,7 +591,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -651,7 +651,7 @@ public class JellyfinApiClient
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             var statusCode = (int)response.StatusCode;
             var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
@@ -697,7 +697,7 @@ public class JellyfinApiClient
         query.Append("&Limit=500");
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -743,7 +743,7 @@ public class JellyfinApiClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -814,7 +814,7 @@ public class JellyfinApiClient
 
         var query = $"/Playlists/{Uri.EscapeDataString(playlistId)}/Items?UserId={Uri.EscapeDataString(userId)}";
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -866,7 +866,7 @@ public class JellyfinApiClient
             query.Append($"&Ids={Uri.EscapeDataString(ids)}");
 
             using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -933,7 +933,7 @@ public class JellyfinApiClient
             query.Append($"&EntryIds={Uri.EscapeDataString(ids)}");
 
             using var request = new HttpRequestMessage(HttpMethod.Delete, BuildUrl(serverUrl, query.ToString()));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -1032,7 +1032,7 @@ public class JellyfinApiClient
             HttpMethod.Get,
             BuildUrl(serverUrl,
                 $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary?tag={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -1122,7 +1122,7 @@ public class JellyfinApiClient
                 ? $"/Items/{Uri.EscapeDataString(itemId)}"
                 : $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}");
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl);
-        getRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(getRequest, apiKey);
         using var getResponse = await _httpClient.SendAsync(getRequest, cancellationToken);
         if (!getResponse.IsSuccessStatusCode)
         {
@@ -1169,7 +1169,7 @@ public class JellyfinApiClient
         {
             Content = new StringContent(updatedJson, Encoding.UTF8, "application/json")
         };
-        postRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(postRequest, apiKey);
         using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
         return postResponse.IsSuccessStatusCode;
     }
@@ -1207,7 +1207,7 @@ public class JellyfinApiClient
                 BuildUrl(
                     serverUrl,
                     $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}"));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             var statusCode = (int)response.StatusCode;
             var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
@@ -1262,7 +1262,7 @@ public class JellyfinApiClient
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
-            request.Headers.Add(EmbyTokenHeader, apiKey);
+            ApplyAuthorization(request, apiKey);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             var statusCode = (int)response.StatusCode;
             if (response.IsSuccessStatusCode)
@@ -1381,7 +1381,7 @@ public class JellyfinApiClient
         {
             Content = uploadContent
         };
-        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(uploadRequest, apiKey);
         using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
         if (!uploadResponse.IsSuccessStatusCode)
         {
@@ -1393,7 +1393,7 @@ public class JellyfinApiClient
             BuildUrl(
                 serverUrl,
                 $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary?tag={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
-        verifyRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(verifyRequest, apiKey);
         using var verifyResponse = await _httpClient.SendAsync(
             verifyRequest,
             HttpCompletionOption.ResponseHeadersRead,
@@ -1426,7 +1426,7 @@ public class JellyfinApiClient
         {
             Content = content
         };
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         return response.IsSuccessStatusCode;
@@ -1467,7 +1467,7 @@ public class JellyfinApiClient
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, queryPath));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
+        ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -1481,6 +1481,14 @@ public class JellyfinApiClient
     private static string BuildUrl(string baseUrl, string path)
     {
         return $"{baseUrl.TrimEnd('/')}{path}";
+    }
+
+    private static void ApplyAuthorization(HttpRequestMessage request, string apiKey)
+    {
+        var token = Uri.EscapeDataString(apiKey.Trim());
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            MediaBrowserAuthorizationScheme,
+            $"Token=\"{token}\"");
     }
 
     private static string ResolveArtistText(JellyfinMediaItem item)
