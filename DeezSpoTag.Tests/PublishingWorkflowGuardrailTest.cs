@@ -83,6 +83,20 @@ public sealed class PublishingWorkflowGuardrailTest
     }
 
     [Fact]
+    public void DockerPublish_InstallsHostFfmpegForAppParityFixtures()
+    {
+        var root = ResolveSrcRoot();
+        var workflow = File.ReadAllText(Path.Join(root, ".github", "workflows", "docker-publish.yml"));
+
+        Assert.Contains("name: Install app parity audit dependencies", workflow, StringComparison.Ordinal);
+        Assert.Contains("if: matrix.image_name == 'deezspotag'", workflow, StringComparison.Ordinal);
+        Assert.Contains(
+            "sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg",
+            workflow,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DockerPublish_RequiresFullGuardrailsBeforeVersioningAndPublishing()
     {
         var root = ResolveSrcRoot();

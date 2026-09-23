@@ -209,6 +209,10 @@ jobs:
           git fetch origin main --tags
           git checkout -B main origin/main
 
+      - name: Install app parity audit dependencies
+        if: matrix.image_name == 'deezspotag'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Compute commit tags
         id: commit
         run: |
