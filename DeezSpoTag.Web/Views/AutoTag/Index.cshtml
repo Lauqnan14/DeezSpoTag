@@ -1672,18 +1672,28 @@
                                 </label>
                                 <input type="text" id="artistImageTemplate" placeholder="folder" />
                             </div>
+                            <div class="form-group" id="artworkOutputFormats">
+                                <label>Artwork output formats</label>
+                                <div class="dropdown-select artwork-format-dropdown" id="artworkFormatDropdown">
+                                    <button type="button" class="dropdown-trigger" id="artworkFormatTrigger">JPEG</button>
+                                    <div class="dropdown-menu artwork-format-menu" id="artworkFormatMenu">
+                                        <div class="artwork-format-options">
+                                            <label class="artwork-format-option"><input type="checkbox" id="artworkFormatJpeg" checked /> JPEG</label>
+                                            <label class="artwork-format-option"><input type="checkbox" id="artworkFormatPng" /> PNG</label>
+                                            <label class="artwork-format-option"><input type="checkbox" id="artworkFormatWebp" /> WebP</label>
+                                            <label class="artwork-format-option"><input type="checkbox" id="artworkFormatAll" /> Select all artwork formats</label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="localArtworkFormat" value="jpg" />
+                            </div>
                             <div class="form-group">
-                                <label for="localArtworkFormat">
-                                    Artwork output format
-                                    <span class="autotag-tooltip-icon ms-1" title="Applies to saved artwork files and embedded artwork format." aria-label="Applies to saved artwork files and embedded artwork format.">
-                                        <i class="fas fa-question-circle"></i>
-                                    </span>
-                                </label>
-                                <select id="localArtworkFormat">
-                                    <option value="jpg">JPEG</option>
-                                    <option value="png">PNG</option>
-                                    <option value="jpg,png">Both</option>
-                                </select>
+                                <label for="localArtworkSize">Saved artwork size</label>
+                                <input type="number" id="localArtworkSize" value="1200" min="100" max="5000" />
+                            </div>
+                            <div class="form-group">
+                                <label for="embeddedArtworkSize">Embedded artwork size</label>
+                                <input type="number" id="embeddedArtworkSize" value="800" min="100" max="5000" />
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="embedMaxQualityCover" checked />

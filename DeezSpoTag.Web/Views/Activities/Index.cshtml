@@ -3811,14 +3811,6 @@ span.badge.badge-artwork-animated {
                                         <span class="analysis-summary-value" id="analysisLatestStatus">Unknown</span>
                                     </div>
                                     <div class="analysis-summary-card">
-                                        <span class="analysis-summary-label">Essentia worker</span>
-                                        <span class="analysis-summary-value" id="analysisAnalyzerState">Stopped</span>
-                                    </div>
-                                    <div class="analysis-summary-card">
-                                        <span class="analysis-summary-label">Essentia failure</span>
-                                        <span class="analysis-summary-value" id="analysisAnalyzerFailure">None</span>
-                                    </div>
-                                    <div class="analysis-summary-card">
                                         <span class="analysis-summary-label">Mood tags</span>
                                         <span class="analysis-summary-value" id="analysisMoodTags">None</span>
                                     </div>
@@ -8197,16 +8189,6 @@ async function loadAnalysisActivity() {
 
 function applyAnalysisRuntime(runtime) {
     analysisState.running = runtime?.running === true;
-    const analyzer = runtime?.analyzer;
-    const analyzerState = document.getElementById('analysisAnalyzerState');
-    const analyzerFailure = document.getElementById('analysisAnalyzerFailure');
-    if (analyzerState) {
-        const starts = Number(analyzer?.startCount || 0);
-        analyzerState.textContent = `${analyzer?.state || 'stopped'} · starts ${starts}`;
-    }
-    if (analyzerFailure) {
-        analyzerFailure.textContent = analyzer?.lastFailureReason || 'None';
-    }
     if (runtime?.latest) {
         applyLatestAnalysis(runtime.latest, false);
     }

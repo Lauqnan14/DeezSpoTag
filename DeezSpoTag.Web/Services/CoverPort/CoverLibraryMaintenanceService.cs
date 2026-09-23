@@ -20,7 +20,7 @@ public sealed class CoverLibraryMaintenanceService
         ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".aiff", ".wma", ".alac"
     };
 
-    private static readonly string[] ExternalCoverNames = { "cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png" };
+    private static readonly string[] ExternalCoverNames = { "cover.jpg", "cover.jpeg", "cover.png", "cover.webp", "folder.jpg", "folder.png", "folder.webp" };
     private static readonly string[] CompilationMarkers = { "compilation", "greatest hits", "best of", "anthology", "collection", "various artists" };
     private static readonly string[] SingleMarkers = { "single", "ep", "e.p." };
     private readonly record struct AlbumMetadata(string Artist, string Album, string? Title);
@@ -409,22 +409,7 @@ public sealed class CoverLibraryMaintenanceService
                 await onWritePhaseStarted(cancellationToken);
             }
 
-            var wroteAnything = false;
-            if (context.Request.WriteExternalSidecar)
-            {
-                await File.WriteAllBytesAsync(ResolveStillCoverOutputPath(context), coverBytes, cancellationToken);
-                wroteAnything = true;
-            }
-
-            if (context.Request.WriteEmbeddedCover)
-            {
-                foreach (var audioPath in context.AudioFiles)
-                {
-                    EmbedArtwork(audioPath, coverBytes);
-                }
-
-                wroteAnything = true;
-            }
+            var wroteAnything = await ApplyPreparedArtworkAsync(context, coverBytes, cancellationToken);
 
             if (!wroteAnything)
             {
@@ -575,40 +560,18 @@ public sealed class CoverLibraryMaintenanceService
             return false;
         }
 
-        var baseName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
-        var destinationPath = Path.Join(albumDir, $"{baseName}.{ResolveSidecarExtension(request)}");
-        var temporaryPath = Path.Join(albumDir, $".{baseName}.{Guid.NewGuid():N}.tmp.{ResolveSidecarExtension(request)}");
-        var wroteAnything = false;
-        try
+        var audioFiles = Directory.EnumerateFiles(albumDir)
+            .Where(path => AudioExtensions.Contains(Path.GetExtension(path))).ToList();
+        var artworkState = InspectAlbumArtwork(albumDir, audioFiles.FirstOrDefault() ?? string.Empty, audioFiles.Count, metadata, request);
+        var context = new StillCoverUpdateContext(albumDir, audioFiles, metadata, artworkState,
+            new AlbumWorkPlan(true, true, false, false, false), request);
+        var wroteAnything = await ApplyPreparedArtworkAsync(context, bytes, cancellationToken);
+        if (!wroteAnything)
         {
-            if (request.WriteExternalSidecar)
-            {
-                await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
-                File.Move(temporaryPath, destinationPath, overwrite: true);
-                wroteAnything = true;
-            }
-
-            if (request.WriteEmbeddedCover)
-            {
-                foreach (var audioPath in Directory.EnumerateFiles(albumDir)
-                             .Where(path => AudioExtensions.Contains(Path.GetExtension(path))))
-                {
-                    EmbedArtwork(audioPath, bytes);
-                }
-                wroteAnything = true;
-            }
-
-            if (!wroteAnything)
-            {
-                logs.Enqueue($"[skip] {albumDir}: matching Apple still artwork was resolved, but profile does not allow embedding or saving artwork files.");
-            }
-
-            return wroteAnything;
+            logs.Enqueue($"[skip] {albumDir}: matching Apple still artwork was resolved, but profile does not allow embedding or saving artwork files.");
         }
-        finally
-        {
-            TryDeleteTemporaryFile(temporaryPath);
-        }
+
+        return wroteAnything;
     }
 
     private async Task<TrackIdentityResolution?> ResolveAppleIdentityAsync(
@@ -663,7 +626,7 @@ public sealed class CoverLibraryMaintenanceService
             playlist: null);
     }
 
-    private static string ResolveStillCoverOutputPath(StillCoverUpdateContext context)
+    private static string ResolveStillCoverOutputPath(StillCoverUpdateContext context, string format)
     {
         var baseFileName = BuildAlbumArtworkBaseFileName(context.Metadata, context.Request.CoverImageTemplate);
         if (string.IsNullOrWhiteSpace(baseFileName))
@@ -671,13 +634,7 @@ public sealed class CoverLibraryMaintenanceService
             baseFileName = "cover";
         }
 
-        return Path.Join(context.AlbumDir, $"{baseFileName}.{ResolveSidecarExtension(context.Request)}");
-    }
-
-    private static string ResolveSidecarExtension(CoverLibraryMaintenanceRequest request)
-    {
-        var format = (request.LocalArtworkFormat ?? "jpg").Trim().TrimStart('.').ToLowerInvariant();
-        return format == "png" ? "png" : "jpg";
+        return Path.Join(context.AlbumDir, $"{baseFileName}.{format}");
     }
 
     private static CoverSearchQuery BuildCoverSearchQuery(AlbumMetadata metadata, ShazamCoverHints? hints)
@@ -1070,18 +1027,50 @@ public sealed class CoverLibraryMaintenanceService
         return Math.Min(size.width, size.height) < minResolution;
     }
 
-    private static void EmbedArtwork(string audioPath, byte[] artworkData)
+    private static async Task<bool> ApplyPreparedArtworkAsync(
+        StillCoverUpdateContext context,
+        byte[] artworkData,
+        CancellationToken cancellationToken)
     {
-        using var file = TagLib.File.Create(audioPath);
-        var picture = new TagLib.Picture
+        var extension = context.AudioFiles.Count > 0 ? Path.GetExtension(context.AudioFiles[0]) : ".flac";
+        var prepared = await ArtworkAssetProcessor.PrepareAsync(new ArtworkAssetRequest(
+            artworkData,
+            context.Request.LocalArtworkFormat,
+            context.Request.LocalArtworkSize,
+            context.Request.EmbeddedArtworkSize,
+            context.Request.EmbedMaxQualityCover,
+            context.Request.JpegImageQuality,
+            extension), cancellationToken);
+        var wrote = false;
+        var externalNeedsUpgrade = context.WorkPlan.NeedsUpgrade
+            && context.ArtworkState.ExternalSize is { } externalSize
+            && IsLowResolution(externalSize, context.Request.MinResolution);
+        var embeddedNeedsUpgrade = context.WorkPlan.NeedsUpgrade
+            && context.ArtworkState.EmbeddedSize is { } embeddedSize
+            && IsLowResolution(embeddedSize, context.Request.MinResolution);
+        var shouldWriteSidecars = context.Request.WriteExternalSidecar
+            && (context.WorkPlan.NeedsExternal || externalNeedsUpgrade || context.WorkPlan.NoArtworkAtAll);
+        var shouldWriteEmbedded = context.Request.WriteEmbeddedCover
+            && (context.WorkPlan.NeedsEmbedded || embeddedNeedsUpgrade || context.WorkPlan.NoArtworkAtAll);
+        if (shouldWriteSidecars)
         {
-            Data = artworkData,
-            Type = TagLib.PictureType.FrontCover,
-            MimeType = "image/jpeg",
-            Description = "Cover"
-        };
-        file.Tag.Pictures = new TagLib.IPicture[] { picture };
-        file.Save();
+            foreach (var variant in prepared.Sidecars.Values)
+            {
+                var path = ResolveStillCoverOutputPath(context, variant.Extension);
+                if (File.Exists(path) && context.Request.ArtworkOverwrite is not ("y" or "t")) continue;
+                await File.WriteAllBytesAsync(path, variant.Bytes, cancellationToken);
+                wrote = true;
+            }
+        }
+        if (shouldWriteEmbedded)
+        {
+            foreach (var audioPath in context.AudioFiles)
+            {
+                EmbeddedArtworkWriter.WriteAndVerify(audioPath, prepared.Embedded);
+                wrote = true;
+            }
+        }
+        return wrote;
     }
 
     private static string ResolveReleaseType(string albumTitle, string artistName, int trackCount)
@@ -1209,6 +1198,11 @@ public sealed record CoverLibraryMaintenanceRequest(
     bool WriteEmbeddedCover = true,
     bool WriteExternalSidecar = true,
     string LocalArtworkFormat = "jpg",
+    int LocalArtworkSize = 1200,
+    int EmbeddedArtworkSize = 800,
+    bool EmbedMaxQualityCover = true,
+    int JpegImageQuality = 90,
+    string ArtworkOverwrite = "n",
     bool UseShazamForUntaggedFiles = false,
     Core.Models.Settings.DeezSpoTagSettings? Settings = null);
 

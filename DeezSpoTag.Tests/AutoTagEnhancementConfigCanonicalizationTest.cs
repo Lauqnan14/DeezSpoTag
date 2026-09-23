@@ -532,6 +532,26 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTest
             .ToArray();
     }
 
+    [Fact]
+    public void ArtworkSettings_ExposeIndependentFormatsAndPersistCompleteSizePolicy()
+    {
+        var root = ResolveRepoRoot();
+        var view = File.ReadAllText(Path.Join(root, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var script = File.ReadAllText(Path.Join(root, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+
+        Assert.Contains("id=\"artworkFormatJpeg\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"artworkFormatPng\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"artworkFormatWebp\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"artworkFormatAll\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"artworkFormatTrigger\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"artworkFormatMenu\"", view, StringComparison.Ordinal);
+        Assert.Contains("setupArtworkFormatDropdown();", script, StringComparison.Ordinal);
+        Assert.DoesNotContain(">Both</option>", view, StringComparison.Ordinal);
+        Assert.Contains("settings.localArtworkSize = getNumber", script, StringComparison.Ordinal);
+        Assert.Contains("settings.embeddedArtworkSize = getNumber", script, StringComparison.Ordinal);
+        Assert.Contains("setArtworkFormatControls(source.localArtworkFormat", script, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

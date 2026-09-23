@@ -262,6 +262,23 @@ public static class DownloadEngineSettingsHelper
             settings.JpegImageQuality = Math.Clamp(overrides.JpegImageQuality.Value, 1, 100);
         }
 
+        if (overrides.EmbeddedArtworkSize.HasValue)
+        {
+            settings.EmbeddedArtworkSize = Math.Clamp(overrides.EmbeddedArtworkSize.Value, 100, 5000);
+        }
+        if (overrides.LocalArtworkSize.HasValue)
+        {
+            settings.LocalArtworkSize = Math.Clamp(overrides.LocalArtworkSize.Value, 100, 5000);
+        }
+        if (overrides.AppleArtworkSize.HasValue)
+        {
+            settings.AppleArtworkSize = Math.Clamp(overrides.AppleArtworkSize.Value, 100, 5000);
+        }
+        if (!string.IsNullOrWhiteSpace(overrides.AppleArtworkSizeText))
+        {
+            settings.AppleArtworkSizeText = overrides.AppleArtworkSizeText.Trim();
+        }
+
         if (overrides.AnimatedArtworkMaxSizeMb.HasValue)
         {
             settings.AnimatedArtworkMaxSizeMb = Math.Clamp(overrides.AnimatedArtworkMaxSizeMb.Value, 1, 200);
@@ -275,20 +292,7 @@ public static class DownloadEngineSettingsHelper
             return null;
         }
 
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "jpg",
-            "png"
-        };
-
-        var formats = raw
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(candidate => allowed.Contains(candidate))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(candidate => candidate.ToLowerInvariant())
-            .ToList();
-
-        return formats.Count == 0 ? null : string.Join(",", formats);
+        return ArtworkFormatPolicy.Normalize(raw);
     }
 
     private static string? NormalizeAnimatedArtworkFormats(string? raw)

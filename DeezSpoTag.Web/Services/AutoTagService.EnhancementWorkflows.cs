@@ -3027,6 +3027,11 @@ public partial class AutoTagService
             WriteEmbeddedCover: settings.Tags?.Cover != false,
             WriteExternalSidecar: settings.SaveArtwork,
             LocalArtworkFormat: settings.LocalArtworkFormat,
+            LocalArtworkSize: settings.LocalArtworkSize,
+            EmbeddedArtworkSize: settings.EmbeddedArtworkSize,
+            EmbedMaxQualityCover: settings.EmbedMaxQualityCover,
+            JpegImageQuality: settings.JpegImageQuality,
+            ArtworkOverwrite: settings.OverwriteFile,
             UseShazamForUntaggedFiles: useShazamForUntaggedFiles,
             Settings: settings);
 

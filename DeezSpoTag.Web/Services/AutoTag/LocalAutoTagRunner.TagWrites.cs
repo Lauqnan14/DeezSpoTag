@@ -190,6 +190,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             tempCoverPath = TryResolveFolderArtworkPath(filePath);
         }
 
+        var embeddedCoverPath = effectiveTagSettings.Cover && !string.IsNullOrWhiteSpace(tempCoverPath)
+            ? await PrepareEmbeddedArtworkFileAsync(tempCoverPath, filePath, settings, token)
+            : null;
+
         var writeResult = await WriteTagsOnetaggerStyleAsync(
             new TagWriteRequest
             {
@@ -201,7 +205,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 Settings = settings,
                 PlatformId = platformId,
                 Separator = separator,
-                TempCoverPath = tempCoverPath
+                TempCoverPath = embeddedCoverPath
             },
             token);
         await EnsureTemplateFoldersAndArtworkSidecarAsync(
@@ -238,6 +242,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 $"Provider identity persistence failed: format={failure.Format}, provider={failure.Provider}, field={failure.Field}, reason={failure.Reason}.");
         }
 
+        if (!string.IsNullOrWhiteSpace(embeddedCoverPath))
+        {
+            IOFile.Delete(embeddedCoverPath);
+        }
         if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
         {
             try
@@ -315,6 +323,23 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         ApplyAlbumArtTagWrite(file, context);
         file.Save();
         RemoveId3v1TagIfDisabled(file, context);
+        file.Dispose();
+
+        if (IsMp4Family(context.Extension)
+            && context.AttemptedTags.Contains(SupportedTag.AlbumArt)
+            && !string.IsNullOrWhiteSpace(context.TempCoverPath))
+        {
+            var bytes = await IOFile.ReadAllBytesAsync(context.TempCoverPath, token);
+            using var image = SixLabors.ImageSharp.Image.Load(bytes);
+            EmbeddedArtworkWriter.WriteAndVerify(
+                context.FilePath,
+                new ArtworkVariant(
+                    bytes,
+                    Path.GetExtension(context.TempCoverPath).TrimStart('.').ToLowerInvariant(),
+                    CoverArtMimeTypeResolver.Resolve(context.TempCoverPath, bytes),
+                    image.Width,
+                    image.Height));
+        }
 
         AtlTagHelper.RestoreChapters(context.FilePath, chapterSnapshot, _logger);
 

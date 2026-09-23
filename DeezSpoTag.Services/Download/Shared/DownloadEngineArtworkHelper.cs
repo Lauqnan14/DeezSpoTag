@@ -735,7 +735,8 @@ public static class DownloadEngineArtworkHelper
                 var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
                 if (validated != null)
                 {
-                    savedArtwork.Add(validated);
+                    savedArtwork.Add(await NormalizeArtistArtworkAsync(
+                        validated, format, request.Settings, cancellationToken));
                 }
             }
 
@@ -755,18 +756,18 @@ public static class DownloadEngineArtworkHelper
             var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
             if (validated != null)
             {
-                savedArtwork.Add(validated);
+                savedArtwork.Add(await NormalizeArtistArtworkAsync(
+                    validated, "jpg", request.Settings, cancellationToken));
             }
 
             return BuildArtistArtworkSaveResult(savedArtwork);
         }
 
-        var formats = (request.Settings.LocalArtworkFormat ?? "jpg")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var formats = ArtworkFormatPolicy.Parse(request.Settings.LocalArtworkFormat);
 
         foreach (var format in formats)
         {
-            var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
+            var ext = format;
             var targetPath = Path.Join(request.ArtistPath, $"{artistName}.{ext}");
             var protectedExisting = IsProtectedExistingArtwork(targetPath, request.Settings.OverwriteFile);
             var downloaded = await request.ImageDownloader.DownloadImageAsync(
@@ -778,11 +779,39 @@ public static class DownloadEngineArtworkHelper
             var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
             if (validated != null)
             {
-                savedArtwork.Add(validated);
+                savedArtwork.Add(await NormalizeArtistArtworkAsync(
+                    validated, format, request.Settings, cancellationToken));
             }
         }
 
         return BuildArtistArtworkSaveResult(savedArtwork);
+    }
+
+    private static async Task<ValidatedArtistArtwork> NormalizeArtistArtworkAsync(
+        ValidatedArtistArtwork artwork,
+        string format,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (artwork.ExistingArtworkRetained)
+        {
+            return artwork;
+        }
+
+        var sourceBytes = await File.ReadAllBytesAsync(artwork.Path, cancellationToken);
+        var prepared = await ArtworkAssetProcessor.PrepareAsync(
+            new ArtworkAssetRequest(
+                sourceBytes,
+                format,
+                settings.LocalArtworkSize,
+                settings.EmbeddedArtworkSize,
+                settings.EmbedMaxQualityCover,
+                settings.JpegImageQuality,
+                null),
+            cancellationToken);
+        var variant = prepared.Sidecars[format];
+        await File.WriteAllBytesAsync(artwork.Path, variant.Bytes, cancellationToken);
+        return artwork with { Width = variant.Width, Height = variant.Height };
     }
 
     private static ArtistArtworkSaveResult BuildArtistArtworkSaveResult(IReadOnlyList<ValidatedArtistArtwork> savedArtwork)

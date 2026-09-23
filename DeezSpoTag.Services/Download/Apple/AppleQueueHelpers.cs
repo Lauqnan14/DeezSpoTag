@@ -1005,8 +1005,8 @@ public static class AppleQueueHelpers
     public static string GetAppleArtworkFormat(DeezSpoTagSettings settings)
     {
         var formats = GetArtworkOutputFormats(settings);
-        return formats.Count == 1 && string.Equals(formats[0], "png", StringComparison.OrdinalIgnoreCase)
-            ? "png"
+        return formats.Count == 1 && formats[0] is "png" or "webp"
+            ? formats[0]
             : DefaultArtworkFormat;
     }
 
@@ -1015,7 +1015,7 @@ public static class AppleQueueHelpers
         var configured = (settings.LocalArtworkFormat ?? DefaultArtworkFormat)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(static format => format.ToLowerInvariant())
-            .Where(static format => format is "jpg" or "png")
+            .Where(static format => format is "jpg" or "png" or "webp")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -1035,7 +1035,7 @@ public static class AppleQueueHelpers
         }
 
         var normalized = raw;
-        if (string.Equals(format, "png", StringComparison.OrdinalIgnoreCase))
+        if (format is "png" or "webp")
         {
             var match = MatchWithTimeout(normalized, @"\{w\}x\{h\}");
             if (match.Success)
@@ -1043,12 +1043,17 @@ public static class AppleQueueHelpers
                 var parts = SplitWithTimeout(normalized, @"\{w\}x\{h\}");
                 if (parts.Length == 2)
                 {
-                    normalized = parts[0] + "{w}x{h}" + parts[1].Replace(".jpg", ".png", StringComparison.OrdinalIgnoreCase);
+                    normalized = parts[0] + "{w}x{h}"
+                        + ReplaceWithTimeout(parts[1], @"\.[a-z0-9]+(?=$|\?)", $".{format}", RegexOptions.IgnoreCase);
                 }
             }
         }
 
         normalized = NormalizeArtworkUrl(normalized, sizeText, width, height);
+        if (format is "png" or "webp")
+        {
+            normalized = ReplaceWithTimeout(normalized, @"\.[a-z0-9]+(?=$|\?)", $".{format}", RegexOptions.IgnoreCase);
+        }
 
         if (string.Equals(format, "original", StringComparison.OrdinalIgnoreCase))
         {
@@ -1065,6 +1070,12 @@ public static class AppleQueueHelpers
 
     public static string? BuildAppleArtworkFallbackUrl(string raw, string sizeText, int width, int height, string format)
     {
+        if (string.Equals(format, "webp", StringComparison.OrdinalIgnoreCase))
+        {
+            var normalizedWebpFallback = NormalizeArtworkUrl(raw, sizeText, width, height);
+            return ReplaceWithTimeout(normalizedWebpFallback, @"\.[a-z0-9]+(?=$|\?)", ".jpg", RegexOptions.IgnoreCase);
+        }
+
         if (!string.Equals(format, "original", StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -1087,9 +1098,9 @@ public static class AppleQueueHelpers
 
     public static string GetAppleArtworkExtension(string raw, string format)
     {
-        if (string.Equals(format, "png", StringComparison.OrdinalIgnoreCase))
+        if (format is "png" or "webp")
         {
-            return "png";
+            return format;
         }
 
         var match = MatchWithTimeout(raw ?? string.Empty, @"\.([a-zA-Z0-9]+)(?:$|\?)");
@@ -1128,7 +1139,7 @@ public static class AppleQueueHelpers
 
         var (_, _, sizeText) = GetAppleArtworkDimensions(settings);
         var pathExtension = Path.GetExtension(outputPath)?.TrimStart('.').ToLowerInvariant();
-        var format = pathExtension is "jpg" or "png"
+        var format = pathExtension is "jpg" or "png" or "webp"
             ? pathExtension
             : GetAppleArtworkFormat(settings);
         var effectiveSizeText = size > 0 ? $"{size}x{size}" : sizeText;

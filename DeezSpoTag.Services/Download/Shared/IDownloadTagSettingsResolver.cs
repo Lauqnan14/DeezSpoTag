@@ -21,6 +21,10 @@ public sealed record DownloadProfileRuntimeOverrides(
     string? LocalArtworkFormat,
     bool? EmbedMaxQualityCover,
     int? JpegImageQuality,
+    int? EmbeddedArtworkSize = null,
+    int? LocalArtworkSize = null,
+    int? AppleArtworkSize = null,
+    string? AppleArtworkSizeText = null,
     int? AnimatedArtworkMaxSizeMb = null,
     string? AnimatedArtworkSquareFileName = null,
     string? AnimatedArtworkTallFileName = null);

@@ -6484,6 +6484,11 @@
             const data = await response.json();
             state.settingsCache = data?.settings || null;
             setAnimatedArtworkFormatControls(state.settingsCache?.animatedArtworkFormats || "mp4");
+            setArtworkFormatControls(state.settingsCache?.localArtworkFormat || "jpg");
+            applyFieldValueIfPresent("localArtworkSize", state.settingsCache?.localArtworkSize);
+            applyFieldValueIfPresent("embeddedArtworkSize", state.settingsCache?.embeddedArtworkSize);
+            applyFieldCheckedWhenBoolean("embedMaxQualityCover", state.settingsCache?.embedMaxQualityCover);
+            applyFieldValueIfPresent("jpegImageQuality", state.settingsCache?.jpegImageQuality);
             applyFieldValueIfPresent("animatedArtworkSquareFileName", state.settingsCache?.animatedArtworkSquareFileName);
             applyFieldValueIfPresent("animatedArtworkTallFileName", state.settingsCache?.animatedArtworkTallFileName);
             refreshDownloadTagsForSource();
@@ -6524,7 +6529,9 @@
             "animatedArtworkTallFileName",
             settings.animatedArtworkTallFileName ?? "cover_tall");
         settings.artistImageTemplate = getValue("artistImageTemplate", settings.artistImageTemplate ?? "folder");
-        settings.localArtworkFormat = getValue("localArtworkFormat", settings.localArtworkFormat ?? "jpg");
+        settings.localArtworkFormat = collectArtworkFormats(settings.localArtworkFormat ?? "jpg");
+        settings.localArtworkSize = getNumber("localArtworkSize", settings.localArtworkSize ?? 1200);
+        settings.embeddedArtworkSize = getNumber("embeddedArtworkSize", settings.embeddedArtworkSize ?? 800);
         settings.embedMaxQualityCover = getChecked("embedMaxQualityCover", settings.embedMaxQualityCover ?? true);
         settings.artworkFallbackEnabled = getChecked("artworkFallbackEnabled", settings.artworkFallbackEnabled ?? true);
         settings.artworkFallbackOrder = resolveSavedFallbackOrder({
@@ -6683,7 +6690,9 @@
                 "animatedArtworkTallFileName",
                 getBaseString("animatedArtworkTallFileName", "cover_tall")),
             artistImageTemplate: getInputValue("artistImageTemplate", getBaseString("artistImageTemplate", "folder")),
-            localArtworkFormat: getInputValue("localArtworkFormat", getBaseString("localArtworkFormat", "jpg")),
+            localArtworkFormat: collectArtworkFormats(getBaseString("localArtworkFormat", "jpg")),
+            localArtworkSize: getInputNumber("localArtworkSize", getBaseNumber("localArtworkSize", 1200, 100, 5000), 100, 5000),
+            embeddedArtworkSize: getInputNumber("embeddedArtworkSize", getBaseNumber("embeddedArtworkSize", 800, 100, 5000), 100, 5000),
             embedMaxQualityCover: getInputChecked("embedMaxQualityCover", getBaseBool("embedMaxQualityCover", true)),
             jpegImageQuality: getInputNumber(
                 "jpegImageQuality",
@@ -6731,7 +6740,9 @@
         applyFieldValueIfPresent("animatedArtworkSquareFileName", source.animatedArtworkSquareFileName);
         applyFieldValueIfPresent("animatedArtworkTallFileName", source.animatedArtworkTallFileName);
         applyFieldValueIfPresent("artistImageTemplate", source.artistImageTemplate);
-        applyFieldValueIfPresent("localArtworkFormat", source.localArtworkFormat);
+        setArtworkFormatControls(source.localArtworkFormat || "jpg");
+        applyFieldValueIfPresent("localArtworkSize", source.localArtworkSize);
+        applyFieldValueIfPresent("embeddedArtworkSize", source.embeddedArtworkSize);
         applyFieldCheckedWhenBoolean("embedMaxQualityCover", source.embedMaxQualityCover);
 
         if (source.jpegImageQuality !== undefined && source.jpegImageQuality !== null) {
@@ -6847,6 +6858,56 @@
             })
             .map(([, format]) => format);
         return (selected.length ? selected : normalizeAnimatedArtworkFormats(fallback)).join(",");
+    }
+
+    function normalizeArtworkFormats(value) {
+        const text = String(value || "jpg").trim().toLowerCase();
+        const raw = text === "both" ? ["jpg", "png"] : text.split(",");
+        const selected = new Set(raw.map((entry) => entry.trim().replace(/^\./, "").replace(/^jpeg$/, "jpg")));
+        const normalized = ["jpg", "png", "webp"].filter((format) => selected.has(format));
+        return normalized.length ? normalized : ["jpg"];
+    }
+
+    function setArtworkFormatControls(value) {
+        const formats = new Set(normalizeArtworkFormats(value));
+        [["artworkFormatJpeg", "jpg"], ["artworkFormatPng", "png"], ["artworkFormatWebp", "webp"]]
+            .forEach(([id, format]) => {
+                const field = el(id);
+                if (field instanceof HTMLInputElement) field.checked = formats.has(format);
+            });
+        const all = el("artworkFormatAll");
+        if (all instanceof HTMLInputElement) all.checked = formats.size === 3;
+        const hidden = el("localArtworkFormat");
+        if (hidden instanceof HTMLInputElement) hidden.value = [...formats].join(",");
+        const trigger = el("artworkFormatTrigger");
+        if (trigger instanceof HTMLButtonElement) {
+            const labels = { jpg: "JPEG", png: "PNG", webp: "WebP" };
+            trigger.textContent = ["jpg", "png", "webp"]
+                .filter((format) => formats.has(format))
+                .map((format) => labels[format])
+                .join(", ");
+        }
+    }
+
+    function collectArtworkFormats(fallback = "jpg") {
+        const selected = [["artworkFormatJpeg", "jpg"], ["artworkFormatPng", "png"], ["artworkFormatWebp", "webp"]]
+            .filter(([id]) => el(id)?.checked)
+            .map(([, format]) => format);
+        const normalized = selected.length ? selected : normalizeArtworkFormats(fallback);
+        setArtworkFormatControls(normalized.join(","));
+        return normalized.join(",");
+    }
+
+    function setupArtworkFormatDropdown() {
+        const trigger = el("artworkFormatTrigger");
+        const menu = el("artworkFormatMenu");
+        if (!(trigger instanceof HTMLButtonElement) || !(menu instanceof HTMLElement)) return;
+        trigger.addEventListener("click", (event) => {
+            event.stopPropagation();
+            menu.classList.toggle("show");
+        });
+        menu.addEventListener("click", (event) => event.stopPropagation());
+        document.addEventListener("click", () => menu.classList.remove("show"));
     }
 
     async function startAutoTag() {
@@ -7825,6 +7886,25 @@
             });
         }
     });
+    ["artworkFormatJpeg", "artworkFormatPng", "artworkFormatWebp"].forEach((id) => {
+        el(id)?.addEventListener("change", () => {
+            collectArtworkFormats(state.settingsCache?.localArtworkFormat || "jpg");
+            state.autoTagDefaultsDirty = true;
+            scheduleProfileAutoSave();
+        });
+    });
+    el("artworkFormatAll")?.addEventListener("change", (event) => {
+        const checked = event.currentTarget instanceof HTMLInputElement && event.currentTarget.checked;
+        ["artworkFormatJpeg", "artworkFormatPng", "artworkFormatWebp"].forEach((id) => {
+            const field = el(id);
+            if (field instanceof HTMLInputElement) field.checked = checked;
+        });
+        const jpeg = el("artworkFormatJpeg");
+        if (!checked && jpeg instanceof HTMLInputElement) jpeg.checked = true;
+        collectArtworkFormats("jpg");
+        state.autoTagDefaultsDirty = true;
+        scheduleProfileAutoSave();
+    });
     ["metadataSourceEngineEnabled", "metadataSourceDeezerEnabled", "metadataSourceSpotifyEnabled"].forEach((id) => {
         const field = el(id);
         if (field) {
@@ -7880,6 +7960,7 @@
     setupLyricsFallbackOrder();
     setupArtworkFallbackOrder();
     setupArtistArtworkFallbackOrder();
+    setupArtworkFormatDropdown();
     setupFallbackSourceSelectors();
     setupDownloadTagsUi();
     setupTemplateVariableHelpers();

@@ -1,14 +1,17 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging.Abstractions;
+using SixLabors.ImageSharp;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -146,6 +149,49 @@ public sealed class EmbeddedArtworkPreferenceTest
                 Assert.NotEmpty(picture.Data.Data);
                 Assert.Equal(TagLib.PictureType.FrontCover, picture.Type);
             }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("flac")]
+    [InlineData("mp3")]
+    [InlineData("m4a")]
+    [InlineData("opus")]
+    public async Task PreparedArtworkWriter_PersistsExpectedBytesAndDimensions(string extension)
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-prepared-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var audioPath = Path.Join(root, $"track.{extension}");
+            var coverPath = Path.Join(root, "source.png");
+            await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                "anullsrc=r=44100:cl=stereo", "-t", "0.1", audioPath);
+            await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                "color=c=blue:s=160x120", "-frames:v", "1", coverPath);
+
+            var prepared = await ArtworkAssetProcessor.PrepareAsync(new ArtworkAssetRequest(
+                await File.ReadAllBytesAsync(coverPath), "webp", 100, 60, false, 90, $".{extension}"));
+            EmbeddedArtworkWriter.WriteAndVerify(audioPath, prepared.Embedded);
+
+            byte[] bytes;
+            if (extension == "m4a")
+            {
+                bytes = new ATL.Track(audioPath).EmbeddedPictures
+                    .First(static picture => picture.PictureData is { Length: > 0 }).PictureData;
+            }
+            else
+            {
+                using var file = TagLib.File.Create(audioPath);
+                bytes = Assert.Single(file.Tag.Pictures).Data.Data;
+            }
+            using var image = Image.Load(bytes);
+            Assert.Equal((60, 45), (image.Width, image.Height));
+            Assert.Equal("image/webp", CoverArtMimeTypeResolver.Resolve("misleading.jpg", bytes));
         }
         finally
         {

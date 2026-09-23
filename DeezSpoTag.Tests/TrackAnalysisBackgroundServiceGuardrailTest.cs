@@ -27,7 +27,7 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTest
     }
 
     [Fact]
-    public void VibeAnalyzerHealth_IsIncludedInRuntimeAndActivities()
+    public void VibeAnalyzerHealth_RemainsInRuntimeButIsNotRenderedInActivities()
     {
         var repoRoot = ResolveRepoRoot();
         var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
@@ -35,9 +35,9 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTest
 
         Assert.Contains("VibeAnalyzerWorkerSnapshot Analyzer", service, StringComparison.Ordinal);
         Assert.Contains("_analyzerWorker?.GetSnapshot()", service, StringComparison.Ordinal);
-        Assert.Contains("analysisAnalyzerState", view, StringComparison.Ordinal);
-        Assert.Contains("analysisAnalyzerFailure", view, StringComparison.Ordinal);
-        Assert.Contains("runtime?.analyzer", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("analysisAnalyzerState", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("analysisAnalyzerFailure", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtime?.analyzer", view, StringComparison.Ordinal);
     }
 
     [Fact]

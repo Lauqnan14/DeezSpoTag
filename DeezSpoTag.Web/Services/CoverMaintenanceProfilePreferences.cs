@@ -95,6 +95,34 @@ internal static class CoverMaintenanceProfilePreferences
         {
             settings.SaveArtworkArtist = saveArtworkArtist;
         }
+
+        ApplyInt(configRoot, "embeddedArtworkSize", value => settings.EmbeddedArtworkSize = value);
+        ApplyInt(configRoot, "localArtworkSize", value => settings.LocalArtworkSize = value);
+        ApplyInt(configRoot, "appleArtworkSize", value => settings.AppleArtworkSize = value);
+        if (configRoot?["appleArtworkSizeText"]?.GetValue<string>() is { } appleSizeText
+            && !string.IsNullOrWhiteSpace(appleSizeText))
+        {
+            settings.AppleArtworkSizeText = appleSizeText.Trim();
+        }
+        if (configRoot?["embedMaxQualityCover"]?.GetValue<bool?>() is bool maxQuality)
+        {
+            settings.EmbedMaxQualityCover = maxQuality;
+        }
+        ApplyInt(configRoot, "jpegImageQuality", value => settings.JpegImageQuality = value, 1, 100);
+        settings.LocalArtworkFormat = DeezSpoTag.Services.Download.Shared.ArtworkFormatPolicy.Normalize(settings.LocalArtworkFormat);
+    }
+
+    private static void ApplyInt(
+        JsonObject? root,
+        string key,
+        Action<int> apply,
+        int minimum = 100,
+        int maximum = 5000)
+    {
+        if (root?[key]?.GetValue<int?>() is int value)
+        {
+            apply(Math.Clamp(value, minimum, maximum));
+        }
     }
 
     private static bool TryReadTagPreference(JsonObject? configRoot, string tagName, out bool enabled)

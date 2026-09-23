@@ -941,6 +941,25 @@ public class TrackDownloader
         result.ArtistArtworkSourceUrl = artistResolution?.Url;
         result.ArtistArtworkResolutionMethod = artistResolution?.ResolutionMethod;
         PopulateArtistArtworkResult(result, settings, pathResult, coverAlbum, resolvedArtistUrl, artistIsApple, useDeezerArtist);
+        if (settings.SaveArtworkArtist && !string.IsNullOrWhiteSpace(resolvedArtistUrl))
+        {
+            var artistPath = pathResult.ArtistPath
+                ?? pathResult.CoverPath
+                ?? Path.GetDirectoryName(pathResult.FilePath)
+                ?? pathResult.FilePath;
+            _ = await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
+                new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
+                    _imageDownloader,
+                    _pathProcessor,
+                    artistPath,
+                    resolvedArtistUrl,
+                    settings,
+                    track,
+                    AppleQueueHelpers.GetAppleArtworkSize(settings),
+                    settings.EmbedMaxQualityCover,
+                    _logger),
+                cancellationToken);
+        }
 
         if (!allowAlbumArtwork)
         {
@@ -958,10 +977,15 @@ public class TrackDownloader
         }
 
         var embeddedSize = settings.EmbedMaxQualityCover ? settings.LocalArtworkSize : settings.EmbeddedArtworkSize;
+        var sourceSize = coverIsApple
+            ? AppleQueueHelpers.GetAppleArtworkSize(settings)
+            : ArtworkSizePolicy.ResolveRequestSize(
+                Math.Max(settings.LocalArtworkSize, embeddedSize),
+                useDeezerCover ? DeezerSource : null);
         var embeddedFormat = ResolveEmbeddedFormat(settings);
         var embeddedUrl = !string.IsNullOrWhiteSpace(resolvedCoverUrl)
             ? resolvedCoverUrl
-            : GeneratePictureUrl(albumMd5!, embeddedSize, embeddedFormat);
+            : GeneratePictureUrl(albumMd5!, sourceSize, embeddedFormat);
         var embeddedPath = BuildEmbeddedCoverPath(
             new EmbeddedCoverPathRequest
             {
@@ -971,14 +995,21 @@ public class TrackDownloader
                 EmbeddedUrl = embeddedUrl,
                 CoverIsApple = coverIsApple,
                 Settings = settings,
-                EmbeddedSize = embeddedSize,
+                EmbeddedSize = sourceSize,
                 ResolvedCoverUrl = resolvedCoverUrl
             });
 
-        await TryDownloadEmbeddedCoverAsync(embeddedPath, embeddedUrl, coverIsApple, settings, embeddedSize, cancellationToken);
+        await TryDownloadEmbeddedCoverAsync(embeddedPath, embeddedUrl, coverIsApple, settings, sourceSize, cancellationToken);
         if (System.IO.File.Exists(embeddedPath))
         {
-            ApplyEmbeddedCoverPathForTagging(track, coverAlbum, embeddedPath);
+            var preparedEmbeddedPath = await PrepareDirectDownloadArtworkAsync(
+                embeddedPath,
+                pathResult.CoverPath ?? Path.GetDirectoryName(pathResult.FilePath) ?? pathResult.FilePath,
+                _pathProcessor.GenerateAlbumName(settings.CoverImageTemplate, coverAlbum, settings, playlist),
+                Path.GetExtension(pathResult.FilePath),
+                settings,
+                cancellationToken);
+            ApplyEmbeddedCoverPathForTagging(track, coverAlbum, preparedEmbeddedPath);
         }
 
         PopulateAlbumArtworkResult(
@@ -993,6 +1024,46 @@ public class TrackDownloader
                 CoverIsApple = coverIsApple,
                 AlbumMd5 = albumMd5
             });
+    }
+
+    private static async Task<string> PrepareDirectDownloadArtworkAsync(
+        string sourcePath,
+        string outputDirectory,
+        string outputName,
+        string audioExtension,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var prepared = await ArtworkAssetProcessor.PrepareAsync(
+            new ArtworkAssetRequest(
+                await System.IO.File.ReadAllBytesAsync(sourcePath, cancellationToken),
+                settings.LocalArtworkFormat,
+                settings.LocalArtworkSize,
+                settings.EmbeddedArtworkSize,
+                settings.EmbedMaxQualityCover,
+                settings.JpegImageQuality,
+                audioExtension),
+            cancellationToken);
+
+        if (settings.SaveArtwork)
+        {
+            Directory.CreateDirectory(outputDirectory);
+            foreach (var variant in prepared.Sidecars.Values)
+            {
+                var sidecarPath = Path.Join(outputDirectory, $"{outputName}.{variant.Extension}");
+                if (System.IO.File.Exists(sidecarPath) && settings.OverwriteFile is not ("y" or "t"))
+                {
+                    continue;
+                }
+                await System.IO.File.WriteAllBytesAsync(sidecarPath, variant.Bytes, cancellationToken);
+            }
+        }
+
+        var embeddedPath = Path.Join(
+            Path.GetDirectoryName(sourcePath)!,
+            $"{Path.GetFileNameWithoutExtension(sourcePath)}.embedded.{prepared.Embedded.Extension}");
+        await System.IO.File.WriteAllBytesAsync(embeddedPath, prepared.Embedded.Bytes, cancellationToken);
+        return embeddedPath;
     }
 
     private static void EnsureTrackEmbeddedCoverPathForTagging(Track track, Album? contextAlbum)

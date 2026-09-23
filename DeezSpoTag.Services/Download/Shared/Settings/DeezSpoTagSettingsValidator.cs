@@ -398,10 +398,10 @@ public class DeezSpoTagSettingsValidator
         switch (propertyName)
         {
             case nameof(settings.LocalArtworkFormat):
-                var validFormats = new[] { "jpg", "png", "jpg,png" };
-                if (!validFormats.Contains(currentValue))
+                var normalizedFormats = ArtworkFormatPolicy.Normalize(currentValue);
+                if (!string.Equals(currentValue, normalizedFormats, StringComparison.Ordinal))
                 {
-                    setter(defaultSettings.LocalArtworkFormat);
+                    setter(normalizedFormats);
                     return 1;
                 }
                 break;

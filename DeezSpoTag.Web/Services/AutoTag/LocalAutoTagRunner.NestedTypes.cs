@@ -701,6 +701,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public bool? OrganizeSidecarsIntoTemplateFolders { get; set; }
         public bool? EmbedMaxQualityCover { get; set; }
         public int? JpegImageQuality { get; set; }
+        public int? EmbeddedArtworkSize { get; set; }
+        public int? LocalArtworkSize { get; set; }
+        public int? AppleArtworkSize { get; set; }
+        public string? AppleArtworkSizeText { get; set; }
 
         public int? AnimatedArtworkMaxSizeMb { get; set; }
         public TechnicalTagSettings? Technical { get; set; }

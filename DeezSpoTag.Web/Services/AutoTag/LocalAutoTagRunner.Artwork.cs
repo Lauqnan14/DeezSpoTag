@@ -23,8 +23,6 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Formats.Png;
 using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
@@ -227,20 +225,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "jpg",
-            "png"
-        };
-
-        var normalized = raw
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(value => allowed.Contains(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(value => value.ToLowerInvariant())
-            .ToList();
-
-        return normalized.Count == 0 ? null : string.Join(",", normalized);
+        return ArtworkFormatPolicy.Normalize(raw);
     }
 
     private static string BuildAlbumArtworkBaseFileName(AutoTagTrack track, DeezSpoTagSettings settings)
@@ -520,40 +505,47 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             baseFileName = CoverTag;
         }
 
-        var formats = ResolveLocalArtworkFormats(settings.LocalArtworkFormat);
-        using var image = await Image.LoadAsync(tempCoverPath, token);
-        foreach (var format in formats)
+        var prepared = await ArtworkAssetProcessor.PrepareAsync(new ArtworkAssetRequest(
+            await IOFile.ReadAllBytesAsync(tempCoverPath, token),
+            settings.LocalArtworkFormat,
+            settings.LocalArtworkSize,
+            settings.EmbeddedArtworkSize,
+            settings.EmbedMaxQualityCover,
+            settings.JpegImageQuality,
+            Path.GetExtension(filePath)), token);
+        foreach (var variant in prepared.Sidecars.Values)
         {
-            var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.{format}");
+            var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.{variant.Extension}");
             if (IOFile.Exists(coverPath))
             {
                 continue;
             }
-
-            if (format == "png")
-            {
-                await image.SaveAsPngAsync(coverPath, new PngEncoder(), token);
-            }
-            else
-            {
-                await image.SaveAsJpegAsync(
-                    coverPath,
-                    new JpegEncoder { Quality = Math.Clamp(settings.JpegImageQuality, 1, 100) },
-                    token);
-            }
+            await IOFile.WriteAllBytesAsync(coverPath, variant.Bytes, token);
         }
+    }
+
+    private static async Task<string> PrepareEmbeddedArtworkFileAsync(
+        string sourcePath,
+        string audioPath,
+        DeezSpoTagSettings settings,
+        CancellationToken token)
+    {
+        var prepared = await ArtworkAssetProcessor.PrepareAsync(new ArtworkAssetRequest(
+            await IOFile.ReadAllBytesAsync(sourcePath, token),
+            settings.LocalArtworkFormat,
+            settings.LocalArtworkSize,
+            settings.EmbeddedArtworkSize,
+            settings.EmbedMaxQualityCover,
+            settings.JpegImageQuality,
+            Path.GetExtension(audioPath)), token);
+        var path = Path.Join(Path.GetTempPath(), $"autotag-embedded-{Guid.NewGuid():N}.{prepared.Embedded.Extension}");
+        await IOFile.WriteAllBytesAsync(path, prepared.Embedded.Bytes, token);
+        return path;
     }
 
     private static IReadOnlyList<string> ResolveLocalArtworkFormats(string? configured)
     {
-        var formats = (configured ?? "jpg")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(value => value.TrimStart('.').ToLowerInvariant())
-            .Where(value => value is "jpg" or "jpeg" or "png")
-            .Select(value => value == "jpeg" ? "jpg" : value)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        return formats.Count == 0 ? ["jpg"] : formats;
+        return ArtworkFormatPolicy.Parse(configured);
     }
 
     private static bool TrackHasEmbeddedArtwork(string filePath, AutoTagRunnerConfig config, string platformId)

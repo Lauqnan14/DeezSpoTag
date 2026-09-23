@@ -20,6 +20,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using SixLabors.ImageSharp;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Shared;
@@ -1539,9 +1540,41 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        if (HasEmbeddedArtwork(request.OutputPath))
+        var artworkBytes = ReadEmbeddedArtwork(request.OutputPath);
+        if (artworkBytes is { Length: > 0 })
         {
-            return;
+            try
+            {
+                using var image = Image.Load(artworkBytes);
+                if (!request.Settings.EmbedMaxQualityCover
+                    && Math.Max(image.Width, image.Height) > request.Settings.EmbeddedArtworkSize)
+                {
+                    throw new InvalidDataException(
+                        $"Embedded artwork is {image.Width}x{image.Height}, exceeding the configured {request.Settings.EmbeddedArtworkSize}px limit.");
+                }
+
+                var expectedFormat = ArtworkFormatPolicy.ResolveEmbeddedFormat(
+                    request.Settings.LocalArtworkFormat,
+                    Path.GetExtension(request.OutputPath));
+                var actualMime = CoverArtMimeTypeResolver.Resolve(null, artworkBytes);
+                var expectedMime = expectedFormat switch
+                {
+                    "png" => "image/png",
+                    "webp" => "image/webp",
+                    _ => "image/jpeg"
+                };
+                if (!string.Equals(actualMime, expectedMime, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        $"Embedded artwork format is {actualMime}, expected {expectedMime}.");
+                }
+
+                return;
+            }
+            catch (UnknownImageFormatException ex)
+            {
+                throw new InvalidDataException("Embedded artwork is not a decodable image.", ex);
+            }
         }
 
         throw new InvalidOperationException(
@@ -2538,7 +2571,7 @@ public static partial class EngineAudioPostDownloadHelper
         foreach (var coverUrl in coverUrls)
         {
             var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
-            var savedPaths = await SavePrimaryArtworkAsync(
+            var savedArtwork = await SavePrimaryArtworkAsync(
                 execution,
                 runtime,
                 coverUrl,
@@ -2546,14 +2579,16 @@ public static partial class EngineAudioPostDownloadHelper
                 appleArtworkSize,
                 preferMaxQualityCover,
                 token);
-            if (savedPaths.Count > 0)
+            if (savedArtwork.Paths.Count > 0)
             {
+                var prepared = await PrepareDownloadedArtworkAsync(
+                    execution, savedArtwork.Paths[0], savedArtwork.ProtectedPaths, token);
                 return new PrefetchArtworkResult(
                     true,
                     GeneratedSidecarPaths: execution.Request.Settings.SaveArtwork
-                        ? savedPaths
+                        ? prepared.SidecarPaths
                         : Array.Empty<string>(),
-                    PrimaryArtworkPath: savedPaths[0]);
+                    PrimaryArtworkPath: prepared.EmbeddedPath);
             }
         }
 
@@ -2591,7 +2626,11 @@ public static partial class EngineAudioPostDownloadHelper
             : new PrefetchArtworkResult(false, "Artist artwork download failed.");
     }
 
-    private static async Task<IReadOnlyList<string>> SavePrimaryArtworkAsync(
+    private sealed record DownloadedArtworkPaths(
+        IReadOnlyList<string> Paths,
+        IReadOnlySet<string> ProtectedPaths);
+
+    private static async Task<DownloadedArtworkPaths> SavePrimaryArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         string coverUrl,
@@ -2606,6 +2645,7 @@ public static partial class EngineAudioPostDownloadHelper
             : BuildTemporaryEmbeddedArtworkDirectory(execution.Paths.QueueUuid);
         Directory.CreateDirectory(outputDirectory);
         var savedPaths = new List<string>();
+        var protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var coverName = runtime.PathProcessor.GenerateAlbumName(
             settings.CoverImageTemplate,
             execution.Request.Context.Track.Album,
@@ -2616,6 +2656,10 @@ public static partial class EngineAudioPostDownloadHelper
             foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(settings))
             {
                 var targetPath = Path.Join(outputDirectory, $"{coverName}.{format}");
+                if (File.Exists(targetPath) && settings.OverwriteFile is not ("y" or "t"))
+                {
+                    protectedPaths.Add(targetPath);
+                }
                 var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     runtime.ImageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
@@ -2635,15 +2679,18 @@ public static partial class EngineAudioPostDownloadHelper
                 }
             }
             ApplyTemporaryEmbeddedArtworkPath(execution, savedPaths);
-            return savedPaths;
+            return new DownloadedArtworkPaths(savedPaths, protectedPaths);
         }
 
-        var formats = (settings.LocalArtworkFormat ?? "jpg")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var formats = ArtworkFormatPolicy.Parse(settings.LocalArtworkFormat);
         foreach (var format in formats)
         {
-            var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
+            var ext = format;
             var targetPath = Path.Join(outputDirectory, $"{coverName}.{ext}");
+            if (File.Exists(targetPath) && settings.OverwriteFile is not ("y" or "t"))
+            {
+                protectedPaths.Add(targetPath);
+            }
             var downloaded = await runtime.ImageDownloader.DownloadImageAsync(
                 coverUrl,
                 targetPath,
@@ -2657,7 +2704,52 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         ApplyTemporaryEmbeddedArtworkPath(execution, savedPaths);
-        return savedPaths;
+        return new DownloadedArtworkPaths(savedPaths, protectedPaths);
+    }
+
+    private sealed record PreparedArtworkPaths(string EmbeddedPath, IReadOnlyList<string> SidecarPaths);
+
+    private static async Task<PreparedArtworkPaths> PrepareDownloadedArtworkAsync(
+        PrefetchExecutionContext execution,
+        string sourcePath,
+        IReadOnlySet<string> protectedPaths,
+        CancellationToken cancellationToken)
+    {
+        var settings = execution.Request.Settings;
+        var result = await ArtworkAssetProcessor.PrepareAsync(
+            new ArtworkAssetRequest(
+                await File.ReadAllBytesAsync(sourcePath, cancellationToken),
+                settings.LocalArtworkFormat,
+                settings.LocalArtworkSize,
+                settings.EmbeddedArtworkSize,
+                settings.EmbedMaxQualityCover,
+                settings.JpegImageQuality,
+                Path.GetExtension(execution.Request.ExpectedOutputPath)),
+            cancellationToken);
+
+        var sidecars = new List<string>();
+        if (settings.SaveArtwork)
+        {
+            var directory = Path.GetDirectoryName(sourcePath)!;
+            var stem = Path.GetFileNameWithoutExtension(sourcePath);
+            foreach (var variant in result.Sidecars.Values)
+            {
+                var path = Path.Join(directory, $"{stem}.{variant.Extension}");
+                if (protectedPaths.Contains(path))
+                {
+                    sidecars.Add(path);
+                    continue;
+                }
+                await File.WriteAllBytesAsync(path, variant.Bytes, cancellationToken);
+                sidecars.Add(path);
+            }
+        }
+
+        var embeddedDirectory = BuildTemporaryEmbeddedArtworkDirectory(execution.Paths.QueueUuid);
+        Directory.CreateDirectory(embeddedDirectory);
+        var embeddedPath = Path.Join(embeddedDirectory, $"embedded.{result.Embedded.Extension}");
+        await File.WriteAllBytesAsync(embeddedPath, result.Embedded.Bytes, cancellationToken);
+        return new PreparedArtworkPaths(embeddedPath, sidecars);
     }
 
     private static void ApplyTemporaryEmbeddedArtworkPath(
@@ -3032,12 +3124,12 @@ public static partial class EngineAudioPostDownloadHelper
         => ShouldAllowPlaylistCover(payload, settings)
            && settings.Tags?.Cover == true;
 
-    private static bool HasEmbeddedArtwork(string? outputPath)
+    private static byte[]? ReadEmbeddedArtwork(string? outputPath)
     {
         if (string.IsNullOrWhiteSpace(outputPath)
             || !File.Exists(outputPath))
         {
-            return false;
+            return null;
         }
 
         try
@@ -3048,16 +3140,17 @@ public static partial class EngineAudioPostDownloadHelper
                 || extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
             {
                 var track = new ATL.Track(outputPath);
-                return track.EmbeddedPictures?.Any(
-                    static picture => picture?.PictureData?.Length > 0) == true;
+                return track.EmbeddedPictures?.FirstOrDefault(
+                    static picture => picture?.PictureData?.Length > 0)?.PictureData;
             }
 
             using var file = TagLib.File.Create(outputPath);
-            return file.Tag.Pictures?.Any(pic => pic?.Data != null && pic.Data.Count > 0) == true;
+            return file.Tag.Pictures?.FirstOrDefault(
+                static picture => picture?.Data != null && picture.Data.Count > 0)?.Data?.Data;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
-            return false;
+            return null;
         }
     }
 

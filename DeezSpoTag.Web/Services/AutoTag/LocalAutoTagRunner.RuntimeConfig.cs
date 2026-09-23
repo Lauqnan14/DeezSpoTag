@@ -114,6 +114,22 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             settings.JpegImageQuality = Math.Clamp(config.JpegImageQuality.Value, 1, 100);
         }
+        if (config.EmbeddedArtworkSize.HasValue)
+        {
+            settings.EmbeddedArtworkSize = Math.Clamp(config.EmbeddedArtworkSize.Value, 100, 5000);
+        }
+        if (config.LocalArtworkSize.HasValue)
+        {
+            settings.LocalArtworkSize = Math.Clamp(config.LocalArtworkSize.Value, 100, 5000);
+        }
+        if (config.AppleArtworkSize.HasValue)
+        {
+            settings.AppleArtworkSize = Math.Clamp(config.AppleArtworkSize.Value, 100, 5000);
+        }
+        if (!string.IsNullOrWhiteSpace(config.AppleArtworkSizeText))
+        {
+            settings.AppleArtworkSizeText = config.AppleArtworkSizeText.Trim();
+        }
     }
 
     private Dictionary<string, HashSet<SupportedTag>> BuildPlatformSupportedTags()
@@ -259,6 +275,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             OrganizeSidecarsIntoTemplateFolders = raw.OrganizeSidecarsIntoTemplateFolders,
             EmbedMaxQualityCover = raw.EmbedMaxQualityCover,
             JpegImageQuality = raw.JpegImageQuality,
+            EmbeddedArtworkSize = raw.EmbeddedArtworkSize,
+            LocalArtworkSize = raw.LocalArtworkSize,
+            AppleArtworkSize = raw.AppleArtworkSize,
+            AppleArtworkSizeText = raw.AppleArtworkSizeText,
             AnimatedArtworkMaxSizeMb = raw.AnimatedArtworkMaxSizeMb,
             Technical = raw.Technical,
             ProfileId = raw.ProfileId,

@@ -127,6 +127,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             LocalArtworkFormat: ReadStringValue(data, "localArtworkFormat"),
             EmbedMaxQualityCover: ReadBooleanValue(data, "embedMaxQualityCover"),
             JpegImageQuality: ReadIntValue(data, "jpegImageQuality"),
+            EmbeddedArtworkSize: ReadIntValue(data, "embeddedArtworkSize"),
+            LocalArtworkSize: ReadIntValue(data, "localArtworkSize"),
+            AppleArtworkSize: ReadIntValue(data, "appleArtworkSize"),
+            AppleArtworkSizeText: ReadStringValue(data, "appleArtworkSizeText"),
             AnimatedArtworkMaxSizeMb: ReadIntValue(data, "animatedArtworkMaxSizeMb"));
 
         var hasAnyValue =
@@ -143,6 +147,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             || !string.IsNullOrWhiteSpace(runtime.LocalArtworkFormat)
             || runtime.EmbedMaxQualityCover.HasValue
             || runtime.JpegImageQuality.HasValue
+            || runtime.EmbeddedArtworkSize.HasValue
+            || runtime.LocalArtworkSize.HasValue
+            || runtime.AppleArtworkSize.HasValue
+            || !string.IsNullOrWhiteSpace(runtime.AppleArtworkSizeText)
             || runtime.AnimatedArtworkMaxSizeMb.HasValue;
 
         return hasAnyValue ? runtime : null;

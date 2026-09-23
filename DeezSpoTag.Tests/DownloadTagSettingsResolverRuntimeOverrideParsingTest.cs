@@ -93,6 +93,30 @@ public sealed class DownloadTagSettingsResolverRuntimeOverrideParsingTest
     }
 
     [Fact]
+    public void ExtractRuntimeOverrides_CarriesCompleteArtworkPolicy()
+    {
+        var autoTag = CreateAutoTagSettings(
+            ("localArtworkFormat", "webp,png,jpg"),
+            ("localArtworkSize", 1400),
+            ("embeddedArtworkSize", 700),
+            ("appleArtworkSize", 1800),
+            ("appleArtworkSizeText", "1800x1800"),
+            ("embedMaxQualityCover", false),
+            ("jpegImageQuality", 83));
+
+        var runtimeOverrides = ExtractRuntimeOverrides(autoTag);
+
+        Assert.NotNull(runtimeOverrides);
+        Assert.Equal("webp,png,jpg", runtimeOverrides.LocalArtworkFormat);
+        Assert.Equal(1400, runtimeOverrides.LocalArtworkSize);
+        Assert.Equal(700, runtimeOverrides.EmbeddedArtworkSize);
+        Assert.Equal(1800, runtimeOverrides.AppleArtworkSize);
+        Assert.Equal("1800x1800", runtimeOverrides.AppleArtworkSizeText);
+        Assert.False(runtimeOverrides.EmbedMaxQualityCover);
+        Assert.Equal(83, runtimeOverrides.JpegImageQuality);
+    }
+
+    [Fact]
     public void ExtractRuntimeOverrides_ReturnsNull_WhenNoRuntimeOverrideHasValidValue()
     {
         var autoTag = CreateAutoTagSettings(

@@ -762,8 +762,10 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("TryRecognizeUntaggedAlbumAsync", source, StringComparison.Ordinal);
         Assert.Contains("onAlbumCompleted", source, StringComparison.Ordinal);
         Assert.Contains("Interlocked.Increment(ref completedAlbums)", source, StringComparison.Ordinal);
-        Assert.Contains("if (context.Request.WriteExternalSidecar)", source, StringComparison.Ordinal);
-        Assert.Contains("if (context.Request.WriteEmbeddedCover)", source, StringComparison.Ordinal);
+        Assert.Contains("if (shouldWriteSidecars)", source, StringComparison.Ordinal);
+        Assert.Contains("if (shouldWriteEmbedded)", source, StringComparison.Ordinal);
+        Assert.Contains("context.WorkPlan.NeedsExternal || externalNeedsUpgrade", source, StringComparison.Ordinal);
+        Assert.Contains("context.WorkPlan.NeedsEmbedded || embeddedNeedsUpgrade", source, StringComparison.Ordinal);
         Assert.DoesNotContain("|| !context.ArtworkState.HasExternal", source, StringComparison.Ordinal);
         Assert.Contains("AlbumResults: albumResults", source, StringComparison.Ordinal);
     }
@@ -879,8 +881,8 @@ public sealed class EnhancementMultiSectionRunTest
         Assert.Contains("TryApplyMatchingAppleStillArtworkAsync", source, StringComparison.Ordinal);
         Assert.Contains("updatedAnything = animatedResult.AnimatedSaved || animatedResult.MatchingStillApplied || updatedAnything;", source, StringComparison.Ordinal);
         Assert.Contains("if (workPlan.RequiresStillCoverUpdate && !animatedResult.AnimatedSaved)", source, StringComparison.Ordinal);
-        Assert.Contains("if (request.WriteExternalSidecar)", source, StringComparison.Ordinal);
-        Assert.Contains("if (request.WriteEmbeddedCover)", source, StringComparison.Ordinal);
+        Assert.Contains("if (shouldWriteSidecars)", source, StringComparison.Ordinal);
+        Assert.Contains("if (shouldWriteEmbedded)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("if (workPlan.RequiresStillCoverUpdate && (!request.QueueAnimatedArtwork || !animatedSaved))", source, StringComparison.Ordinal);
     }
 

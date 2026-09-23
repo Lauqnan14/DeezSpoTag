@@ -872,6 +872,35 @@ body.autotag-col-resizing * {
     accent-color: var(--primary-color);
 }
 
+.artwork-format-dropdown .artwork-format-menu {
+    min-width: 100%;
+    width: 100%;
+    padding: 10px 12px;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+}
+
+.artwork-format-options {
+    display: grid;
+    gap: 8px;
+}
+
+.artwork-format-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.artwork-format-option input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--primary-color);
+}
+
 .lyrics-format-card-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

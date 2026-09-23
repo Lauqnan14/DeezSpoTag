@@ -6,14 +6,14 @@ public static class CoverArtMimeTypeResolver
 
     public static string Resolve(string? imagePath, byte[]? data)
     {
-        var fromPath = ResolveFromPath(imagePath);
-        if (!string.IsNullOrWhiteSpace(fromPath))
+        var fromData = ResolveFromData(data);
+        if (!string.IsNullOrWhiteSpace(fromData))
         {
-            return fromPath;
+            return fromData;
         }
 
-        var fromData = ResolveFromData(data);
-        return string.IsNullOrWhiteSpace(fromData) ? DefaultMimeType : fromData;
+        var fromPath = ResolveFromPath(imagePath);
+        return string.IsNullOrWhiteSpace(fromPath) ? DefaultMimeType : fromPath;
     }
 
     private static string? ResolveFromPath(string? imagePath)
