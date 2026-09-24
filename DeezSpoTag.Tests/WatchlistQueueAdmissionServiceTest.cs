@@ -16,6 +16,28 @@ namespace DeezSpoTag.Tests;
 
 public sealed class WatchlistQueueAdmissionServiceTest
 {
+    [Fact]
+    public void DownloadAdmission_IgnoresPlaylistWithoutPrimaryDestinationEvenWhenRoutingRulesExist()
+    {
+        var preference = new PlaylistWatchPreferenceDto(
+            "spotify",
+            "playlist-with-routes-only",
+            DestinationFolderId: null,
+            Service: null,
+            SyncTargets: null,
+            PreferredEngine: null,
+            DownloadEngineOrder: null,
+            DownloadVariantMode: "standard",
+            SyncMode: null,
+            UpdateArtwork: true,
+            ReuseSavedArtwork: false,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow,
+            RoutingRules: [new PlaylistTrackRoutingRule("genre", "contains", "Gospel", 3, 0)]);
+
+        Assert.False(WatchlistEngine.HasDownloadDestination(preference));
+    }
+
     [Theory]
     [InlineData(19, 20, false)]
     [InlineData(20, 20, true)]

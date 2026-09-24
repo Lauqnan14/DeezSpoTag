@@ -29,6 +29,7 @@ public sealed class ArtistMetadataCacheRefreshService
         BiographyProvider.Qobuz
     ];
     private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
+    private static readonly TimeSpan ArtistRefreshTimeout = TimeSpan.FromMinutes(10);
     private readonly LibraryRepository _repository;
     private readonly ArtistArtworkCatalogService _artworkCatalog;
     private readonly SpotifyArtistService _spotify;
@@ -110,21 +111,42 @@ public sealed class ArtistMetadataCacheRefreshService
             processed++;
             progress?.Report(new ArtistMetadataOperationProgress(
                 processed, artists.Count, artist.Name, null, succeeded, failed));
+            using var artistCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Task<bool>? refreshTask = null;
             try
             {
-                await RefreshArtistAsync(
+                refreshTask = RefreshArtistAsync(
                     artist.Id,
                     artist.Name,
                     request.Source,
                     request.IncludePopularSongs,
                     request.IncludeDiscography,
-                    cancellationToken,
+                    artistCancellation.Token,
                     gate,
                     request.ForceProviderRefresh,
                     request.OcrTextArtBlockingEnabled);
+                await refreshTask.WaitAsync(ArtistRefreshTimeout, cancellationToken);
                 succeeded++;
                 progress?.Report(new ArtistMetadataOperationProgress(
                     processed, artists.Count, artist.Name, artist.Id, succeeded, failed));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (TimeoutException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                artistCancellation.CancelAfter(TimeSpan.Zero);
+                ObserveLateCompletion(refreshTask);
+                failed++;
+                progress?.Report(new ArtistMetadataOperationProgress(
+                    processed, artists.Count, artist.Name, artist.Id, succeeded, failed));
+                _logger.LogWarning(
+                    "Artist metadata cache refresh timed out for artist {ArtistId} ({ArtistName}) after {TimeoutMinutes} minutes.",
+                    artist.Id,
+                    artist.Name,
+                    ArtistRefreshTimeout.TotalMinutes);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -138,6 +160,18 @@ public sealed class ArtistMetadataCacheRefreshService
         }
 
         return new ArtistMetadataCacheRefreshResult(artists.Count, succeeded, failed, null);
+    }
+
+    private static void ObserveLateCompletion(Task? operation)
+    {
+        if (operation is not null && !operation.IsCompletedSuccessfully)
+        {
+            _ = operation.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
     public Task<bool> RefreshArtistAsync(
@@ -273,8 +307,8 @@ public sealed class ArtistMetadataCacheRefreshService
 
         if (includeDiscography)
         {
-            await RefreshMediaExtrasAsync("apple", artistId, artistName, _mediaExtras.RefreshAppleAsync, cancellationToken);
-            await RefreshMediaExtrasAsync("tidal", artistId, artistName, _mediaExtras.RefreshTidalAsync, cancellationToken);
+            await RefreshMediaExtrasAsync("apple", artistId, artistName, _mediaExtras.RefreshAppleAsync, gate, cancellationToken);
+            await RefreshMediaExtrasAsync("tidal", artistId, artistName, _mediaExtras.RefreshTidalAsync, gate, cancellationToken);
         }
 
         return true;
@@ -327,11 +361,19 @@ public sealed class ArtistMetadataCacheRefreshService
         long artistId,
         string artistName,
         Func<long, string, CancellationToken, Task> refresh,
+        ArtistMetadataProviderGate gate,
         CancellationToken cancellationToken)
     {
         try
         {
-            await refresh(artistId, artistName, cancellationToken);
+            await gate.RunAsync(
+                provider,
+                async token =>
+                {
+                    await refresh(artistId, artistName, token);
+                    return true;
+                },
+                cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

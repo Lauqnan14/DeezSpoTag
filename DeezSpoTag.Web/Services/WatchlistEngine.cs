@@ -36,6 +36,7 @@ public sealed class ArtistWatchQueueOptions
     public required string CollectionType { get; init; }
     public long? DestinationFolderId { get; init; }
     public string? PreferredEngine { get; init; }
+    public DownloadEngineOrderSettings? DownloadEngineOrder { get; init; }
     public IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules { get; init; }
     public string? DownloadVariantMode { get; init; }
     public long? AtmosDestinationFolderId { get; init; }
@@ -1085,7 +1086,8 @@ internal sealed class WatchlistEngine
                 continue;
             }
 
-            if (!artist.DestinationFolderId.HasValue)
+            var destinationFolderId = ResolveArtistDestinationFolderId(artist);
+            if (!destinationFolderId.HasValue)
             {
                 results.Add(new PlaylistReconciliationResult(
                     false,
@@ -1106,17 +1108,19 @@ internal sealed class WatchlistEngine
                 WatchlistSource = NormalizeWatchSource(firstRow.Source),
                 WatchlistPlaylistId = firstRow.SourceId,
                 PreferredEngine = artist.PreferredEngine,
-                DownloadEngineOrder = null,
-                DownloadVariantMode = artist.DownloadVariantMode,
-                AtmosDestinationFolderId = artist.AtmosDestinationFolderId,
-                RuleSet = new QueueWatchRuleSet(artist.RoutingRules, null),
+                DownloadEngineOrder = artist.DownloadEngineOrder,
+                DownloadVariantMode = artist.DownloadVariantMode ?? ResolveGlobalArtistDownloadVariantMode(),
+                AtmosDestinationFolderId = artist.AtmosDestinationFolderOverride == true
+                    ? artist.AtmosDestinationFolderId
+                    : _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId,
+                RuleSet = new QueueWatchRuleSet(artist.RoutingRules, artist.IgnoreRules),
                 WatchlistOrigin = PlaylistWatchOrigin,
                 CandidateIdentityRevision = group.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.CandidateRevision))?.CandidateRevision,
                 ProviderReadinessRevision = group.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.ProviderReadinessRevision))?.ProviderReadinessRevision
             });
             var queueResult = await QueueWatchIntentTracksAsync(
                 missingTracks,
-                artist.DestinationFolderId,
+                destinationFolderId,
                 queueOptions,
                 cancellationToken);
             results.Add(new PlaylistReconciliationResult(
@@ -1290,7 +1294,7 @@ internal sealed class WatchlistEngine
             {
                 if (TryParseArtistWatchContainerId(row.SourceId, out var artistId)
                     && artistsById.TryGetValue(artistId, out var artist)
-                    && artist.DestinationFolderId.HasValue)
+                    && ResolveArtistDestinationFolderId(artist).HasValue)
                 {
                     destinationKeys.Add(key);
                 }
@@ -1757,9 +1761,8 @@ internal sealed class WatchlistEngine
         return playlist.TrackCount.GetValueOrDefault() == 0;
     }
 
-    private static bool HasDownloadDestination(PlaylistWatchPreferenceDto? preference)
-        => preference?.DestinationFolderId is > 0
-            || preference?.RoutingRules?.Any(static rule => rule.DestinationFolderId > 0) == true;
+    internal static bool HasDownloadDestination(PlaylistWatchPreferenceDto? preference)
+        => preference?.DestinationFolderId is > 0;
 
     private static PlaylistWatchlistDto BuildCurrentPlaylistDto(
         PlaylistWatchlistDto playlist,
@@ -5018,6 +5021,19 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         }
 
         return itemDownloadEngineOrder ?? globalSettings.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
+    }
+
+    private long? ResolveArtistDestinationFolderId(WatchlistArtistDto artist)
+        => artist.DestinationFolderOverride == true
+            ? artist.DestinationFolderId
+            : _settingsService.LoadSettings().MultiQuality?.PrimaryDestinationFolderId;
+
+    private string ResolveGlobalArtistDownloadVariantMode()
+    {
+        var multiQuality = _settingsService.LoadSettings().MultiQuality;
+        return multiQuality?.Enabled == true && multiQuality.SecondaryEnabled
+            ? "dual_quality"
+            : "standard";
     }
 
     private static string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine, DeezSpoTagSettings globalSettings)

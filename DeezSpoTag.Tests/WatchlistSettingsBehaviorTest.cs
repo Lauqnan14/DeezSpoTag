@@ -22,6 +22,20 @@ namespace DeezSpoTag.Tests;
 public sealed class WatchlistSettingsBehaviorTest : IDisposable
 {
     [Fact]
+    public void ArtistSettingsReusePlaylistDownloadOptionsAndCustomEngineOrder()
+    {
+        var source = File.ReadAllText(Path.Join(ResolveRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var start = source.IndexOf("async function openArtistSettingsPanel", StringComparison.Ordinal);
+        var end = source.IndexOf("async function openSharedPlaylistArtworkPickerViaShared", start, StringComparison.Ordinal);
+        var body = source[start..end];
+
+        Assert.DoesNotContain(".filter(option => String(option.value || '').trim().toLowerCase() !== 'custom')", body, StringComparison.Ordinal);
+        Assert.Contains("...playlistDownloadModeOptions", body, StringComparison.Ordinal);
+        Assert.Contains("createWatchlistDownloadEngineOrderSection", body, StringComparison.Ordinal);
+        Assert.Contains("downloadEngineOrder", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WatchInterval_ExplainsCompletionAnchoredFullRunSchedule()
     {
         var repoRoot = ResolveRepoRoot();
@@ -193,6 +207,23 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.DoesNotContain("ps-service-select", watchlistScriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("data-playlist-service", watchlistScriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("playlistServerOptions", watchlistScriptSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtistSettings_UseCreatedDownloadModeSectionAndShowEveryMonitoredSource()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var watchlistScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("const artistDownloadMode = createPlaylistSettingsSelectSection", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("panel.appendChild(downloadModeSection);", watchlistScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("downloadModeSection.appendChild(downloadModeTitle)", watchlistScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("downloadModeSection.appendChild(downloadModeSelect)", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("item.spotifyId ?", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("item.deezerId ?", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("item.appleId ?", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("item.qobuzId ?", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("item.tidalId ?", watchlistScript, StringComparison.Ordinal);
     }
 
     [Fact]

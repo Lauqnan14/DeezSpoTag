@@ -286,6 +286,21 @@ public sealed class ArtistMetadataAutomationResilienceTest
     }
 
     [Fact]
+    public void CacheRefreshBoundsEachArtistAndPreservesParentCancellation()
+    {
+        var cache = ReadCacheRefresh();
+
+        Assert.Contains("ArtistRefreshTimeout = TimeSpan.FromMinutes(10)", cache, StringComparison.Ordinal);
+        Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)", cache, StringComparison.Ordinal);
+        Assert.Contains("refreshTask.WaitAsync(ArtistRefreshTimeout, cancellationToken)", cache, StringComparison.Ordinal);
+        Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
+        Assert.Contains("catch (TimeoutException)", cache, StringComparison.Ordinal);
+        Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", cache, StringComparison.Ordinal);
+        Assert.Contains("artistCancellation.CancelAfter(TimeSpan.Zero);", cache, StringComparison.Ordinal);
+        Assert.Contains("Artist metadata cache refresh timed out for artist {ArtistId} ({ArtistName})", cache, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutomaticBiographyAndMediaExtrasProvidersAreOrderedAndIsolated()
     {
         var cache = ReadCacheRefresh();
@@ -300,6 +315,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         Assert.True(lastFm > tidal && audiomack > lastFm && qobuz > audiomack);
         Assert.Contains("RefreshMediaExtrasAsync(\"apple\"", cache, StringComparison.Ordinal);
         Assert.Contains("RefreshMediaExtrasAsync(\"tidal\"", cache, StringComparison.Ordinal);
+        Assert.Contains("gate.RunAsync(\n                provider,", cache, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
         Assert.Contains("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
     }

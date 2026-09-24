@@ -311,23 +311,35 @@ public sealed class ArtistWatchService
 
     private sealed record SpotifyWatchState(int Offset, bool DownloadEntireDiscography, bool TopSongsEnabled);
 
-    private static ArtistWatchQueueOptions BuildArtistQueueOptions(
+    private ArtistWatchQueueOptions BuildArtistQueueOptions(
         WatchlistArtistDto artist,
         string collectionName,
         string collectionType)
     {
+        var global = _settingsService.LoadSettings();
+        var multiQuality = global.MultiQuality;
         return new ArtistWatchQueueOptions
         {
             CollectionName = collectionName,
             CollectionType = collectionType,
-            DestinationFolderId = artist.DestinationFolderId,
+            DestinationFolderId = artist.DestinationFolderOverride == true
+                ? artist.DestinationFolderId
+                : multiQuality?.PrimaryDestinationFolderId,
             PreferredEngine = artist.PreferredEngine,
+            DownloadEngineOrder = artist.DownloadEngineOrder,
             RoutingRules = artist.RoutingRules,
-            DownloadVariantMode = artist.DownloadVariantMode,
-            AtmosDestinationFolderId = artist.AtmosDestinationFolderId,
+            DownloadVariantMode = artist.DownloadVariantMode ?? ResolveGlobalDownloadVariantMode(multiQuality),
+            AtmosDestinationFolderId = artist.AtmosDestinationFolderOverride == true
+                ? artist.AtmosDestinationFolderId
+                : multiQuality?.SecondaryDestinationFolderId,
             BlockRules = artist.IgnoreRules
         };
     }
+
+    private static string ResolveGlobalDownloadVariantMode(DeezSpoTag.Core.Models.Settings.MultiQualityDownloadSettings? settings)
+        => settings?.Enabled == true && settings.SecondaryEnabled
+            ? "dual_quality"
+            : "standard";
 
     private async Task<List<ArtistWatchAlbumInsert>> QueueSpotifyArtistTopSongsAsync(
         WatchlistArtistDto artist,

@@ -107,7 +107,9 @@ async function loadWatchlist() {
             const badges = [
                 item.spotifyId ? `<span class="watchlist-card-badge" title="Spotify"><i class="fab fa-spotify"></i></span>` : '',
                 item.deezerId ? `<span class="watchlist-card-badge" title="Deezer"><i class="fa-solid fa-music"></i></span>` : '',
-                item.appleId ? `<span class="watchlist-card-badge" title="Apple Music"><i class="fab fa-apple"></i></span>` : ''
+                item.appleId ? `<span class="watchlist-card-badge" title="Apple Music"><i class="fab fa-apple"></i></span>` : '',
+                item.qobuzId ? `<span class="watchlist-card-badge" title="Qobuz"><i class="fa-solid fa-compact-disc"></i></span>` : '',
+                item.tidalId ? `<span class="watchlist-card-badge" title="Tidal"><i class="fa-solid fa-wave-square"></i></span>` : ''
             ].filter(Boolean).join('');
 
             const detectedCount = detectedByItemKey[`artist:${item.artistId}`] || 0;
@@ -134,7 +136,7 @@ async function loadWatchlist() {
                         <i class="fa-solid fa-ellipsis-vertical"></i>
                     </button>
                     <div class="watchlist-action-dropdown watchlist-action-dropdown--hover" data-artist-menu="${escapeHtml(String(item.artistId || ''))}" hidden>
-                        <button class="dropdown-item" data-artist-action="settings" data-artist-id="${escapeHtml(String(item.artistId || ''))}" data-artist-name="${escapeHtml(item.artistName)}" data-artist-folder="${escapeHtml(item.destinationFolderId == null ? '' : String(item.destinationFolderId))}" data-artist-groups="${escapeHtml(JSON.stringify(item.watchedAlbumGroups || []))}" data-artist-top-songs="${escapeHtml(item.topSongsEnabled == null ? '' : String(item.topSongsEnabled))}" data-artist-latest="${escapeHtml(item.latestReleasesOnly == null ? '' : String(item.latestReleasesOnly))}" data-artist-engine="${escapeHtml(item.preferredEngine || '')}" data-artist-routing-rules="${escapeHtml(JSON.stringify(item.routingRules || []))}" data-artist-atmos-folder="${escapeHtml(item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId))}" data-artist-download-mode="${escapeHtml(item.downloadVariantMode || 'standard')}" data-artist-top-songs-sync="${escapeHtml(item.topSongsSyncMode || 'mirror')}" data-artist-discography="${escapeHtml(item.downloadDiscographyEnabled == null ? '' : String(item.downloadDiscographyEnabled))}" data-artist-block-rules="${escapeHtml(JSON.stringify(item.ignoreRules || []))}" type="button">
+                        <button class="dropdown-item" data-artist-action="settings" data-artist-id="${escapeHtml(String(item.artistId || ''))}" data-artist-name="${escapeHtml(item.artistName)}" data-artist-folder="${escapeHtml(item.destinationFolderId == null ? '' : String(item.destinationFolderId))}" data-artist-folder-override="${escapeHtml(item.destinationFolderOverride == null ? '' : String(item.destinationFolderOverride))}" data-artist-groups="${escapeHtml(JSON.stringify(item.watchedAlbumGroups || []))}" data-artist-top-songs="${escapeHtml(item.topSongsEnabled == null ? '' : String(item.topSongsEnabled))}" data-artist-latest="${escapeHtml(item.latestReleasesOnly == null ? '' : String(item.latestReleasesOnly))}" data-artist-engine="${escapeHtml(item.preferredEngine || '')}" data-artist-engine-order="${escapeHtml(JSON.stringify(item.downloadEngineOrder || null))}" data-artist-routing-rules="${escapeHtml(JSON.stringify(item.routingRules || []))}" data-artist-atmos-folder="${escapeHtml(item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId))}" data-artist-atmos-folder-override="${escapeHtml(item.atmosDestinationFolderOverride == null ? '' : String(item.atmosDestinationFolderOverride))}" data-artist-download-mode="${escapeHtml(item.downloadVariantMode || '')}" data-artist-top-songs-sync="${escapeHtml(item.topSongsSyncMode || 'mirror')}" data-artist-discography="${escapeHtml(item.downloadDiscographyEnabled == null ? '' : String(item.downloadDiscographyEnabled))}" data-artist-block-rules="${escapeHtml(JSON.stringify(item.ignoreRules || []))}" type="button">
                             <i class="fa-solid fa-gear"></i>
                             <span>Settings</span>
                         </button>
@@ -199,12 +201,15 @@ async function loadWatchlist() {
                         artistId,
                         artistName: button.dataset.artistName || 'Artist',
                         currentFolderId: button.dataset.artistFolder || '',
+                        currentFolderOverride: button.dataset.artistFolderOverride || '',
                         currentGroups: parseArtistSettingsGroups(button.dataset.artistGroups),
                         currentTopSongs: button.dataset.artistTopSongs || '',
                         currentLatestOnly: button.dataset.artistLatest || '',
                         currentPreferredEngine: button.dataset.artistEngine || '',
+                        currentDownloadEngineOrder: parseArtistDownloadEngineOrder(button.dataset.artistEngineOrder),
                         currentRoutingRules: parseArtistRoutingRules(button.dataset.artistRoutingRules),
                         currentAtmosFolderId: button.dataset.artistAtmosFolder || '',
+                        currentAtmosFolderOverride: button.dataset.artistAtmosFolderOverride || '',
                         currentDownloadMode: button.dataset.artistDownloadMode || 'standard',
                         currentTopSongsSyncMode: button.dataset.artistTopSongsSync || 'mirror',
                         currentDiscography: button.dataset.artistDiscography || '',
@@ -212,12 +217,15 @@ async function loadWatchlist() {
                     });
                     if (savedSettings !== null) {
                         button.dataset.artistFolder = savedSettings.folderId;
+                        button.dataset.artistFolderOverride = String(savedSettings.destinationFolderOverride);
                         button.dataset.artistGroups = JSON.stringify(savedSettings.groups);
                         button.dataset.artistTopSongs = String(savedSettings.topSongs);
                         button.dataset.artistLatest = String(savedSettings.latest);
                         button.dataset.artistEngine = savedSettings.preferredEngine;
+                        button.dataset.artistEngineOrder = JSON.stringify(savedSettings.downloadEngineOrder || null);
                         button.dataset.artistRoutingRules = JSON.stringify(savedSettings.routingRules);
                         button.dataset.artistAtmosFolder = savedSettings.atmosFolderId;
+                        button.dataset.artistAtmosFolderOverride = String(savedSettings.atmosDestinationFolderOverride);
                         button.dataset.artistDownloadMode = savedSettings.downloadVariantMode;
                         button.dataset.artistTopSongsSync = savedSettings.topSongsSyncMode;
                         button.dataset.artistDiscography = String(savedSettings.downloadDiscography);
@@ -543,6 +551,15 @@ function parseArtistRoutingRules(rawValue) {
         return Array.isArray(parsed) ? parsed : [];
     } catch {
         return [];
+    }
+}
+
+function parseArtistDownloadEngineOrder(rawValue) {
+    try {
+        const parsed = JSON.parse(String(rawValue || 'null'));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
     }
 }
 
@@ -1007,12 +1024,15 @@ async function openArtistSettingsPanel({
     artistId,
     artistName,
     currentFolderId,
+    currentFolderOverride,
     currentGroups,
     currentTopSongs,
     currentLatestOnly,
     currentPreferredEngine,
+    currentDownloadEngineOrder,
     currentRoutingRules,
     currentAtmosFolderId,
+    currentAtmosFolderOverride,
     currentDownloadMode,
     currentTopSongsSyncMode,
     currentDiscography,
@@ -1025,8 +1045,10 @@ async function openArtistSettingsPanel({
     await ensurePlaylistSettingsFoldersLoaded();
     const globalSettingsResponse = await fetchJson('/api/getSettings').catch(() => null);
     const downloadSourceCatalog = await getWatchlistDownloadSourceCatalog();
-    const downloadSourceOptions = downloadSourceCatalog.options
-        .filter(option => String(option.value || '').trim().toLowerCase() !== 'custom');
+    const downloadSourceOptions = [
+        { value: '', label: 'Use global settings' },
+        ...downloadSourceCatalog.options
+    ];
     const globalSettings = globalSettingsResponse?.settings || {};
     const { selectedGroups, topSongsEnabled, latestOnly } = resolveArtistSettingsDefaults(
         currentGroups,
@@ -1051,10 +1073,13 @@ async function openArtistSettingsPanel({
     folderSelect.className = 'form-select ps-folder-select';
     const noFolderOption = document.createElement('option');
     noFolderOption.value = '';
-    noFolderOption.textContent = 'No folder';
+    noFolderOption.textContent = 'Use global destination folder';
     folderSelect.appendChild(noFolderOption);
+    folderSelect.appendChild(new Option('No folder', '__none'));
     appendArtistSettingsFolderOptions(folderSelect, enabledFolders);
-    folderSelect.value = currentFolderId ? String(currentFolderId) : '';
+    folderSelect.value = currentFolderOverride === 'true'
+        ? (currentFolderId ? String(currentFolderId) : '__none')
+        : '';
     const folderHint = document.createElement('div');
     folderHint.className = 'playlist-settings-help';
     folderHint.textContent = 'Used by artist watchlist downloads, including latest releases and Spotify top songs.';
@@ -1071,8 +1096,11 @@ async function openArtistSettingsPanel({
     const atmosFolderSelect = document.createElement('select');
     atmosFolderSelect.className = 'form-select ps-atmos-folder-select';
     atmosFolderSelect.appendChild(new Option('Use global Atmos folder', ''));
+    atmosFolderSelect.appendChild(new Option('No Atmos folder', '__none'));
     appendArtistSettingsFolderOptions(atmosFolderSelect, enabledFolders);
-    atmosFolderSelect.value = currentAtmosFolderId ? String(currentAtmosFolderId) : '';
+    atmosFolderSelect.value = currentAtmosFolderOverride === 'true'
+        ? (currentAtmosFolderId ? String(currentAtmosFolderId) : '__none')
+        : '';
     const atmosFolderHint = document.createElement('div');
     atmosFolderHint.className = 'playlist-settings-help';
     atmosFolderHint.textContent = 'Used when artist watchlist download mode includes Atmos.';
@@ -1085,33 +1113,38 @@ async function openArtistSettingsPanel({
         title: 'Download engine',
         selectClass: 'ps-engine-select',
         options: downloadSourceOptions,
-        value: String(currentPreferredEngine || 'auto').toLowerCase(),
+        value: String(currentPreferredEngine || '').toLowerCase(),
         helpText: 'Selects the download source for this watched artist.'
     });
     const engineSelect = artistEngine.select;
     panel.appendChild(artistEngine.section);
+    const customEngineOrder = createWatchlistDownloadEngineOrderSection(
+        currentDownloadEngineOrder,
+        downloadSourceCatalog.defaultDownloadEngineOrder);
+    panel.appendChild(customEngineOrder.section);
+    const syncCustomEngineOrderVisibility = () => {
+        customEngineOrder.section.hidden = String(engineSelect.value || '').toLowerCase() !== 'custom';
+    };
+    engineSelect.addEventListener('change', syncCustomEngineOrderVisibility);
+    syncCustomEngineOrderVisibility();
 
     const artistDownloadMode = createPlaylistSettingsSelectSection({
         title: 'Download mode',
         selectClass: 'ps-download-mode-select',
-        options: [
-        ['standard', 'Standard only'],
-        ['dual_quality', 'Dual quality (standard + Atmos)'],
-        ['atmos_only', 'Atmos only']
-        ],
-        value: String(currentDownloadMode || 'standard').toLowerCase()
+        options: [{ value: '', label: 'Use global settings' }, ...playlistDownloadModeOptions],
+        value: String(currentDownloadMode || '').toLowerCase()
     });
     const downloadModeSection = artistDownloadMode.section;
     const downloadModeSelect = artistDownloadMode.select;
     const syncAtmosFolderVisibility = () => {
-        const selectedMode = String(downloadModeSelect.value || 'standard').toLowerCase();
+        const inheritedDualMode = globalSettings?.multiQuality?.enabled === true
+            && globalSettings?.multiQuality?.secondaryEnabled === true;
+        const selectedMode = String(downloadModeSelect.value || (inheritedDualMode ? 'dual_quality' : 'standard')).toLowerCase();
         const shouldShowAtmosFolder = selectedMode === 'dual_quality' || selectedMode === 'atmos_only';
         atmosFolderSection.hidden = !shouldShowAtmosFolder;
         atmosFolderSelect.disabled = !shouldShowAtmosFolder;
     };
     downloadModeSelect.addEventListener('change', syncAtmosFolderVisibility);
-    downloadModeSection.appendChild(downloadModeTitle);
-    downloadModeSection.appendChild(downloadModeSelect);
     panel.appendChild(downloadModeSection);
     syncAtmosFolderVisibility();
 
@@ -1312,7 +1345,8 @@ async function openArtistSettingsPanel({
         return null;
     }
 
-    const destinationFolderId = folderSelect.value ? Number(folderSelect.value) : null;
+    const destinationFolderOverride = folderSelect.value !== '';
+    const destinationFolderId = folderSelect.value && folderSelect.value !== '__none' ? Number(folderSelect.value) : null;
     const collectGroup = (id, value) => panel.querySelector(`#${id}`)?.checked ? value : null;
     const downloadDiscographyEnabled = panel.querySelector('#artist-watch-discography')?.checked === true;
     const watchedArtistAlbumGroup = downloadDiscographyEnabled
@@ -1327,11 +1361,15 @@ async function openArtistSettingsPanel({
         && panel.querySelector('#artist-watch-top-songs')?.checked === true;
     const watchArtistLatestReleasesOnly = !downloadDiscographyEnabled
         && panel.querySelector('#artist-watch-latest-releases')?.checked === true;
-    const preferredEngine = engineSelect.value || 'auto';
+    const preferredEngine = engineSelect.value || null;
+    const downloadEngineOrder = preferredEngine === 'custom'
+        ? collectWatchlistDownloadEngineOrder(panel)
+        : null;
     const routingRules = collectPlaylistRoutingRules(rulesList);
     const blockRules = collectPlaylistBlockRules(blockRulesList);
-    const downloadVariantMode = downloadModeSelect.value || 'standard';
-    const atmosDestinationFolderId = atmosFolderSelect.value ? Number(atmosFolderSelect.value) : null;
+    const downloadVariantMode = downloadModeSelect.value || null;
+    const atmosDestinationFolderOverride = atmosFolderSelect.value !== '';
+    const atmosDestinationFolderId = atmosFolderSelect.value && atmosFolderSelect.value !== '__none' ? Number(atmosFolderSelect.value) : null;
     const topSongsSyncMode = topSongsSyncSelect.value || 'mirror';
     if (watchedArtistAlbumGroup.length === 0 && !watchArtistTopSongsEnabled) {
         throw new Error('Select at least one artist watch option.');
@@ -1342,12 +1380,15 @@ async function openArtistSettingsPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             destinationFolderId,
+            destinationFolderOverride,
             watchedArtistAlbumGroup,
             watchArtistTopSongsEnabled,
             watchArtistLatestReleasesOnly,
             preferredEngine,
+            downloadEngineOrder,
             routingRules,
             atmosDestinationFolderId,
+            atmosDestinationFolderOverride,
             downloadVariantMode,
             topSongsSyncMode,
             downloadDiscographyEnabled,
@@ -1356,13 +1397,16 @@ async function openArtistSettingsPanel({
     });
     showToast('Artist settings saved.');
     return {
-        folderId: folderSelect.value || '',
+        folderId: destinationFolderId == null ? '' : String(destinationFolderId),
+        destinationFolderOverride,
         groups: watchedArtistAlbumGroup,
         topSongs: watchArtistTopSongsEnabled,
         latest: watchArtistLatestReleasesOnly,
-        preferredEngine: preferredEngine || 'auto',
+        preferredEngine: preferredEngine || '',
+        downloadEngineOrder,
         routingRules,
-        atmosFolderId: atmosFolderSelect.value || '',
+        atmosFolderId: atmosDestinationFolderId == null ? '' : String(atmosDestinationFolderId),
+        atmosDestinationFolderOverride,
         downloadVariantMode,
         topSongsSyncMode,
         downloadDiscography: downloadDiscographyEnabled,

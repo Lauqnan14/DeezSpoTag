@@ -9,6 +9,7 @@ using Microsoft.Net.Http.Headers;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -24,6 +25,7 @@ public sealed class LibraryPlaylistWatchlistDependencies
     public required BoomplayMetadataService BoomplayMetadataService { get; init; }
     public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
     public WatchlistRunCoordinator? WatchlistRunCoordinator { get; init; }
+    public DeezSpoTagSettingsService? SettingsService { get; init; }
 }
 
 [Route("api/library/playlists")]
@@ -46,6 +48,7 @@ public partial class WatchlistApiController : ControllerBase
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly WatchlistRunCoordinator? _watchlistCoordinator;
+    private readonly DeezSpoTagSettingsService? _settingsService;
 
     public WatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
     {
@@ -59,6 +62,7 @@ public partial class WatchlistApiController : ControllerBase
         _queueRepository = dependencies.QueueRepository;
         _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
         _watchlistCoordinator = dependencies.WatchlistRunCoordinator;
+        _settingsService = dependencies.SettingsService;
     }
 
     [HttpGet]

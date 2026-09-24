@@ -752,12 +752,15 @@ CREATE TABLE IF NOT EXISTS watchlist_target_capability (
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_id", BigIntType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_override", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "album_groups_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "top_songs_enabled", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "latest_releases_only", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "preferred_engine", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_engine_order_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "atmos_destination_folder_id", BigIntType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "atmos_destination_folder_override", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_variant_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "top_songs_sync_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_discography_enabled", IntegerType, cancellationToken);
@@ -863,8 +866,17 @@ CREATE TABLE IF NOT EXISTS recommendation_rejection (
         await BackfillColumnFromLegacyAsync(connection, WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillWatchlistHistoryItemKeysAsync(connection, cancellationToken);
         await NormalizeWatchlistKeysAsync(connection, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, DeezerIdColumn, unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+UPDATE artist_watchlist SET destination_folder_override=1 WHERE destination_folder_override IS NULL AND destination_folder_id IS NOT NULL;
+UPDATE artist_watchlist SET atmos_destination_folder_override=1 WHERE atmos_destination_folder_override IS NULL AND atmos_destination_folder_id IS NOT NULL;", cancellationToken);
+        await RepairDuplicateArtistWatchRowsAsync(connection, cancellationToken);
+        await DropIndexIfExistsAsync(connection, "idx_artist_watchlist_spotify_id", cancellationToken);
+        await DropIndexIfExistsAsync(connection, "idx_artist_watchlist_deezer_id", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_watchlist_spotify_id
+ON artist_watchlist(lower(trim(spotify_id))) WHERE spotify_id IS NOT NULL AND trim(spotify_id) <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_watchlist_deezer_id
+ON artist_watchlist(lower(trim(deezer_id))) WHERE deezer_id IS NOT NULL AND trim(deezer_id) <> '';", cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, CreatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watchlist_priority", PlaylistWatchlistTable, "sync_priority, created_at", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
@@ -1047,6 +1059,96 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
 );", cancellationToken);
 
         await EnsurePlaylistWatchTargetSyncViewsAsync(connection, cancellationToken);
+    }
+
+    private static async Task RepairDuplicateArtistWatchRowsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+BEGIN IMMEDIATE;
+DROP INDEX IF EXISTS idx_artist_watchlist_spotify_id;
+DROP INDEX IF EXISTS idx_artist_watchlist_deezer_id;
+DROP TABLE IF EXISTS temp.artist_watch_canonical_map;
+CREATE TEMP TABLE artist_watch_canonical_map(old_id INTEGER PRIMARY KEY, canonical_id INTEGER NOT NULL);
+INSERT INTO artist_watch_canonical_map(old_id, canonical_id)
+SELECT w.artist_id,
+       COALESCE(
+         (SELECT w2.artist_id FROM artist_watchlist w2 JOIN artist a ON a.id=w2.artist_id
+           WHERE (w.spotify_id IS NOT NULL AND trim(w.spotify_id)<>'' AND lower(trim(w2.spotify_id))=lower(trim(w.spotify_id)))
+              OR (w.deezer_id IS NOT NULL AND trim(w.deezer_id)<>'' AND lower(trim(w2.deezer_id))=lower(trim(w.deezer_id)))
+          ORDER BY EXISTS(SELECT 1 FROM artist_source mapped WHERE mapped.artist_id=w2.artist_id) DESC,
+                   datetime(w2.created_at) ASC, w2.artist_id ASC LIMIT 1),
+         (SELECT w2.artist_id FROM artist_watchlist w2
+           WHERE (w.spotify_id IS NOT NULL AND trim(w.spotify_id)<>'' AND lower(trim(w2.spotify_id))=lower(trim(w.spotify_id)))
+              OR (w.deezer_id IS NOT NULL AND trim(w.deezer_id)<>'' AND lower(trim(w2.deezer_id))=lower(trim(w.deezer_id)))
+          ORDER BY datetime(w2.created_at) ASC, w2.artist_id ASC LIMIT 1)
+       )
+FROM artist_watchlist w
+WHERE EXISTS (SELECT 1 FROM artist_watchlist other
+ WHERE other.artist_id<>w.artist_id AND (
+   (w.spotify_id IS NOT NULL AND trim(w.spotify_id)<>'' AND lower(trim(other.spotify_id))=lower(trim(w.spotify_id))) OR
+   (w.deezer_id IS NOT NULL AND trim(w.deezer_id)<>'' AND lower(trim(other.deezer_id))=lower(trim(w.deezer_id)))));
+DELETE FROM artist_watch_canonical_map WHERE old_id=canonical_id;
+
+UPDATE artist_watchlist AS target SET
+ destination_folder_id=COALESCE(target.destination_folder_id,(SELECT source.destination_folder_id FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.destination_folder_id IS NOT NULL LIMIT 1)),
+ destination_folder_override=COALESCE(target.destination_folder_override,(SELECT source.destination_folder_override FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.destination_folder_override IS NOT NULL LIMIT 1)),
+ album_groups_json=COALESCE(target.album_groups_json,(SELECT source.album_groups_json FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.album_groups_json IS NOT NULL LIMIT 1)),
+ top_songs_enabled=COALESCE(target.top_songs_enabled,(SELECT source.top_songs_enabled FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.top_songs_enabled IS NOT NULL LIMIT 1)),
+ latest_releases_only=COALESCE(target.latest_releases_only,(SELECT source.latest_releases_only FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.latest_releases_only IS NOT NULL LIMIT 1)),
+ preferred_engine=COALESCE(target.preferred_engine,(SELECT source.preferred_engine FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.preferred_engine IS NOT NULL LIMIT 1)),
+ download_engine_order_json=COALESCE(target.download_engine_order_json,(SELECT source.download_engine_order_json FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.download_engine_order_json IS NOT NULL LIMIT 1)),
+ routing_rules_json=COALESCE(target.routing_rules_json,(SELECT source.routing_rules_json FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.routing_rules_json IS NOT NULL LIMIT 1)),
+ atmos_destination_folder_id=COALESCE(target.atmos_destination_folder_id,(SELECT source.atmos_destination_folder_id FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.atmos_destination_folder_id IS NOT NULL LIMIT 1)),
+ atmos_destination_folder_override=COALESCE(target.atmos_destination_folder_override,(SELECT source.atmos_destination_folder_override FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.atmos_destination_folder_override IS NOT NULL LIMIT 1)),
+ download_variant_mode=COALESCE(target.download_variant_mode,(SELECT source.download_variant_mode FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.download_variant_mode IS NOT NULL LIMIT 1)),
+ top_songs_sync_mode=COALESCE(target.top_songs_sync_mode,(SELECT source.top_songs_sync_mode FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.top_songs_sync_mode IS NOT NULL LIMIT 1)),
+ download_discography_enabled=COALESCE(target.download_discography_enabled,(SELECT source.download_discography_enabled FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.download_discography_enabled IS NOT NULL LIMIT 1)),
+ ignore_rules_json=COALESCE(target.ignore_rules_json,(SELECT source.ignore_rules_json FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.ignore_rules_json IS NOT NULL LIMIT 1)),
+ spotify_id=COALESCE(target.spotify_id,(SELECT source.spotify_id FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.spotify_id IS NOT NULL LIMIT 1)),
+ deezer_id=COALESCE(target.deezer_id,(SELECT source.deezer_id FROM artist_watch_canonical_map m JOIN artist_watchlist source ON source.artist_id=m.old_id WHERE m.canonical_id=target.artist_id AND source.deezer_id IS NOT NULL LIMIT 1))
+WHERE EXISTS(SELECT 1 FROM artist_watch_canonical_map m WHERE m.canonical_id=target.artist_id);
+
+INSERT OR IGNORE INTO artist_watch_album(artist_id,source,album_source_id,created_at)
+SELECT m.canonical_id,a.source,a.album_source_id,a.created_at FROM artist_watch_album a JOIN artist_watch_canonical_map m ON m.old_id=a.artist_id;
+DELETE FROM artist_watch_album WHERE artist_id IN (SELECT old_id FROM artist_watch_canonical_map);
+INSERT OR REPLACE INTO artist_watch_state(artist_id,spotify_id,batch_next_offset,last_checked_utc,last_run_status,last_run_message,next_attempt_utc,consecutive_failures,current_phase,heartbeat_utc,deadline_utc,updated_at)
+SELECT m.canonical_id,s.spotify_id,s.batch_next_offset,s.last_checked_utc,s.last_run_status,s.last_run_message,s.next_attempt_utc,s.consecutive_failures,s.current_phase,s.heartbeat_utc,s.deadline_utc,s.updated_at FROM artist_watch_state s JOIN artist_watch_canonical_map m ON m.old_id=s.artist_id
+WHERE s.updated_at >= COALESCE((SELECT current.updated_at FROM artist_watch_state current WHERE current.artist_id=m.canonical_id),'');
+DELETE FROM artist_watch_state WHERE artist_id IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_track SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_missing_track SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_download_claim SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_target_membership SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_artwork_state SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE playlist_watch_artwork_target_state SET source_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(source_id,8) AS INTEGER)) WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE watchlist_sync_job SET playlist_id='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(playlist_id,8) AS INTEGER)) WHERE playlist_id LIKE 'artist:%' AND CAST(substr(playlist_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+UPDATE OR REPLACE watchlist_reconciliation_request SET identifier='artist:'||(SELECT canonical_id FROM artist_watch_canonical_map WHERE old_id=CAST(substr(identifier,8) AS INTEGER)) WHERE identifier LIKE 'artist:%' AND CAST(substr(identifier,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_track WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_missing_track WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_download_claim WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_target_membership WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_artwork_state WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM playlist_watch_artwork_target_state WHERE source_id LIKE 'artist:%' AND CAST(substr(source_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM watchlist_sync_job WHERE playlist_id LIKE 'artist:%' AND CAST(substr(playlist_id,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM watchlist_reconciliation_request WHERE identifier LIKE 'artist:%' AND CAST(substr(identifier,8) AS INTEGER) IN (SELECT old_id FROM artist_watch_canonical_map);
+DELETE FROM artist_watchlist WHERE artist_id IN (SELECT old_id FROM artist_watch_canonical_map);
+DROP TABLE temp.artist_watch_canonical_map;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_watchlist_spotify_id ON artist_watchlist(lower(trim(spotify_id))) WHERE spotify_id IS NOT NULL AND trim(spotify_id) <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_watchlist_deezer_id ON artist_watchlist(lower(trim(deezer_id))) WHERE deezer_id IS NOT NULL AND trim(deezer_id) <> '';
+COMMIT;";
+        try
+        {
+            await using var command = new SqliteCommand(sql, connection);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch
+        {
+            await using var rollback = new SqliteCommand("ROLLBACK;", connection);
+            await rollback.ExecuteNonQueryAsync(CancellationToken.None);
+            throw;
+        }
     }
 
     private static async Task<bool> MigratePlayHistoryIdentityAsync(

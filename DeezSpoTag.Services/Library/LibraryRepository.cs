@@ -209,12 +209,15 @@ public sealed class LibraryRepository
     public sealed record ArtistWatchPreferenceUpdateInput(
         long ArtistId,
         long? DestinationFolderId,
+        bool? DestinationFolderOverride,
         IReadOnlyCollection<string>? AlbumGroups,
         bool? TopSongsEnabled,
         bool? LatestReleasesOnly,
         string? PreferredEngine,
+        DownloadEngineOrderSettings? DownloadEngineOrder,
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
         long? AtmosDestinationFolderId,
+        bool? AtmosDestinationFolderOverride,
         string? DownloadVariantMode,
         string? TopSongsSyncMode,
         bool? DownloadDiscographyEnabled,
@@ -2005,12 +2008,15 @@ LIMIT 20;";
                 new ArtistWatchPreferenceUpdateInput(
                     item.ArtistId,
                     destinationFolderId,
+                    item.DestinationFolderOverride,
                     item.WatchedAlbumGroups,
                     item.TopSongsEnabled,
                     item.LatestReleasesOnly,
                     item.PreferredEngine,
+                    item.DownloadEngineOrder,
                     routingRules,
                     atmosDestinationFolderId,
+                    item.AtmosDestinationFolderOverride,
                     item.DownloadVariantMode,
                     item.TopSongsSyncMode,
                     item.DownloadDiscographyEnabled,
@@ -8049,12 +8055,15 @@ SELECT w.artist_id,
        w.created_at,
        ws.last_checked_utc,
        w.destination_folder_id,
+       w.destination_folder_override,
        w.album_groups_json,
        w.top_songs_enabled,
        w.latest_releases_only,
        w.preferred_engine,
+       w.download_engine_order_json,
        w.routing_rules_json,
        w.atmos_destination_folder_id,
+       w.atmos_destination_folder_override,
        w.download_variant_mode,
        w.top_songs_sync_mode,
        w.download_discography_enabled,
@@ -8106,6 +8115,23 @@ ORDER BY w.created_at DESC;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string canonicalSql = @"
+SELECT artist_id FROM artist_watchlist
+WHERE (@spotifyId IS NOT NULL AND lower(trim(spotify_id))=lower(trim(@spotifyId)))
+   OR (@deezerId IS NOT NULL AND lower(trim(deezer_id))=lower(trim(@deezerId)))
+ORDER BY CASE WHEN artist_id=@artistId THEN 0 ELSE 1 END
+LIMIT 1;";
+        await using (var canonicalCommand = new SqliteCommand(canonicalSql, connection))
+        {
+            canonicalCommand.Parameters.AddWithValue("artistId", artistId);
+            canonicalCommand.Parameters.AddWithValue("spotifyId", (object?)spotifyId ?? DBNull.Value);
+            canonicalCommand.Parameters.AddWithValue("deezerId", (object?)deezerId ?? DBNull.Value);
+            var existingId = await canonicalCommand.ExecuteScalarAsync(cancellationToken);
+            if (existingId is not null && existingId != DBNull.Value)
+            {
+                artistId = Convert.ToInt64(existingId);
+            }
+        }
         const string sql = @"
 INSERT INTO artist_watchlist (artist_id, artist_name, spotify_id, deezer_id)
 VALUES (@artistId, @artistName, @spotifyId, @deezerId)
@@ -8113,12 +8139,28 @@ ON CONFLICT(artist_id) DO UPDATE SET
     artist_name = excluded.artist_name,
     spotify_id = COALESCE(excluded.spotify_id, artist_watchlist.spotify_id),
     deezer_id = COALESCE(excluded.deezer_id, artist_watchlist.deezer_id);";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue("artistName", artistName);
-        command.Parameters.AddWithValue("spotifyId", (object?)spotifyId ?? DBNull.Value);
-        command.Parameters.AddWithValue("deezerId", (object?)deezerId ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        try
+        {
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("artistId", artistId);
+            command.Parameters.AddWithValue("artistName", artistName);
+            command.Parameters.AddWithValue("spotifyId", (object?)spotifyId ?? DBNull.Value);
+            command.Parameters.AddWithValue("deezerId", (object?)deezerId ?? DBNull.Value);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            await using var resolveCommand = new SqliteCommand(canonicalSql, connection);
+            resolveCommand.Parameters.AddWithValue("artistId", artistId);
+            resolveCommand.Parameters.AddWithValue("spotifyId", (object?)spotifyId ?? DBNull.Value);
+            resolveCommand.Parameters.AddWithValue("deezerId", (object?)deezerId ?? DBNull.Value);
+            var existingId = await resolveCommand.ExecuteScalarAsync(cancellationToken);
+            if (existingId is null || existingId == DBNull.Value)
+            {
+                throw;
+            }
+            artistId = Convert.ToInt64(existingId);
+        }
 
         const string selectSql = @"
 SELECT w.artist_id,
@@ -8135,12 +8177,15 @@ SELECT w.artist_id,
        a.preferred_image_path,
        w.created_at,
        w.destination_folder_id,
+       w.destination_folder_override,
        w.album_groups_json,
        w.top_songs_enabled,
        w.latest_releases_only,
        w.preferred_engine,
+       w.download_engine_order_json,
        w.routing_rules_json,
        w.atmos_destination_folder_id,
+       w.atmos_destination_folder_override,
        w.download_variant_mode,
        w.top_songs_sync_mode,
        w.download_discography_enabled,
@@ -8174,6 +8219,54 @@ LIMIT 1;";
         return await ReadWatchlistArtistAsync(reader, hasLastCheckedUtc: false, cancellationToken);
     }
 
+    public async Task<long?> GetWatchlistedArtistIdByProviderIdAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var column = source.Trim().ToLowerInvariant() switch
+        {
+            "spotify" => "spotify_id",
+            "deezer" => "deezer_id",
+            _ => null
+        };
+        if (column is null || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return null;
+        }
+        await using var command = new SqliteCommand(
+            $"SELECT artist_id FROM artist_watchlist WHERE lower(trim({column}))=lower(trim(@sourceId)) LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("sourceId", sourceId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result);
+    }
+
+    public async Task<long?> ResolveCanonicalWatchlistArtistIdAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT w.artist_id
+FROM artist_watchlist w
+WHERE w.artist_id=@artistId
+   OR EXISTS (
+       SELECT 1
+       FROM artist_source requested
+       JOIN artist_source watched
+         ON watched.source=requested.source
+        AND lower(trim(watched.source_id))=lower(trim(requested.source_id))
+       WHERE requested.artist_id=@artistId AND watched.artist_id=w.artist_id)
+ORDER BY CASE WHEN w.artist_id=@artistId THEN 0 ELSE 1 END
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result);
+    }
+
     private static async Task<WatchlistArtistDto> ReadWatchlistArtistAsync(
         SqliteDataReader reader,
         bool hasLastCheckedUtc,
@@ -8184,8 +8277,9 @@ LIMIT 1;";
         var lastChecked = hasLastCheckedUtc
             ? await ReadDateTimeOffsetAsync(reader, 7, cancellationToken)
             : null;
-        var routingRulesJson = await ReadStringAsync(reader, 12 + offset, cancellationToken);
-        var ignoreRulesJson = await ReadStringAsync(reader, 17 + offset, cancellationToken);
+        var downloadEngineOrderJson = await ReadStringAsync(reader, 13 + offset, cancellationToken);
+        var routingRulesJson = await ReadStringAsync(reader, 14 + offset, cancellationToken);
+        var ignoreRulesJson = await ReadStringAsync(reader, 20 + offset, cancellationToken);
 
         return new WatchlistArtistDto(
             reader.GetInt64(0),
@@ -8197,18 +8291,21 @@ LIMIT 1;";
             created,
             lastChecked,
             await ReadInt64Async(reader, 7 + offset, cancellationToken),
-            await ReadStringListAsync(reader, 8 + offset, cancellationToken),
-            await ReadBooleanAsync(reader, 9 + offset, cancellationToken),
+            await ReadBooleanAsync(reader, 8 + offset, cancellationToken),
+            await ReadStringListAsync(reader, 9 + offset, cancellationToken),
             await ReadBooleanAsync(reader, 10 + offset, cancellationToken),
-            await ReadStringAsync(reader, 11 + offset, cancellationToken),
+            await ReadBooleanAsync(reader, 11 + offset, cancellationToken),
+            await ReadStringAsync(reader, 12 + offset, cancellationToken),
+            downloadEngineOrderJson is null ? null : JsonSerializer.Deserialize<DownloadEngineOrderSettings>(downloadEngineOrderJson),
             routingRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson),
-            await ReadInt64Async(reader, 13 + offset, cancellationToken),
-            await ReadStringAsync(reader, 14 + offset, cancellationToken),
-            await ReadStringAsync(reader, 15 + offset, cancellationToken),
+            await ReadInt64Async(reader, 15 + offset, cancellationToken),
             await ReadBooleanAsync(reader, 16 + offset, cancellationToken),
-            ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson),
+            await ReadStringAsync(reader, 17 + offset, cancellationToken),
             await ReadStringAsync(reader, 18 + offset, cancellationToken),
-            await ReadStringAsync(reader, 19 + offset, cancellationToken));
+            await ReadBooleanAsync(reader, 19 + offset, cancellationToken),
+            ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson),
+            await ReadStringAsync(reader, 21 + offset, cancellationToken),
+            await ReadStringAsync(reader, 22 + offset, cancellationToken));
     }
 
     private static async Task<string?> ReadStringAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
@@ -8234,12 +8331,15 @@ LIMIT 1;";
         const string sql = @"
 UPDATE artist_watchlist
 SET destination_folder_id = @destinationFolderId,
+    destination_folder_override = @destinationFolderOverride,
     album_groups_json = @albumGroupsJson,
     top_songs_enabled = @topSongsEnabled,
     latest_releases_only = @latestReleasesOnly,
     preferred_engine = @preferredEngine,
+    download_engine_order_json = @downloadEngineOrderJson,
     routing_rules_json = @routingRulesJson,
     atmos_destination_folder_id = @atmosDestinationFolderId,
+    atmos_destination_folder_override = @atmosDestinationFolderOverride,
     download_variant_mode = @downloadVariantMode,
     top_songs_sync_mode = @topSongsSyncMode,
     download_discography_enabled = @downloadDiscographyEnabled,
@@ -8248,12 +8348,15 @@ WHERE artist_id = @artistId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", input.ArtistId);
         command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("destinationFolderOverride", ToDbBoolean(input.DestinationFolderOverride));
         command.Parameters.AddWithValue("albumGroupsJson", ToJsonDbValue(input.AlbumGroups));
         command.Parameters.AddWithValue("topSongsEnabled", ToDbBoolean(input.TopSongsEnabled));
         command.Parameters.AddWithValue("latestReleasesOnly", ToDbBoolean(input.LatestReleasesOnly));
         command.Parameters.AddWithValue("preferredEngine", ToLowerTextDbValue(input.PreferredEngine));
+        command.Parameters.AddWithValue("downloadEngineOrderJson", input.DownloadEngineOrder is null ? DBNull.Value : JsonSerializer.Serialize(input.DownloadEngineOrder));
         command.Parameters.AddWithValue("routingRulesJson", ToJsonDbValue(input.RoutingRules));
         command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)input.AtmosDestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("atmosDestinationFolderOverride", ToDbBoolean(input.AtmosDestinationFolderOverride));
         command.Parameters.AddWithValue("downloadVariantMode", ToLowerTextDbValue(input.DownloadVariantMode));
         command.Parameters.AddWithValue("topSongsSyncMode", ToLowerTextDbValue(input.TopSongsSyncMode));
         command.Parameters.AddWithValue("downloadDiscographyEnabled", ToDbBoolean(input.DownloadDiscographyEnabled));

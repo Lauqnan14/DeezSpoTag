@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -135,6 +136,59 @@ public sealed class ArtistMetadataProviderGateTest
     }
 
     [Fact]
+    public async Task TimedOutProviderReturnsDefaultAndAnotherProviderStillRuns()
+    {
+        var gate = CreateGate(operationTimeout: TimeSpan.FromMilliseconds(40));
+        var timedOutTokenWasCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var first = await gate.RunAsync<int>(
+            "spotify",
+            async token =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    timedOutTokenWasCancelled.TrySetResult();
+                    throw;
+                }
+
+                return 1;
+            },
+            CancellationToken.None);
+        var second = await gate.RunAsync(
+            "deezer",
+            _ => Task.FromResult(7),
+            CancellationToken.None);
+
+        await timedOutTokenWasCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, first);
+        Assert.Equal(7, second);
+        Assert.False(gate.IsUnavailable("spotify"));
+    }
+
+    [Fact]
+    public async Task ProviderThatIgnoresCancellationCannotRetainTheGate()
+    {
+        var gate = CreateGate(operationTimeout: TimeSpan.FromMilliseconds(40));
+        var neverCompletes = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var startedAt = DateTimeOffset.UtcNow;
+        var result = await gate.RunAsync(
+            "qobuz",
+            _ => neverCompletes.Task,
+            CancellationToken.None);
+
+        Assert.Equal(0, result);
+        Assert.True(DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(2));
+
+        neverCompletes.TrySetException(new InvalidOperationException("late provider failure"));
+        await Task.Delay(20);
+    }
+
+    [Fact]
     public void ThrowIfRateLimitedUsesHttp429()
     {
         using var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
@@ -143,6 +197,36 @@ public sealed class ArtistMetadataProviderGateTest
         Assert.True(ArtistMetadataProviderGate.IsRateLimited(ex));
     }
 
-    private static ArtistMetadataProviderGate CreateGate(Func<string, TimeSpan>? minInterval = null)
-        => new(NullLogger<ArtistMetadataProviderGate>.Instance, minInterval ?? (_ => TimeSpan.Zero));
+    [Fact]
+    public void TimeoutPathPreservesParentCancellationAndDoesNotAwaitCallbacks()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "ArtistMetadataProviderGate.cs"));
+
+        Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", source, StringComparison.Ordinal);
+        Assert.Contains("operationCancellation.CancelAfter(TimeSpan.Zero);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await operationCancellation.CancelAsync()", source, StringComparison.Ordinal);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, ".git")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Could not locate repository root.");
+    }
+
+    private static ArtistMetadataProviderGate CreateGate(
+        Func<string, TimeSpan>? minInterval = null,
+        TimeSpan? operationTimeout = null)
+        => new(
+            NullLogger<ArtistMetadataProviderGate>.Instance,
+            minInterval ?? (_ => TimeSpan.Zero),
+            operationTimeout);
 }

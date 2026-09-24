@@ -12,12 +12,14 @@ namespace DeezSpoTag.Web.Services;
 public sealed class ArtistMetadataProviderGate
 {
     public const string UnavailableMessage = "skipped; provider rate limited (backing off)";
+    internal static readonly TimeSpan DefaultOperationTimeout = TimeSpan.FromSeconds(90);
 
     /// <summary>How long a provider rests after a rate-limit hit before it is retried.</summary>
     internal static readonly TimeSpan RateLimitBackoff = TimeSpan.FromMinutes(10);
 
     private readonly ILogger _logger;
     private readonly Func<string, TimeSpan> _minInterval;
+    private readonly TimeSpan _operationTimeout;
     private readonly Dictionary<string, SemaphoreSlim> _inflight = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastRequestUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _rateLimitedUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -25,10 +27,16 @@ public sealed class ArtistMetadataProviderGate
 
     public ArtistMetadataProviderGate(
         ILogger logger,
-        Func<string, TimeSpan>? minInterval = null)
+        Func<string, TimeSpan>? minInterval = null,
+        TimeSpan? operationTimeout = null)
     {
         _logger = logger;
         _minInterval = minInterval ?? DefaultMinInterval;
+        _operationTimeout = operationTimeout ?? DefaultOperationTimeout;
+        if (_operationTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(operationTimeout));
+        }
     }
 
     public bool IsUnavailable(string provider)
@@ -63,15 +71,33 @@ public sealed class ArtistMetadataProviderGate
             }
 
             await WaitSpacingAsync(provider, cancellationToken);
+            using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Task<T>? operation = null;
             try
             {
-                var result = await work(cancellationToken);
+                operation = work(operationCancellation.Token);
+                var result = await operation.WaitAsync(_operationTimeout, cancellationToken);
                 RecordRequest(provider);
                 return result;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (TimeoutException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                operationCancellation.CancelAfter(TimeSpan.Zero);
+                if (operation is not null)
+                {
+                    ObserveLateCompletion(operation);
+                }
+                RecordRequest(provider);
+                _logger.LogWarning(
+                    "Artist metadata provider {Provider} timed out after {TimeoutSeconds} seconds.",
+                    provider,
+                    _operationTimeout.TotalSeconds);
+                return default;
             }
             catch (Exception ex) when (ex is not OperationCanceledException && IsRateLimited(ex))
             {
@@ -83,6 +109,18 @@ public sealed class ArtistMetadataProviderGate
         finally
         {
             inflight.Release();
+        }
+    }
+
+    private static void ObserveLateCompletion(Task operation)
+    {
+        if (!operation.IsCompletedSuccessfully)
+        {
+            _ = operation.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 

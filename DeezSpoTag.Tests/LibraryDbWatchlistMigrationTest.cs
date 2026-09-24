@@ -129,6 +129,57 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
         }
     }
 
+    [Fact]
+    public async Task EnsureSchema_MergesDuplicateArtistWatchRowsIntoCurrentCanonicalArtist()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+DROP INDEX idx_artist_watchlist_spotify_id;
+DROP INDEX idx_artist_watchlist_deezer_id;
+INSERT INTO artist(id,name) VALUES (1211,'50 Cent');
+INSERT INTO artist_source(artist_id,source,source_id) VALUES (1211,'spotify','3q7HBObVc0L8jNeTe5Gofh');
+INSERT INTO artist_watchlist(artist_id,artist_name,spotify_id,destination_folder_id,preferred_engine)
+VALUES (57,'50 Cent','3q7HBObVc0L8jNeTe5Gofh',7,'tidal'),
+       (1211,'50 Cent','3q7HBObVc0L8jNeTe5Gofh',NULL,NULL);
+INSERT INTO artist_watch_album(artist_id,source,album_source_id) VALUES (57,'spotify','album-1');
+INSERT INTO artist_watch_state(artist_id,last_run_status) VALUES (57,'complete');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await dbService.EnsureSchemaAsync();
+
+        await using var verify = new SqliteConnection($"Data Source={_dbPath}");
+        await verify.OpenAsync();
+        await using var commandVerify = verify.CreateCommand();
+        commandVerify.CommandText = @"
+SELECT COUNT(*), MIN(artist_id), MAX(destination_folder_id), MAX(preferred_engine)
+FROM artist_watchlist WHERE spotify_id='3q7HBObVc0L8jNeTe5Gofh';
+SELECT artist_id FROM artist_watch_album WHERE album_source_id='album-1';
+SELECT artist_id FROM artist_watch_state WHERE last_run_status='complete';
+SELECT COUNT(*) FROM pragma_index_list('artist_watchlist') WHERE name='idx_artist_watchlist_spotify_id' AND [unique]=1;";
+        await using var reader = await commandVerify.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(1, reader.GetInt32(0));
+        Assert.Equal(1211, reader.GetInt64(1));
+        Assert.Equal(7, reader.GetInt64(2));
+        Assert.Equal("tidal", reader.GetString(3));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(1211, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(1211, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(1, reader.GetInt32(0));
+    }
+
     private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName)
     {
         await using var command = connection.CreateCommand();

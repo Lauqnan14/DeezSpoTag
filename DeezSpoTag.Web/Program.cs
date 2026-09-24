@@ -1667,7 +1667,8 @@ public partial class Program
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
-                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>()
+                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(),
+                SettingsService = sp.GetService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>()
             });
         AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(
             services,
