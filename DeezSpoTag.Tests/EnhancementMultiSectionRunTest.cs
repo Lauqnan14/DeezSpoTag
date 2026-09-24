@@ -13,6 +13,32 @@ namespace DeezSpoTag.Tests;
 public sealed class EnhancementMultiSectionRunTest
 {
     [Fact]
+    public void ManualEnrichment_AlwaysRunsProfileDrivenLyricsInHistorySidecars()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Services/AutoTagService.EnhancementWorkflows.cs"));
+
+        Assert.Contains("(!includesEnhancementWorkflows && !isManualEnrichment)", source, StringComparison.Ordinal);
+        Assert.Contains("if (isManualEnrichment && movedFiles != null)", source, StringComparison.Ordinal);
+        Assert.Contains("forceProfileLyrics: true", source, StringComparison.Ordinal);
+        Assert.Contains("new SidecarLyricsOptions(QueueLyricsRefresh: true", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualEnrichment_DoesNotAcceptLineTimedTtmlAsWordTimed()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Services/AutoTag/LocalAutoTagRunner.Lyrics.cs"));
+
+        Assert.Contains(
+            "sidecarState.HasTtml\n            && AppleLyricsService.IsWordSyncedTtml",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EnhancementJobSelection_RoundTripsThroughPersistenceJson()
     {
         var job = new AutoTagJob

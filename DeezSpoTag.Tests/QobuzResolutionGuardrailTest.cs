@@ -114,6 +114,42 @@ public sealed class QobuzResolutionGuardrailTest
     }
 
     [Fact]
+    public void EveryAtmosQueue_ResolvesCompleteIdentityMatrixBeforePayloadConstruction()
+    {
+        var source = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+        AssertAtmosResolvesIdentityBeforePayload(source, "TryEnqueueAppleAtmosAsync", "TryEnqueueTidalAtmosAsync", "BuildApplePayloadBaseAsync");
+        AssertAtmosResolvesIdentityBeforePayload(source, "TryEnqueueTidalAtmosAsync", "TryEnqueueAmazonAtmosAsync", "PopulateStandardQueuePayload");
+        AssertAtmosResolvesIdentityBeforePayload(source, "TryEnqueueAmazonAtmosAsync", "private static List<string> ResolveAtmosSources", "PopulateStandardQueuePayload");
+    }
+
+    private static void AssertAtmosResolvesIdentityBeforePayload(
+        string source,
+        string methodName,
+        string nextMethodName,
+        string payloadMarker)
+    {
+        var start = source.IndexOf($"private async Task<bool> {methodName}", StringComparison.Ordinal);
+        var end = source.IndexOf($"private", start + 1, StringComparison.Ordinal);
+        if (!string.IsNullOrWhiteSpace(nextMethodName))
+        {
+            var namedEnd = source.IndexOf(nextMethodName, start + 1, StringComparison.Ordinal);
+            if (namedEnd > start) end = namedEnd;
+        }
+        Assert.True(start >= 0 && end > start);
+        var body = source[start..end];
+        var identity = body.IndexOf("ResolveTrackIdentityMatrixAsync", StringComparison.Ordinal);
+        var payload = body.IndexOf(payloadMarker, StringComparison.Ordinal);
+        Assert.True(identity >= 0 && payload > identity);
+        Assert.Contains("BuildIdentityTargetsForDownload", body, StringComparison.Ordinal);
+        if (string.Equals(methodName, "TryEnqueueAmazonAtmosAsync", StringComparison.Ordinal))
+        {
+            Assert.True(
+                body.LastIndexOf("payload.AmazonId = amazonTrack.Id", StringComparison.Ordinal)
+                > body.IndexOf("ApplyIntentMetadata(payload, request.Intent)", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
     public void AtmosResolution_DoesNotStopOnWeakProviderCandidates()
     {
         var tidalSource = ReadSource("DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs");

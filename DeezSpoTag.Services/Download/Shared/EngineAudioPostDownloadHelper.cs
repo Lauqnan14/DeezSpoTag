@@ -2521,6 +2521,7 @@ public static partial class EngineAudioPostDownloadHelper
         var payload = execution.Request.Payload;
         var appleId = execution.Request.AnimatedArtworkAppleIdOverride
             ?? execution.Request.AppleCoverLookupIdOverride
+            ?? payload.LyricsIdentityAppleId
             ?? payload.AppleId;
         if (string.IsNullOrWhiteSpace(appleId))
         {
@@ -2956,6 +2957,20 @@ public static partial class EngineAudioPostDownloadHelper
         var resolution = await execution.Request.LyricsService.ResolveLyricsWithDetailsAsync(
             lyricsTrack,
             execution.Request.Settings,
+            providerOptions: null,
+            async (progress, progressToken) =>
+            {
+                runState.LyricsArtifacts.ApplyProgress(progress);
+                execution.Request.Payload.LyricsArtifacts = runState.LyricsArtifacts;
+                await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
+                    execution.Paths.QueueUuid,
+                    runState.LyricsArtifacts,
+                    progressToken);
+                QueueLyricsArtifactHelper.Send(
+                    execution.Request.Listener,
+                    execution.Paths.QueueUuid,
+                    runState.LyricsArtifacts);
+            },
             token);
         runState.LyricsArtifacts.ApplyResolution(resolution);
         execution.Request.Payload.LyricsArtifacts = runState.LyricsArtifacts;

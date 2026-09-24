@@ -287,7 +287,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             requestFlags = requestFlags with { WantsSynced = false, WantsUnsynced = false };
         }
 
-        if (sidecarState.HasTtml)
+        if (sidecarState.HasTtml
+            && AppleLyricsService.IsWordSyncedTtml(ReadFileOrEmpty(Path.ChangeExtension(filePath, TtmlExtension))))
         {
             requestFlags = requestFlags with { WantsTtml = false };
         }

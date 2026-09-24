@@ -179,9 +179,11 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         long trackId,
         LyricsRefreshOptions options,
         CancellationToken cancellationToken,
-        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? onLookupProgress = null)
     {
-        return await ProcessTrackLyricsRefreshAsync(trackId, options ?? LyricsRefreshOptions.Default, cancellationToken, onWritePhaseStarted);
+        return await ProcessTrackLyricsRefreshAsync(
+            trackId, options ?? LyricsRefreshOptions.Default, cancellationToken, onWritePhaseStarted, onLookupProgress);
     }
 
     public async Task<LyricsRefreshPlan> PlanTrackRefreshAsync(
@@ -342,7 +344,8 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         long trackId,
         LyricsRefreshOptions options,
         CancellationToken cancellationToken,
-        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null)
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? onLookupProgress = null)
     {
         if (!_repository.IsConfigured)
         {
@@ -400,9 +403,40 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
         var audioModifiedBefore = File.GetLastWriteTimeUtc(info.FilePath);
         var savedLyrics = LyricsSaveResult.Empty;
+        LyricsResolutionResult? resolution = null;
+        LyricsResolutionProgress? latestProgress = null;
         if (shouldFetch && LyricsSettingsPolicy.CanFetchLyrics(settings))
         {
-            savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken, onWritePhaseStarted);
+            resolution = await _lyricsService.ResolveLyricsWithDetailsAsync(
+                track,
+                settings,
+                providerOptions: null,
+                async (progress, progressToken) =>
+                {
+                    latestProgress = progress;
+                    if (onLookupProgress != null)
+                    {
+                        await onLookupProgress(progress, progressToken);
+                    }
+                },
+                cancellationToken);
+            if (resolution.Lyrics?.IsLoaded() == true)
+            {
+                if (onWritePhaseStarted != null)
+                {
+                    await onWritePhaseStarted(cancellationToken);
+                }
+                savedLyrics = await _lyricsService.SaveLyricsAsync(
+                    resolution.Lyrics,
+                    track,
+                    paths,
+                    settings,
+                    cancellationToken);
+            }
+            else if (resolution.Incomplete)
+            {
+                savedLyrics = LyricsSaveResult.Failed;
+            }
         }
 
         var deletedLineTtml = (options.RemoveLineSyncedTtml || plan.NeedsLocalOnly)
@@ -434,12 +468,24 @@ public sealed class LyricsRefreshQueueService : BackgroundService
                         : shouldFetch
                             ? LyricsRefreshTrackResult.ConfirmedAbsent(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
                             : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics cleanup was required.");
+        var remainingOutputs = latestProgress?.RemainingOutputs ?? Array.Empty<string>();
+        var incompleteReason = resolution?.Incomplete == true
+            ? resolution.Error
+            : remainingOutputs.Count > 0
+                ? $"Requested lyrics not found: {string.Join(", ", remainingOutputs)}."
+                : null;
         return result with
         {
             Title = info.Title,
             ArtistName = info.ArtistName,
             CoverPath = info.CoverPath,
-            TimingBadges = timingBadges
+            TimingBadges = timingBadges,
+            ProviderOutcomes = resolution?.ProviderOutcomes ?? Array.Empty<LyricsProviderOutcome>(),
+            RemainingOutputs = remainingOutputs,
+            IncompleteReason = incompleteReason,
+            Message = string.IsNullOrWhiteSpace(incompleteReason)
+                ? result.Message
+                : $"{result.Message} {incompleteReason}"
         };
     }
 
@@ -770,6 +816,9 @@ public sealed record LyricsRefreshTrackResult(
     public bool LyricsConfirmedAbsent { get; init; }
 
     public bool LookupFailed { get; init; }
+    public IReadOnlyList<LyricsProviderOutcome> ProviderOutcomes { get; init; } = Array.Empty<LyricsProviderOutcome>();
+    public IReadOnlyList<string> RemainingOutputs { get; init; } = Array.Empty<string>();
+    public string? IncompleteReason { get; init; }
 
     public static LyricsRefreshTrackResult ConfirmedAbsent(long trackId, string? filePath, string message)
         => new(trackId, filePath, false, false, Array.Empty<string>(), message) { LyricsConfirmedAbsent = true };

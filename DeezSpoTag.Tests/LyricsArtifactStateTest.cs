@@ -124,6 +124,27 @@ public sealed class LyricsArtifactStateTest
     }
 
     [Fact]
+    public void ApplyProgress_TracksProviderAndTimingAwareRemainingOutputs()
+    {
+        var state = LyricsArtifactState.Fetching(
+            new LyricsResolutionPlan(["ttml", "lrc"], ["apple", "lrclib"], false));
+        var revision = state.Revision;
+
+        state.ApplyProgress(new LyricsResolutionProgress(
+            "provider-started",
+            "apple",
+            null,
+            ["word-ttml", "enhanced-lrc"],
+            ["enhanced-lrc"],
+            ["word-ttml"]));
+
+        Assert.True(state.Revision > revision);
+        Assert.Equal("apple", state.CurrentProvider);
+        Assert.Equal(["word-ttml"], state.RemainingOutputs);
+        Assert.Equal("fetching", state.Status);
+    }
+
+    [Fact]
     public void ApplyDownloadedFiles_RecordsWrittenSidecarsAndSuppressesTxt()
     {
         var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["lrclib"], true));

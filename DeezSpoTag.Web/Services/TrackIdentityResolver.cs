@@ -73,55 +73,62 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         var targets = ResolveTargets(request);
         var candidates = new List<PlatformIdentityCandidate>();
-        var resolutionTasks = new List<Task<List<PlatformIdentityCandidate>>>();
+        var resolutionTasks = new List<Task<IdentityResolutionAttempt>>();
 
         if (ShouldResolve(targets, Spotify) && string.IsNullOrWhiteSpace(state.SpotifyId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveSpotifyAsync(state, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveSpotifyAsync(localState, local, token), cancellationToken));
         }
 
         if (ShouldResolve(targets, Deezer) && string.IsNullOrWhiteSpace(state.DeezerId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveDeezerAsync(state, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveDeezerAsync(localState, local, token), cancellationToken));
         }
 
         if (ShouldResolve(targets, Apple) && string.IsNullOrWhiteSpace(state.AppleId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveAppleAsync(state, request, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveAppleAsync(localState, request, local, token), cancellationToken));
         }
 
         if (ShouldResolve(targets, Qobuz) && string.IsNullOrWhiteSpace(state.QobuzId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveQobuzAsync(state, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveQobuzAsync(localState, local, token), cancellationToken));
         }
 
         if (ShouldResolve(targets, Tidal) && string.IsNullOrWhiteSpace(state.TidalId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveTidalAsync(state, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveTidalAsync(localState, local, token), cancellationToken));
         }
 
         if (ShouldResolve(targets, Amazon) && string.IsNullOrWhiteSpace(state.AmazonId))
         {
-            resolutionTasks.Add(RunResolverAsync((local, token) => ResolveAmazonAsync(state, local, token), cancellationToken));
+            resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveAmazonAsync(localState, local, token), cancellationToken));
         }
 
         var results = await Task.WhenAll(resolutionTasks);
         foreach (var result in results)
         {
-            candidates.AddRange(result);
+            state.MergeMissingFrom(result.State);
+            candidates.AddRange(result.Candidates);
         }
 
         return state.ToResolution(candidates);
     }
 
-    private static async Task<List<PlatformIdentityCandidate>> RunResolverAsync(
-        Func<List<PlatformIdentityCandidate>, CancellationToken, Task> resolver,
+    private static async Task<IdentityResolutionAttempt> RunResolverAsync(
+        IdentityState source,
+        Func<IdentityState, List<PlatformIdentityCandidate>, CancellationToken, Task> resolver,
         CancellationToken cancellationToken)
     {
+        var state = source.Clone();
         var candidates = new List<PlatformIdentityCandidate>();
-        await resolver(candidates, cancellationToken);
-        return candidates;
+        await resolver(state, candidates, cancellationToken);
+        return new IdentityResolutionAttempt(state, candidates);
     }
+
+    private sealed record IdentityResolutionAttempt(
+        IdentityState State,
+        List<PlatformIdentityCandidate> Candidates);
 
     private static HashSet<string> ResolveTargets(TrackIdentityResolutionRequest request)
     {
@@ -1200,6 +1207,60 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 AmazonUrl = string.IsNullOrWhiteSpace(request.AmazonId) ? null : $"https://music.amazon.com/tracks/{request.AmazonId.Trim()}",
                 PreferredReleaseType = request.PreferredReleaseType?.Trim().ToLowerInvariant()
             };
+
+        public IdentityState Clone()
+            => new()
+            {
+                Title = Title,
+                Artist = Artist,
+                Album = Album,
+                Isrc = Isrc,
+                DurationMs = DurationMs,
+                SpotifyId = SpotifyId,
+                SpotifyUrl = SpotifyUrl,
+                DeezerId = DeezerId,
+                DeezerUrl = DeezerUrl,
+                AppleId = AppleId,
+                AppleUrl = AppleUrl,
+                AppleAlbumId = AppleAlbumId,
+                AppleAlbumName = AppleAlbumName,
+                AppleArtistName = AppleArtistName,
+                AppleIsrc = AppleIsrc,
+                AppleDurationMs = AppleDurationMs,
+                QobuzId = QobuzId,
+                QobuzUrl = QobuzUrl,
+                TidalId = TidalId,
+                TidalUrl = TidalUrl,
+                AmazonId = AmazonId,
+                AmazonUrl = AmazonUrl,
+                PreferredReleaseType = PreferredReleaseType
+            };
+
+        public void MergeMissingFrom(IdentityState candidate)
+        {
+            Title ??= candidate.Title;
+            Artist ??= candidate.Artist;
+            Album ??= candidate.Album;
+            Isrc ??= candidate.Isrc;
+            DurationMs ??= candidate.DurationMs;
+            SpotifyId ??= candidate.SpotifyId;
+            SpotifyUrl ??= candidate.SpotifyUrl;
+            DeezerId ??= candidate.DeezerId;
+            DeezerUrl ??= candidate.DeezerUrl;
+            AppleId ??= candidate.AppleId;
+            AppleUrl ??= candidate.AppleUrl;
+            AppleAlbumId ??= candidate.AppleAlbumId;
+            AppleAlbumName ??= candidate.AppleAlbumName;
+            AppleArtistName ??= candidate.AppleArtistName;
+            AppleIsrc ??= candidate.AppleIsrc;
+            AppleDurationMs ??= candidate.AppleDurationMs;
+            QobuzId ??= candidate.QobuzId;
+            QobuzUrl ??= candidate.QobuzUrl;
+            TidalId ??= candidate.TidalId;
+            TidalUrl ??= candidate.TidalUrl;
+            AmazonId ??= candidate.AmazonId;
+            AmazonUrl ??= candidate.AmazonUrl;
+        }
 
         public TrackIdentityResolution ToResolution(IReadOnlyList<PlatformIdentityCandidate> candidates)
             => new(

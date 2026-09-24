@@ -70,7 +70,7 @@ public sealed class DownloadEngineArtworkHelperTest
         Assert.DoesNotContain("ITrackIdentityResolver", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ISpotifyIdResolver", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SpotifyId = execution.Request.Payload.SpotifyId", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("payload.AppleId", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("payload.LyricsIdentityAppleId\n            ?? payload.AppleId;", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("ResolveAppleArtworkIdentity(execution)", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("ArtworkFallbackHelper.ResolveOrder(settings)", intentSource, StringComparison.Ordinal);
         Assert.Contains("ArtworkFallbackHelper.ResolveArtistOrder(settings)", intentSource, StringComparison.Ordinal);

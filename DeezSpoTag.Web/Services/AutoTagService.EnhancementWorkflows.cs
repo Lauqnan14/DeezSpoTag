@@ -4,6 +4,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services.AutoTag;
 using DeezSpoTag.Web.Services.CoverPort;
@@ -606,7 +607,8 @@ public partial class AutoTagService
         CancellationToken cancellationToken,
         AutoTagMoveSummary? autoMoveSummary = null)
     {
-        if (!includesEnhancementWorkflows
+        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
+        if ((!includesEnhancementWorkflows && !isManualEnrichment)
             || !ShouldRunIntegratedWorkflowsForIntent(job.RunIntent)
             || !IsEnhancementWorkflowTrigger(job.Trigger))
         {
@@ -614,10 +616,11 @@ public partial class AutoTagService
         }
 
         var root = LoadConfigRoot(configPath);
-        if (root == null || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        if (root == null)
         {
             return;
         }
+        var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
 
         // Manual enrichment just moved its fully enriched files to the destination
         // library folder. Sidecar lookups run on those moved files with their library
@@ -630,8 +633,7 @@ public partial class AutoTagService
             await IngestKnownFilesAfterAutoMoveAsync(job, autoMoveSummary!, cancellationToken);
         }
 
-        if (IsManualEnrichmentRunIntent(job.RunIntent) && movedFiles != null
-            && EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))
+        if (isManualEnrichment && movedFiles != null)
         {
             var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
             await RunManualEnrichmentBatchSidecarsAsync(
@@ -961,7 +963,8 @@ public partial class AutoTagService
                 enabledFolders,
                 configPath,
                 token,
-                currentFiles),
+                currentFiles,
+                forceProfileLyrics: true),
             cancellationToken);
 
         SaveJob(job);
@@ -975,12 +978,16 @@ public partial class AutoTagService
         IReadOnlyList<FolderDto> enabledFolders,
         string configPath,
         CancellationToken cancellationToken,
-        IReadOnlyList<string>? batchFiles = null)
+        IReadOnlyList<string>? batchFiles = null,
+        bool forceProfileLyrics = false)
     {
         var sidecarEnabled = enhancementRoot["sidecars"] is JsonObject sidecars
             && ReadBool(sidecars, EnabledField) == true;
-        var runLyrics = sidecarEnabled && EnhancementWorkflowSelection.HasSidecarLyricsActions(enhancementRoot);
-        var runCovers = sidecarEnabled && EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot);
+        var runLyrics = forceProfileLyrics
+            || (sidecarEnabled && EnhancementWorkflowSelection.HasSidecarLyricsActions(enhancementRoot));
+        var runCovers = !forceProfileLyrics
+            && sidecarEnabled
+            && EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot);
         if (!runLyrics && !runCovers)
         {
             return EnhancementWorkflowOutcome.Skipped("no sidecar actions are enabled.");
@@ -1001,7 +1008,9 @@ public partial class AutoTagService
         // profile supplies *how* they run (artwork sidecar / embedded cover, cover template,
         // animated-artwork file names and formats, local artwork format, and the technical
         // lyrics block). Neither source overrides the other; they answer different questions.
-        var lyricsOptions = BuildSidecarLyricsOptions(enhancementRoot);
+        var lyricsOptions = forceProfileLyrics
+            ? new SidecarLyricsOptions(QueueLyricsRefresh: true, RemoveLineSyncedTtml: false, RewriteLineSyncedTtml: false)
+            : BuildSidecarLyricsOptions(enhancementRoot);
         var orderedFiles = await ResolveSidecarRunFilesAsync(
             job,
             configRoot,
@@ -1165,7 +1174,24 @@ public partial class AutoTagService
                             token,
                             suppressFetchActivity: true,
                             onWritePhaseStarted: lyricsBudget.BeginWrite,
-                            onTrackResult: result => lyricsResult = result);
+                            onTrackResult: result => lyricsResult = result,
+                            onLookupProgress: (progress, _) =>
+                            {
+                                var provider = string.IsNullOrWhiteSpace(progress.Provider)
+                                    ? "lyrics providers"
+                                    : progress.Provider;
+                                var remaining = progress.RemainingOutputs.Count == 0
+                                    ? "finalizing lyrics"
+                                    : $"seeking {string.Join(", ", progress.RemainingOutputs)}";
+                                RecordSidecarFetchStatus(
+                                    job,
+                                    card,
+                                    $"Lyrics: {provider} — {remaining}",
+                                    counters.Processed,
+                                    orderedRun.Count,
+                                    !string.Equals(progress.Phase, "completed", StringComparison.OrdinalIgnoreCase));
+                                return ValueTask.CompletedTask;
+                            });
                         return true;
                     },
                     lyricsBudget,
@@ -3255,7 +3281,8 @@ public partial class AutoTagService
         CancellationToken cancellationToken,
         bool suppressFetchActivity = false,
         Func<CancellationToken, ValueTask>? onWritePhaseStarted = null,
-        Action<LyricsRefreshTrackResult>? onTrackResult = null)
+        Action<LyricsRefreshTrackResult>? onTrackResult = null,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? onLookupProgress = null)
     {
         var batchCount = targetTrackIds.Count == 0
             ? 0
@@ -3325,7 +3352,8 @@ public partial class AutoTagService
                         trackId,
                         refreshOptions,
                         cancellationToken,
-                        onWritePhaseStarted);
+                        onWritePhaseStarted,
+                        onLookupProgress);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

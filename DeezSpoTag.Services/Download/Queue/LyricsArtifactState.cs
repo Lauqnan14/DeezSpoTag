@@ -56,6 +56,24 @@ public sealed class LyricsArtifactState
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 
+    [JsonPropertyName("currentProvider")]
+    public string? CurrentProvider { get; set; }
+
+    [JsonPropertyName("requestedOutputs")]
+    public List<string> RequestedOutputs { get; set; } = new();
+
+    [JsonPropertyName("resolvedOutputs")]
+    public List<string> ResolvedOutputs { get; set; } = new();
+
+    [JsonPropertyName("remainingOutputs")]
+    public List<string> RemainingOutputs { get; set; } = new();
+
+    [JsonPropertyName("latestProviderOutcome")]
+    public string? LatestProviderOutcome { get; set; }
+
+    [JsonPropertyName("incompleteReason")]
+    public string? IncompleteReason { get; set; }
+
     public static LyricsArtifactState Fetching(LyricsResolutionPlan plan, LyricsArtifactState? previous = null)
     {
         var planFingerprint = BuildPlanFingerprint(plan);
@@ -132,6 +150,32 @@ public sealed class LyricsArtifactState
         Status = result.Incomplete
             ? "incomplete"
             : ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
+        CurrentProvider = null;
+        IncompleteReason = result.Incomplete
+            ? result.Error
+            : RemainingOutputs.Count > 0
+                ? $"Requested lyrics not found: {string.Join(", ", RemainingOutputs)}."
+                : null;
+    }
+
+    public void ApplyProgress(LyricsResolutionProgress progress)
+    {
+        Revision++;
+        CurrentProvider = string.Equals(progress.Phase, "completed", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : progress.Provider;
+        RequestedOutputs = NormalizeTokens(progress.RequestedOutputs);
+        ResolvedOutputs = NormalizeTokens(progress.ResolvedOutputs);
+        RemainingOutputs = NormalizeTokens(progress.RemainingOutputs);
+        LatestProviderOutcome = progress.Outcome;
+        if (progress.Incomplete)
+        {
+            IncompleteReason = progress.Detail;
+        }
+        if (!string.Equals(progress.Phase, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            Status = "fetching";
+        }
     }
 
     public void ApplyDownloadedFiles(IReadOnlyDictionary<string, string> filesByFormat)

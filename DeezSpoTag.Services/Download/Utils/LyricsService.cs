@@ -56,6 +56,16 @@ public sealed record LyricsProviderOutcome(
     public bool IsOperationalFailure => Status is "transient-failure" or "authentication-failure";
 }
 
+public sealed record LyricsResolutionProgress(
+    string Phase,
+    string? Provider,
+    string? Outcome,
+    IReadOnlyList<string> RequestedOutputs,
+    IReadOnlyList<string> ResolvedOutputs,
+    IReadOnlyList<string> RemainingOutputs,
+    string? Detail = null,
+    bool Incomplete = false);
+
 public sealed record LyricsResolutionResult(
     LyricsBase? Lyrics,
     LyricsResolutionPlan Plan,
@@ -218,6 +228,15 @@ public class LyricsService
         DeezSpoTagSettings settings,
         LyricsProviderOptions? providerOptions,
         CancellationToken cancellationToken = default)
+        => await ResolveLyricsWithDetailsAsync(
+            track, settings, providerOptions, progress: null, cancellationToken);
+
+    public async Task<LyricsResolutionResult> ResolveLyricsWithDetailsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        LyricsProviderOptions? providerOptions,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? progress,
+        CancellationToken cancellationToken = default)
     {
         var plan = DescribeResolutionPlan(settings);
         if (track == null)
@@ -236,6 +255,7 @@ public class LyricsService
         var providers = plan.Providers;
 
         var state = new LyricsResolutionState();
+        await ReportProgressAsync(progress, "started", null, null, outputRequirements, state, null, false, cancellationToken);
 
         foreach (var provider in providers)
         {
@@ -244,16 +264,26 @@ public class LyricsService
                 continue;
             }
             state.ProvidersAttempted.Add(provider);
+            await ReportProgressAsync(progress, "provider-started", provider, null, outputRequirements, state, null, false, cancellationToken);
             var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
+            var providerOutcome = state.ProviderOutcomes.LastOrDefault(outcome =>
+                string.Equals(outcome.Provider, provider, StringComparison.OrdinalIgnoreCase));
             if (providerLyrics == null || !providerLyrics.IsLoaded())
             {
+                await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
+                    outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
                 continue;
             }
 
             MergeProviderLyrics(state, providerLyrics, provider);
+            await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
+                outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
             if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: true))
             {
-                return BuildResolutionResult(state, plan, outputRequirements, null);
+                var completed = BuildResolutionResult(state, plan, outputRequirements, null);
+                await ReportProgressAsync(progress, "completed", provider, providerOutcome?.Status,
+                    outputRequirements, state, completed.Error, completed.Incomplete, cancellationToken);
+                return completed;
             }
         }
 
@@ -267,7 +297,10 @@ public class LyricsService
 
             if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: false))
             {
-                return BuildResolutionResult(state, plan, outputRequirements, null);
+                var completed = BuildResolutionResult(state, plan, outputRequirements, null);
+                await ReportProgressAsync(progress, "completed", null, null, outputRequirements, state,
+                    completed.Error, completed.Incomplete, cancellationToken);
+                return completed;
             }
         }
 
@@ -279,7 +312,10 @@ public class LyricsService
                 TtmlLyricsSourceFormat = state.TtmlFallbackSourceFormat
             };
             state.ResolvedLyrics = lyrics;
-            return BuildResolutionResult(state, plan, outputRequirements, null);
+            var completed = BuildResolutionResult(state, plan, outputRequirements, null);
+            await ReportProgressAsync(progress, "completed", null, null, outputRequirements, state,
+                completed.Error, completed.Incomplete, cancellationToken);
+            return completed;
         }
 
         string error;
@@ -293,7 +329,60 @@ public class LyricsService
         }
 
         state.ResolvedLyrics = LyricsNew.CreateError(error);
-        return BuildResolutionResult(state, plan, outputRequirements, error);
+        var unavailable = BuildResolutionResult(state, plan, outputRequirements, error);
+        await ReportProgressAsync(progress, "completed", null, null, outputRequirements, state,
+            unavailable.Error, unavailable.Incomplete, cancellationToken);
+        return unavailable;
+    }
+
+    private static async ValueTask ReportProgressAsync(
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? callback,
+        string phase,
+        string? provider,
+        string? outcome,
+        LyricsOutputRequirements requirements,
+        LyricsResolutionState state,
+        string? detail,
+        bool incomplete,
+        CancellationToken cancellationToken)
+    {
+        if (callback == null)
+        {
+            return;
+        }
+
+        var requested = DescribeRequestedOutputs(requirements);
+        var resolved = DescribeResolvedOutputs(requirements, state.ResolvedLyrics);
+        var remaining = requested.Except(resolved, StringComparer.OrdinalIgnoreCase).ToArray();
+        await callback(new LyricsResolutionProgress(
+            phase,
+            provider,
+            outcome,
+            requested,
+            resolved,
+            remaining,
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(detail),
+            incomplete), cancellationToken);
+    }
+
+    private static string[] DescribeRequestedOutputs(LyricsOutputRequirements requirements)
+    {
+        var outputs = new List<string>(4);
+        if (requirements.WantsTtmlLyrics) outputs.Add("word-ttml");
+        if (requirements.WantsEnhancedSynchronizedLyrics) outputs.Add("enhanced-lrc");
+        else if (requirements.WantsLrcLyrics) outputs.Add("line-lrc");
+        if (requirements.WantsPlainLyrics) outputs.Add("plain-text");
+        return outputs.ToArray();
+    }
+
+    private static string[] DescribeResolvedOutputs(LyricsOutputRequirements requirements, LyricsBase? lyrics)
+    {
+        var outputs = new List<string>(4);
+        if (requirements.WantsTtmlLyrics && AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics)) outputs.Add("word-ttml");
+        if (requirements.WantsEnhancedSynchronizedLyrics && lyrics?.HasEnhancedSynchronizedLyrics() == true) outputs.Add("enhanced-lrc");
+        else if (requirements.WantsLrcLyrics && lyrics?.CanSaveLrcSidecar() == true) outputs.Add("line-lrc");
+        if (requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics)) outputs.Add("plain-text");
+        return outputs.ToArray();
     }
 
     public static LyricsResolutionPlan DescribeResolutionPlan(DeezSpoTagSettings settings)

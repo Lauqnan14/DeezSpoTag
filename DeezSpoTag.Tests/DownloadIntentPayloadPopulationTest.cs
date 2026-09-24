@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Services.Download.Deezer;
 using DeezSpoTag.Services.Download.Fallback;
@@ -54,6 +55,67 @@ public sealed class DownloadIntentPayloadPopulationTest
             "ApplyVisiblePayloadResolutionState",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("DownloadIntentService.ApplyVisiblePayloadResolutionState not found.");
+
+    private static readonly MethodInfo BuildIdentityTargetsForDownloadMethod =
+        typeof(DownloadIntentService).GetMethod(
+            "BuildIdentityTargetsForDownload",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("DownloadIntentService.BuildIdentityTargetsForDownload not found.");
+
+    private static readonly MethodInfo PopulateLookupIdentitySnapshotMethod =
+        typeof(DownloadIntentService).GetMethod(
+            "PopulateLookupIdentitySnapshot",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("DownloadIntentService.PopulateLookupIdentitySnapshot not found.");
+
+    [Fact]
+    public void DownloadIdentityTargets_AlwaysIncludeEverySupportedMusicPlatform()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            LyricsFallbackOrder = "apple",
+            LyricsFallbackEnabled = false
+        };
+
+        var targets = Assert.IsAssignableFrom<IEnumerable<string>>(
+                BuildIdentityTargetsForDownloadMethod.Invoke(null, [settings, new[] { "deezer" }]))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.All(
+            new[] { "spotify", "deezer", "apple", "qobuz", "tidal", "amazon" },
+            platform => Assert.Contains(platform, targets));
+    }
+
+    [Fact]
+    public void ApplePayload_ReceivesCompleteStereoLookupIdentitySnapshot()
+    {
+        var payload = new AppleQueueItem { AppleId = "atmos-apple-id" };
+        var intent = new DownloadIntent
+        {
+            Title = "Stereo title",
+            Artist = "Stereo artist",
+            Album = "Stereo album",
+            Isrc = "USABC1234567",
+            DurationMs = 201500,
+            SpotifyId = "spotify-id",
+            DeezerId = "123",
+            AppleId = "stereo-apple-id",
+            QobuzId = "456",
+            TidalId = "789",
+            AmazonId = "B087654321"
+        };
+
+        PopulateLookupIdentitySnapshotMethod.Invoke(null, [payload, intent, 202]);
+
+        Assert.Equal("atmos-apple-id", payload.AppleId);
+        Assert.Equal("stereo-apple-id", payload.LyricsIdentityAppleId);
+        Assert.Equal("spotify-id", payload.LyricsIdentitySpotifyId);
+        Assert.Equal("123", payload.LyricsIdentityDeezerId);
+        Assert.Equal("456", payload.LyricsIdentityQobuzId);
+        Assert.Equal("789", payload.LyricsIdentityTidalId);
+        Assert.Equal("B087654321", payload.LyricsIdentityAmazonId);
+        Assert.Equal(202, payload.LyricsIdentityDurationSeconds);
+    }
 
     [Fact]
     public void ManualVisiblePreResolutionQueueItems_AreInsertedAsQueuedNotResolving()
@@ -132,6 +194,9 @@ public sealed class DownloadIntentPayloadPopulationTest
         Assert.Equal(intent.SpotifyId, payload.LyricsIdentitySpotifyId);
         Assert.Equal(intent.DeezerId, payload.LyricsIdentityDeezerId);
         Assert.Equal(intent.AppleId, payload.LyricsIdentityAppleId);
+        Assert.Equal(intent.QobuzId, payload.LyricsIdentityQobuzId);
+        Assert.Equal(intent.TidalId, payload.LyricsIdentityTidalId);
+        Assert.Equal(intent.AmazonId, payload.LyricsIdentityAmazonId);
         Assert.Equal(intent.Title, payload.LyricsIdentityTitle);
         Assert.Equal(intent.Artist, payload.LyricsIdentityArtist);
     }

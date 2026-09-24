@@ -2825,6 +2825,13 @@ public sealed class DownloadIntentService
             .Select(engine => engine.Trim())
             .ToList();
 
+        // Every music download carries the independently resolved stereo identity matrix.
+        // A catalog where the track is unavailable remains empty; it must not prevent the
+        // other platform identities from being resolved and retained.
+        AddIdentityTargets(
+            engines,
+            [SpotifyPlatform, DeezerPlatform, ApplePlatform, QobuzPlatform, TidalPlatform, AmazonPlatform]);
+
         if (ShouldResolveAppleIdentityForArtwork(settings)
             && !engines.Contains(ApplePlatform, StringComparer.OrdinalIgnoreCase))
         {
@@ -2863,7 +2870,8 @@ public sealed class DownloadIntentService
                 "applemusic" or "apple-music" or "apple_music" or "itunes" => ApplePlatform,
                 _ => source.Trim().ToLowerInvariant()
             };
-            if (normalized is not (ApplePlatform or DeezerPlatform or SpotifyPlatform)
+            if (normalized is not (ApplePlatform or DeezerPlatform or SpotifyPlatform
+                    or QobuzPlatform or TidalPlatform or AmazonPlatform)
                 || engines.Contains(normalized, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
@@ -6270,6 +6278,11 @@ public sealed class DownloadIntentService
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = AtmosQualityUpper;
+        await ResolveTrackIdentityMatrixAsync(
+            request.Intent,
+            request.Settings,
+            BuildIdentityTargetsForDownload(request.Settings, new[] { ApplePlatform }),
+            request.CancellationToken);
         var candidate = await ResolveIntentAsync(
             request.Intent,
             ApplePlatform,
@@ -6437,6 +6450,11 @@ public sealed class DownloadIntentService
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = TidalAtmosQuality;
+        await ResolveTrackIdentityMatrixAsync(
+            request.Intent,
+            request.Settings,
+            BuildIdentityTargetsForDownload(request.Settings, new[] { AmazonPlatform }),
+            request.CancellationToken);
         var amazonTrack = await ResolveAmazonAtmosAvailabilityAsync(request.Intent, request.CancellationToken);
         if (amazonTrack is null)
         {
@@ -6475,6 +6493,7 @@ public sealed class DownloadIntentService
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
+        payload.AmazonId = amazonTrack.Id;
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
@@ -6595,6 +6614,11 @@ public sealed class DownloadIntentService
             SourceUrl = sourceUrl,
             AppleId = appleId ?? string.Empty,
             AppleArtistId = intent.AppleArtistId ?? string.Empty,
+            AppleAlbumId = intent.AppleAlbumId ?? string.Empty,
+            AppleAlbumName = FirstNonEmpty(intent.AppleAlbumName, intent.Album) ?? string.Empty,
+            AppleArtistName = FirstNonEmpty(intent.AppleArtistName, intent.Artist) ?? string.Empty,
+            AppleIsrc = FirstNonEmpty(intent.AppleIsrc, intent.Isrc) ?? string.Empty,
+            AppleDurationMs = intent.AppleDurationMs ?? (intent.DurationMs > 0 ? intent.DurationMs : null),
             DeezerArtistId = intent.DeezerArtistId ?? string.Empty,
             SpotifyArtistId = intent.SpotifyArtistId ?? string.Empty,
             WatchlistSource = intent.WatchlistSource ?? string.Empty,
@@ -6621,6 +6645,9 @@ public sealed class DownloadIntentService
             Url = intent.Url ?? string.Empty,
             Barcode = intent.Barcode ?? string.Empty,
             DeezerId = intent.DeezerId ?? string.Empty,
+            QobuzId = intent.QobuzId ?? string.Empty,
+            TidalId = intent.TidalId ?? string.Empty,
+            AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId) ?? string.Empty,
             Cover = resolvedCover,
             ReleaseDate = resolvedReleaseDate,
             DurationSeconds = durationSeconds,
@@ -6645,6 +6672,8 @@ public sealed class DownloadIntentService
             SpotifyId = intent.SpotifyId ?? string.Empty,
             Size = 1
         };
+
+        PopulateLookupIdentitySnapshot(payload, intent, durationSeconds);
 
         return (payload, isVideo);
     }
@@ -7290,19 +7319,7 @@ public sealed class DownloadIntentService
         payload.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(context.SourceUrl, RegexTimeout)
             ?? string.Empty;
-        payload.LyricsIdentityTitle = intent.Title ?? string.Empty;
-        payload.LyricsIdentityArtist = intent.Artist ?? string.Empty;
-        payload.LyricsIdentityAlbum = intent.Album ?? string.Empty;
-        payload.LyricsIdentityIsrc = intent.Isrc ?? string.Empty;
-        payload.LyricsIdentityDurationSeconds = intent.DurationMs > 0
-            ? (int)Math.Round(intent.DurationMs / 1000d)
-            : context.DurationSeconds;
-        payload.LyricsIdentitySpotifyId = intent.SpotifyId ?? string.Empty;
-        payload.LyricsIdentityDeezerId = payload.DeezerId;
-        payload.LyricsIdentityAppleId = payload.AppleId;
-        payload.LyricsIdentityQobuzId = payload.QobuzId;
-        payload.LyricsIdentityTidalId = payload.TidalId;
-        payload.LyricsIdentityAmazonId = payload.AmazonId;
+        PopulateLookupIdentitySnapshot(payload, intent, context.DurationSeconds);
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
         payload.AutoIndex = Math.Max(0, context.SelectedAutoIndex);
@@ -7315,6 +7332,30 @@ public sealed class DownloadIntentService
         payload.DestinationFolderId = context.DestinationFolderId;
         payload.QualityBucket = context.QualityBucket;
         payload.Size = 1;
+    }
+
+    private static void PopulateLookupIdentitySnapshot(
+        EngineQueueItemBase payload,
+        DownloadIntent intent,
+        int fallbackDurationSeconds)
+    {
+        payload.LyricsIdentityTitle = intent.Title ?? string.Empty;
+        payload.LyricsIdentityArtist = intent.Artist ?? string.Empty;
+        payload.LyricsIdentityAlbum = intent.Album ?? string.Empty;
+        payload.LyricsIdentityIsrc = intent.Isrc ?? string.Empty;
+        payload.LyricsIdentityDurationSeconds = intent.DurationMs > 0
+            ? (int)Math.Round(intent.DurationMs / 1000d)
+            : Math.Max(0, fallbackDurationSeconds);
+        payload.LyricsIdentitySpotifyId = intent.SpotifyId ?? string.Empty;
+        payload.LyricsIdentityDeezerId = FirstNonEmpty(intent.DeezerId, payload.DeezerId) ?? string.Empty;
+        payload.LyricsIdentityAppleId = payload is AppleQueueItem
+            ? intent.AppleId ?? string.Empty
+            : FirstNonEmpty(intent.AppleId, payload.AppleId) ?? string.Empty;
+        payload.LyricsIdentityQobuzId = FirstNonEmpty(intent.QobuzId, payload.QobuzId) ?? string.Empty;
+        payload.LyricsIdentityTidalId = FirstNonEmpty(intent.TidalId, payload.TidalId) ?? string.Empty;
+        payload.LyricsIdentityAmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.NormalizeAmazonTrackId(payload.AmazonId)
+            ?? string.Empty;
     }
 
     private static int ResolveTrustedQueueDurationSeconds(

@@ -5993,8 +5993,9 @@ async function clearCanceledTasks() {
 		            delete queueProgressTextAnimationByTask[taskId];
 		        }
 
-	        const errorHtml = task.error
-	            ? `<div class="error-message">⚠ ${escapeHtml(task.error)}</div>`
+	        const displayedError = task.error || task.lyricsIncompleteReason;
+	        const errorHtml = displayedError
+	            ? `<div class="error-message">⚠ ${escapeHtml(displayedError)}</div>`
 	            : '';
 	        const taskActionInFlight = Boolean(task._actionInFlight);
 	        const taskActionAttrs = taskActionInFlight ? ' disabled aria-disabled="true"' : '';
@@ -6543,7 +6544,8 @@ function mapQueueItem(item) {
     updateTaskPrefetchStatus(taskId, prefetchArtworkStatus);
     const mappedStatus = mapStatus(item.status);
     const lyricsBadges = resolveLyricsBadgesForQueueItem(item);
-    const lyricsRevision = getLyricsArtifactRevision(item.lyricsArtifacts ?? item.LyricsArtifacts);
+    const lyricsArtifacts = item.lyricsArtifacts ?? item.LyricsArtifacts;
+    const lyricsRevision = getLyricsArtifactRevision(lyricsArtifacts);
     const artworkBadges = resolveArtworkBadgesForQueueItem(item);
     return {
         taskId,
@@ -6553,6 +6555,8 @@ function mapQueueItem(item) {
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         lyricsRevision,
+        lyricsActivity: getLyricsArtifactActivity(lyricsArtifacts),
+        lyricsIncompleteReason: String(lyricsArtifacts?.incompleteReason ?? lyricsArtifacts?.IncompleteReason ?? '').trim(),
         status: mappedStatus,
         rawStatus: item.rawStatus || item.RawStatus || item.status,
         progress: normalizeQueueProgressPercent(item.progress),
@@ -6709,6 +6713,12 @@ function mergeQueueTask(existing, incoming) {
         lyricsBadges: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
             ? incoming.lyricsBadges
             : existing.lyricsBadges,
+        lyricsActivity: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsActivity
+            : existing.lyricsActivity,
+        lyricsIncompleteReason: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsIncompleteReason
+            : existing.lyricsIncompleteReason,
         artworkBadges: incoming.artworkBadges && incoming.artworkBadges.length
             ? incoming.artworkBadges
             : (existing.artworkBadges || []),
@@ -7002,6 +7012,10 @@ function getTaskActivityText(task) {
         return realtime.trim();
     }
 
+    if (typeof task.lyricsActivity === 'string' && task.lyricsActivity.trim()) {
+        return task.lyricsActivity.trim();
+    }
+
     const prefetchText = getPrefetchActivityText(task.taskId);
     if (prefetchText) {
         return prefetchText;
@@ -7013,6 +7027,18 @@ function getTaskActivityText(task) {
     }
 
     return 'Finalizing items...';
+}
+
+function getLyricsArtifactActivity(artifacts) {
+    if (!artifacts || String(artifacts.status || artifacts.Status || '').toLowerCase() !== 'fetching') {
+        return '';
+    }
+    const provider = String(artifacts.currentProvider ?? artifacts.CurrentProvider ?? '').trim();
+    const remaining = artifacts.remainingOutputs ?? artifacts.RemainingOutputs;
+    const labels = Array.isArray(remaining) ? remaining.filter(Boolean).join(', ') : '';
+    if (provider && labels) return `Fetching ${labels} from ${provider}`;
+    if (provider) return `Fetching lyrics from ${provider}`;
+    return labels ? `Fetching ${labels}` : 'Fetching lyrics';
 }
 
 function setTaskActivity(taskId, message) {
