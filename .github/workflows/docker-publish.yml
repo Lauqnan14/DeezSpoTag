@@ -542,14 +542,15 @@ jobs:
         run: |
           set -euo pipefail
           ref="${{ steps.vars.outputs.image }}:${{ steps.commit.outputs.full_sha }}"
-          inspect_output="$(docker buildx imagetools inspect "$ref")"
-          printf '%s\n' "$inspect_output"
           IFS=',' read -ra expected_platforms <<< "${{ matrix.platforms }}"
           for platform in "${expected_platforms[@]}"; do
-            if ! grep -q "$platform" <<< "$inspect_output"; then
-              echo "Missing $platform in published manifest: $ref" >&2
+            docker pull --platform "$platform" "$ref"
+            actual_platform="$(docker image inspect "$ref" --format '{{.Os}}/{{.Architecture}}')"
+            if [[ "$actual_platform" != "$platform" ]]; then
+              echo "Published image resolved to $actual_platform instead of $platform: $ref" >&2
               exit 1
             fi
+            echo "Verified published platform $actual_platform: $ref"
           done
 
       - name: Run wrapper runtime contract audit (published)

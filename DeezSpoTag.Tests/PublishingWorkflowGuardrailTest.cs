@@ -75,6 +75,9 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("Published digest matches parity-tested digest", workflow, StringComparison.Ordinal);
         Assert.Contains("matrix.image_name == 'deezspotag-apple-wrapper'", workflow, StringComparison.Ordinal);
         Assert.Contains("name: Run published app parity smoke audit", workflow, StringComparison.Ordinal);
+        Assert.Contains("docker pull --platform \"$platform\" \"$ref\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("docker image inspect \"$ref\" --format '{{.Os}}/{{.Architecture}}'", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("grep -q \"$platform\" <<< \"$inspect_output\"", workflow, StringComparison.Ordinal);
         Assert.Contains("response.get(\"AnalysisVersion\") != \"musicnn-1\"", parity, StringComparison.Ordinal);
         Assert.Contains("response.get(\"GenreModel\") != \"discogs519-maest-30s-pw-519l\"", parity, StringComparison.Ordinal);
         Assert.Contains("EssentiaGenreEvidence", parity, StringComparison.Ordinal);
