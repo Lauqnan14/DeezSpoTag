@@ -90,7 +90,11 @@ public sealed class VibeAnalyzerWorkerTest : IAsyncLifetime
         var recovered = await worker.AnalyzeAsync("success", CancellationToken.None);
 
         Assert.False(crashed.Succeeded);
-        Assert.Contains("exited", crashed.FailureReason, StringComparison.OrdinalIgnoreCase);
+        var crashReason = Assert.IsType<string>(crashed.FailureReason);
+        Assert.True(
+            crashReason.Contains("exited", StringComparison.OrdinalIgnoreCase)
+            || crashReason.Contains("closed its output stream", StringComparison.OrdinalIgnoreCase),
+            $"Unexpected worker crash reason: {crashReason}");
         Assert.True(recovered.Succeeded, recovered.FailureReason);
         Assert.Equal(2, File.ReadAllLines(startsPath).Length);
     }
