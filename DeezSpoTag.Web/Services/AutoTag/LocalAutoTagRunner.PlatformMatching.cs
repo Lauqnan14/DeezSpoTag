@@ -396,6 +396,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var editionConflict = PreserveAlbumEditionIdentity(validationBasis, match.Track);
         if (editionConflict && context.Plan.Config.EditionConflictReview == true)
         {
+            ApplyAlbumIdentityConsensus(
+                context,
+                validationBasis,
+                match.Track,
+                capturedIdentity,
+                hasAuthoritativeProviderResult: providerReleaseIdIsValid);
             var editionMessage = "album edition conflict: file and provider describe different editions of the same album";
             EmitReviewStatus(
                 context,
@@ -422,7 +428,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 validationBasis,
                 match.Track,
                 capturedIdentity,
-                hasAuthoritativeProviderResult: !editionConflict && providerReleaseIdIsValid);
+                hasAuthoritativeProviderResult: providerReleaseIdIsValid);
             match.ProviderIdentity = MergeEstablishedIdentity(match.Track, capturedIdentity, context.Platform);
             if (isManualEnrichment && frozenRelease == null)
             {

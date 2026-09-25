@@ -1412,7 +1412,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         try
         {
             _taggingInProgress = true;
-            var enrichmentConfig = ClearEnhancementTags(automationConfigJson);
+            var enrichmentConfig = AddDestinationFolderScope(
+                ClearEnhancementTags(automationConfigJson),
+                destinationFolderId,
+                downloadRootPath);
             enrichmentJob = await _autoTagService.StartJob(
                 downloadRootPath,
                 enrichmentConfig,
@@ -1443,6 +1446,19 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             $"Automation: enrichment finished for destination folder {destinationFolderId} (status={enrichmentJob?.Status ?? "skipped"})."));
 
         return ResolvePipelineEnrichmentResult(enrichmentJob);
+    }
+
+    private static string AddDestinationFolderScope(string configJson, long folderId, string rootPath)
+    {
+        var root = JsonNode.Parse(configJson) as JsonObject
+            ?? throw new InvalidOperationException("AutoTag profile config is invalid.");
+        root["destinationFolderId"] = folderId;
+        root["destinationFolderScopes"] = new JsonArray(new JsonObject
+        {
+            ["id"] = folderId,
+            ["rootPath"] = Path.GetFullPath(rootPath)
+        });
+        return root.ToJsonString(ScheduleJsonOptions);
     }
 
     private async Task<bool> RunPostDownloadFinalizationAsync(
@@ -3193,6 +3209,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         var selected = EnhancementWorkflowSelection.NormalizeSelectedFeatures(selectedFeatures);
         long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericFolderId);
+        if (numericFolderId > 0)
+        {
+            root["destinationFolderId"] = numericFolderId;
+        }
         EnhancementWorkflowSelection.ApplyFeatureSelection(
             root,
             selected,

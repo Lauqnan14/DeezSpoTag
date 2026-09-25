@@ -284,7 +284,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 var family = AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field);
                 try
                 {
-                    if (ShouldOverwriteTag(config, family.SupportedTag))
+                    if (payload.ForceOverwrite || ShouldOverwriteTag(config, family.SupportedTag))
                     {
                         foreach (var alias in family.CleanupNames)
                         {

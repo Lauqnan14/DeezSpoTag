@@ -207,6 +207,7 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var selectedForJob = ApplyEnhancementRunSelection(configNode, request, requestedFolderIds, targetFiles);
+        ApplyDestinationFolderScopes(configNode, scopedFolders);
         configNode[AutoTagLiterals.EnhancementForceFingerprintKey] = request.ForceFingerprint;
         var rootPath = targetFiles.Count > 0
             ? ResolveEnhancementTargetRootPath(targetFiles)
@@ -352,6 +353,7 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var selectedForJob = ApplyEnhancementRunSelection(configNode, request, requestedFolderIds, []);
+        ApplyDestinationFolderScopes(configNode, groupFolders);
         configNode[AutoTagLiterals.EnhancementForceFingerprintKey] = request.ForceFingerprint;
         var rootPath = Path.GetFullPath(groupFolders[0].RootPath!);
         configNode["path"] = rootPath;
@@ -463,6 +465,7 @@ public class AutoTagJobsController : ControllerBase
         configNode["organizeSidecarsIntoTemplateFolders"] = true;
         configNode[AutoTagLiterals.ManualReleasePreferenceKey] = releasePreference;
         configNode[AutoTagLiterals.ManualDestinationFolderIdKey] = destinationFolder.Id;
+        ApplyDestinationFolderScopes(configNode, [destinationFolder]);
         configNode[AutoTagLiterals.ManualForceFingerprintKey] = request.ForceFingerprint;
         configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
         configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
@@ -479,6 +482,24 @@ public class AutoTagJobsController : ControllerBase
                 EnhancementFeature: AutoTagLiterals.EnhancementFeatureManualEnrichment,
                 EnhancementGroupId: request.GroupId));
         return CreateStartJobResponse(job);
+    }
+
+    private static void ApplyDestinationFolderScopes(
+        JsonObject configNode,
+        IReadOnlyCollection<DeezSpoTag.Services.Library.FolderDto> folders)
+    {
+        configNode["destinationFolderScopes"] = new JsonArray(folders
+            .Where(folder => folder.Id > 0 && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Select(folder => (JsonNode)new JsonObject
+            {
+                ["id"] = folder.Id,
+                ["rootPath"] = Path.GetFullPath(folder.RootPath!)
+            })
+            .ToArray());
+        if (folders.Count == 1)
+        {
+            configNode["destinationFolderId"] = folders.First().Id;
+        }
     }
 
     private async Task<List<string>> ResolveManualEnrichmentTargetFilesAsync(

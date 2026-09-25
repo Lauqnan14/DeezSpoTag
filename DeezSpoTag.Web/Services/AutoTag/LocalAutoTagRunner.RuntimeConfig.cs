@@ -285,7 +285,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             ProfileName = raw.ProfileName,
             LibraryWideEnhancementBatchSize = raw.LibraryWideEnhancementBatchSize,
             ManualReleasePreference = NormalizeManualReleasePreference(raw.ManualReleasePreference),
-            ManualDestinationFolderId = raw.ManualDestinationFolderId
+            ManualDestinationFolderId = raw.ManualDestinationFolderId,
+            DestinationFolderId = raw.DestinationFolderId,
+            DestinationFolderScopes = raw.DestinationFolderScopes?
+                .Where(scope => scope.Id > 0 && !string.IsNullOrWhiteSpace(scope.RootPath))
+                .Select(scope => new AutoTagDestinationFolderScope
+                {
+                    Id = scope.Id,
+                    RootPath = scope.RootPath.Trim()
+                })
+                .ToList()
         };
     }
 

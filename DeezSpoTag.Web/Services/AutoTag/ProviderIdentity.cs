@@ -32,6 +32,8 @@ internal sealed record ProviderIdentityPayload(
     string? Url,
     bool IsNativeProviderResult)
 {
+    public bool ForceOverwrite { get; init; }
+
     public string? ValueFor(ProviderIdentityField field) => field switch
     {
         ProviderIdentityField.TrackId => TrackId,

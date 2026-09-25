@@ -131,6 +131,44 @@ public sealed class AlbumAwarenessTest
         Assert.NotEqual(altB, otherLibrary);
     }
 
+    [Fact]
+    public void BuildFolderScopedKey_NormalizesScopeAndAlbumPath()
+    {
+        var first = AlbumIdentity.BuildFolderScopedKey("/music/AltB/", "Artist\\Album/");
+        var equivalent = AlbumIdentity.BuildFolderScopedKey("/MUSIC/ALTB", "artist/album");
+
+        Assert.Equal(first, equivalent);
+        Assert.NotEqual(first, AlbumIdentity.BuildFolderScopedKey("/music/Gold", "Artist/Album"));
+        Assert.NotEqual(first, AlbumIdentity.BuildFolderScopedKey("/music/AltB", "Artist/Other Album"));
+    }
+
+    [Fact]
+    public void BuildFolderScopedKey_DoesNotDependOnProviderAlbumWordingOrEdition()
+    {
+        var folderKey = AlbumIdentity.BuildFolderScopedKey("folder:7", "Artist/Album");
+
+        Assert.Equal(folderKey, AlbumIdentity.BuildFolderScopedKey("folder:7", "Artist/Album"));
+        Assert.NotNull(folderKey);
+        Assert.Null(AlbumIdentity.BuildFolderScopedKey("folder:7", ""));
+        Assert.Null(AlbumIdentity.BuildFolderScopedKey("", "Artist/Album"));
+    }
+
+    [Fact]
+    public void AlbumReconciliation_DoesNotUseOrdinaryOverwriteChecksForAlbumIdentity()
+    {
+        var runner = PartialSourceReader.ReadTypeSource(
+            "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var start = runner.IndexOf("private async Task ReconcileBatchAlbumIdentitiesAsync(", StringComparison.Ordinal);
+        var end = runner.IndexOf("private static void WriteReconciledRawIdentity(", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = runner[start..end];
+
+        Assert.DoesNotContain("ShouldOverwriteTag(plan.Config, SupportedTag.Album)", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldOverwriteTag(plan.Config, SupportedTag.AlbumArtist)", body, StringComparison.Ordinal);
+        Assert.Contains("enabled.Contains(AlbumTag)", body, StringComparison.Ordinal);
+        Assert.Contains("enabled.Contains(AlbumArtistTag)", body, StringComparison.Ordinal);
+    }
+
     private static Dictionary<string, ProviderAlbumIdentity> ProviderMap(
         params (string Provider, string? AlbumId, string? ReleaseId, string? AlbumArtistId)[] entries)
     {
@@ -487,6 +525,38 @@ public sealed class AlbumAwarenessTest
             {
                 File.Delete(path);
             }
+        }
+    }
+
+    [Fact]
+    public void Store_LoadMigratesLegacyScopedIdentityToFolderKey()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"album-identities-migrate-{Guid.NewGuid():N}.json");
+        try
+        {
+            var legacyKey = AlbumIdentity.BuildScopedEditionAwareKey("/music/Gold", "Artist", "Album")!;
+            var identity = new AlbumIdentity(
+                "2024-01-01",
+                "f67cd8b2-1ac6-4e21-8451-4d6a58eb0ee5",
+                null,
+                CanonicalAlbumTitle: "Album",
+                CanonicalAlbumArtist: "Artist",
+                AlbumRelativePath: "Artist/Album",
+                ProviderIdentities: ProviderMap(("spotify", null, "spotify-release", null)));
+            var store = new AlbumIdentityStore();
+            store.Merge([(legacyKey, identity, DateTimeOffset.UtcNow)]);
+            store.Save(path);
+
+            var migrated = AlbumIdentityStore.Load(path);
+            var expectedKey = AlbumIdentity.BuildFolderScopedKey("/music/Gold", "Artist/Album");
+            var entry = Assert.Single(migrated.Entries);
+            Assert.Equal(expectedKey, entry.Key);
+            Assert.Equal("spotify-release", entry.Identity.GetProviderIdentity("spotify")?.ReleaseId);
+            Assert.Equal("Album", entry.Identity.CanonicalAlbumTitle);
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 

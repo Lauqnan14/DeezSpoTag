@@ -252,6 +252,23 @@ public sealed record AlbumIdentity(
         return scope.Length == 0 ? null : $"{scope}\u001e{releaseKey}";
     }
 
+    public static string? BuildFolderScopedKey(string? libraryScope, string? albumRelativePath)
+    {
+        var scope = NormalizePathPart(libraryScope);
+        var relativePath = NormalizePathPart(albumRelativePath);
+        return scope.Length == 0 || relativePath.Length == 0
+            ? null
+            : $"folder:{scope}\u001e{relativePath}";
+    }
+
+    private static string NormalizePathPart(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim()
+                .Replace('\\', '/')
+                .Trim('/')
+                .ToLowerInvariant();
+
     public static string? FormatReleaseDate(DateTime? value)
         => value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 

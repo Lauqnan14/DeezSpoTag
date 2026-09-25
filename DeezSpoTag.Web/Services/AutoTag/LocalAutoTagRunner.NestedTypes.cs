@@ -713,6 +713,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public int? LibraryWideEnhancementBatchSize { get; set; }
         public string? ManualReleasePreference { get; set; }
         public long? ManualDestinationFolderId { get; set; }
+        public long? DestinationFolderId { get; set; }
+        public List<AutoTagDestinationFolderScope>? DestinationFolderScopes { get; set; }
+    }
+
+    private sealed class AutoTagDestinationFolderScope
+    {
+        public long Id { get; set; }
+        public string RootPath { get; set; } = string.Empty;
     }
 
     private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal, ShazamFailureKind FailureKind = ShazamFailureKind.None);

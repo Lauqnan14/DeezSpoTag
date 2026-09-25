@@ -34,9 +34,7 @@ public sealed class AlbumIdentityStore
             return new AlbumIdentityStore();
         }
 
-        return new AlbumIdentityStore
-        {
-            Entries = document.Identities
+        var entries = document.Identities
                 .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
                 .Select(entry => new AlbumIdentityStoreEntry(
                     entry.Key,
@@ -56,8 +54,41 @@ public sealed class AlbumIdentityStore
                         entry.AlbumRelativePath,
                         ResolveProviderIdentities(entry)),
                     entry.UpdatedAt))
-                .ToList()
-        };
+                .Select(MigrateFolderKey)
+                .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(group =>
+                {
+                    var ordered = group.OrderByDescending(entry => entry.UpdatedAt).ToList();
+                    var identity = ordered[0].Identity;
+                    foreach (var older in ordered.Skip(1))
+                    {
+                        identity = identity.CoalesceWith(older.Identity);
+                    }
+
+                    return new AlbumIdentityStoreEntry(ordered[0].Key, identity, ordered[0].UpdatedAt);
+                })
+                .ToList();
+        return new AlbumIdentityStore { Entries = entries };
+    }
+
+    private static AlbumIdentityStoreEntry MigrateFolderKey(AlbumIdentityStoreEntry entry)
+    {
+        if (entry.Key.StartsWith("folder:", StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(entry.Identity.AlbumRelativePath))
+        {
+            return entry;
+        }
+
+        var separator = entry.Key.IndexOf('\u001e');
+        if (separator <= 0)
+        {
+            return entry;
+        }
+
+        var key = AlbumIdentity.BuildFolderScopedKey(
+            entry.Key[..separator],
+            entry.Identity.AlbumRelativePath);
+        return key is null ? entry : entry with { Key = key };
     }
 
     /// <summary>

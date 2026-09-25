@@ -815,7 +815,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         DateTime date,
         SupportedTag tag,
         AutoTagRunnerConfig config,
-        bool useNullSeparator)
+        bool useNullSeparator,
+        bool forceOverwrite = false)
     {
         var useYearOnly = IsYearOnlyDateFormat(config.Technical?.DateFormat);
         var payload = new DateWritePayload(
@@ -828,17 +829,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            WriteId3Date(file, kind, tag, config, payload, useNullSeparator);
+            WriteId3Date(file, kind, tag, config, payload, useNullSeparator, forceOverwrite);
             return;
         }
 
         if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            WriteVorbisDate(file, kind, tag, config, payload.DateString);
+            WriteVorbisDate(file, kind, tag, config, payload.DateString, forceOverwrite);
             return;
         }
 
-        WriteMp4Date(file, extension, kind, tag, config, payload.DateString);
+        WriteMp4Date(file, extension, kind, tag, config, payload.DateString, forceOverwrite);
     }
 
     private static void WriteId3Date(
@@ -847,12 +848,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         SupportedTag tag,
         AutoTagRunnerConfig config,
         DateWritePayload payload,
-        bool useNullSeparator)
+        bool useNullSeparator,
+        bool forceOverwrite)
     {
         var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
         if (kind == ReleaseDateTag)
         {
-            if (ShouldSkipId3ReleaseDate(config, tag, id3, payload.UseYearOnly))
+            if (!forceOverwrite && ShouldSkipId3ReleaseDate(config, tag, id3, payload.UseYearOnly))
             {
                 return;
             }
@@ -884,11 +886,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string kind,
         SupportedTag tag,
         AutoTagRunnerConfig config,
-        string dateString)
+        string dateString,
+        bool forceOverwrite)
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
         var field = kind == ReleaseDateTag ? "DATE" : OriginalDateUpperTag;
-        if (!ShouldOverwriteTag(config, tag) && TagRawProbe.HasVorbisRaw(vorbis, field))
+        if (!forceOverwrite && !ShouldOverwriteTag(config, tag) && TagRawProbe.HasVorbisRaw(vorbis, field))
         {
             return;
         }
@@ -902,7 +905,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string kind,
         SupportedTag tag,
         AutoTagRunnerConfig config,
-        string dateString)
+        string dateString,
+        bool forceOverwrite)
     {
         if (!IsMp4Family(extension))
         {
@@ -911,7 +915,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         if (kind == ReleaseDateTag)
         {
-            if (!ShouldOverwriteTag(config, tag)
+            if (!forceOverwrite && !ShouldOverwriteTag(config, tag)
                 && (Mp4TagHelper.HasRaw(file, "©day")
                     || Mp4TagHelper.HasRaw(file, "DATE")))
             {

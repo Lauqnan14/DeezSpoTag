@@ -272,13 +272,12 @@ public sealed class AutoTagVariantTitleGuardTest
 
         // Same edition → adopt the folder's established album wording.
         var folderBody = ExtractMethodBody(runner, "private void ApplyFolderAlbumIdentity(");
-        Assert.Contains("AlbumTitleNormalizer.IsSameEdition(establishedFolder.AlbumTitle, track.Album)", folderBody, StringComparison.Ordinal);
-        Assert.Contains("track.Album = establishedFolder.AlbumTitle", folderBody, StringComparison.Ordinal);
-        Assert.Contains("ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform)", folderBody, StringComparison.Ordinal);
+        var applyFolderBody = ExtractMethodBody(runner, "private static void ApplyEstablishedFolderIdentity(");
+        Assert.Contains("track.Album = establishedFolder.AlbumTitle", applyFolderBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, platform)", applyFolderBody, StringComparison.Ordinal);
 
         // Different edition → keep the folder's established edition (never rewrite).
-        Assert.Contains("AlbumTitleNormalizer.IsEditionConflict(establishedFolder.AlbumTitle, track.Album)", folderBody, StringComparison.Ordinal);
-        Assert.Contains("ApplyEstablishedAlbumIdentity(track, establishedFolder.Identity, context.Platform)", folderBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyEstablishedFolderIdentity(track, establishedFolder, context.Platform)", folderBody, StringComparison.Ordinal);
     }
 
     [Fact]
