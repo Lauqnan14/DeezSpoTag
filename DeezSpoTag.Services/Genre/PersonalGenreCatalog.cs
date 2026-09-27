@@ -53,8 +53,11 @@ public sealed class PersonalGenreCatalog
         IReadOnlyList<PersonalGenreTaxon> taxa)
     {
         var result = new Dictionary<string, PersonalGenreTaxon>(StringComparer.Ordinal);
-        foreach (var taxon in taxa)
+        foreach (var rawTaxon in taxa)
         {
+            var taxon = rawTaxon.ContextOnly && rawTaxon.Kind != PersonalGenreTaxonKind.Context
+                ? rawTaxon with { Kind = PersonalGenreTaxonKind.Context }
+                : rawTaxon;
             Add(taxon.Name, taxon);
             Add(taxon.Id, taxon);
             if (taxon.Aliases is not null)
