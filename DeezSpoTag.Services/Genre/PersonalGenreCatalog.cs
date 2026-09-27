@@ -71,7 +71,7 @@ public sealed class PersonalGenreCatalog
         void Add(string value, PersonalGenreTaxon taxon)
         {
             var normalized = PersonalGenreTaxonomy.Normalize(value);
-            if (normalized.Length > 0)
+            if (normalized.Length > 0 && !result.ContainsKey(normalized))
             {
                 result[normalized] = taxon;
             }
