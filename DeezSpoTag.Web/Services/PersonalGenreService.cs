@@ -6,6 +6,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PersonalGenreService
 {
+    private const int ConfigurationSchemaVersion = 1;
     private readonly PersonalGenreStore _store;
     private readonly LibraryRepository _repository;
     private readonly ILogger<PersonalGenreService> _logger;
@@ -20,8 +21,26 @@ public sealed class PersonalGenreService
         _logger = logger;
     }
 
-    public IReadOnlyList<PersonalGenreTaxon> GetTaxonomy()
-        => PersonalGenreTaxonomy.GetDefaultTaxa();
+    public async Task<IReadOnlyList<PersonalGenreTaxon>> GetTaxonomyAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var custom = await _store.GetCustomTaxaAsync(cancellationToken);
+        return new PersonalGenreCatalog(custom).Taxa;
+    }
+
+    public Task<IReadOnlyList<PersonalGenreTaxon>> GetCustomTaxaAsync(
+        CancellationToken cancellationToken = default)
+        => _store.GetCustomTaxaAsync(cancellationToken);
+
+    public Task<PersonalGenreTaxon> UpsertCustomTaxonAsync(
+        PersonalGenreTaxon taxon,
+        CancellationToken cancellationToken = default)
+        => _store.UpsertCustomTaxonAsync(taxon, cancellationToken);
+
+    public Task DeleteCustomTaxonAsync(
+        string taxonId,
+        CancellationToken cancellationToken = default)
+        => _store.DeleteCustomTaxonAsync(taxonId, cancellationToken);
 
     public Task<PersonalGenreSettings> GetSettingsAsync(CancellationToken cancellationToken = default)
         => _store.GetSettingsAsync(cancellationToken);
@@ -80,6 +99,83 @@ public sealed class PersonalGenreService
         return await ResolveTrackAsync(trackId, cancellationToken);
     }
 
+    public async Task<PersonalGenreConfiguration> ExportConfigurationAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await _store.GetSettingsAsync(cancellationToken);
+        var customTaxa = await _store.GetCustomTaxaAsync(cancellationToken);
+        var mappings = await _store.GetMappingsAsync(cancellationToken);
+        var rules = await _store.GetRulesAsync(cancellationToken);
+
+        return new PersonalGenreConfiguration(
+            ConfigurationSchemaVersion,
+            PersonalGenreTaxonomy.Version,
+            DateTimeOffset.UtcNow,
+            settings,
+            customTaxa,
+            mappings.Select(item => item with { Id = 0 }).ToArray(),
+            rules.Select(item => item with { Id = 0 }).ToArray());
+    }
+
+    public async Task<PersonalGenreImportResult> ImportConfigurationAsync(
+        PersonalGenreConfiguration configuration,
+        CancellationToken cancellationToken = default)
+    {
+        if (configuration.SchemaVersion != ConfigurationSchemaVersion)
+        {
+            throw new ArgumentException(
+                $"Unsupported Personal Genre configuration schema version {configuration.SchemaVersion}.",
+                nameof(configuration));
+        }
+
+        await _store.SaveSettingsAsync(configuration.Settings, cancellationToken);
+
+        var customTaxaImported = 0;
+        foreach (var taxon in configuration.CustomTaxa ?? Array.Empty<PersonalGenreTaxon>())
+        {
+            await _store.UpsertCustomTaxonAsync(taxon, cancellationToken);
+            customTaxaImported++;
+        }
+
+        var existingMappings = (await _store.GetMappingsAsync(cancellationToken)).ToList();
+        var existingRules = (await _store.GetRulesAsync(cancellationToken)).ToList();
+        var mappingsImported = 0;
+        var rulesImported = 0;
+        var duplicatesSkipped = 0;
+
+        foreach (var mapping in configuration.Mappings ?? Array.Empty<PersonalGenreMapping>())
+        {
+            if (existingMappings.Any(existing => SameMappingIdentity(existing, mapping)))
+            {
+                duplicatesSkipped++;
+                continue;
+            }
+
+            var saved = await _store.UpsertMappingAsync(mapping with { Id = 0 }, cancellationToken);
+            existingMappings.Add(saved);
+            mappingsImported++;
+        }
+
+        foreach (var rule in configuration.Rules ?? Array.Empty<PersonalGenreRule>())
+        {
+            if (existingRules.Any(existing => SameRuleIdentity(existing, rule)))
+            {
+                duplicatesSkipped++;
+                continue;
+            }
+
+            var saved = await _store.UpsertRuleAsync(rule with { Id = 0 }, cancellationToken);
+            existingRules.Add(saved);
+            rulesImported++;
+        }
+
+        return new PersonalGenreImportResult(
+            customTaxaImported,
+            mappingsImported,
+            rulesImported,
+            duplicatesSkipped);
+    }
+
     public async Task<PersonalGenreTrackResult?> ResolveTrackAsync(
         long trackId,
         CancellationToken cancellationToken = default)
@@ -109,7 +205,14 @@ public sealed class PersonalGenreService
         var mappings = await _store.GetMappingsAsync(cancellationToken);
         var rules = await _store.GetRulesAsync(cancellationToken);
         var locks = await _store.GetLocksAsync(analysis.TrackId, cancellationToken);
-        var resolution = PersonalGenreResolver.Resolve(evidence, mappings, rules, locks, settings);
+        var customTaxa = await _store.GetCustomTaxaAsync(cancellationToken);
+        var resolution = PersonalGenreResolver.Resolve(
+            evidence,
+            mappings,
+            rules,
+            locks,
+            customTaxa,
+            settings);
         var result = new PersonalGenreTrackResult(
             analysis.TrackId,
             resolution,
@@ -161,7 +264,7 @@ public sealed class PersonalGenreService
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Personal Genre could not parse Vibe semantic evidence for track {TrackId}.", "unknown");
+            _logger.LogWarning(ex, "Personal Genre could not parse Vibe semantic evidence.");
             return Array.Empty<PersonalGenreEvidence>();
         }
     }
@@ -189,6 +292,26 @@ public sealed class PersonalGenreService
             }
         }
     }
+
+    private static bool SameMappingIdentity(
+        PersonalGenreMapping left,
+        PersonalGenreMapping right)
+        => string.Equals(NormalizeValue(left.MatchValue), NormalizeValue(right.MatchValue), StringComparison.Ordinal)
+           && string.Equals(left.TargetTaxonId.Trim(), right.TargetTaxonId.Trim(), StringComparison.OrdinalIgnoreCase)
+           && string.Equals(NormalizeSource(left.Source), NormalizeSource(right.Source), StringComparison.Ordinal);
+
+    private static bool SameRuleIdentity(
+        PersonalGenreRule left,
+        PersonalGenreRule right)
+        => string.Equals(NormalizeValue(left.MatchValue), NormalizeValue(right.MatchValue), StringComparison.Ordinal)
+           && string.Equals(left.TargetTaxonId.Trim(), right.TargetTaxonId.Trim(), StringComparison.OrdinalIgnoreCase)
+           && string.Equals(NormalizeSource(left.Source), NormalizeSource(right.Source), StringComparison.Ordinal);
+
+    private static string NormalizeValue(string value)
+        => PersonalGenreTaxonomy.Normalize(value);
+
+    private static string NormalizeSource(string? value)
+        => (value ?? string.Empty).Trim().ToLowerInvariant();
 
     private static PersonalGenreTaxonKind? ParseKind(string? value)
         => value?.Trim().ToLowerInvariant() switch
