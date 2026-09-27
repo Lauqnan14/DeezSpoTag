@@ -128,6 +128,14 @@ public sealed record PersonalGenreImportResult(
     int DuplicatesSkipped);
 
 
+public sealed record PersonalGenreRebuildResult(
+    int Processed,
+    int Resolved,
+    int Skipped,
+    long LastTrackId,
+    bool HasMore);
+
+
 public sealed record PersonalGenreResolutionHistoryItem(
     long Id,
     long TrackId,
