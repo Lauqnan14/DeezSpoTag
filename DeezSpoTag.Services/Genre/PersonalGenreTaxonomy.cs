@@ -23,6 +23,19 @@ public static class PersonalGenreTaxonomy
         new("jazz", "Jazz", PersonalGenreTaxonKind.Genre),
         new("classical", "Classical", PersonalGenreTaxonKind.Genre),
 
+        // African and regional canonical genres. Geography remains Context; these are musical forms.
+        new("genge", "Genge", PersonalGenreTaxonKind.Genre, Aliases: ["Genge Music"]),
+        new("benga", "Benga", PersonalGenreTaxonKind.Genre, Aliases: ["Benga Music"]),
+        new("ohangla", "Ohangla", PersonalGenreTaxonKind.Genre),
+        new("mugithi", "Mugithi", PersonalGenreTaxonKind.Genre),
+        new("taarab", "Taarab", PersonalGenreTaxonKind.Genre),
+        new("singeli", "Singeli", PersonalGenreTaxonKind.Genre),
+        new("soukous", "Soukous", PersonalGenreTaxonKind.Genre),
+        new("congolese-rumba", "Congolese Rumba", PersonalGenreTaxonKind.Genre, Aliases: ["Congo Rumba", "Rumba Congolaise"]),
+        new("highlife", "Highlife", PersonalGenreTaxonKind.Genre),
+        new("coupe-decale", "Coupé-Décalé", PersonalGenreTaxonKind.Genre, Aliases: ["Coupe Decale", "Coupé Décalé"]),
+        new("kwaito", "Kwaito", PersonalGenreTaxonKind.Genre),
+
         new("afropop", "Afropop", PersonalGenreTaxonKind.Style, ParentIds: ["afrobeats", "pop"], Aliases: ["Afro-Pop", "Afro Pop"]),
         new("afro-fusion", "Afro-Fusion", PersonalGenreTaxonKind.Style, ParentIds: ["afrobeats"]),
         new("afro-soul", "Afro-Soul", PersonalGenreTaxonKind.Style, ParentIds: ["soul", "afrobeats"]),
@@ -36,9 +49,13 @@ public static class PersonalGenreTaxonomy
         new("bongo-flava-pop", "Bongo Flava Pop", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "pop"]),
         new("bongo-flava-rnb", "Bongo Flava R&B", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "rnb"], Aliases: ["Bongo Flava RnB"]),
         new("bongo-flava-rap", "Bongo Flava Rap", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "hip-hop"], Aliases: ["Bongo Rap"]),
+        new("gengetone", "Gengetone", PersonalGenreTaxonKind.Style, ParentIds: ["genge", "hip-hop"]),
+        new("kenyan-drill", "Kenyan Drill", PersonalGenreTaxonKind.Style, ParentIds: ["hip-hop"], Aliases: ["Kenya Drill"]),
+        new("ndombolo", "Ndombolo", PersonalGenreTaxonKind.Style, ParentIds: ["soukous", "congolese-rumba"]),
+        new("east-african-gospel", "East African Gospel", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"]),
+        new("swahili-gospel", "Swahili Gospel", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"]),
 
         new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Substyle, ParentIds: ["bongo-flava", "afropop"]),
-        new("bongo-rap", "Bongo Rap", PersonalGenreTaxonKind.Substyle, ParentIds: ["bongo-flava", "hip-hop"]),
 
         new("afrosounds", "Afrosounds", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
@@ -48,7 +65,10 @@ public static class PersonalGenreTaxonomy
         new("uganda", "Uganda", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("south-africa", "South Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("nigeria", "Nigeria", PersonalGenreTaxonKind.Context, ContextOnly: true),
-        new("ghana", "Ghana", PersonalGenreTaxonKind.Context, ContextOnly: true)
+        new("ghana", "Ghana", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("congo", "Congo", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("drc", "DR Congo", PersonalGenreTaxonKind.Context, ContextOnly: true, Aliases: ["Democratic Republic of the Congo", "DRC"]),
+        new("zilizopendwa", "Zilizopendwa", PersonalGenreTaxonKind.Context, ContextOnly: true, Aliases: ["Swahili Oldies"])
     ];
 
     private static readonly IReadOnlyDictionary<string, PersonalGenreTaxon> ById =
