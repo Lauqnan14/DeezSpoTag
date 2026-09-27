@@ -236,6 +236,7 @@
                 targetTaxonId: byId('pgMappingTarget').value,
                 source: nullableText(byId('pgMappingSource').value),
                 priority: toInt(byId('pgMappingPriority').value, 100),
+                action: toInt(byId('pgMappingAction').value, 0),
                 enabled: byId('pgMappingEnabled').checked
             };
 
@@ -280,7 +281,7 @@
         const body = byId('pgMappingsBody');
         if (!body) return;
         if (!state.mappings.length) {
-            body.innerHTML = '<tr><td colspan="6" class="pg-muted">No provider mappings yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="7" class="pg-muted">No provider mappings yet.</td></tr>';
             return;
         }
 
@@ -288,7 +289,8 @@
             '<tr>' +
             '<td><strong>' + escapeHtml(item.matchValue) + '</strong></td>' +
             '<td>' + (item.source ? escapeHtml(item.source) : '<span class="pg-muted">Any source</span>') + '</td>' +
-            '<td>' + formatTaxon(item.targetTaxonId) + '</td>' +
+            '<td>' + escapeHtml(formatMappingAction(item.action)) + '</td>' +
+            '<td>' + formatMappingTarget(item) + '</td>' +
             '<td>' + escapeHtml(String(item.priority)) + '</td>' +
             '<td><span class="pg-state ' + (item.enabled ? 'pg-state--enabled' : '') + '">' + (item.enabled ? 'Enabled' : 'Disabled') + '</span></td>' +
             '<td><div class="pg-row-actions">' +
@@ -302,6 +304,7 @@
         byId('pgMappingId').value = item.id || 0;
         byId('pgMappingValue').value = item.matchValue || '';
         byId('pgMappingSource').value = item.source || '';
+        byId('pgMappingAction').value = String(normalizeMappingActionValue(item.action));
         byId('pgMappingTarget').value = item.targetTaxonId || '';
         byId('pgMappingPriority').value = item.priority ?? 100;
         byId('pgMappingEnabled').checked = item.enabled !== false;
@@ -312,6 +315,7 @@
         byId('pgMappingForm')?.reset();
         byId('pgMappingId').value = 0;
         byId('pgMappingPriority').value = 100;
+        byId('pgMappingAction').value = '0';
         byId('pgMappingEnabled').checked = true;
     }
 
@@ -512,6 +516,33 @@
         }
 
         return payload;
+    }
+
+    function normalizeMappingActionValue(value) {
+        if (typeof value === 'number') return value;
+        switch (String(value || '').toLowerCase().replaceAll('_', '')) {
+            case 'contextonly': return 1;
+            case 'ignore': return 2;
+            case 'ambiguous': return 3;
+            default: return 0;
+        }
+    }
+
+    function formatMappingAction(value) {
+        switch (normalizeMappingActionValue(value)) {
+            case 1: return 'Context only';
+            case 2: return 'Ignore';
+            case 3: return 'Ambiguous';
+            default: return 'Map';
+        }
+    }
+
+    function formatMappingTarget(item) {
+        const action = normalizeMappingActionValue(item.action);
+        if (action === 2 || action === 3) {
+            return '<span class="pg-muted">Not used</span>';
+        }
+        return formatTaxon(item.targetTaxonId);
     }
 
     function formatTaxon(id) {
