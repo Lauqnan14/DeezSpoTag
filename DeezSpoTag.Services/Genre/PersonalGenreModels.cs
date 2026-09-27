@@ -12,7 +12,7 @@ public sealed record PersonalGenreTaxon(
     string Id,
     string Name,
     PersonalGenreTaxonKind Kind,
-    string? ParentId = null,
+    IReadOnlyList<string>? ParentIds = null,
     bool ContextOnly = false,
     IReadOnlyList<string>? Aliases = null);
 
@@ -39,11 +39,25 @@ public sealed record PersonalGenreRule(
     int Priority = 1000,
     bool Enabled = true);
 
+public sealed record PersonalGenreLock(
+    long TrackId,
+    string TaxonId,
+    bool Enabled = true,
+    DateTimeOffset? UpdatedAtUtc = null);
+
 public sealed record PersonalGenreSettings(
     bool Enabled = true,
     int MaxGenres = 3,
     bool PreserveProviderFallback = true,
     bool IncludeParentGenres = false);
+
+public sealed record PersonalGenreClassification(
+    string TaxonId,
+    string Name,
+    PersonalGenreTaxonKind Kind,
+    double Confidence,
+    IReadOnlyList<string> Sources,
+    bool UserLocked = false);
 
 public sealed record PersonalGenreResolution(
     string? PrimaryGenre,
@@ -51,6 +65,7 @@ public sealed record PersonalGenreResolution(
     IReadOnlyList<string> Styles,
     IReadOnlyList<string> Substyles,
     IReadOnlyList<string> Contexts,
+    IReadOnlyList<PersonalGenreClassification> Classifications,
     IReadOnlyList<string> AppliedRuleIds,
     IReadOnlyList<PersonalGenreEvidence> Evidence,
     string ResolverVersion);
