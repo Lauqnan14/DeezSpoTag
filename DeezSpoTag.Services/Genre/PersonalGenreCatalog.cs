@@ -37,9 +37,7 @@ public sealed class PersonalGenreCatalog
         }
 
         var normalizedTaxa = taxa
-            .Select(item => item.ContextOnly && item.Kind != PersonalGenreTaxonKind.Context
-                ? item with { Kind = PersonalGenreTaxonKind.Context }
-                : item)
+            .Select(NormalizeTaxon)
             .ToList();
 
         _taxa = normalizedTaxa;
@@ -55,15 +53,21 @@ public sealed class PersonalGenreCatalog
     public bool TryMatch(string? value, out PersonalGenreTaxon taxon)
         => _byLookup.TryGetValue(PersonalGenreTaxonomy.Normalize(value), out taxon!);
 
+    private static PersonalGenreTaxon NormalizeTaxon(PersonalGenreTaxon taxon)
+        => taxon.ContextOnly
+           && taxon.Kind is PersonalGenreTaxonKind.Genre
+               or PersonalGenreTaxonKind.Style
+               or PersonalGenreTaxonKind.Substyle
+            ? taxon with { Kind = PersonalGenreTaxonKind.Context }
+            : taxon;
+
     private static IReadOnlyDictionary<string, PersonalGenreTaxon> BuildLookup(
         IReadOnlyList<PersonalGenreTaxon> taxa)
     {
         var result = new Dictionary<string, PersonalGenreTaxon>(StringComparer.Ordinal);
         foreach (var rawTaxon in taxa)
         {
-            var taxon = rawTaxon.ContextOnly && rawTaxon.Kind != PersonalGenreTaxonKind.Context
-                ? rawTaxon with { Kind = PersonalGenreTaxonKind.Context }
-                : rawTaxon;
+            var taxon = NormalizeTaxon(rawTaxon);
             Add(taxon.Name, taxon);
             Add(taxon.Id, taxon);
             if (taxon.Aliases is not null)
