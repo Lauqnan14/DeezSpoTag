@@ -394,10 +394,10 @@ SELECT last_insert_rowid();
         {
             const string currentSql = """
 INSERT INTO personal_genre_track
-    (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
+    (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json, scenes_json, languages_json,
      classifications_json, decisions_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
 VALUES
-    (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson,
+    (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson, @scenesJson, @languagesJson,
      @classificationsJson, @decisionsJson, @appliedRuleIdsJson, @evidenceJson, @resolverVersion, @resolvedAtUtc)
 ON CONFLICT(track_id) DO UPDATE SET
     primary_genre = excluded.primary_genre,
@@ -405,6 +405,8 @@ ON CONFLICT(track_id) DO UPDATE SET
     styles_json = excluded.styles_json,
     substyles_json = excluded.substyles_json,
     contexts_json = excluded.contexts_json,
+    scenes_json = excluded.scenes_json,
+    languages_json = excluded.languages_json,
     classifications_json = excluded.classifications_json,
     decisions_json = excluded.decisions_json,
     applied_rule_ids_json = excluded.applied_rule_ids_json,
@@ -420,10 +422,10 @@ ON CONFLICT(track_id) DO UPDATE SET
 
             const string historySql = """
 INSERT INTO personal_genre_resolution_history
-    (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
+    (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json, scenes_json, languages_json,
      classifications_json, decisions_json, applied_rule_ids_json, resolver_version, resolved_at_utc)
 VALUES
-    (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson,
+    (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson, @scenesJson, @languagesJson,
      @classificationsJson, @decisionsJson, @appliedRuleIdsJson, @resolverVersion, @resolvedAtUtc);
 SELECT last_insert_rowid();
 """;
@@ -465,7 +467,7 @@ SELECT last_insert_rowid();
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
-SELECT primary_genre, genres_json, styles_json, substyles_json, contexts_json,
+SELECT primary_genre, genres_json, styles_json, substyles_json, contexts_json, scenes_json, languages_json,
        classifications_json, decisions_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc
 FROM personal_genre_track
 WHERE track_id = @trackId;
@@ -484,13 +486,15 @@ WHERE track_id = @trackId;
             ParseStringList(reader.GetString(2)),
             ParseStringList(reader.GetString(3)),
             ParseStringList(reader.GetString(4)),
-            ParseClassifications(reader.GetString(5)),
-            ParseDecisions(reader.GetString(6)),
-            ParseStringList(reader.GetString(7)),
-            ParseEvidence(reader.GetString(8)),
-            reader.GetString(9));
+            ParseStringList(reader.GetString(5)),
+            ParseStringList(reader.GetString(6)),
+            ParseClassifications(reader.GetString(7)),
+            ParseDecisions(reader.GetString(8)),
+            ParseStringList(reader.GetString(9)),
+            ParseEvidence(reader.GetString(10)),
+            reader.GetString(11));
 
-        var resolvedAtUtc = ParseDateTimeOffset(reader.IsDBNull(10) ? null : reader.GetString(10));
+        var resolvedAtUtc = ParseDateTimeOffset(reader.IsDBNull(12) ? null : reader.GetString(12));
         return new PersonalGenreTrackResult(trackId, resolution, resolvedAtUtc ?? DateTimeOffset.MinValue);
     }
 
@@ -796,6 +800,8 @@ LIMIT 1;
         command.Parameters.AddWithValue("stylesJson", JsonSerializer.Serialize(result.Resolution.Styles));
         command.Parameters.AddWithValue("substylesJson", JsonSerializer.Serialize(result.Resolution.Substyles));
         command.Parameters.AddWithValue("contextsJson", JsonSerializer.Serialize(result.Resolution.Contexts));
+        command.Parameters.AddWithValue("scenesJson", JsonSerializer.Serialize(result.Resolution.Scenes));
+        command.Parameters.AddWithValue("languagesJson", JsonSerializer.Serialize(result.Resolution.Languages));
         command.Parameters.AddWithValue("classificationsJson", JsonSerializer.Serialize(result.Resolution.Classifications));
         command.Parameters.AddWithValue("decisionsJson", JsonSerializer.Serialize(result.Resolution.Decisions));
         command.Parameters.AddWithValue("appliedRuleIdsJson", JsonSerializer.Serialize(result.Resolution.AppliedRuleIds));
@@ -1017,6 +1023,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
     classifications_json TEXT NOT NULL DEFAULT '[]',
     decisions_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -1034,6 +1042,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
     classifications_json TEXT NOT NULL DEFAULT '[]',
     decisions_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -1182,6 +1192,8 @@ LIMIT 1;
             "style" => PersonalGenreTaxonKind.Style,
             "substyle" => PersonalGenreTaxonKind.Substyle,
             "context" => PersonalGenreTaxonKind.Context,
+            "scene" => PersonalGenreTaxonKind.Scene,
+            "language" => PersonalGenreTaxonKind.Language,
             _ => throw new InvalidOperationException($"Unknown Personal Genre taxon kind '{value}'.")
         };
 
