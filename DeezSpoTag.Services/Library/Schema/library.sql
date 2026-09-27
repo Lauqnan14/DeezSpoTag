@@ -1137,6 +1137,58 @@ CREATE TABLE IF NOT EXISTS track_analysis (
 
 CREATE INDEX IF NOT EXISTS idx_track_analysis_library ON track_analysis (library_id);
 
+
+CREATE TABLE IF NOT EXISTS personal_genre_settings (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    max_genres INTEGER NOT NULL DEFAULT 3,
+    preserve_provider_fallback INTEGER NOT NULL DEFAULT 1,
+    include_parent_genres INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS personal_genre_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_mapping_match
+    ON personal_genre_mapping (match_value, source, enabled, priority DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 1000,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_rule_match
+    ON personal_genre_rule (match_value, source, enabled, priority DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_track (
+    track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
+    ON personal_genre_track (primary_genre);
+
 CREATE TABLE IF NOT EXISTS mood_bucket (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
     mood TEXT NOT NULL,
