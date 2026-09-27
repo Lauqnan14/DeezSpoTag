@@ -88,6 +88,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly EmbeddedVibeMetadataReader _embeddedVibeReader;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly MoodBucketService _moodBucketService;
+    private readonly PersonalGenreService _personalGenreService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
     private readonly SemaphoreSlim _manualRunSignal = new(0, 1);
@@ -124,6 +125,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         EmbeddedVibeMetadataReader embeddedVibeReader,
         AutoTagProfileResolutionService profileResolutionService,
         MoodBucketService moodBucketService,
+        PersonalGenreService personalGenreService,
         IConfiguration configuration)
     {
         _repository = repository;
@@ -135,6 +137,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _embeddedVibeReader = embeddedVibeReader;
         _profileResolutionService = profileResolutionService;
         _moodBucketService = moodBucketService;
+        _personalGenreService = personalGenreService;
         _configuration = configuration;
     }
 
@@ -548,6 +551,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             result = await AttachLastFmTagsIfMissingAsync(result, summary, run.Token);
 
             await _repository.UpsertTrackAnalysisAsync(result, run.Token);
+            await ResolvePersonalGenreSafelyAsync(result, run.Token);
             var isComplete = IsAnalysisCompleteStatus(result.Status);
             await AssignMoodBucketsIfCompleteAsync(track.TrackId, isComplete, run.Token);
 
@@ -772,6 +776,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         SetCurrentAnalysis(track, summary);
         var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
         await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+        await ResolvePersonalGenreSafelyAsync(result, cancellationToken);
         if (IsAnalysisCompleteStatus(result.Status))
         {
             await AssignTrackMoodBucketsAsync(track.TrackId, cancellationToken);
@@ -849,6 +854,25 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         var reason = string.IsNullOrWhiteSpace(error) ? "Unknown error" : error;
         errorBuckets[reason] = errorBuckets.TryGetValue(reason, out var count) ? count + 1 : 1;
+    }
+
+    private async Task ResolvePersonalGenreSafelyAsync(
+        TrackAnalysisResultDto result,
+        CancellationToken cancellationToken)
+    {
+        if (!IsAnalysisCompleteStatus(result.Status))
+        {
+            return;
+        }
+
+        try
+        {
+            await _personalGenreService.ResolveAndStoreAsync(result, cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Personal Genre resolution failed for track {TrackId}", result.TrackId);
+        }
     }
 
     private async Task AssignTrackMoodBucketsAsync(long trackId, CancellationToken cancellationToken)
