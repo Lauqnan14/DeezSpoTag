@@ -71,6 +71,138 @@ ON CONFLICT(id) DO UPDATE SET
         return normalized;
     }
 
+    public async Task<IReadOnlyList<PersonalGenreTaxon>> GetCustomTaxaAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT id, name, kind, parent_ids_json, context_only, aliases_json
+FROM personal_genre_taxon
+ORDER BY kind, name COLLATE NOCASE, id;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<PersonalGenreTaxon>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            output.Add(new PersonalGenreTaxon(
+                reader.GetString(0),
+                reader.GetString(1),
+                ParseTaxonKind(reader.GetString(2)),
+                ParseStringList(reader.GetString(3)),
+                reader.GetInt32(4) != 0,
+                ParseStringList(reader.GetString(5))));
+        }
+
+        return output;
+    }
+
+    public async Task<PersonalGenreTaxon> UpsertCustomTaxonAsync(
+        PersonalGenreTaxon taxon,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        var id = NormalizeCustomTaxonId(taxon.Id);
+        var name = RequireValue(taxon.Name, nameof(taxon.Name));
+        if (PersonalGenreTaxonomy.TryGetById(id, out _))
+        {
+            throw new ArgumentException($"Built-in Personal Genre taxon '{id}' cannot be replaced.", nameof(taxon.Id));
+        }
+
+        var parentIds = (taxon.ParentIds ?? Array.Empty<string>())
+            .Where(parentId => !string.IsNullOrWhiteSpace(parentId))
+            .Select(parentId => parentId.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parentIds.Any(parentId => string.Equals(parentId, id, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException("A taxonomy term cannot be its own parent.", nameof(taxon.ParentIds));
+        }
+
+        foreach (var parentId in parentIds)
+        {
+            await ValidateTaxonAsync(parentId, cancellationToken);
+        }
+
+        var aliases = (taxon.Aliases ?? Array.Empty<string>())
+            .Where(alias => !string.IsNullOrWhiteSpace(alias))
+            .Select(alias => alias.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var normalized = new PersonalGenreTaxon(
+            id,
+            name,
+            taxon.Kind,
+            parentIds,
+            taxon.ContextOnly || taxon.Kind == PersonalGenreTaxonKind.Context,
+            aliases);
+
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+INSERT INTO personal_genre_taxon
+    (id, name, kind, parent_ids_json, context_only, aliases_json, created_at_utc, updated_at_utc)
+VALUES
+    (@id, @name, @kind, @parentIdsJson, @contextOnly, @aliasesJson, @now, @now)
+ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    kind = excluded.kind,
+    parent_ids_json = excluded.parent_ids_json,
+    context_only = excluded.context_only,
+    aliases_json = excluded.aliases_json,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("id", normalized.Id);
+        command.Parameters.AddWithValue("name", normalized.Name);
+        command.Parameters.AddWithValue("kind", normalized.Kind.ToString().ToLowerInvariant());
+        command.Parameters.AddWithValue("parentIdsJson", JsonSerializer.Serialize(normalized.ParentIds ?? Array.Empty<string>()));
+        command.Parameters.AddWithValue("contextOnly", normalized.ContextOnly ? 1 : 0);
+        command.Parameters.AddWithValue("aliasesJson", JsonSerializer.Serialize(normalized.Aliases ?? Array.Empty<string>()));
+        command.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return normalized;
+    }
+
+    public async Task DeleteCustomTaxonAsync(
+        string taxonId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        var id = NormalizeCustomTaxonId(taxonId);
+        if (PersonalGenreTaxonomy.TryGetById(id, out _))
+        {
+            throw new ArgumentException("Built-in Personal Genre taxonomy terms cannot be deleted.", nameof(taxonId));
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        const string referenceSql = """
+SELECT
+    (SELECT COUNT(*) FROM personal_genre_mapping WHERE lower(target_taxon_id) = lower(@id)) +
+    (SELECT COUNT(*) FROM personal_genre_rule WHERE lower(target_taxon_id) = lower(@id)) +
+    (SELECT COUNT(*) FROM personal_genre_lock WHERE lower(taxon_id) = lower(@id)) +
+    (SELECT COUNT(*)
+       FROM personal_genre_taxon term, json_each(term.parent_ids_json) parent
+      WHERE lower(CAST(parent.value AS TEXT)) = lower(@id));
+""";
+        await using (var referenceCommand = new SqliteCommand(referenceSql, connection))
+        {
+            referenceCommand.Parameters.AddWithValue("id", id);
+            var references = Convert.ToInt32(await referenceCommand.ExecuteScalarAsync(cancellationToken) ?? 0, CultureInfo.InvariantCulture);
+            if (references > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Custom taxon '{id}' is still referenced by a mapping, rule, lock, or child term.");
+            }
+        }
+
+        const string deleteSql = "DELETE FROM personal_genre_taxon WHERE lower(id) = lower(@id);";
+        await using var deleteCommand = new SqliteCommand(deleteSql, connection);
+        deleteCommand.Parameters.AddWithValue("id", id);
+        await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<PersonalGenreMapping>> GetMappingsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -101,9 +233,8 @@ ORDER BY priority DESC, id;
         PersonalGenreMapping mapping,
         CancellationToken cancellationToken = default)
     {
-        ValidateTaxon(mapping.TargetTaxonId);
+        await ValidateTaxonAsync(mapping.TargetTaxonId, cancellationToken);
         var matchValue = RequireValue(mapping.MatchValue, nameof(mapping.MatchValue));
-        await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
 
         if (mapping.Id > 0)
@@ -173,9 +304,8 @@ ORDER BY priority DESC, id;
         PersonalGenreRule rule,
         CancellationToken cancellationToken = default)
     {
-        ValidateTaxon(rule.TargetTaxonId);
+        await ValidateTaxonAsync(rule.TargetTaxonId, cancellationToken);
         var matchValue = RequireValue(rule.MatchValue, nameof(rule.MatchValue));
-        await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
 
         if (rule.Id > 0)
@@ -340,8 +470,7 @@ ORDER BY taxon_id;
         PersonalGenreLock item,
         CancellationToken cancellationToken = default)
     {
-        ValidateTaxon(item.TaxonId);
-        await EnsureSchemaAsync(cancellationToken);
+        await ValidateTaxonAsync(item.TaxonId, cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
         var now = DateTimeOffset.UtcNow;
         const string sql = """
@@ -427,6 +556,19 @@ CREATE TABLE IF NOT EXISTS personal_genre_settings (
 );
 INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS personal_genre_taxon (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_only INTEGER NOT NULL DEFAULT 0,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_taxon_kind_name
+    ON personal_genre_taxon (kind, name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS personal_genre_mapping (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_value TEXT NOT NULL,
@@ -501,13 +643,56 @@ CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
         return connection;
     }
 
-    private static void ValidateTaxon(string taxonId)
+    private async Task ValidateTaxonAsync(
+        string taxonId,
+        CancellationToken cancellationToken)
     {
-        if (!PersonalGenreTaxonomy.TryGetById(taxonId, out _))
+        var normalized = taxonId?.Trim() ?? string.Empty;
+        if (PersonalGenreTaxonomy.TryGetById(normalized, out _))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT 1
+FROM personal_genre_taxon
+WHERE lower(id) = lower(@id)
+LIMIT 1;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("id", normalized);
+        var exists = await command.ExecuteScalarAsync(cancellationToken);
+        if (exists is null)
         {
             throw new ArgumentException($"Unknown Personal Genre taxon '{taxonId}'.", nameof(taxonId));
         }
     }
+
+    private static string NormalizeCustomTaxonId(string? taxonId)
+    {
+        var value = taxonId?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (value.Length == 0
+            || value.Any(character => !char.IsLetterOrDigit(character) && character is not '-' and not '_'))
+        {
+            throw new ArgumentException(
+                "Custom taxon ID must contain only letters, numbers, hyphens, or underscores.",
+                nameof(taxonId));
+        }
+
+        return value;
+    }
+
+    private static PersonalGenreTaxonKind ParseTaxonKind(string value)
+        => value.Trim().ToLowerInvariant() switch
+        {
+            "genre" => PersonalGenreTaxonKind.Genre,
+            "style" => PersonalGenreTaxonKind.Style,
+            "substyle" => PersonalGenreTaxonKind.Substyle,
+            "context" => PersonalGenreTaxonKind.Context,
+            _ => throw new InvalidOperationException($"Unknown Personal Genre taxon kind '{value}'.")
+        };
 
     private static string RequireValue(string value, string parameterName)
     {
