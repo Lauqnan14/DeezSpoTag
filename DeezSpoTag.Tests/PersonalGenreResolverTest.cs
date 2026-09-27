@@ -172,6 +172,106 @@ public sealed class PersonalGenreResolverTest
         Assert.Empty(resolution.Genres);
     }
 
+    [Fact]
+    public void RawProviderMapping_CanOverrideExistingCanonicalValue()
+    {
+        var mappings = new[]
+        {
+            new PersonalGenreMapping(
+                1,
+                "Afrosounds",
+                "bongo-flava",
+                Source: "audiomack",
+                Priority: 500,
+                Enabled: true)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "audiomack",
+                "Afrosounds",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track",
+                CanonicalValue: "Afropop")
+        ],
+        mappings: mappings);
+
+        Assert.Equal("Bongo Flava", resolution.PrimaryGenre);
+        Assert.DoesNotContain("Afropop", resolution.Styles);
+    }
+
+    [Fact]
+    public void CustomTaxonAlias_ParticipatesInResolution()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon(
+                "genge",
+                "Genge",
+                PersonalGenreTaxonKind.Genre,
+                Aliases: ["Kenyan Genge", "Genge Music"])
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("lastfm", "Kenyan Genge", PersonalGenreTaxonKind.Genre, 1d, "track")
+        ],
+        customTaxa: customTaxa);
+
+        Assert.Equal("Genge", resolution.PrimaryGenre);
+        Assert.Contains("Genge", resolution.Genres);
+    }
+
+    [Fact]
+    public void CustomStyle_CanContributeBuiltInParentGenre()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon(
+                "gengetone",
+                "Gengetone",
+                PersonalGenreTaxonKind.Style,
+                ParentIds: ["hip-hop"])
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("lastfm", "Gengetone", PersonalGenreTaxonKind.Style, 1d, "track")
+        ],
+        customTaxa: customTaxa,
+        settings: new PersonalGenreSettings(IncludeParentGenres: true));
+
+        Assert.Contains("Gengetone", resolution.Styles);
+        Assert.Contains("Hip-Hop", resolution.Genres);
+    }
+
+    [Fact]
+    public void UserLock_CanTargetCustomTaxon()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon("genge", "Genge", PersonalGenreTaxonKind.Genre)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("audiomack", "Amapiano", PersonalGenreTaxonKind.Genre, 1d, "track")
+        ],
+        locks:
+        [
+            new PersonalGenreLock(99, "genge")
+        ],
+        customTaxa: customTaxa);
+
+        Assert.Equal("Genge", resolution.PrimaryGenre);
+        Assert.DoesNotContain("Amapiano", resolution.Genres);
+        var locked = Assert.Single(resolution.Classifications.Where(item => item.TaxonId == "genge"));
+        Assert.True(locked.UserLocked);
+        Assert.Equal(1d, locked.Confidence, 3);
+    }
+
     [Theory]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Style, 0.90)]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Genre, 0.85)]
