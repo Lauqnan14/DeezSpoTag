@@ -43,6 +43,7 @@
         const state = {
             trackId: trackId,
             taxonomy: [],
+            trackScope: null,
             locks: [],
             result: null
         };
@@ -62,17 +63,18 @@
             status.textContent = 'Loading Personal Genre…';
             const taxonomyPayload = await requestJson('/api/personal-genre/taxonomy');
             state.taxonomy = Array.isArray(taxonomyPayload?.taxa) ? taxonomyPayload.taxa : [];
-            state.locks = await requestJson('/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks');
+            state.trackScope = await requestJson(
+                '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/scope',
+                {},
+                true);
+            await loadLocks();
 
             const existing = await requestJson(
                 '/api/personal-genre/tracks/' + encodeURIComponent(trackId),
                 {},
                 true);
             if (existing === null) {
-                state.result = await requestJson(
-                    '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/resolve',
-                    { method: 'POST' },
-                    true);
+                await resolveCurrentTrack();
             } else {
                 state.result = existing;
             }
@@ -82,12 +84,63 @@
             renderResult();
         }
 
+        async function loadLocks() {
+            const combined = [];
+            const trackLocks = await requestJson(
+                '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks');
+            (Array.isArray(trackLocks) ? trackLocks : []).forEach(item => {
+                combined.push({ ...item, scopeType: 'track', scopeId: Number(trackId) });
+            });
+
+            const albumId = Number(state.trackScope?.albumId || 0);
+            if (albumId > 0) {
+                const albumLocks = await requestJson(
+                    '/api/personal-genre/scopes/album/' + encodeURIComponent(albumId) + '/locks');
+                (Array.isArray(albumLocks) ? albumLocks : []).forEach(item => {
+                    combined.push({ ...item, scopeType: 'album', scopeId: albumId });
+                });
+            }
+
+            const artistId = Number(state.trackScope?.artistId || 0);
+            if (artistId > 0) {
+                const artistLocks = await requestJson(
+                    '/api/personal-genre/scopes/artist/' + encodeURIComponent(artistId) + '/locks');
+                (Array.isArray(artistLocks) ? artistLocks : []).forEach(item => {
+                    combined.push({ ...item, scopeType: 'artist', scopeId: artistId });
+                });
+            }
+
+            state.locks = combined;
+        }
+
+        function selectedScopeTarget() {
+            const scopeType = String(document.getElementById('pgTrackLockScope')?.value || 'track').toLowerCase();
+            if (scopeType === 'album') {
+                return { scopeType, scopeId: Number(state.trackScope?.albumId || 0) };
+            }
+            if (scopeType === 'artist') {
+                return { scopeType, scopeId: Number(state.trackScope?.artistId || 0) };
+            }
+            return { scopeType: 'track', scopeId: Number(trackId) };
+        }
+
+        async function resolveCurrentTrack() {
+            state.result = await requestJson(
+                '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/resolve',
+                { method: 'POST' },
+                true);
+        }
+
         function renderTaxonSelect() {
             const previous = lockSelect.value;
             lockSelect.innerHTML = '';
+            const selectedScope = selectedScopeTarget();
             const lockedIds = new Set(
                 (state.locks || [])
                     .filter(item => item.enabled !== false)
+                    .filter(item =>
+                        String(item.scopeType || 'track').toLowerCase() === selectedScope.scopeType
+                        && Number(item.scopeId || 0) === selectedScope.scopeId)
                     .map(item => String(item.taxonId || '').toLowerCase()));
 
             ['genre', 'style', 'substyle', 'context'].forEach(kind => {
@@ -134,7 +187,8 @@
                 pill.className = 'pg-track-lock-pill';
 
                 const label = document.createElement('span');
-                label.textContent = taxon?.name || item.taxonId;
+                const scopeLabel = capitalize(String(item.scopeType || 'track'));
+                label.textContent = (taxon?.name || item.taxonId) + ' · ' + scopeLabel;
                 pill.appendChild(label);
 
                 const remove = document.createElement('button');
@@ -143,12 +197,20 @@
                 remove.textContent = '×';
                 remove.addEventListener('click', async () => {
                     try {
-                        state.result = await requestJson(
-                            '/api/personal-genre/tracks/' + encodeURIComponent(trackId) +
-                            '/locks/' + encodeURIComponent(item.taxonId),
-                            { method: 'DELETE' });
-                        state.locks = await requestJson(
-                            '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks');
+                        const scopeType = String(item.scopeType || 'track').toLowerCase();
+                        if (scopeType === 'track') {
+                            await requestJson(
+                                '/api/personal-genre/tracks/' + encodeURIComponent(trackId) +
+                                '/locks/' + encodeURIComponent(item.taxonId),
+                                { method: 'DELETE' });
+                        } else {
+                            await requestJson(
+                                '/api/personal-genre/scopes/' + encodeURIComponent(scopeType) + '/' +
+                                encodeURIComponent(item.scopeId) + '/locks/' + encodeURIComponent(item.taxonId),
+                                { method: 'DELETE' });
+                        }
+                        await resolveCurrentTrack();
+                        await loadLocks();
                         renderLocks();
                         renderTaxonSelect();
                         renderResult();
@@ -213,21 +275,42 @@
             });
         }
 
+        document.getElementById('pgTrackLockScope')?.addEventListener('change', () => {
+            renderTaxonSelect();
+        });
+
         lockAdd.addEventListener('click', async () => {
             const taxonId = lockSelect.value;
             if (!taxonId) {
                 return;
             }
 
+            const target = selectedScopeTarget();
+            if (!target.scopeId) {
+                status.textContent = 'The selected lock scope is not available for this track.';
+                return;
+            }
+
             try {
-                state.result = await requestJson(
-                    '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks',
-                    {
-                        method: 'POST',
-                        body: JSON.stringify({ taxonId: taxonId, enabled: true })
-                    });
-                state.locks = await requestJson(
-                    '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks');
+                if (target.scopeType === 'track') {
+                    await requestJson(
+                        '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/locks',
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({ taxonId: taxonId, enabled: true })
+                        });
+                } else {
+                    await requestJson(
+                        '/api/personal-genre/scopes/' + encodeURIComponent(target.scopeType) + '/' +
+                        encodeURIComponent(target.scopeId) + '/locks',
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({ taxonId: taxonId, enabled: true })
+                        });
+                }
+
+                await resolveCurrentTrack();
+                await loadLocks();
                 renderLocks();
                 renderTaxonSelect();
                 renderResult();
