@@ -288,20 +288,20 @@ public sealed class PersonalGenreResolverTest
         var customTaxa = new[]
         {
             new PersonalGenreTaxon(
-                "genge",
-                "Genge",
+                "coastal-fusion-test",
+                "Coastal Fusion Test",
                 PersonalGenreTaxonKind.Genre,
-                Aliases: ["Kenyan Genge", "Genge Music"])
+                Aliases: ["Coastal Test Sound", "Coastal Fusion Alias"])
         };
 
         var resolution = PersonalGenreResolver.Resolve(
         [
-            new PersonalGenreEvidence("lastfm", "Kenyan Genge", PersonalGenreTaxonKind.Genre, 1d, "track")
+            new PersonalGenreEvidence("lastfm", "Coastal Test Sound", PersonalGenreTaxonKind.Genre, 1d, "track")
         ],
         customTaxa: customTaxa);
 
-        Assert.Equal("Genge", resolution.PrimaryGenre);
-        Assert.Contains("Genge", resolution.Genres);
+        Assert.Equal("Coastal Fusion Test", resolution.PrimaryGenre);
+        Assert.Contains("Coastal Fusion Test", resolution.Genres);
     }
 
     [Fact]
@@ -310,20 +310,20 @@ public sealed class PersonalGenreResolverTest
         var customTaxa = new[]
         {
             new PersonalGenreTaxon(
-                "gengetone",
-                "Gengetone",
+                "urban-fusion-test",
+                "Urban Fusion Test",
                 PersonalGenreTaxonKind.Style,
                 ParentIds: ["hip-hop"])
         };
 
         var resolution = PersonalGenreResolver.Resolve(
         [
-            new PersonalGenreEvidence("lastfm", "Gengetone", PersonalGenreTaxonKind.Style, 1d, "track")
+            new PersonalGenreEvidence("lastfm", "Urban Fusion Test", PersonalGenreTaxonKind.Style, 1d, "track")
         ],
         customTaxa: customTaxa,
         settings: new PersonalGenreSettings(IncludeParentGenres: true));
 
-        Assert.Contains("Gengetone", resolution.Styles);
+        Assert.Contains("Urban Fusion Test", resolution.Styles);
         Assert.Contains("Hip-Hop", resolution.Genres);
     }
 
@@ -332,7 +332,7 @@ public sealed class PersonalGenreResolverTest
     {
         var customTaxa = new[]
         {
-            new PersonalGenreTaxon("genge", "Genge", PersonalGenreTaxonKind.Genre)
+            new PersonalGenreTaxon("custom-locked-genre", "Custom Locked Genre", PersonalGenreTaxonKind.Genre)
         };
 
         var resolution = PersonalGenreResolver.Resolve(
@@ -341,13 +341,13 @@ public sealed class PersonalGenreResolverTest
         ],
         locks:
         [
-            new PersonalGenreLock(99, "genge")
+            new PersonalGenreLock(99, "custom-locked-genre")
         ],
         customTaxa: customTaxa);
 
-        Assert.Equal("Genge", resolution.PrimaryGenre);
+        Assert.Equal("Custom Locked Genre", resolution.PrimaryGenre);
         Assert.DoesNotContain("Amapiano", resolution.Genres);
-        var locked = Assert.Single(resolution.Classifications.Where(item => item.TaxonId == "genge"));
+        var locked = Assert.Single(resolution.Classifications.Where(item => item.TaxonId == "custom-locked-genre"));
         Assert.True(locked.UserLocked);
         Assert.Equal(1d, locked.Confidence, 3);
     }
