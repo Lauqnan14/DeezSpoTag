@@ -1,0 +1,445 @@
+
+.pg-page {
+    max-width: 1500px;
+    margin: 0 auto;
+    padding: 8px 0 48px;
+}
+
+.pg-hero {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+    padding: 22px 24px;
+    border: 1px solid var(--border-primary);
+    border-radius: 16px;
+    background: var(--bg-secondary);
+}
+
+.pg-eyebrow {
+    color: var(--primary-color);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.pg-hero h1 {
+    margin: 0 0 8px;
+    font-size: clamp(1.9rem, 3vw, 2.6rem);
+}
+
+.pg-hero p {
+    margin: 0;
+    max-width: 820px;
+    color: var(--text-muted);
+    line-height: 1.55;
+}
+
+.pg-hero-badges {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.pg-badge {
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 7px 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.pg-badge--safe {
+    color: var(--primary-color);
+}
+
+.pg-status {
+    min-height: 22px;
+    margin: 0 2px 12px;
+    color: var(--text-muted);
+    font-size: 0.88rem;
+}
+
+.pg-status.is-error {
+    color: #d65d5d;
+}
+
+.pg-status.is-success {
+    color: var(--primary-color);
+}
+
+.pg-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.pg-tab {
+    appearance: none;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-radius: 10px;
+    padding: 9px 14px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.pg-tab:hover,
+.pg-tab.is-active {
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.pg-panel {
+    display: none;
+}
+
+.pg-panel.is-active {
+    display: block;
+}
+
+.pg-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.pg-grid--settings {
+    grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+}
+
+.pg-card {
+    border: 1px solid var(--border-primary);
+    border-radius: 14px;
+    background: var(--bg-secondary);
+    padding: 18px;
+    min-width: 0;
+}
+
+.pg-card-head {
+    margin-bottom: 16px;
+}
+
+.pg-card-head--toolbar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.pg-card h2 {
+    margin: 0 0 5px;
+    font-size: 1.12rem;
+}
+
+.pg-card-head p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.pg-form {
+    display: grid;
+    gap: 13px;
+}
+
+.pg-form--inline {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding-top: 14px;
+}
+
+.pg-form--row {
+    grid-template-columns: minmax(180px, 1.3fr) minmax(150px, 1fr) minmax(180px, 1.2fr) 110px auto auto;
+    align-items: end;
+    margin-bottom: 18px;
+}
+
+.pg-field {
+    display: grid;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+}
+
+.pg-field--wide {
+    grid-column: span 2;
+}
+
+.pg-field input,
+.pg-field select,
+.pg-toolbar input,
+.pg-toolbar select {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 10px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    font: inherit;
+}
+
+.pg-field input:focus,
+.pg-field select:focus,
+.pg-toolbar input:focus,
+.pg-toolbar select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.pg-field small {
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
+.pg-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 18px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.pg-toggle-row:last-of-type {
+    border-bottom: 0;
+}
+
+.pg-toggle-row span {
+    display: grid;
+    gap: 4px;
+}
+
+.pg-toggle-row small {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.pg-toggle-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary-color);
+}
+
+.pg-toggle-row--compact {
+    border: 0;
+    padding: 0 4px 8px;
+    min-height: 40px;
+}
+
+.pg-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.pg-btn {
+    appearance: none;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: 8px;
+    min-height: 38px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.pg-btn:hover {
+    border-color: var(--primary-color);
+}
+
+.pg-btn--primary {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--bg-primary);
+    font-weight: 650;
+}
+
+.pg-btn--danger {
+    color: #d65d5d;
+}
+
+.pg-btn--small {
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 0.8rem;
+}
+
+.pg-authority-list {
+    display: grid;
+    gap: 0;
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.pg-authority-list > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 8px 11px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.pg-authority-list > div:last-child {
+    border-bottom: 0;
+}
+
+.pg-authority-list span {
+    color: var(--text-secondary);
+}
+
+.pg-note {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--primary-color);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    line-height: 1.45;
+    border-radius: 6px;
+}
+
+.pg-note--warning {
+    border-left-color: #d59c3d;
+}
+
+.pg-toolbar {
+    display: flex;
+    gap: 8px;
+    width: min(540px, 100%);
+}
+
+.pg-editor {
+    margin: 0 0 18px;
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--bg-primary);
+}
+
+.pg-editor summary {
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 650;
+}
+
+.pg-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+}
+
+.pg-table {
+    width: 100%;
+    min-width: 760px;
+    border-collapse: collapse;
+    font-size: 0.86rem;
+}
+
+.pg-table th,
+.pg-table td {
+    padding: 10px 11px;
+    border-bottom: 1px solid var(--border-primary);
+    text-align: left;
+    vertical-align: top;
+}
+
+.pg-table th {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-weight: 650;
+    position: sticky;
+    top: 0;
+}
+
+.pg-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.pg-table tbody tr:hover {
+    background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent 30%);
+}
+
+.pg-kind,
+.pg-origin,
+.pg-state {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 3px 8px;
+    border: 1px solid var(--border-primary);
+    white-space: nowrap;
+}
+
+.pg-origin--custom,
+.pg-state--enabled {
+    color: var(--primary-color);
+}
+
+.pg-muted {
+    color: var(--text-muted);
+}
+
+.pg-row-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+@media (max-width: 1100px) {
+    .pg-grid,
+    .pg-grid--settings {
+        grid-template-columns: 1fr;
+    }
+
+    .pg-form--row,
+    .pg-form--inline {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pg-card-head--toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .pg-toolbar {
+        width: 100%;
+    }
+}
+
+@media (max-width: 720px) {
+    .pg-hero {
+        flex-direction: column;
+    }
+
+    .pg-hero-badges {
+        justify-content: flex-start;
+    }
+
+    .pg-form--row,
+    .pg-form--inline {
+        grid-template-columns: 1fr;
+    }
+
+    .pg-field--wide {
+        grid-column: auto;
+    }
+
+    .pg-toolbar {
+        flex-direction: column;
+    }
+}
