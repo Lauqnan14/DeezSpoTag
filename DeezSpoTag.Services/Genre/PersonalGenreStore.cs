@@ -132,14 +132,21 @@ ORDER BY kind, name COLLATE NOCASE, id;
             .ToArray();
 
         var normalizedKind = taxon.ContextOnly
+            && taxon.Kind is PersonalGenreTaxonKind.Genre
+                or PersonalGenreTaxonKind.Style
+                or PersonalGenreTaxonKind.Substyle
             ? PersonalGenreTaxonKind.Context
             : taxon.Kind;
+        var contextOnly = taxon.ContextOnly
+            || normalizedKind is PersonalGenreTaxonKind.Context
+                or PersonalGenreTaxonKind.Scene
+                or PersonalGenreTaxonKind.Language;
         var normalized = new PersonalGenreTaxon(
             id,
             name,
             normalizedKind,
             parentIds,
-            normalizedKind == PersonalGenreTaxonKind.Context,
+            contextOnly,
             aliases);
 
         await ValidateCustomTaxonLookupAsync(normalized, cancellationToken);
