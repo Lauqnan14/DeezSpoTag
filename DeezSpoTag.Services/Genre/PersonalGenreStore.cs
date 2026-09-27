@@ -284,6 +284,34 @@ SELECT last_insert_rowid();
         return mapping with { Id = id, MatchValue = matchValue };
     }
 
+    public async Task<IReadOnlyList<long>> GetAnalyzedTrackIdsAfterAsync(
+        long afterTrackId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT track_id
+FROM track_analysis
+WHERE status IN ('complete', 'completed')
+  AND track_id > @afterTrackId
+ORDER BY track_id
+LIMIT @limit;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("afterTrackId", Math.Max(0, afterTrackId));
+        command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 1000));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<long>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            output.Add(reader.GetInt64(0));
+        }
+
+        return output;
+    }
+
     public async Task<IReadOnlyList<PersonalGenreRule>> GetRulesAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
