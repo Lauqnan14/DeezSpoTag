@@ -229,6 +229,13 @@ public sealed class PersonalGenreApiController : ControllerBase
         CancellationToken cancellationToken = default)
         => Ok(await _service.GetTrackHistoryAsync(trackId, limit, cancellationToken));
 
+    [HttpPost("rebuild")]
+    public async Task<IActionResult> Rebuild(
+        [FromQuery] long afterTrackId = 0,
+        [FromQuery] int batchSize = 200,
+        CancellationToken cancellationToken = default)
+        => Ok(await _service.RebuildBatchAsync(afterTrackId, batchSize, cancellationToken));
+
     [HttpGet("tracks/{trackId:long}/locks")]
     public async Task<IActionResult> GetLocks(long trackId, CancellationToken cancellationToken)
         => Ok(await _service.GetLocksAsync(trackId, cancellationToken));
