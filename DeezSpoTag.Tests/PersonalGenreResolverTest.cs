@@ -1,3 +1,4 @@
+using System.Linq;
 using DeezSpoTag.Services.Genre;
 using Xunit;
 
