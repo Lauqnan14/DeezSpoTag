@@ -5,7 +5,9 @@ public enum PersonalGenreTaxonKind
     Genre,
     Style,
     Substyle,
-    Context
+    Context,
+    Scene,
+    Language
 }
 
 public sealed record PersonalGenreTaxon(
@@ -100,6 +102,8 @@ public sealed record PersonalGenreResolution(
     IReadOnlyList<string> Styles,
     IReadOnlyList<string> Substyles,
     IReadOnlyList<string> Contexts,
+    IReadOnlyList<string> Scenes,
+    IReadOnlyList<string> Languages,
     IReadOnlyList<PersonalGenreClassification> Classifications,
     IReadOnlyList<PersonalGenreEvidenceDecision> Decisions,
     IReadOnlyList<string> AppliedRuleIds,
