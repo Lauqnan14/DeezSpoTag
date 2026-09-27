@@ -212,7 +212,7 @@ SELECT
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
-SELECT id, match_value, target_taxon_id, source, priority, enabled
+SELECT id, match_value, target_taxon_id, source, priority, enabled, action
 FROM personal_genre_mapping
 ORDER BY priority DESC, id;
 """;
@@ -227,7 +227,8 @@ ORDER BY priority DESC, id;
                 reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.GetInt32(4),
-                reader.GetInt32(5) != 0));
+                reader.GetInt32(5) != 0,
+                ParseMappingAction(reader.IsDBNull(6) ? "map" : reader.GetString(6))));
         }
 
         return output;
@@ -237,7 +238,10 @@ ORDER BY priority DESC, id;
         PersonalGenreMapping mapping,
         CancellationToken cancellationToken = default)
     {
-        await ValidateTaxonAsync(mapping.TargetTaxonId, cancellationToken);
+        if (mapping.Action is PersonalGenreMappingAction.Map or PersonalGenreMappingAction.ContextOnly)
+        {
+            await ValidateTaxonAsync(mapping.TargetTaxonId, cancellationToken);
+        }
         var matchValue = RequireValue(mapping.MatchValue, nameof(mapping.MatchValue));
         await using var connection = await OpenAsync(cancellationToken);
 
@@ -250,6 +254,7 @@ SET match_value = @matchValue,
     source = @source,
     priority = @priority,
     enabled = @enabled,
+    action = @action,
     updated_at_utc = @updatedAtUtc
 WHERE id = @id;
 """;
@@ -266,9 +271,9 @@ WHERE id = @id;
 
         const string insertSql = """
 INSERT INTO personal_genre_mapping
-    (match_value, target_taxon_id, source, priority, enabled, created_at_utc, updated_at_utc)
+    (match_value, target_taxon_id, source, priority, enabled, action, created_at_utc, updated_at_utc)
 VALUES
-    (@matchValue, @targetTaxonId, @source, @priority, @enabled, @now, @now);
+    (@matchValue, @targetTaxonId, @source, @priority, @enabled, @action, @now, @now);
 SELECT last_insert_rowid();
 """;
         await using var insert = new SqliteCommand(insertSql, connection);
@@ -358,10 +363,10 @@ SELECT last_insert_rowid();
         const string sql = """
 INSERT INTO personal_genre_track
     (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
-     classifications_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
+     classifications_json, decisions_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
 VALUES
     (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson,
-     @classificationsJson, @appliedRuleIdsJson, @evidenceJson, @resolverVersion, @resolvedAtUtc)
+     @classificationsJson, @decisionsJson, @appliedRuleIdsJson, @evidenceJson, @resolverVersion, @resolvedAtUtc)
 ON CONFLICT(track_id) DO UPDATE SET
     primary_genre = excluded.primary_genre,
     genres_json = excluded.genres_json,
@@ -369,6 +374,7 @@ ON CONFLICT(track_id) DO UPDATE SET
     substyles_json = excluded.substyles_json,
     contexts_json = excluded.contexts_json,
     classifications_json = excluded.classifications_json,
+    decisions_json = excluded.decisions_json,
     applied_rule_ids_json = excluded.applied_rule_ids_json,
     evidence_json = excluded.evidence_json,
     resolver_version = excluded.resolver_version,
@@ -382,6 +388,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         command.Parameters.AddWithValue("substylesJson", JsonSerializer.Serialize(result.Resolution.Substyles));
         command.Parameters.AddWithValue("contextsJson", JsonSerializer.Serialize(result.Resolution.Contexts));
         command.Parameters.AddWithValue("classificationsJson", JsonSerializer.Serialize(result.Resolution.Classifications));
+        command.Parameters.AddWithValue("decisionsJson", JsonSerializer.Serialize(result.Resolution.Decisions));
         command.Parameters.AddWithValue("appliedRuleIdsJson", JsonSerializer.Serialize(result.Resolution.AppliedRuleIds));
         command.Parameters.AddWithValue("evidenceJson", JsonSerializer.Serialize(result.Resolution.Evidence));
         command.Parameters.AddWithValue("resolverVersion", result.Resolution.ResolverVersion);
@@ -397,7 +404,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
 SELECT primary_genre, genres_json, styles_json, substyles_json, contexts_json,
-       classifications_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc
+       classifications_json, decisions_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc
 FROM personal_genre_track
 WHERE track_id = @trackId;
 """;
@@ -416,12 +423,13 @@ WHERE track_id = @trackId;
             ParseStringList(reader.GetString(3)),
             ParseStringList(reader.GetString(4)),
             ParseClassifications(reader.GetString(5)),
-            ParseStringList(reader.GetString(6)),
-            ParseEvidence(reader.GetString(7)),
-            reader.GetString(8));
+            ParseDecisions(reader.GetString(6)),
+            ParseStringList(reader.GetString(7)),
+            ParseEvidence(reader.GetString(8)),
+            reader.GetString(9));
 
         var resolvedAtUtc = DateTimeOffset.TryParse(
-            reader.GetString(9),
+            reader.GetString(10),
             CultureInfo.InvariantCulture,
             DateTimeStyles.RoundtripKind,
             out var parsed)
@@ -580,6 +588,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_mapping (
     source TEXT,
     priority INTEGER NOT NULL DEFAULT 100,
     enabled INTEGER NOT NULL DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'map',
     created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -615,6 +624,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
     classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
     evidence_json TEXT NOT NULL DEFAULT '[]',
     resolver_version TEXT NOT NULL,
@@ -756,6 +766,7 @@ LIMIT 1;
         command.Parameters.AddWithValue("source", (object?)NormalizeOptional(mapping.Source) ?? DBNull.Value);
         command.Parameters.AddWithValue("priority", mapping.Priority);
         command.Parameters.AddWithValue("enabled", mapping.Enabled ? 1 : 0);
+        command.Parameters.AddWithValue("action", mapping.Action.ToString().ToLowerInvariant());
     }
 
     private static void BindRule(SqliteCommand command, PersonalGenreRule rule)
@@ -773,8 +784,20 @@ LIMIT 1;
     private static IReadOnlyList<string> ParseStringList(string json)
         => JsonSerializer.Deserialize<List<string>>(json) ?? [];
 
+    private static PersonalGenreMappingAction ParseMappingAction(string value)
+        => value.Trim().ToLowerInvariant() switch
+        {
+            "contextonly" or "context_only" => PersonalGenreMappingAction.ContextOnly,
+            "ignore" => PersonalGenreMappingAction.Ignore,
+            "ambiguous" => PersonalGenreMappingAction.Ambiguous,
+            _ => PersonalGenreMappingAction.Map
+        };
+
     private static IReadOnlyList<PersonalGenreClassification> ParseClassifications(string json)
         => JsonSerializer.Deserialize<List<PersonalGenreClassification>>(json) ?? [];
+
+    private static IReadOnlyList<PersonalGenreEvidenceDecision> ParseDecisions(string json)
+        => JsonSerializer.Deserialize<List<PersonalGenreEvidenceDecision>>(json) ?? [];
 
     private static IReadOnlyList<PersonalGenreEvidence> ParseEvidence(string json)
         => JsonSerializer.Deserialize<List<PersonalGenreEvidence>>(json) ?? [];
