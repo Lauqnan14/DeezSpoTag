@@ -75,3 +75,19 @@ public sealed record PersonalGenreTrackResult(
     long TrackId,
     PersonalGenreResolution Resolution,
     DateTimeOffset ResolvedAtUtc);
+
+
+public sealed record PersonalGenreConfiguration(
+    int SchemaVersion,
+    string TaxonomyVersion,
+    DateTimeOffset ExportedAtUtc,
+    PersonalGenreSettings Settings,
+    IReadOnlyList<PersonalGenreTaxon> CustomTaxa,
+    IReadOnlyList<PersonalGenreMapping> Mappings,
+    IReadOnlyList<PersonalGenreRule> Rules);
+
+public sealed record PersonalGenreImportResult(
+    int CustomTaxaImported,
+    int MappingsImported,
+    int RulesImported,
+    int DuplicatesSkipped);
