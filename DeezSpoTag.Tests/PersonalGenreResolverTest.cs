@@ -295,6 +295,172 @@ public sealed class PersonalGenreResolverTest
         Assert.Equal(1d, locked.Confidence, 3);
     }
 
+    [Fact]
+    public void IgnoreMapping_SuppressesClassificationAndProviderFallback()
+    {
+        var mappings = new[]
+        {
+            new PersonalGenreMapping(
+                11,
+                "Regional Pop Bucket",
+                "pop",
+                Source: "audiomack",
+                Action: PersonalGenreMappingAction.Ignore)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "audiomack",
+                "Regional Pop Bucket",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track")
+        ],
+        mappings: mappings);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Empty(resolution.Genres);
+        var decision = Assert.Single(resolution.Decisions);
+        Assert.Equal("ignored", decision.Outcome);
+        Assert.Null(decision.TaxonId);
+    }
+
+    [Fact]
+    public void AmbiguousMapping_SuppressesClassificationAndProviderFallback()
+    {
+        var mappings = new[]
+        {
+            new PersonalGenreMapping(
+                12,
+                "Urban",
+                "hip-hop",
+                Source: "lastfm",
+                Action: PersonalGenreMappingAction.Ambiguous)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "lastfm",
+                "Urban",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track")
+        ],
+        mappings: mappings);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Empty(resolution.Genres);
+        var decision = Assert.Single(resolution.Decisions);
+        Assert.Equal("ambiguous", decision.Outcome);
+    }
+
+    [Fact]
+    public void ContextOnlyMapping_CannotCreateFinalGenre()
+    {
+        var mappings = new[]
+        {
+            new PersonalGenreMapping(
+                13,
+                "East African",
+                "bongo-flava",
+                Source: "manual",
+                Action: PersonalGenreMappingAction.ContextOnly)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "manual",
+                "East African",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track")
+        ],
+        mappings: mappings);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Empty(resolution.Genres);
+        Assert.Contains("Bongo Flava", resolution.Contexts);
+        var decision = Assert.Single(resolution.Decisions);
+        Assert.Equal("context_only", decision.Outcome);
+        Assert.Equal("bongo-flava", decision.TaxonId);
+    }
+
+    [Fact]
+    public void TrackLock_OutranksAlbumAndArtistLocksForSameKind()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "audiomack",
+                "Amapiano",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track")
+        ],
+        locks:
+        [
+            new PersonalGenreLock(99, "afrobeats", ScopeType: "artist", ScopeId: 1),
+            new PersonalGenreLock(99, "hip-hop", ScopeType: "album", ScopeId: 2),
+            new PersonalGenreLock(99, "bongo-flava", ScopeType: "track", ScopeId: 99)
+        ]);
+
+        Assert.Equal("Bongo Flava", resolution.PrimaryGenre);
+        Assert.DoesNotContain("Hip-Hop", resolution.Genres);
+        Assert.DoesNotContain("Afrobeats", resolution.Genres);
+        var locked = Assert.Single(resolution.Classifications.Where(item => item.UserLocked));
+        Assert.Equal("bongo-flava", locked.TaxonId);
+        Assert.Contains("user-lock:track", locked.Sources);
+    }
+
+    [Fact]
+    public void AlbumLock_OutranksArtistLockWhenTrackLockIsAbsent()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "audiomack",
+                "Amapiano",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "track")
+        ],
+        locks:
+        [
+            new PersonalGenreLock(99, "afrobeats", ScopeType: "artist", ScopeId: 1),
+            new PersonalGenreLock(99, "hip-hop", ScopeType: "album", ScopeId: 2)
+        ]);
+
+        Assert.Equal("Hip-Hop", resolution.PrimaryGenre);
+        Assert.DoesNotContain("Afrobeats", resolution.Genres);
+        var locked = Assert.Single(resolution.Classifications.Where(item => item.UserLocked));
+        Assert.Equal("hip-hop", locked.TaxonId);
+        Assert.Contains("user-lock:album", locked.Sources);
+    }
+
+    [Fact]
+    public void DecisionTrail_RecordsCanonicalTaxonomyClassification()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "essentia-discogs519",
+                "Electronic---House",
+                PersonalGenreTaxonKind.Genre,
+                0.9d,
+                "audio",
+                CanonicalValue: "House")
+        ]);
+
+        Assert.Equal("House", resolution.PrimaryGenre);
+        var decision = Assert.Single(resolution.Decisions);
+        Assert.Equal("classified", decision.Outcome);
+        Assert.Equal("house", decision.TaxonId);
+        Assert.Contains("canonical evidence value", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Style, 0.90)]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Genre, 0.85)]
