@@ -2,76 +2,88 @@ namespace DeezSpoTag.Services.Genre;
 
 public static class PersonalGenreResolver
 {
+    private const double UserRuleAuthority = 0.98;
+    private const double UserLockAuthority = 1.00;
+
     public static PersonalGenreResolution Resolve(
         IReadOnlyList<PersonalGenreEvidence>? evidence,
         IReadOnlyList<PersonalGenreMapping>? mappings = null,
         IReadOnlyList<PersonalGenreRule>? rules = null,
+        IReadOnlyList<PersonalGenreLock>? locks = null,
         PersonalGenreSettings? settings = null)
     {
         settings ??= new PersonalGenreSettings();
         evidence ??= Array.Empty<PersonalGenreEvidence>();
         mappings ??= Array.Empty<PersonalGenreMapping>();
         rules ??= Array.Empty<PersonalGenreRule>();
+        locks ??= Array.Empty<PersonalGenreLock>();
 
         var appliedRuleIds = new List<string>();
-        var resolved = new List<(PersonalGenreTaxon Taxon, double Weight, int Priority, int Order)>();
-        var order = 0;
+        var candidates = new List<Candidate>();
+        var matchedEvidenceIndexes = new HashSet<int>();
 
-        foreach (var item in evidence)
+        for (var index = 0; index < evidence.Count; index++)
         {
-            var match = ResolveEvidence(item, mappings, rules, appliedRuleIds);
+            var item = evidence[index];
+            var match = ResolveEvidence(item, mappings, rules);
             if (match is null)
             {
-                order++;
                 continue;
             }
 
-            resolved.Add((match.Value.Taxon, Math.Max(0d, item.Weight), match.Value.Priority, order++));
-        }
-
-        var genres = SelectByKind(resolved, PersonalGenreTaxonKind.Genre, settings.MaxGenres);
-        var styles = SelectByKind(resolved, PersonalGenreTaxonKind.Style, int.MaxValue);
-        var substyles = SelectByKind(resolved, PersonalGenreTaxonKind.Substyle, int.MaxValue);
-        var contexts = SelectByKind(resolved, PersonalGenreTaxonKind.Context, int.MaxValue);
-
-        if (settings.PreserveProviderFallback && genres.Count < settings.MaxGenres)
-        {
-            foreach (var raw in evidence
-                .Where(item => item.Kind == PersonalGenreTaxonKind.Genre)
-                .Select(item => item.RawValue?.Trim())
-                .Where(item => !string.IsNullOrWhiteSpace(item))
-                .Cast<string>())
+            matchedEvidenceIndexes.Add(index);
+            if (match.AppliedRuleId.HasValue)
             {
-                if (genres.Contains(raw, StringComparer.OrdinalIgnoreCase)
-                    || resolved.Any(item => string.Equals(item.Taxon.Name, raw, StringComparison.OrdinalIgnoreCase)))
-                {
-                    continue;
-                }
-
-                genres.Add(raw);
-                if (genres.Count >= settings.MaxGenres)
-                {
-                    break;
-                }
+                appliedRuleIds.Add(match.AppliedRuleId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
-        }
 
-        if (settings.IncludeParentGenres)
-        {
-            foreach (var parent in resolved
-                .Select(item => item.Taxon.ParentId)
-                .Where(parentId => !string.IsNullOrWhiteSpace(parentId))
-                .Distinct(StringComparer.OrdinalIgnoreCase))
+            var cap = GetAuthorityCap(item);
+            var contribution = Math.Min(Math.Clamp(item.Weight, 0d, 1d), cap);
+            if (match.AppliedRuleId.HasValue)
             {
-                if (PersonalGenreTaxonomy.TryGetById(parent, out var parentTaxon)
-                    && parentTaxon.Kind == PersonalGenreTaxonKind.Genre
-                    && !genres.Contains(parentTaxon.Name, StringComparer.OrdinalIgnoreCase)
-                    && genres.Count < settings.MaxGenres)
-                {
-                    genres.Add(parentTaxon.Name);
-                }
+                contribution = Math.Max(contribution, UserRuleAuthority);
             }
+
+            candidates.Add(new Candidate(
+                match.Taxon,
+                contribution,
+                NormalizeSource(item.Source),
+                index,
+                match.AppliedRuleId.HasValue));
         }
+
+        if (settings.PreserveProviderFallback)
+        {
+            AppendProviderFallbacks(candidates, evidence, matchedEvidenceIndexes);
+        }
+
+        var classifications = Fuse(candidates);
+        classifications = ApplyLocks(classifications, locks);
+        classifications = IncludeParentGenresIfRequested(classifications, locks, settings);
+
+        var ordered = classifications
+            .OrderByDescending(item => item.UserLocked)
+            .ThenByDescending(item => item.Confidence)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var genres = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Genre)
+            .Take(Math.Clamp(settings.MaxGenres, 1, 10))
+            .Select(item => item.Name)
+            .ToList();
+        var styles = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Style)
+            .Select(item => item.Name)
+            .ToList();
+        var substyles = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Substyle)
+            .Select(item => item.Name)
+            .ToList();
+        var contexts = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Context)
+            .Select(item => item.Name)
+            .ToList();
 
         return new PersonalGenreResolution(
             genres.FirstOrDefault(),
@@ -79,31 +91,92 @@ public static class PersonalGenreResolver
             styles,
             substyles,
             contexts,
+            ordered,
             appliedRuleIds.Distinct(StringComparer.Ordinal).ToArray(),
             evidence,
             PersonalGenreTaxonomy.Version);
     }
 
-    private static (PersonalGenreTaxon Taxon, int Priority)? ResolveEvidence(
+    public static double GetAuthorityCap(PersonalGenreEvidence evidence)
+    {
+        var source = NormalizeSource(evidence.Source);
+        var scope = NormalizeSource(evidence.Scope);
+
+        if (source == "embedded")
+        {
+            // Embedded metadata is local evidence and sits below explicit user rules/locks.
+            return 0.95;
+        }
+
+        if (source == "discogs")
+        {
+            return evidence.Kind is PersonalGenreTaxonKind.Style or PersonalGenreTaxonKind.Substyle
+                ? 0.90
+                : 0.85;
+        }
+
+        if (source == "audiomack")
+        {
+            return scope switch
+            {
+                "editorial" => 0.82,
+                "album" => 0.80,
+                "artist" => 0.60,
+                _ => 0.88
+            };
+        }
+
+        if (source == "lastfm")
+        {
+            return scope == "artist" ? 0.50 : 0.72;
+        }
+
+        if (source == "spotify")
+        {
+            return 0.55;
+        }
+
+        if (source.StartsWith("essentia", StringComparison.Ordinal))
+        {
+            return 0.40;
+        }
+
+        if (source is "manual" or "user")
+        {
+            return 0.95;
+        }
+
+        if (source == "vibe-resolved")
+        {
+            return 0.35;
+        }
+
+        return 0.35;
+    }
+
+    private static MatchResult? ResolveEvidence(
         PersonalGenreEvidence evidence,
         IReadOnlyList<PersonalGenreMapping> mappings,
-        IReadOnlyList<PersonalGenreRule> rules,
-        ICollection<string> appliedRuleIds)
+        IReadOnlyList<PersonalGenreRule> rules)
     {
         var normalizedValue = PersonalGenreTaxonomy.Normalize(evidence.RawValue);
-        var normalizedSource = NormalizeSource(evidence.Source);
+        if (normalizedValue.Length == 0)
+        {
+            return null;
+        }
 
+        var normalizedSource = NormalizeSource(evidence.Source);
         var rule = rules
             .Where(item => item.Enabled)
             .Where(item => PersonalGenreTaxonomy.Normalize(item.MatchValue) == normalizedValue)
             .Where(item => SourceMatches(item.Source, normalizedSource))
             .OrderByDescending(item => item.Priority)
+            .ThenBy(item => item.Id)
             .FirstOrDefault();
 
         if (rule is not null && PersonalGenreTaxonomy.TryGetById(rule.TargetTaxonId, out var ruleTaxon))
         {
-            appliedRuleIds.Add(rule.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            return (ruleTaxon, rule.Priority);
+            return new MatchResult(ruleTaxon, rule.Id);
         }
 
         var mapping = mappings
@@ -111,47 +184,178 @@ public static class PersonalGenreResolver
             .Where(item => PersonalGenreTaxonomy.Normalize(item.MatchValue) == normalizedValue)
             .Where(item => SourceMatches(item.Source, normalizedSource))
             .OrderByDescending(item => item.Priority)
+            .ThenBy(item => item.Id)
             .FirstOrDefault();
 
         if (mapping is not null && PersonalGenreTaxonomy.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
         {
-            return (mappedTaxon, mapping.Priority);
+            return new MatchResult(mappedTaxon, null);
         }
 
-        if (PersonalGenreTaxonomy.TryMatch(evidence.RawValue, out var taxonomyTaxon))
-        {
-            if (evidence.Kind.HasValue && taxonomyTaxon.Kind != evidence.Kind.Value)
-            {
-                return (taxonomyTaxon, 10);
-            }
-
-            return (taxonomyTaxon, 20);
-        }
-
-        return null;
+        return PersonalGenreTaxonomy.TryMatch(evidence.RawValue, out var taxonomyTaxon)
+            ? new MatchResult(taxonomyTaxon, null)
+            : null;
     }
 
-    private static List<string> SelectByKind(
-        IReadOnlyList<(PersonalGenreTaxon Taxon, double Weight, int Priority, int Order)> resolved,
-        PersonalGenreTaxonKind kind,
-        int limit)
+    private static List<PersonalGenreClassification> Fuse(IReadOnlyList<Candidate> candidates)
     {
-        return resolved
-            .Where(item => item.Taxon.Kind == kind)
-            .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new
+        var output = new List<PersonalGenreClassification>();
+        foreach (var taxonGroup in candidates.GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase))
+        {
+            var taxon = taxonGroup.First().Taxon;
+            var providerContributions = taxonGroup
+                .GroupBy(item => item.ProviderKey, StringComparer.Ordinal)
+                .Select(group => group.Max(item => item.Contribution))
+                .ToList();
+
+            var remaining = 1d;
+            foreach (var contribution in providerContributions)
             {
-                Taxon = group.First().Taxon,
-                Priority = group.Max(item => item.Priority),
-                Weight = group.Sum(item => item.Weight),
-                Order = group.Min(item => item.Order)
-            })
-            .OrderByDescending(item => item.Priority)
-            .ThenByDescending(item => item.Weight)
-            .ThenBy(item => item.Order)
-            .Select(item => item.Taxon.Name)
-            .Take(limit)
+                remaining *= 1d - Math.Clamp(contribution, 0d, 1d);
+            }
+
+            var confidence = Math.Round(1d - remaining, 3);
+            output.Add(new PersonalGenreClassification(
+                taxon.Id,
+                taxon.Name,
+                taxon.Kind,
+                confidence,
+                taxonGroup.Select(item => item.ProviderKey)
+                    .Where(item => item.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray()));
+        }
+
+        return output;
+    }
+
+    private static List<PersonalGenreClassification> ApplyLocks(
+        IReadOnlyList<PersonalGenreClassification> classifications,
+        IReadOnlyList<PersonalGenreLock> locks)
+    {
+        var validLocks = locks
+            .Where(item => item.Enabled)
+            .Select(item => PersonalGenreTaxonomy.TryGetById(item.TaxonId, out var taxon)
+                ? (Lock: item, Taxon: taxon)
+                : ((PersonalGenreLock Lock, PersonalGenreTaxon Taxon)?)null)
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
             .ToList();
+
+        if (validLocks.Count == 0)
+        {
+            return classifications.ToList();
+        }
+
+        var lockedKinds = validLocks
+            .Select(item => item.Taxon.Kind)
+            .ToHashSet();
+
+        var output = classifications
+            .Where(item => !lockedKinds.Contains(item.Kind))
+            .ToList();
+
+        foreach (var item in validLocks
+            .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First()))
+        {
+            output.Add(new PersonalGenreClassification(
+                item.Taxon.Id,
+                item.Taxon.Name,
+                item.Taxon.Kind,
+                UserLockAuthority,
+                ["user-lock"],
+                UserLocked: true));
+        }
+
+        return output;
+    }
+
+    private static List<PersonalGenreClassification> IncludeParentGenresIfRequested(
+        IReadOnlyList<PersonalGenreClassification> classifications,
+        IReadOnlyList<PersonalGenreLock> locks,
+        PersonalGenreSettings settings)
+    {
+        if (!settings.IncludeParentGenres)
+        {
+            return classifications.ToList();
+        }
+
+        var hasGenreLock = locks.Any(item =>
+            item.Enabled
+            && PersonalGenreTaxonomy.TryGetById(item.TaxonId, out var taxon)
+            && taxon.Kind == PersonalGenreTaxonKind.Genre);
+        if (hasGenreLock)
+        {
+            return classifications.ToList();
+        }
+
+        var output = classifications.ToList();
+        foreach (var classification in classifications
+            .Where(item => item.Kind is PersonalGenreTaxonKind.Style or PersonalGenreTaxonKind.Substyle))
+        {
+            if (!PersonalGenreTaxonomy.TryGetById(classification.TaxonId, out var taxon)
+                || taxon.ParentIds is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            foreach (var parentId in taxon.ParentIds)
+            {
+                if (!PersonalGenreTaxonomy.TryGetById(parentId, out var parent)
+                    || parent.Kind != PersonalGenreTaxonKind.Genre
+                    || output.Any(item => string.Equals(item.TaxonId, parent.Id, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                output.Add(new PersonalGenreClassification(
+                    parent.Id,
+                    parent.Name,
+                    parent.Kind,
+                    Math.Round(classification.Confidence * 0.95, 3),
+                    classification.Sources
+                        .Append("taxonomy-parent")
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray()));
+            }
+        }
+
+        return output;
+    }
+
+    private static void AppendProviderFallbacks(
+        ICollection<Candidate> candidates,
+        IReadOnlyList<PersonalGenreEvidence> evidence,
+        IReadOnlySet<int> matchedEvidenceIndexes)
+    {
+        for (var index = 0; index < evidence.Count; index++)
+        {
+            if (matchedEvidenceIndexes.Contains(index))
+            {
+                continue;
+            }
+
+            var item = evidence[index];
+            if (item.Kind != PersonalGenreTaxonKind.Genre || string.IsNullOrWhiteSpace(item.RawValue))
+            {
+                continue;
+            }
+
+            var raw = item.RawValue.Trim();
+            var providerKey = NormalizeSource(item.Source);
+            var fallbackTaxon = new PersonalGenreTaxon(
+                $"provider:{providerKey}:{PersonalGenreTaxonomy.Normalize(raw)}",
+                raw,
+                PersonalGenreTaxonKind.Genre);
+
+            candidates.Add(new Candidate(
+                fallbackTaxon,
+                Math.Min(GetAuthorityCap(item), 0.20),
+                providerKey,
+                index,
+                FromUserRule: false));
+        }
     }
 
     private static bool SourceMatches(string? configuredSource, string normalizedSource)
@@ -160,4 +364,13 @@ public static class PersonalGenreResolver
 
     private static string NormalizeSource(string? source)
         => (source ?? string.Empty).Trim().ToLowerInvariant();
+
+    private sealed record MatchResult(PersonalGenreTaxon Taxon, long? AppliedRuleId);
+
+    private sealed record Candidate(
+        PersonalGenreTaxon Taxon,
+        double Contribution,
+        string ProviderKey,
+        int Order,
+        bool FromUserRule);
 }
