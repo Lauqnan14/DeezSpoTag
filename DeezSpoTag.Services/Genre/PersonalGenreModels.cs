@@ -21,7 +21,8 @@ public sealed record PersonalGenreEvidence(
     string RawValue,
     PersonalGenreTaxonKind? Kind,
     double Weight = 1d,
-    string? Scope = null);
+    string? Scope = null,
+    string? CanonicalValue = null);
 
 public sealed record PersonalGenreMapping(
     long Id,
