@@ -519,7 +519,37 @@ public sealed class PersonalGenreResolverTest
         Assert.Contains("canonical evidence value", decision.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
+
+    [Fact]
+    public void CustomGlobalGenre_ResolvesWithoutRegionalAssumptions()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon(
+                "reggaeton",
+                "Reggaeton",
+                PersonalGenreTaxonKind.Genre,
+                Aliases: ["Reggaetón", "Reggaeton Music"])
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence(
+                "spotify",
+                "Reggaetón",
+                PersonalGenreTaxonKind.Genre,
+                1d,
+                "artist")
+        ],
+        customTaxa: customTaxa);
+
+        Assert.Equal("Reggaeton", resolution.PrimaryGenre);
+        Assert.Contains("Reggaeton", resolution.Genres);
+        Assert.DoesNotContain("Reggaeton", resolution.Contexts);
+        Assert.DoesNotContain("Reggaeton", resolution.Styles);
+    }
+
+[Theory]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Style, 0.90)]
     [InlineData("discogs", "track", PersonalGenreTaxonKind.Genre, 0.85)]
     [InlineData("audiomack", "track", PersonalGenreTaxonKind.Genre, 0.88)]
