@@ -139,6 +139,7 @@ ORDER BY kind, name COLLATE NOCASE, id;
             taxon.ContextOnly || taxon.Kind == PersonalGenreTaxonKind.Context,
             aliases);
 
+        await ValidateCustomTaxonLookupAsync(normalized, cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
 INSERT INTO personal_genre_taxon
@@ -641,6 +642,46 @@ CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
         await using var pragma = new SqliteCommand("PRAGMA foreign_keys = ON;", connection);
         await pragma.ExecuteNonQueryAsync(cancellationToken);
         return connection;
+    }
+
+    private async Task ValidateCustomTaxonLookupAsync(
+        PersonalGenreTaxon taxon,
+        CancellationToken cancellationToken)
+    {
+        var candidateValues = new[] { taxon.Id, taxon.Name }
+            .Concat(taxon.Aliases ?? Array.Empty<string>())
+            .Select(PersonalGenreTaxonomy.Normalize)
+            .Where(value => value.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var builtIn in PersonalGenreTaxonomy.GetDefaultTaxa())
+        {
+            var builtInValues = new[] { builtIn.Id, builtIn.Name }
+                .Concat(builtIn.Aliases ?? Array.Empty<string>())
+                .Select(PersonalGenreTaxonomy.Normalize);
+            if (builtInValues.Any(candidateValues.Contains))
+            {
+                throw new ArgumentException(
+                    $"Custom taxon '{taxon.Id}' conflicts with protected built-in taxon '{builtIn.Id}'. " +
+                    "Use a mapping or user rule for intentional remapping.",
+                    nameof(taxon));
+            }
+        }
+
+        var existing = await GetCustomTaxaAsync(cancellationToken);
+        foreach (var other in existing.Where(item =>
+            !string.Equals(item.Id, taxon.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            var otherValues = new[] { other.Id, other.Name }
+                .Concat(other.Aliases ?? Array.Empty<string>())
+                .Select(PersonalGenreTaxonomy.Normalize);
+            if (otherValues.Any(candidateValues.Contains))
+            {
+                throw new ArgumentException(
+                    $"Custom taxon '{taxon.Id}' conflicts with existing custom taxon '{other.Id}'.",
+                    nameof(taxon));
+            }
+        }
     }
 
     private async Task ValidateTaxonAsync(
