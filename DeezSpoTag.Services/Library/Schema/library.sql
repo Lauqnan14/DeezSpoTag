@@ -1174,6 +1174,14 @@ CREATE TABLE IF NOT EXISTS personal_genre_rule (
 CREATE INDEX IF NOT EXISTS idx_personal_genre_rule_match
     ON personal_genre_rule (match_value, source, enabled, priority DESC);
 
+CREATE TABLE IF NOT EXISTS personal_genre_lock (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (track_id, taxon_id)
+);
+
 CREATE TABLE IF NOT EXISTS personal_genre_track (
     track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
     primary_genre TEXT,
@@ -1181,6 +1189,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
     evidence_json TEXT NOT NULL DEFAULT '[]',
     resolver_version TEXT NOT NULL,
