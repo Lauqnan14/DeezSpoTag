@@ -19,12 +19,67 @@ public sealed class PersonalGenreApiController : ControllerBase
     }
 
     [HttpGet("taxonomy")]
-    public IActionResult GetTaxonomy()
-        => Ok(new
+    public async Task<IActionResult> GetTaxonomy(CancellationToken cancellationToken)
+    {
+        var taxa = await _service.GetTaxonomyAsync(cancellationToken);
+        var builtInIds = PersonalGenreTaxonomy.GetDefaultTaxa()
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return Ok(new
         {
             version = PersonalGenreTaxonomy.Version,
-            taxa = _service.GetTaxonomy()
+            taxa = taxa.Select(item => new
+            {
+                item.Id,
+                item.Name,
+                kind = item.Kind.ToString().ToLowerInvariant(),
+                item.ParentIds,
+                item.ContextOnly,
+                item.Aliases,
+                builtIn = builtInIds.Contains(item.Id)
+            })
         });
+    }
+
+    [HttpGet("taxonomy/custom")]
+    public async Task<IActionResult> GetCustomTaxa(CancellationToken cancellationToken)
+        => Ok(await _service.GetCustomTaxaAsync(cancellationToken));
+
+    [HttpPost("taxonomy/custom")]
+    public async Task<IActionResult> UpsertCustomTaxon(
+        [FromBody] PersonalGenreTaxon taxon,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _service.UpsertCustomTaxonAsync(taxon, cancellationToken));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpDelete("taxonomy/custom/{taxonId}")]
+    public async Task<IActionResult> DeleteCustomTaxon(
+        string taxonId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _service.DeleteCustomTaxonAsync(taxonId, cancellationToken);
+            return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { error = ex.Message });
+        }
+    }
 
     [HttpGet("settings")]
     public async Task<IActionResult> GetSettings(CancellationToken cancellationToken)
@@ -88,6 +143,25 @@ public sealed class PersonalGenreApiController : ControllerBase
         return NoContent();
     }
 
+    [HttpGet("configuration/export")]
+    public async Task<IActionResult> ExportConfiguration(CancellationToken cancellationToken)
+        => Ok(await _service.ExportConfigurationAsync(cancellationToken));
+
+    [HttpPost("configuration/import")]
+    public async Task<IActionResult> ImportConfiguration(
+        [FromBody] PersonalGenreConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _service.ImportConfigurationAsync(configuration, cancellationToken));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     [HttpGet("tracks/{trackId:long}/locks")]
     public async Task<IActionResult> GetLocks(long trackId, CancellationToken cancellationToken)
         => Ok(await _service.GetLocksAsync(trackId, cancellationToken));
@@ -135,7 +209,6 @@ public sealed class PersonalGenreApiController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 }
-
 
 public sealed class PersonalGenreLockRequest
 {
