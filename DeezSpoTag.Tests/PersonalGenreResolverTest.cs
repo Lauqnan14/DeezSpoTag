@@ -154,6 +154,63 @@ public sealed class PersonalGenreResolverTest
     }
 
     [Fact]
+    public void Swahili_IsLanguage_NotContextOrGenre()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("manual", "Swahili", PersonalGenreTaxonKind.Language, 1d, "track")
+        ]);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Contains("Swahili", resolution.Languages);
+        Assert.DoesNotContain("Swahili", resolution.Contexts);
+        Assert.DoesNotContain("Swahili", resolution.Genres);
+    }
+
+    [Fact]
+    public void Zilizopendwa_IsScene_NotGenre()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("manual", "Zilizopendwa", PersonalGenreTaxonKind.Scene, 1d, "track")
+        ]);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.Contains("Zilizopendwa", resolution.Scenes);
+        Assert.DoesNotContain("Zilizopendwa", resolution.Genres);
+    }
+
+    [Fact]
+    public void CustomSceneAndLanguage_PreserveTheirDimensions()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon(
+                "dar-club-scene",
+                "Dar Club Scene",
+                PersonalGenreTaxonKind.Scene,
+                ContextOnly: true),
+            new PersonalGenreTaxon(
+                "luganda",
+                "Luganda",
+                PersonalGenreTaxonKind.Language,
+                ContextOnly: true)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("manual", "Dar Club Scene", PersonalGenreTaxonKind.Scene, 1d, "track"),
+            new PersonalGenreEvidence("manual", "Luganda", PersonalGenreTaxonKind.Language, 1d, "track")
+        ],
+        customTaxa: customTaxa);
+
+        Assert.Contains("Dar Club Scene", resolution.Scenes);
+        Assert.Contains("Luganda", resolution.Languages);
+        Assert.DoesNotContain("Dar Club Scene", resolution.Contexts);
+        Assert.DoesNotContain("Luganda", resolution.Contexts);
+    }
+
+    [Fact]
     public void Context_NeverBecomesPrimaryGenre()
     {
         var resolution = PersonalGenreResolver.Resolve(
