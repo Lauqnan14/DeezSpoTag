@@ -1095,6 +1095,12 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
 CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
     ON personal_genre_track (primary_genre);
 ", cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "classifications_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_plex_metadata (
