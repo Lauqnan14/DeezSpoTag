@@ -146,13 +146,15 @@ public sealed class PersonalGenreService
                 var source = GetString(item, "source") ?? "unknown";
                 var kind = ParseKind(GetString(item, "kind"));
                 var scope = GetString(item, "scope");
+                var canonicalValue = GetString(item, "canonicalValue");
                 var weight = GetDouble(item, "finalWeight") ?? GetDouble(item, "strength") ?? 1d;
                 output.Add(new PersonalGenreEvidence(
                     source,
                     rawValue,
                     kind,
                     Math.Clamp(weight, 0d, 10d),
-                    scope));
+                    scope,
+                    canonicalValue));
             }
 
             return output;
