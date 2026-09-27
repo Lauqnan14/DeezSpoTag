@@ -159,7 +159,10 @@ public static class PersonalGenreResolver
         IReadOnlyList<PersonalGenreMapping> mappings,
         IReadOnlyList<PersonalGenreRule> rules)
     {
-        var normalizedValue = PersonalGenreTaxonomy.Normalize(evidence.RawValue);
+        var effectiveValue = string.IsNullOrWhiteSpace(evidence.CanonicalValue)
+            ? evidence.RawValue
+            : evidence.CanonicalValue!;
+        var normalizedValue = PersonalGenreTaxonomy.Normalize(effectiveValue);
         if (normalizedValue.Length == 0)
         {
             return null;
@@ -192,7 +195,7 @@ public static class PersonalGenreResolver
             return new MatchResult(mappedTaxon, null);
         }
 
-        return PersonalGenreTaxonomy.TryMatch(evidence.RawValue, out var taxonomyTaxon)
+        return PersonalGenreTaxonomy.TryMatch(effectiveValue, out var taxonomyTaxon)
             ? new MatchResult(taxonomyTaxon, null)
             : null;
     }
