@@ -155,7 +155,7 @@
                         && Number(item.scopeId || 0) === selectedScope.scopeId)
                     .map(item => String(item.taxonId || '').toLowerCase()));
 
-            ['genre', 'style', 'substyle', 'context'].forEach(kind => {
+            ['genre', 'style', 'substyle', 'context', 'scene', 'language'].forEach(kind => {
                 const items = state.taxonomy
                     .filter(item => String(item.kind || '').toLowerCase() === kind)
                     .filter(item => !lockedIds.has(String(item.id || '').toLowerCase()))
@@ -498,6 +498,8 @@
             case 1: return 'Style';
             case 2: return 'Substyle';
             case 3: return 'Context';
+            case 4: return 'Scene';
+            case 5: return 'Language';
             default: return 'Unknown';
         }
     }
