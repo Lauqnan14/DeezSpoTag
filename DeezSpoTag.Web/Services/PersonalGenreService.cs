@@ -106,6 +106,11 @@ public sealed class PersonalGenreService
         CancellationToken cancellationToken = default)
         => _store.GetTrackHistoryAsync(trackId, limit, cancellationToken);
 
+    public Task<PersonalGenreTrackScope?> GetTrackScopeAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+        => _store.GetTrackScopeAsync(trackId, cancellationToken);
+
     public async Task<PersonalGenreTrackResult?> SaveLockAndResolveAsync(
         PersonalGenreLock item,
         CancellationToken cancellationToken = default)
