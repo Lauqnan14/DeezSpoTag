@@ -58,6 +58,28 @@ public sealed class PersonalGenreService
         CancellationToken cancellationToken = default)
         => _store.GetTrackResultAsync(trackId, cancellationToken);
 
+    public Task<IReadOnlyList<PersonalGenreLock>> GetLocksAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+        => _store.GetLocksAsync(trackId, cancellationToken);
+
+    public async Task<PersonalGenreTrackResult?> SaveLockAndResolveAsync(
+        PersonalGenreLock item,
+        CancellationToken cancellationToken = default)
+    {
+        await _store.SaveLockAsync(item, cancellationToken);
+        return await ResolveTrackAsync(item.TrackId, cancellationToken);
+    }
+
+    public async Task<PersonalGenreTrackResult?> DeleteLockAndResolveAsync(
+        long trackId,
+        string taxonId,
+        CancellationToken cancellationToken = default)
+    {
+        await _store.DeleteLockAsync(trackId, taxonId, cancellationToken);
+        return await ResolveTrackAsync(trackId, cancellationToken);
+    }
+
     public async Task<PersonalGenreTrackResult?> ResolveTrackAsync(
         long trackId,
         CancellationToken cancellationToken = default)
@@ -86,7 +108,8 @@ public sealed class PersonalGenreService
 
         var mappings = await _store.GetMappingsAsync(cancellationToken);
         var rules = await _store.GetRulesAsync(cancellationToken);
-        var resolution = PersonalGenreResolver.Resolve(evidence, mappings, rules, settings);
+        var locks = await _store.GetLocksAsync(analysis.TrackId, cancellationToken);
+        var resolution = PersonalGenreResolver.Resolve(evidence, mappings, rules, locks, settings);
         var result = new PersonalGenreTrackResult(
             analysis.TrackId,
             resolution,
