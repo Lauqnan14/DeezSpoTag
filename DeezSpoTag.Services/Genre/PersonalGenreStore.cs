@@ -186,6 +186,7 @@ SELECT
     (SELECT COUNT(*) FROM personal_genre_mapping WHERE lower(target_taxon_id) = lower(@id)) +
     (SELECT COUNT(*) FROM personal_genre_rule WHERE lower(target_taxon_id) = lower(@id)) +
     (SELECT COUNT(*) FROM personal_genre_lock WHERE lower(taxon_id) = lower(@id)) +
+    (SELECT COUNT(*) FROM personal_genre_scope_lock WHERE lower(taxon_id) = lower(@id)) +
     (SELECT COUNT(*)
        FROM personal_genre_taxon term, json_each(term.parent_ids_json) parent
       WHERE lower(CAST(parent.value AS TEXT)) = lower(@id));
