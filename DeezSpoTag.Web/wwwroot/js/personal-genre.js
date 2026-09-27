@@ -80,6 +80,62 @@
                 setStatus(error.message, 'error');
             }
         });
+
+        byId('pgRebuildButton')?.addEventListener('click', () => {
+            void rebuildExistingResults();
+        });
+    }
+
+    async function rebuildExistingResults() {
+        const button = byId('pgRebuildButton');
+        const status = byId('pgRebuildStatus');
+        if (!button || button.disabled) return;
+
+        button.disabled = true;
+        const originalText = button.textContent;
+        let afterTrackId = 0;
+        let processed = 0;
+        let resolved = 0;
+        let skipped = 0;
+
+        try {
+            do {
+                const result = await requestJson(
+                    apiBase + '/rebuild?afterTrackId=' + encodeURIComponent(afterTrackId) + '&batchSize=200',
+                    { method: 'POST' });
+
+                const batchProcessed = Number(result?.processed || 0);
+                processed += batchProcessed;
+                resolved += Number(result?.resolved || 0);
+                skipped += Number(result?.skipped || 0);
+                afterTrackId = Number(result?.lastTrackId || afterTrackId);
+
+                if (status) {
+                    status.textContent =
+                        'Rebuild running · ' + processed + ' processed · ' +
+                        resolved + ' resolved · ' + skipped + ' skipped';
+                }
+
+                if (!result?.hasMore || batchProcessed === 0) {
+                    break;
+                }
+            } while (true);
+
+            if (status) {
+                status.textContent =
+                    'Rebuild complete · ' + processed + ' processed · ' +
+                    resolved + ' resolved · ' + skipped + ' skipped. No audio analysis or file writes were performed.';
+            }
+            setStatus('Personal Genre rebuild complete.', 'success');
+        } catch (error) {
+            if (status) {
+                status.textContent = 'Rebuild stopped: ' + (error.message || error);
+            }
+            setStatus(error.message || 'Personal Genre rebuild failed.', 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
     }
 
     function renderSettings() {
