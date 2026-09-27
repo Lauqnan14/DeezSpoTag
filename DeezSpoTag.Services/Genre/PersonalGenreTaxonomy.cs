@@ -59,7 +59,7 @@ public static class PersonalGenreTaxonomy
 
         new("afrosounds", "Afrosounds", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
-        new("swahili", "Swahili", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("swahili", "Swahili", PersonalGenreTaxonKind.Language, ContextOnly: true),
         new("tanzania", "Tanzania", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("kenya", "Kenya", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("uganda", "Uganda", PersonalGenreTaxonKind.Context, ContextOnly: true),
@@ -68,7 +68,7 @@ public static class PersonalGenreTaxonomy
         new("ghana", "Ghana", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("congo", "Congo", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("drc", "DR Congo", PersonalGenreTaxonKind.Context, ContextOnly: true, Aliases: ["Democratic Republic of the Congo", "DRC"]),
-        new("zilizopendwa", "Zilizopendwa", PersonalGenreTaxonKind.Context, ContextOnly: true, Aliases: ["Swahili Oldies"])
+        new("zilizopendwa", "Zilizopendwa", PersonalGenreTaxonKind.Scene, ContextOnly: true, Aliases: ["Swahili Oldies"])
     ];
 
     private static readonly IReadOnlyDictionary<string, PersonalGenreTaxon> ById =
