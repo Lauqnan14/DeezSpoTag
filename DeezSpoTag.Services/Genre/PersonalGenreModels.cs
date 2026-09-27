@@ -126,3 +126,14 @@ public sealed record PersonalGenreImportResult(
     int MappingsImported,
     int RulesImported,
     int DuplicatesSkipped);
+
+
+public sealed record PersonalGenreResolutionHistoryItem(
+    long Id,
+    long TrackId,
+    string? PrimaryGenre,
+    string ResolverVersion,
+    DateTimeOffset ResolvedAtUtc,
+    int EvidenceCount,
+    int ClassificationCount,
+    IReadOnlyList<PersonalGenreEvidenceDecision> Decisions);
