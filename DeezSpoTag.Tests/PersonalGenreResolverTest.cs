@@ -131,6 +131,29 @@ public sealed class PersonalGenreResolverTest
     }
 
     [Fact]
+    public void ContextOnlyCustomTaxon_CannotBecomeGenreEvenWithWrongKind()
+    {
+        var customTaxa = new[]
+        {
+            new PersonalGenreTaxon(
+                "regional-bucket",
+                "Regional Bucket",
+                PersonalGenreTaxonKind.Genre,
+                ContextOnly: true)
+        };
+
+        var resolution = PersonalGenreResolver.Resolve(
+        [
+            new PersonalGenreEvidence("manual", "Regional Bucket", PersonalGenreTaxonKind.Genre, 1d, "track")
+        ],
+        customTaxa: customTaxa);
+
+        Assert.Null(resolution.PrimaryGenre);
+        Assert.DoesNotContain("Regional Bucket", resolution.Genres);
+        Assert.Contains("Regional Bucket", resolution.Contexts);
+    }
+
+    [Fact]
     public void Context_NeverBecomesPrimaryGenre()
     {
         var resolution = PersonalGenreResolver.Resolve(
