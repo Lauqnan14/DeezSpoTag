@@ -1,0 +1,332 @@
+@{
+    ViewData["Title"] = "Genre Intelligence";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/personal-genre.css")" />
+
+<div class="pg-page" id="personalGenrePage">
+    <header class="pg-hero">
+        <div>
+            <div class="pg-eyebrow">DeezSpoTag Personal Genre</div>
+            <h1>Genre Intelligence</h1>
+            <p>
+                DeezSpoTag owns the taxonomy. Providers contribute evidence; mappings, rules and locks decide how that evidence becomes your library classification, regardless of region or music market.
+            </p>
+        </div>
+        <div class="pg-hero-badges">
+            <span class="pg-badge">Local SQLite</span>
+            <span class="pg-badge">Evidence preserved</span>
+            <span class="pg-badge pg-badge--safe">No automatic file writes</span>
+        </div>
+    </header>
+
+    <div class="pg-status" id="pgStatus" role="status" aria-live="polite">Loading Personal Genre…</div>
+
+    <nav class="pg-tabs" aria-label="Genre Intelligence sections">
+        <button type="button" class="pg-tab is-active" data-pg-tab="settings">Settings</button>
+        <button type="button" class="pg-tab" data-pg-tab="taxonomy">Taxonomy</button>
+        <button type="button" class="pg-tab" data-pg-tab="mappings">Mappings</button>
+        <button type="button" class="pg-tab" data-pg-tab="rules">Rules</button>
+        <button type="button" class="pg-tab" data-pg-tab="portability">Import / Export</button>
+    </nav>
+
+    <section class="pg-panel is-active" data-pg-panel="settings">
+        <div class="pg-grid pg-grid--settings">
+            <article class="pg-card">
+                <div class="pg-card-head">
+                    <div>
+                        <h2>Resolver</h2>
+                        <p>Controls how Personal Genre turns preserved evidence into canonical classifications.</p>
+                    </div>
+                </div>
+                <form id="pgSettingsForm" class="pg-form">
+                    <label class="pg-toggle-row">
+                        <span>
+                            <strong>Enable Personal Genre</strong>
+                            <small>Resolve and store Personal Genre when Vibe analysis completes.</small>
+                        </span>
+                        <input id="pgEnabled" type="checkbox" />
+                    </label>
+                    <label class="pg-field">
+                        <span>Maximum final genres</span>
+                        <input id="pgMaxGenres" type="number" min="1" max="10" value="3" />
+                    </label>
+                    <label class="pg-toggle-row">
+                        <span>
+                            <strong>Preserve unknown provider genre fallback</strong>
+                            <small>Unknown provider genre labels can survive at low confidence instead of being discarded.</small>
+                        </span>
+                        <input id="pgProviderFallback" type="checkbox" />
+                    </label>
+                    <label class="pg-toggle-row">
+                        <span>
+                            <strong>Include parent genres</strong>
+                            <small>Allow Style/Substyle relationships to contribute parent Genres when no Genre lock exists.</small>
+                        </span>
+                        <input id="pgIncludeParents" type="checkbox" />
+                    </label>
+                    <div class="pg-actions">
+                        <button class="pg-btn pg-btn--primary" type="submit">Save settings</button>
+                        <button class="pg-btn" type="button" id="pgRebuildButton">Rebuild existing results</button>
+                    </div>
+                    <div class="pg-note" id="pgRebuildStatus">
+                        Rebuild re-resolves tracks that already have completed Vibe analysis. It does not re-run audio analysis and does not write tags to files.
+                    </div>
+                </form>
+            </article>
+
+            <article class="pg-card">
+                <div class="pg-card-head">
+                    <div>
+                        <h2>Authority model</h2>
+                        <p>Evidence is capped so a source cannot become truth merely because it supplied a label. Caps apply when that source's evidence is present.</p>
+                    </div>
+                </div>
+                <div class="pg-authority-list">
+                    <div><span>User lock</span><strong>1.00</strong></div>
+                    <div><span>User rule</span><strong>0.98</strong></div>
+                    <div><span>Discogs style</span><strong>0.90</strong></div>
+                    <div><span>Audiomack track</span><strong>0.88</strong></div>
+                    <div><span>Discogs genre</span><strong>0.85</strong></div>
+                    <div><span>Audiomack editorial</span><strong>0.82</strong></div>
+                    <div><span>Audiomack album</span><strong>0.80</strong></div>
+                    <div><span>Last.fm track</span><strong>0.72</strong></div>
+                    <div><span>Audiomack artist</span><strong>0.60</strong></div>
+                    <div><span>Spotify artist</span><strong>0.55</strong></div>
+                    <div><span>Essentia</span><strong>0.40</strong></div>
+                </div>
+                <div class="pg-note">
+                    <strong>Automatic evidence today:</strong> embedded file semantics, Audiomack, Last.fm and Essentia. Discogs and Spotify authority caps are reserved for source-specific evidence when it is available; Personal Genre does not launch extra provider lookups merely to fill a classification.
+                </div>
+                <div class="pg-note">
+                    <strong>Regional semantics are preserved:</strong> provider umbrellas such as Audiomack <em>Afrosounds</em> remain Context rather than Genre, while established musical forms such as Bongo Flava can remain canonical Genres. The same separation applies to any region.
+                </div>
+            </article>
+        </div>
+    </section>
+
+    <section class="pg-panel" data-pg-panel="taxonomy">
+        <div class="pg-card">
+            <div class="pg-card-head pg-card-head--toolbar">
+                <div>
+                    <h2>Canonical taxonomy</h2>
+                    <p>Built-ins are a protected starting foundation, not a regional limit. Add custom Genre, Style, Substyle, Context, Scene or Language terms for any music catalog without modifying provider evidence.</p>
+                </div>
+                <div class="pg-toolbar">
+                    <input id="pgTaxonomySearch" type="search" placeholder="Search taxonomy…" />
+                    <select id="pgTaxonomyKindFilter">
+                        <option value="">All kinds</option>
+                        <option value="genre">Genre</option>
+                        <option value="style">Style</option>
+                        <option value="substyle">Substyle</option>
+                        <option value="context">Context</option>
+                        <option value="scene">Scene</option>
+                        <option value="language">Language</option>
+                    </select>
+                </div>
+            </div>
+
+            <details class="pg-editor">
+                <summary>Add or update custom taxon</summary>
+                <form id="pgTaxonForm" class="pg-form pg-form--inline">
+                    <label class="pg-field">
+                        <span>ID</span>
+                        <input id="pgTaxonId" required placeholder="e.g. reggaeton" />
+                    </label>
+                    <label class="pg-field">
+                        <span>Name</span>
+                        <input id="pgTaxonName" required placeholder="e.g. Reggaeton" />
+                    </label>
+                    <label class="pg-field">
+                        <span>Kind</span>
+                        <select id="pgTaxonKind">
+                            <option value="genre">Genre</option>
+                            <option value="style">Style</option>
+                            <option value="substyle">Substyle</option>
+                            <option value="context">Context</option>
+                            <option value="scene">Scene</option>
+                            <option value="language">Language</option>
+                        </select>
+                    </label>
+                    <label class="pg-field pg-field--wide">
+                        <span>Parent IDs</span>
+                        <input id="pgTaxonParents" placeholder="hip-hop, pop" />
+                        <small>Comma separated; multiple parents are allowed.</small>
+                    </label>
+                    <label class="pg-field pg-field--wide">
+                        <span>Aliases</span>
+                        <input id="pgTaxonAliases" placeholder="Reggaeton Music, Reggaetón" />
+                        <small>Comma separated raw labels that should match this taxon.</small>
+                    </label>
+                    <label class="pg-toggle-row pg-toggle-row--compact">
+                        <span><strong>Non-genre dimension</strong></span>
+                        <input id="pgTaxonContextOnly" type="checkbox" />
+                    </label>
+                    <div class="pg-actions pg-field--wide">
+                        <button class="pg-btn pg-btn--primary" type="submit">Save custom taxon</button>
+                        <button class="pg-btn" type="button" id="pgTaxonReset">Clear form</button>
+                    </div>
+                </form>
+            </details>
+
+            <div class="pg-table-wrap">
+                <table class="pg-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Kind</th>
+                            <th>Parents</th>
+                            <th>Aliases</th>
+                            <th>Origin</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pgTaxonomyBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="pg-panel" data-pg-panel="mappings">
+        <div class="pg-card">
+            <div class="pg-card-head">
+                <div>
+                    <h2>Provider mappings</h2>
+                    <p>Translate provider vocabulary into a Personal Genre taxon without changing the provider's raw evidence.</p>
+                </div>
+            </div>
+            <form id="pgMappingForm" class="pg-form pg-form--row">
+                <input id="pgMappingId" type="hidden" value="0" />
+                <label class="pg-field">
+                    <span>Provider value</span>
+                    <input id="pgMappingValue" required placeholder="e.g. Latin Urban" />
+                </label>
+                <label class="pg-field">
+                    <span>Source</span>
+                    <input id="pgMappingSource" placeholder="audiomack, discogs, lastfm…" />
+                </label>
+                <label class="pg-field">
+                    <span>Action</span>
+                    <select id="pgMappingAction">
+                        <option value="0">Map</option>
+                        <option value="1">Context only</option>
+                        <option value="2">Ignore</option>
+                        <option value="3">Ambiguous</option>
+                    </select>
+                </label>
+                <label class="pg-field">
+                    <span>Target taxon</span>
+                    <select id="pgMappingTarget" required></select>
+                    <small>Target is used by Map and Context-only actions.</small>
+                </label>
+                <label class="pg-field">
+                    <span>Priority</span>
+                    <input id="pgMappingPriority" type="number" value="100" />
+                </label>
+                <label class="pg-toggle-row pg-toggle-row--compact">
+                    <span><strong>Enabled</strong></span>
+                    <input id="pgMappingEnabled" type="checkbox" checked />
+                </label>
+                <div class="pg-actions">
+                    <button class="pg-btn pg-btn--primary" type="submit">Save mapping</button>
+                    <button class="pg-btn" type="button" id="pgMappingReset">Clear</button>
+                </div>
+            </form>
+            <div class="pg-table-wrap">
+                <table class="pg-table">
+                    <thead>
+                        <tr><th>Provider value</th><th>Source</th><th>Action</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr>
+                    </thead>
+                    <tbody id="pgMappingsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="pg-panel" data-pg-panel="rules">
+        <div class="pg-card">
+            <div class="pg-card-head">
+                <div>
+                    <h2>User rules</h2>
+                    <p>User rules outrank provider mappings and built-in matching. User locks outrank automation, with track scope overriding album scope and album scope overriding artist scope.</p>
+                </div>
+            </div>
+            <form id="pgRuleForm" class="pg-form pg-form--row">
+                <input id="pgRuleId" type="hidden" value="0" />
+                <label class="pg-field">
+                    <span>Match value</span>
+                    <input id="pgRuleValue" required placeholder="e.g. Alternative R&B" />
+                </label>
+                <label class="pg-field">
+                    <span>Source restriction</span>
+                    <input id="pgRuleSource" placeholder="Optional provider name" />
+                </label>
+                <label class="pg-field">
+                    <span>Target taxon</span>
+                    <select id="pgRuleTarget" required></select>
+                </label>
+                <label class="pg-field">
+                    <span>Priority</span>
+                    <input id="pgRulePriority" type="number" value="1000" />
+                </label>
+                <label class="pg-toggle-row pg-toggle-row--compact">
+                    <span><strong>Enabled</strong></span>
+                    <input id="pgRuleEnabled" type="checkbox" checked />
+                </label>
+                <div class="pg-actions">
+                    <button class="pg-btn pg-btn--primary" type="submit">Save rule</button>
+                    <button class="pg-btn" type="button" id="pgRuleReset">Clear</button>
+                </div>
+            </form>
+            <div class="pg-table-wrap">
+                <table class="pg-table">
+                    <thead>
+                        <tr><th>Match value</th><th>Source</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr>
+                    </thead>
+                    <tbody id="pgRulesBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="pg-panel" data-pg-panel="portability">
+        <div class="pg-grid">
+            <article class="pg-card">
+                <div class="pg-card-head">
+                    <div>
+                        <h2>Export configuration</h2>
+                        <p>Exports resolver settings, custom taxonomy, provider mappings and user rules as JSON.</p>
+                    </div>
+                </div>
+                <div class="pg-note">
+                    Track-level locks and resolved track results are deliberately excluded because they belong to this library.
+                </div>
+                <div class="pg-actions">
+                    <button id="pgExportButton" class="pg-btn pg-btn--primary" type="button">Export JSON</button>
+                </div>
+            </article>
+
+            <article class="pg-card">
+                <div class="pg-card-head">
+                    <div>
+                        <h2>Import configuration</h2>
+                        <p>Imports by merging. Existing equivalent mappings and rules are skipped instead of duplicated.</p>
+                    </div>
+                </div>
+                <label class="pg-field">
+                    <span>Personal Genre JSON file</span>
+                    <input id="pgImportFile" type="file" accept="application/json,.json" />
+                </label>
+                <div class="pg-actions">
+                    <button id="pgImportButton" class="pg-btn pg-btn--primary" type="button">Import JSON</button>
+                </div>
+                <div class="pg-note pg-note--warning">
+                    This does not write Genre or Style tags to audio files. File write-back remains a separate explicit feature.
+                </div>
+            </article>
+        </div>
+    </section>
+</div>
+
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/personal-genre.js")"></script>

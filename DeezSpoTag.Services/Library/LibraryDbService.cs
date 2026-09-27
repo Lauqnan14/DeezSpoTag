@@ -1035,6 +1035,183 @@ CREATE TABLE IF NOT EXISTS local_duplicate_resolution_event (
             ("loudness_ml", RealType));
 
         await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS personal_genre_settings (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    max_genres INTEGER NOT NULL DEFAULT 3,
+    preserve_provider_fallback INTEGER NOT NULL DEFAULT 1,
+    include_parent_genres INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS personal_genre_taxon (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_only INTEGER NOT NULL DEFAULT 0,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_taxon_kind_name
+    ON personal_genre_taxon (kind, name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS personal_genre_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'map',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_mapping_match
+    ON personal_genre_mapping (match_value, source, enabled, priority DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 1000,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_rule_match
+    ON personal_genre_rule (match_value, source, enabled, priority DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_lock (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (track_id, taxon_id)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_scope_lock (
+    scope_type TEXT NOT NULL,
+    scope_id BIGINT NOT NULL,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope_type, scope_id, taxon_id)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_scope_lock_scope
+    ON personal_genre_scope_lock (scope_type, scope_id, enabled);
+
+CREATE TABLE IF NOT EXISTS personal_genre_track (
+    track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
+    ON personal_genre_track (primary_genre);
+
+CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_resolution_history_track
+    ON personal_genre_resolution_history (track_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_evidence_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    raw_value TEXT NOT NULL,
+    canonical_value TEXT,
+    kind TEXT,
+    scope TEXT,
+    weight REAL NOT NULL,
+    authority_cap REAL NOT NULL,
+    PRIMARY KEY (resolution_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]',
+    user_locked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'suggested',
+    evidence_state TEXT NOT NULL DEFAULT 'single_source',
+    PRIMARY KEY (resolution_id, taxon_id)
+);
+", cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_mapping",
+            "action",
+            "TEXT NOT NULL DEFAULT 'map'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "classifications_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "decisions_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "languages_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "languages_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+
+        await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_plex_metadata (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
     plex_rating_key TEXT,

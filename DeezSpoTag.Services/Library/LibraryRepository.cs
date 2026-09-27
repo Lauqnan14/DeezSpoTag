@@ -950,6 +950,12 @@ VALUES (@timestampUtc, @level, @message);";
             var tracksRemoved = await CountRowsAsync(connection, transaction, TrackType, cancellationToken);
 
             const string sql = @"
+DELETE FROM personal_genre_evidence_history;
+DELETE FROM personal_genre_classification_history;
+DELETE FROM personal_genre_resolution_history;
+DELETE FROM personal_genre_scope_lock;
+DELETE FROM personal_genre_lock;
+DELETE FROM personal_genre_track;
 DELETE FROM track_analysis;
 DELETE FROM track_genre;
 DELETE FROM track_local;

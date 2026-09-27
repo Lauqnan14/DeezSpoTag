@@ -818,6 +818,16 @@
                 </div>
                 <span class="menu-text">Library</span>
             </a>
+            <a href="/GenreIntelligence" class="menu-item genre-intelligence" data-tooltip="Genre Intelligence">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 5h10l6 6l-9 9l-7-7V5Z"/>
+                        <circle cx="9" cy="10" r="1.5"/>
+                        <path d="M14 5v6h6"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Genre Intelligence</span>
+            </a>
             <a href="/MediaManagement" class="menu-item media-management" data-tooltip="Media Management">
                 <div class="menu-icon">
                     <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
@@ -1204,6 +1214,8 @@
                 document.querySelector('.menu-item.home')?.classList.add('active');
             } else if (currentPath.startsWith('/library')) {
                 document.querySelector('.menu-item.library')?.classList.add('active');
+            } else if (currentPath.startsWith('/genreintelligence')) {
+                document.querySelector('.menu-item.genre-intelligence')?.classList.add('active');
             } else if (currentPath.startsWith('/mediamanagement')) {
                 document.querySelector('.menu-item.media-management')?.classList.add('active');
             } else if (currentPath.startsWith('/autotag')) {
