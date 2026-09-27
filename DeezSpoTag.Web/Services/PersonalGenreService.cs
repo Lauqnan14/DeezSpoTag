@@ -242,6 +242,46 @@ public sealed class PersonalGenreService
             duplicatesSkipped);
     }
 
+    public async Task<PersonalGenreRebuildResult> RebuildBatchAsync(
+        long afterTrackId,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        var pageSize = Math.Clamp(batchSize, 1, 500);
+        var ids = await _store.GetAnalyzedTrackIdsAfterAsync(
+            Math.Max(0, afterTrackId),
+            pageSize + 1,
+            cancellationToken);
+
+        var hasMore = ids.Count > pageSize;
+        var page = ids.Take(pageSize).ToArray();
+        var resolved = 0;
+        var skipped = 0;
+        long lastTrackId = afterTrackId;
+
+        foreach (var trackId in page)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lastTrackId = trackId;
+            var result = await ResolveTrackAsync(trackId, cancellationToken);
+            if (result is null)
+            {
+                skipped++;
+            }
+            else
+            {
+                resolved++;
+            }
+        }
+
+        return new PersonalGenreRebuildResult(
+            page.Length,
+            resolved,
+            skipped,
+            Math.Max(0, lastTrackId),
+            hasMore);
+    }
+
     public async Task<PersonalGenreTrackResult?> ResolveTrackAsync(
         long trackId,
         CancellationToken cancellationToken = default)
