@@ -22,41 +22,74 @@ public static class PersonalGenreResolver
         var catalog = new PersonalGenreCatalog(customTaxa);
         var appliedRuleIds = new List<string>();
         var candidates = new List<Candidate>();
-        var matchedEvidenceIndexes = new HashSet<int>();
+        var suppressedEvidenceIndexes = new HashSet<int>();
+        var classifiedEvidenceIndexes = new HashSet<int>();
+        var decisions = new List<PersonalGenreEvidenceDecision>(evidence.Count);
 
         for (var index = 0; index < evidence.Count; index++)
         {
             var item = evidence[index];
-            var match = ResolveEvidence(item, mappings, rules, catalog);
-            if (match is null)
+            var attempt = ResolveEvidence(item, mappings, rules, catalog);
+            decisions.Add(new PersonalGenreEvidenceDecision(
+                index,
+                item.Source,
+                item.RawValue,
+                item.CanonicalValue,
+                attempt.Outcome,
+                attempt.Taxon?.Id,
+                attempt.Reason));
+
+            if (attempt.SuppressFallback)
+            {
+                suppressedEvidenceIndexes.Add(index);
+            }
+
+            if (attempt.Taxon is null)
             {
                 continue;
             }
 
-            matchedEvidenceIndexes.Add(index);
-            if (match.AppliedRuleId.HasValue)
+            classifiedEvidenceIndexes.Add(index);
+            if (attempt.AppliedRuleId.HasValue)
             {
-                appliedRuleIds.Add(match.AppliedRuleId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                appliedRuleIds.Add(attempt.AppliedRuleId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
 
             var cap = GetAuthorityCap(item);
             var contribution = Math.Min(Math.Clamp(item.Weight, 0d, 1d), cap);
-            if (match.AppliedRuleId.HasValue)
+            if (attempt.AppliedRuleId.HasValue)
             {
                 contribution = Math.Max(contribution, UserRuleAuthority);
             }
 
             candidates.Add(new Candidate(
-                match.Taxon,
+                attempt.Taxon,
                 contribution,
                 NormalizeSource(item.Source),
                 index,
-                match.AppliedRuleId.HasValue));
+                attempt.AppliedRuleId.HasValue));
         }
 
         if (settings.PreserveProviderFallback)
         {
-            AppendProviderFallbacks(candidates, evidence, matchedEvidenceIndexes);
+            var fallbackIndexes = AppendProviderFallbacks(
+                candidates,
+                evidence,
+                classifiedEvidenceIndexes,
+                suppressedEvidenceIndexes);
+            if (fallbackIndexes.Count > 0)
+            {
+                decisions = decisions
+                    .Select(item => fallbackIndexes.Contains(item.EvidenceIndex)
+                        ? item with
+                        {
+                            Outcome = "provider_fallback",
+                            TaxonId = candidates.First(candidate => candidate.EvidenceIndex == item.EvidenceIndex).Taxon.Id,
+                            Reason = "No canonical mapping matched; retained as a low-authority provider genre fallback."
+                        }
+                        : item)
+                    .ToList();
+            }
         }
 
         var classifications = Fuse(candidates);
@@ -94,6 +127,7 @@ public static class PersonalGenreResolver
             substyles,
             contexts,
             ordered,
+            decisions,
             appliedRuleIds.Distinct(StringComparer.Ordinal).ToArray(),
             evidence,
             PersonalGenreTaxonomy.Version);
@@ -155,7 +189,7 @@ public static class PersonalGenreResolver
         return 0.35;
     }
 
-    private static MatchResult? ResolveEvidence(
+    private static ResolutionAttempt ResolveEvidence(
         PersonalGenreEvidence evidence,
         IReadOnlyList<PersonalGenreMapping> mappings,
         IReadOnlyList<PersonalGenreRule> rules,
@@ -165,7 +199,12 @@ public static class PersonalGenreResolver
         var normalizedCanonical = PersonalGenreTaxonomy.Normalize(evidence.CanonicalValue);
         if (normalizedRaw.Length == 0 && normalizedCanonical.Length == 0)
         {
-            return null;
+            return new ResolutionAttempt(
+                null,
+                null,
+                "unmapped",
+                "Evidence contained no usable raw or canonical value.",
+                SuppressFallback: true);
         }
 
         var normalizedSource = NormalizeSource(evidence.Source);
@@ -183,7 +222,12 @@ public static class PersonalGenreResolver
 
         if (rule is not null && catalog.TryGetById(rule.TargetTaxonId, out var ruleTaxon))
         {
-            return new MatchResult(ruleTaxon, rule.Id);
+            return new ResolutionAttempt(
+                ruleTaxon,
+                rule.Id,
+                "classified",
+                $"Matched user rule {rule.Id}.",
+                SuppressFallback: true);
         }
 
         var mapping = mappings
@@ -198,20 +242,81 @@ public static class PersonalGenreResolver
             .ThenBy(item => item.Id)
             .FirstOrDefault();
 
-        if (mapping is not null && catalog.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
+        if (mapping is not null)
         {
-            return new MatchResult(mappedTaxon, null);
+            if (mapping.Action == PersonalGenreMappingAction.Ignore)
+            {
+                return new ResolutionAttempt(
+                    null,
+                    null,
+                    "ignored",
+                    $"Provider mapping {mapping.Id} explicitly ignores this value.",
+                    SuppressFallback: true);
+            }
+
+            if (mapping.Action == PersonalGenreMappingAction.Ambiguous)
+            {
+                return new ResolutionAttempt(
+                    null,
+                    null,
+                    "ambiguous",
+                    $"Provider mapping {mapping.Id} marks this value as ambiguous.",
+                    SuppressFallback: true);
+            }
+
+            if (catalog.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
+            {
+                if (mapping.Action == PersonalGenreMappingAction.ContextOnly)
+                {
+                    mappedTaxon = mappedTaxon with
+                    {
+                        Kind = PersonalGenreTaxonKind.Context,
+                        ContextOnly = true
+                    };
+                    return new ResolutionAttempt(
+                        mappedTaxon,
+                        null,
+                        "context_only",
+                        $"Provider mapping {mapping.Id} restricts this evidence to Context.",
+                        SuppressFallback: true);
+                }
+
+                return new ResolutionAttempt(
+                    mappedTaxon,
+                    null,
+                    "classified",
+                    $"Matched provider mapping {mapping.Id}.",
+                    SuppressFallback: true);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(evidence.CanonicalValue)
             && catalog.TryMatch(evidence.CanonicalValue, out var canonicalTaxon))
         {
-            return new MatchResult(canonicalTaxon, null);
+            return new ResolutionAttempt(
+                canonicalTaxon,
+                null,
+                canonicalTaxon.ContextOnly ? "context_only" : "classified",
+                "Matched canonical evidence value in the Personal Genre taxonomy.",
+                SuppressFallback: true);
         }
 
-        return catalog.TryMatch(evidence.RawValue, out var rawTaxon)
-            ? new MatchResult(rawTaxon, null)
-            : null;
+        if (catalog.TryMatch(evidence.RawValue, out var rawTaxon))
+        {
+            return new ResolutionAttempt(
+                rawTaxon,
+                null,
+                rawTaxon.ContextOnly ? "context_only" : "classified",
+                "Matched raw provider value in the Personal Genre taxonomy.",
+                SuppressFallback: true);
+        }
+
+        return new ResolutionAttempt(
+            null,
+            null,
+            "unmapped",
+            "No user rule, provider mapping, or canonical taxonomy term matched this evidence.",
+            SuppressFallback: false);
     }
 
     private static List<PersonalGenreClassification> Fuse(IReadOnlyList<Candidate> candidates)
@@ -231,16 +336,21 @@ public static class PersonalGenreResolver
                 remaining *= 1d - Math.Clamp(contribution, 0d, 1d);
             }
 
+            var sources = taxonGroup
+                .Select(item => item.ProviderKey)
+                .Where(item => item.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
             var confidence = Math.Round(1d - remaining, 3);
             output.Add(new PersonalGenreClassification(
                 taxon.Id,
                 taxon.Name,
                 taxon.Kind,
                 confidence,
-                taxonGroup.Select(item => item.ProviderKey)
-                    .Where(item => item.Length > 0)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray()));
+                sources,
+                UserLocked: false,
+                Status: "suggested",
+                EvidenceState: sources.Length >= 2 ? "agreement" : "single_source"));
         }
 
         return output;
@@ -277,13 +387,18 @@ public static class PersonalGenreResolver
             .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First()))
         {
+            var scope = string.IsNullOrWhiteSpace(item.Lock.ScopeType)
+                ? "track"
+                : item.Lock.ScopeType!.Trim().ToLowerInvariant();
             output.Add(new PersonalGenreClassification(
                 item.Taxon.Id,
                 item.Taxon.Name,
                 item.Taxon.Kind,
                 UserLockAuthority,
-                ["user-lock"],
-                UserLocked: true));
+                [$"user-lock:{scope}"],
+                UserLocked: true,
+                Status: "locked",
+                EvidenceState: "user_override"));
         }
 
         return output;
@@ -336,21 +451,26 @@ public static class PersonalGenreResolver
                     classification.Sources
                         .Append("taxonomy-parent")
                         .Distinct(StringComparer.Ordinal)
-                        .ToArray()));
+                        .ToArray(),
+                    UserLocked: false,
+                    Status: "suggested",
+                    EvidenceState: classification.EvidenceState));
             }
         }
 
         return output;
     }
 
-    private static void AppendProviderFallbacks(
+    private static HashSet<int> AppendProviderFallbacks(
         ICollection<Candidate> candidates,
         IReadOnlyList<PersonalGenreEvidence> evidence,
-        IReadOnlySet<int> matchedEvidenceIndexes)
+        IReadOnlySet<int> classifiedEvidenceIndexes,
+        IReadOnlySet<int> suppressedEvidenceIndexes)
     {
+        var fallbackIndexes = new HashSet<int>();
         for (var index = 0; index < evidence.Count; index++)
         {
-            if (matchedEvidenceIndexes.Contains(index))
+            if (classifiedEvidenceIndexes.Contains(index) || suppressedEvidenceIndexes.Contains(index))
             {
                 continue;
             }
@@ -374,7 +494,10 @@ public static class PersonalGenreResolver
                 providerKey,
                 index,
                 FromUserRule: false));
+            fallbackIndexes.Add(index);
         }
+
+        return fallbackIndexes;
     }
 
     private static bool SourceMatches(string? configuredSource, string normalizedSource)
@@ -384,12 +507,17 @@ public static class PersonalGenreResolver
     private static string NormalizeSource(string? source)
         => (source ?? string.Empty).Trim().ToLowerInvariant();
 
-    private sealed record MatchResult(PersonalGenreTaxon Taxon, long? AppliedRuleId);
+    private sealed record ResolutionAttempt(
+        PersonalGenreTaxon? Taxon,
+        long? AppliedRuleId,
+        string Outcome,
+        string Reason,
+        bool SuppressFallback);
 
     private sealed record Candidate(
         PersonalGenreTaxon Taxon,
         double Contribution,
         string ProviderKey,
-        int Order,
+        int EvidenceIndex,
         bool FromUserRule);
 }
