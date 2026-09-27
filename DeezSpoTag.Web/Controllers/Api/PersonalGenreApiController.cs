@@ -162,6 +162,73 @@ public sealed class PersonalGenreApiController : ControllerBase
         }
     }
 
+    [HttpGet("scopes/{scopeType}/{scopeId:long}/locks")]
+    public async Task<IActionResult> GetScopedLocks(
+        string scopeType,
+        long scopeId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _service.GetScopedLocksAsync(scopeType, scopeId, cancellationToken));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("scopes/{scopeType}/{scopeId:long}/locks")]
+    public async Task<IActionResult> SaveScopedLock(
+        string scopeType,
+        long scopeId,
+        [FromBody] PersonalGenreLockRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _service.SaveScopedLockAsync(
+                new PersonalGenreScopedLock(scopeType, scopeId, request.TaxonId, request.Enabled ?? true),
+                cancellationToken));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpDelete("scopes/{scopeType}/{scopeId:long}/locks/{taxonId}")]
+    public async Task<IActionResult> DeleteScopedLock(
+        string scopeType,
+        long scopeId,
+        string taxonId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _service.DeleteScopedLockAsync(scopeType, scopeId, taxonId, cancellationToken);
+            return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("tracks/{trackId:long}/scope")]
+    public async Task<IActionResult> GetTrackScope(long trackId, CancellationToken cancellationToken)
+    {
+        var scope = await _service.GetTrackScopeAsync(trackId, cancellationToken);
+        return scope is null ? NotFound() : Ok(scope);
+    }
+
+    [HttpGet("tracks/{trackId:long}/history")]
+    public async Task<IActionResult> GetTrackHistory(
+        long trackId,
+        [FromQuery] int limit = 20,
+        CancellationToken cancellationToken = default)
+        => Ok(await _service.GetTrackHistoryAsync(trackId, limit, cancellationToken));
+
     [HttpGet("tracks/{trackId:long}/locks")]
     public async Task<IActionResult> GetLocks(long trackId, CancellationToken cancellationToken)
         => Ok(await _service.GetLocksAsync(trackId, cancellationToken));
