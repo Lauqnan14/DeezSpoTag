@@ -1045,6 +1045,19 @@ CREATE TABLE IF NOT EXISTS personal_genre_settings (
 );
 INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS personal_genre_taxon (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_only INTEGER NOT NULL DEFAULT 0,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_taxon_kind_name
+    ON personal_genre_taxon (kind, name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS personal_genre_mapping (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_value TEXT NOT NULL,
