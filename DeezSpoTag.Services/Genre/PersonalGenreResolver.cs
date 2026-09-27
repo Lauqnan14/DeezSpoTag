@@ -34,6 +34,28 @@ public static class PersonalGenreResolver
         var substyles = SelectByKind(resolved, PersonalGenreTaxonKind.Substyle, int.MaxValue);
         var contexts = SelectByKind(resolved, PersonalGenreTaxonKind.Context, int.MaxValue);
 
+        if (settings.PreserveProviderFallback && genres.Count < settings.MaxGenres)
+        {
+            foreach (var raw in evidence
+                .Where(item => item.Kind == PersonalGenreTaxonKind.Genre)
+                .Select(item => item.RawValue?.Trim())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Cast<string>())
+            {
+                if (genres.Contains(raw, StringComparer.OrdinalIgnoreCase)
+                    || resolved.Any(item => string.Equals(item.Taxon.Name, raw, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                genres.Add(raw);
+                if (genres.Count >= settings.MaxGenres)
+                {
+                    break;
+                }
+            }
+        }
+
         if (settings.IncludeParentGenres)
         {
             foreach (var parent in resolved
@@ -115,7 +137,7 @@ public static class PersonalGenreResolver
         int limit)
     {
         return resolved
-            .Where(item => item.Taxon.Kind == kind && !item.Taxon.ContextOnly || item.Taxon.Kind == kind)
+            .Where(item => item.Taxon.Kind == kind)
             .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => new
             {
