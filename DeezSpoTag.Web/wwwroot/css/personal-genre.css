@@ -556,3 +556,43 @@
         width: 100%;
     }
 }
+
+
+.pg-track-history {
+    margin-top: 16px;
+    border-top: 1px solid var(--border-primary);
+    padding-top: 12px;
+}
+
+.pg-track-history summary {
+    cursor: pointer;
+    font-weight: 650;
+}
+
+.pg-track-history-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.pg-track-history-item {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.8fr) minmax(120px, 0.7fr) minmax(100px, 0.5fr) minmax(220px, 1.2fr);
+    gap: 10px;
+    padding: 9px 11px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    font-size: 0.82rem;
+}
+
+.pg-track-history-item__decision {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+    .pg-track-history-item {
+        grid-template-columns: 1fr;
+    }
+}
