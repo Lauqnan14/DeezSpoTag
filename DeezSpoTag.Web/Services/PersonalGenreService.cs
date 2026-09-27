@@ -431,6 +431,8 @@ public sealed class PersonalGenreService
             "style" => PersonalGenreTaxonKind.Style,
             "substyle" => PersonalGenreTaxonKind.Substyle,
             "context" => PersonalGenreTaxonKind.Context,
+            "scene" => PersonalGenreTaxonKind.Scene,
+            "language" => PersonalGenreTaxonKind.Language,
             _ => null
         };
 
