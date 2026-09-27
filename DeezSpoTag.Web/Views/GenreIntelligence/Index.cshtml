@@ -111,7 +111,7 @@
             <div class="pg-card-head pg-card-head--toolbar">
                 <div>
                     <h2>Canonical taxonomy</h2>
-                    <p>Built-ins are protected. Add custom Genre, Style, Substyle or Context terms without modifying provider evidence.</p>
+                    <p>Built-ins are protected. Add custom Genre, Style, Substyle, Context, Scene or Language terms without modifying provider evidence.</p>
                 </div>
                 <div class="pg-toolbar">
                     <input id="pgTaxonomySearch" type="search" placeholder="Search taxonomy…" />
@@ -121,6 +121,8 @@
                         <option value="style">Style</option>
                         <option value="substyle">Substyle</option>
                         <option value="context">Context</option>
+                        <option value="scene">Scene</option>
+                        <option value="language">Language</option>
                     </select>
                 </div>
             </div>
@@ -143,6 +145,8 @@
                             <option value="style">Style</option>
                             <option value="substyle">Substyle</option>
                             <option value="context">Context</option>
+                            <option value="scene">Scene</option>
+                            <option value="language">Language</option>
                         </select>
                     </label>
                     <label class="pg-field pg-field--wide">
@@ -156,7 +160,7 @@
                         <small>Comma separated raw labels that should match this taxon.</small>
                     </label>
                     <label class="pg-toggle-row pg-toggle-row--compact">
-                        <span><strong>Context only</strong></span>
+                        <span><strong>Non-genre dimension</strong></span>
                         <input id="pgTaxonContextOnly" type="checkbox" />
                     </label>
                     <div class="pg-actions pg-field--wide">
