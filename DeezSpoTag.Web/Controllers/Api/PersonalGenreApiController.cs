@@ -88,6 +88,39 @@ public sealed class PersonalGenreApiController : ControllerBase
         return NoContent();
     }
 
+    [HttpGet("tracks/{trackId:long}/locks")]
+    public async Task<IActionResult> GetLocks(long trackId, CancellationToken cancellationToken)
+        => Ok(await _service.GetLocksAsync(trackId, cancellationToken));
+
+    [HttpPost("tracks/{trackId:long}/locks")]
+    public async Task<IActionResult> SaveLock(
+        long trackId,
+        [FromBody] PersonalGenreLockRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _service.SaveLockAndResolveAsync(
+                new PersonalGenreLock(trackId, request.TaxonId, request.Enabled ?? true),
+                cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpDelete("tracks/{trackId:long}/locks/{taxonId}")]
+    public async Task<IActionResult> DeleteLock(
+        long trackId,
+        string taxonId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _service.DeleteLockAndResolveAsync(trackId, taxonId, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+
     [HttpGet("tracks/{trackId:long}")]
     public async Task<IActionResult> GetTrack(long trackId, CancellationToken cancellationToken)
     {
@@ -101,4 +134,11 @@ public sealed class PersonalGenreApiController : ControllerBase
         var result = await _service.ResolveTrackAsync(trackId, cancellationToken);
         return result is null ? NotFound() : Ok(result);
     }
+}
+
+
+public sealed class PersonalGenreLockRequest
+{
+    public string TaxonId { get; set; } = string.Empty;
+    public bool? Enabled { get; set; }
 }
