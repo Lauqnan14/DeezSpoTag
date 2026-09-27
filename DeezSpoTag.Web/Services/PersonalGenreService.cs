@@ -131,10 +131,47 @@ public sealed class PersonalGenreService
         await _store.SaveSettingsAsync(configuration.Settings, cancellationToken);
 
         var customTaxaImported = 0;
-        foreach (var taxon in configuration.CustomTaxa ?? Array.Empty<PersonalGenreTaxon>())
+        var pendingTaxa = (configuration.CustomTaxa ?? Array.Empty<PersonalGenreTaxon>())
+            .GroupBy(item => item.Id ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToList();
+        var existingCustomTaxa = await _store.GetCustomTaxaAsync(cancellationToken);
+        var availableTaxonIds = PersonalGenreTaxonomy.GetDefaultTaxa()
+            .Select(item => item.Id)
+            .Concat(existingCustomTaxa.Select(item => item.Id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        while (pendingTaxa.Count > 0)
         {
-            await _store.UpsertCustomTaxonAsync(taxon, cancellationToken);
-            customTaxaImported++;
+            var importedThisPass = 0;
+            foreach (var taxon in pendingTaxa.ToArray())
+            {
+                var parents = taxon.ParentIds ?? Array.Empty<string>();
+                if (parents.Any(parentId => !availableTaxonIds.Contains(parentId)))
+                {
+                    continue;
+                }
+
+                var saved = await _store.UpsertCustomTaxonAsync(taxon, cancellationToken);
+                availableTaxonIds.Add(saved.Id);
+                pendingTaxa.Remove(taxon);
+                customTaxaImported++;
+                importedThisPass++;
+            }
+
+            if (importedThisPass > 0)
+            {
+                continue;
+            }
+
+            var unresolved = pendingTaxa
+                .SelectMany(item => item.ParentIds ?? Array.Empty<string>())
+                .Where(parentId => !availableTaxonIds.Contains(parentId))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase);
+            throw new ArgumentException(
+                $"Custom taxonomy contains unresolved or cyclic parent references: {string.Join(", ", unresolved)}.",
+                nameof(configuration));
         }
 
         var existingMappings = (await _store.GetMappingsAsync(cancellationToken)).ToList();
