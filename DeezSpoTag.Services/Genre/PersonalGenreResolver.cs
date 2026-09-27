@@ -10,6 +10,7 @@ public static class PersonalGenreResolver
         IReadOnlyList<PersonalGenreMapping>? mappings = null,
         IReadOnlyList<PersonalGenreRule>? rules = null,
         IReadOnlyList<PersonalGenreLock>? locks = null,
+        IReadOnlyList<PersonalGenreTaxon>? customTaxa = null,
         PersonalGenreSettings? settings = null)
     {
         settings ??= new PersonalGenreSettings();
@@ -18,6 +19,7 @@ public static class PersonalGenreResolver
         rules ??= Array.Empty<PersonalGenreRule>();
         locks ??= Array.Empty<PersonalGenreLock>();
 
+        var catalog = new PersonalGenreCatalog(customTaxa);
         var appliedRuleIds = new List<string>();
         var candidates = new List<Candidate>();
         var matchedEvidenceIndexes = new HashSet<int>();
@@ -25,7 +27,7 @@ public static class PersonalGenreResolver
         for (var index = 0; index < evidence.Count; index++)
         {
             var item = evidence[index];
-            var match = ResolveEvidence(item, mappings, rules);
+            var match = ResolveEvidence(item, mappings, rules, catalog);
             if (match is null)
             {
                 continue;
@@ -58,8 +60,8 @@ public static class PersonalGenreResolver
         }
 
         var classifications = Fuse(candidates);
-        classifications = ApplyLocks(classifications, locks);
-        classifications = IncludeParentGenresIfRequested(classifications, locks, settings);
+        classifications = ApplyLocks(classifications, locks, catalog);
+        classifications = IncludeParentGenresIfRequested(classifications, locks, settings, catalog);
 
         var ordered = classifications
             .OrderByDescending(item => item.UserLocked)
@@ -104,7 +106,6 @@ public static class PersonalGenreResolver
 
         if (source == "embedded")
         {
-            // Embedded metadata is local evidence and sits below explicit user rules/locks.
             return 0.95;
         }
 
@@ -157,7 +158,8 @@ public static class PersonalGenreResolver
     private static MatchResult? ResolveEvidence(
         PersonalGenreEvidence evidence,
         IReadOnlyList<PersonalGenreMapping> mappings,
-        IReadOnlyList<PersonalGenreRule> rules)
+        IReadOnlyList<PersonalGenreRule> rules,
+        PersonalGenreCatalog catalog)
     {
         var effectiveValue = string.IsNullOrWhiteSpace(evidence.CanonicalValue)
             ? evidence.RawValue
@@ -177,7 +179,7 @@ public static class PersonalGenreResolver
             .ThenBy(item => item.Id)
             .FirstOrDefault();
 
-        if (rule is not null && PersonalGenreTaxonomy.TryGetById(rule.TargetTaxonId, out var ruleTaxon))
+        if (rule is not null && catalog.TryGetById(rule.TargetTaxonId, out var ruleTaxon))
         {
             return new MatchResult(ruleTaxon, rule.Id);
         }
@@ -190,12 +192,12 @@ public static class PersonalGenreResolver
             .ThenBy(item => item.Id)
             .FirstOrDefault();
 
-        if (mapping is not null && PersonalGenreTaxonomy.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
+        if (mapping is not null && catalog.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
         {
             return new MatchResult(mappedTaxon, null);
         }
 
-        return PersonalGenreTaxonomy.TryMatch(effectiveValue, out var taxonomyTaxon)
+        return catalog.TryMatch(effectiveValue, out var taxonomyTaxon)
             ? new MatchResult(taxonomyTaxon, null)
             : null;
     }
@@ -234,11 +236,12 @@ public static class PersonalGenreResolver
 
     private static List<PersonalGenreClassification> ApplyLocks(
         IReadOnlyList<PersonalGenreClassification> classifications,
-        IReadOnlyList<PersonalGenreLock> locks)
+        IReadOnlyList<PersonalGenreLock> locks,
+        PersonalGenreCatalog catalog)
     {
         var validLocks = locks
             .Where(item => item.Enabled)
-            .Select(item => PersonalGenreTaxonomy.TryGetById(item.TaxonId, out var taxon)
+            .Select(item => catalog.TryGetById(item.TaxonId, out var taxon)
                 ? (Lock: item, Taxon: taxon)
                 : ((PersonalGenreLock Lock, PersonalGenreTaxon Taxon)?)null)
             .Where(item => item.HasValue)
@@ -277,7 +280,8 @@ public static class PersonalGenreResolver
     private static List<PersonalGenreClassification> IncludeParentGenresIfRequested(
         IReadOnlyList<PersonalGenreClassification> classifications,
         IReadOnlyList<PersonalGenreLock> locks,
-        PersonalGenreSettings settings)
+        PersonalGenreSettings settings,
+        PersonalGenreCatalog catalog)
     {
         if (!settings.IncludeParentGenres)
         {
@@ -286,7 +290,7 @@ public static class PersonalGenreResolver
 
         var hasGenreLock = locks.Any(item =>
             item.Enabled
-            && PersonalGenreTaxonomy.TryGetById(item.TaxonId, out var taxon)
+            && catalog.TryGetById(item.TaxonId, out var taxon)
             && taxon.Kind == PersonalGenreTaxonKind.Genre);
         if (hasGenreLock)
         {
@@ -297,7 +301,7 @@ public static class PersonalGenreResolver
         foreach (var classification in classifications
             .Where(item => item.Kind is PersonalGenreTaxonKind.Style or PersonalGenreTaxonKind.Substyle))
         {
-            if (!PersonalGenreTaxonomy.TryGetById(classification.TaxonId, out var taxon)
+            if (!catalog.TryGetById(classification.TaxonId, out var taxon)
                 || taxon.ParentIds is not { Count: > 0 })
             {
                 continue;
@@ -305,7 +309,7 @@ public static class PersonalGenreResolver
 
             foreach (var parentId in taxon.ParentIds)
             {
-                if (!PersonalGenreTaxonomy.TryGetById(parentId, out var parent)
+                if (!catalog.TryGetById(parentId, out var parent)
                     || parent.Kind != PersonalGenreTaxonKind.Genre
                     || output.Any(item => string.Equals(item.TaxonId, parent.Id, StringComparison.OrdinalIgnoreCase)))
                 {
