@@ -119,6 +119,14 @@ public static class PersonalGenreResolver
             .Where(item => item.Kind == PersonalGenreTaxonKind.Context)
             .Select(item => item.Name)
             .ToList();
+        var scenes = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Scene)
+            .Select(item => item.Name)
+            .ToList();
+        var languages = ordered
+            .Where(item => item.Kind == PersonalGenreTaxonKind.Language)
+            .Select(item => item.Name)
+            .ToList();
 
         return new PersonalGenreResolution(
             genres.FirstOrDefault(),
@@ -126,6 +134,8 @@ public static class PersonalGenreResolver
             styles,
             substyles,
             contexts,
+            scenes,
+            languages,
             ordered,
             decisions,
             appliedRuleIds.Distinct(StringComparer.Ordinal).ToArray(),
