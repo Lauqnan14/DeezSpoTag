@@ -224,16 +224,17 @@ SELECT last_insert_rowid();
         const string sql = """
 INSERT INTO personal_genre_track
     (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
-     applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
+     classifications_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
 VALUES
     (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson,
-     @appliedRuleIdsJson, @evidenceJson, @resolverVersion, @resolvedAtUtc)
+     @classificationsJson, @appliedRuleIdsJson, @evidenceJson, @resolverVersion, @resolvedAtUtc)
 ON CONFLICT(track_id) DO UPDATE SET
     primary_genre = excluded.primary_genre,
     genres_json = excluded.genres_json,
     styles_json = excluded.styles_json,
     substyles_json = excluded.substyles_json,
     contexts_json = excluded.contexts_json,
+    classifications_json = excluded.classifications_json,
     applied_rule_ids_json = excluded.applied_rule_ids_json,
     evidence_json = excluded.evidence_json,
     resolver_version = excluded.resolver_version,
@@ -246,6 +247,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         command.Parameters.AddWithValue("stylesJson", JsonSerializer.Serialize(result.Resolution.Styles));
         command.Parameters.AddWithValue("substylesJson", JsonSerializer.Serialize(result.Resolution.Substyles));
         command.Parameters.AddWithValue("contextsJson", JsonSerializer.Serialize(result.Resolution.Contexts));
+        command.Parameters.AddWithValue("classificationsJson", JsonSerializer.Serialize(result.Resolution.Classifications));
         command.Parameters.AddWithValue("appliedRuleIdsJson", JsonSerializer.Serialize(result.Resolution.AppliedRuleIds));
         command.Parameters.AddWithValue("evidenceJson", JsonSerializer.Serialize(result.Resolution.Evidence));
         command.Parameters.AddWithValue("resolverVersion", result.Resolution.ResolverVersion);
@@ -261,7 +263,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         await using var connection = await OpenAsync(cancellationToken);
         const string sql = """
 SELECT primary_genre, genres_json, styles_json, substyles_json, contexts_json,
-       applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc
+       classifications_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc
 FROM personal_genre_track
 WHERE track_id = @trackId;
 """;
@@ -279,12 +281,13 @@ WHERE track_id = @trackId;
             ParseStringList(reader.GetString(2)),
             ParseStringList(reader.GetString(3)),
             ParseStringList(reader.GetString(4)),
-            ParseStringList(reader.GetString(5)),
-            ParseEvidence(reader.GetString(6)),
-            reader.GetString(7));
+            ParseClassifications(reader.GetString(5)),
+            ParseStringList(reader.GetString(6)),
+            ParseEvidence(reader.GetString(7)),
+            reader.GetString(8));
 
         var resolvedAtUtc = DateTimeOffset.TryParse(
-            reader.GetString(8),
+            reader.GetString(9),
             CultureInfo.InvariantCulture,
             DateTimeStyles.RoundtripKind,
             out var parsed)
@@ -292,6 +295,88 @@ WHERE track_id = @trackId;
             : DateTimeOffset.MinValue;
 
         return new PersonalGenreTrackResult(trackId, resolution, resolvedAtUtc);
+    }
+
+    public async Task<IReadOnlyList<PersonalGenreLock>> GetLocksAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT track_id, taxon_id, enabled, updated_at_utc
+FROM personal_genre_lock
+WHERE track_id = @trackId
+ORDER BY taxon_id;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<PersonalGenreLock>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            DateTimeOffset? updatedAt = null;
+            if (!reader.IsDBNull(3)
+                && DateTimeOffset.TryParse(
+                    reader.GetString(3),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out var parsed))
+            {
+                updatedAt = parsed;
+            }
+
+            output.Add(new PersonalGenreLock(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetInt32(2) != 0,
+                updatedAt));
+        }
+
+        return output;
+    }
+
+    public async Task<PersonalGenreLock> SaveLockAsync(
+        PersonalGenreLock item,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTaxon(item.TaxonId);
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        const string sql = """
+INSERT INTO personal_genre_lock
+    (track_id, taxon_id, enabled, updated_at_utc)
+VALUES
+    (@trackId, @taxonId, @enabled, @updatedAtUtc)
+ON CONFLICT(track_id, taxon_id) DO UPDATE SET
+    enabled = excluded.enabled,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", item.TrackId);
+        command.Parameters.AddWithValue("taxonId", item.TaxonId);
+        command.Parameters.AddWithValue("enabled", item.Enabled ? 1 : 0);
+        command.Parameters.AddWithValue("updatedAtUtc", now.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return item with { UpdatedAtUtc = now };
+    }
+
+    public async Task DeleteLockAsync(
+        long trackId,
+        string taxonId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+DELETE FROM personal_genre_lock
+WHERE track_id = @trackId AND taxon_id = @taxonId;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        command.Parameters.AddWithValue("taxonId", taxonId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task DeleteMappingAsync(long id, CancellationToken cancellationToken = default)
@@ -368,6 +453,14 @@ CREATE TABLE IF NOT EXISTS personal_genre_rule (
 CREATE INDEX IF NOT EXISTS idx_personal_genre_rule_match
     ON personal_genre_rule (match_value, source, enabled, priority DESC);
 
+CREATE TABLE IF NOT EXISTS personal_genre_lock (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (track_id, taxon_id)
+);
+
 CREATE TABLE IF NOT EXISTS personal_genre_track (
     track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
     primary_genre TEXT,
@@ -375,6 +468,7 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
     evidence_json TEXT NOT NULL DEFAULT '[]',
     resolver_version TEXT NOT NULL,
@@ -449,6 +543,9 @@ CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
 
     private static IReadOnlyList<string> ParseStringList(string json)
         => JsonSerializer.Deserialize<List<string>>(json) ?? [];
+
+    private static IReadOnlyList<PersonalGenreClassification> ParseClassifications(string json)
+        => JsonSerializer.Deserialize<List<PersonalGenreClassification>>(json) ?? [];
 
     private static IReadOnlyList<PersonalGenreEvidence> ParseEvidence(string json)
         => JsonSerializer.Deserialize<List<PersonalGenreEvidence>>(json) ?? [];
