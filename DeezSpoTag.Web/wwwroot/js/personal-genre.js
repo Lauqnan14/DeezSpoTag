@@ -151,7 +151,7 @@
         byId('pgTaxonomyKindFilter')?.addEventListener('change', renderTaxonomy);
         byId('pgTaxonReset')?.addEventListener('click', resetTaxonForm);
         byId('pgTaxonKind')?.addEventListener('change', event => {
-            if (event.target.value === 'context') {
+            if (['context', 'scene', 'language'].includes(event.target.value)) {
                 byId('pgTaxonContextOnly').checked = true;
             }
         });
@@ -472,7 +472,7 @@
             grouped.get(key).push(item);
         });
 
-        const html = ['genre', 'style', 'substyle', 'context']
+        const html = ['genre', 'style', 'substyle', 'context', 'scene', 'language']
             .filter(kind => grouped.has(kind))
             .map(kind => {
                 const options = grouped.get(kind)
@@ -632,6 +632,8 @@
             case 'style': return 1;
             case 'substyle': return 2;
             case 'context': return 3;
+            case 'scene': return 4;
+            case 'language': return 5;
             default: return 0;
         }
     }
