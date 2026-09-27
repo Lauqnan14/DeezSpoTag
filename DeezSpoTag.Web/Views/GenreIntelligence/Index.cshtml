@@ -11,7 +11,7 @@
             <div class="pg-eyebrow">DeezSpoTag Personal Genre</div>
             <h1>Genre Intelligence</h1>
             <p>
-                DeezSpoTag owns the taxonomy. Providers contribute evidence; mappings, rules and locks decide how that evidence becomes your library classification.
+                DeezSpoTag owns the taxonomy. Providers contribute evidence; mappings, rules and locks decide how that evidence becomes your library classification, regardless of region or music market.
             </p>
         </div>
         <div class="pg-hero-badges">
@@ -100,7 +100,7 @@
                     <strong>Automatic evidence today:</strong> embedded file semantics, Audiomack, Last.fm and Essentia. Discogs and Spotify authority caps are reserved for source-specific evidence when it is available; Personal Genre does not launch extra provider lookups merely to fill a classification.
                 </div>
                 <div class="pg-note">
-                    <strong>Important:</strong> Audiomack <em>Afrosounds</em> is Context only. Bongo Flava is a canonical Genre. Afrobeat and Afrobeats remain distinct.
+                    <strong>Regional semantics are preserved:</strong> provider umbrellas such as Audiomack <em>Afrosounds</em> remain Context rather than Genre, while established musical forms such as Bongo Flava can remain canonical Genres. The same separation applies to any region.
                 </div>
             </article>
         </div>
@@ -111,7 +111,7 @@
             <div class="pg-card-head pg-card-head--toolbar">
                 <div>
                     <h2>Canonical taxonomy</h2>
-                    <p>Built-ins are protected. Add custom Genre, Style, Substyle, Context, Scene or Language terms without modifying provider evidence.</p>
+                    <p>Built-ins are a protected starting foundation, not a regional limit. Add custom Genre, Style, Substyle, Context, Scene or Language terms for any music catalog without modifying provider evidence.</p>
                 </div>
                 <div class="pg-toolbar">
                     <input id="pgTaxonomySearch" type="search" placeholder="Search taxonomy…" />
@@ -132,11 +132,11 @@
                 <form id="pgTaxonForm" class="pg-form pg-form--inline">
                     <label class="pg-field">
                         <span>ID</span>
-                        <input id="pgTaxonId" required placeholder="e.g. genge" />
+                        <input id="pgTaxonId" required placeholder="e.g. reggaeton" />
                     </label>
                     <label class="pg-field">
                         <span>Name</span>
-                        <input id="pgTaxonName" required placeholder="e.g. Genge" />
+                        <input id="pgTaxonName" required placeholder="e.g. Reggaeton" />
                     </label>
                     <label class="pg-field">
                         <span>Kind</span>
@@ -151,12 +151,12 @@
                     </label>
                     <label class="pg-field pg-field--wide">
                         <span>Parent IDs</span>
-                        <input id="pgTaxonParents" placeholder="hip-hop, east-africa" />
+                        <input id="pgTaxonParents" placeholder="hip-hop, pop" />
                         <small>Comma separated; multiple parents are allowed.</small>
                     </label>
                     <label class="pg-field pg-field--wide">
                         <span>Aliases</span>
-                        <input id="pgTaxonAliases" placeholder="Genge Music, Kenyan Genge" />
+                        <input id="pgTaxonAliases" placeholder="Reggaeton Music, Reggaetón" />
                         <small>Comma separated raw labels that should match this taxon.</small>
                     </label>
                     <label class="pg-toggle-row pg-toggle-row--compact">
@@ -200,7 +200,7 @@
                 <input id="pgMappingId" type="hidden" value="0" />
                 <label class="pg-field">
                     <span>Provider value</span>
-                    <input id="pgMappingValue" required placeholder="e.g. Tanzanian Pop" />
+                    <input id="pgMappingValue" required placeholder="e.g. Latin Urban" />
                 </label>
                 <label class="pg-field">
                     <span>Source</span>
@@ -256,7 +256,7 @@
                 <input id="pgRuleId" type="hidden" value="0" />
                 <label class="pg-field">
                     <span>Match value</span>
-                    <input id="pgRuleValue" required placeholder="e.g. Bongo Rap" />
+                    <input id="pgRuleValue" required placeholder="e.g. Alternative R&B" />
                 </label>
                 <label class="pg-field">
                     <span>Source restriction</span>
