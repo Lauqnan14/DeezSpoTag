@@ -82,6 +82,30 @@ public sealed class PersonalGenreService
         CancellationToken cancellationToken = default)
         => _store.GetLocksAsync(trackId, cancellationToken);
 
+    public Task<IReadOnlyList<PersonalGenreScopedLock>> GetScopedLocksAsync(
+        string scopeType,
+        long scopeId,
+        CancellationToken cancellationToken = default)
+        => _store.GetScopedLocksAsync(scopeType, scopeId, cancellationToken);
+
+    public Task<PersonalGenreScopedLock> SaveScopedLockAsync(
+        PersonalGenreScopedLock item,
+        CancellationToken cancellationToken = default)
+        => _store.SaveScopedLockAsync(item, cancellationToken);
+
+    public Task DeleteScopedLockAsync(
+        string scopeType,
+        long scopeId,
+        string taxonId,
+        CancellationToken cancellationToken = default)
+        => _store.DeleteScopedLockAsync(scopeType, scopeId, taxonId, cancellationToken);
+
+    public Task<IReadOnlyList<PersonalGenreResolutionHistoryItem>> GetTrackHistoryAsync(
+        long trackId,
+        int limit = 20,
+        CancellationToken cancellationToken = default)
+        => _store.GetTrackHistoryAsync(trackId, limit, cancellationToken);
+
     public async Task<PersonalGenreTrackResult?> SaveLockAndResolveAsync(
         PersonalGenreLock item,
         CancellationToken cancellationToken = default)
@@ -233,15 +257,19 @@ public sealed class PersonalGenreService
             return null;
         }
 
-        var evidence = ParseEvidence(analysis.SemanticEvidenceJson);
+        IReadOnlyList<PersonalGenreEvidence> evidence = ParseEvidence(analysis.SemanticEvidenceJson);
         if (evidence.Count == 0)
         {
             evidence = BuildFallbackEvidence(analysis);
         }
+        if (evidence.Count == 0)
+        {
+            evidence = await _store.GetLatestEvidenceAsync(analysis.TrackId, cancellationToken);
+        }
 
         var mappings = await _store.GetMappingsAsync(cancellationToken);
         var rules = await _store.GetRulesAsync(cancellationToken);
-        var locks = await _store.GetLocksAsync(analysis.TrackId, cancellationToken);
+        var locks = await _store.GetEffectiveLocksAsync(analysis.TrackId, cancellationToken);
         var customTaxa = await _store.GetCustomTaxaAsync(cancellationToken);
         var resolution = PersonalGenreResolver.Resolve(
             evidence,
@@ -334,8 +362,9 @@ public sealed class PersonalGenreService
         PersonalGenreMapping left,
         PersonalGenreMapping right)
         => string.Equals(NormalizeValue(left.MatchValue), NormalizeValue(right.MatchValue), StringComparison.Ordinal)
-           && string.Equals(left.TargetTaxonId.Trim(), right.TargetTaxonId.Trim(), StringComparison.OrdinalIgnoreCase)
-           && string.Equals(NormalizeSource(left.Source), NormalizeSource(right.Source), StringComparison.Ordinal);
+           && string.Equals((left.TargetTaxonId ?? string.Empty).Trim(), (right.TargetTaxonId ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase)
+           && string.Equals(NormalizeSource(left.Source), NormalizeSource(right.Source), StringComparison.Ordinal)
+           && left.Action == right.Action;
 
     private static bool SameRuleIdentity(
         PersonalGenreRule left,
