@@ -360,7 +360,10 @@ SELECT last_insert_rowid();
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenAsync(cancellationToken);
-        const string sql = """
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            const string currentSql = """
 INSERT INTO personal_genre_track
     (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
      classifications_json, decisions_json, applied_rule_ids_json, evidence_json, resolver_version, resolved_at_utc)
@@ -380,20 +383,50 @@ ON CONFLICT(track_id) DO UPDATE SET
     resolver_version = excluded.resolver_version,
     resolved_at_utc = excluded.resolved_at_utc;
 """;
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("trackId", result.TrackId);
-        command.Parameters.AddWithValue("primaryGenre", (object?)result.Resolution.PrimaryGenre ?? DBNull.Value);
-        command.Parameters.AddWithValue("genresJson", JsonSerializer.Serialize(result.Resolution.Genres));
-        command.Parameters.AddWithValue("stylesJson", JsonSerializer.Serialize(result.Resolution.Styles));
-        command.Parameters.AddWithValue("substylesJson", JsonSerializer.Serialize(result.Resolution.Substyles));
-        command.Parameters.AddWithValue("contextsJson", JsonSerializer.Serialize(result.Resolution.Contexts));
-        command.Parameters.AddWithValue("classificationsJson", JsonSerializer.Serialize(result.Resolution.Classifications));
-        command.Parameters.AddWithValue("decisionsJson", JsonSerializer.Serialize(result.Resolution.Decisions));
-        command.Parameters.AddWithValue("appliedRuleIdsJson", JsonSerializer.Serialize(result.Resolution.AppliedRuleIds));
-        command.Parameters.AddWithValue("evidenceJson", JsonSerializer.Serialize(result.Resolution.Evidence));
-        command.Parameters.AddWithValue("resolverVersion", result.Resolution.ResolverVersion);
-        command.Parameters.AddWithValue("resolvedAtUtc", result.ResolvedAtUtc.ToString("O", CultureInfo.InvariantCulture));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+            await using (var current = new SqliteCommand(currentSql, connection, transaction))
+            {
+                BindTrackResult(current, result);
+                await current.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            const string historySql = """
+INSERT INTO personal_genre_resolution_history
+    (track_id, primary_genre, genres_json, styles_json, substyles_json, contexts_json,
+     classifications_json, decisions_json, applied_rule_ids_json, resolver_version, resolved_at_utc)
+VALUES
+    (@trackId, @primaryGenre, @genresJson, @stylesJson, @substylesJson, @contextsJson,
+     @classificationsJson, @decisionsJson, @appliedRuleIdsJson, @resolverVersion, @resolvedAtUtc);
+SELECT last_insert_rowid();
+""";
+            long historyId;
+            await using (var history = new SqliteCommand(historySql, connection, transaction))
+            {
+                BindTrackResult(history, result, includeEvidence: false);
+                historyId = Convert.ToInt64(
+                    await history.ExecuteScalarAsync(cancellationToken),
+                    CultureInfo.InvariantCulture);
+            }
+
+            await AppendEvidenceHistoryAsync(
+                connection,
+                transaction,
+                historyId,
+                result.Resolution.Evidence,
+                cancellationToken);
+            await AppendClassificationHistoryAsync(
+                connection,
+                transaction,
+                historyId,
+                result.Resolution.Classifications,
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     public async Task<PersonalGenreTrackResult?> GetTrackResultAsync(
@@ -428,15 +461,86 @@ WHERE track_id = @trackId;
             ParseEvidence(reader.GetString(8)),
             reader.GetString(9));
 
-        var resolvedAtUtc = DateTimeOffset.TryParse(
-            reader.GetString(10),
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind,
-            out var parsed)
-            ? parsed
-            : DateTimeOffset.MinValue;
+        var resolvedAtUtc = ParseDateTimeOffset(reader.IsDBNull(10) ? null : reader.GetString(10));
+        return new PersonalGenreTrackResult(trackId, resolution, resolvedAtUtc ?? DateTimeOffset.MinValue);
+    }
 
-        return new PersonalGenreTrackResult(trackId, resolution, resolvedAtUtc);
+    public async Task<IReadOnlyList<PersonalGenreResolutionHistoryItem>> GetTrackHistoryAsync(
+        long trackId,
+        int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT h.id,
+       h.track_id,
+       h.primary_genre,
+       h.resolver_version,
+       h.resolved_at_utc,
+       (SELECT COUNT(*) FROM personal_genre_evidence_history e WHERE e.resolution_id = h.id),
+       (SELECT COUNT(*) FROM personal_genre_classification_history c WHERE c.resolution_id = h.id),
+       h.decisions_json
+FROM personal_genre_resolution_history h
+WHERE h.track_id = @trackId
+ORDER BY h.id DESC
+LIMIT @limit;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 200));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<PersonalGenreResolutionHistoryItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            output.Add(new PersonalGenreResolutionHistoryItem(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                ParseDateTimeOffset(reader.GetString(4)) ?? DateTimeOffset.MinValue,
+                reader.GetInt32(5),
+                reader.GetInt32(6),
+                ParseDecisions(reader.GetString(7))));
+        }
+
+        return output;
+    }
+
+    public async Task<IReadOnlyList<PersonalGenreEvidence>> GetLatestEvidenceAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT e.source, e.raw_value, e.kind, e.weight, e.scope, e.canonical_value
+FROM personal_genre_evidence_history e
+WHERE e.resolution_id = (
+    SELECT h.id
+    FROM personal_genre_resolution_history h
+    WHERE h.track_id = @trackId
+    ORDER BY h.id DESC
+    LIMIT 1
+)
+ORDER BY e.sequence;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<PersonalGenreEvidence>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            output.Add(new PersonalGenreEvidence(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : ParseTaxonKind(reader.GetString(2)),
+                reader.GetDouble(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        }
+
+        return output;
     }
 
     public async Task<IReadOnlyList<PersonalGenreLock>> GetLocksAsync(
@@ -457,22 +561,13 @@ ORDER BY taxon_id;
         var output = new List<PersonalGenreLock>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            DateTimeOffset? updatedAt = null;
-            if (!reader.IsDBNull(3)
-                && DateTimeOffset.TryParse(
-                    reader.GetString(3),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind,
-                    out var parsed))
-            {
-                updatedAt = parsed;
-            }
-
             output.Add(new PersonalGenreLock(
                 reader.GetInt64(0),
                 reader.GetString(1),
                 reader.GetInt32(2) != 0,
-                updatedAt));
+                ParseDateTimeOffset(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                ScopeType: "track",
+                ScopeId: reader.GetInt64(0)));
         }
 
         return output;
@@ -500,7 +595,7 @@ ON CONFLICT(track_id, taxon_id) DO UPDATE SET
         command.Parameters.AddWithValue("enabled", item.Enabled ? 1 : 0);
         command.Parameters.AddWithValue("updatedAtUtc", now.ToString("O", CultureInfo.InvariantCulture));
         await command.ExecuteNonQueryAsync(cancellationToken);
-        return item with { UpdatedAtUtc = now };
+        return item with { UpdatedAtUtc = now, ScopeType = "track", ScopeId = item.TrackId };
     }
 
     public async Task DeleteLockAsync(
@@ -519,6 +614,265 @@ WHERE track_id = @trackId AND taxon_id = @taxonId;
         command.Parameters.AddWithValue("taxonId", taxonId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    public async Task<IReadOnlyList<PersonalGenreScopedLock>> GetScopedLocksAsync(
+        string scopeType,
+        long scopeId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedScope = NormalizeScopedLockType(scopeType);
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT scope_type, scope_id, taxon_id, enabled, updated_at_utc
+FROM personal_genre_scope_lock
+WHERE scope_type = @scopeType AND scope_id = @scopeId
+ORDER BY taxon_id;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("scopeType", normalizedScope);
+        command.Parameters.AddWithValue("scopeId", scopeId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var output = new List<PersonalGenreScopedLock>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            output.Add(new PersonalGenreScopedLock(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.GetString(2),
+                reader.GetInt32(3) != 0,
+                ParseDateTimeOffset(reader.IsDBNull(4) ? null : reader.GetString(4))));
+        }
+
+        return output;
+    }
+
+    public async Task<PersonalGenreScopedLock> SaveScopedLockAsync(
+        PersonalGenreScopedLock item,
+        CancellationToken cancellationToken = default)
+    {
+        var scopeType = NormalizeScopedLockType(item.ScopeType);
+        if (item.ScopeId <= 0)
+        {
+            throw new ArgumentException("Scope ID must be greater than zero.", nameof(item.ScopeId));
+        }
+
+        await ValidateTaxonAsync(item.TaxonId, cancellationToken);
+        await ValidateScopeEntityAsync(scopeType, item.ScopeId, cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        const string sql = """
+INSERT INTO personal_genre_scope_lock
+    (scope_type, scope_id, taxon_id, enabled, updated_at_utc)
+VALUES
+    (@scopeType, @scopeId, @taxonId, @enabled, @updatedAtUtc)
+ON CONFLICT(scope_type, scope_id, taxon_id) DO UPDATE SET
+    enabled = excluded.enabled,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("scopeType", scopeType);
+        command.Parameters.AddWithValue("scopeId", item.ScopeId);
+        command.Parameters.AddWithValue("taxonId", item.TaxonId);
+        command.Parameters.AddWithValue("enabled", item.Enabled ? 1 : 0);
+        command.Parameters.AddWithValue("updatedAtUtc", now.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return item with { ScopeType = scopeType, UpdatedAtUtc = now };
+    }
+
+    public async Task DeleteScopedLockAsync(
+        string scopeType,
+        long scopeId,
+        string taxonId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedScope = NormalizeScopedLockType(scopeType);
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+DELETE FROM personal_genre_scope_lock
+WHERE scope_type = @scopeType
+  AND scope_id = @scopeId
+  AND taxon_id = @taxonId;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("scopeType", normalizedScope);
+        command.Parameters.AddWithValue("scopeId", scopeId);
+        command.Parameters.AddWithValue("taxonId", taxonId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PersonalGenreLock>> GetEffectiveLocksAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = await GetTrackScopeAsync(trackId, cancellationToken);
+        if (scope is null)
+        {
+            return await GetLocksAsync(trackId, cancellationToken);
+        }
+
+        var output = new List<PersonalGenreLock>();
+        var artistLocks = await GetScopedLocksAsync("artist", scope.ArtistId, cancellationToken);
+        var albumLocks = await GetScopedLocksAsync("album", scope.AlbumId, cancellationToken);
+        var trackLocks = await GetLocksAsync(trackId, cancellationToken);
+
+        output.AddRange(artistLocks.Select(item => new PersonalGenreLock(
+            trackId,
+            item.TaxonId,
+            item.Enabled,
+            item.UpdatedAtUtc,
+            ScopeType: "artist",
+            ScopeId: item.ScopeId)));
+        output.AddRange(albumLocks.Select(item => new PersonalGenreLock(
+            trackId,
+            item.TaxonId,
+            item.Enabled,
+            item.UpdatedAtUtc,
+            ScopeType: "album",
+            ScopeId: item.ScopeId)));
+        output.AddRange(trackLocks);
+        return output;
+    }
+
+    public async Task<PersonalGenreTrackScope?> GetTrackScopeAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        const string sql = """
+SELECT t.id, t.album_id, a.artist_id
+FROM track t
+JOIN album a ON a.id = t.album_id
+WHERE t.id = @trackId
+LIMIT 1;
+""";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? new PersonalGenreTrackScope(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2))
+            : null;
+    }
+
+    private static void BindTrackResult(
+        SqliteCommand command,
+        PersonalGenreTrackResult result,
+        bool includeEvidence = true)
+    {
+        command.Parameters.AddWithValue("trackId", result.TrackId);
+        command.Parameters.AddWithValue("primaryGenre", (object?)result.Resolution.PrimaryGenre ?? DBNull.Value);
+        command.Parameters.AddWithValue("genresJson", JsonSerializer.Serialize(result.Resolution.Genres));
+        command.Parameters.AddWithValue("stylesJson", JsonSerializer.Serialize(result.Resolution.Styles));
+        command.Parameters.AddWithValue("substylesJson", JsonSerializer.Serialize(result.Resolution.Substyles));
+        command.Parameters.AddWithValue("contextsJson", JsonSerializer.Serialize(result.Resolution.Contexts));
+        command.Parameters.AddWithValue("classificationsJson", JsonSerializer.Serialize(result.Resolution.Classifications));
+        command.Parameters.AddWithValue("decisionsJson", JsonSerializer.Serialize(result.Resolution.Decisions));
+        command.Parameters.AddWithValue("appliedRuleIdsJson", JsonSerializer.Serialize(result.Resolution.AppliedRuleIds));
+        if (includeEvidence)
+        {
+            command.Parameters.AddWithValue("evidenceJson", JsonSerializer.Serialize(result.Resolution.Evidence));
+        }
+        command.Parameters.AddWithValue("resolverVersion", result.Resolution.ResolverVersion);
+        command.Parameters.AddWithValue("resolvedAtUtc", result.ResolvedAtUtc.ToString("O", CultureInfo.InvariantCulture));
+    }
+
+    private static async Task AppendEvidenceHistoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long historyId,
+        IReadOnlyList<PersonalGenreEvidence> evidence,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+INSERT INTO personal_genre_evidence_history
+    (resolution_id, sequence, source, raw_value, canonical_value, kind, scope, weight, authority_cap)
+VALUES
+    (@resolutionId, @sequence, @source, @rawValue, @canonicalValue, @kind, @scope, @weight, @authorityCap);
+""";
+        for (var index = 0; index < evidence.Count; index++)
+        {
+            var item = evidence[index];
+            await using var command = new SqliteCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue("resolutionId", historyId);
+            command.Parameters.AddWithValue("sequence", index);
+            command.Parameters.AddWithValue("source", item.Source);
+            command.Parameters.AddWithValue("rawValue", item.RawValue);
+            command.Parameters.AddWithValue("canonicalValue", (object?)item.CanonicalValue ?? DBNull.Value);
+            command.Parameters.AddWithValue("kind", item.Kind.HasValue ? item.Kind.Value.ToString().ToLowerInvariant() : (object)DBNull.Value);
+            command.Parameters.AddWithValue("scope", (object?)item.Scope ?? DBNull.Value);
+            command.Parameters.AddWithValue("weight", item.Weight);
+            command.Parameters.AddWithValue("authorityCap", PersonalGenreResolver.GetAuthorityCap(item));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task AppendClassificationHistoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long historyId,
+        IReadOnlyList<PersonalGenreClassification> classifications,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+INSERT INTO personal_genre_classification_history
+    (resolution_id, taxon_id, name, kind, confidence, sources_json, user_locked, status, evidence_state)
+VALUES
+    (@resolutionId, @taxonId, @name, @kind, @confidence, @sourcesJson, @userLocked, @status, @evidenceState);
+""";
+        foreach (var item in classifications)
+        {
+            await using var command = new SqliteCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue("resolutionId", historyId);
+            command.Parameters.AddWithValue("taxonId", item.TaxonId);
+            command.Parameters.AddWithValue("name", item.Name);
+            command.Parameters.AddWithValue("kind", item.Kind.ToString().ToLowerInvariant());
+            command.Parameters.AddWithValue("confidence", item.Confidence);
+            command.Parameters.AddWithValue("sourcesJson", JsonSerializer.Serialize(item.Sources));
+            command.Parameters.AddWithValue("userLocked", item.UserLocked ? 1 : 0);
+            command.Parameters.AddWithValue("status", item.Status);
+            command.Parameters.AddWithValue("evidenceState", item.EvidenceState);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private async Task ValidateScopeEntityAsync(
+        string scopeType,
+        long scopeId,
+        CancellationToken cancellationToken)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        var table = scopeType == "artist" ? "artist" : "album";
+        var sql = $"SELECT 1 FROM {table} WHERE id = @scopeId LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("scopeId", scopeId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is null)
+        {
+            throw new ArgumentException($"Unknown {scopeType} ID '{scopeId}'.", nameof(scopeId));
+        }
+    }
+
+    private static string NormalizeScopedLockType(string scopeType)
+    {
+        var normalized = (scopeType ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "artist" => "artist",
+            "album" => "album",
+            _ => throw new ArgumentException("Scoped Personal Genre locks support only 'artist' or 'album'.", nameof(scopeType))
+        };
+    }
+
+    private static DateTimeOffset? ParseDateTimeOffset(string? value)
+        => DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out var parsed)
+            ? parsed
+            : null;
 
     public async Task DeleteMappingAsync(long id, CancellationToken cancellationToken = default)
         => await DeleteByIdAsync("personal_genre_mapping", id, cancellationToken);
