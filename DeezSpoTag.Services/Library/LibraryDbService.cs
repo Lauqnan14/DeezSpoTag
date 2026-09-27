@@ -1111,6 +1111,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
     classifications_json TEXT NOT NULL DEFAULT '[]',
     decisions_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -1129,6 +1131,8 @@ CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
     styles_json TEXT NOT NULL DEFAULT '[]',
     substyles_json TEXT NOT NULL DEFAULT '[]',
     contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
     classifications_json TEXT NOT NULL DEFAULT '[]',
     decisions_json TEXT NOT NULL DEFAULT '[]',
     applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -1180,6 +1184,30 @@ CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
             connection,
             "personal_genre_track",
             "decisions_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "languages_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "languages_json",
             "TEXT NOT NULL DEFAULT '[]'",
             cancellationToken);
 
