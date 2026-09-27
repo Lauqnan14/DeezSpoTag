@@ -1743,6 +1743,8 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Spotify auth environment warmup after HTTP readiness with a hard timeout.");
         services.AddSingleton<LibraryDbService>();
+        services.AddSingleton<DeezSpoTag.Services.Genre.PersonalGenreStore>();
+        services.AddSingleton<DeezSpoTag.Web.Services.PersonalGenreService>();
         services.AddSingleton<DeezSpoTag.Services.Library.LibraryRepository>();
         services.AddSingleton<DeezSpoTag.Services.Library.AudioQualitySignalAnalyzer>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpectrogramService>();
