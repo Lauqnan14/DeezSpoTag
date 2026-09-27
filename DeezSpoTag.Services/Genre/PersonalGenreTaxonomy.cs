@@ -6,12 +6,12 @@ public static class PersonalGenreTaxonomy
 
     private static readonly PersonalGenreTaxon[] DefaultTaxa =
     [
-        new("afrobeats", "Afrobeats", PersonalGenreTaxonKind.Genre, aliases: ["Afrobeat", "Afro Beats"]),
-        new("afropop", "Afropop", PersonalGenreTaxonKind.Genre, aliases: ["Afro-Pop", "Afro Pop"]),
-        new("bongo-flava", "Bongo Flava", PersonalGenreTaxonKind.Genre, aliases: ["Bongo-Flava", "BongoFlava"]),
+        new("afrobeats", "Afrobeats", PersonalGenreTaxonKind.Genre, Aliases: ["Afrobeat", "Afro Beats"]),
+        new("afropop", "Afropop", PersonalGenreTaxonKind.Genre, Aliases: ["Afro-Pop", "Afro Pop"]),
+        new("bongo-flava", "Bongo Flava", PersonalGenreTaxonKind.Genre, Aliases: ["Bongo-Flava", "BongoFlava"]),
         new("amapiano", "Amapiano", PersonalGenreTaxonKind.Genre),
-        new("hip-hop", "Hip-Hop", PersonalGenreTaxonKind.Genre, aliases: ["Hip Hop", "HipHop"]),
-        new("rnb", "R&B", PersonalGenreTaxonKind.Genre, aliases: ["Rnb", "R and B", "Rhythm and Blues"]),
+        new("hip-hop", "Hip-Hop", PersonalGenreTaxonKind.Genre, Aliases: ["Hip Hop", "HipHop"]),
+        new("rnb", "R&B", PersonalGenreTaxonKind.Genre, Aliases: ["Rnb", "R and B", "Rhythm and Blues"]),
         new("reggae", "Reggae", PersonalGenreTaxonKind.Genre),
         new("dancehall", "Dancehall", PersonalGenreTaxonKind.Genre),
         new("gospel", "Gospel", PersonalGenreTaxonKind.Genre),
@@ -25,24 +25,24 @@ public static class PersonalGenreTaxonomy
 
         new("afro-fusion", "Afro-Fusion", PersonalGenreTaxonKind.Style),
         new("afro-soul", "Afro-Soul", PersonalGenreTaxonKind.Style),
-        new("alt-rnb", "Alternative R&B", PersonalGenreTaxonKind.Style, parentId: "rnb", aliases: ["Alt R&B", "Alternative RnB"]),
-        new("trap", "Trap", PersonalGenreTaxonKind.Style, parentId: "hip-hop"),
-        new("boom-bap", "Boom Bap", PersonalGenreTaxonKind.Style, parentId: "hip-hop"),
-        new("deep-house", "Deep House", PersonalGenreTaxonKind.Style, parentId: "house"),
-        new("afro-house", "Afro House", PersonalGenreTaxonKind.Style, parentId: "house"),
-        new("praise", "Praise", PersonalGenreTaxonKind.Style, parentId: "gospel"),
-        new("worship", "Worship", PersonalGenreTaxonKind.Style, parentId: "gospel"),
+        new("alt-rnb", "Alternative R&B", PersonalGenreTaxonKind.Style, ParentId: "rnb", Aliases: ["Alt R&B", "Alternative RnB"]),
+        new("trap", "Trap", PersonalGenreTaxonKind.Style, ParentId: "hip-hop"),
+        new("boom-bap", "Boom Bap", PersonalGenreTaxonKind.Style, ParentId: "hip-hop"),
+        new("deep-house", "Deep House", PersonalGenreTaxonKind.Style, ParentId: "house"),
+        new("afro-house", "Afro House", PersonalGenreTaxonKind.Style, ParentId: "house"),
+        new("praise", "Praise", PersonalGenreTaxonKind.Style, ParentId: "gospel"),
+        new("worship", "Worship", PersonalGenreTaxonKind.Style, ParentId: "gospel"),
 
-        new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Substyle, parentId: "bongo-flava"),
-        new("bongo-rap", "Bongo Rap", PersonalGenreTaxonKind.Substyle, parentId: "bongo-flava"),
+        new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Substyle, ParentId: "bongo-flava"),
+        new("bongo-rap", "Bongo Rap", PersonalGenreTaxonKind.Substyle, ParentId: "bongo-flava"),
 
-        new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("tanzania", "Tanzania", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("kenya", "Kenya", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("uganda", "Uganda", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("south-africa", "South Africa", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("nigeria", "Nigeria", PersonalGenreTaxonKind.Context, contextOnly: true),
-        new("ghana", "Ghana", PersonalGenreTaxonKind.Context, contextOnly: true)
+        new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("tanzania", "Tanzania", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("kenya", "Kenya", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("uganda", "Uganda", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("south-africa", "South Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("nigeria", "Nigeria", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("ghana", "Ghana", PersonalGenreTaxonKind.Context, ContextOnly: true)
     ];
 
     private static readonly IReadOnlyDictionary<string, PersonalGenreTaxon> ById =
