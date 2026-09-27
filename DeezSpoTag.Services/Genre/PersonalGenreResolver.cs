@@ -161,11 +161,9 @@ public static class PersonalGenreResolver
         IReadOnlyList<PersonalGenreRule> rules,
         PersonalGenreCatalog catalog)
     {
-        var effectiveValue = string.IsNullOrWhiteSpace(evidence.CanonicalValue)
-            ? evidence.RawValue
-            : evidence.CanonicalValue!;
-        var normalizedValue = PersonalGenreTaxonomy.Normalize(effectiveValue);
-        if (normalizedValue.Length == 0)
+        var normalizedRaw = PersonalGenreTaxonomy.Normalize(evidence.RawValue);
+        var normalizedCanonical = PersonalGenreTaxonomy.Normalize(evidence.CanonicalValue);
+        if (normalizedRaw.Length == 0 && normalizedCanonical.Length == 0)
         {
             return null;
         }
@@ -173,7 +171,11 @@ public static class PersonalGenreResolver
         var normalizedSource = NormalizeSource(evidence.Source);
         var rule = rules
             .Where(item => item.Enabled)
-            .Where(item => PersonalGenreTaxonomy.Normalize(item.MatchValue) == normalizedValue)
+            .Where(item =>
+            {
+                var match = PersonalGenreTaxonomy.Normalize(item.MatchValue);
+                return match == normalizedRaw || (normalizedCanonical.Length > 0 && match == normalizedCanonical);
+            })
             .Where(item => SourceMatches(item.Source, normalizedSource))
             .OrderByDescending(item => item.Priority)
             .ThenBy(item => item.Id)
@@ -186,7 +188,11 @@ public static class PersonalGenreResolver
 
         var mapping = mappings
             .Where(item => item.Enabled)
-            .Where(item => PersonalGenreTaxonomy.Normalize(item.MatchValue) == normalizedValue)
+            .Where(item =>
+            {
+                var match = PersonalGenreTaxonomy.Normalize(item.MatchValue);
+                return match == normalizedRaw || (normalizedCanonical.Length > 0 && match == normalizedCanonical);
+            })
             .Where(item => SourceMatches(item.Source, normalizedSource))
             .OrderByDescending(item => item.Priority)
             .ThenBy(item => item.Id)
@@ -197,8 +203,14 @@ public static class PersonalGenreResolver
             return new MatchResult(mappedTaxon, null);
         }
 
-        return catalog.TryMatch(effectiveValue, out var taxonomyTaxon)
-            ? new MatchResult(taxonomyTaxon, null)
+        if (!string.IsNullOrWhiteSpace(evidence.CanonicalValue)
+            && catalog.TryMatch(evidence.CanonicalValue, out var canonicalTaxon))
+        {
+            return new MatchResult(canonicalTaxon, null);
+        }
+
+        return catalog.TryMatch(evidence.RawValue, out var rawTaxon)
+            ? new MatchResult(rawTaxon, null)
             : null;
     }
 
