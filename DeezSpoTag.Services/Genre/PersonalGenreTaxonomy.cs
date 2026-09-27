@@ -6,7 +6,8 @@ public static class PersonalGenreTaxonomy
 
     private static readonly PersonalGenreTaxon[] DefaultTaxa =
     [
-        new("afrobeats", "Afrobeats", PersonalGenreTaxonKind.Genre, Aliases: ["Afrobeat", "Afro Beats"]),
+        new("afrobeat", "Afrobeat", PersonalGenreTaxonKind.Genre),
+        new("afrobeats", "Afrobeats", PersonalGenreTaxonKind.Genre, Aliases: ["Afro Beats"]),
         new("afropop", "Afropop", PersonalGenreTaxonKind.Genre, Aliases: ["Afro-Pop", "Afro Pop"]),
         new("bongo-flava", "Bongo Flava", PersonalGenreTaxonKind.Genre, Aliases: ["Bongo-Flava", "BongoFlava"]),
         new("amapiano", "Amapiano", PersonalGenreTaxonKind.Genre),
