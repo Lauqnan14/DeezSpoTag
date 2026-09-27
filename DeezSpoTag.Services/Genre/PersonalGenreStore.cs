@@ -970,6 +970,17 @@ CREATE TABLE IF NOT EXISTS personal_genre_lock (
     PRIMARY KEY (track_id, taxon_id)
 );
 
+CREATE TABLE IF NOT EXISTS personal_genre_scope_lock (
+    scope_type TEXT NOT NULL,
+    scope_id BIGINT NOT NULL,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope_type, scope_id, taxon_id)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_scope_lock_scope
+    ON personal_genre_scope_lock (scope_type, scope_id, enabled);
+
 CREATE TABLE IF NOT EXISTS personal_genre_track (
     track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
     primary_genre TEXT,
@@ -986,6 +997,49 @@ CREATE TABLE IF NOT EXISTS personal_genre_track (
 );
 CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
     ON personal_genre_track (primary_genre);
+CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_resolution_history_track
+    ON personal_genre_resolution_history (track_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS personal_genre_evidence_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    raw_value TEXT NOT NULL,
+    canonical_value TEXT,
+    kind TEXT,
+    scope TEXT,
+    weight REAL NOT NULL,
+    authority_cap REAL NOT NULL,
+    PRIMARY KEY (resolution_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]',
+    user_locked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'suggested',
+    evidence_state TEXT NOT NULL DEFAULT 'single_source',
+    PRIMARY KEY (resolution_id, taxon_id)
+);
+
 """;
             await using var command = new SqliteCommand(sql, connection);
             await command.ExecuteNonQueryAsync(cancellationToken);
