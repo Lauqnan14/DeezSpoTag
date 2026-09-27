@@ -45,7 +45,8 @@
             taxonomy: [],
             trackScope: null,
             locks: [],
-            result: null
+            result: null,
+            history: []
         };
 
         const status = document.getElementById('pgTrackStatus');
@@ -54,8 +55,10 @@
         const lockSelect = document.getElementById('pgTrackLockTaxon');
         const lockAdd = document.getElementById('pgTrackLockAdd');
         const resolveButton = document.getElementById('pgTrackResolve');
+        const decisions = document.getElementById('pgTrackDecisions');
+        const history = document.getElementById('pgTrackHistory');
 
-        if (!status || !classifications || !lockList || !lockSelect || !lockAdd || !resolveButton) {
+        if (!status || !classifications || !lockList || !lockSelect || !lockAdd || !resolveButton || !decisions || !history) {
             return;
         }
 
@@ -78,10 +81,13 @@
             } else {
                 state.result = existing;
             }
+            await loadHistory();
 
             renderTaxonSelect();
             renderLocks();
             renderResult();
+            renderDecisions();
+            renderHistory();
         }
 
         async function loadLocks() {
@@ -129,6 +135,12 @@
                 '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/resolve',
                 { method: 'POST' },
                 true);
+        }
+
+        async function loadHistory() {
+            const payload = await requestJson(
+                '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/history?limit=20');
+            state.history = Array.isArray(payload) ? payload : [];
         }
 
         function renderTaxonSelect() {
@@ -211,9 +223,12 @@
                         }
                         await resolveCurrentTrack();
                         await loadLocks();
+                        await loadHistory();
                         renderLocks();
                         renderTaxonSelect();
                         renderResult();
+                        renderDecisions();
+                        renderHistory();
                     } catch (error) {
                         status.textContent = error.message || 'Failed to remove Personal Genre lock.';
                     }
@@ -275,6 +290,92 @@
             });
         }
 
+        function renderDecisions() {
+            decisions.innerHTML = '';
+            const items = Array.isArray(state.result?.resolution?.decisions)
+                ? state.result.resolution.decisions
+                : [];
+            if (!items.length) {
+                const empty = document.createElement('div');
+                empty.className = 'pg-muted';
+                empty.textContent = 'No evidence decisions recorded.';
+                decisions.appendChild(empty);
+                return;
+            }
+
+            items.forEach(item => {
+                const row = document.createElement('div');
+                row.className = 'pg-track-history-item';
+
+                const heading = document.createElement('strong');
+                heading.textContent =
+                    (item.rawValue || item.canonicalValue || 'Evidence') +
+                    ' · ' + String(item.outcome || 'unmapped').replaceAll('_', ' ');
+                row.appendChild(heading);
+
+                const meta = document.createElement('div');
+                meta.className = 'pg-muted';
+                const canonical = item.canonicalValue && item.canonicalValue !== item.rawValue
+                    ? ' · canonical ' + item.canonicalValue
+                    : '';
+                const target = item.taxonId ? ' · taxon ' + item.taxonId : '';
+                meta.textContent = (item.source || 'unknown') + canonical + target;
+                row.appendChild(meta);
+
+                if (item.reason) {
+                    const reason = document.createElement('div');
+                    reason.textContent = item.reason;
+                    row.appendChild(reason);
+                }
+
+                decisions.appendChild(row);
+            });
+        }
+
+        function renderHistory() {
+            history.innerHTML = '';
+            if (!state.history.length) {
+                const empty = document.createElement('div');
+                empty.className = 'pg-muted';
+                empty.textContent = 'No previous Personal Genre resolutions.';
+                history.appendChild(empty);
+                return;
+            }
+
+            state.history.forEach(item => {
+                const row = document.createElement('div');
+                row.className = 'pg-track-history-item';
+
+                const heading = document.createElement('strong');
+                heading.textContent = item.primaryGenre || 'No final Genre';
+                row.appendChild(heading);
+
+                const meta = document.createElement('div');
+                meta.className = 'pg-muted';
+                const at = item.resolvedAtUtc ? new Date(item.resolvedAtUtc).toLocaleString() : 'Unknown time';
+                meta.textContent =
+                    at + ' · ' + Number(item.classificationCount || 0) + ' classifications · ' +
+                    Number(item.evidenceCount || 0) + ' evidence items';
+                row.appendChild(meta);
+
+                const decisionItems = Array.isArray(item.decisions) ? item.decisions : [];
+                if (decisionItems.length) {
+                    const summary = document.createElement('div');
+                    const counts = decisionItems.reduce((acc, decision) => {
+                        const key = String(decision.outcome || 'unmapped');
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                    }, {});
+                    summary.textContent = Object.entries(counts)
+                        .map(([key, count]) => key.replaceAll('_', ' ') + ': ' + count)
+                        .join(' · ');
+                    row.appendChild(summary);
+                }
+
+                history.appendChild(row);
+            });
+        }
+
         document.getElementById('pgTrackLockScope')?.addEventListener('change', () => {
             renderTaxonSelect();
         });
@@ -311,9 +412,12 @@
 
                 await resolveCurrentTrack();
                 await loadLocks();
+                await loadHistory();
                 renderLocks();
                 renderTaxonSelect();
                 renderResult();
+                renderDecisions();
+                renderHistory();
             } catch (error) {
                 status.textContent = error.message || 'Failed to save Personal Genre lock.';
             }
@@ -323,11 +427,11 @@
             resolveButton.disabled = true;
             status.textContent = 'Re-resolving Personal Genre…';
             try {
-                state.result = await requestJson(
-                    '/api/personal-genre/tracks/' + encodeURIComponent(trackId) + '/resolve',
-                    { method: 'POST' },
-                    true);
+                await resolveCurrentTrack();
+                await loadHistory();
                 renderResult();
+                renderDecisions();
+                renderHistory();
             } catch (error) {
                 status.textContent = error.message || 'Personal Genre resolution failed.';
             } finally {
