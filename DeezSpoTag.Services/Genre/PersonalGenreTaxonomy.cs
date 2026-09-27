@@ -33,12 +33,16 @@ public static class PersonalGenreTaxonomy
         new("afro-house", "Afro House", PersonalGenreTaxonKind.Style, ParentIds: ["house", "afrobeats"]),
         new("praise", "Praise", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"]),
         new("worship", "Worship", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"]),
+        new("bongo-flava-pop", "Bongo Flava Pop", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "pop"]),
+        new("bongo-flava-rnb", "Bongo Flava R&B", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "rnb"], Aliases: ["Bongo Flava RnB"]),
+        new("bongo-flava-rap", "Bongo Flava Rap", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "hip-hop"], Aliases: ["Bongo Rap"]),
 
         new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Substyle, ParentIds: ["bongo-flava", "afropop"]),
         new("bongo-rap", "Bongo Rap", PersonalGenreTaxonKind.Substyle, ParentIds: ["bongo-flava", "hip-hop"]),
 
         new("afrosounds", "Afrosounds", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, ContextOnly: true),
+        new("swahili", "Swahili", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("tanzania", "Tanzania", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("kenya", "Kenya", PersonalGenreTaxonKind.Context, ContextOnly: true),
         new("uganda", "Uganda", PersonalGenreTaxonKind.Context, ContextOnly: true),
