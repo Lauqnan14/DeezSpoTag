@@ -361,21 +361,13 @@ public static class PersonalGenreResolver
         IReadOnlyList<PersonalGenreLock> locks,
         PersonalGenreCatalog catalog)
     {
-        var validLocks = locks
-            .Where(item => item.Enabled)
-            .Select(item => catalog.TryGetById(item.TaxonId, out var taxon)
-                ? (Lock: item, Taxon: taxon)
-                : ((PersonalGenreLock Lock, PersonalGenreTaxon Taxon)?)null)
-            .Where(item => item.HasValue)
-            .Select(item => item!.Value)
-            .ToList();
-
-        if (validLocks.Count == 0)
+        var effectiveLocks = GetMostSpecificLocks(locks, catalog);
+        if (effectiveLocks.Count == 0)
         {
             return classifications.ToList();
         }
 
-        var lockedKinds = validLocks
+        var lockedKinds = effectiveLocks
             .Select(item => item.Taxon.Kind)
             .ToHashSet();
 
@@ -383,13 +375,11 @@ public static class PersonalGenreResolver
             .Where(item => !lockedKinds.Contains(item.Kind))
             .ToList();
 
-        foreach (var item in validLocks
+        foreach (var item in effectiveLocks
             .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First()))
         {
-            var scope = string.IsNullOrWhiteSpace(item.Lock.ScopeType)
-                ? "track"
-                : item.Lock.ScopeType!.Trim().ToLowerInvariant();
+            var scope = NormalizeLockScope(item.Lock.ScopeType);
             output.Add(new PersonalGenreClassification(
                 item.Taxon.Id,
                 item.Taxon.Name,
@@ -415,10 +405,8 @@ public static class PersonalGenreResolver
             return classifications.ToList();
         }
 
-        var hasGenreLock = locks.Any(item =>
-            item.Enabled
-            && catalog.TryGetById(item.TaxonId, out var taxon)
-            && taxon.Kind == PersonalGenreTaxonKind.Genre);
+        var hasGenreLock = GetMostSpecificLocks(locks, catalog)
+            .Any(item => item.Taxon.Kind == PersonalGenreTaxonKind.Genre);
         if (hasGenreLock)
         {
             return classifications.ToList();
@@ -459,6 +447,49 @@ public static class PersonalGenreResolver
         }
 
         return output;
+    }
+
+    private static List<(PersonalGenreLock Lock, PersonalGenreTaxon Taxon)> GetMostSpecificLocks(
+        IReadOnlyList<PersonalGenreLock> locks,
+        PersonalGenreCatalog catalog)
+    {
+        var valid = locks
+            .Where(item => item.Enabled)
+            .Select(item => catalog.TryGetById(item.TaxonId, out var taxon)
+                ? (Lock: item, Taxon: taxon)
+                : ((PersonalGenreLock Lock, PersonalGenreTaxon Taxon)?)null)
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
+            .ToList();
+
+        if (valid.Count == 0)
+        {
+            return [];
+        }
+
+        var output = new List<(PersonalGenreLock Lock, PersonalGenreTaxon Taxon)>();
+        foreach (var kindGroup in valid.GroupBy(item => item.Taxon.Kind))
+        {
+            var highestRank = kindGroup.Max(item => LockScopeRank(item.Lock.ScopeType));
+            output.AddRange(kindGroup.Where(item => LockScopeRank(item.Lock.ScopeType) == highestRank));
+        }
+
+        return output;
+    }
+
+    private static int LockScopeRank(string? scopeType)
+        => NormalizeLockScope(scopeType) switch
+        {
+            "track" => 3,
+            "album" => 2,
+            "artist" => 1,
+            _ => 0
+        };
+
+    private static string NormalizeLockScope(string? scopeType)
+    {
+        var normalized = (scopeType ?? "track").Trim().ToLowerInvariant();
+        return normalized is "artist" or "album" or "track" ? normalized : "track";
     }
 
     private static HashSet<int> AppendProviderFallbacks(
