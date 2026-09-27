@@ -199,8 +199,18 @@
                     <input id="pgMappingSource" placeholder="audiomack, discogs, lastfm…" />
                 </label>
                 <label class="pg-field">
+                    <span>Action</span>
+                    <select id="pgMappingAction">
+                        <option value="0">Map</option>
+                        <option value="1">Context only</option>
+                        <option value="2">Ignore</option>
+                        <option value="3">Ambiguous</option>
+                    </select>
+                </label>
+                <label class="pg-field">
                     <span>Target taxon</span>
                     <select id="pgMappingTarget" required></select>
+                    <small>Target is used by Map and Context-only actions.</small>
                 </label>
                 <label class="pg-field">
                     <span>Priority</span>
@@ -218,7 +228,7 @@
             <div class="pg-table-wrap">
                 <table class="pg-table">
                     <thead>
-                        <tr><th>Provider value</th><th>Source</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr>
+                        <tr><th>Provider value</th><th>Source</th><th>Action</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr>
                     </thead>
                     <tbody id="pgMappingsBody"></tbody>
                 </table>
@@ -231,7 +241,7 @@
             <div class="pg-card-head">
                 <div>
                     <h2>User rules</h2>
-                    <p>User rules outrank provider mappings and built-in matching. Track-level locks outrank all automation.</p>
+                    <p>User rules outrank provider mappings and built-in matching. User locks outrank automation, with track scope overriding album scope and album scope overriding artist scope.</p>
                 </div>
             </div>
             <form id="pgRuleForm" class="pg-form pg-form--row">
