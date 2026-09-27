@@ -36,9 +36,15 @@ public sealed class PersonalGenreCatalog
             }
         }
 
-        _taxa = taxa;
-        _byId = taxa.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
-        _byLookup = BuildLookup(taxa);
+        var normalizedTaxa = taxa
+            .Select(item => item.ContextOnly && item.Kind != PersonalGenreTaxonKind.Context
+                ? item with { Kind = PersonalGenreTaxonKind.Context }
+                : item)
+            .ToList();
+
+        _taxa = normalizedTaxa;
+        _byId = normalizedTaxa.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        _byLookup = BuildLookup(normalizedTaxa);
     }
 
     public IReadOnlyList<PersonalGenreTaxon> Taxa => _taxa;
