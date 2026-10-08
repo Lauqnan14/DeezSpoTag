@@ -62,6 +62,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private const string TrendingSongsTitle = "Trending songs";
     private const string PopularRadioTitle = "Popular radio";
     private const string PopularRadiosTitle = "Popular radios";
+    private const string MadeForYouTitle = "Made for you";
+    private const string FallbackMadeForYouSectionUri = "spotify:section:0JQ5DAUnp4wcj0bCb3wh3S";
     private const string DefaultMusicBrowseCategoryId = "0JQ5DAqbMKFSi39LMRT0Cy";
     private const string FallbackPopularRadioSectionUri = "spotify:section:0JQ5DAnM3wGh0gz1MXnu4h";
     private const string ErrorBrowseDisabled = "Spotify browse disabled.";
@@ -931,6 +933,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var selectedSections = blobResult.Sections.Count > 0 ? blobResult.Sections : legacyResult.Sections;
         selectedSections = MergeMissingPopularRadioSection(selectedSections, legacyResult.Sections);
         selectedSections = await EnsurePopularRadioSectionAsync(selectedSections, timeZone, cancellationToken);
+        selectedSections = await EnsureMadeForYouSectionAsync(selectedSections, timeZone, cancellationToken);
         var greeting = !string.IsNullOrWhiteSpace(blobResult.Greeting) ? blobResult.Greeting : legacyResult.Greeting ?? string.Empty;
         var finalSections = AddTrendingSection(selectedSections, await trendingTask);
 
@@ -951,14 +954,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return merged;
         }
 
-        foreach (var section in legacySections)
+        foreach (var section in legacySections.Where(section =>
+            (TitleMatches(section, PopularRadioTitle) || TitleMatches(section, PopularRadiosTitle)) &&
+            (TryGetAnonymousItems(section)?.Count ?? 0) > 0))
         {
-            if ((TitleMatches(section, PopularRadioTitle) || TitleMatches(section, PopularRadiosTitle)) &&
-                (TryGetAnonymousItems(section)?.Count ?? 0) > 0)
-            {
-                merged.Add(section);
-                break;
-            }
+            merged.Add(section);
+            break;
         }
 
         if (!ContainsSectionTitle(merged, PopularRadioTitle) && !ContainsSectionTitle(merged, PopularRadiosTitle) &&
@@ -1192,6 +1193,113 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             || string.Equals(normalized, PopularRadiosTitle, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsMadeForYouTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        return string.Equals(title.Trim(), MadeForYouTitle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<List<object>> EnsureMadeForYouSectionAsync(
+        List<object> sections,
+        string? timeZone,
+        CancellationToken cancellationToken)
+    {
+        var existing = sections.Where(section => IsMadeForYouTitle(TryGetAnonymousTitle(section))).ToList();
+        if (existing.Count == 0)
+        {
+            return sections;
+        }
+
+        // The header the web player sends owns the real shelf uri. The one-item fragments that
+        // follow carry their own per-fragment section uris, so only the header counts here.
+        var sectionUri = existing
+            .Where(section => (TryGetAnonymousItems(section)?.Count ?? 0) == 0)
+            .Select(section => TryGetAnonymousString(section, UriKey) ?? string.Empty)
+            .FirstOrDefault(uri => uri.StartsWith("spotify:section:", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(sectionUri))
+        {
+            sectionUri = FallbackMadeForYouSectionUri;
+        }
+
+        var hydratedItems = new List<object>();
+        var homeSectionDoc = await _pathfinderClient.FetchHomeSectionWithBlobAsync(sectionUri, timeZone, 0, 60, cancellationToken);
+        AppendMappedBrowseItems(homeSectionDoc, hydratedItems);
+
+        var browseSectionDoc = await _pathfinderClient.FetchBrowseSectionWithBlobAsync(sectionUri, 0, 60, cancellationToken);
+        AppendMappedBrowseItems(browseSectionDoc, hydratedItems);
+
+        return MergeMadeForYouSections(sections, hydratedItems);
+    }
+
+    private static List<object> MergeMadeForYouSections(List<object> sections, List<object> hydratedItems)
+    {
+        var madeForYou = sections.Where(section => IsMadeForYouTitle(TryGetAnonymousTitle(section))).ToList();
+        if (madeForYou.Count == 0)
+        {
+            return sections;
+        }
+
+        // Only the hydrated section defines this shelf. The one-item "Made for you" fragments in
+        // the feed are separate sections - their cards are mixes and stations that do not appear
+        // in the Made For You carousel - so they are dropped rather than merged in. Both fetches
+        // can return the same shelf, so dedupe across them.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var merged = new List<object>();
+        foreach (var item in hydratedItems)
+        {
+            var uri = TryGetAnonymousString(item, UriKey);
+            if (!string.IsNullOrWhiteSpace(uri) && !seen.Add(uri))
+            {
+                continue;
+            }
+
+            merged.Add(item);
+        }
+
+        // A shelf we could not load is not a shelf. Drop the fragments rather than render a row
+        // of unrelated mixes and stations under the Made For You heading.
+        if (merged.Count == 0)
+        {
+            return sections.Where(section => !IsMadeForYouTitle(TryGetAnonymousTitle(section))).ToList();
+        }
+
+        // One row, no "Show more": the web player gates these behind a section page we do not
+        // link to, and the client only draws the button when both hasMore and pagePath are set.
+        var mergedSection = new
+        {
+            uri = FallbackMadeForYouSectionUri,
+            title = MadeForYouTitle,
+            layout = "row",
+            pagePath = string.Empty,
+            hasMore = false,
+            items = merged
+        };
+
+        var result = new List<object>();
+        var inserted = false;
+        foreach (var section in sections)
+        {
+            if (IsMadeForYouTitle(TryGetAnonymousTitle(section)))
+            {
+                if (!inserted)
+                {
+                    result.Add(mergedSection);
+                    inserted = true;
+                }
+
+                continue;
+            }
+
+            result.Add(section);
+        }
+
+        return result;
+    }
+
     private static object? MapBrowsePlaylistToHomeRawItem(object? browseItem)
     {
         if (browseItem is null)
@@ -1386,6 +1494,16 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             if (items.Count > 0)
             {
                 sections.Add(new { uri = sectionUri, title, items });
+                continue;
+            }
+
+            // The web player models "Made For You" as a header that owns a spotify:section: uri
+            // and carries no inline items; the cards live in that section and in the fragments
+            // that follow it. Keep the header so it can be hydrated, then merged into one row.
+            if (IsMadeForYouTitle(title) &&
+                sectionUri.StartsWith("spotify:section:", StringComparison.OrdinalIgnoreCase))
+            {
+                sections.Add(new { uri = sectionUri, title, items = new List<object>() });
             }
         }
 

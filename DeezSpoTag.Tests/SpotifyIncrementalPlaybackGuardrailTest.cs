@@ -150,6 +150,52 @@ public sealed class SpotifyIncrementalPlaybackGuardrailTest
     }
 
     [Fact]
+    public void SpotifyHome_MadeForYouIsOneHydratedRowWithoutShowMore()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "SpotifyHomeFeedApiController.cs");
+
+        Assert.Contains("private const string MadeForYouTitle = \"Made for you\"", controller, StringComparison.Ordinal);
+        Assert.Contains("spotify:section:0JQ5DAUnp4wcj0bCb3wh3S", controller, StringComparison.Ordinal);
+
+        // The web player sends "Made For You" as a header that owns a section uri and carries no
+        // inline items, alongside one-item fragments. Both must survive parsing to be merged.
+        var parseMethod = SliceMethod(controller,
+            "private static (bool Success, string Greeting, List<object> Sections) ParseHomeFeed",
+            "private static List<object> ParseSectionItems");
+        Assert.Contains("IsMadeForYouTitle(title)", parseMethod, StringComparison.Ordinal);
+        Assert.Contains("sectionUri.StartsWith(\"spotify:section:\"", parseMethod, StringComparison.Ordinal);
+
+        // Hydration reuses the existing blob section fetch rather than a new pathfinder path.
+        var ensureMethod = SliceMethod(controller,
+            "private async Task<List<object>> EnsureMadeForYouSectionAsync",
+            "private static List<object> MergeMadeForYouSections");
+        Assert.Contains("FetchHomeSectionWithBlobAsync(sectionUri, timeZone, 0, 60, cancellationToken)", ensureMethod, StringComparison.Ordinal);
+        Assert.Contains("AppendMappedBrowseItems", ensureMethod, StringComparison.Ordinal);
+
+        // One merged row, and no "Show more": the client draws that button only when both
+        // hasMore and pagePath are set.
+        var mergeMethod = SliceMethod(controller,
+            "private static List<object> MergeMadeForYouSections",
+            "private static object? MapBrowsePlaylistToHomeRawItem");
+        Assert.Contains("hasMore = false", mergeMethod, StringComparison.Ordinal);
+        Assert.Contains("pagePath = string.Empty", mergeMethod, StringComparison.Ordinal);
+        Assert.Contains("layout = \"row\"", mergeMethod, StringComparison.Ordinal);
+
+        // The shelf is the hydrated section only. The one-item "Made for you" fragments are
+        // separate sections whose cards never appear in the Made For You carousel, so merging
+        // them in renders unrelated mixes and stations under the wrong heading.
+        Assert.Contains("foreach (var item in hydratedItems)", mergeMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryGetAnonymousItems(section) ?? new List<object>()", mergeMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectMany", mergeMethod, StringComparison.Ordinal);
+        Assert.Contains("if (merged.Count == 0)", mergeMethod, StringComparison.Ordinal);
+
+        var selectionMethod = SliceMethod(controller,
+            "private async Task<HomeFeedSelection> FetchSelectedHomeFeedAsync",
+            "private static List<object> MergeMissingPopularRadioSection");
+        Assert.Contains("await EnsureMadeForYouSectionAsync(selectedSections, timeZone, cancellationToken)", selectionMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistResolver_UsesIsrcFirstAndStrictMetadataOnlyForHardMismatch()
     {
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "SpotifyPlaylistTracklistApiController.cs");

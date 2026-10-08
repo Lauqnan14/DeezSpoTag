@@ -1,9 +1,10 @@
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Web.Services.Favorites;
 using Newtonsoft.Json.Linq;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class DeezerFavoritesService
+public sealed class DeezerFavoritesService : IFavoritesProvider
 {
     private readonly DeezerClient _deezerClient;
     private readonly ILogger<DeezerFavoritesService> _logger;
@@ -13,6 +14,12 @@ public sealed class DeezerFavoritesService
         _deezerClient = deezerClient;
         _logger = logger;
     }
+
+    public string Key => "deezer";
+
+    public string DisplayName => "Deezer";
+
+    public string IconPath => "/images/icons/deezer.png";
 
     public async Task<FavoritesResult> GetFavoritesAsync(int limit, CancellationToken cancellationToken)
     {

@@ -1033,15 +1033,17 @@ public sealed class SpotifyPathfinderMetadataClient
         };
     }
 
-    public async Task<List<SpotifyTrackSummary>> FetchArtistTopTracksAsync(string artistId, CancellationToken cancellationToken)
+    public async Task<List<SpotifyTrackSummary>> FetchArtistTopTracksAsync(string artistId, CancellationToken cancellationToken, bool throwOnUnavailable = false)
     {
         if (string.IsNullOrWhiteSpace(artistId))
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyTrackSummary>();
         }
         PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyTrackSummary>();
         }
         Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
@@ -1051,25 +1053,29 @@ public sealed class SpotifyPathfinderMetadataClient
         JsonElement? overview = await overviewTask;
         if (!artist.HasValue && !overview.HasValue)
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyTrackSummary>();
         }
         return MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
     }
 
-    public async Task<List<SpotifyRelatedArtist>> FetchArtistRelatedArtistsAsync(string artistId, CancellationToken cancellationToken)
+    public async Task<List<SpotifyRelatedArtist>> FetchArtistRelatedArtistsAsync(string artistId, CancellationToken cancellationToken, bool throwOnUnavailable = false)
     {
         if (string.IsNullOrWhiteSpace(artistId))
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyRelatedArtist>();
         }
         PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyRelatedArtist>();
         }
         JsonElement? artist = await QueryArtistAsync(context, artistId, cancellationToken);
         if (!artist.HasValue)
         {
+            if (throwOnUnavailable) throw new InvalidOperationException("Spotify Pathfinder artist metadata is unavailable.");
             return new List<SpotifyRelatedArtist>();
         }
         return ParseArtistRelatedArtists(artist.Value);
@@ -1232,6 +1238,34 @@ public sealed class SpotifyPathfinderMetadataClient
     {
         return (await BuildBlobAuthContextAsync(cancellationToken)).Success;
     }
+
+    /// <summary>
+    /// The web-player session these reads are made with, for a caller that must send pathfinder
+    /// calls of its own.
+    /// <para>
+    /// This exists so playlist writing reuses the auth this class already builds from the signed-in
+    /// blob - the access token, the client token and the client version are all derived there and
+    /// caching them twice would give the two callers different answers about who is signed in.
+    /// Returns null when no usable blob is configured, which is the same condition
+    /// <see cref="HasPathfinderAuthContextAsync"/> reports.
+    /// </para>
+    /// </summary>
+    public async Task<SpotifyWebPlayerSession?> TryGetWebPlayerSessionAsync(CancellationToken cancellationToken)
+    {
+        PathfinderAuthBuildResult result = await BuildBlobAuthContextAsync(cancellationToken);
+        if (!result.Success || result.Context is null)
+        {
+            return null;
+        }
+
+        return new SpotifyWebPlayerSession(
+            result.Context.AccessToken,
+            result.Context.ClientToken,
+            result.Context.ClientVersion);
+    }
+
+    /// <summary>What the web player needs on every pathfinder call, as this class resolves it.</summary>
+    public sealed record SpotifyWebPlayerSession(string AccessToken, string ClientToken, string ClientVersion);
 
     public async Task<bool> HasBlobBackedAuthContextAsync(CancellationToken cancellationToken)
     {
@@ -3165,6 +3199,237 @@ public sealed class SpotifyPathfinderMetadataClient
         return normalized.Length == 0 ? null : normalized;
     }
 
+    /// <summary>
+    /// A playlist in the signed-in account's own library, with the artwork the library listing carries.
+    /// </summary>
+    public sealed record SpotifyLibraryPlaylistSummary(
+        string Id,
+        string Name,
+        string? CoverUrl,
+        string? Subtitle);
+
+    /// <summary>
+    /// The account's own playlists, via the web player's filtered library query rather than the
+    /// Web API, which only lists playlists the account can read.
+    /// </summary>
+    public async Task<List<SpotifyLibraryPlaylistSummary>> FetchLibraryPlaylistsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
+        if (context is null)
+        {
+            return new List<SpotifyLibraryPlaylistSummary>();
+        }
+
+        int resolvedLimit = Math.Clamp((limit <= 0) ? 50 : limit, 1, 100);
+        var payload = new
+        {
+            operationName = "libraryV3",
+            variables = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["filters"] = new[] { "Playlists" },
+                ["order"] = "Alphabetical",
+                ["textFilter"] = null,
+                ["features"] = Array.Empty<string>(),
+                ["limit"] = resolvedLimit,
+                ["offset"] = 0,
+                ["flatten"] = true,
+                ["expandedFolders"] = null,
+                ["folderUri"] = null,
+                ["includeFoldersWhenFlattening"] = true,
+            },
+            extensions = new
+            {
+                persistedQuery = new
+                {
+                    version = GetPersistedQuery("libraryV3", 1, "9f4da031f81274d572cfedaf6fc57a737c84b43d572952200b2c36aaa8fec1c6").Version,
+                    sha256Hash = GetPersistedQuery("libraryV3", 1, "9f4da031f81274d572cfedaf6fc57a737c84b43d572952200b2c36aaa8fec1c6").Sha256Hash
+                }
+            }
+        };
+
+        using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
+        if (doc is null)
+        {
+            return new List<SpotifyLibraryPlaylistSummary>();
+        }
+
+        return ParseLibraryPlaylistSummaries(doc.RootElement, resolvedLimit);
+    }
+
+    private static List<SpotifyLibraryPlaylistSummary> ParseLibraryPlaylistSummaries(JsonElement root, int limit)
+    {
+        var playlists = new List<SpotifyLibraryPlaylistSummary>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!root.TryGetProperty("data", out var dataElement)
+            || !dataElement.TryGetProperty("me", out var meElement)
+            || !meElement.TryGetProperty("libraryV3", out var libraryElement)
+            || !libraryElement.TryGetProperty("items", out var itemsElement)
+            || itemsElement.ValueKind != JsonValueKind.Array)
+        {
+            return playlists;
+        }
+
+        foreach (var row in itemsElement.EnumerateArray())
+        {
+            if (playlists.Count >= limit)
+            {
+                break;
+            }
+
+            if (!row.TryGetProperty("item", out var itemElement))
+            {
+                continue;
+            }
+
+            var data = itemElement.TryGetProperty("data", out var dataValue) ? dataValue : default;
+            if (data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty("__typename", out var typeValue)
+                || !string.Equals(typeValue.ToString(), "Playlist", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var uri = (data.TryGetProperty("uri", out var uriValue) ? uriValue.ToString() : null)
+                      ?? (itemElement.TryGetProperty("_uri", out var fallbackUri) ? fallbackUri.ToString() : null);
+            if (string.IsNullOrWhiteSpace(uri)
+                || !uri.StartsWith("spotify:playlist:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var id = uri["spotify:playlist:".Length..];
+            // A further colon means a follow-uri, not an addressable playlist.
+            if (id.Contains(':', StringComparison.Ordinal) || !seen.Add(id))
+            {
+                continue;
+            }
+
+            var name = data.TryGetProperty("name", out var nameValue) ? nameValue.ToString() : null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var subtitle = data.TryGetProperty("ownerV2", out var owner) && owner.TryGetProperty("data", out var ownerData)
+                && ownerData.TryGetProperty("name", out var ownerName)
+                ? ownerName.ToString()
+                : null;
+
+            playlists.Add(new SpotifyLibraryPlaylistSummary(
+                id,
+                name,
+                FindLibraryPlaylistImageUrl(data),
+                subtitle));
+        }
+
+        return playlists;
+    }
+
+    /// <summary>
+    /// First image URL on a Spotify CDN host. Spotify's own artwork host only is accepted: an
+    /// arbitrary URL from the payload would otherwise be rendered as card artwork.
+    /// </summary>
+    private static string? FindLibraryPlaylistImageUrl(JsonElement element)
+    {
+        // Walk the artwork paths in preference order rather than taking the first url found. The
+        // library listing carries the owner's avatar as well as the playlist cover, and avatar
+        // often appears earlier in document order - taking it gives every card the same picture.
+        var preferred = new[]
+        {
+            new object[] { "images", "items", 0, "sources", 0, "url" },
+            new object[] { "images", 0, "url" },
+            new object[] { "visualIdentity", "image", 0, "url" },
+            new object[] { "images", "items", 0, "image", "url" },
+            new object[] { "coverArt", "sources", 0, "url" },
+            new object[] { "coverArt", "sources", "url" },
+            new object[] { "albumOfTrack", "coverArt", "sources", 0, "url" },
+            new object[] { "album", "coverArt", "sources", 0, "url" }
+        };
+
+        foreach (var path in preferred)
+        {
+            if (TryReadStringPath(element, path, out var candidate)
+                && IsSpotifyImageHostUrl(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Reads a string at a path of property names and array indexes. A segment that is missing at
+    /// any depth is simply a miss, so callers can list candidate shapes without guarding each one.
+    /// </summary>
+    private static bool TryReadStringPath(JsonElement element, object[] path, out string value)
+    {
+        value = string.Empty;
+        var current = element;
+        foreach (var segment in path)
+        {
+            if (segment is int index)
+            {
+                if (current.ValueKind != JsonValueKind.Array || index < 0)
+                {
+                    return false;
+                }
+
+                var position = 0;
+                var found = false;
+                foreach (var candidate in current.EnumerateArray())
+                {
+                    if (position == index)
+                    {
+                        current = candidate;
+                        found = true;
+                        break;
+                    }
+
+                    position++;
+                }
+
+                if (!found)
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            var name = segment as string;
+            if (name is null
+                || current.ValueKind != JsonValueKind.Object
+                || !current.TryGetProperty(name, out current))
+            {
+                return false;
+            }
+        }
+
+        if (current.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = current.GetString() ?? string.Empty;
+        return true;
+    }
+
+    private static bool IsSpotifyImageHostUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Contains("i.scdn.co", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("spotifycdn.com", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("scdn.co", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<List<SpotifyTrackSummary>> FetchLibraryLikedTracksAsync(int limit, int offset, CancellationToken cancellationToken)
     {
         PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
@@ -3194,8 +3459,117 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyTrackSummary>();
         }
-        List<SpotifyTrackSummary> tracks = ParseSearchSuggestionTracks(doc.RootElement, resolvedLimit);
-        return (tracks.Count <= resolvedLimit) ? tracks : tracks.Take(resolvedLimit).ToList();
+
+        // The library listing is a row-per-item payload, not the search shape this query's
+        // previous parser assumed, so it has to be read on its own terms.
+        var tracks = ParseLibraryTrackSummaries(doc.RootElement, resolvedLimit);
+        return tracks.Count <= resolvedLimit ? tracks : tracks.Take(resolvedLimit).ToList();
+    }
+
+    private static List<SpotifyTrackSummary> ParseLibraryTrackSummaries(JsonElement root, int limit)
+    {
+        var tracks = new List<SpotifyTrackSummary>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!root.TryGetProperty("data", out var dataElement)
+            || !dataElement.TryGetProperty("me", out var meElement)
+            || !meElement.TryGetProperty("libraryV3", out var libraryElement)
+            || !libraryElement.TryGetProperty("items", out var itemsElement)
+            || itemsElement.ValueKind != JsonValueKind.Array)
+        {
+            return tracks;
+        }
+
+        foreach (var row in itemsElement.EnumerateArray())
+        {
+            if (tracks.Count >= limit)
+            {
+                break;
+            }
+
+            if (!row.TryGetProperty("item", out var itemElement))
+            {
+                continue;
+            }
+
+            var data = itemElement.TryGetProperty("data", out var dataValue) ? dataValue : default;
+            if (data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty("__typename", out var typeValue)
+                || !string.Equals(typeValue.ToString(), "Track", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var uri = (data.TryGetProperty("uri", out var uriValue) ? uriValue.ToString() : null)
+                      ?? (itemElement.TryGetProperty("_uri", out var fallbackUri) ? fallbackUri.ToString() : null);
+            if (string.IsNullOrWhiteSpace(uri) || !uri.StartsWith("spotify:track:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var id = uri["spotify:track:".Length..];
+            if (id.Contains(':', StringComparison.Ordinal) || !seen.Add(id))
+            {
+                continue;
+            }
+
+            var name = data.TryGetProperty("name", out var nameValue) ? nameValue.ToString() : null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var artists = ReadLibraryArtistNames(data);
+            var album = data.TryGetProperty("albumOfTrack", out var albumOfTrack)
+                        && albumOfTrack.TryGetProperty("name", out var albumName)
+                ? albumName.ToString()
+                : null;
+
+            int? durationMs = null;
+            if (data.TryGetProperty("duration", out var duration)
+                && duration.TryGetProperty("totalMilliseconds", out var totalMilliseconds)
+                && totalMilliseconds.TryGetInt32(out var milliseconds))
+            {
+                durationMs = milliseconds;
+            }
+
+            tracks.Add(new SpotifyTrackSummary(
+                id,
+                name,
+                artists,
+                album,
+                durationMs,
+                $"https://open.spotify.com/track/{id}",
+                FindLibraryPlaylistImageUrl(data),
+                null));
+        }
+
+        return tracks;
+    }
+
+    private static string? ReadLibraryArtistNames(JsonElement data)
+    {
+        if (!data.TryGetProperty("firstArtist", out var firstArtist)
+            || !firstArtist.TryGetProperty("items", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var names = new List<string>();
+        foreach (var artist in items.EnumerateArray())
+        {
+            var name = artist.TryGetProperty("profile", out var profile)
+                       && profile.TryGetProperty("name", out var profileName)
+                ? profileName.ToString()
+                : null;
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                names.Add(name);
+            }
+        }
+
+        return names.Count > 0 ? string.Join(", ", names) : null;
     }
 
     public async Task<JsonDocument?> FetchRecommendationsAsync(string contextUri, string contextType, int limit, CancellationToken cancellationToken)

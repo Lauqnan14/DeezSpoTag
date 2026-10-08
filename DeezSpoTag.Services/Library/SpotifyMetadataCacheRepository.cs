@@ -8,6 +8,12 @@ namespace DeezSpoTag.Services.Library;
 public sealed class SpotifyMetadataCacheRepository
 {
     private const string TypeParameter = "$type";
+
+    private static string BuildBySourceIdsSql(IReadOnlyList<string> parameterNames)
+        => @"
+SELECT source_id, payload_json, fetched_utc
+FROM spotify_metadata_cache
+WHERE type = $type AND source_id IN (" + SqlTextComposer.JoinParameterNames(parameterNames) + ");";
     private readonly IConfiguration _configuration;
     private readonly ILogger<SpotifyMetadataCacheRepository> _logger;
     private readonly TimeSpan _ttl = TimeSpan.FromDays(7);
@@ -91,10 +97,7 @@ LIMIT 1;";
                     command.Parameters.AddWithValue(parameterName, batch[index]);
                 }
 
-                command.CommandText = $@"
-SELECT source_id, payload_json, fetched_utc
-FROM spotify_metadata_cache
-WHERE type = $type AND source_id IN ({string.Join(", ", parameterNames)});";
+                command.CommandText = BuildBySourceIdsSql(parameterNames);
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
                 while (await reader.ReadAsync(cancellationToken))
                 {

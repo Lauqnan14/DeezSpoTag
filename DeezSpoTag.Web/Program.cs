@@ -1707,6 +1707,30 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDeezerLinkService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyFavoritesService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DeezerFavoritesService>();
+        // Typed clients: AddHttpClient registers the provider itself, so these must not also be
+        // registered as singletons or the last registration silently wins.
+        services.AddHttpClient<DeezSpoTag.Web.Services.Favorites.QobuzFavoritesService>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.Favorites.AppleMusicFavoritesService>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.Favorites.TidalFavoritesService>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.Favorites.DiscogsFavoritesService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.YouTubeMusicFavoritesService>();
+        // The Favorites tab renders whatever is registered, so each provider is registered through
+        // the interface rather than by concrete type.
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.DeezerFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Favorites.QobuzFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Favorites.AppleMusicFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Favorites.TidalFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Favorites.YouTubeMusicFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.IFavoritesProvider>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Favorites.DiscogsFavoritesService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.Favorites.FavoritesProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistWatchPlatformDependencies>(sp =>
             new DeezSpoTag.Web.Services.ArtistWatchPlatformDependencies(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),

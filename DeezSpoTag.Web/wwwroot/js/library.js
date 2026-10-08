@@ -8913,28 +8913,68 @@ function formatMetricSamples(value) {
     return number.toLocaleString();
 }
 
-function setFavoritesStatus(prefix, message, state) {
-    const status = document.getElementById(`${prefix}FavoritesStatus`);
-    if (!status) {
-        return;
+function createFavoritesProviderSection(provider) {
+    const section = document.createElement('div');
+    section.className = 'favorites-section';
+    section.dataset.favoritesProvider = provider.key || '';
+
+    const header = document.createElement('div');
+    header.className = 'favorites-section-header';
+
+    const brand = document.createElement('div');
+    brand.className = 'favorites-brand';
+    if (provider.iconPath) {
+        const icon = document.createElement('img');
+        icon.src = provider.iconPath;
+        icon.alt = provider.displayName || provider.key || '';
+        icon.className = 'favorites-icon';
+        brand.appendChild(icon);
     }
-    status.textContent = message || 'Unavailable';
-    status.classList.remove('is-connected', 'is-error');
-    if (state === 'connected') {
-        status.classList.add('is-connected');
-    } else if (state === 'error') {
-        status.classList.add('is-error');
-    }
+    const heading = document.createElement('h3');
+    heading.textContent = provider.displayName || provider.key || '';
+    brand.appendChild(heading);
+    header.appendChild(brand);
+
+    const status = document.createElement('span');
+    status.className = 'favorites-status';
+    status.textContent = 'Loading...';
+    header.appendChild(status);
+    section.appendChild(header);
+
+    // One subsection per collection the platform actually returned, so a provider that has no
+    // albums never renders an empty "Albums" heading.
+    [
+        { key: 'albums', label: 'Albums' },
+        { key: 'playlists', label: 'Playlists' },
+        { key: 'tracks', label: 'Tracks' }
+    ].forEach(collection => {
+        const items = Array.isArray(provider[collection.key]) ? provider[collection.key] : [];
+        if (items.length === 0) {
+            return;
+        }
+
+        const subsection = document.createElement('div');
+        subsection.className = 'favorites-subsection';
+
+        const label = document.createElement('h4');
+        label.textContent = collection.label;
+        subsection.appendChild(label);
+
+        const grid = document.createElement('div');
+        grid.className = 'favorites-grid';
+        subsection.appendChild(grid);
+
+        section.appendChild(subsection);
+    });
+
+    return section;
 }
 
-function renderFavoritesList(items, listId, emptyId) {
-    const container = document.getElementById(listId);
-    const empty = document.getElementById(emptyId);
+function renderFavoritesList(items, container) {
     if (!container) {
         return false;
     }
 
-    const subsection = container.closest('.favorites-subsection');
     container.innerHTML = '';
     const hasItems = Array.isArray(items) && items.length > 0;
     if (!hasItems) {
@@ -9105,37 +9145,45 @@ async function loadFavorites() {
     if (!root) {
         return;
     }
-    setFavoritesStatus('spotify', 'Loading...', '');
-    setFavoritesStatus('deezer', 'Loading...', '');
+
     try {
         const response = await fetchJson('/api/favorites?limit=50');
-        const spotify = response?.spotify;
-        const deezer = response?.deezer;
+        const providers = Array.isArray(response?.providers) ? response.providers : [];
 
-        if (spotify?.available) {
-            setFavoritesStatus('spotify', 'Connected', 'connected');
-        } else {
-            setFavoritesStatus('spotify', spotify?.message || 'Not connected', 'error');
-        }
-        if (deezer?.available) {
-            setFavoritesStatus('deezer', 'Connected', 'connected');
-        } else {
-            setFavoritesStatus('deezer', deezer?.message || 'Not connected', 'error');
+        root.innerHTML = '';
+        if (providers.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'empty-section';
+            empty.textContent = 'No platforms are available.';
+            root.appendChild(empty);
+            return;
         }
 
-        const spotifyHasPlaylists = renderFavoritesList(spotify?.playlists, 'spotifyFavoritePlaylists', 'spotifyFavoritePlaylistsEmpty');
-        const spotifyHasTracks = renderFavoritesList(spotify?.tracks, 'spotifyFavoriteTracks', 'spotifyFavoriteTracksEmpty');
-        const deezerHasAlbums = renderFavoritesList(deezer?.albums, 'deezerFavoriteAlbums', 'deezerFavoriteAlbumsEmpty');
-        const deezerHasPlaylists = renderFavoritesList(deezer?.playlists, 'deezerFavoritePlaylists', 'deezerFavoritePlaylistsEmpty');
-        const deezerHasTracks = renderFavoritesList(deezer?.tracks, 'deezerFavoriteTracks', 'deezerFavoriteTracksEmpty');
+        providers.forEach(provider => {
+            const section = createFavoritesProviderSection(provider);
+            const status = section.querySelector('.favorites-status');
+            if (status) {
+                status.textContent = provider.available ? 'Connected' : (provider.message || 'Not connected');
+                status.classList.add(provider.available ? 'is-connected' : 'is-error');
+            }
 
-        setFavoriteProviderVisibility('spotifyFavoritesSection', spotifyHasPlaylists || spotifyHasTracks);
-        setFavoriteProviderVisibility('deezerFavoritesSection', deezerHasAlbums || deezerHasPlaylists || deezerHasTracks);
+            section.querySelectorAll('.favorites-subsection').forEach(subsection => {
+                const grid = subsection.querySelector('.favorites-grid');
+                const label = subsection.querySelector('h4')?.textContent || '';
+                const key = label === 'Albums' ? 'albums'
+                    : label === 'Playlists' ? 'playlists'
+                    : 'tracks';
+                renderFavoritesList(provider[key], grid);
+            });
+
+            root.appendChild(section);
+        });
     } catch (error) {
-        setFavoritesStatus('spotify', 'Unavailable', 'error');
-        setFavoritesStatus('deezer', 'Unavailable', 'error');
-        setFavoriteProviderVisibility('spotifyFavoritesSection', false);
-        setFavoriteProviderVisibility('deezerFavoritesSection', false);
+        root.innerHTML = '';
+        const failed = document.createElement('div');
+        failed.className = 'empty-section';
+        failed.textContent = 'Failed to load favorites.';
+        root.appendChild(failed);
         console.error('Failed to load favorites.', error);
     }
 }

@@ -230,54 +230,11 @@
             <div class="media-tab-header">
                 <div>
                     <h2>Favorites</h2>
-                    <p>Favorites pulled from Spotify and Deezer accounts.</p>
+                    <p>Saved tracks, albums and playlists from every connected platform.</p>
                 </div>
             </div>
             <div id="favoritesContainer" class="favorites-root">
-                <div class="favorites-section" id="spotifyFavoritesSection">
-                    <div class="favorites-section-header">
-                        <div class="favorites-brand">
-                            <img src="/images/icons/spotify.png" alt="Spotify" class="favorites-icon" />
-                            <h3>Spotify</h3>
-                        </div>
-                        <span id="spotifyFavoritesStatus" class="favorites-status">Loading...</span>
-                    </div>
-                    <div class="favorites-subsection">
-                        <h4>Playlists</h4>
-                        <div id="spotifyFavoritePlaylists" class="favorites-grid"></div>
-                        <div id="spotifyFavoritePlaylistsEmpty" class="favorites-empty">No playlists found.</div>
-                    </div>
-                    <div class="favorites-subsection">
-                        <h4>Tracks</h4>
-                        <div id="spotifyFavoriteTracks" class="favorites-grid"></div>
-                        <div id="spotifyFavoriteTracksEmpty" class="favorites-empty">No tracks found.</div>
-                    </div>
-                </div>
-
-                <div class="favorites-section" id="deezerFavoritesSection">
-                    <div class="favorites-section-header">
-                        <div class="favorites-brand">
-                            <img src="/images/icons/deezer.png" alt="Deezer" class="favorites-icon" />
-                            <h3>Deezer</h3>
-                        </div>
-                        <span id="deezerFavoritesStatus" class="favorites-status">Loading...</span>
-                    </div>
-                    <div class="favorites-subsection">
-                        <h4>Albums</h4>
-                        <div id="deezerFavoriteAlbums" class="favorites-grid"></div>
-                        <div id="deezerFavoriteAlbumsEmpty" class="favorites-empty">No albums found.</div>
-                    </div>
-                    <div class="favorites-subsection">
-                        <h4>Playlists</h4>
-                        <div id="deezerFavoritePlaylists" class="favorites-grid"></div>
-                        <div id="deezerFavoritePlaylistsEmpty" class="favorites-empty">No playlists found.</div>
-                    </div>
-                    <div class="favorites-subsection">
-                        <h4>Tracks</h4>
-                        <div id="deezerFavoriteTracks" class="favorites-grid"></div>
-                        <div id="deezerFavoriteTracksEmpty" class="favorites-empty">No tracks found.</div>
-                    </div>
-                </div>
+                <div id="favoritesLoading" class="favorites-loading">Loading favorites...</div>
             </div>
         </div>
 
