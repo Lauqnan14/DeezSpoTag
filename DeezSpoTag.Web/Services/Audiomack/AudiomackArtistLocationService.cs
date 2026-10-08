@@ -160,13 +160,11 @@ public sealed class AudiomackArtistLocationService
 
         var ordered = new List<string>(lookupNames.Count) { canonical };
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { canonical };
-        foreach (var name in lookupNames)
+        foreach (var trimmed in lookupNames
+                     .Select(name => (name ?? string.Empty).Trim())
+                     .Where(trimmed => trimmed.Length > 0 && seen.Add(trimmed)))
         {
-            var trimmed = (name ?? string.Empty).Trim();
-            if (trimmed.Length > 0 && seen.Add(trimmed))
-            {
-                ordered.Add(trimmed);
-            }
+            ordered.Add(trimmed);
         }
 
         return ordered;

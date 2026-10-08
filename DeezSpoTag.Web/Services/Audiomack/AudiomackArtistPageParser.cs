@@ -29,15 +29,17 @@ namespace DeezSpoTag.Web.Services.Audiomack;
 /// of them is present, so a biography-only profile is still usable. The matched
 /// object's own numeric id (<c>RawArtistId</c>) is carried too so a search hit's
 /// id can be confirmed against Audiomack's own page before it is trusted.
-public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography, string? RawArtistId = null);
+public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography, string? RawArtistId = null, string? RawHometown = null);
 
 public static class AudiomackArtistPageParser
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
     private static readonly Regex PushChunkRegex =
-        new("self\\.__next_f\\.push\\(\\[1,\\s*\"(?<payload>(?:[^\"\\\\]|\\\\.)*)\"\\]\\)", RegexOptions.Compiled);
+        new("self\\.__next_f\\.push\\(\\[1,\\s*\"(?<payload>(?:[^\"\\\\]|\\\\.)*)\"\\]\\)", RegexOptions.Compiled, RegexTimeout);
 
     private static readonly Regex UrlSlugRegex =
-        new("\"url_slug\"\\s*:\\s*\"(?<slug>[^\"]*)\"", RegexOptions.Compiled);
+        new("\"url_slug\"\\s*:\\s*\"(?<slug>[^\"]*)\"", RegexOptions.Compiled, RegexTimeout);
 
     public static string? TryExtractRawLocation(string? html, string? urlSlug, string? expectedArtistName)
     {
@@ -126,12 +128,12 @@ public static class AudiomackArtistPageParser
                 continue;
             }
 
-            var raw = !string.IsNullOrWhiteSpace(hometown) ? hometown : location;
+            var raw = !string.IsNullOrWhiteSpace(location) ? location : hometown;
             var rawLocation = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
             var rawBiography = string.IsNullOrWhiteSpace(biography) ? null : biography.Trim();
             if (rawLocation != null || rawBiography != null)
             {
-                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography, artistId);
+                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography, artistId, hometown);
             }
         }
 
@@ -204,13 +206,11 @@ public static class AudiomackArtistPageParser
     private static ObjectSpan? FindInnermostSpanContaining(List<ObjectSpan> spans, int index)
     {
         ObjectSpan? innermost = null;
-        foreach (var span in spans)
+        foreach (var span in spans.Where(span =>
+            span.Open <= index && index <= span.Close
+            && (innermost == null || span.Open > innermost.Value.Open)))
         {
-            if (span.Open <= index && index <= span.Close
-                && (innermost == null || span.Open > innermost.Value.Open))
-            {
-                innermost = span;
-            }
+            innermost = span;
         }
 
         return innermost;

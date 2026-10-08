@@ -1,0 +1,3 @@
+<html lang="en"><head><meta charSet="utf-8"/></head><body>
+<script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"className\":\"ArtistPage-content\",\"children\":[[\"$\",\"$L4b\",null,{\"artist\":{\"id\":44556677,\"name\":\"Abass Doobeez\",\"verified\":\"yes\",\"hometown\":\"Accra,Ghana\",\"bio\":\"Abass Doobeez is the preferred DeezSpoTag spelling for this Ghanaian artist.\",\"location\":{\"tag\":\"accraghan\",\"display\":\"Accra, Ghana\"},\"url_slug\":\"abass-doobeez\",\"type\":\"artist\"}}]]}"])</script>
+</body></html>

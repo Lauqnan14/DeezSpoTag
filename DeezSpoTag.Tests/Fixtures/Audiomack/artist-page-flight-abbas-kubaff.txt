@@ -1,0 +1,3 @@
+<html lang="en"><head><meta charSet="utf-8"/></head><body>
+<script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"className\":\"ArtistPage-content\",\"children\":[[\"$\",\"$L4b\",null,{\"artist\":{\"id\":99112233,\"name\":\"Abbass Kubaff\",\"verified\":\"yes\",\"hometown\":\"Accra,Ghana\",\"bio\":\"Abbass Kubaff is a Ghanaian recording artist known for highlife and afrobeats releases. This biography is only reachable under the alias spelling.\",\"location\":{\"tag\":\"accraghan\",\"display\":\"Accra, Ghana\"},\"url_slug\":\"abbass-kubaff\",\"type\":\"artist\"}}]]}"])</script>
+</body></html>

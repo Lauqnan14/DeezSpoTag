@@ -165,7 +165,29 @@ internal static class AudiomackTaxonomy
            && !IsNonMusicValue(song.Genre)
            && CollectStyles(song).Count > 0;
 
-    internal static AudiomackSongCandidate Merge(AudiomackSongCandidate current, AudiomackSongCandidate richer)
+    /// <summary>
+    /// Guarded enrichment: a richer payload may only fill missing fields when it
+    /// proves it belongs to the same verified recording. On rejection no field
+    /// changes and the caller keeps <paramref name="current"/> intact.
+    /// </summary>
+    internal static bool TryMerge(
+        AudiomackSongCandidate current,
+        AudiomackSongCandidate richer,
+        out AudiomackSongCandidate merged,
+        out string? rejectionReason)
+    {
+        if (!AudiomackIdNormalizer.IsSameSong(current, richer, out rejectionReason))
+        {
+            merged = current;
+            return false;
+        }
+
+        merged = MergeVerified(current, richer);
+        rejectionReason = null;
+        return true;
+    }
+
+    private static AudiomackSongCandidate MergeVerified(AudiomackSongCandidate current, AudiomackSongCandidate richer)
     {
         var genre = current.Genre;
         if (IsNonMusicValue(genre) && !IsNonMusicValue(richer.Genre) && !string.IsNullOrWhiteSpace(richer.Genre))

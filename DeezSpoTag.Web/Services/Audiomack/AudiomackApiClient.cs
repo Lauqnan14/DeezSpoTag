@@ -184,13 +184,11 @@ public sealed record AudiomackSongCandidate(
         }
 
         var output = new List<string>();
-        foreach (var item in value.EnumerateArray())
+        foreach (var item in value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(item.GetString())))
         {
-            if (item.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(item.GetString()))
-            {
-                output.Add(item.GetString()!.Trim());
-            }
+            output.Add(item.GetString()!.Trim());
         }
 
         return output;
@@ -470,27 +468,24 @@ public sealed class AudiomackApiClient
     /// last resort) is anonymous and fills those gaps. Failure is non-fatal.
     /// </summary>
     public async Task<AudiomackSongCandidate?> GetPublicPageSongAsync(
-        string artistSlug,
-        string songSlug,
+        AudiomackSongCandidate expected,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(artistSlug) || string.IsNullOrWhiteSpace(songSlug))
+        if (expected is null || !AudiomackIdNormalizer.TryGetSongIdentity(expected, out _, out var canonicalPath, out _) || canonicalPath is null)
         {
             return null;
         }
 
         try
         {
-            var debugPath = Environment.GetEnvironmentVariable("AUDIOMACK_DEBUG_PAYLOAD") == "1"
-                ? "/tmp/deezspotag-audiomack-nextdata.json"
-                : null;
+            var debugPath = AudiomackDebugPayload.ResolveOutputPath();
             var song = await AudiomackNextDataExtractor.FetchSongObjectAsync(
-                _httpClientFactory, artistSlug, songSlug, debugPath, cancellationToken).ConfigureAwait(false);
+                _httpClientFactory, expected, debugPath, cancellationToken).ConfigureAwait(false);
             return song is null ? null : AudiomackSongCandidate.FromJson(song.Value);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Audiomack public page overlay failed ({ArtistSlug}/{SongSlug})", artistSlug, songSlug);
+            _logger.LogDebug(ex, "Audiomack public page overlay failed");
             return null;
         }
     }

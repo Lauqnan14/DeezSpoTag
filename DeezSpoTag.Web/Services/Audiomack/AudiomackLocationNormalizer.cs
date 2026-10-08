@@ -10,12 +10,16 @@ public sealed record AudiomackLocationResult(
     string? City,
     string? Country,
     string? CountryCode,
-    string Source = "audiomack");
+    string Source = "audiomack")
+{
+    public string? Region { get; init; }
+    public string? Hometown { get; init; }
+}
 
 /// <summary>
 /// Normalizes raw Audiomack artist location values (for example "Lagos, Nigeria",
-/// "Nairobi", "Thika") into city / country / ISO 3166-1 alpha-2 country code.
-/// Pure and side-effect free; the raw value is always preserved on the result.
+/// "Accra, Greater Accra, Ghana") into distinct city, region, country and ISO code.
+/// Pure and side-effect free; unresolved text stays raw and is never promoted to a city.
 /// </summary>
 public static class AudiomackLocationNormalizer
 {
@@ -41,7 +45,7 @@ public static class AudiomackLocationNormalizer
             var singleCode = ResolveCountryCode(single);
             return singleCode != null
                 ? new AudiomackLocationResult(raw, null, single, singleCode)
-                : new AudiomackLocationResult(raw, single, null, null);
+                : new AudiomackLocationResult(raw, null, null, null);
         }
 
         var city = parts[0];
@@ -49,12 +53,20 @@ public static class AudiomackLocationNormalizer
         var countryCode = ResolveCountryCode(countryCandidate);
         if (countryCode != null)
         {
-            return new AudiomackLocationResult(raw, city, countryCandidate, countryCode);
+            return new AudiomackLocationResult(raw, city, countryCandidate, countryCode)
+            {
+                Region = parts.Length > 2 ? string.Join(", ", parts.Skip(1).Take(parts.Length - 2)) : null
+            };
         }
 
-        // Last segment is not a recognized country (for example "Austin, TX").
-        // Keep the value as city-level text instead of inventing a country.
-        return new AudiomackLocationResult(raw, string.Join(", ", parts), null, null);
+        // A city/state abbreviation can be separated without inventing a country.
+        if (parts.Length == 2 && countryCandidate.Length == 2
+            && countryCandidate.All(char.IsAsciiLetterUpper))
+        {
+            return new AudiomackLocationResult(raw, city, null, null) { Region = countryCandidate };
+        }
+
+        return new AudiomackLocationResult(raw, null, null, null);
     }
 
     public static string? ResolveCountryCode(string? countryName)
@@ -158,10 +170,12 @@ public static class AudiomackLocationNormalizer
         ["drc"] = "CD",
         ["democratic republic of congo"] = "CD",
         ["congo kinshasa"] = "CD",
+        ["congo (kinshasa)"] = "CD",
         ["congo-kinshasa"] = "CD",
         ["zaire"] = "CD",
         ["republic of the congo"] = "CG",
         ["congo brazzaville"] = "CG",
+        ["congo (brazzaville)"] = "CG",
         ["congo-brazzaville"] = "CG",
         ["cape verde"] = "CV",
         ["cabo verde"] = "CV",

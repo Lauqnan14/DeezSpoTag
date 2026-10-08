@@ -2061,7 +2061,9 @@ namespace DeezSpoTag.Web.Controllers
         {
             try
             {
-                if (payload.ContainsKey("location_source"))
+                if (payload.TryGetValue("location_source", out var existingSource)
+                    && (!string.Equals(existingSource?.ToString(), "audiomack", StringComparison.OrdinalIgnoreCase)
+                        || payload.TryGetValue("audiomack_location_schema", out var schema) && schema?.ToString() == "2"))
                 {
                     return;
                 }
@@ -2078,21 +2080,12 @@ namespace DeezSpoTag.Web.Controllers
                     return;
                 }
 
-                if (!string.IsNullOrWhiteSpace(location.City))
-                {
-                    payload["city"] = location.City;
-                }
-
-                if (!string.IsNullOrWhiteSpace(location.Country))
-                {
-                    payload["country"] = location.Country;
-                }
-
-                if (!string.IsNullOrWhiteSpace(location.CountryCode))
-                {
-                    payload["country_code"] = location.CountryCode;
-                }
-
+                payload["city"] = location.City!;
+                payload["country"] = location.Country!;
+                payload["country_code"] = location.CountryCode!;
+                payload["audiomack_location_schema"] = 2;
+                payload["region"] = location.Region!;
+                payload["hometown"] = location.Hometown!;
                 payload["location_source"] = "audiomack";
                 payload["raw_location"] = location.RawLocation;
             }
@@ -2171,27 +2164,23 @@ namespace DeezSpoTag.Web.Controllers
                     return payloadJson;
                 }
 
+                if (root["location_source"] is JsonValue existingSource
+                    && existingSource.TryGetValue<string>(out var source)
+                    && (source != "audiomack" || root["audiomack_location_schema"]?.ToString() == "2"))
+                    return payloadJson;
+
                 var location = await _audiomackArtistLocation.ResolveAsync(artistName, cancellationToken);
                 if (location == null)
                 {
                     return payloadJson;
                 }
 
-                if (!string.IsNullOrWhiteSpace(location.City))
-                {
-                    root["city"] = location.City;
-                }
-
-                if (!string.IsNullOrWhiteSpace(location.Country))
-                {
-                    root["country"] = location.Country;
-                }
-
-                if (!string.IsNullOrWhiteSpace(location.CountryCode))
-                {
-                    root["country_code"] = location.CountryCode;
-                }
-
+                root["city"] = location.City;
+                root["country"] = location.Country;
+                root["country_code"] = location.CountryCode;
+                root["region"] = location.Region;
+                root["hometown"] = location.Hometown;
+                root["audiomack_location_schema"] = 2;
                 root["location_source"] = "audiomack";
                 root["raw_location"] = location.RawLocation;
                 return root.ToJsonString();

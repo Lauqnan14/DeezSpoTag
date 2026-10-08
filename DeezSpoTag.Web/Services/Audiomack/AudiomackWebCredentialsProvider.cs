@@ -28,10 +28,12 @@ public sealed class AudiomackWebCredentialsProvider
     private const string ChunkUrlPrefix = "/_next/static/chunks/";
     private const int MaxChunkFetches = 20;
 
-    private static readonly Regex ChunkUrlRegex = new("/_next/static/chunks/[^\"'<>]+?\\.js", RegexOptions.Compiled);
-    private static readonly Regex ConsumerSecretRegex = new("API_CONSUMER_SECRET:\\\\?\"(?<secret>[0-9a-fA-F]{8,64})\\\\?\"", RegexOptions.Compiled);
-    private static readonly Regex ConsumerKeyRegex = new("API_CONSUMER_KEY:\\\\?\"(?<key>[^\"]{1,128})\\\\?\"", RegexOptions.Compiled);
-    private static readonly Regex ApiBaseUrlRegex = new("API_PUBLIC_API_URL:\\\\?\"(?<url>https://[^\"\\\\]+)\\\\?\"", RegexOptions.Compiled);
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
+    private static readonly Regex ChunkUrlRegex = new("/_next/static/chunks/[^\"'<>]+?\\.js", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex ConsumerSecretRegex = new("API_CONSUMER_SECRET:\\\\?\"(?<secret>[0-9a-fA-F]{8,64})\\\\?\"", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex ConsumerKeyRegex = new("API_CONSUMER_KEY:\\\\?\"(?<key>[^\"]{1,128})\\\\?\"", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex ApiBaseUrlRegex = new("API_PUBLIC_API_URL:\\\\?\"(?<url>https://[^\"\\\\]+)\\\\?\"", RegexOptions.Compiled, RegexTimeout);
 
     /// <summary>Last-known web-client identity: a bootstrap/fallback, not a permanent design constant.</summary>
     private static readonly AudiomackWebCredentials FallbackCredentials = new(
