@@ -184,12 +184,13 @@ public sealed class SoulseekRepositoryTest : IDisposable
 
         await repository.RecordSearchCompletedAsync(
             searchId,
-            completed: true,
-            timedOut: false,
-            fileCount: 12,
-            responseCount: 4,
-            candidateCount: 3,
-            bestCandidateId: null,
+            new SoulseekSearchCompletion(
+                Completed: true,
+                TimedOut: false,
+                FileCount: 12,
+                ResponseCount: 4,
+                CandidateCount: 3,
+                BestCandidateId: null),
             TestContext());
 
         var completed = await repository.GetSearchAsync(searchId, TestContext());
@@ -773,7 +774,7 @@ public sealed class SoulseekRepositoryTest : IDisposable
         var repository = CreateRepository();
         var searchId = Guid.NewGuid();
         await repository.RecordSearchStartedAsync(searchId, "a - b", SoulseekSearchMode.Manual, null, TestContext());
-        await repository.RecordSearchCompletedAsync(searchId, true, false, 10, 2, 3, 0, TestContext());
+        await repository.RecordSearchCompletedAsync(searchId, new SoulseekSearchCompletion(true, false, 10, 2, 3, 0), TestContext());
 
         var record = await repository.GetSearchAsync(searchId, TestContext());
         Assert.NotNull(record);
