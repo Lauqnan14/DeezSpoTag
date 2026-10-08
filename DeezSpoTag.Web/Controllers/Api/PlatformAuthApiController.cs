@@ -168,6 +168,7 @@ public class PlatformAuthApiController : ControllerBase
             tidal = ToPublicTidal(state.Tidal),
             amazonMusic = ToPublicAmazonMusic(state.AmazonMusic),
             soulseek = ToPublicSoulseek(state.Soulseek),
+            soundcloud = ToPublicSoundCloud(state.SoundCloud),
             boomplay = ToPublicBoomplay(state.Boomplay),
             beatport = ToPublicBeatport(state.Beatport)
         });
@@ -341,6 +342,45 @@ public class PlatformAuthApiController : ControllerBase
         if (gate != null) return gate;
         var state = await RefreshQobuzAccountAsync(await _authService.LoadAsync(), cancellationToken);
         return Ok(ToPublicQobuz(state.Qobuz));
+    }
+
+    /// <summary>
+    ///     Checks the saved SoundCloud token without changing what is stored.
+    /// </summary>
+    /// <remarks>
+    ///     Present as its own verb so the login UI can re-verify a saved token with an empty body. A blank
+    ///     submission is a check, never a clear: only the disconnect endpoint removes the token.
+    /// </remarks>
+    [HttpPost("soundcloud/check")]
+    public async Task<IActionResult> CheckSoundCloud(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+
+        var state = await _authService.LoadAsync();
+        var saved = state.SoundCloud;
+
+        if (_soundCloudClient is null || saved is null || string.IsNullOrWhiteSpace(saved.OAuthToken))
+        {
+            return Ok(new { tokenChecked = false, soundcloud = ToPublicSoundCloud(saved) });
+        }
+
+        var valid = await _soundCloudClient.ValidateCredentialsAsync(saved.OAuthToken, cancellationToken);
+
+        var refreshed = await _authService.UpdateAsync(current =>
+        {
+            current.SoundCloud = new SoundCloudAuth
+            {
+                OAuthToken = saved.OAuthToken,
+                CredentialsValid = valid,
+                LastStatus = valid ? "connected" : "invalid_token",
+                LastError = valid ? null : "SoundCloud did not accept the saved token.",
+                CheckedAt = DateTimeOffset.UtcNow
+            };
+            return current.SoundCloud;
+        });
+
+        return Ok(new { tokenChecked = true, soundcloud = ToPublicSoundCloud(refreshed) });
     }
 
     [HttpGet("soulseek/connection")]
@@ -1316,6 +1356,45 @@ public class PlatformAuthApiController : ControllerBase
             configured,
             connected = auth?.ConnectionValid == true,
             username = auth?.Username,
+            status = statusOut,
+            message = reason,
+            checkedAt = auth?.CheckedAt
+        };
+    }
+
+    /// <summary>
+    ///     Builds the public view of the SoundCloud connection.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately exposes only whether a token is saved and whether it validated. The token itself is
+    ///     never returned, because this payload goes to the browser and would otherwise be a credential leak
+    ///     into page source, devtools, and any proxy log in between.
+    /// </remarks>
+    private static object ToPublicSoundCloud(SoundCloudAuth? auth)
+    {
+        var tokenSaved = !string.IsNullOrWhiteSpace(auth?.OAuthToken);
+        var status = auth?.LastStatus;
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            status = tokenSaved ? "disconnected" : "not_configured";
+        }
+
+        var message = auth?.LastError;
+        if (auth?.CredentialsValid == true)
+        {
+            message = "SoundCloud is connected.";
+        }
+        else if (string.IsNullOrWhiteSpace(message))
+        {
+            message = tokenSaved
+                ? "The saved SoundCloud token has not been checked yet."
+                : "No SoundCloud token is saved. Public tracks work without one.";
+        }
+
+        return new
+        {
+            tokenSaved,
+            connected = auth?.CredentialsValid == true,
             status,
             message,
             checkedAt = auth?.CheckedAt
@@ -1598,6 +1677,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "soulseek":
                     state.Soulseek = null;
                     break;
+                case "soundcloud":
+                    state.SoundCloud = null;
+                    break;
                 case "boomplay":
                     state.Boomplay = null;
                     break;
@@ -1635,6 +1717,7 @@ public class PlatformAuthApiController : ControllerBase
             or "tidal"
             or "amazonmusic"
             or "soulseek"
+            or "soundcloud"
             or "boomplay";
     }
 

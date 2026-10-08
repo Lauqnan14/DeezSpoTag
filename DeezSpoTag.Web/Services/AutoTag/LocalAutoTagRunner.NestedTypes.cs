@@ -244,6 +244,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public required LastFmMatcher LastFmMatcher { get; init; }
         public required BoomplayMatcher BoomplayMatcher { get; init; }
         public required AudiomackMatcher AudiomackMatcher { get; init; }
+        public required SoundcloudMatcher SoundcloudMatcher { get; init; }
         public required ShazamMatcher ShazamMatcher { get; init; }
         public required ShazamRecognitionService ShazamRecognitionService { get; init; }
         public required AppleLyricsService AppleLyricsService { get; init; }

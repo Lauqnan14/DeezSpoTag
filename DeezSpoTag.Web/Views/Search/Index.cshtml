@@ -1815,7 +1815,11 @@ async function parseDeezerLinkDirectly(input) {
     return data;
 }
 
-const deezerMappedPlaylistSources = new Set(['tidal', 'qobuz', 'bandcamp']);
+// Sources whose playlist URL opens the shared tracklist when the link mapper cannot resolve the URL
+// to a Deezer entity. SoundCloud belongs here: classifyExternalSource recognises it and
+// isPlaylistLikeExternalLink accepts its /sets/ and /discover/sets/ shapes, so without this entry a pasted
+// SoundCloud playlist URL failed the gate below and threw instead of opening the tracklist.
+const deezerMappedPlaylistSources = new Set(['tidal', 'qobuz', 'bandcamp', 'soundcloud']);
 
 function classifyExternalSource(url) {
     if (!url) return '';

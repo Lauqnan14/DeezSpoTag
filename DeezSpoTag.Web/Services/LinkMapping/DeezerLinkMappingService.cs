@@ -75,8 +75,11 @@ public sealed class DeezerLinkMappingService
             return DeezerLinkMappingResult.Success(source, mappedDeezer);
         }
 
-        var searchedDeezer = await TryMapByMetadataSearchAsync(normalizedUrl, source, mapped, cancellationToken);
-        if (searchedDeezer != null)
+        // SoundCloud is the one source whose central resolution is authoritative end to end, so the permissive
+        // fallback below is withheld from it. Without this, hydrating a SoundCloud URL would be enough to arm
+        // a Levenshtein search that accepts a 0.30 match, and a mapping the central resolver rejected on
+        // purpose would be quietly rescued by an unrelated result. A miss stays a miss.
+        if (!IsStrictlyResolvedSource(source))
         {
             var searchedDeezer = await TryMapByMetadataSearchAsync(normalizedUrl, source, mapped, cancellationToken);
             if (searchedDeezer != null)
@@ -134,8 +137,23 @@ public sealed class DeezerLinkMappingService
             ExternalLinkSource.AppleMusic => "apple",
             ExternalLinkSource.Qobuz => "qobuz",
             ExternalLinkSource.Tidal => "tidal",
+            // Tells the central resolver the source URL must be hydrated through SoundCloud before any target
+            // platform is resolved. Without this arm the resolver receives a null platform, hydrates nothing,
+            // and every target is reported unresolved.
+            ExternalLinkSource.SoundCloud => "soundcloud",
             _ => null
         };
+
+    /// <summary>
+    ///     Sources for which the central identity resolver is the final word on Deezer mapping.
+    /// </summary>
+    /// <remarks>
+    ///     For these the permissive title-similarity fallback is not consulted, because the central resolver
+    ///     already tried the ISRC and then a strictly validated metadata search. Running the fallback
+    ///     afterwards would amount to a third, weaker resolver able to overturn a deliberate rejection.
+    /// </remarks>
+    private static bool IsStrictlyResolvedSource(ExternalLinkSource source)
+        => source == ExternalLinkSource.SoundCloud;
 
     private async Task<DeezerLinkDescriptor?> TryMapByMetadataSearchAsync(
         string normalizedUrl,

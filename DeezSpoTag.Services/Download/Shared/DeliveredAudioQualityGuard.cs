@@ -111,6 +111,11 @@ internal static class DeliveredAudioQualityGuard
             return TidalStereoQuality.Accepts(TidalStereoQuality.Normalize(requestedQuality), actual);
         }
 
+        if (IsSoundCloudEngine(engine))
+        {
+            return SoundCloudStereoQuality.Accepts(SoundCloudStereoQuality.Normalize(requestedQuality), actual);
+        }
+
         if (IsAmazonEngine(engine))
         {
             return normalized switch
@@ -203,6 +208,9 @@ internal static class DeliveredAudioQualityGuard
 
     private static bool IsTidalEngine(string? engine)
         => string.Equals(engine?.Trim(), "tidal", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSoundCloudEngine(string? engine)
+        => string.Equals(engine?.Trim(), SoundCloudQueueItem.EngineId, StringComparison.OrdinalIgnoreCase);
 
     private static string FormatRequestedQuality(string? engine, string? quality)
     {

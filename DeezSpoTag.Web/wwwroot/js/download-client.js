@@ -894,6 +894,11 @@ DeezSpoTag.DownloadClient = {
                     tidalId: metadata?.tidalId || undefined,
                     qobuzId: metadata?.qobuzId || undefined,
                     amazonId: metadata?.amazonId || undefined,
+
+                    // SoundCloud identity from a pasted set row. Carried so the engine downloads that exact
+                    // permalink instead of searching for the track again.
+                    soundcloudId: metadata?.soundcloudId || undefined,
+                    soundcloudUrl: metadata?.soundcloudUrl || undefined,
                     preferredEngine: intentContext.preferredEngine || undefined,
                     quality: intentQuality,
                     contentType: metadataContentType || undefined,

@@ -22,8 +22,23 @@ public static class ExternalLinkClassifier
         @"^https?:\/\/(?:(?:www\.)?deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:track|album|playlist|artist|episode|show)\/[\w-]+|deezer\.page\.link\/[\w-]+)(?:[\?#].*)?$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <remarks>
+    ///     SoundCloud permalinks come in four real shapes, and all four are recognised:
+    ///     <list type="bullet">
+    ///         <item><c>/user/track</c> - a track</item>
+    ///         <item><c>/user/sets/playlist</c> - a set. This was not matched before: the optional
+    ///         <c>/sets/</c> group used to sit after two required path segments, so the real shape, where
+    ///         <c>sets</c> is the second segment, could never reach it.</item>
+    ///         <item><c>/user</c> - a profile</item>
+    ///         <item><c>on.soundcloud.com/&lt;code&gt;</c> - a share link, which may carry a query or
+    ///         fragment and whose code is not length-bounded in practice.</item>
+    ///     </list>
+    ///     Segments allow dots, colons and hyphens so slugs like <c>j.i.</c> and algorithmic set slugs like
+    ///     <c>trending-by-genre:hip-hop</c> both match. The host is still pinned, so a lookalike host
+    ///     cannot match.
+    /// </remarks>
     private static readonly Regex SoundCloudRegex = CreateRegex(
-        @"^(?:https?:\/\/soundcloud\.com\/([\w-]+)\/([\w-]+)(?:\/sets\/([\w-]+))?(?:[\?#].*)?|https?:\/\/on\.soundcloud\.com\/([\w-]{8,}))$",
+        @"^https?:\/\/(?:soundcloud\.com\/[\w.:\-]+(?:\/[\w.:\-]+){1,2}(?:\/[\w.:\-]+)*(?:\?.*)?|on\.soundcloud\.com\/[\w\-]+(?:\?.*)?)$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex TidalRegex = CreateRegex(

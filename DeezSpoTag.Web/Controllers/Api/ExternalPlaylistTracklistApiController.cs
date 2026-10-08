@@ -5,6 +5,7 @@ using HtmlAgilityPack;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using DeezSpoTag.Integrations.Tidal;
+using DeezSpoTag.Services.Download.SoundCloud;
 using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -17,6 +18,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
     private const string BandcampSource = "bandcamp";
+    private const string SoundCloudSource = "soundcloud";
     private const string ArtistType = "artist";
     private const string AlbumType = "album";
     private const string MixType = "mix";
@@ -28,15 +30,18 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private const int DefaultPageSize = 100;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
+    private readonly ISoundCloudClient _soundCloudClient;
     private readonly ILogger<ExternalPlaylistTracklistApiController> _logger;
 
     public ExternalPlaylistTracklistApiController(
         IHttpClientFactory httpClientFactory,
         ITidalAccessTokenProvider tidalAccessTokenProvider,
+        ISoundCloudClient soundCloudClient,
         ILogger<ExternalPlaylistTracklistApiController> logger)
     {
         _httpClientFactory = httpClientFactory;
         _tidalAccessTokenProvider = tidalAccessTokenProvider;
+        _soundCloudClient = soundCloudClient;
         _logger = logger;
     }
 
@@ -103,6 +108,10 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             {
                 payload = await BuildQobuzPlaylistTracklistAsync(id, playlistUrl, cancellationToken);
             }
+            else if (string.Equals(normalizedSource, SoundCloudSource, StringComparison.Ordinal))
+            {
+                payload = await BuildSoundCloudSetTracklistAsync(playlistUrl, cancellationToken);
+            }
             else
             {
                 payload = await BuildBandcampAlbumTracklistAsync(playlistUrl, cancellationToken);
@@ -136,6 +145,180 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistUrl));
             return StatusCode(500, new { available = false, error = "Failed to load external playlist." });
         }
+    }
+
+    /// <summary>
+    ///     Picks the album title for a SoundCloud row, preferring the distributor's own declaration.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <c>publisher_metadata.album_title</c> is the only album SoundCloud ever publishes, and only
+    ///         distributor-supplied tracks carry it - a plain upload has none, and neither does an algorithmic
+    ///         discover page's set, whose title is a genre rather than a release.
+    ///     </para>
+    ///     <para>
+    ///         <c>Album</c> is the fallback for a user-owned set, where the containing set genuinely is what
+    ///         the track was published inside. It is not used for a discover page, because that would stamp
+    ///         the genre across every row.
+    ///     </para>
+    /// </remarks>
+    private static string ResolveSoundCloudAlbumTitle(SoundCloudTrack track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.PublisherAlbumTitle))
+        {
+            return track.PublisherAlbumTitle.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(track.Album) ? string.Empty : track.Album.Trim();
+    }
+
+    /// <summary>
+    ///     Builds a SoundCloud set as the endpoint's existing tracklist shape.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Returns the same field names the other sources return, so the Tracklist page needs no
+    ///         SoundCloud-specific rendering. The SoundCloud identity is added on top as
+    ///         <c>soundcloudId</c>/<c>soundcloudUrl</c>, which is what lets a queued row be handed straight to
+    ///         the SoundCloud engine instead of being re-resolved.
+    ///     </para>
+    ///     <para>
+    ///         Nothing here carries authorization. The per-track authorization token stays inside the engine;
+    ///         exposing it through a tracklist response would put a per-track secret in the browser.
+    ///     </para>
+    /// </remarks>
+    private async Task<object?> BuildSoundCloudSetTracklistAsync(
+        string setUrl,
+        CancellationToken cancellationToken)
+    {
+        SoundCloudSet set;
+        try
+        {
+            set = await _soundCloudClient.ResolveSetAsync(setUrl, cancellationToken);
+        }
+        catch (SoundCloudInvalidUrlException)
+        {
+            // A URL that is not a SoundCloud set is a caller mistake, reported through the endpoint's
+            // existing safe shape rather than as a server error.
+            return null;
+        }
+        catch (SoundCloudException ex)
+        {
+            // Any SoundCloud failure the reader could have caused - a dead link, a set that has gone private,
+            // a page with no playlist hydration, a client-id discovery failure - is reported through the
+            // endpoint's existing safe unavailable shape rather than as a server error. A 500 would tell the
+            // reader the endpoint is broken when the truth is that this particular URL cannot be resolved.
+            if (ex is not (SoundCloudUnavailableException or SoundCloudShortLinkException or SoundCloudHydrationException
+                or SoundCloudClientIdException or SoundCloudNoStreamException or SoundCloudAuthenticationException))
+            {
+                throw;
+            }
+
+            _logger.LogInformation(
+                "SoundCloud set {Url} is unavailable: {Reason} {Message}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(setUrl),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ex.Reason),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ex.Message));
+            return null;
+        }
+
+        if (set.Tracks.Count == 0)
+        {
+            return null;
+        }
+
+        var tracks = new List<object>();
+        var position = 0;
+        foreach (var track in set.Tracks)
+        {
+            position++;
+
+            // A track with no permalink could not be downloaded later, so it is reported as an unavailable
+            // row rather than queued as something that would fail at download time.
+            if (string.IsNullOrWhiteSpace(track.PermalinkUrl))
+            {
+                tracks.Add(new
+                {
+                    id = track.Id.ToString(CultureInfo.InvariantCulture),
+                    title = string.IsNullOrWhiteSpace(track.Title) ? $"Track {position}" : track.Title,
+                    available = false,
+                    track_position = position,
+                    sourceUrl = string.Empty,
+                    soundcloudId = track.Id.ToString(CultureInfo.InvariantCulture),
+                    soundcloudUrl = string.Empty
+                });
+                continue;
+            }
+
+            var durationSeconds = track.DurationMs > 0 ? (int)Math.Round(track.DurationMs / 1000d) : 0;
+
+            // The album title is whatever the distributor declared, and nothing else. SoundCloud has no
+            // album concept of its own, and a set title is not an album: on an algorithmic /discover page it
+            // is a genre name, and labelling every row "Trap" would be worse than saying nothing. So a track
+            // whose publisher supplied no title gets a blank album rather than an invented one.
+            var albumTitle = ResolveSoundCloudAlbumTitle(track);
+
+            // The track's own artwork. A /discover stub carries none, but the hydrate step that expands the
+            // stubs recovers each track's real artwork_url, so this is per track rather than the set's.
+            // The set's cover is only a last resort for a track that genuinely publishes none.
+            var rowCover = !string.IsNullOrWhiteSpace(track.ArtworkUrl)
+                ? track.ArtworkUrl
+                : set.ArtworkUrl ?? string.Empty;
+
+            tracks.Add(new
+            {
+                id = track.Id.ToString(CultureInfo.InvariantCulture),
+                title = string.IsNullOrWhiteSpace(track.Title) ? $"Track {position}" : track.Title,
+                duration = durationSeconds,
+                durationMs = track.DurationMs,
+                track_position = position,
+                link = track.PermalinkUrl,
+                sourceUrl = track.PermalinkUrl,
+                isrc = track.Isrc ?? string.Empty,
+                soundcloudId = track.Id.ToString(CultureInfo.InvariantCulture),
+                soundcloud_id = track.Id.ToString(CultureInfo.InvariantCulture),
+                soundcloudUrl = track.PermalinkUrl,
+                soundcloud_url = track.PermalinkUrl,
+                artist = new { id = string.Empty, name = track.Artist },
+                // "title", not "name": the shared tracklist renderer reads album.title for every source, and
+                // emitting "name" here rendered every SoundCloud row's album column as "Unknown".
+                // "cover_medium" is the field the row renderer reads for the per-row thumbnail; the other four
+                // spellings are the header's. Emitting only those left every SoundCloud row without artwork,
+                // which is the one thing that made this list look unlike the rest of the app.
+                album = new
+                {
+                    id = string.Empty,
+                    title = albumTitle,
+                    name = albumTitle,
+                    cover_medium = rowCover,
+                    cover_big = rowCover,
+                    cover_xl = rowCover,
+                    picture_big = rowCover,
+                    picture_xl = rowCover
+                },
+                genre = track.Genre ?? string.Empty
+            });
+        }
+
+        var setTitle = string.IsNullOrWhiteSpace(set.Title) ? "SoundCloud Set" : set.Title;
+        return new
+        {
+            id = set.Id.ToString(CultureInfo.InvariantCulture),
+            title = setTitle,
+
+            // The curator's own blurb. Sent as an empty string rather than omitted so the header's blank state
+            // is the viewer's decision, not a missing field.
+            description = set.Description ?? string.Empty,
+            cover_big = set.ArtworkUrl ?? string.Empty,
+            cover_xl = set.ArtworkUrl ?? string.Empty,
+            picture_big = set.ArtworkUrl ?? string.Empty,
+            picture_xl = set.ArtworkUrl ?? string.Empty,
+            link = set.PermalinkUrl,
+            sourceUrl = set.PermalinkUrl,
+            creator = new { name = string.IsNullOrWhiteSpace(set.Artist) ? "SoundCloud" : set.Artist },
+            nb_tracks = set.Tracks.Count,
+            tracks
+        };
     }
 
     private async Task<object?> BuildTidalPlaylistTracklistAsync(
@@ -1883,6 +2066,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             TidalSource => TidalSource,
             QobuzSource => QobuzSource,
             BandcampSource => BandcampSource,
+            SoundCloudSource => SoundCloudSource,
             _ => string.Empty
         };
     }

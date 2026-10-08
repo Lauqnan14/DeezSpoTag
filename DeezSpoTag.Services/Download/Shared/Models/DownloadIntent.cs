@@ -15,6 +15,20 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string QobuzId { get; set; } = "";
     public string TidalId { get; set; } = "";
     public string AmazonId { get; set; } = "";
+
+    /// <summary>
+    ///     Gets or sets the SoundCloud track id, when the request carries one.
+    /// </summary>
+    /// <remarks>
+    ///     Carried so a SoundCloud download keeps its identity through retries and cross-engine fallback. The
+    ///     permalink is the authoritative value: a SoundCloud id cannot be turned back into a URL, because the
+    ///     path carries the uploader and track slugs rather than the numeric id.
+    /// </remarks>
+    public string SoundCloudId { get; set; } = "";
+
+    /// <summary>Gets or sets the exact SoundCloud permalink, when the request carries one.</summary>
+    public string SoundCloudUrl { get; set; } = "";
+
     public string DeezerAlbumId { get; set; } = "";
     public string DeezerArtistId { get; set; } = "";
     public string Isrc { get; set; } = "";

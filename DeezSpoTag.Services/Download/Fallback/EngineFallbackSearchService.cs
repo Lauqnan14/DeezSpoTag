@@ -30,7 +30,15 @@ public sealed record EngineFallbackSearchRequest(
     string Language,
     string? MediaUserToken,
     string UserCountry,
-    bool FallbackSearchEnabled);
+    bool FallbackSearchEnabled,
+    /// <summary>
+    ///     The SoundCloud permalink, when the item already carries one.
+    /// </summary>
+    /// <remarks>
+    ///     Optional and trailing so every existing caller keeps compiling. A step that arrives with an exact
+    ///     SoundCloud URL reuses it rather than searching for a different track.
+    /// </remarks>
+    string? SoundCloudUrl = null);
 
 public sealed record EngineFallbackSearchResult(
     string? ResolvedUrl,
@@ -95,6 +103,7 @@ public sealed class EngineFallbackSearchService
     private readonly TidalDownloadService? _tidalDownloadService;
     private readonly IAmazonFallbackTrackResolver? _amazonFallbackTrackResolver;
     private readonly IAppleAtmosCapabilityResolver? _appleAtmosCapabilityResolver;
+    private readonly SoundCloudDownloadService? _soundCloudDownloadService;
     private readonly ILogger<EngineFallbackSearchService> _logger;
 
     public EngineFallbackSearchService(
@@ -103,7 +112,8 @@ public sealed class EngineFallbackSearchService
         QobuzTrackResolver? qobuzTrackResolver = null,
         TidalDownloadService? tidalDownloadService = null,
         IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null,
-        IAppleAtmosCapabilityResolver? appleAtmosCapabilityResolver = null)
+        IAppleAtmosCapabilityResolver? appleAtmosCapabilityResolver = null,
+        SoundCloudDownloadService? soundCloudDownloadService = null)
     {
         _appleCatalogService = appleCatalogService;
         _logger = logger;
@@ -111,6 +121,10 @@ public sealed class EngineFallbackSearchService
         _tidalDownloadService = tidalDownloadService;
         _amazonFallbackTrackResolver = amazonFallbackTrackResolver;
         _appleAtmosCapabilityResolver = appleAtmosCapabilityResolver;
+
+        // Optional so a host that registers this service without the SoundCloud engine still resolves it,
+        // and a SoundCloud step simply resolves to nothing rather than failing the whole fallback walk.
+        _soundCloudDownloadService = soundCloudDownloadService;
     }
 
     public async Task<EngineFallbackSearchResult> ResolveAsync(
@@ -204,6 +218,56 @@ public sealed class EngineFallbackSearchService
         }
 
         return new EngineFallbackSearchResult(null, "unresolved");
+    }
+
+    /// <summary>
+    ///     Resolves a SoundCloud fallback step to a permalink.
+    /// </summary>
+    /// <remarks>
+    ///     An exact permalink already on the request wins without a search, so a step that carries one is not
+    ///     re-resolved to a different track. Otherwise the download service runs the search and applies the
+    ///     shared candidate validator, which is the same authority every other engine's fallback search uses.
+    ///     A step with nothing acceptable resolves to null and is recorded as unresolved, so the coordinator
+    ///     moves on rather than requeueing a track that will fail again.
+    /// </remarks>
+    private async Task<string?> ResolveSoundCloudUrlAsync(
+        EngineFallbackSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_soundCloudDownloadService == null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.SoundCloudUrl)
+            && SoundCloudHydrationParser.IsSoundCloudTrackUrl(request.SoundCloudUrl))
+        {
+            return request.SoundCloudUrl.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        var durationSeconds = request.DurationMs.HasValue && request.DurationMs.Value > 0
+            ? (int)Math.Round(request.DurationMs.Value / 1000d)
+            : 0;
+
+        var track = await _soundCloudDownloadService.ResolveTrackAsync(
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.Isrc ?? string.Empty,
+            durationSeconds,
+            cancellationToken).ConfigureAwait(false);
+
+        if (track is null || !SoundCloudHydrationParser.IsSoundCloudTrackUrl(track.PermalinkUrl))
+        {
+            return null;
+        }
+
+        return track.PermalinkUrl;
     }
 
     private async Task<string?> ResolveAmazonUrlAsync(
@@ -684,6 +748,7 @@ public sealed class EngineFallbackSearchService
             "amazon" => url.Contains("amazon.", StringComparison.OrdinalIgnoreCase)
                         || url.Contains("music.amazon", StringComparison.OrdinalIgnoreCase),
             QobuzEngine => url.Contains("qobuz.com", StringComparison.OrdinalIgnoreCase),
+            SoundCloudEngine => url.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase),
             _ => false
         };
     }

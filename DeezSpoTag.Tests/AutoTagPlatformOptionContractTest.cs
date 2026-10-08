@@ -58,6 +58,7 @@ public sealed class AutoTagPlatformOptionContractTest
         ("lrclib", typeof(LrclibPlatform), typeof(LrclibConfig)),
         ("musicbrainz", typeof(MusicBrainzPlatform), typeof(MusicBrainzMatchConfig)),
         ("shazam", typeof(ShazamPlatform), typeof(ShazamMatchConfig)),
+        ("soundcloud", typeof(SoundcloudPlatform), typeof(SoundcloudMatchConfig)),
     ];
 
     [Fact]

@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.SoundCloud;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Matching;
 using DeezSpoTag.Services.Metadata.Qobuz;
@@ -17,12 +18,27 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class TrackIdentityResolver : ITrackIdentityResolver
 {
-    private const string Spotify = "spotify";
-    private const string Deezer = "deezer";
-    private const string Apple = "apple";
-    private const string Qobuz = "qobuz";
-    private const string Tidal = "tidal";
-    private const string Amazon = "amazon";
+    /// <summary>
+    ///     The six engine ids are aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These were private byte-identical copies. This resolver decides which engine a track id
+    ///     belongs to and then resolves it, so a copy that drifted from the vocabulary the stored
+    ///     columns were written with would classify every id as unknown and resolve nothing. The
+    ///     short names are kept because this file uses them throughout; the value is defined once.
+    /// </remarks>
+    private const string Spotify = DownloadTagSourceHelper.SpotifySource;
+
+    private const string Deezer = DownloadTagSourceHelper.DeezerSource;
+
+    private const string Apple = DownloadTagSourceHelper.AppleSource;
+
+    private const string Qobuz = DownloadTagSourceHelper.QobuzSource;
+
+    private const string Tidal = DownloadTagSourceHelper.TidalSource;
+
+    private const string Amazon = DownloadTagSourceHelper.AmazonSource;
+    private const string SoundCloud = "soundcloud";
     private const string DefaultStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly TimeSpan ProviderResolveTimeout = TimeSpan.FromSeconds(3);
@@ -30,6 +46,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private static readonly TimeSpan AppleResolveTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AppleIsrcResolveTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan SpotifyResolveTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan SoundCloudResolveTimeout = TimeSpan.FromSeconds(15);
     private static readonly MemoryCache AppleIdentityCache = new(new MemoryCacheOptions { SizeLimit = 512 });
 
     private readonly ISpotifyIdResolver _spotifyIdResolver;
@@ -40,6 +57,11 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly DeezerClient _deezerClient;
+
+    /// <summary>
+    ///     Optional so a deployment without the SoundCloud engine still resolves every other platform.
+    /// </summary>
+    private readonly ISoundCloudClient? _soundCloudClient;
     private readonly ILogger<TrackIdentityResolver> _logger;
 
     public TrackIdentityResolver(
@@ -51,6 +73,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         AppleMusicCatalogService appleCatalogService,
         AuthenticatedDeezerService authenticatedDeezerService,
         DeezerClient deezerClient,
+        ISoundCloudClient? soundCloudClient,
         ILogger<TrackIdentityResolver> logger)
     {
         _spotifyIdResolver = spotifyIdResolver;
@@ -61,6 +84,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         _appleCatalogService = appleCatalogService;
         _authenticatedDeezerService = authenticatedDeezerService;
         _deezerClient = deezerClient;
+        _soundCloudClient = soundCloudClient;
         _logger = logger;
     }
 
@@ -185,6 +209,86 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             && !string.IsNullOrWhiteSpace(state.DeezerId))
         {
             await HydrateDeezerIsrcAsync(state, cancellationToken);
+        }
+
+        if (source == SoundCloud
+            && (string.IsNullOrWhiteSpace(state.Isrc)
+                || string.IsNullOrWhiteSpace(state.Title)
+                || string.IsNullOrWhiteSpace(state.Artist)))
+        {
+            await HydrateSoundCloudMetadataAsync(state, request.SourceUrl, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    ///     Populates source metadata from a SoundCloud track so Deezer resolution has something to work with.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This only fills the shared identity state. It deliberately does not resolve Deezer itself:
+    ///         <see cref="ResolveDeezerAsync" /> already performs the ISRC lookup before the metadata fallback,
+    ///         and that ordering must not be duplicated here.
+    ///     </para>
+    ///     <para>
+    ///         Artist comes from <see cref="SoundCloudTrack.PreferredArtist" />, so the recording artist
+    ///         outranks the uploader handle. <c>release</c> is not read: SoundCloud's <c>release_title</c> is the
+    ///         track title, not an album, so treating it as one would reject valid Deezer candidates.
+    ///     </para>
+    /// </remarks>
+    private async Task HydrateSoundCloudMetadataAsync(
+        IdentityState state,
+        string? sourceUrl,
+        CancellationToken cancellationToken)
+    {
+        if (_soundCloudClient is null || string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return;
+        }
+
+        try
+        {
+            using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            providerTimeout.CancelAfter(SoundCloudResolveTimeout);
+
+            var track = await _soundCloudClient
+                .ResolveTrackAsync(sourceUrl, providerTimeout.Token)
+                .ConfigureAwait(false);
+
+            if (track is null)
+            {
+                return;
+            }
+
+            state.Title ??= NullIfBlank(track.Title);
+            state.Artist ??= NullIfBlank(track.PreferredArtist);
+            state.Isrc ??= NullIfBlank(track.Isrc);
+            state.DurationMs ??= track.DurationMs > 0 ? track.DurationMs : null;
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Hydrated SoundCloud source {Url} as urn={Urn} title={Title} artist={Artist} isrc={Isrc}",
+                    SoundCloudUrlRedactor.Redact(sourceUrl),
+                    track.Urn,
+                    track.Title,
+                    track.PreferredArtist,
+                    string.IsNullOrEmpty(track.Isrc) ? "(none)" : "(present)");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (SoundCloudException ex)
+        {
+            // A SoundCloud outage must not fail the whole resolution, and the reason is worth distinguishing:
+            // an unreachable provider and a URL that resolves to no track leave the state empty either way, and
+            // the downstream Deezer resolution then reports unresolved instead of guessing. Only the domain's
+            // own failures are absorbed, so a programming error still surfaces.
+            _logger.LogDebug(
+                ex,
+                "Central identity resolver could not hydrate SoundCloud source metadata ({Reason}).",
+                ex.Reason);
         }
     }
 

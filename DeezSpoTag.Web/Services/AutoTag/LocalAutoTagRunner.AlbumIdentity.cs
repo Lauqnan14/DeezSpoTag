@@ -50,7 +50,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var fullPath = Path.GetFullPath(candidate)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             var leaf = Path.GetFileName(fullPath);
-            if (Regex.IsMatch(leaf, "^CD\\d+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            if (Regex.IsMatch(leaf, "^CD\\d+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout))
             {
                 fullPath = Path.GetDirectoryName(fullPath)?.TrimEnd(
                     Path.DirectorySeparatorChar,
@@ -821,7 +821,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 .Where(path => Regex.IsMatch(
                     Path.GetFileName(path),
                     "^CD\\d+$",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)));
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                    RegexTimeout)));
             siblings = seedDirectories
                 .SelectMany(Directory.EnumerateFiles)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
@@ -1059,6 +1060,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             "musicbrainz" => Guid.TryParse(normalizedValue, out _),
             "spotify" => normalizedValue.Length == 22 && normalizedValue.All(char.IsLetterOrDigit),
             "deezer" or "apple" or "itunes" or "audiomack" or "shazam" or "boomplay" or "amazon" or "discogs" => normalizedValue.All(char.IsDigit),
+            // A SoundCloud track identity is a URN, so it is never a bare number; anything else is not a valid
+            // release id for this provider.
+            "soundcloud" => normalizedValue.StartsWith("soundcloud:", StringComparison.Ordinal),
             _ => true
         };
     }

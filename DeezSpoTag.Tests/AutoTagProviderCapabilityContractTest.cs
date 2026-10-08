@@ -970,6 +970,7 @@ public sealed class AutoTagProviderCapabilityContractTest
             new BandcampPlatform(environment),
             new BpmSupremePlatform(environment),
             new AudiomackPlatform(environment),
+            new SoundcloudPlatform(environment),
             new ItunesPlatform(environment),
             new MusixmatchPlatform(environment),
             new LrclibPlatform(environment),

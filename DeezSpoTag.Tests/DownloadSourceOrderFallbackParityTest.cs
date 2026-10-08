@@ -62,8 +62,12 @@ public sealed class DownloadSourceOrderFallbackParityTest
         "qobuz|5",
         "tidal|HIGH",
         "deezer|3",
+        "soundcloud|HQ",
+        "amazon|OPUS",
         "deezer|1",
-        "tidal|LOW"
+        "soundcloud|SQ",
+        "tidal|LOW",
+        "soundcloud|LQ"
     };
 
     /// <summary>

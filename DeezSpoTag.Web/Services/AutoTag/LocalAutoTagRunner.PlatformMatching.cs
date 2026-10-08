@@ -836,6 +836,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     context.MatchingConfig,
                     LoadConfig(context.Config.Custom, AudiomackPlatform, new AudiomackMatchConfig()),
                     token);
+            case SoundcloudPlatform:
+                return await _soundcloudMatcher.MatchAsync(
+                    info,
+                    context.MatchingConfig,
+                    LoadConfig(context.Config.Custom, SoundcloudPlatform, new SoundcloudMatchConfig()),
+                    token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:

@@ -17,6 +17,7 @@ public class PlatformRegistryApiController : ControllerBase
     private const string QobuzPlatform = "qobuz";
     private const string TidalPlatform = "tidal";
     private const string SoulseekPlatform = "soulseek";
+    private const string SoundCloudPlatform = "soundcloud";
     private const string BoomplayPlatform = "boomplay";
     private const string NavidromePlatform = MediaServerTargetServices.Navidrome;
     private const string YouTubeMusicPlatform = "ytmusic";
@@ -32,6 +33,7 @@ public class PlatformRegistryApiController : ControllerBase
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
+        SoundCloudPlatform,
         "discogs",
         LastFmPlatform,
         BpmSupremePlatform,
@@ -67,7 +69,15 @@ public class PlatformRegistryApiController : ControllerBase
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
-        "beatport"
+        BoomplayPlatform,
+
+        // SoundCloud is listed so its connection state appears on the side panel, matching every other
+        // platform that has credentials here. It does NOT mean the engine needs them: public SoundCloud
+        // tracks download without any token. A saved token only adds account-accessible private tracks and
+        // the Go+ hq stream, and the sidebar is where that optional state belongs.
+        SoundCloudPlatform,
+        "beatport",
+        YouTubeMusicPlatform
     };
 
     private static readonly Dictionary<string, string> LoginTabMap = new(StringComparer.OrdinalIgnoreCase)
@@ -79,6 +89,7 @@ public class PlatformRegistryApiController : ControllerBase
         [QobuzPlatform] = "qobuz-login",
         [TidalPlatform] = "tidal-login",
         [SoulseekPlatform] = "soulseek-login",
+        [SoundCloudPlatform] = "soundcloud-login",
         ["discogs"] = "discogs-login",
         [LastFmPlatform] = "lastfm-login",
         [BpmSupremePlatform] = "bpmsupreme-login",
@@ -267,6 +278,17 @@ public class PlatformRegistryApiController : ControllerBase
         if (string.Equals(platformId, BetterLyricsPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return "/images/icons/better-lyrics.png";
+        }
+        if (string.Equals(platformId, YouTubeMusicPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/icons/youtube-music.png";
+        }
+
+        // SoundCloud falls through to the generic "/images/icons/{id}.png" rule, which resolves to the
+        // existing /images/icons/soundcloud.png. Named explicitly so the asset it depends on is visible here.
+        if (string.Equals(platformId, SoundCloudPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/icons/soundcloud.png";
         }
 
         return $"/images/icons/{platformId}.png";

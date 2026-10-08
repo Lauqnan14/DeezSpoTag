@@ -1937,6 +1937,17 @@ globalThis.DeezSpoTag = {
             'soulseek',
             'slskd',
             authData.soulseek?.status || 'offline');
+
+        // SoundCloud reports connected only when a saved token actually validated. Without one the engine
+        // still downloads public tracks, so the panel shows it as not connected rather than as a problem -
+        // the token only adds private tracks and the Go+ hq stream.
+        this.applyConnectedFlagState(
+            authData.soundcloud?.connected === true,
+            connected,
+            platformStates,
+            'soundcloud',
+            'oauth',
+            authData.soundcloud?.status || 'offline');
     },
 
     applySimpleCredentialState(hasCredential, connected, platformStates, platform, detail) {

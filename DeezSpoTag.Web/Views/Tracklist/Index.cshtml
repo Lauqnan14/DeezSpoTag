@@ -1678,7 +1678,8 @@ const deezerMatchedExternalSources = new Set([
     'tidal',
     'qobuz',
     'amazon',
-    'bandcamp'
+    'bandcamp',
+    'soundcloud'
 ]);
 
 function isSpotifyArtistTopTracksView() {
@@ -4543,6 +4544,8 @@ function buildSpotifyTrackResolveRequestFromRow(row) {
         appleId: String(row.dataset.availabilityAppleId || '').trim(),
         qobuzId: String(row.dataset.availabilityQobuzId || checkbox?.dataset.qobuzId || '').trim(),
         amazonId: String(row.dataset.availabilityAmazonId || checkbox?.dataset.amazonId || '').trim(),
+        soundcloudId: String(checkbox?.dataset.soundcloudId || '').trim(),
+        soundcloudUrl: String(checkbox?.dataset.soundcloudUrl || '').trim(),
         index: parseInt(row.dataset.trackIndex || '-1', 10),
         title: row.dataset.availabilityTitle || checkbox?.dataset.trackTitle || '',
         artist: row.dataset.availabilityArtist || checkbox?.dataset.trackArtist || '',
@@ -6186,7 +6189,13 @@ function resolveTrackPlatformIds(track, spotifyIdOverride = '') {
         appleId: firstTrackValue(track, appleIdKeys),
         tidalId: firstTrackValue(track, tidalIdKeys),
         qobuzId: firstTrackValue(track, qobuzIdKeys),
-        amazonId: firstTrackValue(track, amazonIdKeys)
+        amazonId: firstTrackValue(track, amazonIdKeys),
+
+        // SoundCloud identity, carried so a row from a pasted set keeps its exact permalink instead of
+        // being re-resolved later. Both the id and the URL are read because the permalink is what the engine
+        // needs and the id is what the queue displays.
+        soundcloudId: firstTrackValue(track, ['soundcloudId', 'soundcloud_id']),
+        soundcloudUrl: firstTrackValue(track, ['soundcloudUrl', 'soundcloud_url'])
     };
 }
 
@@ -6695,6 +6704,8 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
 	                           data-tidal-id="${escapeHtml(platformIds.tidalId || '')}"
 	                           data-qobuz-id="${escapeHtml(platformIds.qobuzId || '')}"
 	                           data-amazon-id="${escapeHtml(platformIds.amazonId || '')}"
+	                           data-soundcloud-id="${escapeHtml(platformIds.soundcloudId || '')}"
+	                           data-soundcloud-url="${escapeHtml(platformIds.soundcloudUrl || '')}"
 	                           data-track-link="${track.link || track.sourceUrl || track.appleUrl || ''}"
 	                           data-track-title="${escapeHtml(track.title || '')}"
 	                           data-track-artist="${escapeHtml(artistName || '')}"

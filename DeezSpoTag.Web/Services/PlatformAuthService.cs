@@ -19,6 +19,12 @@ public class PlatformAuthState
     public TidalAuth? Tidal { get; set; }
     public AmazonMusicAuth? AmazonMusic { get; set; }
     public SoulseekAuth? Soulseek { get; set; }
+
+    /// <summary>
+    ///     SoundCloud is optional. Public tracks resolve and download without it; a saved token only adds
+    ///     accessible private tracks and the advertised Go+ hq stream.
+    /// </summary>
+    public SoundCloudAuth? SoundCloud { get; set; }
     public BoomplayAuth? Boomplay { get; set; }
     public BeatportAuth? Beatport { get; set; }
 }
@@ -153,6 +159,31 @@ public class SoulseekAuth
     public DateTimeOffset? CheckedAt { get; set; }
 }
 
+/// <summary>
+///     The saved SoundCloud OAuth token and its last validation state.
+/// </summary>
+/// <remarks>
+///     The token is never returned by the public auth API or written to a log. Only the connection state is
+///     exposed, which is what the login UI renders.
+/// </remarks>
+public class SoundCloudAuth
+{
+    /// <summary>Gets or sets the OAuth token. Protected at rest and never exposed publicly.</summary>
+    public string? OAuthToken { get; set; }
+
+    /// <summary>Gets or sets whether the last validation succeeded.</summary>
+    public bool? CredentialsValid { get; set; }
+
+    /// <summary>Gets or sets the last connection state, matching the other platforms' vocabulary.</summary>
+    public string? LastStatus { get; set; }
+
+    /// <summary>Gets or sets a safe message from the last check.</summary>
+    public string? LastError { get; set; }
+
+    /// <summary>Gets or sets when the token was last checked.</summary>
+    public DateTimeOffset? CheckedAt { get; set; }
+}
+
 public class BoomplayAuth
 {
     public string? Cookie { get; set; }
@@ -193,6 +224,12 @@ public class PlatformAuthService
     private const string TidalProtectionPurpose = "DeezSpoTag.PlatformAuth.Tidal";
     private const string AmazonMusicProtectionPurpose = "DeezSpoTag.PlatformAuth.AmazonMusic";
     private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
+
+    /// <summary>
+    ///     A distinct protection purpose, so a SoundCloud token is encrypted under its own key. Sharing one
+    ///     with another platform would mean a change to that platform's key silently invalidating this token.
+    /// </summary>
+    private const string SoundCloudProtectionPurpose = "DeezSpoTag.PlatformAuth.SoundCloud";
     private const string BoomplayProtectionPurpose = "DeezSpoTag.PlatformAuth.Boomplay";
     private const string NavidromeProtectionPurpose = "DeezSpoTag.PlatformAuth.Navidrome";
     private const string BeatportProtectionPurpose = "DeezSpoTag.PlatformAuth.Beatport";
@@ -209,6 +246,7 @@ public class PlatformAuthService
     private const string BeatportFileName = "beatport.json";
     private const string AmazonMusicFileName = "amazonmusic.json";
     private const string SoulseekFileName = "soulseek.json";
+    private const string SoundCloudFileName = "soundcloud.json";
     private const string BoomplayFileName = "boomplay.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
     private const string AutotagDirectory = "autotag";
@@ -227,6 +265,7 @@ public class PlatformAuthService
     private readonly ProtectedCredentialFileStore _beatportCredentialStore;
     private readonly ProtectedCredentialFileStore _amazonMusicCredentialStore;
     private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
+    private readonly ProtectedCredentialFileStore _soundCloudCredentialStore;
     private readonly ProtectedCredentialFileStore _boomplayCredentialStore;
     private readonly ProtectedCredentialFileStore _navidromeCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
@@ -272,6 +311,7 @@ public class PlatformAuthService
         BeatportFileName,
         AmazonMusicFileName,
         SoulseekFileName,
+        SoundCloudFileName,
         BoomplayFileName
     };
     private readonly JsonSerializerOptions _jsonOptions = new()
@@ -306,6 +346,9 @@ public class PlatformAuthService
         _soulseekCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             SoulseekProtectionPurpose);
+        _soundCloudCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            SoundCloudProtectionPurpose);
         _boomplayCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             BoomplayProtectionPurpose);
@@ -386,6 +429,7 @@ public class PlatformAuthService
         await SaveBeatportNoLockAsync(state.Beatport);
         await SaveAmazonMusicNoLockAsync(state.AmazonMusic);
         await SaveSoulseekNoLockAsync(state.Soulseek);
+        await SaveSoundCloudNoLockAsync(state.SoundCloud);
         await SaveBoomplayNoLockAsync(state.Boomplay);
         TryRetireLegacyAggregateStateNoLock();
         LogAuthStatus(state);
@@ -410,6 +454,7 @@ public class PlatformAuthService
             Beatport = await LoadBeatportNoLockAsync(),
             AmazonMusic = await LoadAmazonMusicNoLockAsync(),
             Soulseek = await LoadSoulseekNoLockAsync(),
+            SoundCloud = await LoadSoundCloudNoLockAsync(),
             Boomplay = await LoadBoomplayNoLockAsync()
         };
 
@@ -609,6 +654,68 @@ public class PlatformAuthService
 
         await _soulseekCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Soulseek");
+    }
+
+    private async Task<SoundCloudAuth?> LoadSoundCloudNoLockAsync()
+    {
+        var path = GetPlatformFilePath(SoundCloudFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _soundCloudCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "SoundCloud");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<SoundCloudAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The path is logged but never the contents: a failure here must not print the token.
+            _logger.LogWarning(ex, "Failed to load protected SoundCloud auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     Saves the SoundCloud section, preserving an existing token when the replacement is blank.
+    /// </summary>
+    /// <remarks>
+    ///     A status-only save arrives from the connection check with no token in the body. Writing that blank
+    ///     over the stored token would silently disconnect a working account, so an empty replacement is
+    ///     treated as "keep what is saved" rather than "clear it". Clearing is an explicit delete instead.
+    /// </remarks>
+    private async Task SaveSoundCloudNoLockAsync(SoundCloudAuth? auth)
+    {
+        var path = GetPlatformFilePath(SoundCloudFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(auth.OAuthToken))
+        {
+            var existing = await LoadSoundCloudNoLockAsync();
+            if (!string.IsNullOrWhiteSpace(existing?.OAuthToken))
+            {
+                auth.OAuthToken = existing.OAuthToken;
+            }
+            else
+            {
+                // Nothing saved and nothing supplied: there is no state worth persisting.
+                TryDeletePlatformSectionNoLock(path);
+                return;
+            }
+        }
+
+        await _soundCloudCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "SoundCloud");
     }
 
     private async Task<BoomplayAuth?> LoadBoomplayNoLockAsync()

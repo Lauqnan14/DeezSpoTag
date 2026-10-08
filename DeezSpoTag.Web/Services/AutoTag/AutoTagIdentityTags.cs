@@ -102,7 +102,8 @@ internal static class AutoTagIdentityTags
         "shazam",
         "qobuz",
         "tidal",
-        "amazon"
+        "amazon",
+        "soundcloud"
     ];
 
     private const string MusicBrainzProvider = "musicbrainz";

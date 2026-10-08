@@ -1,0 +1,40 @@
+{
+  "hydratable": "playlist",
+  "data": {
+    "hydratable": "playlist",
+    "kind": "playlist",
+    "id": 7,
+    "title": "Test Set",
+    "permalink_url": "https://soundcloud.com/test-artist/sets/test-set",
+    "artwork_url": "https://i1.sndcdn.com/artworks-set-large.jpg",
+    "user": {
+      "username": "test-artist",
+      "display_name": "Test Artist",
+      "permalink_url": "https://soundcloud.com/test-artist"
+    },
+    "tracks": [
+      {
+        "id": 101,
+        "title": "First Track",
+        "duration": 185000,
+        "artwork_url": "https://i1.sndcdn.com/artworks-first.jpg",
+        "publisher_metadata": { "isrc": "USRC17600001" },
+        "user": { "username": "test-artist", "display_name": "Test Artist" }
+      },
+      {
+        "id": 102,
+        "title": "Second Track",
+        "duration": 210000,
+        "publisher_metadata": { "isrc": "USRC17600002" },
+        "user": { "username": "test-artist", "display_name": "Test Artist" }
+      },
+      {
+        "id": 103,
+        "title": "Third Track",
+        "duration": 240000,
+        "publisher_metadata": { "isrc": "USRC17600003" },
+        "user": { "username": "first-guest", "display_name": "First Guest" }
+      }
+    ]
+  }
+}

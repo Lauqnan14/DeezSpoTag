@@ -143,7 +143,8 @@ public sealed class ProviderIdentityContractTest
         string[] expected =
         [
             "musicbrainz", "beatport", "discogs", "traxsource", "bandcamp", "itunes",
-            "spotify", "deezer", "boomplay", "audiomack", "shazam", "qobuz", "tidal", "amazon"
+            "spotify", "deezer", "boomplay", "audiomack", "shazam", "qobuz", "tidal", "amazon",
+            "soundcloud"
         ];
 
         foreach (var provider in expected)

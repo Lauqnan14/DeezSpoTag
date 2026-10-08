@@ -9,6 +9,7 @@
     var initialTidalAuth = initialPlatformAuthState.Tidal;
     var initialAmazonMusicAuth = initialPlatformAuthState.AmazonMusic;
     var initialSoulseekAuth = initialPlatformAuthState.Soulseek;
+    var initialSoundCloudAuth = initialPlatformAuthState.SoundCloud;
     var initialBoomplayAuth = initialPlatformAuthState.Boomplay;
     var initialQobuzConnected =
         (!string.IsNullOrWhiteSpace(initialQobuzAuth?.AppSecret) || !string.IsNullOrWhiteSpace(initialQobuzAuth?.DownloadSecret))
@@ -31,6 +32,12 @@
     var initialAmazonMusicStatus = initialAmazonMusicConnected ? "Amazon Music session saved" : "Amazon Music is not configured";
     var initialSoulseekName = ResolveDisplayName(initialSoulseekAuth?.Username, "slskd");
     var initialSoulseekStatus = ResolveInitialSoulseekStatus(initialSoulseekAuth, initialSoulseekConnected);
+    // Only a connected account shows this card, and SoundCloud exposes no display name to the API the app
+    // already calls - /me is used solely to decide whether a token is valid. A constant is the same choice
+    // Boomplay and Amazon Music make for the same reason.
+    const string initialSoundCloudName = "SoundCloud account";
+    var initialSoundCloudConnected = initialSoundCloudAuth?.CredentialsValid == true;
+    var initialSoundCloudStatus = ResolveInitialSoundCloudStatus(initialSoundCloudAuth, initialSoundCloudConnected);
     const string initialBoomplayName = "Boomplay account";
     var initialBoomplayStatus = ResolveInitialBoomplayStatus(initialBoomplayAuth, initialBoomplayConnected);
 
@@ -59,6 +66,26 @@
         }
 
         return string.IsNullOrWhiteSpace(auth?.LastError) ? "Soulseek is not configured" : auth.LastError;
+    }
+
+    static string ResolveInitialSoundCloudStatus(SoundCloudAuth? auth, bool connected)
+    {
+        if (connected)
+        {
+            return "Connected. Private tracks your account has access to are available.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(auth?.OAuthToken))
+        {
+            // A token is stored but SoundCloud did not accept the last check. This is the state that used to
+            // be invisible: the pane rendered nothing at all, so the reader could not tell a stale token from
+            // no token.
+            return string.IsNullOrWhiteSpace(auth.LastError)
+                ? "A token is saved but has not been checked yet."
+                : auth.LastError!;
+        }
+
+        return "No token saved. Public tracks work without one.";
     }
 
     static string ResolveInitialBoomplayStatus(BoomplayAuth? auth, bool connected)
@@ -130,6 +157,16 @@
         <li class="nav-item">
             <button class="nav-link" id="soulseek-login-tab" data-login-target="soulseek-login" type="button" role="tab" aria-selected="false">
                 <img src="/images/icons/soulseek.png" alt="Soulseek" class="platform-icon" />Soulseek
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="soundcloud-login-tab" data-login-target="soundcloud-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/soundcloud.png" alt="SoundCloud" class="platform-icon" />SoundCloud
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="ytmusic-login-tab" data-login-target="ytmusic-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/youtube-music.png" alt="YouTube Music" class="platform-icon" data-platform-icon="ytmusic" />YouTube Music
             </button>
         </li>
         <li class="nav-item">
@@ -444,6 +481,33 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "soulseekLoggedInInfo", ImageAlt = "Soulseek", ImageSrc = "/images/icons/soulseek.png", ImageCssClass = "h-20 w-20", ButtonId = "soulseekDisconnectBtn", NameId = "soulseekLoggedInName", NameFallback = initialSoulseekName, DetailId = "soulseekLoggedInStatus", DetailText = initialSoulseekStatus, WrapperCssClass = initialSoulseekConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="soundcloud-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header"><i class="material-icons">graphic_eq</i>SoundCloud Token</h3>
+                <div id="soundcloudLoginFormSection" class="@(initialSoundCloudConnected ? "hidden" : "")">
+                    @* The token field is a password input and is never pre-filled from the stored value. A token
+                       echoed back into the page would be visible in page source and in any devtools capture. *@
+                    <p class="text-muted">
+                        Optional. SoundCloud downloads work without a token for public tracks. Saving one also
+                        unlocks the private tracks your account has access to.
+                    </p>
+                    <form id="soundcloudLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">OAuth token</span>
+                            <input type="password" id="soundcloudToken" placeholder="SoundCloud OAuth token" class="w-full" autocomplete="off" />
+                        </label>
+                        @* One button, because saving and checking are the same request to the same endpoint:
+                           the server validates whatever it is given, and treats a blank submission as "re-check
+                           the saved token" rather than as a clear. Splitting them into "Save" and "Check saved
+                           token" gave the reader two controls for one operation. *@
+                        <button class="btn btn-primary action-btn" type="submit">Save token</button>
+                        <p class="text-muted" id="soundcloudStatus">@(!initialSoundCloudConnected ? initialSoundCloudStatus : "")</p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "soundcloudLoggedInInfo", ImageAlt = "SoundCloud", ImageSrc = "/images/icons/soundcloud.png", ImageCssClass = "h-20 w-20", ButtonId = "soundcloudDisconnectBtn", NameId = "soundcloudLoggedInName", NameFallback = initialSoundCloudName, DetailId = "soundcloudLoggedInStatus", DetailText = initialSoundCloudStatus, WrapperCssClass = initialSoundCloudConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
             </div>
         </div>
 
@@ -1572,6 +1636,7 @@ const LOGIN_TAB_PLATFORM_MAP = {
     'qobuz-login': 'qobuz',
     'tidal-login': 'tidal',
     'soulseek-login': 'soulseek',
+    'soundcloud-login': 'soundcloud',
     'discogs-login': 'discogs',
     'lastfm-login': 'lastfm',
     'bpmsupreme-login': 'bpmsupreme',
@@ -1787,6 +1852,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 return connected;
             },
             clear: () => clearSoulseekInputs()
+        },
+        soundcloud: {
+            matches: '/soundcloud',
+            // Reads only the redacted fields. The response never carries the token, and this renderer does
+            // not attempt to display one.
+            render: (data, payload, isConnected, statusElementId) => {
+                const connected = data?.connected === true;
+                renderSoundCloudInfo(data || {});
+                setSoundCloudFormStatus(data || {}, statusElementId);
+                return connected;
+            },
+            clear: () => clearSoundCloudInputs()
         },
         boomplay: {
             matches: '/boomplay',
@@ -2036,6 +2113,28 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('soulseekDisconnectBtn', '/api/platform-auth/soulseek/disconnect', 'soulseekStatus');
+
+    // SoundCloud: one button covers both jobs. A non-empty field is saved; an empty one re-checks whatever is
+    // already stored, because the endpoint treats a blank submission as a check rather than as a clear. The
+    // token is sent once and then cleared from the field, so it is not left sitting in the DOM. The saved state
+    // comes back as a redacted view, which is all this form ever displays.
+    const soundcloudForm = document.getElementById('soundcloudLoginForm');
+    if (soundcloudForm) {
+        soundcloudForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const tokenInput = document.getElementById('soundcloudToken');
+            const token = tokenInput.value.trim();
+
+            await savePlatformAuth('/api/platform-auth/soundcloud', token
+                ? { oauthToken: token }
+                : {}, 'soundcloudStatus', true);
+            tokenInput.value = '';
+        });
+    }
+
+    // The separate "Check saved token" button is gone. Re-checking is the same endpoint as saving, so the
+    // single "Save token" button does both: submit an empty field to re-check what is stored.
+    bindPlatformDisconnect('soundcloudDisconnectBtn', '/api/platform-auth/soundcloud/disconnect', 'soundcloudStatus');
 
     const amazonMusicForm = document.getElementById('amazonMusicLoginForm');
     if (amazonMusicForm) {
@@ -2327,6 +2426,7 @@ function getLoginTabFromLocation() {
             qobuz: 'qobuz-login',
             tidal: 'tidal-login',
             soulseek: 'soulseek-login',
+            soundcloud: 'soundcloud-login',
             discogs: 'discogs-login',
             lastfm: 'lastfm-login',
             bpmsupreme: 'bpmsupreme-login',
@@ -2652,6 +2752,14 @@ async function loadPlatformAuthState() {
         }
         if (data.soulseek) {
             applySoulseekConnectionState(data.soulseek);
+        }
+        if (data.soundcloud) {
+            // Without this the SoundCloud pane rendered blank on load, so a saved-but-rejected token looked
+            // identical to no token at all. The card and the form are toggled from the same flag the server
+            // reports, which keeps the two from disagreeing.
+            setSoundCloudFormStatus(data.soundcloud, 'soundcloudStatus');
+            renderSoundCloudInfo(data.soundcloud);
+            togglePlatformLoginState('soundcloud', data.soundcloud.connected === true);
         }
         if (data.boomplay) {
             document.getElementById('boomplayCookie').placeholder = data.boomplay.cookieSaved
@@ -3170,6 +3278,18 @@ function clearSoulseekInputs() {
 function clearBoomplayInputs() {
     resetFormById('boomplayLoginForm');
     clearElementText('boomplayStatus');
+}
+
+/// <summary>
+///     Clears the SoundCloud form.
+/// </summary>
+/// <remarks>
+///     Resetting the form empties the token field, so a disconnect also removes any token still sitting in the
+///     DOM. Nothing is fetched to repopulate it: the stored token is never read back into the page.
+/// </remarks>
+function clearSoundCloudInputs() {
+    resetFormById('soundcloudLoginForm');
+    clearElementText('soundcloudStatus');
 }
 
 function clearAmazonMusicInputs() {
@@ -4036,6 +4156,27 @@ function renderSoulseekInfo(auth) {
     }
 }
 
+/// <summary>
+///     Renders the SoundCloud connected-state card.
+/// </summary>
+/// <remarks>
+///     Reads only the redacted fields of the public payload: <c>connected</c>, <c>status</c> and
+///     <c>message</c>. There is no code path here that could display a token, because the response does not
+///     contain one.
+/// </remarks>
+function renderSoundCloudInfo(auth) {
+    const nameLabel = document.getElementById('soundcloudLoggedInName');
+    const statusLabel = document.getElementById('soundcloudLoggedInStatus');
+    if (nameLabel) {
+        nameLabel.textContent = 'SoundCloud account';
+    }
+    if (statusLabel) {
+        statusLabel.textContent = auth?.connected === true
+            ? 'Connected. Private tracks your account has access to are available.'
+            : (auth?.message || 'SoundCloud is not connected.');
+    }
+}
+
 function renderBoomplayInfo(auth) {
     const nameLabel = document.getElementById('boomplayLoggedInName');
     const statusLabel = document.getElementById('boomplayLoggedInStatus');
@@ -4060,6 +4201,30 @@ function renderAmazonMusicInfo(auth) {
             ? `${auth.host || 'music.amazon.com'} | ${auth.locale || 'en_US'}`
             : 'Amazon Music is not configured.';
     }
+}
+
+/// <summary>
+///     Renders the SoundCloud connection status from the redacted public payload.
+/// </summary>
+/// <remarks>
+///     Only <c>tokenSaved</c>, <c>connected</c>, <c>status</c>, and <c>message</c> are read. There is no code path
+///     here that could display a token, because the response does not contain one.
+/// </remarks>
+function setSoundCloudFormStatus(auth, statusElementId = 'soundcloudStatus') {
+    const statusLabel = document.getElementById(statusElementId);
+    if (!statusLabel) {
+        return;
+    }
+
+    if (auth?.connected === true) {
+        statusLabel.textContent = 'Connected. Private tracks your account has access to are available.';
+        return;
+    }
+
+    statusLabel.textContent = auth?.message
+        || (auth?.tokenSaved
+            ? 'A token is saved but has not been checked yet.'
+            : 'No token saved. Public tracks work without one.');
 }
 
 function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
@@ -4824,6 +4989,13 @@ async function savePlatformAuth(url, payload, statusElementId, isConnected) {
             } catch {
                 // Keep the generic message for non-JSON responses.
             }
+
+            // A platform that refuses the submission can still return its new redacted state - SoundCloud
+            // answers a rejected token with a 400 carrying the updated view. Painting it is what makes the
+            // pane say why it was refused. Without this the page kept showing its previous state, so a refused
+            // token looked exactly like a save that did nothing.
+            applyRejectedPlatformState(url, failure, payload, statusElementId);
+
             showToast(failureMessage, 'error');
             return;
         }
@@ -5417,6 +5589,18 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
                 return isConnected;
             }
         },
+        // This entry was absent, which is why saving a SoundCloud token appeared to do nothing: the binding
+        // lookup failed, so applyPlatformAuthState stopped after writing the generic "Saved" and never
+        // rendered the card or swapped the form. The platform was registered in the disconnect table only.
+        soundcloud: {
+            matches: '/soundcloud',
+            render: (info, rawPayload, connected, elementId) => {
+                const isConnected = info?.connected === true;
+                renderSoundCloudInfo(info || {});
+                setSoundCloudFormStatus(info || {}, elementId);
+                return isConnected;
+            }
+        },
         boomplay: {
             matches: '/boomplay',
             render: (info, rawPayload, connected, elementId) => {
@@ -5448,6 +5632,7 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         platform === 'qobuz' ? data?.qobuz || payload :
         platform === 'tidal' ? data?.tidal || payload :
         platform === 'boomplay' ? data?.boomplay || payload :
+        platform === 'soundcloud' ? data?.soundcloud || payload :
         data?.soulseek || payload;
     const effectiveConnected = binding.render(payloadForRender, payload, isConnected, statusElementId) ?? isConnected;
     togglePlatformLoginState(platform, effectiveConnected);

@@ -1474,6 +1474,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 LastFmMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.LastFmMatcher>(),
                 BoomplayMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BoomplayMatcher>(),
                 AudiomackMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.AudiomackMatcher>(),
+                SoundcloudMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.SoundcloudMatcher>(),
                 ShazamMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.ShazamMatcher>(),
                 ShazamRecognitionService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>(),
                 AppleLyricsService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleLyricsService>(),
@@ -1521,6 +1522,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BandcampPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BpmSupremePlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.AudiomackPlatform>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.SoundcloudPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.ItunesPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.MusixmatchPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.LrclibPlatform>();
@@ -1548,6 +1550,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BpmSupremeClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BpmSupremeMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.AudiomackMatcher>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.SoundcloudMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.ItunesClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.ItunesMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.SpotifyClient>();

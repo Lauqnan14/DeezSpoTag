@@ -2639,7 +2639,8 @@
         "lrclib",
         "betterlyrics",
         "shazam",
-        "audiomack"
+        "audiomack",
+        "soundcloud"
     ]);
 
     const TECHNICAL_PLATFORM_ORDER_INDEX = Object.freeze(

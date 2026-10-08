@@ -37,6 +37,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string QobuzId { get; set; } = "";
     public string TidalId { get; set; } = "";
     public string AmazonId { get; set; } = "";
+    public string SoundCloudId { get; set; } = "";
     public string LyricsIdentityTitle { get; set; } = "";
     public string LyricsIdentityArtist { get; set; } = "";
     public string LyricsIdentityAlbum { get; set; } = "";
