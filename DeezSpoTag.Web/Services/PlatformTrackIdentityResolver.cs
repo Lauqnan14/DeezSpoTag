@@ -182,7 +182,7 @@ public sealed class PlatformTrackIdentityResolver
         {
             _logger?.LogInformation(
                 "No identity search is wired for {Service}; {Count} track(s) stay unresolved there.",
-                service,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(service),
                 pending.Count);
             return resolved;
         }
@@ -240,7 +240,9 @@ public sealed class PlatformTrackIdentityResolver
         {
             // One track's search failing is that track's problem, not the pass's. Returning null
             // leaves it unresolved and the next pass retries it.
-            _logger?.LogWarning(ex, "Searching {Service} for {Track} failed.", service, track.Name);
+            _logger?.LogWarning(ex, "Searching {Service} for {Track} failed.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(service),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Name));
             return null;
         }
     }

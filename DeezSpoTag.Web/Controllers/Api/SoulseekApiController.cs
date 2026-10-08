@@ -434,9 +434,9 @@ public sealed class SoulseekApiController : ControllerBase
             // page, and it is the expected failure this action used to let escape as an HTTP 500.
             _logger.LogWarning(
                 "Soulseek browse of {RemoteDirectory} from {Peer} was refused: {Reason}",
-                remoteDirectory,
-                peer,
-                ex.Message);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(remoteDirectory),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(peer),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ex.Message));
             return StatusCode(503, new
             {
                 error = ex.Message,
@@ -451,10 +451,10 @@ public sealed class SoulseekApiController : ControllerBase
             // is in it - and the reason code lets the drawer offer Retry honestly.
             _logger.LogWarning(
                 "Soulseek browse of {RemoteDirectory} from {Peer} failed with slskd status {StatusCode}: {Reason}",
-                remoteDirectory,
-                peer,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(remoteDirectory),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(peer),
                 ex.StatusCode,
-                ex.Message);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ex.Message));
             return StatusCode(502, new
             {
                 error = ex.Message,
@@ -1410,7 +1410,7 @@ public sealed class SoulseekApiController : ControllerBase
             // A cover is decoration. Never let it fail the search.
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Could not resolve a catalogue cover for the Soulseek search '{Query}'.", query);
+                _logger.LogDebug(ex, "Could not resolve a catalogue cover for the Soulseek search '{Query}'.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             }
 
             return null;

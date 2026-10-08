@@ -7,11 +7,154 @@ using System.Reflection;
 using DeezSpoTag.Web.Controllers.Api;
 using Microsoft.AspNetCore.Mvc;
 using Xunit;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using DeezSpoTag.Core.Security;
+using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Web.Filters;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class SecurityHardeningGuardrailTest
 {
+    [Theory]
+    [InlineData("DeezSpoTag.Integrations/Soulseek/SlskdClient.cs", "slskd request to {ApiPath}", "apiPath")]
+    [InlineData("DeezSpoTag.Services/Download/Utils/EnhancedPathTemplateProcessor.cs", "Creating artist folder - Track:", "track.Title", "track.Album?.MainArtist?.Name ?? \"NULL\"", "track.MainArtist?.Name ?? \"NULL\"", "artistToUse?.Name ?? \"NULL\"")]
+    [InlineData("DeezSpoTag.Services/Download/Utils/EnhancedPathTemplateProcessor.cs", "GenerateArtistName called with artist:", "artist?.Name ?? \"NULL\"", "normalizedArtistName", "artist?.Id ?? \"NULL\"", "template")]
+    [InlineData("DeezSpoTag.Services/Download/Utils/EnhancedPathTemplateProcessor.cs", "Artist name is empty or 'Unknown'", "normalizedArtistName")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/SoulseekApiController.cs", "Soulseek browse of {RemoteDirectory} from {Peer} was refused:", "remoteDirectory", "peer", "ex.Message")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/SoulseekApiController.cs", "Soulseek browse of {RemoteDirectory} from {Peer} failed with slskd status", "remoteDirectory", "peer", "ex.Message")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/SoulseekApiController.cs", "Could not resolve a catalogue cover for the Soulseek search", "query")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "MusicBrainz artist search failed for", "artistName")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "MusicBrainz artist search returned nothing for", "artistName")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "MusicBrainz artist search for {ArtistName} not corroborated", "artistName")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "MusicBrainz candidate {Mbid} for {ArtistName} shares no album", "candidate.Id", "artistName")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "No MusicBrainz candidate for", "artistName")]
+    [InlineData("DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs", "MusicBrainz matched {ArtistName} to {Mbid}", "artistName", "best.Mbid")]
+    [InlineData("DeezSpoTag.Web/Services/AutoTag/LocalAutoTagRunner.ArtistMetadata.cs", "Explicit language observations unavailable for", "filePath")]
+    [InlineData("DeezSpoTag.Web/Services/LibraryRecommendationService.cs", "Recommendation maintenance failed for", "jobKey")]
+    [InlineData("DeezSpoTag.Web/Services/PlatformTrackIdentityResolver.cs", "No identity search is wired for", "service")]
+    [InlineData("DeezSpoTag.Web/Services/PlatformTrackIdentityResolver.cs", "Searching {Service} for {Track} failed.", "service", "track.Name")]
+    [InlineData("DeezSpoTag.Web/Services/TrackIdentityResolver.cs", "Hydrated SoundCloud source", "SoundCloudUrlRedactor.Redact(sourceUrl)", "track.Urn", "track.Title", "track.PreferredArtist")]
+    public void SecurityFlaggedLogCall_SanitizesEachUntrustedArgument(string path, string message, params string[] arguments)
+    {
+        var source = File.ReadAllText(Path.Combine(ResolveSrcRoot(), path));
+        var start = source.IndexOf(message, StringComparison.Ordinal);
+        Assert.True(start >= 0, "Flagged logging call must remain covered.");
+        var end = source.IndexOf(");", start, StringComparison.Ordinal);
+        var call = source[start..(end + 2)];
+        foreach (var argument in arguments)
+            Assert.Contains("LogSanitizer.OneLine(" + argument + ")", call, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("ordinary artist", "ordinary artist")]
+    [InlineData("first\r\nsecond\tthird", "first  second third")]
+    public void SecurityLogSanitizer_PreservesTextWithoutRecordSeparators(string? input, string expected)
+        => Assert.Equal(expected, LogSanitizer.OneLine(input));
+
+    [Fact]
+    public void SecurityLogSanitizer_LimitsUntrustedText()
+        => Assert.Equal("1234...", LogSanitizer.OneLine("123456", 4));
+
+    [Fact]
+    public void SecurityPathTemplateLog_SanitizesArtistAndTemplateWithoutChangingPath()
+    {
+        var logger = new SecurityCaptureLogger<EnhancedPathTemplateProcessor>();
+        var processor = new EnhancedPathTemplateProcessor(logger);
+        var artist = new Artist("first\r\nFORGED\tartist") { Id = "id\r\nFORGED" };
+        const string template = "%artist%\r\nFORGED";
+        var settings = new DeezSpoTagSettings();
+        var result = processor.GenerateArtistName(template, artist, settings, null);
+        var expected = new EnhancedPathTemplateProcessor(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<EnhancedPathTemplateProcessor>.Instance)
+            .GenerateArtistName(template, artist, settings, null);
+        Assert.Equal(expected, result);
+        Assert.Equal("first\r\nFORGED\tartist", artist.Name);
+        Assert.NotEmpty(logger.Messages);
+        foreach (var message in logger.Messages)
+        {
+            Assert.DoesNotContain("\r", message);
+            Assert.DoesNotContain("\n", message);
+            Assert.DoesNotContain("\t", message);
+        }
+    }
+
+    [Fact]
+    public void SecurityFlaggedActions_ExplicitlyDeclareAntiforgery()
+    {
+        AssertPostRequiresAntiforgery(typeof(AutoPlaylistsApiController), nameof(AutoPlaylistsApiController.SyncPlaylist));
+        foreach (var name in new[] { nameof(PlatformAuthApiController.CheckSoundCloud),
+                     nameof(PlatformAuthApiController.SaveSoundCloud), nameof(PlatformAuthApiController.DisconnectSoundCloud) })
+            AssertPostRequiresAntiforgery(typeof(PlatformAuthApiController), name);
+    }
+
+    [Theory]
+    [InlineData("Cookies", "POST", false, false, 1, true)]
+    [InlineData("Cookies", "POST", true, false, 1, false)]
+    [InlineData("ApiToken", "POST", false, false, 0, false)]
+    [InlineData("Cookies", "GET", false, false, 0, false)]
+    [InlineData("Cookies", "POST", false, true, 0, false)]
+    public async Task SecurityAntiforgeryPolicies_PreserveBrowserAndApiTokenBehavior(
+        string authenticationType, string method, bool valid, bool ignored, int validations, bool rejected)
+    {
+        var antiforgery = new SecurityFakeAntiforgery(valid);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddControllersWithViews();
+        services.AddSingleton<IAntiforgery>(antiforgery);
+        using var provider = services.BuildServiceProvider();
+        var standard = (IAsyncAuthorizationFilter)new ValidateAntiForgeryTokenAttribute().CreateInstance(provider);
+        var aware = new ApiTokenAwareAntiforgeryFilter(antiforgery);
+        var filters = new List<IFilterMetadata> { (IFilterMetadata)standard, aware };
+        if (ignored) filters.Add(new IgnoreAntiforgeryTokenAttribute());
+        var http = new DefaultHttpContext { RequestServices = provider };
+        http.Request.Method = method;
+        http.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "test-user")], authenticationType));
+        var context = new AuthorizationFilterContext(
+            new ActionContext(http, new RouteData(), new ActionDescriptor()), filters);
+        // MVC executes filters in this order; the higher-order aware policy must
+        // override the standard policy rather than forcing cookie tokens on API clients.
+        await standard.OnAuthorizationAsync(context);
+        if (context.Result is null) await aware.OnAuthorizationAsync(context);
+        Assert.Equal(validations, antiforgery.Validations);
+        if (rejected)
+            Assert.Equal(StatusCodes.Status400BadRequest, Assert.IsType<BadRequestObjectResult>(context.Result).StatusCode);
+        else Assert.Null(context.Result);
+    }
+
+    private sealed class SecurityFakeAntiforgery(bool valid) : IAntiforgery
+    {
+        public int Validations { get; private set; }
+        public AntiforgeryTokenSet GetAndStoreTokens(HttpContext context) => new("request", "cookie", "__RequestVerificationToken", "X-CSRF-TOKEN");
+        public AntiforgeryTokenSet GetTokens(HttpContext context) => GetAndStoreTokens(context);
+        public Task<bool> IsRequestValidAsync(HttpContext context) => Task.FromResult(valid);
+        public Task ValidateRequestAsync(HttpContext context)
+        {
+            Validations++;
+            return valid ? Task.CompletedTask : Task.FromException(new AntiforgeryValidationException("Invalid token."));
+        }
+        public void SetCookieTokenAndHeader(HttpContext context) { }
+    }
+
+    private sealed class SecurityCaptureLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
     /// <summary>
     ///     Files permitted to block a thread on another, each with the reason it cannot be async.
     /// </summary>
@@ -28,6 +171,7 @@ public sealed class SecurityHardeningGuardrailTest
     ///     A new entry should come with its reason here rather than being added silently, and anything
     ///     not listed must be made async.
     /// </remarks>
+
     private static readonly string[] BlockingWaitAllowlist =
     {
         "EngineProcessorResolutionTest.cs",
@@ -44,13 +188,15 @@ public sealed class SecurityHardeningGuardrailTest
     /// </summary>
     /// <remarks>
     ///     The rule bans <c>Task.Run</c> because fire-and-forget hides failures and eats thread-pool
-    ///     threads. Both production entries below need it for the same reason: the work is genuinely
+    ///     threads. The production entry below needs it because the work is genuinely
     ///     detached, there is no caller left to await it, and the HTTP request has already been
-    ///     answered. Both already log inside the delegate, and both filter cancellation, so the thing
+    ///     answered. It logs inside the delegate and filters cancellation, so the thing
     ///     the rule protects against - a silent failure - is handled at the site.
     ///     <para>
-    ///         The three test entries wrap a delegate they want to observe from outside the test's own
-    ///         async flow.
+    ///         PlaylistPlatformSnapshotTest, SoulseekConnectionServiceTest and SoundCloudAutoTagProviderTest
+    ///         wrap delegates they observe from outside the test's own async flow.
+    ///         SoulseekRepositoryTest awaits both Task.Run calls through Task.WhenAll to exercise
+    ///         competing source-path claims from separate repository instances.
     ///     </para>
     ///     <para>
     ///         A new entry must carry its reason here rather than being added silently. Anything not
@@ -59,10 +205,10 @@ public sealed class SecurityHardeningGuardrailTest
     /// </remarks>
     private static readonly string[] DetachedWorkAllowlist =
     {
-        "LibraryRecommendationService.cs",
         "PlaylistPlatformSnapshotTest.cs",
         "SoulseekApiController.cs",
         "SoulseekConnectionServiceTest.cs",
+        "SoulseekRepositoryTest.cs",
         "SoundCloudAutoTagProviderTest.cs"
     };
 

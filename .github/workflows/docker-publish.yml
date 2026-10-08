@@ -60,6 +60,17 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Vibe test dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --requirement <(sed -n '/^numpy==/p' scripts/vibe-runtime-requirements.txt)
+
       - name: Run full guardrails
         run: |
           chmod +x scripts/guardrails.sh
@@ -631,7 +642,7 @@ jobs:
 
   release:
     needs: [release-context, change-scope, bump-version, publish]
-    if: ${{ github.server_url == 'https://github.com' && always() && github.ref == 'refs/heads/main' && needs.change-scope.outputs.app_changed == 'true' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
+    if: ${{ github.server_url == 'https://github.com' && always() && needs.publish.result == 'success' && github.ref == 'refs/heads/main' && needs.change-scope.outputs.app_changed == 'true' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

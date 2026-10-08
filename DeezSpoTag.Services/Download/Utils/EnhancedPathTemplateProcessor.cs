@@ -78,10 +78,11 @@ public class EnhancedPathTemplateProcessor
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("Creating artist folder - Track: {TrackTitle}, Album Artist: {AlbumArtist}, Track Artist: {TrackArtist}, Using: {UsingArtist}",
-                    track.Title,
-                    track.Album?.MainArtist?.Name ?? "NULL",
-                    track.MainArtist?.Name ?? "NULL",
-                    artistToUse?.Name ?? "NULL");            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Album?.MainArtist?.Name ?? "NULL"),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.MainArtist?.Name ?? "NULL"),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistToUse?.Name ?? "NULL"));
+            }
 
             var artistName = GenerateArtistName(
                 settings.ArtistNameTemplate,
@@ -284,7 +285,11 @@ public class EnhancedPathTemplateProcessor
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("GenerateArtistName called with artist: {ArtistName} (normalized: {NormalizedArtistName}) (ID: {ArtistId}), template: {Template}",
-                artist?.Name ?? "NULL", normalizedArtistName, artist?.Id ?? "NULL", template);        }
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artist?.Name ?? "NULL"),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedArtistName),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artist?.Id ?? "NULL"),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(template));
+        }
 
         if (artist == null)
         {
@@ -294,7 +299,7 @@ public class EnhancedPathTemplateProcessor
 
         if (string.IsNullOrEmpty(normalizedArtistName) || normalizedArtistName == UnknownValue || normalizedArtistName == UnknownArtist)
         {
-            _logger.LogWarning("Artist name is empty or 'Unknown' in GenerateArtistName: '{ArtistName}', returning 'Unknown Artist'", normalizedArtistName);
+            _logger.LogWarning("Artist name is empty or 'Unknown' in GenerateArtistName: '{ArtistName}', returning 'Unknown Artist'", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedArtistName));
             return UnknownArtist;
         }
 
@@ -320,7 +325,8 @@ public class EnhancedPathTemplateProcessor
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("GenerateArtistName result: {Result}", result);        }
+            _logger.LogDebug("GenerateArtistName result: {Result}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(result));
+        }
         return result;
     }
 

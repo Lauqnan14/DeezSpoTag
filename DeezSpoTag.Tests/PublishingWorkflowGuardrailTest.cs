@@ -7,6 +7,27 @@ namespace DeezSpoTag.Tests;
 
 public sealed class PublishingWorkflowGuardrailTest
 {
+    [Theory]
+    [InlineData("guardrails.yml", "name: Run guardrails")]
+    [InlineData("docker-publish.yml", "name: Run full guardrails")]
+    public void GuardrailJobs_InstallPinnedNumpyBeforeTests(string fileName, string testStep)
+    {
+        var workflow = File.ReadAllText(Path.Join(ResolveSrcRoot(), ".github", "workflows", fileName));
+        var installIndex = workflow.IndexOf("name: Install Vibe test dependency", StringComparison.Ordinal);
+        Assert.True(installIndex >= 0 && installIndex < workflow.IndexOf(testStep, StringComparison.Ordinal));
+        Assert.Contains("uses: actions/setup-python@v5", workflow, StringComparison.Ordinal);
+        Assert.Contains("python3 -m pip install --requirement <(sed -n '/^numpy==/p' scripts/vibe-runtime-requirements.txt)", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DockerRelease_RequiresSuccessfulImagePublication()
+    {
+        var workflow = File.ReadAllText(Path.Join(ResolveSrcRoot(), ".github", "workflows", "docker-publish.yml"));
+        var release = workflow[workflow.IndexOf("  release:", StringComparison.Ordinal)..];
+        var condition = release.Split('\n').First(line => line.TrimStart().StartsWith("if:", StringComparison.Ordinal));
+        Assert.Contains("needs.publish.result == 'success'", condition, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void VibeRuntime_UsesOneExactDependencyLock()
     {

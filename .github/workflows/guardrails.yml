@@ -35,6 +35,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Vibe test dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --requirement <(sed -n '/^numpy==/p' scripts/vibe-runtime-requirements.txt)
+
       - name: Resolve base reference
         shell: bash
         run: |
