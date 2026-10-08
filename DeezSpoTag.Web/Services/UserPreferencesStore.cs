@@ -168,6 +168,14 @@ public sealed class UserPreferencesDto
     public List<string> DisabledLoginPlatforms { get; set; } = new();
     public long? PwaPromptDismissedAt { get; set; }
 
+    /// <summary>
+    /// Set once the app has been observed running as an installed web app (an app
+    /// display mode was matched, or the browser fired appinstalled). The install
+    /// prompt stays hidden while this is set, and it is cleared again when the
+    /// browser reports the app as installable again through beforeinstallprompt.
+    /// </summary>
+    public long? PwaInstalledAt { get; set; }
+
     // AutoTag
     public List<string> AutoTagSelectedPlatforms { get; set; } = new();
     public JsonElement? AutoTagPreferences { get; set; }

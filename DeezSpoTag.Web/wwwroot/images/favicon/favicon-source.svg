@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+
+<!--
+  DeezSpoTag browser tab favicon.
+
+  Same hexagon equalizer mark as the PWA icons
+  (wwwroot/images/pwa/icon-source.svg), redrawn at a native 32x32 so the strokes are
+  real device pixels: stroke-width 2 here is exactly 1px in a 16px tab and 2px at 32px.
+  A scaled-down copy of the 512 icon cannot work, because its 2-unit stroke inside
+  scale(3.9) resolves to roughly a quarter of a pixel at 16px.
+
+  Deliberate differences from the app icon:
+    - transparent background, so it sits on light or dark tab chrome
+    - no neon glow, which turns to grey mush below 32px
+    - the inner hexagon is lighter than the outer one so the two stay separable
+      where they nearly touch at 16px
+    - the bars are centred on the canvas. The app logo places them at local x
+      -20/-10/0/10, which spans -20..15 and sits 2.5 units LEFT of the hexagon
+      centreline; that reads as correct inside a 400x180 wordmark but looks
+      visibly off-centre in a square icon, so the group is shifted here to put
+      its midpoint on the mark's centreline.
+
+  Regenerate (run from this directory):
+    inkscape -w 16 -h 16 -o favicon-16.png favicon-source.svg
+    inkscape -w 32 -h 32 -o favicon-32.png favicon-source.svg
+    inkscape -w 48 -h 48 -o favicon-48.png favicon-source.svg
+    convert favicon-16.png favicon-32.png favicon-48.png ../../favicon.ico
+-->
+
+<defs>
+
+<linearGradient id="faviconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+
+<stop offset="0%" style="stop-color:#00bfff;stop-opacity:1" />
+
+<stop offset="100%" style="stop-color:#1e90ff;stop-opacity:1" />
+
+</linearGradient>
+
+</defs>
+
+<path d="M2.5,16 L9.25,4.3 L22.75,4.3 L29.5,16 L22.75,27.7 L9.25,27.7 Z" fill="none" stroke="url(#faviconGrad)" stroke-width="2"/>
+
+<path d="M5.5,16 L10.75,7 L21.25,7 L26.5,16 L21.25,25 L10.75,25 Z" fill="none" stroke="url(#faviconGrad)" stroke-width="1.5" opacity="0.75"/>
+
+<!-- Bars span 10.5..21.5, so the group midpoint is 16, the canvas centreline. -->
+<rect x="10.5" y="11.5" width="2" height="9" fill="#00bfff"/>
+
+<rect x="13.5" y="10" width="2" height="12" fill="#0099cc"/>
+
+<rect x="16.5" y="12.4" width="2" height="7.2" fill="#0099cc"/>
+
+<rect x="19.5" y="10.6" width="2" height="10.8" fill="#1e90ff"/>
+
+</svg>

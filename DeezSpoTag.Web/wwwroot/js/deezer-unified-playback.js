@@ -12,7 +12,7 @@
 
     function normalizeState(state) {
         const normalized = trim(state).toLowerCase();
-        if (normalized === 'requested' || normalized === 'playing' || normalized === 'ended' || normalized === 'error') {
+        if (normalized === 'requested' || normalized === 'playing' || normalized === 'paused' || normalized === 'ended' || normalized === 'error') {
             return normalized;
         }
         return 'idle';
@@ -389,6 +389,70 @@
         }
     }
 
+    function getCurrentRequest() {
+        return currentSession ? currentSession.request : null;
+    }
+
+    // True pause: the session and the loaded source are kept so a resume is instant
+    // and the queue position survives. stop() deliberately clears the source instead.
+    async function pause() {
+        if (!currentSession || audio.paused) {
+            return false;
+        }
+
+        const session = currentSession;
+        audio.pause();
+        emitState(session.request, 'paused', { reason: 'pause' });
+        return true;
+    }
+
+    async function resume() {
+        if (!currentSession || !audio.paused) {
+            return false;
+        }
+
+        const sessionId = currentSession.id;
+        try {
+            await audio.play();
+        } catch {
+            return false;
+        }
+
+        if (!isSessionCurrent(sessionId)) {
+            return false;
+        }
+
+        emitState(currentSession.request, 'playing', { resumed: true });
+        return true;
+    }
+
+    async function playAdjacentRequest(direction) {
+        const session = currentSession;
+        const factoryName = direction === 'previous' ? 'getPreviousRequest' : 'getNextRequest';
+        const factory = session?.request?.[factoryName];
+        if (typeof factory !== 'function') {
+            return false;
+        }
+
+        let adjacentRequest = null;
+        try {
+            adjacentRequest = await factory({
+                audio,
+                request: session.request,
+                session: getSession()
+            });
+        } catch (error) {
+            console.warn(`Failed to resolve the ${direction} playback request:`, error);
+            return false;
+        }
+
+        if (!adjacentRequest || typeof adjacentRequest !== 'object') {
+            return false;
+        }
+
+        return await play(adjacentRequest);
+    }
+
     function getSession() {
         if (!currentSession) {
             return null;
@@ -558,6 +622,12 @@
     global.DeezerUnifiedPlayback = {
         play,
         stop,
-        getSession
+        pause,
+        resume,
+        next: () => playAdjacentRequest('next'),
+        previous: () => playAdjacentRequest('previous'),
+        getSession,
+        getCurrentRequest,
+        getAudio: () => audio
     };
 })(globalThis);

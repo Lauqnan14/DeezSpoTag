@@ -41,7 +41,12 @@
     }
 
     function getStorageKey(tabList) {
-        const id = getTabListId(tabList);
+        return buildStorageKeyForId(getTabListId(tabList));
+    }
+
+    // Single source of truth for the remembered-tab storage key.
+    function buildStorageKeyForId(tabListId) {
+        const id = String(tabListId || "").trim();
         if (!id) {
             return "";
         }
@@ -61,6 +66,12 @@
         const candidates = Array.from(tabList.querySelectorAll(TAB_SELECTOR));
         return candidates.find((trigger) => {
             if (trigger.disabled || trigger.classList.contains("disabled")) {
+                return false;
+            }
+
+            // An opted-out trigger is never a restore destination either, so a value
+            // stored before it was marked cannot resurrect it.
+            if (isTriggerOptedOut(trigger)) {
                 return false;
             }
 
@@ -101,7 +112,7 @@
         const tabList = getTabList(trigger);
         const storageKey = getStorageKey(tabList);
         const targetSelector = getTargetSelector(trigger);
-        if (!storageKey || !targetSelector || isOptedOut(tabList)) {
+        if (!storageKey || !targetSelector || isOptedOut(tabList) || isTriggerOptedOut(trigger)) {
             return;
         }
 
@@ -157,6 +168,47 @@
         document.addEventListener("DOMContentLoaded", restoreAllTabs);
     }
 
+    // Shared storage contract for tab groups that drive their own activation and so
+    // cannot ride the shown.bs.tab path: the login platform tabs, the soundtrack
+    // category tabs and the artist discography tabs. They keep their own activation
+    // logic, but the key format, the setting check and the server-side mirror live
+    // here so there is a single implementation.
+    function readTabPreference(storageKey) {
+        if (!storageKey || !isRememberEnabled()) {
+            return null;
+        }
+
+        try {
+            return globalThis.localStorage?.getItem(storageKey) || null;
+        } catch (error) {
+            logDebug("read tab preference", error);
+            return null;
+        }
+    }
+
+    function writeTabPreference(storageKey, value) {
+        if (!storageKey) {
+            return;
+        }
+
+        const normalized = String(value == null ? "" : value).trim();
+
+        try {
+            // Writing an empty value, or writing at all while the setting is off,
+            // clears the remembered tab so it cannot come back as a stale default.
+            if (!normalized || !isRememberEnabled()) {
+                globalThis.localStorage?.removeItem(storageKey);
+                globalThis.UserPrefs?.setTabSelection?.(storageKey, "");
+                return;
+            }
+
+            globalThis.localStorage?.setItem(storageKey, normalized);
+            globalThis.UserPrefs?.setTabSelection?.(storageKey, normalized);
+        } catch (error) {
+            logDebug("persist tab preference", error);
+        }
+    }
+
     function logDebug(action, error) {
         if (globalThis.console && typeof globalThis.console.debug === "function") {
             globalThis.console.debug(`[TabPreferences] Failed to ${action}.`, error);
@@ -164,4 +216,11 @@
     }
 
     bindTabPersistence();
+
+    globalThis.TabPreferences = {
+        isEnabled: isRememberEnabled,
+        keyFor: buildStorageKeyForId,
+        read: readTabPreference,
+        write: writeTabPreference
+    };
 })();

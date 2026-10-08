@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+
+<!--
+  DeezSpoTag PWA icon source ("any" purpose, opaque).
+
+  Artwork is the hexagon equalizer mark from the app logo
+  (Views/Shared/_DeezSpoTagLogo.cshtml, wwwroot/images/logo.svg), frozen at its
+  resting bar heights. No SMIL animation and no wordmark: app icons are rendered
+  statically and the "DeezSpoTag" text is unreadable below 192px.
+
+  Background #0f172a matches the manifest background_color/theme_color.
+
+  Regenerate (run from this directory):
+    inkscape -w 512 -h 512 -o icon-512.png icon-source.svg
+    inkscape -w 192 -h 192 -o icon-192.png icon-source.svg
+    inkscape -w 180 -h 180 -o icon-180.png icon-source.svg
+-->
+
+<defs>
+
+<linearGradient id="pwaIconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+
+<stop offset="0%" style="stop-color:#00bfff;stop-opacity:1" />
+
+<stop offset="100%" style="stop-color:#1e90ff;stop-opacity:1" />
+
+</linearGradient>
+
+<filter id="pwaIconGlow" x="-25%" y="-25%" width="150%" height="150%">
+
+<feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+
+<feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+
+</filter>
+
+</defs>
+
+<rect x="0" y="0" width="512" height="512" fill="#0f172a"/>
+
+<g transform="translate(256,256) scale(3.9)">
+
+<path d="M-45,0 L-22.5,-39 L22.5,-39 L45,0 L22.5,39 L-22.5,39 Z" fill="none" stroke="url(#pwaIconGrad)" stroke-width="2" filter="url(#pwaIconGlow)"/>
+
+<path d="M-35,0 L-17.5,-30 L17.5,-30 L35,0 L17.5,30 L-17.5,30 Z" fill="none" stroke="url(#pwaIconGrad)" stroke-width="1" opacity="0.5"/>
+
+<g filter="url(#pwaIconGlow)">
+
+<!-- The logo's bars sit at local x -20/-10/0/10, spanning -20..15, which is 2.5
+     units left of the hexagon centreline. That is invisible in the 400x180 wordmark
+     but reads as off-centre in a square app icon, so the group is nudged +2.5 to
+     centre it on the mark. -->
+<g transform="translate(2.5,0)">
+
+<rect x="-20" y="-15" width="5" height="30" fill="#00bfff"/>
+
+<rect x="-10" y="-20" width="5" height="40" fill="#0099cc"/>
+
+<rect x="0" y="-12" width="5" height="24" fill="#0099cc"/>
+
+<rect x="10" y="-18" width="5" height="36" fill="#1e90ff"/>
+
+</g>
+
+</g>
+
+</g>
+
+</svg>

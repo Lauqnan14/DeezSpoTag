@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+
+<!--
+  DeezSpoTag PWA icon source ("monochrome" purpose).
+
+  Single-colour mark on a transparent background so Android themed icons can
+  recolour it. Geometry matches icon-source.svg.
+
+  Regenerate (run from this directory):
+    inkscape -w 512 -h 512 -o icon-mono-512.png icon-source-mono.svg
+-->
+
+<g transform="translate(256,256) scale(3.9)">
+
+<path d="M-45,0 L-22.5,-39 L22.5,-39 L45,0 L22.5,39 L-22.5,39 Z" fill="none" stroke="#ffffff" stroke-width="2"/>
+
+<path d="M-35,0 L-17.5,-30 L17.5,-30 L35,0 L17.5,30 L-17.5,30 Z" fill="none" stroke="#ffffff" stroke-width="1" opacity="0.6"/>
+
+<!-- Nudged +2.5 so the bar group is centred on the hexagon centreline; see
+     icon-source.svg for why the logo's own bar positions are off-centre. -->
+<g transform="translate(2.5,0)">
+
+<rect x="-20" y="-15" width="5" height="30" fill="#ffffff"/>
+
+<rect x="-10" y="-20" width="5" height="40" fill="#ffffff"/>
+
+<rect x="0" y="-12" width="5" height="24" fill="#ffffff"/>
+
+<rect x="10" y="-18" width="5" height="36" fill="#ffffff"/>
+
+</g>
+
+</g>
+
+</svg>

@@ -3,7 +3,7 @@
 
     function normalizeState(state) {
         const normalized = String(state || '').trim().toLowerCase();
-        if (normalized === 'requested' || normalized === 'playing' || normalized === 'ended' || normalized === 'error') {
+        if (normalized === 'requested' || normalized === 'playing' || normalized === 'paused' || normalized === 'ended' || normalized === 'error') {
             return normalized;
         }
         return 'idle';
@@ -13,9 +13,13 @@
         const normalized = normalizeState(state);
         const isRequested = normalized === 'requested';
         const isPlaying = normalized === 'playing';
+        // A paused track is still the active session: the row stays highlighted and the
+        // button offers resume rather than being torn down. Only a terminal or idle
+        // state releases the session.
+        const isActive = isRequested || isPlaying || normalized === 'paused';
 
         if (!button) {
-            if (!isRequested && !isPlaying && typeof options.clear === 'function') {
+            if (!isActive && typeof options.clear === 'function') {
                 options.clear();
             }
             return;
@@ -23,7 +27,7 @@
 
         button.classList.toggle('is-starting', isRequested);
 
-        if (isRequested || isPlaying) {
+        if (isActive) {
             button.dataset.playbackState = normalized;
         } else {
             delete button.dataset.playbackState;

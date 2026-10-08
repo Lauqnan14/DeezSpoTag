@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+
+<!--
+  DeezSpoTag browser tab favicon, pixel-hinted for 16px.
+
+  This is the same mark as wwwroot/images/logo.svg and
+  Views/Shared/_DeezSpoTagLogo.cshtml: one hexagon outline, the lighter inner
+  hexagon, and four equalizer bars in #00bfff / #0099cc / #0099cc / #1e90ff.
+  No shape, count, colour or arrangement is changed.
+
+  The only difference is the grid. The scalable source is drawn on a 32-unit
+  viewBox, so at a 16px tab its inner hexagon stroke lands on 0.75px and the gap
+  between bars on 0.5px. Sub-pixel strokes cannot be drawn: the rasteriser covers
+  them partially, so they render as translucent grey instead of a clean line, and
+  the tab icon reads as mush. Here the same geometry is placed on a 16-unit
+  viewBox so every stroke is a whole pixel and every gap is a whole pixel:
+
+      outer hexagon stroke   1px   (was 0.5px-equivalent at 16)
+      inner hexagon stroke   1px   (was 0.75px)
+      hexagon to hexagon     1px clear (was 0.5px)
+      bar width              1px
+      gap between bars       1px   (was 0.5px)
+
+  The gradient stroke, the 0.5 inner-hexagon opacity and the bar heights relative
+  to each other are all preserved, so this reads as the same logo.
+
+  Regenerate (run from this directory):
+    inkscape -w 16 -h 16 -o favicon-16.png favicon-16-source.svg
+    convert favicon-16.png favicon-24.png favicon-32.png favicon-48.png \
+            favicon-64.png favicon-128.png favicon-256.png ../../favicon.ico
+-->
+
+<defs>
+
+<linearGradient id="faviconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+
+<stop offset="0%" style="stop-color:#00bfff;stop-opacity:1" />
+
+<stop offset="100%" style="stop-color:#1e90ff;stop-opacity:1" />
+
+</linearGradient>
+
+</defs>
+
+<!-- Outer hexagon: half-width 7, half-height 6.07, keeping the logo's 90:78 ratio. -->
+<path d="M1,8 L4.5,1.93 L11.5,1.93 L15,8 L11.5,14.07 L4.5,14.07 Z" fill="none" stroke="url(#faviconGrad)" stroke-width="1"/>
+
+<!-- Inner hexagon: half-width 5, half-height 4.33, same 0.5 opacity as the logo. -->
+<path d="M3,8 L5.5,3.67 L10.5,3.67 L13,8 L10.5,12.33 L5.5,12.33 Z" fill="none" stroke="url(#faviconGrad)" stroke-width="1" opacity="0.5"/>
+
+<!-- Four bars spanning 4.5..11.5, midpoint 8, on a 1px pitch with 1px gaps. -->
+<rect x="4.5" y="5.75" width="1" height="4.5" fill="#00bfff"/>
+
+<rect x="6.5" y="5" width="1" height="6" fill="#0099cc"/>
+
+<rect x="8.5" y="6.25" width="1" height="3.5" fill="#0099cc"/>
+
+<rect x="10.5" y="5.25" width="1" height="5.5" fill="#1e90ff"/>
+
+</svg>

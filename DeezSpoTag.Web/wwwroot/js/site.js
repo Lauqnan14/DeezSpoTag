@@ -1028,6 +1028,19 @@ globalThis.DeezSpoTag = {
         });
     },
 
+    // Every display mode the app can legitimately be launched in. An installed web app
+    // matches one of these; a plain browser tab matches none of them.
+    pwaAppDisplayModes: [
+        'standalone',
+        'minimal-ui',
+        'fullscreen',
+        'window-controls-overlay',
+        'tabbed'
+    ],
+
+    pwaInstalledStorageKey: 'pwa-installed',
+    pwaDismissedStorageKey: 'pwa-prompt-dismissed',
+
     initializePwaInstallPrompt() {
         const promptEl = document.getElementById('pwaInstallPrompt');
         if (!promptEl) {
@@ -1039,19 +1052,6 @@ globalThis.DeezSpoTag = {
         const messageEl = promptEl.querySelector('[data-pwa-message]');
         let deferredPrompt = null;
 
-        if (this.isPwaStandalone()) {
-            return;
-        }
-
-        if (this.hasRecentPwaDismissal()) {
-            return;
-        }
-
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !globalThis.MSStream;
-        if (isIOS) {
-            this.prepareIosPwaPrompt(promptEl, messageEl, installButton);
-        }
-
         const showPrompt = () => {
             if (!promptEl.classList.contains('hidden')) {
                 return;
@@ -1061,11 +1061,24 @@ globalThis.DeezSpoTag = {
 
         const handleBeforeInstallPrompt = (event) => {
             event.preventDefault();
+            // Browsers only offer installation while the app is not installed for this
+            // origin, so this event also proves a recorded install is now stale.
+            this.clearRecordedPwaInstall();
+            if (this.isRunningAsInstalledApp() || this.hasRecordedPwaInstall() || this.hasRecentPwaDismissal()) {
+                return;
+            }
             deferredPrompt = event;
             setTimeout(showPrompt, 1500);
         };
 
+        // Registered before the gates below so a recorded install can always be cleared,
+        // and before the button wiring so a cleared latch can still reveal the prompt.
         globalThis.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+        globalThis.addEventListener('appinstalled', () => {
+            promptEl.classList.add('hidden');
+            this.markPwaInstalled();
+        });
 
         if (installButton) {
             installButton.addEventListener('click', async () => {
@@ -1086,22 +1099,88 @@ globalThis.DeezSpoTag = {
             dismissButton.addEventListener('click', () => {
                 promptEl.classList.add('hidden');
                 const _pwaDismissedAt = Date.now();
-                localStorage.setItem('pwa-prompt-dismissed', _pwaDismissedAt.toString());
+                localStorage.setItem(this.pwaDismissedStorageKey, _pwaDismissedAt.toString());
                 if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaPromptDismissedAt', _pwaDismissedAt);
             });
         }
 
-        globalThis.addEventListener('appinstalled', () => {
-            promptEl.classList.add('hidden');
+        // Running as an installed app is the authoritative "already installed" signal.
+        // Record it so a later visit from a browser tab stays quiet as well.
+        if (this.isRunningAsInstalledApp()) {
+            this.markPwaInstalled();
+            return;
+        }
+
+        // A previous install was observed on this instance. Only a browser that
+        // reports the app as installable again may clear this latch.
+        if (this.hasRecordedPwaInstall()) {
+            return;
+        }
+
+        if (this.hasRecentPwaDismissal()) {
+            return;
+        }
+
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !globalThis.MSStream;
+        if (isIOS) {
+            this.prepareIosPwaPrompt(promptEl, messageEl, installButton);
+        }
+    },
+
+    // True only while this document is rendered by an installed web app. Covers every
+    // display mode the app can be launched in, not just plain standalone, so an app
+    // window using another mode is never mistaken for a browser tab.
+    isRunningAsInstalledApp() {
+        if (globalThis.navigator && globalThis.navigator.standalone === true) {
+            return true;
+        }
+
+        if (typeof globalThis.matchMedia !== 'function') {
+            return false;
+        }
+
+        return this.pwaAppDisplayModes.some((displayMode) => {
+            try {
+                return globalThis.matchMedia(`(display-mode: ${displayMode})`).matches;
+            } catch (e) {
+                return false;
+            }
         });
     },
 
-    isPwaStandalone() {
-        return globalThis.matchMedia('(display-mode: standalone)').matches || globalThis.navigator.standalone === true;
+    // True once an installed run has been seen. Unlike a dismissal this never expires,
+    // so an already-installed app is never nagged from a browser tab or a new device.
+    hasRecordedPwaInstall() {
+        const recordedAt = localStorage.getItem(this.pwaInstalledStorageKey);
+        if (!recordedAt) {
+            return false;
+        }
+
+        const recordedTime = Number.parseInt(recordedAt, 10);
+        return !Number.isNaN(recordedTime) && recordedTime > 0;
+    },
+
+    markPwaInstalled() {
+        if (this.hasRecordedPwaInstall()) {
+            return;
+        }
+
+        const installedAt = Date.now();
+        localStorage.setItem(this.pwaInstalledStorageKey, installedAt.toString());
+        if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaInstalledAt', installedAt);
+    },
+
+    clearRecordedPwaInstall() {
+        if (!this.hasRecordedPwaInstall()) {
+            return;
+        }
+
+        localStorage.setItem(this.pwaInstalledStorageKey, '0');
+        if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaInstalledAt', 0);
     },
 
     hasRecentPwaDismissal() {
-        const dismissedAt = localStorage.getItem('pwa-prompt-dismissed');
+        const dismissedAt = localStorage.getItem(this.pwaDismissedStorageKey);
         if (!dismissedAt) {
             return false;
         }
@@ -1313,11 +1392,6 @@ globalThis.DeezSpoTag = {
             }
         });
 
-        // Boomplay works without any login, so it is always listed and always connected.
-        if (this.platformIconMap.boomplay) {
-            ids.add('boomplay');
-        }
-
         selected.forEach((id) => {
             if (this.platformIconMap[id]) {
                 ids.add(id);
@@ -1433,7 +1507,7 @@ globalThis.DeezSpoTag = {
         const baseline = this.buildInitialPlatformStates(Array.from(selectedSet));
         const normalized = this.normalizeConnectedPlatformStates(snapshotStates);
         Object.entries(normalized).forEach(([id, status]) => {
-            if (!this.authRequiredPlatforms.has(id) && !selectedSet.has(id) && id !== 'boomplay') {
+            if (!this.authRequiredPlatforms.has(id) && !selectedSet.has(id)) {
                 return;
             }
             this.setPlatformState(baseline, id, status?.active === true, status?.reason || null);
@@ -1902,10 +1976,8 @@ globalThis.DeezSpoTag = {
             platformStates,
             'navidrome',
             'credentials');
-        // Boomplay requires no login: the platform is always connected regardless of
-        // whether an optional session is saved.
         this.applySimpleCredentialState(
-            true,
+            authData.boomplay?.connected === true,
             connected,
             platformStates,
             'boomplay',

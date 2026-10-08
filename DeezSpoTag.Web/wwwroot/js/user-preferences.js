@@ -21,6 +21,7 @@ globalThis.UserPrefs = (function () {
         'tabs-preference-enabled':               'tabsPreferenceEnabled',
         'deezspotag-disabled-login-platforms':   'disabledLoginPlatforms',
         'pwa-prompt-dismissed':                  'pwaPromptDismissedAt',
+        'pwa-installed':                         'pwaInstalledAt',
         'autotag-selected-platforms':            'autoTagSelectedPlatforms',
         'autotag-preferences':                   'autoTagPreferences',
         'autotag-active-profile-id':             'autoTagActiveProfileId',

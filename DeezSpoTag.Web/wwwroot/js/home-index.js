@@ -648,8 +648,35 @@ function buildHomeTrendingPlaybackRequest(playButton) {
                     return buildHomeTrendingPlaybackRequest(nextButton);
                 }
             }
+        },
+        getPreviousRequest: async () => {
+            const previousButton = getPreviousHomeTrendingQueueButton();
+            if (!previousButton) {
+                return null;
+            }
+            const ready = await ensureHomeTrendingButtonReadyForPlayback(previousButton, {
+                notifyOnUnmatched: false
+            });
+            return ready ? buildHomeTrendingPlaybackRequest(previousButton) : null;
         }
     };
+}
+
+function getPreviousHomeTrendingQueueButton() {
+    const queue = homeTrendingPreviewState.queueButtons;
+    if (!Array.isArray(queue) || queue.length === 0) {
+        return null;
+    }
+
+    for (let index = homeTrendingPreviewState.queueIndex - 1; index >= 0; index--) {
+        const candidate = queue[index];
+        if (candidate?.isConnected) {
+            homeTrendingPreviewState.queueIndex = index;
+            return candidate;
+        }
+    }
+
+    return null;
 }
 
 function showHomeTrendingPlaybackMessage(message) {
@@ -1150,13 +1177,11 @@ async function performUnifiedSearch() {
     }
 }
 
+// The setting itself is owned by tab-preferences.js. The key list below stays local
+// because this runs on the Home page and has to read the *Search* page's key, including
+// canonical /Search and /search fallbacks when the current path differs.
 function isRememberTabsEnabled() {
-    try {
-        const stored = globalThis.localStorage?.getItem('tabs-preference-enabled');
-        return stored === null || stored === '' || stored === 'true';
-    } catch {
-        return true;
-    }
+    return globalThis.TabPreferences?.isEnabled?.() !== false;
 }
 
 function buildSearchTabPreferenceKeys() {
