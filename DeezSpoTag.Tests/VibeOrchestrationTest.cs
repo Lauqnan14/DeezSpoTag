@@ -47,7 +47,7 @@ public sealed class VibeOrchestrationTest
             {
                 new TrackAnalysisBackgroundService.VibeGenreEvidenceDto("Electronic---House", 0.73, genreModel)
             },
-            genreModel, valenceSource, arousalSource);
+            genreModel, valenceSource, arousalSource, AudioTruncated: false);
 
     [Fact]
     public void FullSourceCase_ResolvesAudiomackAuthority_WithAllFourSources()
@@ -162,6 +162,101 @@ public sealed class VibeOrchestrationTest
         // Legacy fields stay intact for compatibility.
         Assert.NotNull(result.MoodTags);
         Assert.NotNull(result.EssentiaGenres);
+    }
+
+    [Fact]
+    public void Discogs400Downgrade_KeepsItsOwnProvenanceEndToEnd()
+    {
+        // Provenance must follow the head that actually ran, from the analyzer
+        // payload through the evidence blob.
+        var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
+            Output(genreModel: "discogs400-discogs-effnet"),
+            null, // embedded
+            null, // audiomack
+            null, // lastfm track
+            null); // lastfm artist
+
+        Assert.Equal("discogs400-discogs-effnet", vibe.GenreModel);
+        var sources = ParseSources(vibe.SemanticEvidenceJson);
+        Assert.Contains("essentia-discogs400", sources);
+        Assert.DoesNotContain("essentia-discogs519", sources);
+    }
+
+    [Fact]
+    public void MissingGenreModel_ReportsNoProvenanceInsteadOfClaimingDiscogs519()
+    {
+        // A payload with no genre evidence carries no model name at all; the
+        // analyzer must not invent Discogs519 provenance for absent evidence.
+        var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(
+            new TrackAnalysisBackgroundService.AnalysisOutput(
+                AnalysisMode: null,
+                Bpm: null,
+                BeatsCount: null,
+                Key: null,
+                KeyScale: null,
+                KeyStrength: null,
+                Danceability: null,
+                Acousticness: null,
+                Instrumentalness: null,
+                Speechiness: null,
+                Genres: Array.Empty<string>(),
+                MoodTags: null,
+                Happy: null,
+                Sad: null,
+                Relaxed: null,
+                Aggressive: null,
+                Party: null,
+                Acoustic: null,
+                Electronic: null,
+                Approachability: null,
+                Engagement: null,
+                VoiceInstrumental: null,
+                TonalAtonal: null,
+                ValenceMl: null,
+                ArousalMl: null,
+                DanceabilityMl: null,
+                Loudness: null,
+                DynamicComplexity: null,
+                EssentiaGenreEvidence: Array.Empty<TrackAnalysisBackgroundService.VibeGenreEvidenceDto>(),
+                GenreModel: null,
+                ValenceSource: null,
+                ArousalSource: null,
+                AudioTruncated: false),
+            null, null, null, null);
+
+        Assert.Null(vibe.GenreModel);
+        Assert.Equal("essentia-acoustic", VibeSemanticResolver.AcousticSourceName(vibe.GenreModel));
+    }
+
+    [Theory]
+    [InlineData(VibeAnalysisRunOutcome.Queued, true, false)]
+    [InlineData(VibeAnalysisRunOutcome.AlreadyRunning, false, false)]
+    [InlineData(VibeAnalysisRunOutcome.Disabled, false, true)]
+    public void RunOutcome_MapsToTheCorrectClientFlags(
+        VibeAnalysisRunOutcome outcome,
+        bool expectedQueued,
+        bool expectedDisabled)
+    {
+        var request = new VibeAnalysisRunRequest(outcome, outcome.Reason());
+
+        Assert.Equal(expectedQueued, request.Queued);
+        Assert.Equal(expectedQueued, outcome.IsAccepted());
+
+        // The controller derives these from the outcome, so a declined-because-busy
+        // run must never look disabled to the client.
+        var enabled = outcome != VibeAnalysisRunOutcome.Disabled;
+        Assert.Equal(!expectedDisabled, enabled);
+        Assert.False(string.IsNullOrWhiteSpace(request.Reason));
+    }
+
+    [Fact]
+    public void AlreadyRunningOutcome_ExplainsItselfInsteadOfPointingAtTheToggle()
+    {
+        var reason = VibeAnalysisRunOutcome.AlreadyRunning.Reason();
+
+        Assert.Contains("already running", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("disabled", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("disabled", VibeAnalysisRunOutcome.Disabled.Reason(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

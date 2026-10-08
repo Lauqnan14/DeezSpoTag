@@ -318,4 +318,10 @@ public sealed record VibeAnalyzerWorkerSnapshot(
     string State,
     string? LastFailureReason,
     DateTimeOffset? LastFailureAtUtc,
-    int StartCount);
+    int StartCount)
+{
+    /// <summary>True when the worker is not currently healthy, i.e. it failed or was
+    /// stopped after a failure. Derived so surfaces render a discreet state badge
+    /// without ever exposing the raw failure reason.</summary>
+    public bool Degraded => !string.Equals(State, VibeAnalyzerWorkerStates.Ready, StringComparison.Ordinal);
+}

@@ -35,26 +35,17 @@ public sealed class VibeAnalysisSettingsApiController : ControllerBase
         var cleaned = new VibeAnalysisSettingsDto(
             request.Enabled ?? existing.Enabled,
             Math.Clamp(request.BatchSize ?? existing.BatchSize, 10, 500),
-            Math.Clamp(request.IntervalMinutes ?? existing.IntervalMinutes, 5, 240),
-            request.UseLibraryOrder ?? existing.UseLibraryOrder,
-            NormalizeLibraryOrder(request.LibraryOrder ?? existing.LibraryOrder));
+            Math.Clamp(request.IntervalMinutes ?? existing.IntervalMinutes, 5, 240))
+        {
+            // Omitted from the request means "unchanged", so a client that only knows
+            // about Enabled/BatchSize/IntervalMinutes cannot erase a library order.
+            UseLibraryOrder = request.UseLibraryOrder ?? existing.UseLibraryOrder,
+            LibraryOrder = request.LibraryOrder ?? existing.LibraryOrder,
+        };
 
         var saved = await _store.SaveAsync(cleaned);
         await _analysisService.ApplySettingsAsync(saved, HttpContext.RequestAborted);
         return Ok(saved);
-    }
-
-    private static long[] NormalizeLibraryOrder(IEnumerable<long>? libraryOrder)
-    {
-        if (libraryOrder is null)
-        {
-            return Array.Empty<long>();
-        }
-
-        return libraryOrder
-            .Where(id => id > 0)
-            .Distinct()
-            .ToArray();
     }
 }
 
@@ -64,5 +55,5 @@ public sealed class VibeAnalysisSettingsUpdateRequest
     public int? BatchSize { get; set; }
     public int? IntervalMinutes { get; set; }
     public bool? UseLibraryOrder { get; set; }
-    public long[]? LibraryOrder { get; set; }
+    public IReadOnlyList<long>? LibraryOrder { get; set; }
 }

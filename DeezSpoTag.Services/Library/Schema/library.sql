@@ -1194,6 +1194,288 @@ CREATE TABLE IF NOT EXISTS track_analysis (
 
 CREATE INDEX IF NOT EXISTS idx_track_analysis_library ON track_analysis (library_id);
 
+-- Sonic Analysis: learned audio embeddings, one row per track and embedding version.
+-- Deliberately a separate table from track_analysis. Ordinary analysis queries
+-- load large TrackAnalysisResultDto batches, and a 1280-float vector (~5 KB)
+-- must not ride along with every one of them. Sonic services load this table
+-- only when they need a vector.
+--
+-- The vector is a BLOB of little-endian float32 values, L2 normalized, with a
+-- declared dimension that a reader must verify against the blob length.
+CREATE TABLE IF NOT EXISTS track_sonic_embedding (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    model_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    embedding_version TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    pooling_method TEXT NOT NULL,
+    normalization_method TEXT NOT NULL,
+    distance_metric TEXT NOT NULL,
+    vector_blob BLOB NOT NULL,
+    source_file_size INTEGER,
+    source_file_mtime_utc TEXT,
+    analyzed_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, model_id, model_version, embedding_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_track_sonic_embedding_library
+    ON track_sonic_embedding (library_id, model_id, model_version, embedding_version);
+
+CREATE INDEX IF NOT EXISTS idx_track_sonic_embedding_analyzed
+    ON track_sonic_embedding (analyzed_at_utc DESC);
+
+-- Meloday DJ domain.
+--
+-- Provenance for a Meloday playlist: which DJ filled it, on what evidence, and why
+-- each track was chosen.
+--
+-- This replaced a separate DJ definition/schedule/run-state product. A DJ is not a
+-- thing that runs on its own schedule — it is a personality applied inside Meloday's
+-- existing generation, using that time slot's own history. So it inherits Meloday's
+-- scheduler and Meloday's once-per-day guard, and needs no second cadence, no second
+-- run state and no identity of its own.
+--
+-- mix_id is deliberately NOT part of a DJ's identity and does not appear here. It is
+-- already on mix_cache, keyed to the playlist, and adding a DJ to it would mean a new
+-- remote playlist every time Random DJ resolved differently.
+--
+-- Occurrence is the identity of the generation, not of the playlist: one per library,
+-- slot and local day, and shared by every mode of that day. That is what lets Direct
+-- and Sonic be compared under one DJ, and what makes a retry reproduce the same choice.
+CREATE TABLE IF NOT EXISTS meloday_generation (
+    meloday_generation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mix_cache_id BIGINT REFERENCES mix_cache(id) ON DELETE CASCADE,
+    mix_id TEXT NOT NULL,
+    library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    slot_id TEXT NOT NULL,
+    weekday_id TEXT NOT NULL,
+    -- The concrete mode that ran: direct or sonic. "both" is two rows.
+    mode TEXT NOT NULL,
+    -- What the user configured ("random" or a strategy id) and what actually ran.
+    -- Recording both is the only way to tell a deliberate choice from a roll.
+    configured_dj TEXT NOT NULL,
+    resolved_dj TEXT NOT NULL,
+    was_random INTEGER NOT NULL DEFAULT 0,
+    occurrence_key TEXT NOT NULL,
+    -- "daypart" or "all-day-fallback". Recorded because Meloday silently falls back when
+    -- a slot has no eligible history of its own, and a playlist built that way is not
+    -- evidence of the time of day it is named for.
+    context_source TEXT NOT NULL,
+    -- The sonic model that was current, so an old playlist can be read as "made with
+    -- an older model" rather than quietly compared against today's.
+    sonic_model_version TEXT,
+    sonic_coverage_percent REAL,
+    seed_summary TEXT,
+    track_count INTEGER NOT NULL DEFAULT 0,
+    diagnostics_json TEXT,
+    started_at_utc TEXT,
+    completed_at_utc TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- One row per playlist per run-day. A retry replaces its row rather than stacking a
+    -- second, so re-running does not make the history look like more than one attempt.
+    UNIQUE (mix_id, library_id)
+);
+
+-- The tracklist, with the reason each track was chosen. Kept because a DJ that picked a
+-- track has to be able to say why, and because it is the only record of a Random DJ's
+-- reasoning once the DJ has moved on to something else next week.
+CREATE TABLE IF NOT EXISTS meloday_generation_item (
+    meloday_generation_id BIGINT NOT NULL REFERENCES meloday_generation(meloday_generation_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
+    similarity REAL,
+    -- "seed", "neighbour", "companion" or "journey", as classified by the strategy.
+    reason TEXT,
+    -- The seed this track was measured against, when the strategy measured one.
+    related_seed_id BIGINT,
+    PRIMARY KEY (meloday_generation_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_meloday_generation_library
+    ON meloday_generation (library_id, completed_at_utc DESC);
+
+CREATE INDEX IF NOT EXISTS idx_meloday_generation_occurrence
+    ON meloday_generation (occurrence_key);
+
+CREATE INDEX IF NOT EXISTS idx_meloday_generation_item_track
+    ON meloday_generation_item (track_id);
+
+
+CREATE TABLE IF NOT EXISTS personal_genre_autotag (
+    job_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    track_id BIGINT NULL,
+    resolution_json TEXT NULL,
+    write_status TEXT NOT NULL DEFAULT 'pending',
+    resolved_at_utc TEXT NULL,
+    PRIMARY KEY (job_id, file_path)
+);
+CREATE TABLE IF NOT EXISTS personal_genre_settings (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    max_genres INTEGER NOT NULL DEFAULT 3,
+    preserve_provider_fallback INTEGER NOT NULL DEFAULT 1,
+    include_parent_genres INTEGER NOT NULL DEFAULT 0,
+    normalize_genre_tags INTEGER NOT NULL DEFAULT 0,
+    genre_tag_alias_rules_json TEXT NOT NULL DEFAULT '[]',
+    -- Nullable on purpose: NULL means "never configured", which is different from
+    -- an empty list meaning "the user wants nothing blocked".
+    genre_tag_block_list_json TEXT NULL,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
+
+-- Records the one-time move of genre normalization out of the general application
+-- settings. Without it a later change made in Genre Intelligence would be reverted
+-- on every startup by a fresh import of the old values.
+CREATE TABLE IF NOT EXISTS personal_genre_migration (
+    name TEXT NOT NULL PRIMARY KEY,
+    applied_at_utc TEXT NOT NULL,
+    detail TEXT
+);
+
+-- File-source architecture. The audio file is the only semantic input, so a
+-- snapshot records observed values, the field each was read from, and the
+-- workflow stage it was taken at. A stage is part of the primary key because
+-- the pre- and post-AutoTag states of one file are different facts.
+CREATE TABLE IF NOT EXISTS personal_genre_snapshot (
+    job_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    track_id BIGINT NULL,
+    read_at_utc TEXT NOT NULL,
+    PRIMARY KEY (job_id, file_path, stage)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_taxon (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_only INTEGER NOT NULL DEFAULT 0,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_taxon_kind_name
+    ON personal_genre_taxon (kind, name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS personal_genre_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'map',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- input_field scopes a mapping or rule to one file field. It replaces the
+-- provider `source` column, which cannot apply once the file is the input.
+-- The indexes over it are created after that column is added.
+
+CREATE TABLE IF NOT EXISTS personal_genre_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 1000,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_lock (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (track_id, taxon_id)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_scope_lock (
+    scope_type TEXT NOT NULL,
+    scope_id BIGINT NOT NULL,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope_type, scope_id, taxon_id)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_scope_lock_scope
+    ON personal_genre_scope_lock (scope_type, scope_id, enabled);
+
+CREATE TABLE IF NOT EXISTS personal_genre_track (
+    track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    preserved_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    observations_json TEXT NOT NULL DEFAULT '[]',
+    pre_autotag_json TEXT NULL,
+    post_autotag_json TEXT NULL,
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
+    ON personal_genre_track (primary_genre);
+
+CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    preserved_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_resolution_history_track
+    ON personal_genre_resolution_history (track_id, id DESC);
+
+-- One row per value read out of the file, in the order it appeared.
+CREATE TABLE IF NOT EXISTS personal_genre_observation_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    raw_value TEXT NOT NULL,
+    input_field TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'post_platform',
+    PRIMARY KEY (resolution_id, sequence)
+);
+
+-- origin_fields_json records which file fields a classification was seen in,
+-- which is what makes a field correction auditable. confidence/sources_json/
+-- evidence_state are provider-era columns: they are left in place so existing
+-- history is not destroyed, and nothing writes them any more.
+CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    origin_fields_json TEXT NOT NULL DEFAULT '[]',
+    user_locked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'suggested',
+    PRIMARY KEY (resolution_id, taxon_id)
+);
+
 CREATE TABLE IF NOT EXISTS mood_bucket (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
     mood TEXT NOT NULL,

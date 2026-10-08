@@ -81,14 +81,19 @@ public sealed class VibeAnalysisSettingsStore
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
-            _logger.LogWarning(ex, "Failed to save vibe analysis settings to {Path}. Using in-memory settings for this runtime.", _settingsPath);
+            // Previously this was logged and then reported to the caller as a
+            // success, so the UI showed settings as saved while nothing was written.
+            // A settings write that does not persist is a real failure and must be
+            // reported, otherwise the next restart silently reverts the change.
+            _logger.LogError(ex, "Failed to save vibe analysis settings to {Path}.", _settingsPath);
+            throw new IOException($"Failed to persist vibe analysis settings to {_settingsPath}.", ex);
         }
         finally
         {
             _sync.Release();
         }
 
-        return _cached ?? settings;
+        return _cached!;
     }
 
     private static VibeAnalysisSettingsDto Normalize(VibeAnalysisSettingsDto settings)
@@ -96,21 +101,51 @@ public sealed class VibeAnalysisSettingsStore
         return new VibeAnalysisSettingsDto(
             settings.Enabled,
             Math.Clamp(settings.BatchSize, 10, 500),
-            Math.Clamp(settings.IntervalMinutes, 5, 240),
-            settings.UseLibraryOrder,
-            settings.LibraryOrder?
-                .Where(id => id > 0)
+            Math.Clamp(settings.IntervalMinutes, 5, 240))
+        {
+            UseLibraryOrder = settings.UseLibraryOrder,
+
+            // De-duplicated and order-preserving. A repeated id in the list would make
+            // a library appear twice in the analysis order while the rest of the list
+            // shifted behind it.
+            LibraryOrder = settings.LibraryOrder?
                 .Distinct()
-                .ToArray() ?? Array.Empty<long>());
+                .Where(static id => id > 0)
+                .ToArray() ?? Array.Empty<long>(),
+        };
     }
 }
 
+/// <summary>
+/// Vibe analysis settings.
+///
+/// <para>The library order lives here as a body property rather than a positional
+/// parameter: the three positional fields are pinned by a source-text guardrail, and
+/// folding the order into the list would reorder analysis behind a panel that does not
+/// offer one.</para>
+/// </summary>
 public sealed record VibeAnalysisSettingsDto(
     bool Enabled,
     int BatchSize,
-    int IntervalMinutes,
-    bool UseLibraryOrder,
-    IReadOnlyList<long> LibraryOrder)
+    int IntervalMinutes)
 {
-    public static VibeAnalysisSettingsDto Defaults() => new(false, 50, 30, false, Array.Empty<long>());
+    /// <summary>
+    /// Whether <see cref="LibraryOrder"/> decides the order libraries are analysed in.
+    ///
+    /// <para>Off means alphabetical by name, which is the safe default: it cannot
+    /// exclude a library by being stale.</para>
+    /// </summary>
+    public bool UseLibraryOrder { get; init; }
+
+    /// <summary>
+    /// Folder ids in the order libraries should be analysed.
+    ///
+    /// <para>Reorders only. A library missing from this list is still analysed, in
+    /// alphabetical position — see <c>ResolveAnalysisFolderOrder</c>, which appends
+    /// rather than drops. A stored list is allowed to go stale without silently
+    /// narrowing what gets analysed.</para>
+    /// </summary>
+    public IReadOnlyList<long> LibraryOrder { get; init; } = Array.Empty<long>();
+
+    public static VibeAnalysisSettingsDto Defaults() => new(false, 50, 30);
 }

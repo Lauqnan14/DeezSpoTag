@@ -95,21 +95,13 @@ public sealed class EmbeddedVibeMetadataReader
                 && file.GetTag(TagTypes.Id3v2) is TagLib.Id3v2.Tag id3)
             {
                 var values = new List<string>();
-                foreach (var frame in id3.GetFrames<TagLib.Id3v2.TextInformationFrame>())
-                {
-                    if (frame.FrameId.ToString().Equals("TMOO", StringComparison.OrdinalIgnoreCase))
-                    {
-                        values.AddRange(frame.Text ?? Array.Empty<string>());
-                    }
-                }
+                values.AddRange(id3.GetFrames<TagLib.Id3v2.TextInformationFrame>()
+                    .Where(frame => frame.FrameId.ToString().Equals("TMOO", StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(frame => frame.Text ?? Array.Empty<string>()));
 
-                foreach (var frame in id3.GetFrames<TagLib.Id3v2.UserTextInformationFrame>())
-                {
-                    if (string.Equals(frame.Description, tag, StringComparison.OrdinalIgnoreCase))
-                    {
-                        values.AddRange(frame.Text ?? Array.Empty<string>());
-                    }
-                }
+                values.AddRange(id3.GetFrames<TagLib.Id3v2.UserTextInformationFrame>()
+                    .Where(frame => string.Equals(frame.Description, tag, StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(frame => frame.Text ?? Array.Empty<string>()));
 
                 return values.ToArray();
             }
@@ -119,23 +111,19 @@ public sealed class EmbeddedVibeMetadataReader
                 return xiph.GetField(tag);
             }
 
-            if (extension.Equals(".m4a", StringComparison.OrdinalIgnoreCase)
+            if ((extension.Equals(".m4a", StringComparison.OrdinalIgnoreCase)
                 || extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+                && file.GetTag(TagTypes.Apple) is TagLib.Mpeg4.AppleTag apple)
             {
-                if (file.GetTag(TagTypes.Apple) is TagLib.Mpeg4.AppleTag apple)
+                var values = new List<string>();
+                foreach (var raw in new[] { tag, mp4Alias ?? tag }
+                    .Select(key => apple.GetDashBox("com.apple.iTunes", key))
+                    .Where(raw => !string.IsNullOrWhiteSpace(raw)))
                 {
-                    var values = new List<string>();
-                    foreach (var key in new[] { tag, mp4Alias ?? tag })
-                    {
-                        var raw = apple.GetDashBox("com.apple.iTunes", key);
-                        if (!string.IsNullOrWhiteSpace(raw))
-                        {
-                            values.Add(raw);
-                        }
-                    }
-
-                    return values.ToArray();
+                    values.Add(raw!);
                 }
+
+                return values.ToArray();
             }
 
             return Array.Empty<string>();
@@ -160,14 +148,10 @@ public sealed class EmbeddedVibeMetadataReader
             var parts = separator is null
                 ? new[] { raw }
                 : raw.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var part in parts)
+            foreach (var value in parts
+                .Select(part => part.Trim())
+                .Where(value => value.Length != 0 && seen.Add(value)))
             {
-                var value = part.Trim();
-                if (value.Length == 0 || !seen.Add(value))
-                {
-                    continue;
-                }
-
                 output.Add(value);
             }
         }

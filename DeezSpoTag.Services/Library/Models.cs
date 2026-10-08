@@ -295,6 +295,68 @@ public sealed record TrackAnalysisResultDto(
     string? ArousalSource = null,
     string? EmbeddedSemanticFingerprint = null);
 
+/// <summary>
+/// One persisted Sonic Analysis embedding: a learned audio vector plus the
+/// provenance needed to decide whether it is still valid.
+///
+/// <para><see cref="Vector"/> is stored little-endian float32 and is expected to
+/// be L2 normalized, so cosine similarity reduces to a dot product. The declared
+/// <see cref="Dimensions"/> must match the vector length; a mismatch means a
+/// corrupt row and callers must reject it rather than score against it.</para>
+///
+/// <para>This is deliberately separate from <see cref="TrackAnalysisResultDto"/>.
+/// Sonic similarity is a distinct question from "what is this track classified
+/// as", and a ~5 KB vector must not be carried by every ordinary analysis query.</para>
+/// </summary>
+public sealed record SonicEmbeddingDto(
+    long TrackId,
+    long? LibraryId,
+    string ModelId,
+    string ModelVersion,
+    string EmbeddingVersion,
+    int Dimensions,
+    string PoolingMethod,
+    string NormalizationMethod,
+    string DistanceMetric,
+    IReadOnlyList<float> Vector,
+    long? SourceFileSize,
+    DateTimeOffset? SourceFileMtimeUtc,
+    DateTimeOffset AnalyzedAtUtc)
+{
+    /// <summary>True when the stored blob matches its declared width and holds
+    /// no NaN or Infinity. A vector that fails this must never be scored.</summary>
+    public bool IsUsable => Vector.Count > 0
+        && Vector.Count == Dimensions
+        && !Vector.Any(float.IsNaN)
+        && !Vector.Any(float.IsInfinity);
+}
+
+/// <summary>A track whose Sonic embedding is missing or out of date, with the
+/// source-file facts that made it a candidate.</summary>
+/// <param name="HasEmbedding">False when no vector exists at all; true when one
+/// exists but its recorded source revision no longer matches the file.</param>
+public sealed record TrackStaleSonicDto(
+    long TrackId,
+    string? FilePath,
+    long? SourceFileSize,
+    string? SourceFileMtime,
+    bool HasEmbedding);
+
+/// <summary>Sonic Analysis coverage for a library, used to decide whether a
+/// DJ or similarity query can run at all before it starts.</summary>
+public sealed record SonicCoverageDto(
+    long LibraryId,
+    int TotalTracks,
+    int TracksWithEmbedding,
+    int TracksAnalyzed,
+    int TracksUnavailable,
+    long NewestAnalyzedUtcTicks = 0)
+{
+    public double CoveragePercent => TotalTracks <= 0
+        ? 0d
+        : Math.Round(TracksWithEmbedding * 100d / TotalTracks, 1);
+}
+
 public sealed record PlayHistoryEntryDto(
     long TrackId,
     DateTimeOffset PlayedAtUtc,

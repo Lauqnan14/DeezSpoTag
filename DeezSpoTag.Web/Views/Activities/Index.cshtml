@@ -2611,6 +2611,35 @@ span.badge.badge-artwork-animated {
     padding: 10px 12px;
 }
 
+.media-operations-tab .analysis-hint {
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+.media-operations-tab .analysis-sonic-actions {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.media-operations-tab .analysis-sonic-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.media-operations-tab .analysis-sonic-message {
+    min-height: 1.2em;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.media-operations-tab .analysis-sonic-message.is-error {
+    color: var(--danger-color, #e05252);
+}
+
 .media-operations-tab .vibe-analysis-settings .form-control::placeholder {
     color: var(--text-muted);
 }
@@ -3843,6 +3872,60 @@ span.badge.badge-artwork-animated {
                                         </div>
                                     </div>
                                 </div>
+                                <div class="section-divider"></div>
+                                <div class="section-label">Sonic analysis</div>
+                                <p class="analysis-hint">
+                                    Learns how tracks sound to each other. Used later to build playlists from
+                                    acoustic neighbourhoods instead of tags alone. Adds a second pass over each
+                                    track, so it is off until you turn it on.
+                                </p>
+                                <div class="analysis-features-grid analysis-features-grid-main">
+                                    <div class="analysis-feature">
+                                        <span class="analysis-feature-label">Coverage</span>
+                                        <span class="analysis-feature-value" id="sonic-coverage">--</span>
+                                    </div>
+                                    <div class="analysis-feature">
+                                        <span class="analysis-feature-label">Embedded</span>
+                                        <span class="analysis-feature-value" id="sonic-embedded">--</span>
+                                    </div>
+                                    <div class="analysis-feature">
+                                        <span class="analysis-feature-label">Needs analysis</span>
+                                        <span class="analysis-feature-value" id="sonic-pending">--</span>
+                                    </div>
+                                    <div class="analysis-feature">
+                                        <span class="analysis-feature-label">Out of date</span>
+                                        <span class="analysis-feature-value" id="sonic-stale">--</span>
+                                    </div>
+                                </div>
+                                <div class="tool-card-controls vibe-analysis-settings">
+                                    <div class="settings-grid">
+                                        <div class="field-group">
+                                            <label class="field-label" for="sonic-reanalyze-batch">Re-analyse batch</label>
+                                            <div class="field-input">
+                                                <input id="sonic-reanalyze-batch" class="form-control" type="number" min="10" max="500" />
+                                                <span class="field-unit">tracks</span>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label class="field-label" for="sonic-model">Model</label>
+                                            <div class="field-input">
+                                                <input id="sonic-model" class="form-control" type="text" readonly />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="analysis-sonic-actions">
+                                    <label class="checkbox-group">
+                                        <input id="sonic-enabled" type="checkbox" />
+                                        <span>Enable sonic analysis</span>
+                                    </label>
+                                    <div class="analysis-sonic-buttons">
+                                        <button id="sonic-reanalyze" class="btn btn-secondary" type="button">Analyse missing or out of date</button>
+                                        <button id="sonic-rebuild-index" class="btn btn-secondary" type="button">Rebuild similarity index</button>
+                                    </div>
+                                    <div id="sonic-message" class="analysis-sonic-message" role="status" aria-live="polite"></div>
+                                </div>
+                                <div class="section-divider"></div>
                                 <div class="section-label">Audio features</div>
                                 <div class="analysis-features-grid analysis-features-grid-main">
                                     <div class="analysis-feature">
@@ -8554,6 +8637,7 @@ function initAnalysisCard() {
     loadLatestAnalysis();
     loadProcessingAnalysis();
     startAnalysisPolling();
+    initSonicAnalysis();
 }
 
 async function refreshAnalysisCard() {
@@ -8565,6 +8649,7 @@ async function refreshAnalysisCard() {
     await loadAnalysisStatus();
     await loadLatestAnalysis();
     await loadProcessingAnalysis();
+    await loadSonicStatus();
 }
 
 async function loadAnalysisSettings() {
@@ -8801,6 +8886,154 @@ async function saveAnalysisSettings(silentSuccess) {
         notifyActivity(`Failed to save analysis settings: ${error?.message || error}`, 'error');
         return false;
     }
+}
+
+// --- Sonic analysis -------------------------------------------------------
+//
+// Deliberately thin. The panel reports coverage and triggers maintenance, and
+// nothing about the embedding itself is configurable here: no dimension, no
+// pooling, no index parameters, no distance metric. Those are implementation
+// details, and surfacing them would invite tuning nobody can evaluate.
+
+function setSonicMessage(text, isError) {
+    const message = document.getElementById('sonic-message');
+    if (!message) {
+        return;
+    }
+
+    message.textContent = text || '';
+    message.classList.toggle('is-error', Boolean(isError));
+}
+
+function setSonicBusy(isBusy) {
+    ['sonic-reanalyze', 'sonic-rebuild-index'].forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) {
+            button.disabled = isBusy;
+        }
+    });
+}
+
+function renderSonicStatus(status) {
+    const coverage = document.getElementById('sonic-coverage');
+    const embedded = document.getElementById('sonic-embedded');
+    const pending = document.getElementById('sonic-pending');
+    const stale = document.getElementById('sonic-stale');
+    const model = document.getElementById('sonic-model');
+    if (!coverage || !embedded || !pending || !stale) {
+        return;
+    }
+
+    const enabledEl = document.getElementById('sonic-enabled');
+    if (enabledEl && document.activeElement !== enabledEl) {
+        enabledEl.checked = Boolean(status.enabled);
+    }
+
+    const batchEl = document.getElementById('sonic-reanalyze-batch');
+    if (batchEl && document.activeElement !== batchEl) {
+        batchEl.value = status.reanalyzeBatchSize ?? 50;
+    }
+
+    if (model) {
+        model.value = status.modelId
+            ? `${status.modelId} (${status.dimensions}d)` : '--';
+    }
+
+    // Coverage is the honest headline: a DJ that claims to be sonic is only
+    // really sonic over the part of the library that is embedded.
+    const percent = Number(status.coveragePercent ?? 0);
+    coverage.textContent = status.totalTracks > 0
+        ? `${percent}% (${status.totalEmbedded} / ${status.totalTracks})`
+        : 'No audio analysed';
+    embedded.textContent = `${status.totalEmbedded ?? 0}`;
+    pending.textContent = `${status.pendingEmbeddings ?? 0}`;
+    stale.textContent = `${status.totalStale ?? 0}`;
+}
+
+async function loadSonicStatus() {
+    try {
+        const response = await fetchJson('/api/library/analysis/sonic/status');
+        renderSonicStatus(response);
+    } catch (error) {
+        setSonicMessage(`Sonic status unavailable: ${error?.message || error}`, true);
+    }
+}
+
+async function saveSonicSettings() {
+    const enabledEl = document.getElementById('sonic-enabled');
+    const batchEl = document.getElementById('sonic-reanalyze-batch');
+    try {
+        const response = await activityFetch('/api/library/analysis/sonic/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                enabled: enabledEl?.checked ?? false,
+                reanalyzeStale: true,
+                reanalyzeBatchSize: Number(batchEl?.value || 50)
+            })
+        });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+
+        setSonicMessage('Sonic analysis settings saved.');
+        await loadSonicStatus();
+        return true;
+    } catch (error) {
+        setSonicMessage(`Failed to save sonic settings: ${error?.message || error}`, true);
+        return false;
+    }
+}
+
+async function runSonicReanalyze() {
+    setSonicBusy(true);
+    setSonicMessage('Analysing missing and out-of-date tracks...');
+    try {
+        const response = await activityFetch('/api/library/analysis/sonic/reanalyze', { method: 'POST' });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+
+        const result = await response.json();
+        setSonicMessage(result.message || 'Sonic re-analysis finished.', !result.accepted);
+        await loadSonicStatus();
+    } catch (error) {
+        setSonicMessage(`Sonic re-analysis failed: ${error?.message || error}`, true);
+    } finally {
+        setSonicBusy(false);
+    }
+}
+
+async function runSonicRebuildIndex() {
+    setSonicBusy(true);
+    setSonicMessage('Rebuilding similarity index...');
+    try {
+        const response = await activityFetch('/api/library/analysis/sonic/rebuild-index', { method: 'POST' });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+
+        const status = await response.json();
+        renderSonicStatus(status);
+        const megabytes = Number(status.indexMegabytes ?? 0);
+        setSonicMessage(`Similarity index rebuilt: ${status.indexVectorCount ?? 0} vectors, ${megabytes.toFixed(1)} MB.`);
+    } catch (error) {
+        setSonicMessage(`Index rebuild failed: ${error?.message || error}`, true);
+    } finally {
+        setSonicBusy(false);
+    }
+}
+
+function initSonicAnalysis() {
+    const enabledEl = document.getElementById('sonic-enabled');
+    if (!enabledEl) {
+        return;
+    }
+
+    enabledEl.addEventListener('change', saveSonicSettings);
+    document.getElementById('sonic-reanalyze')?.addEventListener('click', runSonicReanalyze);
+    document.getElementById('sonic-rebuild-index')?.addEventListener('click', runSonicRebuildIndex);
+    loadSonicStatus();
 }
 
 async function persistAnalysisSettings(payload) {

@@ -189,9 +189,21 @@ for index, response in enumerate(responses, start=1):
         raise RuntimeError(f"persistent vibe worker returned the wrong analysis version: {response}")
     if response.get("GenreModel") != "discogs519-maest-30s-pw-519l":
         raise RuntimeError(f"persistent vibe worker did not initialize Discogs519/MAEST: {response}")
-    if not isinstance(response.get("EssentiaGenreEvidence"), list):
-        raise RuntimeError(f"persistent vibe worker omitted Essentia genre evidence: {response}")
-    for field in ("MoodTags", "Genres", "DanceabilityMl", "ValenceMl", "ArousalMl"):
+    genre_evidence = response.get("EssentiaGenreEvidence")
+    if not isinstance(genre_evidence, list) or not genre_evidence:
+        raise RuntimeError(f"persistent vibe worker returned no Essentia genre evidence: {response}")
+    first_evidence = genre_evidence[0]
+    if not isinstance(first_evidence.get("label"), str) or not first_evidence["label"].strip():
+        raise RuntimeError(f"persistent vibe worker genre evidence has no label: {response}")
+    if not isinstance(first_evidence.get("score"), (int, float)):
+        raise RuntimeError(f"persistent vibe worker genre evidence has no score: {response}")
+    if first_evidence.get("model") != "discogs519-maest-30s-pw-519l":
+        raise RuntimeError(f"persistent vibe worker genre evidence has the wrong model: {response}")
+    if response.get("ValenceSource") != "deam-msd-musicnn-2":
+        raise RuntimeError(f"persistent vibe worker omitted DEAM valence provenance: {response}")
+    if response.get("ArousalSource") != "deam-msd-musicnn-2":
+        raise RuntimeError(f"persistent vibe worker omitted DEAM arousal provenance: {response}")
+    for field in ("MoodTags", "Genres", "DanceabilityMl", "ValenceMl", "ArousalMl", "AudioTruncated"):
         if field not in response:
             raise RuntimeError(f"persistent vibe response missing {field}: {response}")
 print("persistent vibe worker responses=", len(responses))

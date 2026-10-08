@@ -10,6 +10,7 @@ while preserving DeezSpoTag's CLI contract:
 """
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -37,11 +38,15 @@ except RuntimeError:
 # Essentia imports (graceful fallback)
 ESSENTIA_AVAILABLE = False
 es = None
+EssentiaPool = None
 try:
     import essentia  # type: ignore
     essentia.log.warningActive = False
     essentia.log.infoActive = False
     import essentia.standard as es  # type: ignore
+    # essentia.Pool is the container used to pass named inputs into
+    # TensorflowPredict (required by the MAEST -> Discogs519 head path).
+    EssentiaPool = getattr(essentia, "Pool", None)
     ESSENTIA_AVAILABLE = True
 except ImportError:
     pass
@@ -145,7 +150,192 @@ REQUIRED_ENHANCED_MODELS = [
     "mood_aggressive-msd-musicnn-1.pb",
 ]
 
+# Acoustic genre model manifests. Both branches are optional relative to
+# enhanced mode; whichever one loads is reported honestly as GenreModel.
+GENRE_MODEL_DISCogs519 = "discogs519-maest-30s-pw-519l"
+GENRE_MODEL_DISCogs400 = "discogs400-discogs-effnet"
+
+REQUIRED_GENRE519_MODELS = [
+    "discogs-maest-30s-pw-519l-2.pb",
+    "genre_discogs519-discogs-maest-30s-pw-519l-1.pb",
+    "genre_discogs519-discogs-maest-30s-pw-519l-1.json",
+]
+
+REQUIRED_GENRE400_MODELS = [
+    "discogs-effnet-bs64-1.pb",
+    "genre_discogs400-discogs-effnet-1.pb",
+    "genre_discogs400-discogs-effnet-1.json",
+]
+
+# Top-K genre evidence. The threshold is relative to the top-1 score so it stays
+# meaningful across 400-way and 519-way softmax heads, instead of using a fixed
+# absolute floor that a 519-way head almost never clears.
+GENRE_EVIDENCE_TOP_K = 8
+GENRE_SCORE_ABSOLUTE_FLOOR = 0.01
+GENRE_SCORE_RELATIVE_RATIO = 0.25
+
 FFMPEG_ENV_NAMES = ("DEEZSPOTAG_FFMPEG_PATH", "FFMPEG_PATH")
+
+DEFAULT_MAX_ANALYSIS_SECONDS = 600
+MIN_MAX_ANALYSIS_SECONDS = 30
+MAX_MAX_ANALYSIS_SECONDS = 7200
+
+MAX_ANALYSIS_SECONDS_ENV_NAME = "VIBE_ANALYZER_MAX_SECONDS"
+
+# ---------------------------------------------------------------------------
+# Sonic Analysis
+#
+# The primary Sonic representation is the Discogs-EffNet embedding. It is
+# already part of the installed Essentia ecosystem and this analyzer already
+# loads the extractor, so no new model family or ML runtime is introduced.
+#
+# The extractor emits one 1280-wide frame per second of audio, so a 600 s track
+# yields ~600 frames. Frames are mean-pooled to a single track-level vector and
+# L2-normalized, which makes cosine similarity a plain dot product.
+#
+# A pooled vector therefore depends on the analysed duration. Callers must treat
+# the source audio length as part of the cache key, not only size and mtime.
+# ---------------------------------------------------------------------------
+SONIC_MODEL_ID = "discogs-effnet-bs64-1"
+SONIC_MODEL_VERSION = "1"
+SONIC_OUTPUT_NODE = "PartitionedCall:1"
+SONIC_EMBEDDING_VERSION = "embedding-v1"
+SONIC_POOLING_METHOD = "mean-v1"
+SONIC_NORMALIZATION_METHOD = "l2-v1"
+SONIC_DISTANCE_METRIC = "cosine"
+SONIC_DIMENSIONS = 1280
+SONIC_EMBEDDING_FILE = "discogs-effnet-bs64-1.pb"
+
+SONIC_ENABLED_ENV_NAME = "VIBE_SONIC_ENABLED"
+
+
+def sonic_enabled() -> bool:
+    return os.environ.get(SONIC_ENABLED_ENV_NAME, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def pool_sonic_embedding(frames: Any) -> Optional[Dict[str, Any]]:
+    """Mean-pool frame embeddings into one normalized track vector.
+
+    Kept as a single testable entry point so the pooling contract cannot drift
+    between the worker and batch paths. Returns None when the input is unusable
+    rather than emitting a vector with NaN or Infinity in it, because a corrupt
+    vector silently poisons every similarity computed from it.
+    """
+    if frames is None or np is None:
+        return None
+
+    try:
+        matrix = np.asarray(frames, dtype=np.float64)
+    except Exception:
+        return None
+
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(1, -1)
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        return None
+
+    pooled = matrix.mean(axis=0)
+    if not np.isfinite(pooled).all():
+        return None
+
+    norm = float(np.linalg.norm(pooled))
+    if not np.isfinite(norm) or norm <= 0.0:
+        return None
+
+    normalized = pooled / norm
+    if not np.isfinite(normalized).all():
+        return None
+
+    return {
+        "modelId": SONIC_MODEL_ID,
+        "modelVersion": SONIC_MODEL_VERSION,
+        "embeddingVersion": SONIC_EMBEDDING_VERSION,
+        "dimensions": int(normalized.shape[0]),
+        "pooling": SONIC_POOLING_METHOD,
+        "normalization": SONIC_NORMALIZATION_METHOD,
+        "distanceMetric": SONIC_DISTANCE_METRIC,
+        "frameCount": int(matrix.shape[0]),
+        "values": normalized.tolist(),
+    }
+
+_warned_once: set = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Emit a single stderr diagnostic per process so a per-track failure does
+    not flood the worker's diagnostics buffer."""
+    if key in _warned_once:
+        return
+    _warned_once.add(key)
+    try:
+        sys.stderr.write(message.rstrip() + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def resolve_max_analysis_seconds() -> int:
+    """Upper bound on how much audio is decoded per track. Long files (DJ mixes,
+    audiobooks) otherwise produce multi-hundred-megabyte temp WAVs and blow the
+    per-track request timeout, which restarts the analyzer worker."""
+    raw = os.environ.get(MAX_ANALYSIS_SECONDS_ENV_NAME, "").strip()
+    try:
+        configured = int(raw) if raw else DEFAULT_MAX_ANALYSIS_SECONDS
+    except ValueError:
+        configured = DEFAULT_MAX_ANALYSIS_SECONDS
+    return max(MIN_MAX_ANALYSIS_SECONDS, min(MAX_MAX_ANALYSIS_SECONDS, configured))
+
+
+def top_genre_evidence(
+    scores: List[float],
+    labels: List[str],
+    model: str,
+) -> List[Dict[str, Any]]:
+    """Pick the top-K genre labels using a scale-relative threshold.
+
+    Kept free of numpy so the rule is directly unit-testable, and shared by the
+    Discogs519/MAEST and Discogs400/EffNet branches so both behave identically.
+    """
+    if not scores:
+        return []
+
+    if len(scores) != len(labels) or any(not isinstance(label, str) or not label.strip() for label in labels):
+        raise ValueError("Genre scores must align with nonempty class labels")
+
+    order = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
+    top_score = scores[order[0]]
+    if top_score <= 0:
+        return []
+
+    threshold = max(GENRE_SCORE_ABSOLUTE_FLOOR, top_score * GENRE_SCORE_RELATIVE_RATIO)
+
+    evidence: List[Dict[str, Any]] = []
+    for index in order[:GENRE_EVIDENCE_TOP_K]:
+        score = scores[index]
+        # The top-1 label is always kept so a loaded model never yields empty
+        # evidence, however diffuse the head's distribution is.
+        if score < threshold and evidence:
+            continue
+        label = labels[index]
+        evidence.append({
+            "label": label,
+            "score": round(float(score), 4),
+            "model": model,
+        })
+        if len(evidence) >= GENRE_EVIDENCE_TOP_K:
+            break
+    return evidence
+
+
+def _mean_scores(scores: Any, expected_class_count: int) -> List[float]:
+    """Average frame/batch dimensions while preserving the final class axis."""
+    if scores is None or scores.size == 0:
+        return []
+    if expected_class_count <= 0 or scores.ndim == 0 or scores.shape[-1] != expected_class_count:
+        raise ValueError(
+            f"Expected {expected_class_count} genre classes on the final axis; got {scores.shape}")
+    mean_scores = scores.reshape(-1, expected_class_count).mean(axis=0)
+    return [float(value) for value in mean_scores]
 
 
 def resolve_ffmpeg_path() -> Optional[str]:
@@ -172,6 +362,8 @@ class AudioAnalyzer:
         self.deam_predictor = self._load_deam_model()
         self.genre_predictor = None
         self.genre_labels: List[str] = []
+        self.sonic_enabled = sonic_enabled()
+        self.sonic_extractor = None
 
         self.rhythm_extractor = None
         self.key_extractor = None
@@ -221,29 +413,30 @@ class AudioAnalyzer:
             return []
 
     def _extract_essentia_genre_evidence(self, audio_16k):
-        if self.maest_genre_extractor is not None and self.genre519_predictor is not None and np is not None:
+        if (
+            self.maest_genre_extractor is not None
+            and self.genre519_predictor is not None
+            and np is not None
+            and EssentiaPool is not None
+        ):
             try:
                 embeddings = self.maest_genre_extractor(audio_16k)
-                pool = Pool()
+                pool = EssentiaPool()
                 pool.set("embeddings", embeddings)
                 scores = np.array(self.genre519_predictor(pool)["PartitionedCall/Identity_1"])
-                average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
-                if average_scores.size == 0:
-                    return []
-                top_indices = np.argsort(average_scores)[::-1][:8]
-                evidence = []
-                for index in top_indices:
-                    if float(average_scores[index]) < 0.15:
-                        continue
-                    label = self.genre519_labels[index] if index < len(self.genre519_labels) else f"genre_{index}"
-                    evidence.append({
-                        "label": label,
-                        "score": round(float(average_scores[index]), 4),
-                        "model": self.genre_model_name or "discogs519-maest-30s-pw-519l",
-                    })
-                return evidence
-            except Exception:
-                return []
+                return top_genre_evidence(
+                    _mean_scores(scores, len(self.genre519_labels)),
+                    self.genre519_labels,
+                    self.genre_model_name or GENRE_MODEL_DISCogs519,
+                )
+            except Exception as exc:
+                # Degrade to the EffNet/Discogs400 branch instead of returning no
+                # evidence at all, and say so once so the cause is diagnosable.
+                _warn_once(
+                    "discogs519",
+                    f"vibe analyzer Discogs519/MAEST genre extraction failed, "
+                    f"falling back to Discogs400/EffNet: {exc}",
+                )
 
         if self.effnet_extractor is None or self.genre_predictor is None or np is None:
             return []
@@ -251,22 +444,13 @@ class AudioAnalyzer:
         try:
             effnet_embeddings = self.effnet_extractor(audio_16k)
             scores = np.array(self.genre_predictor(effnet_embeddings))
-            average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
-            if average_scores.size == 0:
-                return []
-            top_indices = np.argsort(average_scores)[::-1][:8]
-            evidence = []
-            for index in top_indices:
-                if float(average_scores[index]) < 0.15:
-                    continue
-                label = self.genre_labels[index] if index < len(self.genre_labels) else f"genre_{index}"
-                evidence.append({
-                    "label": label,
-                    "score": round(float(average_scores[index]), 4),
-                    "model": "discogs400-discogs-effnet",
-                })
-            return evidence
-        except Exception:
+            return top_genre_evidence(
+                _mean_scores(scores, len(self.genre_labels)),
+                self.genre_labels,
+                GENRE_MODEL_DISCogs400,
+            )
+        except Exception as exc:
+            _warn_once("discogs400", f"vibe analyzer Discogs400/EffNet genre extraction failed: {exc}")
             return []
 
 
@@ -302,31 +486,6 @@ class AudioAnalyzer:
         except Exception:
             return None
 
-    def _extract_essentia_genres(self, audio_16k) -> List[str]:
-        if self.effnet_extractor is None or self.genre_predictor is None or np is None:
-            return []
-
-        try:
-            effnet_embeddings = self.effnet_extractor(audio_16k)
-            scores = np.array(self.genre_predictor(effnet_embeddings))
-            average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
-            if average_scores.size == 0:
-                return []
-
-            top_indices = np.argsort(average_scores)[::-1][:8]
-            genres: List[str] = []
-            for index in top_indices:
-                if float(average_scores[index]) < 0.15:
-                    continue
-                if self.genre_labels and index < len(self.genre_labels):
-                    genres.append(self.genre_labels[index])
-                else:
-                    genres.append(f"genre_{index}")
-
-            return genres
-        except Exception:
-            return []
-
     def _create_prediction_head(self, file_name: str):
         model_path = self._model_path(file_name)
         if not os.path.exists(model_path):
@@ -344,6 +503,60 @@ class AudioAnalyzer:
             predictor = self._create_prediction_head(file_name)
             if predictor is not None:
                 self.prediction_models[model_name] = predictor
+
+    def _load_sonic_model(self) -> None:
+        """Load the EffNet extractor dedicated to Sonic Analysis.
+
+        The genre branch only reaches EffNet when MAEST is unavailable, so a
+        dedicated instance is required: otherwise Sonic Analysis would silently
+        produce no vectors on any deployment that ships MAEST, which is every
+        application image. Load failures are non-fatal; semantic analysis must
+        still complete when Sonic cannot run.
+        """
+        if not self.sonic_enabled or np is None:
+            return
+
+        if TensorflowPredictEffnetDiscogs is None:
+            _warn_once(
+                "sonic-algorithm",
+                "vibe analyzer cannot use Sonic Analysis: Essentia is missing "
+                "TensorflowPredictEffnetDiscogs.",
+            )
+            return
+
+        model_path = self._model_path(SONIC_EMBEDDING_FILE)
+        if not os.path.exists(model_path) or os.path.getsize(model_path) <= 0:
+            _warn_once(
+                "sonic-model",
+                "vibe analyzer cannot use Sonic Analysis; missing model file: "
+                + os.path.basename(model_path),
+            )
+            return
+
+        try:
+            self.sonic_extractor = TensorflowPredictEffnetDiscogs(
+                graphFilename=model_path,
+                output=SONIC_OUTPUT_NODE,
+            )
+        except Exception as exc:
+            self.sonic_extractor = None
+            _warn_once(
+                "sonic-init",
+                f"vibe analyzer failed to initialize Sonic Analysis: {exc}",
+            )
+
+    def _extract_sonic_embedding(self, audio_16k) -> Optional[Dict[str, Any]]:
+        """Run the Sonic extractor and pool its frames into one track vector."""
+        if self.sonic_extractor is None:
+            return None
+        try:
+            return pool_sonic_embedding(self.sonic_extractor(audio_16k))
+        except Exception as exc:
+            _warn_once(
+                "sonic-extract",
+                f"vibe analyzer Sonic embedding extraction failed: {exc}",
+            )
+            return None
 
     def _load_effnet_genre_models(self) -> None:
         if TensorflowPredictEffnetDiscogs is None:
@@ -372,23 +585,41 @@ class AudioAnalyzer:
 
         if self.genre_predictor is not None:
             self.genre_labels = self._load_genre_labels()
+            if self.genre_labels:
+                # Only claim this model when the head, the extractor and the label
+                # set are all usable; otherwise GenreModel stays unset and the
+                # payload reports the truth (no genre model available).
+                self.genre_model_name = GENRE_MODEL_DISCogs400
 
     def _load_discogs519_models(self):
         genre_model = os.environ.get("VIBE_GENRE_MODEL", "discogs519").strip().lower()
         if genre_model != "discogs519":
-            if genre_model == "discogs400":
-                self.genre_model_name = "discogs400-discogs-effnet"
+            # Explicit diagnostic override. Provenance is still decided by whether
+            # the Discogs400 head actually loads.
             return
 
-        if TensorflowPredictMAEST is None or TensorflowPredict is None:
-            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+        if TensorflowPredictMAEST is None or TensorflowPredict is None or EssentiaPool is None:
+            _warn_once(
+                "discogs519-algorithms",
+                "vibe analyzer cannot use Discogs519/MAEST: Essentia is missing "
+                "TensorflowPredictMAEST, TensorflowPredict or essentia.Pool.",
+            )
             return
 
         maest_path = self._model_path("discogs-maest-30s-pw-519l-2.pb")
         genre519_path = self._model_path("genre_discogs519-discogs-maest-30s-pw-519l-1.pb")
         labels_path = self._model_path("genre_discogs519-discogs-maest-30s-pw-519l-1.json")
-        if not (os.path.exists(maest_path) and os.path.exists(genre519_path)):
-            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+        missing = [
+            path
+            for path in (maest_path, genre519_path, labels_path)
+            if not os.path.exists(path) or os.path.getsize(path) <= 0
+        ]
+        if missing:
+            _warn_once(
+                "discogs519-models",
+                "vibe analyzer cannot use Discogs519/MAEST; missing model files: "
+                + ", ".join(os.path.basename(path) for path in missing),
+            )
             return
 
         try:
@@ -409,15 +640,19 @@ class AudioAnalyzer:
                 inputs=["embeddings"],
                 outputs=["PartitionedCall/Identity_1"],
             )
-            self.genre_model_name = "discogs519-maest-30s-pw-519l"
-        except Exception:
+            self.genre_model_name = GENRE_MODEL_DISCogs519
+        except Exception as exc:
             self.maest_genre_extractor = None
             self.genre519_predictor = None
             self.genre519_labels = []
-            self.genre_model_name = "discogs519-maest-30s-pw-519l"
+            _warn_once(
+                "discogs519-load",
+                f"vibe analyzer failed to initialize Discogs519/MAEST: {exc}",
+            )
 
     def _load_ml_models(self):
         self._load_discogs519_models()
+        self._load_sonic_model()
         if TensorflowPredictMusiCNN is None or TensorflowPredict2D is None:
             self.enhanced_mode = False
             return
@@ -462,11 +697,19 @@ class AudioAnalyzer:
         except Exception:
             return None
 
+    @staticmethod
+    def _discard_temp_file(temp_path: str) -> None:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
     def _transcode_to_temp_wav(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
         ffmpeg_path = resolve_ffmpeg_path()
         if not ffmpeg_path:
             return (None, "ffmpeg is not available for audio decode fallback")
 
+        max_seconds = resolve_max_analysis_seconds()
         temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         temp_path = temp_file.name
         temp_file.close()
@@ -481,6 +724,10 @@ class AudioAnalyzer:
             file_path,
             "-map",
             "0:a:0",
+            # Bound the decode so very long files cannot produce a multi-hundred
+            # megabyte WAV or exceed the host per-track request timeout.
+            "-t",
+            str(max_seconds),
             "-ac",
             "1",
             "-ar",
@@ -500,11 +747,16 @@ class AudioAnalyzer:
             )
             if completed.returncode != 0 or not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
                 message = (completed.stderr or "ffmpeg could not decode audio").strip()
+                # ffmpeg has already created the file; leaving a partial/empty WAV
+                # behind leaks container storage on every undecodable track.
+                self._discard_temp_file(temp_path)
                 return (None, message)
             return (temp_path, None)
         except subprocess.TimeoutExpired:
+            self._discard_temp_file(temp_path)
             return (None, "ffmpeg decode fallback timed out")
         except Exception as exc:
+            self._discard_temp_file(temp_path)
             return (None, str(exc))
 
     def load_audio_pair(self, file_path: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
@@ -519,10 +771,7 @@ class AudioAnalyzer:
                 return (None, None, "Unable to decode transcoded audio")
             return (audio_44k, audio_16k, None)
         finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+            self._discard_temp_file(temp_path)
 
     @staticmethod
     def _default_analysis_result() -> Dict[str, Any]:
@@ -609,6 +858,11 @@ class AudioAnalyzer:
             result["_error"] = decode_error or "Unable to decode audio"
             return result
 
+        # A decoded buffer that fills the configured budget means the source was
+        # longer than the cap; surface it instead of silently analysing a prefix.
+        max_seconds = resolve_max_analysis_seconds()
+        result["audioTruncated"] = len(audio_44k) >= int(44100 * max_seconds * 0.99)
+
         try:
             result.update(self._extract_core_audio_metrics(audio_44k))
             bpm = result.get("bpm")
@@ -619,7 +873,8 @@ class AudioAnalyzer:
                     ml_features = self._extract_ml_features(audio_16k)
                     result.update(ml_features)
                     result["analysisMode"] = "enhanced"
-                except Exception:
+                except Exception as exc:
+                    _warn_once("ml-features", f"vibe analyzer ML feature extraction failed: {exc}")
                     self._apply_standard_estimates(result, scale, bpm)
             else:
                 self._apply_standard_estimates(result, scale, bpm)
@@ -628,10 +883,30 @@ class AudioAnalyzer:
 
             result["essentiaGenreEvidence"] = genre_evidence
 
-            result["genreModel"] = self.genre_model_name or ("discogs519-maest-30s-pw-519l" if self.maest_genre_extractor is not None else "discogs400-discogs-effnet")
+            # Report only the model that actually produced the evidence above.
+            result["genreModel"] = self.genre_model_name
 
             result["essentiaGenres"] = [entry["label"] for entry in genre_evidence]
             result["moodTags"] = self._generate_mood_tags(result)
+
+            # Sonic Analysis is additive and strictly isolated: a failure here
+            # must never turn a completed semantic analysis into a failure. It
+            # runs outside the block that can raise, and a missing vector simply
+            # reports "sonicUnavailable" so the caller can record that state
+            # without failing the track.
+            if self.sonic_enabled:
+                try:
+                    sonic = self._extract_sonic_embedding(audio_16k)
+                    if sonic is None:
+                        result["sonicUnavailable"] = True
+                    else:
+                        result["sonicEmbedding"] = sonic
+                except Exception as exc:
+                    _warn_once(
+                        "sonic-analyze",
+                        f"vibe analyzer Sonic analysis failed: {exc}",
+                    )
+                    result["sonicUnavailable"] = True
         except Exception as exc:
             result["_error"] = str(exc)
 
@@ -919,8 +1194,30 @@ class AudioAnalyzer:
         return deduped
 
 
+def _encode_sonic_vector(sonic: Dict[str, Any]) -> Optional[str]:
+    """Serialise the pooled vector as little-endian float32 base64.
+
+    Only the pooled 1280-float vector crosses the process boundary, never the
+    per-second frame matrix: 1280 float32 values are ~5 KB raw, whereas a
+    600-frame unpooled matrix would be ~3 MB per track.
+    """
+    if np is None or not isinstance(sonic, dict):
+        return None
+    values = sonic.get("values")
+    if not values:
+        return None
+    try:
+        payload = np.asarray(values, dtype="<f4")
+    except Exception:
+        return None
+    if not np.isfinite(payload).all():
+        return None
+    return base64.b64encode(payload.tobytes()).decode("ascii")
+
+
 def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    sonic = result.get("sonicEmbedding")
+    payload = {
         "ok": True,
         "retryable": False,
         "AnalysisMode": result.get("analysisMode", "standard"),
@@ -951,10 +1248,30 @@ def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "TonalAtonal": None,
         "ValenceMl": result.get("valence"),
         "ArousalMl": result.get("arousal"),
+        "ValenceSource": result.get("valenceSource"),
+        "ArousalSource": result.get("arousalSource"),
         "DanceabilityMl": result.get("danceabilityMl"),
         "Loudness": result.get("loudness"),
         "DynamicComplexity": result.get("dynamicRange"),
+        "AudioTruncated": bool(result.get("audioTruncated", False)),
     }
+    if isinstance(sonic, dict):
+        encoded = _encode_sonic_vector(sonic)
+        if encoded is not None:
+            payload["SonicEmbedding"] = {
+                "ModelId": sonic.get("modelId"),
+                "ModelVersion": sonic.get("modelVersion"),
+                "EmbeddingVersion": sonic.get("embeddingVersion"),
+                "Dimensions": int(sonic.get("dimensions") or 0),
+                "Pooling": sonic.get("pooling"),
+                "Normalization": sonic.get("normalization"),
+                "DistanceMetric": sonic.get("distanceMetric"),
+                "FrameCount": int(sonic.get("frameCount") or 0),
+                "VectorBase64": encoded,
+            }
+    if result.get("sonicUnavailable"):
+        payload["SonicUnavailable"] = True
+    return payload
 
 
 _process_analyzer: Optional[AudioAnalyzer] = None
@@ -1124,6 +1441,9 @@ def _probe_payload(models_dir: Optional[str] = None) -> Dict[str, Any]:
         "enhancedMode": False,
         "missingEnhancedModels": [],
         "loadedPredictionHeads": [],
+        "genreModel": None,
+        "genreModelLoaded": False,
+        "missingGenreModelFiles": [],
     }
 
     if missing_required:
@@ -1151,6 +1471,17 @@ def _probe_payload(models_dir: Optional[str] = None) -> Dict[str, Any]:
     payload["enhancedMode"] = analyzer.enhanced_mode
     payload["musicnnLoaded"] = analyzer.musicnn_model is not None
     payload["loadedPredictionHeads"] = loaded_heads
+
+    # Report the acoustic genre branch that actually initialized so the host can
+    # distinguish a full Discogs519 setup from a Discogs400 downgrade.
+    payload["genreModel"] = analyzer.genre_model_name
+    payload["genreModelLoaded"] = analyzer.genre_model_name is not None
+    payload["missingGenreModelFiles"] = sorted(
+        file_name
+        for file_name in REQUIRED_GENRE519_MODELS
+        if not os.path.exists(os.path.join(models_dir, file_name))
+        or os.path.getsize(os.path.join(models_dir, file_name)) <= 0
+    )
 
     if not analyzer.enhanced_mode:
         payload["ok"] = False

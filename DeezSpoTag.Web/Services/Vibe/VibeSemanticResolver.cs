@@ -4,7 +4,7 @@ namespace DeezSpoTag.Web.Services.Vibe;
 
 /// <summary>
 /// Source-aware Vibe resolution. Priority per semantic kind:
-/// Audiomack track metadata → Last.fm track tags → acoustic (Discogs519 /
+/// Audiomack track metadata → Last.fm track tags → acoustic (Discogs genre head /
 /// Essentia moods) → Last.fm artist fallback. Priority is not destructive
 /// replacement: every independent piece of evidence stays visible.
 /// </summary>
@@ -83,7 +83,9 @@ public static class VibeSemanticResolver
         AppendLastFm(evidence, lastFmTrackTags, VibeEvidenceScope.Track, LastFmTagService.VibeTrackTagWeight);
         AppendLastFm(evidence, lastFmArtistTags, VibeEvidenceScope.Artist, LastFmTagService.VibeArtistTagWeight);
 
-        // Acoustic: Discogs519 hierarchy split (broad genre / style) + Essentia moods.
+        // Acoustic: Discogs hierarchy split (broad genre / style) + Essentia moods.
+        // The source name is derived from the model that actually produced each
+        // label, so a Discogs400 downgrade is never reported as Discogs519.
         if (acousticGenres is not null)
         {
             foreach (var acoustic in acousticGenres)
@@ -91,18 +93,19 @@ public static class VibeSemanticResolver
                 var separator = acoustic.Label.IndexOf("---", StringComparison.Ordinal);
                 var broad = separator > 0 ? acoustic.Label[..separator].Trim() : acoustic.Label.Trim();
                 var style = separator > 0 ? acoustic.Label[(separator + 3)..].Trim() : string.Empty;
+                var source = AcousticSourceName(acoustic.Model);
 
                 if (broad.Length > 0)
                 {
                     evidence.Add(Build(
-                        "essentia-discogs519", VibeSemanticKind.Genre, VibeEvidenceScope.Audio,
+                        source, VibeSemanticKind.Genre, VibeEvidenceScope.Audio,
                         broad, AcousticWeight * acoustic.Score, canonicalRaw: acoustic.Label));
                 }
 
                 if (style.Length > 0)
                 {
                     evidence.Add(Build(
-                        "essentia-discogs519", VibeSemanticKind.Style, VibeEvidenceScope.Audio,
+                        source, VibeSemanticKind.Style, VibeEvidenceScope.Audio,
                         style, AcousticWeight * acoustic.Score, canonicalRaw: acoustic.Label));
                 }
             }
@@ -123,6 +126,26 @@ public static class VibeSemanticResolver
             ResolveKind(evidence, VibeSemanticKind.Style),
             ResolveKind(evidence, VibeSemanticKind.Mood),
             evidence);
+    }
+
+    /// <summary>Derive the acoustic evidence source from the genre model that
+    /// actually produced the label, so provenance stays honest when the analyzer
+    /// runs with a Discogs400 head instead of Discogs519/MAEST.</summary>
+    public static string AcousticSourceName(string? genreModel)
+    {
+        if (string.IsNullOrWhiteSpace(genreModel))
+        {
+            return "essentia-acoustic";
+        }
+
+        if (genreModel.Contains("discogs519", StringComparison.OrdinalIgnoreCase))
+        {
+            return "essentia-discogs519";
+        }
+
+        return genreModel.Contains("discogs400", StringComparison.OrdinalIgnoreCase)
+            ? "essentia-discogs400"
+            : "essentia-acoustic";
     }
 
     private static VibeSemanticEvidence Build(

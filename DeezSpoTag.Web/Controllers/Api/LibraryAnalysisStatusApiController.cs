@@ -16,7 +16,6 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly IAudiomackVibeMetadataService _audiomackVibeMetadataService;
     private readonly LastFmTagService _lastFmTagService;
-    private readonly VibeAnalysisSettingsStore _vibeAnalysisSettingsStore;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
 
     public LibraryAnalysisStatusApiController(
@@ -29,21 +28,21 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     {
         _audiomackVibeMetadataService = audiomackVibeMetadataService;
         _lastFmTagService = lastFmTagService;
-        _vibeAnalysisSettingsStore = vibeAnalysisSettingsStore;
         _settingsService = settingsService;
         _repository = repository;
         _analysisService = analysisService;
     }
 
     [HttpGet("status")]
-    public async Task<IActionResult> GetStatus(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetStatus(CancellationToken cancellationToken, [FromQuery] long? libraryId = null)
     {
-        // The progress counter counts exactly the libraries enabled for Vibe
-        // analysis (the settings' library order); no selection = all enabled.
-        var settings = await _vibeAnalysisSettingsStore.LoadAsync().ConfigureAwait(false);
-        var libraryIds = settings.UseLibraryOrder && settings.LibraryOrder.Count > 0
-            ? settings.LibraryOrder
-            : null;
+        if (libraryId is <= 0)
+        {
+            return BadRequest("libraryId must be positive.");
+        }
+
+        // The card supplies its displayed library; other callers can still request global totals.
+        var libraryIds = libraryId.HasValue ? new[] { libraryId.Value } : null;
         var status = await _repository.GetAnalysisStatusAsync(libraryIds, cancellationToken);
         return Ok(status);
     }
@@ -59,20 +58,19 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
         var summary = summaries.FirstOrDefault();
         if (summary is null)
         {
-            return Ok(new { platform = (string?)null, tags = Array.Empty<string>() });
+            return Ok(new { platform = default(string?), tags = Array.Empty<string>() });
         }
 
+        // Genre Intelligence owns the genre-spelling preferences; the settings
+        // object carries them so the display matches what the tagger will write.
         var settings = _settingsService.LoadSettings();
-        var aliasMap = settings.NormalizeGenreTags
-            ? DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
-            : new Dictionary<string, string>(StringComparer.Ordinal);
-        var blockList = DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
+        var normalization = settings.GenreNormalization;
 
         List<string> ApplyGenrePreferences(IEnumerable<string> values)
         {
             var normalized = DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.DedupeValues(
-                DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.NormalizeAndExpandValues(values, aliasMap, settings.NormalizeGenreTags),
-                blockList);
+                DeezSpoTag.Core.Utils.GenreTagAliasNormalizer.NormalizeAndExpandValues(values, normalization.AliasMap, normalization.Enabled),
+                normalization.BlockList);
             // Capitalization is casing-preserving (R&B, HipHop, EDM survive) and
             // matches the user's capitalizeGenres behavior in AutoTag.
             return normalized.Select(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.CapitalizeGenre).ToList();
@@ -104,7 +102,7 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
             return Ok(new { platform = "lastfm", tags = ApplyGenrePreferences(lastfmTags) });
         }
 
-        return Ok(new { platform = (string?)null, tags = Array.Empty<string>() });
+        return Ok(new { platform = default(string?), tags = Array.Empty<string>() });
     }
 
     [HttpGet("latest")]

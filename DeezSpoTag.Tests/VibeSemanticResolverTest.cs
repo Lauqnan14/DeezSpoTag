@@ -72,6 +72,38 @@ public sealed class VibeSemanticResolverTest
     }
 
     [Fact]
+    public void AcousticSourceName_DerivesTheSourceFromTheModelThatProducedTheLabel()
+    {
+        Assert.Equal("essentia-discogs519", VibeSemanticResolver.AcousticSourceName("discogs519-maest-30s-pw-519l"));
+        Assert.Equal("essentia-discogs400", VibeSemanticResolver.AcousticSourceName("discogs400-discogs-effnet"));
+        Assert.Equal("essentia-acoustic", VibeSemanticResolver.AcousticSourceName(null));
+        Assert.Equal("essentia-acoustic", VibeSemanticResolver.AcousticSourceName("   "));
+        Assert.Equal("essentia-acoustic", VibeSemanticResolver.AcousticSourceName("some-other-head"));
+    }
+
+    [Fact]
+    public void Discogs400GenreEvidence_IsNotReportedAsDiscogs519()
+    {
+        // A Discogs400 downgrade must be visible in the evidence provenance rather
+        // than silently claiming the Discogs519/MAEST head produced the label.
+        var downgraded = new[]
+        {
+            new VibeSemanticResolver.AcousticGenreEvidence("Electronic---House", 0.61, "discogs400-discogs-effnet")
+        };
+
+        var resolution = VibeSemanticResolver.Resolve(
+            null, // embedded
+            null, // audiomack
+            null, // lastfm track
+            null, // lastfm artist
+            downgraded,
+            null);
+
+        Assert.Contains(resolution.SemanticEvidence, item => item.Source == "essentia-discogs400");
+        Assert.DoesNotContain(resolution.SemanticEvidence, item => item.Source == "essentia-discogs519");
+    }
+
+    [Fact]
     public void Evidence_RetainsAllIndependentSources()
     {
         var resolution = VibeSemanticResolver.Resolve(

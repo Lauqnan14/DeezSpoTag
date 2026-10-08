@@ -3,6 +3,7 @@ using DeezSpoTag.Web.Services.AutoTag;
 using DeezSpoTag.Web.Services.Audiomack;
 using DeezSpoTag.Web.Services.Vibe;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
@@ -27,6 +28,16 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string VibeAnalyzerUseBatchEnvironmentVariable = "VIBE_ANALYZER_USE_BATCH";
     private const string VibeEssentiaPackageEnvironmentVariable = "VIBE_ANALYZER_ESSENTIA_TF_PACKAGE";
     private const string VibeAnalyzerForceCpuEnvironmentVariable = "VIBE_ANALYZER_FORCE_CPU";
+    private const string SonicAnalysisEnabledEnvironmentVariable = "VIBE_SONIC_ENABLED";
+    private const string SonicAnalysisConfigurationPath = "SonicAnalysis:Enabled";
+
+    // Sonic embedding identity. Bump any of these and every stored vector for
+    // the affected identity becomes stale by construction, because the primary
+    // key includes them.
+    internal const string SonicModelId = "discogs-effnet-bs64-1";
+    internal const string SonicModelVersion = "1";
+    internal const string SonicEmbeddingVersion = "embedding-v1";
+    private const string VibeAnalyzerProbeTimeoutSecondsEnvironmentVariable = "VIBE_ANALYZER_PROBE_TIMEOUT_SECONDS";
     private const string DefaultEssentiaPackage = "essentia-tensorflow==2.1b6.dev1389";
     private const string Python3Executable = "python3";
     private const string ToolsDirectoryName = "Tools";
@@ -37,6 +48,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const int DefaultVibeAnalyzerTimeoutSeconds = 180;
     private const int MinVibeAnalyzerTimeoutSeconds = 10;
     private const int MaxVibeAnalyzerTimeoutSeconds = 600;
+    private const int DefaultVibeAnalyzerProbeTimeoutSeconds = 180;
+    private const int MinVibeAnalyzerProbeTimeoutSeconds = 30;
+    private const int MaxVibeAnalyzerProbeTimeoutSeconds = 900;
     private const int DefaultVibeAnalyzerBatchTimeoutSeconds = 300;
     private static readonly TimeSpan CompletedStandardEnhancedRetryDelay = TimeSpan.FromMinutes(30);
     private const int MinVibeAnalyzerBatchTimeoutSeconds = 60;
@@ -47,25 +61,38 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private static readonly TimeSpan MlCapabilityRetryInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MlBootstrapRetryInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan PipInstallTimeout = TimeSpan.FromMinutes(20);
-    private static readonly (string FileName, string Url)[] RequiredModelFiles =
+    // Importing essentia.standard pulls in the TensorFlow shared libraries, which
+    // is genuinely slow on a cold container. Judging the image-provided runtime
+    // broken on a short budget used to trigger a redundant pip install that then
+    // overrode VIBE_ANALYZER_PYTHON.
+    private static readonly TimeSpan EssentiaImportTimeout = TimeSpan.FromSeconds(120);
+    private const int MaxProcessOutputCharacters = 64 * 1024;
+
+    // Kept in lockstep with scripts/fetch-vibe-models.sh. PublishingWorkflowGuardrailTest
+    // asserts the two manifests declare the same file set so they cannot drift.
+    private static readonly (string FileName, string Url, string Sha256)[] RequiredModelFiles =
     {
-        ("msd-musicnn-1.pb", "https://essentia.upf.edu/models/feature-extractors/musicnn/msd-musicnn-1.pb"),
-        ("mood_happy-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-msd-musicnn-1.pb"),
-        ("mood_sad-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-msd-musicnn-1.pb"),
-        ("mood_relaxed-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-msd-musicnn-1.pb"),
-        ("mood_aggressive-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-msd-musicnn-1.pb"),
-        ("mood_party-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-msd-musicnn-1.pb"),
-        ("mood_acoustic-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-msd-musicnn-1.pb"),
-        ("mood_electronic-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-msd-musicnn-1.pb"),
-        ("voice_instrumental-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-msd-musicnn-1.pb"),
-        ("tonal_atonal-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-msd-musicnn-1.pb"),
-        ("danceability-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/danceability/danceability-msd-musicnn-1.pb"),
-        ("deam-msd-musicnn-2.pb", "https://essentia.upf.edu/models/classification-heads/deam/deam-msd-musicnn-2.pb"),
-        ("discogs-effnet-bs64-1.pb", "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb"),
-        ("approachability_regression-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/approachability/approachability_regression-discogs-effnet-1.pb"),
-        ("engagement_regression-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb"),
-        ("genre_discogs400-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"),
-        ("genre_discogs400-discogs-effnet-1.json", "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json")
+        ("msd-musicnn-1.pb", "https://essentia.upf.edu/models/feature-extractors/musicnn/msd-musicnn-1.pb", "cdea0722bcee7f731286843f2233e3aa69887bb5c3e2dce011eff55f38d04f3e"),
+        ("mood_happy-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-msd-musicnn-1.pb", "d7382bc60304ea4578c298222968cd8d600c31252c7bf3e90b1f728ebb3ec36d"),
+        ("mood_sad-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-msd-musicnn-1.pb", "a5e908cf7f59e8c379ff7c7d138dd85416985fddaebb5de14ca4193200411f61"),
+        ("mood_relaxed-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-msd-musicnn-1.pb", "1252d28ca7d2204e34e0cdf84a00aa2bc9627a87bdcf923df3aad39cfa69d2d9"),
+        ("mood_aggressive-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-msd-musicnn-1.pb", "3b6eb5645e4b47a2ceb28ef3f8612f224640c583048770791b9fc6e8e5627a67"),
+        ("mood_party-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-msd-musicnn-1.pb", "765b096300ee1d92103cb0a122fc12c33882166fb94d37875284e82ce06322a1"),
+        ("mood_acoustic-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-msd-musicnn-1.pb", "519ee3af8210fe32e021002a0094546aeb6fb5a59d22b7d53c48e4ee1ac9e6cc"),
+        ("mood_electronic-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-msd-musicnn-1.pb", "86c109b504fc6cf666c7513d684381a594218a552c3c954f212dd3a9d0c6cdc5"),
+        ("voice_instrumental-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-msd-musicnn-1.pb", "eb762cc7ee6751b2ea32179d3716e2d60a1d1a9e615b7e3b8be8a6f79d71675e"),
+        ("tonal_atonal-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-msd-musicnn-1.pb", "45a36e68a70a6692a60434ee3ae81df9bd5c402204fb04c3355c39f9e3d24aaf"),
+        ("danceability-msd-musicnn-1.pb", "https://essentia.upf.edu/models/classification-heads/danceability/danceability-msd-musicnn-1.pb", "874a4b86afc9e12de3f15a47baf9ff1ac676ace109c56203e26103f2259eb95e"),
+        ("deam-msd-musicnn-2.pb", "https://essentia.upf.edu/models/classification-heads/deam/deam-msd-musicnn-2.pb", "beb5eeb0909266eeb78b8d6bb1323b10829cf2fe55e3c01a13fa1846fa98b371"),
+        ("discogs-effnet-bs64-1.pb", "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb", "3ed9af50d5367c0b9c795b294b00e7599e4943244f4cbd376869f3bfc87721b1"),
+        ("approachability_regression-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/approachability/approachability_regression-discogs-effnet-1.pb", "7ffc208865426fb3aa2842f676b42fc6128282088c9b1d1fd2aba14b17cd121c"),
+        ("engagement_regression-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb", "43031d40b3a380e1995c8495a108d14ca74f620d924fad9b28df4189c84d20c5"),
+        ("genre_discogs400-discogs-effnet-1.pb", "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb", "3885ba078a35249af94b8e5e4247689afac40deca4401a4bc888daf5a579c01c"),
+        ("genre_discogs400-discogs-effnet-1.json", "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json", "2d367319d9b782ffa10f69abf0e805b3ac4e10899025e5bdbaceda3919b243e0"),
+        ("discogs-maest-30s-pw-519l-2.pb", "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.pb", "92783feb21187443d058b4f16d7a76f47888d43fbdc7a28e8bcc8e024603bd20"),
+        ("discogs-maest-30s-pw-519l-2.json", "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.json", "83240aa553ffb491b0ec5a24565eb612553e5f38da5207403c25b890c5b34acd"),
+        ("genre_discogs519-discogs-maest-30s-pw-519l-1.pb", "https://essentia.upf.edu/models/classification-heads/genre_discogs519/genre_discogs519-discogs-maest-30s-pw-519l-1.pb", "0f5d61d9b62e4a27dac058926e986eb424dca0fdb920c066ab53158229cff498"),
+        ("genre_discogs519-discogs-maest-30s-pw-519l-1.json", "https://essentia.upf.edu/models/classification-heads/genre_discogs519/genre_discogs519-discogs-maest-30s-pw-519l-1.json", "07015a89f1a0e9b7cdceb63933783023d85f3ac4b36ce5c1b5488bd1fbad2304")
     };
     private static readonly string[] RequiredEnhancedModelFiles =
     {
@@ -74,6 +101,18 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         "mood_sad-msd-musicnn-1.pb",
         "mood_relaxed-msd-musicnn-1.pb",
         "mood_aggressive-msd-musicnn-1.pb"
+    };
+    private static readonly string[] RequiredGenre519ModelFiles =
+    {
+        "discogs-maest-30s-pw-519l-2.pb",
+        "genre_discogs519-discogs-maest-30s-pw-519l-1.pb",
+        "genre_discogs519-discogs-maest-30s-pw-519l-1.json"
+    };
+    private static readonly string[] RequiredGenre400ModelFiles =
+    {
+        "discogs-effnet-bs64-1.pb",
+        "genre_discogs400-discogs-effnet-1.pb",
+        "genre_discogs400-discogs-effnet-1.json"
     };
     private static readonly HttpClient MlBootstrapHttpClient = new()
     {
@@ -86,6 +125,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly LastFmTagService _lastFmTagService;
     private readonly IAudiomackVibeMetadataService _vibeMetadataService;
     private readonly EmbeddedVibeMetadataReader _embeddedVibeReader;
+    private readonly SonicAnalysisSettingsStore _sonicSettingsStore;
+    private int _sonicEnabled;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
@@ -108,6 +149,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private DateTimeOffset _mlLastWarningLoggedAt = DateTimeOffset.MinValue;
     private DateTimeOffset _analyzerLastFallbackLoggedAt = DateTimeOffset.MinValue;
     private string? _analyzerLastFallbackReason;
+    private DateTimeOffset _analyzerLastDegradationLoggedAt = DateTimeOffset.MinValue;
+    private string? _analyzerLastDegradationReason;
     private static readonly string? FfmpegExecutablePath = FfmpegPathResolver.ResolveExecutable();
     private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new()
     {
@@ -122,6 +165,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         LastFmTagService lastFmTagService,
         IAudiomackVibeMetadataService vibeMetadataService,
         EmbeddedVibeMetadataReader embeddedVibeReader,
+        SonicAnalysisSettingsStore sonicSettingsStore,
         AutoTagProfileResolutionService profileResolutionService,
         MoodBucketService moodBucketService,
         IConfiguration configuration)
@@ -133,6 +177,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _lastFmTagService = lastFmTagService;
         _vibeMetadataService = vibeMetadataService;
         _embeddedVibeReader = embeddedVibeReader;
+        _sonicSettingsStore = sonicSettingsStore;
         _profileResolutionService = profileResolutionService;
         _moodBucketService = moodBucketService;
         _configuration = configuration;
@@ -169,19 +214,41 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     }
 
     public async Task<bool> TryStartManualAnalysisAsync(int batchSize)
-        => await IsAnalysisEnabledAsync().ConfigureAwait(false) && TryQueueAnalysisRun(batchSize);
+        => (await RequestManualAnalysisAsync(batchSize).ConfigureAwait(false)).Queued;
+
+    /// <summary>
+    /// Requests a manual run and reports why it was or was not accepted.
+    ///
+    /// A rejected request is not the same as a disabled feature: enabling
+    /// background analysis immediately starts a scheduled pass, so a manual run
+    /// requested a moment later is declined because a pass is already active.
+    /// Collapsing that into a plain false made the UI tell users to enable a
+    /// setting they had already enabled.
+    /// </summary>
+    internal async Task<VibeAnalysisRunRequest> RequestManualAnalysisAsync(int batchSize)
+    {
+        if (!await IsAnalysisEnabledAsync().ConfigureAwait(false))
+        {
+            return new VibeAnalysisRunRequest(VibeAnalysisRunOutcome.Disabled, VibeAnalysisRunOutcome.Disabled.Reason());
+        }
+
+        return TryQueueAnalysisRun(batchSize);
+    }
 
     public async Task<bool> TrySignalBackgroundAnalysisAsync(int batchSize)
-        => await IsAnalysisEnabledAsync().ConfigureAwait(false) && TryQueueAnalysisRun(batchSize);
+        => await IsAnalysisEnabledAsync().ConfigureAwait(false)
+            && TryQueueAnalysisRun(batchSize).Queued;
 
-    private bool TryQueueAnalysisRun(int batchSize)
+    private VibeAnalysisRunRequest TryQueueAnalysisRun(int batchSize)
     {
         var shouldSignal = false;
         lock (_runtimeLock)
         {
             if (_manualRunPending || _activeRunCancellation is not null || _analysisLock.CurrentCount == 0)
             {
-                return false;
+                return new VibeAnalysisRunRequest(
+                    VibeAnalysisRunOutcome.AlreadyRunning,
+                    VibeAnalysisRunOutcome.AlreadyRunning.Reason());
             }
 
             _manualRunBatchSize = Math.Clamp(batchSize, 10, 500);
@@ -195,11 +262,57 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             _manualRunSignal.Release();
         }
 
-        return true;
+        return new VibeAnalysisRunRequest(VibeAnalysisRunOutcome.Queued, VibeAnalysisRunOutcome.Queued.Reason());
     }
 
     private async Task<bool> IsAnalysisEnabledAsync()
         => (await _settingsStore.LoadAsync().ConfigureAwait(false)).Enabled;
+
+    /// <summary>
+    /// Sonic Analysis is opt-in and independent of Vibe Analysis. It is off by
+    /// default because it adds a second inference pass per track.
+    ///
+    /// <para>The flag is cached because it is read while building a
+    /// ProcessStartInfo, which is synchronous. It is refreshed from the settings
+    /// store on apply and on the analysis loop, and can still be forced on through
+    /// configuration or the environment for operators who never touch the UI.</para>
+    /// </summary>
+    private bool IsSonicAnalysisEnabled() => Volatile.Read(ref _sonicEnabled) != 0;
+
+    /// <summary>
+    /// Applies the Sonic settings to the running analyzer. Called when settings
+    /// are saved so enabling Sonic takes effect without a restart.
+    /// </summary>
+    public async Task ApplySonicSettingsAsync(
+        SonicAnalysisSettingsDto settings,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        Volatile.Write(ref _sonicEnabled, ResolveSonicEnabled(settings) ? 1 : 0);
+
+        // A long-running worker started without the flag can never produce a
+        // vector, because the subprocess loaded no Sonic extractor. Replacing it
+        // is what makes the change take effect.
+        if (settings.Enabled && _analyzerWorker is not null)
+        {
+            await StopAnalyzerWorkerAsync().ConfigureAwait(false);
+        }
+    }
+
+    private bool ResolveSonicEnabled(SonicAnalysisSettingsDto? settings)
+        => (settings?.Enabled ?? false)
+            || _configuration.GetValue(SonicAnalysisConfigurationPath, false)
+            || IsTruthyEnvironment(SonicAnalysisEnabledEnvironmentVariable);
+
+    private static bool IsTruthyEnvironment(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        return value is not null
+            && (value.Equals("1", StringComparison.Ordinal)
+                || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("on", StringComparison.OrdinalIgnoreCase));
+    }
 
     private void ClearPendingRunSignal()
     {
@@ -209,8 +322,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             _manualRunBatchSize = 0;
         }
 
-        while (_manualRunSignal.Wait(0))
+        while (_manualRunSignal.Wait(0, CancellationToken.None))
         {
+            // Intentionally empty: draining every pending wake-up signal here, one per wait.
         }
     }
 
@@ -384,6 +498,14 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 }
 
                 var settings = await _settingsStore.LoadAsync();
+
+                // Refresh the Sonic flag every pass so a settings change written
+                // by another process, or a first run after a restart, is picked up
+                // without relying on ApplySonicSettingsAsync having been called.
+                Volatile.Write(
+                    ref _sonicEnabled,
+                    ResolveSonicEnabled(await _sonicSettingsStore.LoadAsync().ConfigureAwait(false)) ? 1 : 0);
+
                 if (settings.Enabled)
                 {
                     await RunScheduledAnalysisBatchAsync(stoppingToken);
@@ -544,10 +666,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var summary = summaries.Count > 0 ? summaries[0] : null;
             SetCurrentAnalysis(track, summary);
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, run.Token);
-            var result = await AnalyzeTrackAsync(track, null, run.Token, summary);
-            result = await AttachLastFmTagsIfMissingAsync(result, summary, run.Token);
+            var completion = await AnalyzeTrackAsync(track, null, run.Token, summary);
+            var result = await AttachLastFmTagsIfMissingAsync(completion.Result, summary, run.Token);
 
             await _repository.UpsertTrackAnalysisAsync(result, run.Token);
+            await PersistSonicEmbeddingAsync(track, completion.Sonic, run.Token);
             var isComplete = IsAnalysisCompleteStatus(result.Status);
             await AssignMoodBucketsIfCompleteAsync(track.TrackId, isComplete, run.Token);
 
@@ -563,6 +686,120 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         finally
         {
             _analysisLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Stores the Sonic embedding for a track, if the analyzer produced one.
+    ///
+    /// Sonic persistence is strictly additive and fully isolated: any failure here
+    /// is logged and swallowed, because a vector problem must never turn a
+    /// completed semantic analysis into a failed track. The source file's size
+    /// and modification time are recorded so a later run can decide the vector
+    /// is stale without re-hashing the audio.
+    /// </summary>
+    private async Task PersistSonicEmbeddingAsync(
+        TrackAnalysisInputDto track,
+        SonicPayload? sonic,
+        CancellationToken cancellationToken)
+    {
+        if (sonic is null || !IsSonicAnalysisEnabled())
+        {
+            return;
+        }
+
+        try
+        {
+            var vector = DecodeSonicVector(sonic);
+            if (vector is null)
+            {
+                _logger.LogWarning(
+                    "Sonic embedding for track {TrackId} rejected: {Reason}",
+                    track.TrackId,
+                    DescribeSonicRejection(sonic));
+                return;
+            }
+
+            (long? size, DateTimeOffset? mtime) = TryReadSourceRevision(track.FilePath);
+            await _repository.UpsertSonicEmbeddingAsync(
+                new SonicEmbeddingDto(
+                    track.TrackId,
+                    track.LibraryId,
+                    sonic.ModelId,
+                    sonic.ModelVersion,
+                    sonic.EmbeddingVersion,
+                    vector.Count,
+                    sonic.Pooling,
+                    sonic.Normalization,
+                    sonic.DistanceMetric,
+                    vector,
+                    size,
+                    mtime,
+                    DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // Isolated by design: the semantic analysis for this track is already
+            // persisted and stays valid.
+            _logger.LogWarning(ex, "Failed to persist Sonic embedding for track {TrackId}", track.TrackId);
+        }
+    }
+
+    /// <summary>
+    /// Decodes a base64 little-endian float32 vector, rejecting anything whose
+    /// width disagrees with the declared dimension or that contains NaN or
+    /// Infinity. A rejected vector must never be stored.
+    /// </summary>
+    private static IReadOnlyList<float>? DecodeSonicVector(SonicPayload sonic)
+    {
+        if (sonic.Dimensions <= 0 || string.IsNullOrWhiteSpace(sonic.VectorBase64))
+        {
+            return null;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(sonic.VectorBase64);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        if (bytes.Length != sonic.Dimensions * sizeof(float))
+        {
+            return null;
+        }
+
+        var vector = new float[sonic.Dimensions];
+        Buffer.BlockCopy(bytes, 0, vector, 0, bytes.Length);
+        return vector.Any(float.IsNaN) || vector.Any(float.IsInfinity) ? null : vector;
+    }
+
+    private static string DescribeSonicRejection(SonicPayload sonic)
+    {
+        var expected = sonic.Dimensions * sizeof(float);
+        return $"declared {sonic.Dimensions} dimensions but the payload did not decode to "
+            + $"{expected} bytes of little-endian float32, or it contained a non-finite value.";
+    }
+
+    private static (long? Size, DateTimeOffset? Mtime) TryReadSourceRevision(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return (null, null);
+        }
+
+        try
+        {
+            var info = new FileInfo(filePath);
+            return info.Exists ? (info.Length, info.LastWriteTimeUtc) : (null, null);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return (null, null);
         }
     }
 
@@ -595,74 +832,106 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         var attemptedTrackIds = new HashSet<long>();
         var folders = await _repository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken);
-        var orderedFolderIds = ResolveAnalysisFolderOrder(settings, folders);
+        var orderedFolderIds = ResolveAnalysisFolderOrder(folders, settings);
         if (orderedFolderIds.Count == 0)
         {
             return;
         }
 
-        var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
+        // Every enabled music library is resolved in a single query. The repository
+        // encodes the alphabetical folder order in a temp scope table and then sorts
+        // the complete result set in memory, because ArtistOrderKey needs the raw
+        // artist credit to split multi-artist names and strip diacritics. Querying one
+        // folder at a time therefore rescanned every table once per folder per pass for
+        // no ordering benefit, and the terminating "nothing left" query could not be
+        // avoided. The loop below now issues one query per pass and exits as soon as a
+        // pass finds nothing new, which also picks up files added mid-run.
+        var includeCompletedStandard = await IsEnhancedAnalysisAvailableForRetry(cancellationToken).ConfigureAwait(false);
         while (!cancellationToken.IsCancellationRequested)
         {
-            var foundAny = false;
-            foreach (var folderId in orderedFolderIds)
-            {
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    if (stopWhenDisabled && await ShouldStopForDisabledAnalysisAsync(cancellationToken))
-                    {
-                        return;
-                    }
-
-                    var snapshot = await _repository.GetTracksForAnalysisAsync(
-                        int.MaxValue,
-                        includeCompletedStandard: includeCompletedStandard,
-                        completedStandardRetryBeforeUtc: includeCompletedStandard
-                            ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay)
-                            : null,
-                        orderedLibraryIds: [folderId],
-                        excludedTrackIds: attemptedTrackIds,
-                        cancellationToken: cancellationToken);
-                    if (snapshot.Count == 0)
-                    {
-                        break;
-                    }
-
-                    foundAny = true;
-                    await AnalyzeFrozenSnapshotAsync(
-                        snapshot,
-                        Math.Clamp(settings.BatchSize, 10, 500),
-                        attemptedTrackIds,
-                        stopWhenDisabled,
-                        cancellationToken);
-                }
-            }
-
-            if (!foundAny)
+            if (stopWhenDisabled && await ShouldStopForDisabledAnalysisAsync(cancellationToken))
             {
                 return;
             }
+
+            var snapshot = await _repository.GetTracksForAnalysisAsync(
+                int.MaxValue,
+                includeCompletedStandard: includeCompletedStandard,
+                completedStandardRetryBeforeUtc: includeCompletedStandard
+                    ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay)
+                    : null,
+                orderedLibraryIds: orderedFolderIds,
+                excludedTrackIds: attemptedTrackIds,
+                cancellationToken: cancellationToken);
+            if (snapshot.Count == 0)
+            {
+                return;
+            }
+
+            await AnalyzeFrozenSnapshotAsync(
+                snapshot,
+                Math.Clamp(settings.BatchSize, 10, 500),
+                attemptedTrackIds,
+                stopWhenDisabled,
+                cancellationToken);
         }
     }
 
+    /// <summary>
+    /// The order libraries are analysed in.
+    ///
+    /// <para>Alphabetical by folder display name by default, or the order a person
+    /// arranged when they asked for a custom library order. Alphabetical ordering
+    /// applies to <em>albums</em> within a library, not to the libraries themselves.</para>
+    ///
+    /// <para>A stored order REORDERS and never excludes. An earlier version treated the
+    /// stored list as the whole scope, so a list left stale by a renamed or
+    /// re-added library silently stopped that library being analysed at all, with
+    /// nothing reporting the omission. Anything the list does not mention — a library
+    /// added later, one whose id changed — is appended in alphabetical position rather
+    /// than dropped, so every enabled music folder is always in scope.</para>
+    /// </summary>
     internal static IReadOnlyList<long> ResolveAnalysisFolderOrder(
-        VibeAnalysisSettingsDto settings,
-        IReadOnlyList<FolderDto> enabledAudioFolders)
+        IReadOnlyList<FolderDto> enabledAudioFolders,
+        VibeAnalysisSettingsDto? settings = null)
     {
-        var enabledIds = enabledAudioFolders.Select(static folder => folder.Id).ToHashSet();
-        if (settings.UseLibraryOrder && settings.LibraryOrder.Count > 0)
-        {
-            return settings.LibraryOrder
-                .Where(enabledIds.Contains)
-                .Distinct()
-                .ToList();
-        }
-
-        return enabledAudioFolders
+        var alphabetical = enabledAudioFolders
             .OrderBy(static folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static folder => folder.Id)
             .Select(static folder => folder.Id)
             .ToList();
+
+        var storedOrder = settings?.LibraryOrder;
+        if (settings?.UseLibraryOrder != true || storedOrder is null || storedOrder.Count == 0)
+        {
+            return alphabetical;
+        }
+
+        var remaining = new Dictionary<long, int>();
+        for (var index = 0; index < alphabetical.Count; index++)
+        {
+            remaining[alphabetical[index]] = index;
+        }
+
+        var ordered = new List<long>(alphabetical.Count);
+        foreach (var folderId in storedOrder)
+        {
+            // Unknown ids are ignored rather than trusted: a stored list outlives the
+            // libraries it names, and an id that no longer resolves must not be passed
+            // downstream as a scope.
+            if (remaining.Remove(folderId))
+            {
+                ordered.Add(folderId);
+            }
+        }
+
+        // Appended, not dropped. This is the whole reason a stale custom order cannot
+        // narrow what gets analysed.
+        ordered.AddRange(remaining
+            .OrderBy(static entry => entry.Value)
+            .Select(static entry => entry.Key));
+
+        return ordered;
     }
 
     internal static IReadOnlyList<(int Start, int End)> BuildStablePassRanges(
@@ -770,8 +1039,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
         SetCurrentAnalysis(track, summary);
-        var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
+        var completion = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
+        var result = completion.Result;
         await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+        await PersistSonicEmbeddingAsync(track, completion.Sonic, cancellationToken);
         if (IsAnalysisCompleteStatus(result.Status))
         {
             await AssignTrackMoodBucketsAsync(track.TrackId, cancellationToken);
@@ -806,9 +1077,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             $"Vibe analysis errors: {string.Join(", ", topReasons)}"));
     }
 
-    private bool IsEnhancedAnalysisAvailableForRetry()
+    private async Task<bool> IsEnhancedAnalysisAvailableForRetry(CancellationToken cancellationToken)
     {
-        var capability = GetOrProbeMlCapability();
+        var capability = await GetOrProbeMlCapability(cancellationToken).ConfigureAwait(false);
         if (!capability.Available)
         {
             LogMlUnavailable(capability.Reason ?? "Unknown reason.");
@@ -863,17 +1134,28 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<TrackAnalysisResultDto> AnalyzeTrackWithOptionalLastFmAsync(
+    private async Task<TrackAnalysisCompletion> AnalyzeTrackWithOptionalLastFmAsync(
         TrackAnalysisInputDto track,
         MixTrackDto? summary,
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
         CancellationToken cancellationToken)
     {
-        var result = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken, summary);
-        return await AttachLastFmTagsIfMissingAsync(result, summary, cancellationToken);
+        var completion = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken, summary);
+        var result = await AttachLastFmTagsIfMissingAsync(completion.Result, summary, cancellationToken);
+        return completion with { Result = result };
     }
 
-    private async Task<TrackAnalysisResultDto> AnalyzeTrackAsync(
+    /// <summary>
+    /// A completed track analysis plus the Sonic vector that was produced for it.
+    ///
+    /// The vector travels beside the result rather than inside it: carrying a
+    /// multi-kilobyte embedding on every TrackAnalysisResultDto would put it in
+    /// every ordinary analysis query, which is exactly what keeping Sonic in its
+    /// own table exists to prevent.
+    /// </summary>
+    private sealed record TrackAnalysisCompletion(TrackAnalysisResultDto Result, SonicPayload? Sonic);
+
+    private async Task<TrackAnalysisCompletion> AnalyzeTrackAsync(
         TrackAnalysisInputDto track,
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
         CancellationToken cancellationToken,
@@ -926,20 +1208,25 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
                 var vibe = await BuildVibeSemanticsAsync(
                     analysisOutput, summary, cancellationToken, candidate.Track.FilePath, stored);
-                return CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput, summary, vibe);
+                var result = CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput, summary, vibe);
+                return new TrackAnalysisCompletion(result, analysisOutput?.SonicEmbedding);
             }
 
-            return CreateFailure(
-                track.TrackId,
-                track.LibraryId,
-                FailedAnalysisStatus,
-                candidateErrors.Count == 0
-                    ? "No usable audio candidates."
-                    : $"No usable audio candidates: {string.Join(" | ", candidateErrors)}");
+            return new TrackAnalysisCompletion(
+                CreateFailure(
+                    track.TrackId,
+                    track.LibraryId,
+                    FailedAnalysisStatus,
+                    candidateErrors.Count == 0
+                        ? "No usable audio candidates."
+                        : $"No usable audio candidates: {string.Join(" | ", candidateErrors)}"),
+                null);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
-            return CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ex.Message);
+            return new TrackAnalysisCompletion(
+                CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ex.Message),
+                null);
         }
     }
 
@@ -1060,16 +1347,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return new Dictionary<long, BatchPrediction>();
         }
 
-        if (!TryResolveBatchAnalyzerContext(tracks, out var context, out var failureMap))
+        var resolution = await TryResolveBatchAnalyzerContext(tracks, cancellationToken).ConfigureAwait(false);
+        if (resolution.Context is null)
         {
-            return failureMap;
+            return resolution.FailureMap;
         }
+
+        var context = resolution.Context;
 
         var request = tracks.Select(track => new BatchAnalysisRequestItem(track.TrackId, track.FilePath)).ToList();
         var batchTempFilePath = WriteBatchRequestToSecureTempFile(request);
         try
         {
-            using var process = Process.Start(CreateBatchProcessStartInfo(context, batchTempFilePath));
+            using var process = Process.Start(
+                CreateBatchProcessStartInfo(context, batchTempFilePath, IsSonicAnalysisEnabled()));
             if (process is null)
             {
                 return CreateBatchFailureMap(tracks, "Failed to start vibe analyzer batch process.");
@@ -1130,21 +1421,18 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private bool TryResolveBatchAnalyzerContext(
+    private async Task<BatchAnalyzerResolution> TryResolveBatchAnalyzerContext(
         IReadOnlyList<TrackAnalysisInputDto> tracks,
-        out BatchAnalyzerContext context,
-        out Dictionary<long, BatchPrediction> failureMap)
+        CancellationToken cancellationToken)
     {
-        failureMap = new Dictionary<long, BatchPrediction>();
-        context = default!;
+        var failureMap = new Dictionary<long, BatchPrediction>();
 
-        var capability = GetOrProbeMlCapability();
+        var capability = await GetOrProbeMlCapability(cancellationToken).ConfigureAwait(false);
         if (!capability.Available)
         {
             var reason = capability.Reason ?? "Unknown reason.";
             LogMlUnavailable(reason);
-            failureMap = CreateBatchFailureMap(tracks, reason);
-            return false;
+            return new BatchAnalyzerResolution(null, CreateBatchFailureMap(tracks, reason));
         }
 
         var scriptPath = ResolveAnalyzerScriptPath();
@@ -1152,8 +1440,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             var reason = $"Analyzer script missing at {scriptPath}. Set {VibePathEnvironmentVariable} or ensure {ToolsDirectoryName}/{VibeAnalyzerScriptFileName} exists.";
             LogMlUnavailable(reason);
-            failureMap = CreateBatchFailureMap(tracks, reason);
-            return false;
+            return new BatchAnalyzerResolution(null, CreateBatchFailureMap(tracks, reason));
         }
 
         var modelsDir = ResolveModelsDirectory();
@@ -1161,22 +1448,24 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             var reason = $"Models directory missing at {modelsDir}. Set {VibeModelsDirectoryEnvironmentVariable} or place models under {ToolsDirectoryName}/{ModelsDirectoryName}.";
             LogMlUnavailable(reason);
-            failureMap = CreateBatchFailureMap(tracks, reason);
-            return false;
+            return new BatchAnalyzerResolution(null, CreateBatchFailureMap(tracks, reason));
         }
 
         var batchTimeout = ResolveAnalyzerBatchTimeout();
-        context = new BatchAnalyzerContext(
-            scriptPath,
-            modelsDir,
-            ResolveAnalyzerWorkers(),
-            (int)ResolveAnalyzerTimeout().TotalSeconds,
-            batchTimeout,
-            (int)batchTimeout.TotalSeconds);
-        return true;
+        return new BatchAnalyzerResolution(
+            new BatchAnalyzerContext(
+                scriptPath,
+                modelsDir,
+                ResolveAnalyzerWorkers(),
+                (int)ResolveAnalyzerTimeout().TotalSeconds,
+                batchTimeout,
+                (int)batchTimeout.TotalSeconds),
+            failureMap);
     }
 
-    private static ProcessStartInfo CreateBatchProcessStartInfo(BatchAnalyzerContext context, string batchTempFilePath)
+    private sealed record BatchAnalyzerResolution(BatchAnalyzerContext? Context, Dictionary<long, BatchPrediction> FailureMap);
+
+    private static ProcessStartInfo CreateBatchProcessStartInfo(BatchAnalyzerContext context, string batchTempFilePath, bool sonicEnabled = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -1188,7 +1477,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        ConfigurePythonEnvironment(startInfo);
+        ConfigurePythonEnvironment(startInfo, sonicEnabled);
         return startInfo;
     }
 
@@ -1726,7 +2015,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var context = ResolveAnalyzerExecutionContext();
+        var context = await ResolveAnalyzerExecutionContext(cancellationToken).ConfigureAwait(false);
         if (context.FailureReason != null)
         {
             LogMlUnavailable(context.FailureReason);
@@ -1737,7 +2026,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             var analysisTimeout = ResolveAnalyzerTimeout();
             _analyzerWorker ??= new VibeAnalyzerWorker(
-                () => CreatePersistentAnalyzerStartInfo(context.ScriptPath!, context.ModelsDir!),
+                () => CreatePersistentAnalyzerStartInfo(context.ScriptPath!, context.ModelsDir!, IsSonicAnalysisEnabled()),
                 analysisTimeout);
             var workerResult = await _analyzerWorker.AnalyzeAsync(filePath, cancellationToken).ConfigureAwait(false);
             if (!workerResult.Succeeded || string.IsNullOrWhiteSpace(workerResult.PayloadJson))
@@ -1760,7 +2049,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private static ProcessStartInfo CreatePersistentAnalyzerStartInfo(string scriptPath, string modelsDir)
+    private static ProcessStartInfo CreatePersistentAnalyzerStartInfo(string scriptPath, string modelsDir, bool sonicEnabled = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -1775,7 +2064,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         startInfo.ArgumentList.Add("--worker");
         startInfo.ArgumentList.Add("--models");
         startInfo.ArgumentList.Add(modelsDir);
-        ConfigurePythonEnvironment(startInfo);
+        ConfigurePythonEnvironment(startInfo, sonicEnabled);
         return startInfo;
     }
 
@@ -1784,9 +2073,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         string? ModelsDir,
         string? FailureReason);
 
-    private AnalyzerExecutionContext ResolveAnalyzerExecutionContext()
+    private async Task<AnalyzerExecutionContext> ResolveAnalyzerExecutionContext(CancellationToken cancellationToken)
     {
-        var capability = GetOrProbeMlCapability();
+        var capability = await GetOrProbeMlCapability(cancellationToken).ConfigureAwait(false);
         if (!capability.Available)
         {
             return new AnalyzerExecutionContext(null, null, capability.Reason ?? "Unknown reason.");
@@ -1811,6 +2100,22 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         return new AnalyzerExecutionContext(scriptPath, modelsDir, null);
+    }
+
+    private static TimeSpan ResolveProbeTimeout()
+    {
+        var timeoutSeconds = DefaultVibeAnalyzerProbeTimeoutSeconds;
+        var configuredTimeout = Environment.GetEnvironmentVariable(VibeAnalyzerProbeTimeoutSecondsEnvironmentVariable);
+        if (int.TryParse(configuredTimeout, out var parsedTimeoutSeconds))
+        {
+            timeoutSeconds = parsedTimeoutSeconds;
+        }
+
+        // The probe loads every model graph, including the ~332 MB Discogs519
+        // MAEST graph, so the budget must not be a short fixed value.
+        timeoutSeconds = Math.Clamp(timeoutSeconds, MinVibeAnalyzerProbeTimeoutSeconds, MaxVibeAnalyzerProbeTimeoutSeconds);
+
+        return TimeSpan.FromSeconds(timeoutSeconds);
     }
 
     private static TimeSpan ResolveAnalyzerTimeout()
@@ -1901,7 +2206,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return $"{errorCode.Trim()}: {message.Trim()}";
     }
 
-    private MlCapability GetOrProbeMlCapability()
+    private async Task<MlCapability> GetOrProbeMlCapability(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         lock (_mlCapabilityLock)
@@ -1915,8 +2220,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             _mlCapabilityLastCheckedAt = now;
         }
 
-        EnsureMlRuntimeProvisioned();
+        await EnsureMlRuntimeProvisioned(cancellationToken).ConfigureAwait(false);
         var capability = ProbeMlCapability();
+        if (capability.Available && !string.IsNullOrWhiteSpace(capability.Reason))
+        {
+            // Enhanced mode works but the acoustic genre branch degraded. Report it
+            // once per throttle window instead of dropping the detail.
+            LogGenreModelDegradation(capability.Reason!);
+        }
+
         lock (_mlCapabilityLock)
         {
             _mlCapability = capability;
@@ -1926,7 +2238,29 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return capability;
     }
 
-    private void EnsureMlRuntimeProvisioned()
+    private void LogGenreModelDegradation(string reason)
+    {
+        var sanitized = SanitizeAnalyzerFailure(reason);
+        var now = DateTimeOffset.UtcNow;
+        lock (_runtimeLock)
+        {
+            if (string.Equals(_analyzerLastDegradationReason, sanitized, StringComparison.Ordinal)
+                && now - _analyzerLastDegradationLoggedAt < MlWarningThrottle)
+            {
+                return;
+            }
+
+            _analyzerLastDegradationReason = sanitized;
+            _analyzerLastDegradationLoggedAt = now;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            now,
+            "warning",
+            $"Vibe analysis is running in reduced genre mode: {sanitized}"));
+    }
+
+    private async Task EnsureMlRuntimeProvisioned(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         lock (_mlCapabilityLock)
@@ -1940,7 +2274,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         EnsureAnalyzerScriptEnvironmentPath();
-        EnsureModelsProvisioned();
+        await EnsureModelsProvisioned(cancellationToken).ConfigureAwait(false);
         EnsureEssentiaPythonProvisioned();
     }
 
@@ -1955,7 +2289,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         Environment.SetEnvironmentVariable(VibePathEnvironmentVariable, scriptPath);
     }
 
-    private void EnsureModelsProvisioned()
+    private async Task EnsureModelsProvisioned(CancellationToken cancellationToken)
     {
         var modelsDir = ResolveModelsDirectoryForProvisioning();
         if (string.IsNullOrWhiteSpace(modelsDir))
@@ -1967,15 +2301,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             Directory.CreateDirectory(modelsDir);
             var downloaded = 0;
-            foreach (var (fileName, url) in RequiredModelFiles)
+            foreach (var (fileName, url, sha256) in RequiredModelFiles)
             {
                 var destinationPath = Path.Join(modelsDir, fileName);
-                if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length > 0)
+                if (ModelFileMatches(destinationPath, sha256))
                 {
                     continue;
                 }
 
-                if (TryDownloadModel(url, destinationPath))
+                if (await TryDownloadModel(url, destinationPath, sha256, cancellationToken).ConfigureAwait(false))
                 {
                     downloaded++;
                 }
@@ -1993,23 +2327,76 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private bool TryDownloadModel(string url, string destinationPath)
+    private static bool ModelFileMatches(string path, string expectedSha256)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        if (new FileInfo(path).Length <= 0)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedSha256))
+        {
+            return true;
+        }
+
+        try
+        {
+            return string.Equals(ComputeFileSha256(path), expectedSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
+    }
+
+    private static string ComputeFileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant();
+    }
+
+    private async Task<bool> TryDownloadModel(string url, string destinationPath, string expectedSha256, CancellationToken cancellationToken)
     {
         var tempPath = destinationPath + ".tmp";
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = MlBootstrapHttpClient.Send(request, HttpCompletionOption.ResponseHeadersRead);
+            using var response = await MlBootstrapHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to download model {Url}. Status code {StatusCode}.", url, (int)response.StatusCode);
                 return false;
             }
 
-            using var networkStream = response.Content.ReadAsStream();
+            using var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using (var fileStream = File.Create(tempPath))
             {
-                networkStream.CopyTo(fileStream);
+                await networkStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Never promote an unverified transfer. A truncated model that merely
+            // exists on disk is otherwise skipped forever and permanently breaks
+            // enhanced analysis with no self-heal.
+            if (!string.IsNullOrWhiteSpace(expectedSha256))
+            {
+                var actualSha256 = ComputeFileSha256(tempPath);
+                if (!string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "Discarding model {FileName} from {Url}: checksum mismatch (expected {Expected}, got {Actual}).",
+                        Path.GetFileName(destinationPath),
+                        url,
+                        expectedSha256,
+                        actualSha256);
+                    File.Delete(tempPath);
+                    return false;
+                }
             }
 
             File.Move(tempPath, destinationPath, true);
@@ -2098,13 +2485,104 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static bool SupportsEssentia(string pythonExecutable)
     {
-        return TryRunProcess(pythonExecutable, "-c \"import essentia.standard\"", TimeSpan.FromSeconds(20), out _);
+        return TryRunProcess(pythonExecutable, "-c \"import essentia.standard\"", EssentiaImportTimeout, out _);
     }
 
     private static string ResolveEssentiaPackage()
     {
         var configured = Environment.GetEnvironmentVariable(VibeEssentiaPackageEnvironmentVariable);
         return string.IsNullOrWhiteSpace(configured) ? DefaultEssentiaPackage : configured.Trim();
+    }
+
+    private readonly record struct ProcessCaptureResult(
+        bool StartFailed,
+        bool TimedOut,
+        int ExitCode,
+        string StandardOutput,
+        string StandardError);
+
+    /// <summary>
+    /// Runs a short-lived helper process and captures both pipes.
+    ///
+    /// The readers are armed before the blocking wait. Reading the pipes only
+    /// after the process has exited deadlocks as soon as the child fills the OS
+    /// pipe buffer, which pip reliably does during a large install and which
+    /// Essentia/TensorFlow can do on a noisy load.
+    /// </summary>
+    private static ProcessCaptureResult RunProcessCapturingOutput(ProcessStartInfo startInfo, TimeSpan timeout)
+    {
+        using var process = Process.Start(startInfo);
+        if (process is null)
+        {
+            return new ProcessCaptureResult(true, false, -1, string.Empty, string.Empty);
+        }
+
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data is null)
+            {
+                return;
+            }
+
+            lock (stdout)
+            {
+                AppendBounded(stdout, args.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data is null)
+            {
+                return;
+            }
+
+            lock (stderr)
+            {
+                AppendBounded(stderr, args.Data);
+            }
+        };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        if (!process.WaitForExit((int)Math.Clamp(timeout.TotalMilliseconds, 1000, int.MaxValue)))
+        {
+            TryTerminate(process);
+            return new ProcessCaptureResult(false, true, -1, string.Empty, string.Empty);
+        }
+
+        // The parameterless overload also waits for the asynchronous readers to
+        // observe end-of-stream, so the captured output is complete.
+        process.WaitForExit();
+
+        string capturedStdout;
+        string capturedStderr;
+        lock (stdout)
+        {
+            capturedStdout = stdout.ToString();
+        }
+
+        lock (stderr)
+        {
+            capturedStderr = stderr.ToString();
+        }
+
+        return new ProcessCaptureResult(false, false, process.ExitCode, capturedStdout, capturedStderr);
+    }
+
+    private static void AppendBounded(StringBuilder builder, string line)
+    {
+        if (builder.Length >= MaxProcessOutputCharacters)
+        {
+            return;
+        }
+
+        builder.AppendLine(line);
+        if (builder.Length > MaxProcessOutputCharacters)
+        {
+            builder.Remove(0, builder.Length - MaxProcessOutputCharacters);
+        }
     }
 
     private static bool TryRunProcess(string fileName, string arguments, TimeSpan timeout, out string error)
@@ -2122,28 +2600,27 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 CreateNoWindow = true
             };
 
-            using var process = Process.Start(startInfo);
-            if (process is null)
+            var capture = RunProcessCapturingOutput(startInfo, timeout);
+            if (capture.StartFailed)
             {
                 error = $"Failed to start process {fileName}.";
                 return false;
             }
 
-            if (!process.WaitForExit((int)Math.Clamp(timeout.TotalMilliseconds, 1000, int.MaxValue)))
+            if (capture.TimedOut)
             {
-                TryTerminate(process);
                 error = $"{fileName} timed out.";
                 return false;
             }
 
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            if (process.ExitCode == 0)
+            if (capture.ExitCode == 0)
             {
                 return true;
             }
 
-            error = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            error = string.IsNullOrWhiteSpace(capture.StandardError)
+                ? capture.StandardOutput
+                : capture.StandardError;
             return false;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -2229,21 +2706,21 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             };
             ConfigurePythonEnvironment(startInfo);
 
-            using var process = Process.Start(startInfo);
-            if (process is null)
+            var capture = RunProcessCapturingOutput(startInfo, ResolveProbeTimeout());
+            if (capture.StartFailed)
             {
                 return new MlCapability(false, $"Failed to start {Python3Executable} for Essentia probe.");
             }
 
-            if (!process.WaitForExit(15000))
+            if (capture.TimedOut)
             {
-                TryTerminate(process);
-                return new MlCapability(false, "Essentia probe timed out.");
+                return new MlCapability(
+                    false,
+                    $"Essentia probe timed out after {(int)ResolveProbeTimeout().TotalSeconds}s. " +
+                    "Raise VIBE_ANALYZER_PROBE_TIMEOUT_SECONDS on hosts with slow model loading.");
             }
 
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            return ParseProbeResult(process.ExitCode, stdout, stderr);
+            return ParseProbeResult(capture.ExitCode, capture.StandardOutput, capture.StandardError);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -2291,7 +2768,34 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return new MlCapability(false, details);
         }
 
+        // Enhanced mode is available, but the acoustic genre branch may have
+        // degraded. That is a legitimate state, so it must not fail the probe,
+        // but it must not be silently discarded either.
+        if (probe.GenreModelLoaded != true)
+        {
+            return new MlCapability(
+                true,
+                BuildGenreModelDegradation(probe));
+        }
+
         return new MlCapability(true, null);
+    }
+
+    private static string BuildGenreModelDegradation(ProbeOutput probe)
+    {
+        var details = new List<string>();
+        if (probe.MissingGenreModelFiles is { Count: > 0 })
+        {
+            details.Add($"missing genre models: {string.Join(", ", probe.MissingGenreModelFiles)}");
+        }
+
+        if (probe.MissingOptional is { Count: > 0 })
+        {
+            details.Add($"missing optional Essentia algorithms: {string.Join(", ", probe.MissingOptional)}");
+        }
+
+        var suffix = details.Count == 0 ? string.Empty : $" ({string.Join("; ", details)})";
+        return $"Acoustic genre analysis is degraded; no Discogs genre head initialized{suffix}.";
     }
 
     private static string BuildEnhancedProbeFailure(ProbeOutput probe)
@@ -2386,8 +2890,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }.FirstOrDefault(File.Exists);
     }
 
-    private static void ConfigurePythonEnvironment(ProcessStartInfo startInfo)
+    private static void ConfigurePythonEnvironment(ProcessStartInfo startInfo, bool sonicEnabled = false)
     {
+        // The analyzer decides whether to load the Sonic extractor from this flag.
+        // It is always set explicitly (including to "0") so an inherited shell
+        // value cannot silently enable a second inference pass per track.
+        startInfo.Environment[SonicAnalysisEnabledEnvironmentVariable] = sonicEnabled ? "1" : "0";
+
         if (!string.IsNullOrWhiteSpace(FfmpegExecutablePath))
         {
             startInfo.Environment["DEEZSPOTAG_FFMPEG_PATH"] = FfmpegExecutablePath;
@@ -2673,13 +3182,37 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             AddUniqueCandidate(resolvedCandidates, resolvedCandidate);
         }
 
-        var preferredCandidate = resolvedCandidates.FirstOrDefault(HasRequiredEnhancedModels);
-        if (!string.IsNullOrWhiteSpace(preferredCandidate))
+        // Prefer the most complete manifest rather than the first directory that
+        // happens to exist. A stale or partially provisioned data-directory copy
+        // must not shadow a complete bundled one and silently downgrade the
+        // acoustic genre model.
+        return resolvedCandidates
+            .OrderByDescending(CountSatisfiedModelFiles)
+            .ThenByDescending(HasRequiredGenre519Models)
+            .ThenByDescending(HasRequiredEnhancedModels)
+            .FirstOrDefault();
+    }
+
+    private static int CountSatisfiedModelFiles(string modelsDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(modelsDirectory) || !Directory.Exists(modelsDirectory))
         {
-            return preferredCandidate;
+            return 0;
         }
 
-        return resolvedCandidates.Count > 0 ? resolvedCandidates[0] : null;
+        return RequiredModelFiles.Count(model => ModelFilePresent(Path.Join(modelsDirectory, model.FileName)));
+    }
+
+    private static bool ModelFilePresent(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length > 0;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
     }
 
     private static bool HasRequiredEnhancedModels(string modelsDirectory)
@@ -2689,7 +3222,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return false;
         }
 
-        return RequiredEnhancedModelFiles.All(requiredModelFile => File.Exists(Path.Join(modelsDirectory, requiredModelFile)));
+        return RequiredEnhancedModelFiles.All(requiredModelFile => ModelFilePresent(Path.Join(modelsDirectory, requiredModelFile)));
+    }
+
+    private static bool HasRequiredGenre519Models(string modelsDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(modelsDirectory) || !Directory.Exists(modelsDirectory))
+        {
+            return false;
+        }
+
+        return RequiredGenre519ModelFiles.All(requiredModelFile => ModelFilePresent(Path.Join(modelsDirectory, requiredModelFile)));
     }
 
     private static string? TryResolveExistingFilePath(string path)
@@ -2729,6 +3272,21 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         double Electronic);
 
     internal sealed record VibeGenreEvidenceDto(string Label, double Score, string Model);
+
+    /// <summary>
+    /// A Sonic Analysis vector as it arrives from the analyzer: little-endian
+    /// float32 base64 plus the provenance describing how it was produced.
+    /// </summary>
+    internal sealed record SonicPayload(
+        string ModelId,
+        string ModelVersion,
+        string EmbeddingVersion,
+        int Dimensions,
+        string Pooling,
+        string Normalization,
+        string DistanceMetric,
+        int FrameCount,
+        string VectorBase64);
 
     internal sealed record VibeSemantics(
         IReadOnlyList<string>? ResolvedGenres,
@@ -2773,7 +3331,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyList<VibeGenreEvidenceDto>? EssentiaGenreEvidence,
         string? GenreModel,
         string? ValenceSource,
-        string? ArousalSource)
+        string? ArousalSource,
+        bool? AudioTruncated,
+        // Named to match the analyzer's payload key exactly. The payload is
+        // deserialized case-insensitively by property name, so renaming this
+        // would silently stop the vector binding rather than fail to compile.
+        SonicPayload? SonicEmbedding = null,
+        bool? SonicUnavailable = null)
     {
         public MoodScores? MoodScores => Happy.HasValue
             ? new MoodScores(
@@ -2837,7 +3401,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyList<string>? MissingOptional,
         bool? EnhancedMode,
         IReadOnlyList<string>? MissingEnhancedModels,
-        IReadOnlyList<string>? LoadedPredictionHeads);
+        IReadOnlyList<string>? LoadedPredictionHeads,
+        string? GenreModel,
+        bool? GenreModelLoaded,
+        IReadOnlyList<string>? MissingGenreModelFiles);
 
     private static bool TryReadWithFfmpeg(string path, int seconds, out float[] samples, out int sampleRate, out string? errorMessage)
     {
@@ -3327,6 +3894,39 @@ public static class VibeAnalysisRuntimeStates
     public const string Running = "running";
     public const string Pausing = "pausing";
     public const string Paused = "paused";
+}
+
+/// <summary>Why a manual analysis run was accepted or declined.</summary>
+public enum VibeAnalysisRunOutcome
+{
+    /// <summary>The run was accepted and queued.</summary>
+    Queued,
+
+    /// <summary>A pass is already running or pending, so a second run was declined.
+    /// This is a healthy state, not a disabled feature.</summary>
+    AlreadyRunning,
+
+    /// <summary>Background analysis is switched off.</summary>
+    Disabled
+}
+
+public static class VibeAnalysisRunOutcomeExtensions
+{
+    public static bool IsAccepted(this VibeAnalysisRunOutcome outcome)
+        => outcome == VibeAnalysisRunOutcome.Queued;
+
+    public static string Reason(this VibeAnalysisRunOutcome outcome)
+        => outcome switch
+        {
+            VibeAnalysisRunOutcome.Queued => "Vibe analysis run queued.",
+            VibeAnalysisRunOutcome.AlreadyRunning => "Vibe analysis is already running.",
+            _ => "Background analysis is disabled."
+        };
+}
+
+public readonly record struct VibeAnalysisRunRequest(VibeAnalysisRunOutcome Outcome, string Reason)
+{
+    public bool Queued => Outcome.IsAccepted();
 }
 
 public sealed record VibeAnalysisRecentItemDto(

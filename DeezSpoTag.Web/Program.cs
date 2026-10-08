@@ -3,6 +3,8 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Extensions;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Library.Dj;
+using DeezSpoTag.Services.Library.Sonic;
 using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services;
@@ -2037,6 +2039,10 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.AudiomackVibeMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.Audiomack.IAudiomackVibeMetadataService>(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.Audiomack.AudiomackVibeMetadataService>());
         services.AddSingleton<DeezSpoTag.Web.Services.Vibe.EmbeddedVibeMetadataReader>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SonicAnalysisSettingsStore>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SonicAnalysisService>();
+        services.AddSonicSimilarity();
+        services.AddMelodayDj();
         services.AddSingleton<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>(
             services,

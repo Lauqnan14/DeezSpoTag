@@ -5896,6 +5896,721 @@ ON CONFLICT(track_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    // ---------------------------------------------------------------- Sonic
+    //
+    // Sonic Analysis embeddings. Kept apart from track_analysis so that ordinary
+    // analysis queries never carry a multi-kilobyte vector, and so a vector can
+    // be invalidated on its own terms (model version, source file revision)
+    // without touching the semantic analysis row.
+
+    /// <summary>
+    /// Inserts or replaces one Sonic embedding. The declared dimension is derived
+    /// from the vector itself rather than trusted from the caller, so a mismatch
+    /// is impossible to persist.
+    /// </summary>
+    public async Task UpsertSonicEmbeddingAsync(SonicEmbeddingDto embedding, CancellationToken cancellationToken = default)
+    {
+        if (embedding.Vector.Count == 0)
+        {
+            return;
+        }
+
+        var bytes = new byte[embedding.Vector.Count * sizeof(float)];
+        Buffer.BlockCopy(embedding.Vector.ToArray(), 0, bytes, 0, bytes.Length);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO track_sonic_embedding
+    (track_id, library_id, model_id, model_version, embedding_version, dimensions,
+     pooling_method, normalization_method, distance_metric, vector_blob,
+     source_file_size, source_file_mtime_utc, analyzed_at_utc)
+VALUES
+    (@trackId, @libraryId, @modelId, @modelVersion, @embeddingVersion, @dimensions,
+     @pooling, @normalization, @distance, @vector,
+     @sourceSize, @sourceMtime, @analyzedAt)
+ON CONFLICT(track_id, model_id, model_version, embedding_version) DO UPDATE SET
+    library_id = excluded.library_id,
+    dimensions = excluded.dimensions,
+    pooling_method = excluded.pooling_method,
+    normalization_method = excluded.normalization_method,
+    distance_metric = excluded.distance_metric,
+    vector_blob = excluded.vector_blob,
+    source_file_size = excluded.source_file_size,
+    source_file_mtime_utc = excluded.source_file_mtime_utc,
+    analyzed_at_utc = excluded.analyzed_at_utc;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdField, embedding.TrackId);
+        command.Parameters.AddWithValue(LibraryIdField, (object?)embedding.LibraryId ?? DBNull.Value);
+        command.Parameters.AddWithValue("modelId", embedding.ModelId);
+        command.Parameters.AddWithValue("modelVersion", embedding.ModelVersion);
+        command.Parameters.AddWithValue("embeddingVersion", embedding.EmbeddingVersion);
+        command.Parameters.AddWithValue("dimensions", embedding.Vector.Count);
+        command.Parameters.AddWithValue("pooling", embedding.PoolingMethod);
+        command.Parameters.AddWithValue("normalization", embedding.NormalizationMethod);
+        command.Parameters.AddWithValue("distance", embedding.DistanceMetric);
+        command.Parameters.AddWithValue("vector", bytes);
+        command.Parameters.AddWithValue("sourceSize", (object?)embedding.SourceFileSize ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "sourceMtime",
+            embedding.SourceFileMtimeUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("analyzedAt", embedding.AnalyzedAtUtc.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Loads the current embedding for a track. Returns null when the track has
+    /// no embedding for the requested identity.
+    /// </summary>
+    public async Task<SonicEmbeddingDto?> GetSonicEmbeddingAsync(
+        long trackId,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT track_id, library_id, model_id, model_version, embedding_version, dimensions,
+       pooling_method, normalization_method, distance_metric, vector_blob,
+       source_file_size, source_file_mtime_utc, analyzed_at_utc
+FROM track_sonic_embedding
+WHERE track_id = @trackId AND model_id = @modelId
+  AND model_version = @modelVersion AND embedding_version = @embeddingVersion;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdField, trackId);
+        command.Parameters.AddWithValue("modelId", modelId);
+        command.Parameters.AddWithValue("modelVersion", modelVersion);
+        command.Parameters.AddWithValue("embeddingVersion", embeddingVersion);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReadSonicEmbedding(reader)
+            : null;
+    }
+
+    /// <summary>
+    /// Loads every current embedding for one library. This is the bulk read a
+    /// Sonic similarity index is built from; nothing else should query vectors
+    /// in bulk.
+    /// </summary>
+    /// <summary>
+    /// Which of these tracks actually have a usable sonic vector.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately ids only. Loading the vectors to answer this would read 5 KB per
+    /// track — hundreds of megabytes for a large library — and the caller needs to know
+    /// presence, not content. Scoped by track id so the query cannot grow with the
+    /// library, which matters because this runs once per generated playlist.
+    /// </remarks>
+    public async Task<IReadOnlySet<long>> GetSonicEmbeddedTrackIdsAsync(
+        IReadOnlyCollection<long> trackIds,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        CancellationToken cancellationToken = default)
+    {
+        if (trackIds.Count == 0)
+        {
+            return new HashSet<long>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT track_id
+FROM track_sonic_embedding
+WHERE track_id IN (SELECT CAST(value AS INTEGER) FROM json_each(@trackIdsJson))
+  AND model_id = @modelId
+  AND model_version = @modelVersion
+  AND embedding_version = @embeddingVersion;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds.ToList()));
+        command.Parameters.AddWithValue("modelId", modelId);
+        command.Parameters.AddWithValue("modelVersion", modelVersion);
+        command.Parameters.AddWithValue("embeddingVersion", embeddingVersion);
+
+        var embedded = new HashSet<long>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            embedded.Add(reader.GetInt64(0));
+        }
+
+        return embedded;
+    }
+
+    public async Task<IReadOnlyList<SonicEmbeddingDto>> GetLibrarySonicEmbeddingsAsync(
+        long libraryId,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT track_id, library_id, model_id, model_version, embedding_version, dimensions,
+       pooling_method, normalization_method, distance_metric, vector_blob,
+       source_file_size, source_file_mtime_utc, analyzed_at_utc
+FROM track_sonic_embedding
+WHERE library_id = @libraryId AND model_id = @modelId
+  AND model_version = @modelVersion AND embedding_version = @embeddingVersion
+ORDER BY track_id;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue("modelId", modelId);
+        command.Parameters.AddWithValue("modelVersion", modelVersion);
+        command.Parameters.AddWithValue("embeddingVersion", embeddingVersion);
+
+        var results = new List<SonicEmbeddingDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var embedding = ReadSonicEmbedding(reader);
+            if (embedding is not null)
+            {
+                results.Add(embedding);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Sonic coverage for a library, plus how many tracks have a failed or
+    /// missing vector so a caller can distinguish "not analysed yet" from
+    /// "analysed and could not produce a vector".
+    /// </summary>
+    public async Task<SonicCoverageDto> GetSonicCoverageAsync(
+        long libraryId,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        // A track belongs to a library through its audio file's folder, not
+        // through track_analysis.library_id: that column is only backfilled and
+        // can be null. Coverage must be counted from the real folder chain.
+        const string sql = @"
+SELECT
+    (SELECT COUNT(DISTINCT tl.track_id)
+       FROM track_local tl
+       JOIN audio_file af ON af.id = tl.audio_file_id
+       JOIN folder f ON f.id = af.folder_id
+      WHERE f.library_id = @libraryId) AS total,
+    (SELECT COUNT(DISTINCT tl.track_id)
+       FROM track_local tl
+       JOIN audio_file af ON af.id = tl.audio_file_id
+       JOIN folder f ON f.id = af.folder_id
+       JOIN track_analysis a ON a.track_id = tl.track_id
+      WHERE f.library_id = @libraryId AND a.status = 'completed') AS analyzed,
+    (SELECT COUNT(*) FROM track_sonic_embedding e
+      WHERE e.library_id = @libraryId AND e.model_id = @modelId
+        AND e.model_version = @modelVersion
+        AND e.embedding_version = @embeddingVersion) AS embedded,
+    (SELECT IFNULL(MAX(e.analyzed_at_utc), '')
+       FROM track_sonic_embedding e
+      WHERE e.library_id = @libraryId AND e.model_id = @modelId
+        AND e.model_version = @modelVersion
+        AND e.embedding_version = @embeddingVersion) AS newest;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue("modelId", modelId);
+        command.Parameters.AddWithValue("modelVersion", modelVersion);
+        command.Parameters.AddWithValue("embeddingVersion", embeddingVersion);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new SonicCoverageDto(libraryId, 0, 0, 0, 0);
+        }
+
+        var total = Convert.ToInt32(reader.GetValue(0));
+        var analyzed = Convert.ToInt32(reader.GetValue(1));
+        var embedded = Convert.ToInt32(reader.GetValue(2));
+        var newestRaw = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+        var newestTicks = string.IsNullOrEmpty(newestRaw)
+            ? 0L
+            : DateTimeOffset.Parse(newestRaw, null, System.Globalization.DateTimeStyles.RoundtripKind).UtcTicks;
+
+        return new SonicCoverageDto(
+            libraryId,
+            total,
+            embedded,
+            analyzed,
+            Math.Max(0, analyzed - embedded),
+            newestTicks);
+    }
+
+    /// <summary>
+    /// Tracks whose Sonic embedding is absent, or present but no longer matching
+    /// the file it was derived from.
+    ///
+    /// <para>Staleness is decided on the source file's size and modification time,
+    /// which are stored alongside every vector. That is deliberately conservative:
+    /// a tag-only edit changes the file and forces a re-embedding even though the
+    /// audio is identical. Hashing every file on every scan would cost far more
+    /// I/O than it saves, and an audio-aware rule can replace this later without
+    /// any schema change.</para>
+    ///
+    /// <para>Bounded by <paramref name="limit"/> so enabling Sonic does not queue
+    /// an entire library in one pass.</para>
+    ///
+    /// <para>The modification time is compared with <c>julianday()</c>, never as
+    /// text. The two columns are serialised differently on purpose:
+    /// <c>audio_file.mtime</c> comes from a bound <see cref="DateTime"/> and
+    /// reads back as <c>2026-06-01 12:00:00</c>, while
+    /// <c>source_file_mtime_utc</c> is written with <c>ToString("O")</c> and
+    /// reads back as <c>2026-06-01T12:00:00.0000000+00:00</c>. Those describe
+    /// the same instant, so a string comparison never matches and every stored
+    /// vector would be reported stale on every pass, re-embedding the whole
+    /// library forever. Both sides must be reduced to a comparable value first.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<TrackStaleSonicDto>> GetStaleSonicTracksAsync(
+        long libraryId,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT tl.track_id,
+       af.path,
+       af.size,
+       af.mtime,
+       CASE WHEN e.track_id IS NULL THEN 0 ELSE 1 END AS has_embedding
+  FROM track_local tl
+  JOIN audio_file af ON af.id = tl.audio_file_id
+  JOIN folder f ON f.id = af.folder_id
+  LEFT JOIN track_sonic_embedding e
+         ON e.track_id = tl.track_id
+        AND e.model_id = $modelId
+        AND e.model_version = $modelVersion
+        AND e.embedding_version = $embeddingVersion
+ WHERE f.library_id = $libraryId
+   AND (
+        e.track_id IS NULL
+     OR af.size IS NOT e.source_file_size
+     OR julianday(af.mtime) IS NOT julianday(e.source_file_mtime_utc)
+   )
+ ORDER BY tl.track_id
+ LIMIT $limit;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue("$modelId", modelId);
+        command.Parameters.AddWithValue("$modelVersion", modelVersion);
+        command.Parameters.AddWithValue("$embeddingVersion", embeddingVersion);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 5000));
+
+        var results = new List<TrackStaleSonicDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new TrackStaleSonicDto(
+                Convert.ToInt64(reader.GetValue(0)),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? (long?)null : Convert.ToInt64(reader.GetValue(2)),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                Convert.ToInt32(reader.GetValue(4)) == 1));
+        }
+
+        return results;
+    }
+
+    /// <summary>How many stored Sonic embeddings no longer match their source file.</summary>
+    public async Task<int> CountStaleSonicEmbeddingsAsync(
+        long libraryId,
+        string modelId,
+        string modelVersion,
+        string embeddingVersion,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COUNT(DISTINCT tl.track_id)
+  FROM track_local tl
+  JOIN audio_file af ON af.id = tl.audio_file_id
+  JOIN folder f ON f.id = af.folder_id
+  JOIN track_sonic_embedding e
+    ON e.track_id = tl.track_id
+   AND e.model_id = $modelId
+   AND e.model_version = $modelVersion
+   AND e.embedding_version = $embeddingVersion
+ WHERE f.library_id = $libraryId
+   AND (
+        af.size IS NOT e.source_file_size
+     OR julianday(af.mtime) IS NOT julianday(e.source_file_mtime_utc)
+   );";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue("$modelId", modelId);
+        command.Parameters.AddWithValue("$modelVersion", modelVersion);
+        command.Parameters.AddWithValue("$embeddingVersion", embeddingVersion);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
+    /// <summary>Configured, enabled libraries that have at least one folder.</summary>
+    public async Task<IReadOnlyList<(long LibraryId, string Name)>> GetEnabledLibraryScopesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT l.id, l.name
+  FROM library l
+  JOIN folder f ON f.library_id = l.id
+ WHERE f.enabled = 1
+ ORDER BY l.id;";
+
+        var results = new List<(long, string)>();
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add((Convert.ToInt64(reader.GetValue(0)), reader.GetString(1)));
+        }
+
+        return results;
+    }
+
+    private static SonicEmbeddingDto? ReadSonicEmbedding(SqliteDataReader reader)
+    {
+        var trackId = Convert.ToInt64(reader.GetValue(0));
+        var libraryId = reader.IsDBNull(1) ? (long?)null : Convert.ToInt64(reader.GetValue(1));
+        var modelId = reader.GetString(2);
+        var modelVersion = reader.GetString(3);
+        var embeddingVersion = reader.GetString(4);
+        var dimensions = Convert.ToInt32(reader.GetValue(5));
+        var pooling = reader.GetString(6);
+        var normalization = reader.GetString(7);
+        var distance = reader.GetString(8);
+
+        var blob = (byte[])reader.GetValue(9);
+        if (blob.Length != dimensions * sizeof(float))
+        {
+            // A blob that does not match its declared width is corrupt. Reject it
+            // here rather than letting a caller score against garbage.
+            return null;
+        }
+
+        var vector = new float[dimensions];
+        Buffer.BlockCopy(blob, 0, vector, 0, blob.Length);
+        if (vector.Any(float.IsNaN) || vector.Any(float.IsInfinity))
+        {
+            return null;
+        }
+
+        var sourceSize = reader.IsDBNull(10) ? (long?)null : Convert.ToInt64(reader.GetValue(10));
+        var sourceMtime = reader.IsDBNull(11)
+            ? (DateTimeOffset?)null
+            : DateTimeOffset.Parse(reader.GetString(11), null, System.Globalization.DateTimeStyles.RoundtripKind);
+        var analyzedAt = DateTimeOffset.Parse(reader.GetString(12), null, System.Globalization.DateTimeStyles.RoundtripKind);
+
+        return new SonicEmbeddingDto(
+            trackId,
+            libraryId,
+            modelId,
+            modelVersion,
+            embeddingVersion,
+            dimensions,
+            pooling,
+            normalization,
+            distance,
+            vector,
+            sourceSize,
+            sourceMtime,
+            analyzedAt);
+    }
+// ---------------------------------------------------- Meloday DJ provenance
+    //
+    // Persistence only. A DJ has no schedule, no run state and no identity of its own:
+    // it is applied inside Meloday's existing generation, so Meloday's scheduler, its
+    // once-per-day guard and its mix_cache row already hold everything a re-run needs.
+    // What they do not hold is *why* the playlist looks the way it does — which DJ ran,
+    // whether that was chosen or rolled, and why each track was picked — and that is what
+    // these tables keep. It is the one thing a Random DJ cannot re-derive after it has
+    // moved on to a different DJ next week.
+
+    public sealed record MelodayGenerationUpsertInput(
+        long MixCacheId,
+        string MixId,
+        long LibraryId,
+        string SlotId,
+        string WeekdayId,
+        string Mode,
+        string ConfiguredDj,
+        string ResolvedDj,
+        bool WasRandom,
+        string OccurrenceKey,
+        string ContextSource,
+        string? SonicModelVersion,
+        double? SonicCoveragePercent,
+        string? SeedSummary,
+        int TrackCount,
+        IReadOnlyList<string> Diagnostics,
+        DateTimeOffset? StartedAtUtc,
+        DateTimeOffset CompletedAtUtc);
+
+    public sealed record MelodayGenerationItemUpsertInput(
+        int Position,
+        long? TrackId,
+        double? Similarity,
+        string? Reason,
+        long? RelatedSeedId);
+
+    /// <summary>
+    /// Records one generated playlist's DJ provenance, replacing any earlier run of the
+    /// same playlist.
+    /// </summary>
+    /// <remarks>
+    /// Upsert rather than append, keyed on the playlist: a retry of the same occurrence
+    /// resolves the same DJ by construction, so a second row would be the same fact
+    /// recorded twice and would make the history look like two attempts.
+    /// </remarks>
+    public async Task<long> UpsertMelodayGenerationAsync(
+        MelodayGenerationUpsertInput input,
+        IReadOnlyList<MelodayGenerationItemUpsertInput>? items = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = @"
+INSERT INTO meloday_generation (
+    mix_cache_id, mix_id, library_id, slot_id, weekday_id, mode,
+    configured_dj, resolved_dj, was_random, occurrence_key, context_source,
+    sonic_model_version, sonic_coverage_percent, seed_summary, track_count,
+    diagnostics_json, started_at_utc, completed_at_utc)
+VALUES (
+    @mixCacheId, @mixId, @libraryId, @slotId, @weekdayId, @mode,
+    @configuredDj, @resolvedDj, @wasRandom, @occurrenceKey, @contextSource,
+    @sonicModelVersion, @sonicCoveragePercent, @seedSummary, @trackCount,
+    @diagnosticsJson, @startedAtUtc, @completedAtUtc)
+ON CONFLICT (mix_id, library_id) DO UPDATE SET
+    mix_cache_id = excluded.mix_cache_id,
+    slot_id = excluded.slot_id,
+    weekday_id = excluded.weekday_id,
+    mode = excluded.mode,
+    configured_dj = excluded.configured_dj,
+    resolved_dj = excluded.resolved_dj,
+    was_random = excluded.was_random,
+    occurrence_key = excluded.occurrence_key,
+    context_source = excluded.context_source,
+    sonic_model_version = excluded.sonic_model_version,
+    sonic_coverage_percent = excluded.sonic_coverage_percent,
+    seed_summary = excluded.seed_summary,
+    track_count = excluded.track_count,
+    diagnostics_json = excluded.diagnostics_json,
+    started_at_utc = excluded.started_at_utc,
+    completed_at_utc = excluded.completed_at_utc,
+    updated_at = CURRENT_TIMESTAMP;
+";
+        long generationId;
+        await using (var command = new SqliteCommand(sql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("mixCacheId", input.MixCacheId);
+            command.Parameters.AddWithValue("mixId", input.MixId);
+            command.Parameters.AddWithValue("libraryId", input.LibraryId);
+            command.Parameters.AddWithValue("slotId", input.SlotId);
+            command.Parameters.AddWithValue("weekdayId", input.WeekdayId);
+            command.Parameters.AddWithValue("mode", input.Mode);
+            command.Parameters.AddWithValue("configuredDj", input.ConfiguredDj);
+            command.Parameters.AddWithValue("resolvedDj", input.ResolvedDj);
+            command.Parameters.AddWithValue("wasRandom", input.WasRandom ? 1 : 0);
+            command.Parameters.AddWithValue("occurrenceKey", input.OccurrenceKey);
+            command.Parameters.AddWithValue("contextSource", input.ContextSource);
+            command.Parameters.AddWithValue("sonicModelVersion", (object?)input.SonicModelVersion ?? DBNull.Value);
+            command.Parameters.AddWithValue("sonicCoveragePercent", (object?)input.SonicCoveragePercent ?? DBNull.Value);
+            command.Parameters.AddWithValue("seedSummary", (object?)input.SeedSummary ?? DBNull.Value);
+            command.Parameters.AddWithValue("trackCount", input.TrackCount);
+            command.Parameters.AddWithValue(
+                "diagnosticsJson",
+                System.Text.Json.JsonSerializer.Serialize(input.Diagnostics ?? Array.Empty<string>()));
+            command.Parameters.AddWithValue("startedAtUtc", input.StartedAtUtc?.ToString("O") ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("completedAtUtc", input.CompletedAtUtc.ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            await using var select = new SqliteCommand(
+                "SELECT meloday_generation_id FROM meloday_generation WHERE mix_id = @mixId AND library_id = @libraryId;",
+                connection,
+                transaction);
+            select.Parameters.AddWithValue("mixId", input.MixId);
+            select.Parameters.AddWithValue("libraryId", input.LibraryId);
+            var found = await select.ExecuteScalarAsync(cancellationToken);
+            generationId = Convert.ToInt64(found);
+        }
+
+        if (items is { Count: > 0 })
+        {
+            await using (var delete = new SqliteCommand(
+                "DELETE FROM meloday_generation_item WHERE meloday_generation_id = @generationId;",
+                connection,
+                transaction))
+            {
+                delete.Parameters.AddWithValue("generationId", generationId);
+                await delete.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            const string itemSql = @"
+INSERT INTO meloday_generation_item (
+    meloday_generation_id, position, track_id, similarity, reason, related_seed_id)
+VALUES (@generationId, @position, @trackId, @similarity, @reason, @relatedSeedId);";
+            foreach (var item in items)
+            {
+                await using var command = new SqliteCommand(itemSql, connection, transaction);
+                command.Parameters.AddWithValue("generationId", generationId);
+                command.Parameters.AddWithValue("position", item.Position);
+                command.Parameters.AddWithValue("trackId", (object?)item.TrackId ?? DBNull.Value);
+                command.Parameters.AddWithValue("similarity", (object?)item.Similarity ?? DBNull.Value);
+                command.Parameters.AddWithValue("reason", (object?)item.Reason ?? DBNull.Value);
+                command.Parameters.AddWithValue("relatedSeedId", (object?)item.RelatedSeedId ?? DBNull.Value);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return generationId;
+    }
+
+    /// <summary>How a DJ-filled playlist was built, with its tracklist.</summary>
+    public async Task<MelodayGenerationWithItems?> GetMelodayGenerationAsync(
+        string? mixId,
+        long? libraryId = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(mixId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT g.meloday_generation_id, g.mix_cache_id, g.mix_id, g.library_id, g.slot_id,
+       g.weekday_id, g.mode, g.configured_dj, g.resolved_dj, g.was_random,
+       g.occurrence_key, g.context_source, g.sonic_model_version,
+       g.sonic_coverage_percent, g.seed_summary, g.track_count, g.diagnostics_json,
+       g.started_at_utc, g.completed_at_utc
+FROM meloday_generation g
+WHERE g.mix_id = @mixId
+  AND (@libraryId IS NULL OR g.library_id = @libraryId)
+ORDER BY g.meloday_generation_id DESC
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("mixId", mixId);
+        command.Parameters.AddWithValue("libraryId", libraryId);
+
+        MelodayGenerationDto generation;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+
+            generation = new MelodayGenerationDto
+            {
+                MelodayGenerationId = reader.GetInt64(0),
+                MixCacheId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                MixId = reader.GetString(2),
+                LibraryId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                SlotId = reader.GetString(4),
+                WeekdayId = reader.GetString(5),
+                Mode = reader.GetString(6),
+                ConfiguredDj = reader.GetString(7),
+                ResolvedDj = reader.GetString(8),
+                WasRandom = Convert.ToInt64(reader.GetValue(9)) != 0,
+                OccurrenceKey = reader.GetString(10),
+                ContextSource = reader.GetString(11),
+                SonicModelVersion = reader.IsDBNull(12) ? null : reader.GetString(12),
+                SonicCoveragePercent = reader.IsDBNull(13) ? null : Convert.ToDouble(reader.GetValue(13)),
+                SeedSummary = reader.IsDBNull(14) ? null : reader.GetString(14),
+                TrackCount = Convert.ToInt32(reader.GetValue(15)),
+                Diagnostics = DeserializeStringListOrNull(reader.IsDBNull(16) ? null : reader.GetString(16))
+                    ?? Array.Empty<string>(),
+                StartedAtUtc = reader.IsDBNull(17)
+                    ? null
+                    : DateTimeOffset.Parse(reader.GetString(17), null, System.Globalization.DateTimeStyles.RoundtripKind),
+                CompletedAtUtc = DateTimeOffset.Parse(reader.GetString(18), null, System.Globalization.DateTimeStyles.RoundtripKind),
+            };
+        }
+
+        var items = new List<MelodayGenerationItemDto>();
+        await using (var itemCommand = new SqliteCommand(
+            @"SELECT position, track_id, similarity, reason, related_seed_id
+              FROM meloday_generation_item
+              WHERE meloday_generation_id = @generationId
+              ORDER BY position;",
+            connection))
+        {
+            itemCommand.Parameters.AddWithValue("generationId", generation.MelodayGenerationId);
+            await using var reader = await itemCommand.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(new MelodayGenerationItemDto
+                {
+                    Position = Convert.ToInt32(reader.GetValue(0)),
+                    TrackId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    Similarity = reader.IsDBNull(2) ? null : Convert.ToDouble(reader.GetValue(2)),
+                    Reason = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    RelatedSeedId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                });
+            }
+        }
+
+        return new MelodayGenerationWithItems(generation, items);
+    }
+
+    /// <summary>Recent DJ provenance for a library, newest first. For diagnostics.</summary>
+    public async Task<IReadOnlyList<MelodayGenerationDto>> GetMelodayGenerationsAsync(
+        long? libraryId = null,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT mix_id, slot_id, weekday_id, mode, configured_dj, resolved_dj, was_random,
+       context_source, sonic_coverage_percent, track_count, completed_at_utc
+FROM meloday_generation
+WHERE (@libraryId IS NULL OR library_id = @libraryId)
+ORDER BY completed_at_utc DESC
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("libraryId", libraryId);
+        command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 500));
+
+        var results = new List<MelodayGenerationDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new MelodayGenerationDto
+            {
+                MixId = reader.GetString(0),
+                SlotId = reader.GetString(1),
+                WeekdayId = reader.GetString(2),
+                Mode = reader.GetString(3),
+                ConfiguredDj = reader.GetString(4),
+                ResolvedDj = reader.GetString(5),
+                WasRandom = Convert.ToInt64(reader.GetValue(6)) != 0,
+                ContextSource = reader.GetString(7),
+                SonicCoveragePercent = reader.IsDBNull(8) ? null : Convert.ToDouble(reader.GetValue(8)),
+                TrackCount = Convert.ToInt32(reader.GetValue(9)),
+                CompletedAtUtc = DateTimeOffset.Parse(reader.GetString(10), null, System.Globalization.DateTimeStyles.RoundtripKind),
+            });
+        }
+
+        return results;
+    }
+
     public async Task<AnalysisStatusDto> GetAnalysisStatusAsync(IReadOnlyList<long>? libraryIds = null, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);

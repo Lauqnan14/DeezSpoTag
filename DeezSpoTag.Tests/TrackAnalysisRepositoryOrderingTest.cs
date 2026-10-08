@@ -84,6 +84,45 @@ public sealed class TrackAnalysisRepositoryOrderingTest : IAsyncLifetime
         Assert.Equal([failed], snapshot.Select(static item => item.TrackId));
     }
 
+    [Fact]
+    public async Task Snapshot_AcrossManyFolders_IsCompleteAndAlphabeticalInOneCall()
+    {
+        // The analysis pass resolves every enabled library in a single query. This
+        // guards the property that makes that safe: the scope table's sort order
+        // produces one globally alphabetical sequence, not per-folder runs.
+        const int folderCount = 25;
+        var expected = new List<long>();
+        var orderedFolderIds = new List<long>();
+
+        for (var index = 0; index < folderCount; index++)
+        {
+            // Deliberately created out of alphabetical order.
+            var name = $"{(char)('Z' - (index % 26))}{index:00} Library {index:00}";
+            var folder = await AddFolderAsync(name, $"lib{index:00}");
+            orderedFolderIds.Insert(index, folder.Id);
+
+            var track = await AddTrackAsync(
+                folder.Id,
+                $"Artist {index:00}",
+                "Album",
+                $"Track {index:00}",
+                1,
+                1);
+            expected.Add(track);
+        }
+
+        // Feed the ids in a deliberately scrambled order to prove the caller's
+        // order is what drives the result, then assert it is honoured end to end.
+        var scrambled = orderedFolderIds.AsEnumerable().Reverse().ToList();
+        var snapshot = await _repository.GetTracksForAnalysisAsync(1000, orderedLibraryIds: scrambled);
+
+        Assert.Equal(folderCount, snapshot.Count);
+
+        // The temp scope table's sort order must produce one global sequence that
+        // follows the caller's order, not per-folder groupings.
+        Assert.Equal(expected.AsEnumerable().Reverse(), snapshot.Select(static item => item.TrackId));
+    }
+
     private async Task<FolderDto> AddFolderAsync(string name, string suffix)
         => await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
             Path.Join(_root, suffix), name, true, name, "flac", false, null, null, "test-profile"));

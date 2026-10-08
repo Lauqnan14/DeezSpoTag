@@ -92,6 +92,11 @@ public sealed class LibraryDbService
             ["idx_manual_unavailable_track_retry"] = (ManualUnavailableTrackTable, "next_retry_at_utc", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
             ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
+            ["idx_track_sonic_embedding_library"] = ("track_sonic_embedding", "library_id, model_id, model_version, embedding_version", false),
+            ["idx_track_sonic_embedding_analyzed"] = ("track_sonic_embedding", "analyzed_at_utc DESC", false),
+            ["idx_meloday_generation_library"] = ("meloday_generation", "library_id, completed_at_utc DESC", false),
+            ["idx_meloday_generation_occurrence"] = ("meloday_generation", "occurrence_key", false),
+            ["idx_meloday_generation_item_track"] = ("meloday_generation_item", "track_id", false),
             ["idx_local_duplicate_resolution_event_duplicate"] = ("local_duplicate_resolution_event", "duplicate_track_id, created_at_utc DESC", false),
             ["idx_album_artist_id"] = (AlbumTable, ArtistIdColumn, false),
             ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
@@ -1115,6 +1120,364 @@ CREATE TABLE IF NOT EXISTS local_duplicate_resolution_event (
             ("arousal_ml", RealType),
             ("dynamic_complexity", RealType),
             ("loudness_ml", RealType));
+
+        // Sonic Analysis embeddings. Created here as well as in library.sql so an
+        // existing installation gains the table on upgrade without needing the
+        // schema file to be re-run.
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS track_sonic_embedding (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    model_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    embedding_version TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    pooling_method TEXT NOT NULL,
+    normalization_method TEXT NOT NULL,
+    distance_metric TEXT NOT NULL,
+    vector_blob BLOB NOT NULL,
+    source_file_size INTEGER,
+    source_file_mtime_utc TEXT,
+    analyzed_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, model_id, model_version, embedding_version)
+);", cancellationToken);
+        await EnsureIndexAsync(
+            connection,
+            "idx_track_sonic_embedding_library",
+            "track_sonic_embedding",
+            "library_id, model_id, model_version, embedding_version",
+            unique: false,
+            cancellationToken);
+        await EnsureIndexAsync(
+            connection,
+            "idx_track_sonic_embedding_analyzed",
+            "track_sonic_embedding",
+            "analyzed_at_utc DESC",
+            unique: false,
+            cancellationToken);
+
+        // Meloday DJ provenance. Created here as well as in library.sql, for the same
+        // upgrade reason as the table above.
+        //
+        // A DJ is a personality applied inside Meloday's existing generation, not a
+        // thing with its own schedule. It therefore has no definition, schedule or
+        // run-state table: it inherits Meloday's scheduler, Meloday's once-per-day guard
+        // and Meloday's mix identity, and this table records only what those do not
+        // already hold - who filled the playlist, on what evidence, and why each track
+        // was chosen.
+        //
+        // Both configured_dj and resolved_dj are stored. Recording only the resolved one
+        // would make a deliberate choice indistinguishable from a roll, which is the one
+        // thing worth being able to check later.
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS meloday_generation (
+    meloday_generation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mix_cache_id BIGINT REFERENCES mix_cache(id) ON DELETE CASCADE,
+    mix_id TEXT NOT NULL,
+    library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    slot_id TEXT NOT NULL,
+    weekday_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    configured_dj TEXT NOT NULL,
+    resolved_dj TEXT NOT NULL,
+    was_random INTEGER NOT NULL DEFAULT 0,
+    occurrence_key TEXT NOT NULL,
+    -- 'daypart' or 'all-day-fallback'. Meloday silently falls back when a slot has no
+    -- eligible history of its own, and a playlist built that way is not evidence of the
+    -- time of day it is named for.
+    context_source TEXT NOT NULL,
+    sonic_model_version TEXT,
+    sonic_coverage_percent REAL,
+    seed_summary TEXT,
+    track_count INTEGER NOT NULL DEFAULT 0,
+    diagnostics_json TEXT,
+    started_at_utc TEXT,
+    completed_at_utc TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (mix_id, library_id)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_meloday_generation_library", "meloday_generation", "library_id, completed_at_utc DESC", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_meloday_generation_occurrence", "meloday_generation", "occurrence_key", unique: false, cancellationToken);
+
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS meloday_generation_item (
+    meloday_generation_id BIGINT NOT NULL REFERENCES meloday_generation(meloday_generation_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
+    similarity REAL,
+    reason TEXT,
+    related_seed_id BIGINT,
+    PRIMARY KEY (meloday_generation_id, position)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_meloday_generation_item_track", "meloday_generation_item", "track_id", unique: false, cancellationToken);
+
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS personal_genre_autotag (
+    job_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    track_id BIGINT NULL,
+    resolution_json TEXT NULL,
+    write_status TEXT NOT NULL DEFAULT 'pending',
+    resolved_at_utc TEXT NULL,
+    PRIMARY KEY (job_id, file_path)
+);
+CREATE TABLE IF NOT EXISTS personal_genre_settings (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    max_genres INTEGER NOT NULL DEFAULT 3,
+    preserve_provider_fallback INTEGER NOT NULL DEFAULT 1,
+    include_parent_genres INTEGER NOT NULL DEFAULT 0,
+    normalize_genre_tags INTEGER NOT NULL DEFAULT 0,
+    genre_tag_alias_rules_json TEXT NOT NULL DEFAULT '[]',
+    -- Nullable on purpose: NULL means never configured, which is different from
+    -- an empty list meaning the user wants nothing blocked.
+    genre_tag_block_list_json TEXT NULL,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO personal_genre_settings (id) VALUES (1);
+
+-- Records the one-time move of genre normalization out of the general application
+-- settings. Without it a later change made in Genre Intelligence would be reverted
+-- on every startup by a fresh import of the old values.
+CREATE TABLE IF NOT EXISTS personal_genre_migration (
+    name TEXT NOT NULL PRIMARY KEY,
+    applied_at_utc TEXT NOT NULL,
+    detail TEXT
+);
+
+-- File-source architecture. The audio file is the only semantic input, so a
+-- snapshot records observed values, the field each was read from, and the
+-- workflow stage it was taken at. A stage is part of the primary key because
+-- the pre- and post-AutoTag states of one file are different facts.
+CREATE TABLE IF NOT EXISTS personal_genre_snapshot (
+    job_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    track_id BIGINT NULL,
+    read_at_utc TEXT NOT NULL,
+    PRIMARY KEY (job_id, file_path, stage)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_taxon (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_only INTEGER NOT NULL DEFAULT 0,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_taxon_kind_name
+    ON personal_genre_taxon (kind, name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS personal_genre_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'map',
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- input_field scopes a mapping or rule to one file field. It replaces the
+-- provider `source` column, which cannot apply once the file is the input.
+-- The indexes over it are created after the column is added, because a table
+-- created here from an older definition does not have it yet.
+
+CREATE TABLE IF NOT EXISTS personal_genre_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_value TEXT NOT NULL,
+    target_taxon_id TEXT NOT NULL,
+    source TEXT,
+    priority INTEGER NOT NULL DEFAULT 1000,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_lock (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (track_id, taxon_id)
+);
+
+CREATE TABLE IF NOT EXISTS personal_genre_scope_lock (
+    scope_type TEXT NOT NULL,
+    scope_id BIGINT NOT NULL,
+    taxon_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope_type, scope_id, taxon_id)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_scope_lock_scope
+    ON personal_genre_scope_lock (scope_type, scope_id, enabled);
+
+CREATE TABLE IF NOT EXISTS personal_genre_track (
+    track_id BIGINT NOT NULL PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    preserved_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    observations_json TEXT NOT NULL DEFAULT '[]',
+    pre_autotag_json TEXT NULL,
+    post_autotag_json TEXT NULL,
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_track_primary
+    ON personal_genre_track (primary_genre);
+
+CREATE TABLE IF NOT EXISTS personal_genre_resolution_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    primary_genre TEXT,
+    genres_json TEXT NOT NULL DEFAULT '[]',
+    styles_json TEXT NOT NULL DEFAULT '[]',
+    substyles_json TEXT NOT NULL DEFAULT '[]',
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    scenes_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    preserved_json TEXT NOT NULL DEFAULT '[]',
+    classifications_json TEXT NOT NULL DEFAULT '[]',
+    decisions_json TEXT NOT NULL DEFAULT '[]',
+    applied_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    resolver_version TEXT NOT NULL,
+    resolved_at_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_resolution_history_track
+    ON personal_genre_resolution_history (track_id, id DESC);
+
+-- One row per value read out of the file, in the order it appeared.
+CREATE TABLE IF NOT EXISTS personal_genre_observation_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    raw_value TEXT NOT NULL,
+    input_field TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'post_platform',
+    PRIMARY KEY (resolution_id, sequence)
+);
+
+-- origin_fields_json records which file fields a classification was seen in,
+-- which is what makes a field correction auditable. confidence/sources_json/
+-- evidence_state are provider-era columns: they are left in place so existing
+-- history is not destroyed, and nothing writes them any more.
+CREATE TABLE IF NOT EXISTS personal_genre_classification_history (
+    resolution_id BIGINT NOT NULL REFERENCES personal_genre_resolution_history(id) ON DELETE CASCADE,
+    taxon_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    origin_fields_json TEXT NOT NULL DEFAULT '[]',
+    user_locked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'suggested',
+    PRIMARY KEY (resolution_id, taxon_id)
+);
+", cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_mapping",
+            "action",
+            "TEXT NOT NULL DEFAULT 'map'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "classifications_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "decisions_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_track",
+            "languages_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "scenes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+        await EnsureColumnAsync(
+            connection,
+            "personal_genre_resolution_history",
+            "languages_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+            cancellationToken);
+
+        // File-source schema. Add-only and idempotent, so an existing install
+        // upgrades in place and keeps the resolution history it already has.
+        await EnsureColumnAsync(connection, "personal_genre_mapping", "input_field", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_rule", "input_field", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_settings", "preserve_unmapped_tags", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_track", "preserved_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_track", "observations_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_track", "pre_autotag_json", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_track", "post_autotag_json", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_resolution_history", "preserved_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_classification_history", "origin_fields_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_observation_history", "origin", "TEXT NOT NULL DEFAULT 'post_platform'", cancellationToken);
+
+        // Genre normalization moved here from the general application settings.
+        await EnsureColumnAsync(connection, "personal_genre_settings", "normalize_genre_tags", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, "personal_genre_settings", "genre_tag_alias_rules_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        // Added with no default on purpose, so an existing row reads as NULL: the
+        // "never configured" state the migration distinguishes from a list the user
+        // deliberately emptied. Do not add a data-fixing UPDATE here — this runs on
+        // every startup, and one would undo an emptied list on each restart.
+        await EnsureColumnAsync(connection, "personal_genre_settings", "genre_tag_block_list_json", "TEXT", cancellationToken);
+
+        // preserve_unmapped_tags arrives with DEFAULT 1, so an explicit "off" and
+        // a never-set row are indistinguishable. Carry the legacy flag across only
+        // while the new column still holds its default; afterwards the new column
+        // is authoritative and must be free to be turned off.
+        await EnsureTableAsync(connection, @"
+UPDATE personal_genre_settings
+SET preserve_unmapped_tags = preserve_provider_fallback
+WHERE preserve_unmapped_tags = 1 AND preserve_provider_fallback = 0;",
+            cancellationToken);
+
+        // Created only now, because they reference input_field.
+        await EnsureTableAsync(connection, @"
+CREATE INDEX IF NOT EXISTS idx_personal_genre_mapping_match
+    ON personal_genre_mapping (match_value, input_field, enabled, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_personal_genre_rule_match
+    ON personal_genre_rule (match_value, input_field, enabled, priority DESC);",
+            cancellationToken);
+
+        // An in-flight run from the provider era keeps its evidence readable as a
+        // legacy snapshot rather than losing a checkpoint a resume may still need.
+        await EnsureTableAsync(connection, @"
+INSERT OR IGNORE INTO personal_genre_snapshot (job_id, file_path, stage, snapshot_json, track_id, read_at_utc)
+SELECT job_id, file_path, 'legacy', evidence_json, track_id, COALESCE(resolved_at_utc, CURRENT_TIMESTAMP)
+FROM personal_genre_autotag
+WHERE evidence_json IS NOT NULL AND evidence_json <> '[]';",
+            cancellationToken);
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_plex_metadata (
