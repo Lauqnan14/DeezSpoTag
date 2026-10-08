@@ -85,4 +85,15 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public DateTime? PublishDate { get; set; }
     public Dictionary<string, List<string>> Other { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> RawTagsToRemove { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Resolved, provider-independent artist location/language metadata.
+    /// Populated by the shared enrichment pipeline regardless of file-write selection.</summary>
+    public DeezSpoTag.Core.Models.ArtistEnrichmentMetadata? ArtistMetadata { get; set; }
+
+    public bool ArtistMetadataUsesSingleArtistPreference { get; set; }
+
+    public IReadOnlyList<DeezSpoTag.Core.Models.ArtistEnrichmentMetadata> ArtistMetadataRecords { get; set; } = [];
+
+    /// <summary>Language evidence qualified against the matched recording.</summary>
+    public IReadOnlyList<DeezSpoTag.Core.Models.LanguageMetadataEvidence>? TrackLanguageEvidence { get; set; }
 }

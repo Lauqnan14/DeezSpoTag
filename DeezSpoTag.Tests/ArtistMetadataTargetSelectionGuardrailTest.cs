@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.RegularExpressions;
@@ -222,11 +223,57 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
             "Index.cshtml"));
 
         Assert.Contains("SkippedNotDue", updater);
-        Assert.Contains("public const string NotDue = \"notDue\";", updater);
         Assert.Contains("SkipReasons", updater);
         Assert.Contains("BuildCompletionMessage(counters)", updater);
+
+        // The canonical skip-reason tokens now live beside the run outcome vocabulary they describe,
+        // so the persisted reasons and the human-readable reasons cannot drift apart.
+        var coordinator = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "ArtistMetadataAutomationCoordinator.cs"));
+        Assert.Contains("public const string NotDue = \"notDue\";", coordinator);
+        Assert.Contains("public const string ScanOnly = \"scanOnly\";", coordinator);
+        Assert.Contains("public const string SyncBlocked = \"syncBlocked\";", coordinator);
+        Assert.Contains("MetadataSkipReasons.NotDue", updater);
+
+        // The completion summary must account for every processed artist, including the ones carried
+        // over from an interrupted run, so the buckets always add up to the processed total.
+        Assert.Contains("carried over from an interrupted run", updater);
+        Assert.Contains("PartialArtists", updater);
+        Assert.Contains("NoMetadataArtists", updater);
+
         Assert.Contains("formatMetadataSkipReason", activities);
         Assert.Contains("case 'notDue':", activities);
+
+        // Every target is reported separately, and a narrower write capability is declared in the UI so
+        // a low count reads as a capability limit rather than a failure.
+        Assert.Contains("formatMetadataTargetBreakdown", activities);
+        Assert.Contains("navidrome: 'Navidrome'", activities);
+        Assert.Contains("(artwork only)", activities);
+        Assert.Contains("not configured", activities);
+        // Both call sites must still fill the panel. The status-driven one looks the element up by id
+        // on every poll, so it cannot be left pointing at a stale node, and the one after a manual
+        // start must still update it from the response it just received.
+        Assert.Contains("applyMetadataTargetBreakdown(document.getElementById('metadata-target-breakdown')", activities);
+        Assert.Contains("applyMetadataTargetBreakdown(targetBreakdown, result.status.targetUpdate", activities);
+    }
+
+    [Fact]
+    public void Metadata_updater_status_reports_updated_partial_and_missing_metadata_separately()
+    {
+        var activities = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml"));
+
+        // "success" used to absorb no-ops; the live line must distinguish real updates from partial
+        // updates and from artists that simply have no upstream metadata.
+        Assert.Contains("updated, ${partial} partial, ${noMetadata} without metadata", activities);
+        Assert.Contains("carried over", activities);
     }
 
     [Fact]
@@ -334,8 +381,34 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         var imageQueue = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryArtistImageQueueService.cs"));
         var search = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "DeezSpoTagSearchService.cs"));
 
+        // Every orderable provider must be handled in the catalog. The engines that have a
+        // canonical constant are now referenced through it rather than as a repeated literal, so
+        // this accepts either spelling and additionally pins the constant to the id it must carry -
+        // which is stronger than the original check, since matching the bare word "SpotifySource"
+        // would otherwise be enough even if it held the wrong value.
+        var providerAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["spotify"] = "SpotifySource",
+            ["deezer"] = "DeezerSource",
+            ["tidal"] = "TidalSource",
+            ["qobuz"] = "QobuzSource",
+        };
+
         foreach (var provider in new[] { "local", "spotify", "deezer", "itunes", "tidal", "qobuz", "lastfm" })
         {
+            if (providerAliases.TryGetValue(provider, out var alias))
+            {
+                Assert.True(
+                    catalog.Contains($"\"{provider}\"", StringComparison.Ordinal)
+                    || catalog.Contains(alias, StringComparison.Ordinal),
+                    $"the catalog must still handle {provider}");
+                Assert.Contains(
+                    $"private const string {alias} = DownloadTagSourceHelper.{alias};",
+                    catalog,
+                    StringComparison.Ordinal);
+                continue;
+            }
+
             Assert.Contains($"\"{provider}\"", catalog);
         }
         Assert.DoesNotContain("ResolveAppleAsync", catalog);
@@ -399,8 +472,14 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", matching, StringComparison.Ordinal);
         Assert.Contains("Artist source matcher {Provider} failed for artist {ArtistId}", matching, StringComparison.Ordinal);
         Assert.Equal(5, method.Split("if (await MatchSourceIdSafelyAsync(").Length - 1);
-        Assert.True(method.LastIndexOf("\"tidal\"", StringComparison.Ordinal)
-                    < method.LastIndexOf("\"qobuz\"", StringComparison.Ordinal));
+        // Qobuz must be matched last. The engines are referenced through their canonical constants
+        // now rather than as repeated literals, so the ordering is asserted against those names.
+        // The property is unchanged: still "Tidal's matcher appears before Qobuz's".
+        Assert.True(method.LastIndexOf("TidalSource", StringComparison.Ordinal)
+                    < method.LastIndexOf("QobuzSource", StringComparison.Ordinal),
+                    "Qobuz must be the last automatic identity matcher to run");
+        Assert.True(method.Contains("TidalSource", StringComparison.Ordinal));
+        Assert.True(method.Contains("QobuzSource", StringComparison.Ordinal));
     }
 
     [Fact]

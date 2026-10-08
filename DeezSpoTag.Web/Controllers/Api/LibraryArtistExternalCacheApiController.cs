@@ -12,16 +12,16 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
 {
     private readonly LibraryConfigStore _configStore;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
-    private readonly ArtistMetadataCacheRefreshService _cacheRefreshService;
+    private readonly ArtistMetadataAutomationCoordinator _coordinator;
 
     public LibraryArtistExternalCacheApiController(
         LibraryConfigStore configStore,
         DeezSpoTag.Services.Library.LibraryRepository repository,
-        ArtistMetadataCacheRefreshService cacheRefreshService)
+        ArtistMetadataAutomationCoordinator coordinator)
     {
         _configStore = configStore;
         _repository = repository;
-        _cacheRefreshService = cacheRefreshService;
+        _coordinator = coordinator;
     }
 
     [HttpPost("{id:long}/external-cache/refresh")]
@@ -37,19 +37,13 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
         {
             return NotFound("Artist not found.");
         }
-        var refreshed = await _cacheRefreshService.RefreshArtistAsync(
-            id,
-            artist.Name,
-            "auto",
-            includePopularSongs: false,
-            includeDiscography: true,
-            cancellationToken);
+        var queued = await _coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken);
 
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+        if (queued) _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Artist external cache refresh completed for artist {id}."));
+            $"Artist cache refresh queued for artist {id}."));
 
-        return Ok(new { refreshed = true });
+        return Ok(new { queued, status = _coordinator.GetStatus() });
     }
 }

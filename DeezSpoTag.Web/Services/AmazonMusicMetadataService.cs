@@ -530,7 +530,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         var sessionId = ReadString(document.RootElement, "sessionId");
         var deviceId = ReadString(document.RootElement, "deviceId");
-        var csrf = ReadString(document.RootElement, "csrf");
+        var csrf = ResolveAmazonCsrf(document.RootElement);
         var csrfTimestamp = ReadNestedString(document.RootElement, "csrf", "ts");
         var csrfNonce = ReadNestedString(document.RootElement, "csrf", "rnd");
         var version = ReadString(document.RootElement, "version");
@@ -2028,6 +2028,14 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         return null;
+    }
+
+    private static string? ResolveAmazonCsrf(JsonElement root)
+    {
+        var legacy = ReadString(root, "csrf");
+        return string.IsNullOrWhiteSpace(legacy)
+            ? ReadString(root, "montanaCsrf")
+            : legacy;
     }
 
     private static string? ReadNestedString(JsonElement node, string propertyName, string nestedName)

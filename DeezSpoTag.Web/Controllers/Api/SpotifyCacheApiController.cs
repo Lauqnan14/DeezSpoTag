@@ -769,6 +769,11 @@ public class SpotifyCacheApiController : ControllerBase
         }
     }
 
+    // Held in a nullable field so the anonymous capability entries infer a uniform
+    // `string?` member: a bare literal infers `string` and makes the array mismatch (CS8619).
+    private static readonly string? NavidromeCapabilityLimitationReason =
+        "Navidrome exposes one artist image slot; the large artist image is used as the background-equivalent. Biography can be refreshed/read through getArtistInfo2, but Navidrome does not expose an HTTP biography write endpoint.";
+
     [HttpGet("artist-metadata/capabilities")]
     public IActionResult ArtistMetadataCapabilities()
     {
@@ -782,7 +787,7 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateBiography = true,
                 canUpdateBackground = true,
                 canTriggerLibraryScan = true,
-                limitationReason = (string?)null
+                limitationReason = default(string?)
             },
             new
             {
@@ -792,7 +797,7 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateBiography = true,
                 canUpdateBackground = true,
                 canTriggerLibraryScan = true,
-                limitationReason = (string?)null
+                limitationReason = default(string?)
             },
             new
             {
@@ -802,7 +807,7 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateBiography = false,
                 canUpdateBackground = true,
                 canTriggerLibraryScan = true,
-                limitationReason = (string?)"Navidrome exposes one artist image slot; the large artist image is used as the background-equivalent. Biography can be refreshed/read through getArtistInfo2, but Navidrome does not expose an HTTP biography write endpoint."
+                limitationReason = NavidromeCapabilityLimitationReason
             }
         });
     }
@@ -859,9 +864,9 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateAvatar = true,
                 canUpdateBiography = true,
                 canUpdateBackground = true,
-                hasAvatar = (bool?)null,
-                hasBiography = (bool?)null,
-                hasBackground = (bool?)null,
+                hasAvatar = default(bool?),
+                hasBiography = default(bool?),
+                hasBackground = default(bool?),
                 message = "Plex is not configured."
             };
         }
@@ -912,9 +917,9 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateAvatar = true,
                 canUpdateBiography = true,
                 canUpdateBackground = true,
-                hasAvatar = (bool?)null,
-                hasBiography = (bool?)null,
-                hasBackground = (bool?)null,
+                hasAvatar = default(bool?),
+                hasBiography = default(bool?),
+                hasBackground = default(bool?),
                 message = "Jellyfin is not configured."
             };
         }
@@ -965,9 +970,9 @@ public class SpotifyCacheApiController : ControllerBase
                 canUpdateAvatar = true,
                 canUpdateBiography = false,
                 canUpdateBackground = true,
-                hasAvatar = (bool?)null,
-                hasBiography = (bool?)null,
-                hasBackground = (bool?)null,
+                hasAvatar = default(bool?),
+                hasBiography = default(bool?),
+                hasBackground = default(bool?),
                 message = "Navidrome is not configured."
             };
         }

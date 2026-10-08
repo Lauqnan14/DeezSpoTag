@@ -157,13 +157,11 @@ ORDER BY name COLLATE NOCASE;";
         }
 
         var inputNames = new List<string> { preferred };
-        foreach (var alias in aliases ?? Enumerable.Empty<string>())
+        foreach (var trimmed in (aliases ?? Enumerable.Empty<string>())
+                     .Select(alias => (alias ?? string.Empty).Trim())
+                     .Where(trimmed => trimmed.Length > 0))
         {
-            var trimmed = (alias ?? string.Empty).Trim();
-            if (trimmed.Length > 0)
-            {
-                inputNames.Add(trimmed);
-            }
+            inputNames.Add(trimmed);
         }
 
         // Distinct by normalized name, keep first occurrence's display form.
@@ -441,17 +439,14 @@ VALUES ($group_id, $name, $normalized);";
 
         var normalized = NormalizeName(trimmed);
         var groups = await GetAllGroupsAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var group in groups)
+        foreach (var names in groups.Select(group => new[] { group.PreferredName }.Concat(group.Aliases)
+                         .Where(name => !string.IsNullOrWhiteSpace(name))
+                         .Select(name => name.Trim())
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .ToList())
+                     .Where(names => names.Any(name => string.Equals(NormalizeName(name), normalized, StringComparison.Ordinal))))
         {
-            var names = new[] { group.PreferredName }.Concat(group.Aliases)
-                .Where(name => !string.IsNullOrWhiteSpace(name))
-                .Select(name => name.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (names.Any(name => string.Equals(NormalizeName(name), normalized, StringComparison.Ordinal)))
-            {
-                return names;
-            }
+            return names;
         }
 
         return new[] { trimmed };

@@ -188,7 +188,11 @@
         { tag: "publisher", label: "Publisher" },
         { tag: "description", label: "Description / Comment" },
         { tag: "replayGain", label: "ReplayGain" },
-        { tag: "language", label: "Language" },
+        { tag: "artistCountry", label: "Artist Country" },
+        { tag: "artistCity", label: "Artist City" },
+        { tag: "artistRegion", label: "Artist Region" },
+        { tag: "artistLanguage", label: "Artist Language" },
+        { tag: "language", label: "Track Language" },
         { tag: "rating", label: "Rating" },
         { tag: "url", label: "URL" },
         { tag: "otherTags", label: "Other Tags", tooltip: "Specific tags only for some platforms (Beatport, Discogs)" },
@@ -313,6 +317,10 @@
         "publisher",
         "description",
         "replayGain",
+        "artistCountry",
+        "artistCity",
+        "artistRegion",
+        "artistLanguage",
         "language",
         "rating",
         "url",
@@ -3718,6 +3726,11 @@
             return true;
         }
         if (tag === "metaTags") {
+            return true;
+        }
+        if (tag === "artistCountry" || tag === "artistCity" || tag === "artistRegion" || tag === "artistLanguage") {
+            // Common artist-enrichment fields are collected by the shared metadata pipeline,
+            // not by individual track providers.
             return true;
         }
         if (isHiddenSpotifyAudioFeatureTag(tag)) {

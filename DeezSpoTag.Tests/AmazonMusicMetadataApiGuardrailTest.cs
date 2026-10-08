@@ -1,6 +1,9 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text.Json;
+using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -88,6 +91,45 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
         Assert.Contains("ExtractCommunityPlaylistSearchItems", source, StringComparison.Ordinal);
         Assert.Contains("FetchArtistTopTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("IsCommunityPlaylistUrl", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AmazonSession_UsesCurrentMontanaCsrfToken()
+    {
+        using var document = JsonDocument.Parse("""{"montanaCsrf":"current-token"}""");
+
+        var token = ResolveAmazonCsrf(document.RootElement);
+
+        Assert.Equal("current-token", token);
+    }
+
+    [Fact]
+    public void AmazonSession_KeepsLegacyCsrfTokenCompatibility()
+    {
+        using var document = JsonDocument.Parse("""{"csrf":{"token":"legacy-token","ts":"1","rnd":"2"}}""");
+
+        var token = ResolveAmazonCsrf(document.RootElement);
+
+        Assert.Equal("legacy-token", token);
+    }
+
+    [Fact]
+    public void AmazonSession_RejectsResponseWithoutCsrfToken()
+    {
+        using var document = JsonDocument.Parse("""{"sessionId":"session","deviceId":"device"}""");
+
+        var token = ResolveAmazonCsrf(document.RootElement);
+
+        Assert.Null(token);
+    }
+
+    private static string? ResolveAmazonCsrf(JsonElement root)
+    {
+        var method = typeof(AmazonMusicMetadataService).GetMethod(
+            "ResolveAmazonCsrf",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        return method.Invoke(null, [root]) as string;
     }
 
     private static string ReadSource(params string[] relativeParts)

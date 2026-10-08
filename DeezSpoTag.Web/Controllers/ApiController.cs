@@ -2161,11 +2161,6 @@ namespace DeezSpoTag.Web.Controllers
         /// </summary>
         private async Task<string> TryAttachLocationToCachedPayloadAsync(string payloadJson, CancellationToken cancellationToken)
         {
-            if (payloadJson.Contains("\"location_source\"", StringComparison.Ordinal))
-            {
-                return payloadJson;
-            }
-
             try
             {
                 var node = JsonNode.Parse(payloadJson);

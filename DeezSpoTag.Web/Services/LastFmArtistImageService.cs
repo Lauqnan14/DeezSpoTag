@@ -201,8 +201,21 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         }
 
         if (!doc.RootElement.TryGetProperty("artist", out var artist)
-            || artist.ValueKind != JsonValueKind.Object
-            || !artist.TryGetProperty("image", out var images)
+            || artist.ValueKind != JsonValueKind.Object)
+        {
+            return Array.Empty<LastFmArtistImageCandidate>();
+        }
+
+        // The request is sent with autocorrect=1, so Last.fm may answer with a different
+        // artist than the one asked for. Images are only accepted when the returned artist
+        // name matches the name this attempt queried, using the same strict comparison the
+        // biography path already applies. Matching is never loosened here.
+        if (!ArtistNamesMatch(normalizedArtist, GetString(artist, "name")))
+        {
+            return Array.Empty<LastFmArtistImageCandidate>();
+        }
+
+        if (!artist.TryGetProperty("image", out var images)
             || images.ValueKind != JsonValueKind.Array)
         {
             return Array.Empty<LastFmArtistImageCandidate>();
@@ -320,13 +333,11 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         var decoded = WebUtility.HtmlDecode(value ?? string.Empty).Trim().ToLowerInvariant();
         var formD = decoded.Normalize(System.Text.NormalizationForm.FormD);
         var builder = new System.Text.StringBuilder(formD.Length);
-        foreach (var character in formD)
+        foreach (var character in formD.Where(character =>
+            System.Globalization.CharUnicodeInfo.GetUnicodeCategory(character)
+            != System.Globalization.UnicodeCategory.NonSpacingMark))
         {
-            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(character)
-                != System.Globalization.UnicodeCategory.NonSpacingMark)
-            {
-                builder.Append(character);
-            }
+            builder.Append(character);
         }
 
         var accentFolded = builder.ToString().Normalize(System.Text.NormalizationForm.FormC);

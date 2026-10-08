@@ -186,6 +186,18 @@ public class TagSettings
     [JsonPropertyName("language")]
     public bool Language { get; set; } = false;
 
+    [JsonPropertyName("artistCountry")]
+    public bool ArtistCountry { get; set; } = false;
+
+    [JsonPropertyName("artistCity")]
+    public bool ArtistCity { get; set; } = false;
+
+    [JsonPropertyName("artistRegion")]
+    public bool ArtistRegion { get; set; } = false;
+
+    [JsonPropertyName("artistLanguage")]
+    public bool ArtistLanguage { get; set; } = false;
+
     [JsonPropertyName("otherTags")]
     public bool OtherTags { get; set; } = false;
 

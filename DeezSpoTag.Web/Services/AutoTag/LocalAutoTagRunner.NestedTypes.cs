@@ -254,6 +254,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public required ITrackIdentityResolver TrackIdentityResolver { get; init; }
         public PortedPlatformRegistry? PlatformRegistry { get; init; }
 
+        /// <summary>Shared location resolver used for artist enrichment metadata collection.</summary>
+        public DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver? ArtistLocationResolver { get; init; }
+
+        /// <summary>Artist page cache used to retain versioned enrichment payloads.</summary>
+        public DeezSpoTag.Services.Library.ArtistPageCacheRepository? ArtistPageCache { get; init; }
+        public DeezSpoTag.Services.Library.LibraryRepository? ArtistLibraryRepository { get; init; }
+
         /// <summary>Optional path of the cross-run album identity store; persistence is disabled when null.</summary>
         public string? AlbumIdentityStorePath { get; init; }
     }

@@ -260,6 +260,10 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Mood = ParseTagSource(tagConfigObject, "mood"),
             Activity = ParseTagSource(tagConfigObject, "activity"),
             Language = ParseTagSource(tagConfigObject, "language"),
+            ArtistCountry = ParseTagSource(tagConfigObject, "artistCountry"),
+            ArtistCity = ParseTagSource(tagConfigObject, "artistCity"),
+            ArtistRegion = ParseTagSource(tagConfigObject, "artistRegion"),
+            ArtistLanguage = ParseTagSource(tagConfigObject, "artistLanguage"),
             Url = ParseTagSource(tagConfigObject, "url"),
             OtherTags = ParseTagSource(tagConfigObject, "otherTags"),
             MetaTags = ParseTagSource(tagConfigObject, "metaTags")
@@ -463,6 +467,10 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Mood = TagSource.None,
             Activity = TagSource.None,
             Language = TagSource.None,
+            ArtistCountry = TagSource.None,
+            ArtistCity = TagSource.None,
+            ArtistRegion = TagSource.None,
+            ArtistLanguage = TagSource.None,
             Url = TagSource.None,
             OtherTags = TagSource.None,
             MetaTags = TagSource.None
@@ -683,6 +691,18 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 break;
             case "language":
                 config.Language = MergeTagSource(config.Language, source);
+                break;
+            case "artistCountry":
+                config.ArtistCountry = MergeTagSource(config.ArtistCountry, source);
+                break;
+            case "artistCity":
+                config.ArtistCity = MergeTagSource(config.ArtistCity, source);
+                break;
+            case "artistRegion":
+                config.ArtistRegion = MergeTagSource(config.ArtistRegion, source);
+                break;
+            case "artistLanguage":
+                config.ArtistLanguage = MergeTagSource(config.ArtistLanguage, source);
                 break;
             case "url":
                 config.Url = MergeTagSource(config.Url, source);

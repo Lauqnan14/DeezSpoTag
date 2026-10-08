@@ -527,7 +527,11 @@ public partial class AutoTagService
         ["comments"] = "description",
         ["source"] = "source",
         ["rating"] = "rating",
-        [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
+        [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag,
+        ["artistCountry"] = "artistCountry",
+        ["artistCity"] = "artistCity",
+        ["artistRegion"] = "artistRegion",
+        ["artistLanguage"] = "artistLanguage"
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildEnrichmentStageAllowedKeys();
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildEnhancementStageAllowedKeys();

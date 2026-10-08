@@ -78,7 +78,7 @@ public sealed class ArtistAliasMergeService
             .Select(ArtistAliasService.NormalizeName)
             .Where(name => name.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
-        var preferredNormalized = ArtistAliasService.NormalizeName(group.PreferredName);
+        ArtistAliasService.NormalizeName(group.PreferredName);
         var settings = _settingsService.LoadSettings() ?? new DeezSpoTagSettings();
 
         var errors = new List<string>();
@@ -130,10 +130,7 @@ public sealed class ArtistAliasMergeService
                     var absorbedImagePaths = new List<(string? Image, string? Background)>();
                     await using var readImages = connection.CreateCommand();
                     readImages.Transaction = transaction;
-                    readImages.CommandText = @"
-SELECT preferred_image_path, preferred_background_path
-FROM artist
-WHERE id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
+                    readImages.CommandText = BuildSelectAbsorbedArtistArtworkSql(absorbedArtistIds.Count);
                     for (var index = 0; index < absorbedArtistIds.Count; index++)
                     {
                         readImages.Parameters.AddWithValue($"$a{index}", absorbedArtistIds[index]);
@@ -151,10 +148,7 @@ WHERE id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
 
                     await using var rePoint = connection.CreateCommand();
                     rePoint.Transaction = transaction;
-                    rePoint.CommandText = @"
-UPDATE album
-SET artist_id = $preferred, updated_at = CURRENT_TIMESTAMP
-WHERE artist_id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
+                    rePoint.CommandText = BuildRepointAlbumArtistSql(absorbedArtistIds.Count);
                     rePoint.Parameters.AddWithValue("$preferred", preferredArtistId);
                     for (var index = 0; index < absorbedArtistIds.Count; index++)
                     {
@@ -171,9 +165,7 @@ WHERE artist_id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
 
                     await using var deleteArtists = connection.CreateCommand();
                     deleteArtists.Transaction = transaction;
-                    deleteArtists.CommandText = @"
-DELETE FROM artist
-WHERE id IN (" + BuildPlaceholders(absorbedArtistIds.Count, "a") + @");";
+                    deleteArtists.CommandText = BuildDeleteAbsorbedArtistsSql(absorbedArtistIds.Count);
                     for (var index = 0; index < absorbedArtistIds.Count; index++)
                     {
                         deleteArtists.Parameters.AddWithValue($"$a{index}", absorbedArtistIds[index]);
@@ -332,7 +324,7 @@ WHERE id = $id;";
             }
 
             var root = Path.GetDirectoryName(aliasArtistDir)!;
-            var preferredArtistDir = Path.Combine(root, artistFolderName);
+            var preferredArtistDir = Path.Join(root, artistFolderName);
             foreach (var leftover in Directory.EnumerateFiles(aliasArtistDir, "*", SearchOption.AllDirectories))
             {
                 if (IsAudioExtension(leftover))
@@ -345,7 +337,7 @@ WHERE id = $id;";
 
                 try
                 {
-                    var destination = Path.Combine(preferredArtistDir, Path.GetRelativePath(aliasArtistDir, leftover));
+                    var destination = Path.Join(preferredArtistDir, Path.GetRelativePath(aliasArtistDir, leftover));
                     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                     if (File.Exists(destination))
                     {
@@ -693,18 +685,11 @@ WHERE af.id IN (
                 conditions.Append(" OR ");
             }
 
-            var pattern = $"%{EscapeLike(alias)}%";
-            conditions.Append($"(t.tag_artist LIKE $like{index} ESCAPE '\\' OR t.tag_album_artist LIKE $like{index} ESCAPE '\\' OR t.title LIKE $like{index} ESCAPE '\\')");
+            conditions.Append(FileMatchPredicate(index));
             index++;
         }
 
-        var sql = $@"
-SELECT DISTINCT af.id, af.path, af.folder_id, f.root_path, af.quality_rank
-FROM track t
-JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-WHERE {conditions};";
+        var sql = BuildResolveCandidateFilesSql(conditions.ToString());
 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -746,11 +731,11 @@ WHERE {conditions};";
                 conditions.Append(" OR ");
             }
 
-            conditions.Append($"(IFNULL(tag_artist,'') LIKE $like{index} ESCAPE '\\' OR IFNULL(tag_album_artist,'') LIKE $like{index} ESCAPE '\\' OR IFNULL(title,'') LIKE $like{index} ESCAPE '\\')");
+            conditions.Append(TrackMatchPredicate(index));
             index++;
         }
 
-        var sql = $"SELECT id, tag_artist, tag_album_artist, title FROM track WHERE {conditions};";
+        var sql = BuildResolveCandidateTracksSql(conditions.ToString());
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         index = 0;
@@ -899,19 +884,17 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
 
         for (var index = 1; index < segments.Length; index++)
         {
-            foreach (var alias in aliasNormalized)
+            foreach (var alias in aliasNormalized.Where(alias =>
+                segments[index].Contains(alias, StringComparison.OrdinalIgnoreCase)))
             {
-                if (segments[index].Contains(alias, StringComparison.OrdinalIgnoreCase))
-                {
-                    segments[index] = segments[index].Replace(alias, preferredName, StringComparison.OrdinalIgnoreCase);
-                    changed = true;
-                }
+                segments[index] = segments[index].Replace(alias, preferredName, StringComparison.OrdinalIgnoreCase);
+                changed = true;
             }
 
             segments[index] = SanitizeSegment(segments[index]);
         }
 
-        var destinationPath = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
+        var destinationPath = Path.GetFullPath(Path.Join(root, Path.Join(segments)));
         if (!destinationPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(destinationPath, root, StringComparison.OrdinalIgnoreCase))
         {
@@ -995,7 +978,7 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
         var extension = Path.GetExtension(occupiedPath);
         for (var counter = 2; counter < 1000; counter++)
         {
-            var candidate = Path.Combine(directory, $"{fileName} ({counter}){extension}");
+            var candidate = Path.Join(directory, $"{fileName} ({counter}){extension}");
             if (!File.Exists(candidate))
             {
                 return candidate;
@@ -1111,7 +1094,7 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
 
         var relative = sourcePath[(root.Length + 1)..];
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Length <= 1 ? null : Path.Combine(root, segments[0]);
+        return segments.Length <= 1 ? null : Path.Join(root, segments[0]);
     }
 
     private string BuildArtistFolderName(string preferredName, DeezSpoTagSettings settings)
@@ -1228,6 +1211,41 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
 
         return builder.ToString();
     }
+
+    private static string BuildSelectAbsorbedArtistArtworkSql(int absorbedCount)
+        => @"
+SELECT preferred_image_path, preferred_background_path
+FROM artist
+WHERE id IN (" + BuildPlaceholders(absorbedCount, "a") + ");";
+
+    private static string BuildRepointAlbumArtistSql(int absorbedCount)
+        => @"
+UPDATE album
+SET artist_id = $preferred, updated_at = CURRENT_TIMESTAMP
+WHERE artist_id IN (" + BuildPlaceholders(absorbedCount, "a") + ");";
+
+    private static string BuildDeleteAbsorbedArtistsSql(int absorbedCount)
+        => @"
+DELETE FROM artist
+WHERE id IN (" + BuildPlaceholders(absorbedCount, "a") + ");";
+
+    private static string TrackMatchPredicate(int index)
+        => $"(IFNULL(tag_artist,'') LIKE $like{index} ESCAPE '\\' OR IFNULL(tag_album_artist,'') LIKE $like{index} ESCAPE '\\' OR IFNULL(title,'') LIKE $like{index} ESCAPE '\\')";
+
+    private static string FileMatchPredicate(int index)
+        => $"(t.tag_artist LIKE $like{index} ESCAPE '\\' OR t.tag_album_artist LIKE $like{index} ESCAPE '\\' OR t.title LIKE $like{index} ESCAPE '\\')";
+
+    private static string BuildResolveCandidateTracksSql(string conditions)
+        => "SELECT id, tag_artist, tag_album_artist, title FROM track WHERE " + conditions + ";";
+
+    private static string BuildResolveCandidateFilesSql(string conditions)
+        => @"
+SELECT DISTINCT af.id, af.path, af.folder_id, f.root_path, af.quality_rank
+FROM track t
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE " + conditions + ";";
 
     private static string BuildPlaceholders(int count, string prefix)
     {

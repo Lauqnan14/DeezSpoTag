@@ -207,7 +207,12 @@ public sealed class ArtistMetadataProviderGateTest
             "ArtistMetadataProviderGate.cs"));
 
         Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", source, StringComparison.Ordinal);
-        Assert.Contains("operationCancellation.CancelAfter(TimeSpan.Zero);", source, StringComparison.Ordinal);
+
+        // Must cancel synchronously so delivery is not lost when the linked source is disposed at
+        // the end of the timeout scope. TimedOutProviderReturnsDefaultAndAnotherProviderStillRuns
+        // fails if this regresses to CancelAfter(TimeSpan.Zero).
+        Assert.Contains("operationCancellation.Cancel();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("operationCancellation.CancelAfter(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("await operationCancellation.CancelAsync()", source, StringComparison.Ordinal);
     }
 

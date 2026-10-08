@@ -123,6 +123,30 @@ public sealed class AppleArtistBiographyService
         CancellationToken cancellationToken)
         => ResolveArtistIdFromLocalTracksAsync(artistName, trackTitles, GetStorefront(), cancellationToken);
 
+    /// <summary>
+    /// Ordered provider lookup names: the canonical name first, then an Artist Alias name only
+    /// when the previous name resolved no id. Each attempt keeps the unchanged exact artist-name
+    /// and track-title validation, so this widens the search keys without widening what counts
+    /// as a match.
+    /// </summary>
+    public async Task<string?> ResolveArtistIdFromLocalTracksAsync(
+        IReadOnlyList<string> artistNames,
+        IReadOnlyCollection<string> trackTitles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var artistName in artistNames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var appleId = await ResolveArtistIdFromLocalTracksAsync(artistName, trackTitles, GetStorefront(), cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(appleId))
+            {
+                return appleId;
+            }
+        }
+
+        return null;
+    }
+
     private async Task<string?> ResolveArtistIdFromLocalTracksAsync(
         string artistName,
         IReadOnlyCollection<string> trackTitles,

@@ -74,6 +74,10 @@ public class UnifiedTagConfig
     public TagSource Mood { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Activity { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Language { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource ArtistCountry { get; set; } = TagSource.None;
+    public TagSource ArtistCity { get; set; } = TagSource.None;
+    public TagSource ArtistRegion { get; set; } = TagSource.None;
+    public TagSource ArtistLanguage { get; set; } = TagSource.None;
     public TagSource Url { get; set; } = TagSource.AutoTagPlatform;
     public TagSource OtherTags { get; set; } = TagSource.AutoTagPlatform;
     public TagSource MetaTags { get; set; } = TagSource.AutoTagPlatform;

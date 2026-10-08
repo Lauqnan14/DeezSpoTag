@@ -343,6 +343,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
 	               && !settings.Remixer
 	               && !settings.Version
 	               && !settings.Language
+	               && !settings.ArtistCountry
+	               && !settings.ArtistCity
+	               && !settings.ArtistRegion
+	               && !settings.ArtistLanguage
 	               && !settings.OtherTags
 	               && !settings.MetaTags
 	               && !settings.ReleaseDate

@@ -120,6 +120,28 @@ public sealed class SpotifyArtistService
         _logger = logger;
     }
 
+    public async Task<string?> EnsurePathfinderRecommendationArtistIdAsync(long artistId, string artistName, CancellationToken cancellationToken)
+    {
+        var existing = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(existing)) return existing;
+        var names = _aliasService is null ? new[] { artistName }.ToList()
+            : (await _aliasService.GetGroupNamesAsync(artistName, cancellationToken)).ToList();
+        if (!names.Contains(artistName)) names.Add(artistName);
+        var targets = BuildArtistAliasTargets(artistName);
+        foreach (var name in names) targets.UnionWith(BuildArtistAliasTargets(name));
+        var albums = FilterResolvableAlbumTitles(await TryGetLocalAlbumTitleSetAsync(artistId, cancellationToken));
+        foreach (var name in names)
+        {
+            var candidates = (await _pathfinderMetadataClient.SearchArtistsAsync(name, 20, cancellationToken))
+                .Where(candidate => targets.Any(target => IsEquivalentArtistName(candidate.Name, target))).ToList();
+            var id = await TrySelectExactCandidateArtistIdAsync(candidates, albums, targets, artistName, cancellationToken);
+            if (string.IsNullOrWhiteSpace(id)) continue;
+            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, id, cancellationToken);
+            return id;
+        }
+        return null;
+    }
+
     public async Task<string?> EnsureSpotifyArtistIdAsync(long artistId, string artistName, CancellationToken cancellationToken)
     {
         await EnsureAliasSpotifyIdentitiesAsync(artistId, artistName, cancellationToken);
@@ -161,6 +183,13 @@ public sealed class SpotifyArtistService
             return null;
         }
 
+        // An empty group list is an explicit "no album releases" choice, not "no preference".
+        // Top songs are queued separately by the caller, so returning null here is safe.
+        if (albumGroups.Count == 0)
+        {
+            return null;
+        }
+
         var url = BuildSpotifyArtistUrl(spotifyId);
         var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(url, cancellationToken);
         if (metadata is null || metadata.AlbumList.Count == 0)
@@ -168,27 +197,34 @@ public sealed class SpotifyArtistService
             return null;
         }
 
+        return BuildFilteredAlbumPage(metadata.AlbumList, albumGroups, offset, limit);
+    }
+
+    /// <summary>
+    /// Maps pathfinder discography summaries to releases and keeps only the watched album
+    /// groups. Filtering happens before paging so the offset window refers to the selected
+    /// releases rather than to the unfiltered discography.
+    /// </summary>
+    internal static SpotifyAlbumPage BuildFilteredAlbumPage(
+        IReadOnlyList<SpotifyAlbumSummary> summaries,
+        IReadOnlyCollection<string> albumGroups,
+        int offset,
+        int limit)
+    {
+        var filtered = MapDiscographySummaries(summaries)
+            .Where(album => ArtistWatchService.ShouldIncludeAlbumGroup(album.AlbumGroup, albumGroups))
+            .ToList();
+
         var boundedLimit = Math.Clamp(limit, 1, 50);
         var boundedOffset = Math.Max(0, offset);
-        var slice = metadata.AlbumList
+        var slice = filtered
             .Skip(boundedOffset)
             .Take(boundedLimit)
             .ToList();
 
-        var albums = slice.Select(item =>
-            new SpotifyAlbum(
-                item.Id,
-                item.Name,
-                null,
-                AlbumType,
-                item.TotalTracks ?? 0,
-                item.ImageUrl is null ? new List<SpotifyImage>() : new List<SpotifyImage> { new SpotifyImage(item.ImageUrl, null, null) },
-                item.SourceUrl))
-            .ToList();
-
-        var total = metadata.AlbumList.Count;
+        var total = filtered.Count;
         var hasMore = boundedOffset + boundedLimit < total;
-        return new SpotifyAlbumPage(albums, total, hasMore);
+        return new SpotifyAlbumPage(slice, total, hasMore);
     }
 
     public async Task<SpotifyArtistPageResult?> GetArtistPageAsync(
@@ -303,6 +339,12 @@ public sealed class SpotifyArtistService
             names = new[] { artistName.Trim() };
         }
 
+        // GetGroupNamesAsync returns the preferred name first, so index 0 is the identity that
+        // must own the primary slot when it resolves. Alias ids stay attached to the same local
+        // artist as verified secondary identities.
+        var preferredNormalizedName = ArtistAliasService.NormalizeName(names[0]);
+        string? preferredSpotifyId = null;
+
         foreach (var name in names)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -315,7 +357,96 @@ public sealed class SpotifyArtistService
 
             await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, resolved, cancellationToken);
             AddActivity("info", $"[spotify] alias identity kept: {name} -> {resolved}.");
+            if (string.Equals(ArtistAliasService.NormalizeName(name), preferredNormalizedName, StringComparison.Ordinal))
+            {
+                preferredSpotifyId = resolved;
+            }
         }
+
+        // Only the preferred name's own verified id may claim the primary slot. When it could
+        // not be resolved the existing primary is left untouched rather than replaced by an
+        // arbitrary alias identity.
+        if (!string.IsNullOrWhiteSpace(preferredSpotifyId))
+        {
+            try
+            {
+                await _libraryRepository.SetPrimaryArtistSourceIdAsync(artistId, SpotifySource, preferredSpotifyId, cancellationToken);
+                AddActivity("info", $"[spotify] primary identity: {preferredSpotifyId}.");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "[spotify] could not set the primary identity for artist {ArtistId}.", artistId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The first non-empty biography among the artist's verified Spotify identities other than
+    /// the primary page that was just read. This is fill-only: the caller keeps the primary
+    /// biography whenever it has one, so two valid but conflicting biographies are never
+    /// combined or reordered. Sibling pages are fetched without a discography request because
+    /// only artist-level metadata is wanted.
+    /// </summary>
+    public async Task<string?> GetAliasIdentityBiographyAsync(
+        long artistId,
+        string? primarySpotifyId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        if (artistId <= 0)
+        {
+            return null;
+        }
+
+        foreach (var siblingId in await _libraryRepository.GetArtistSourceIdsAsync(artistId, SpotifySource, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.Equals(siblingId, primarySpotifyId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var sibling = await GetSiblingArtistPageAsync(artistId, siblingId, artistName, cancellationToken);
+            var biography = sibling?.Artist?.Biography;
+            if (!string.IsNullOrWhiteSpace(biography))
+            {
+                return biography;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A verified secondary identity's artist page, read from cache when possible and fetched
+    /// on a cache miss. Discography is never requested for a sibling identity: the caller only
+    /// needs its images, gallery, header image and biography.
+    /// </summary>
+    private async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync(
+        long artistId,
+        string siblingSpotifyId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(siblingSpotifyId))
+        {
+            return null;
+        }
+
+        var cached = await TryGetCachedArtistPageAsync(siblingSpotifyId, artistName, allowStale: true, cancellationToken);
+        if (cached is not null)
+        {
+            return cached;
+        }
+
+        return await GetArtistPageBySpotifyIdInternalAsync(
+            siblingSpotifyId,
+            artistName,
+            allowCache: false,
+            localArtistId: artistId,
+            includeDeezerLinking: false,
+            includeDiscography: false,
+            cancellationToken);
     }
 
     public async Task<SpotifyArtistPageResult> MergeAliasVisualsAsync(
@@ -352,7 +483,9 @@ public sealed class SpotifyArtistService
                 continue;
             }
 
-            var cached = await TryGetCachedArtistPageAsync(id, result.Artist.Name, allowStale: true, cancellationToken);
+            // A verified secondary identity must not be useless just because its page was never
+            // cached, so it is fetched once on a cache miss — without a discography request.
+            var cached = await GetSiblingArtistPageAsync(artistId, id, result.Artist.Name, cancellationToken);
             if (cached?.Artist is null)
             {
                 continue;
@@ -449,12 +582,10 @@ public sealed class SpotifyArtistService
         var seenSuggestionIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var query in aliasTargets.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).Take(6))
         {
-            foreach (var candidate in await _pathfinderMetadataClient.SearchArtistsAsync(query, Math.Max(10, safeLimit), cancellationToken))
+            foreach (var candidate in (await _pathfinderMetadataClient.SearchArtistsAsync(query, Math.Max(10, safeLimit), cancellationToken))
+                         .Where(candidate => seenSuggestionIds.Add(candidate.Id)))
             {
-                if (seenSuggestionIds.Add(candidate.Id))
-                {
-                    results.Add(candidate);
-                }
+                results.Add(candidate);
             }
         }
         if (results.Count == 0)
@@ -3523,6 +3654,18 @@ public sealed class SpotifyArtistService
             return;
         }
 
+        // The Artist Alias preferred name is the user's decision and wins over a provider's
+        // display name. When the local artist belongs to an alias group and Spotify's canonical
+        // name is another member of that same group, the folders must stay on the preferred
+        // name. Querying Spotify under the alias is unaffected; only this rename is suppressed.
+        if (await IsAliasGroupSiblingAsync(currentArtistName, canonicalArtistName, cancellationToken))
+        {
+            AddActivity(
+                "info",
+                $"[spotify] kept the alias preferred artist folder for {currentArtistName}; Spotify's name {canonicalArtistName} is a known alias.");
+            return;
+        }
+
         var targetArtistSegment = SanitizePathSegment(canonicalArtistName);
         if (string.IsNullOrWhiteSpace(targetArtistSegment))
         {
@@ -3545,6 +3688,56 @@ public sealed class SpotifyArtistService
             AddActivity(
                 rewriteResult.MoveFailures > 0 ? "warn" : "info",
                 $"[spotify] canonical artist folder rewrite for {currentArtistName} -> {canonicalArtistName}: moved_albums={rewriteResult.MovedAlbumCount}, conflicts={rewriteResult.MoveConflicts}, failures={rewriteResult.MoveFailures}.");
+        }
+    }
+
+    /// <summary>
+    /// True when the local artist belongs to an Artist Alias group and the provider's canonical
+    /// name is a member of that same group, so the group's preferred name must keep winning.
+    /// Reads only the cached alias snapshot, so an artist outside any group costs one dictionary
+    /// probe and the existing rename behaviour is untouched.
+    /// </summary>
+    private async Task<bool> IsAliasGroupSiblingAsync(
+        string? localArtistName,
+        string? providerArtistName,
+        CancellationToken cancellationToken)
+    {
+        if (_aliasService is null || !_aliasService.IsConfigured)
+        {
+            return false;
+        }
+
+        var localName = (localArtistName ?? string.Empty).Trim();
+        var providerName = (providerArtistName ?? string.Empty).Trim();
+        if (localName.Length == 0 || providerName.Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            // Membership is read from the cached alias map: the snapshot holds every group name
+            // (preferred names map to themselves), so this is one dictionary probe. A local
+            // artist outside any group can never be outranked by a provider name.
+            var aliasMap = await _aliasService.GetAliasMapAsync(cancellationToken).ConfigureAwait(false);
+            if (!aliasMap.TryGetValue(ArtistAliasService.NormalizeName(localName), out var localAlias))
+            {
+                return false;
+            }
+
+            var localPreferred = localAlias.Trim();
+            if (localPreferred.Length == 0)
+            {
+                return false;
+            }
+
+            var providerPreferred = (await _aliasService.ResolvePreferredAsync(providerName, cancellationToken).ConfigureAwait(false)).Trim();
+            return string.Equals(providerPreferred, localPreferred, StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Artist alias group check unavailable for the Spotify folder rewrite guard.");
+            return false;
         }
     }
 

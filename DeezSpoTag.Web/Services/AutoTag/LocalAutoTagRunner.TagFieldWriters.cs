@@ -639,7 +639,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var values = ResolveOtherValues(context.SourceTrack, LanguageTag, LanguageRawTag);
+        var values = GetTrackLanguageValues(context.SourceTrack);
+
         if (values.Count == 0)
         {
             return;
@@ -647,6 +648,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         SetRawIfAllowed(tagWriteContext, LanguageTag, LanguageRawTag, values);
     }
+
+    private static void WriteArtistMetadataTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames)
+        {
+            if (field.Key == LanguageTag || !context.EnabledTags.Contains(field.Key)) continue;
+            var values = GetArtistFieldValues(context.SourceTrack, field.Key);
+            if (values.Count > 0) SetRawIfAllowed(tagWriteContext, field.Key, field.Value, values);
+        }
+    }
+
 
     private static void WriteExplicitTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
@@ -1033,6 +1045,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    private static readonly IReadOnlyDictionary<string, string> GenreAcronymSpellings =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ccm"] = "CCM", ["edm"] = "EDM", ["ebm"] = "EBM", ["aor"] = "AOR",
+            ["uk"] = "UK", ["us"] = "US", ["usa"] = "USA", ["dnb"] = "DnB",
+            ["idm"] = "IDM", ["r&b"] = "R&B"
+        };
+
     internal static string CapitalizeGenre(string input)
     {
         if (string.IsNullOrWhiteSpace(input))
@@ -1054,13 +1074,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             chars[0] = char.ToUpperInvariant(chars[0]);
             for (var c = 1; c < chars.Length; c++)
             {
-                if (chars[c - 1] == '&' && char.IsLetter(chars[c]))
+                // Both '&' and '-' start a new part of a compound, so both hand over a
+                // capital. R&B stays R&B, and K-Pop and Hip-Hop survive instead of
+                // decaying into K-pop and Hip-hop on every pass. Capitalising after a
+                // hyphen is also what keeps an established spelling such as
+                // "Coupé-Décalé" intact, which is the difference between a readable
+                // tag and a visibly wrong one.
+                // A digit-led compound is the exception: "16-bit" and "2-step" are
+                // single lexical units rather than a title split across a hyphen, so
+                // they keep the spelling the vocabulary already uses.
+                if ((chars[c - 1] == '&'
+                     || (chars[c - 1] == '-' && char.IsLetter(chars[c - 2])))
+                    && char.IsLetter(chars[c]))
                 {
                     chars[c] = char.ToUpperInvariant(chars[c]);
                 }
             }
 
-            words[i] = new string(chars);
+            var word = new string(chars);
+            words[i] = GenreAcronymSpellings.TryGetValue(word, out var spelling) ? spelling : word;
         }
 
         return string.Join(' ', words);

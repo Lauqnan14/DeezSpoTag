@@ -23,6 +23,32 @@ public sealed class AudiomackArtistLocationTest
 {
     public sealed class Normalizer
     {
+        [Fact]
+        public void LocationSeparation_LiveCongoSpellingResolvesWithoutUsingHometown()
+        {
+            var result = AudiomackLocationNormalizer.Normalize("Goma, Congo (Kinshasa)")!;
+            Assert.Equal("Goma", result.City);
+            Assert.Equal("Congo (Kinshasa)", result.Country);
+            Assert.Equal("CD", result.CountryCode);
+        }
+
+        [Fact]
+        public void LocationSeparation_RegionAndUnresolvedTextStayDistinct()
+        {
+            var full = AudiomackLocationNormalizer.Normalize("Accra, Greater Accra, Ghana")!;
+            Assert.Equal("Accra", full.City);
+            Assert.Equal("Greater Accra", full.Region);
+            Assert.Equal("Ghana", full.Country);
+            var regional = AudiomackLocationNormalizer.Normalize("Austin, TX")!;
+            Assert.Equal("Austin", regional.City);
+            Assert.Equal("TX", regional.Region);
+            Assert.Null(regional.Country);
+            var unknown = AudiomackLocationNormalizer.Normalize("East Africa")!;
+            Assert.Equal("East Africa", unknown.RawLocation);
+            Assert.Null(unknown.City);
+        }
+
+
         [Theory]
         [InlineData("Nairobi, Kenya", "Nairobi", "Kenya", "KE")]
         [InlineData("Lagos, Nigeria", "Lagos", "Nigeria", "NG")]
@@ -65,7 +91,7 @@ public sealed class AudiomackArtistLocationTest
             var result = AudiomackLocationNormalizer.Normalize(raw);
 
             Assert.NotNull(result);
-            Assert.Equal(raw, result.City);
+            Assert.Equal(raw == "Atlanta, TX" ? "Atlanta" : null, result.City);
             Assert.Null(result.Country);
             Assert.Null(result.CountryCode);
         }
@@ -184,13 +210,15 @@ public sealed class AudiomackArtistLocationTest
         }
 
         [Fact]
-        public void TryExtractRawLocation_HometownTakesPriorityOverStructuredLocation()
+        public void TryExtractRawLocation_PreservesLocationAndHometownSeparately()
         {
             const string html = """
                 <script>self.__next_f.push([1,"3:[\"$\",\"div\",null,{\"artist\":{\"name\":\"Test\",\"hometown\":\"KONONGO\",\"location\":{\"tag\":\"ghanagreateraccraaccra\",\"display\":\"Accra, Ghana\"},\"url_slug\":\"test-artist\",\"type\":\"artist\"}}"])</script>
                 """;
 
-            Assert.Equal("KONONGO", AudiomackArtistPageParser.TryExtractRawLocation(html, "test-artist", "Test"));
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "test-artist", "Test");
+            Assert.Equal("Accra, Ghana", info!.RawLocation);
+            Assert.Equal("KONONGO", info.RawHometown);
         }
 
         [Theory]
@@ -295,7 +323,8 @@ public sealed class AudiomackArtistLocationTest
 
             Assert.NotNull(info);
             Assert.Equal("alikiba", info!.CanonicalUrlSlug);
-            Assert.Equal("Dar es Salaam,Tanzania", info.RawLocation);
+            Assert.Equal("Dar es Salaam, Tanzania", info.RawLocation);
+            Assert.Equal("Dar es Salaam,Tanzania", info.RawHometown);
             Assert.NotNull(info.RawBiography);
             Assert.Contains("Ally Saleh Kiba", info.RawBiography);
             Assert.Contains("Tanzanian recording artiste", info.RawBiography);
@@ -734,10 +763,23 @@ public sealed class AudiomackArtistLocationTest
         }
 
         [Fact]
+        public async Task CachedPayloadWithOldLocationSchema_RefreshesSeparatedFields()
+        {
+            var controller = CreateController();
+            const string payload = """{"name":"Alikiba","city":"Dar es Salaam,Tanzania","location_source":"audiomack"}""";
+            var result = await InvokeAttachAsync(controller, payload);
+            using var doc = JsonDocument.Parse(result);
+            Assert.Equal("Dar es Salaam", doc.RootElement.GetProperty("city").GetString());
+            Assert.Equal("Tanzania", doc.RootElement.GetProperty("country").GetString());
+            Assert.Equal("Dar es Salaam,Tanzania", doc.RootElement.GetProperty("hometown").GetString());
+            Assert.Equal(2, doc.RootElement.GetProperty("audiomack_location_schema").GetInt32());
+        }
+
+        [Fact]
         public async Task CachedPayloadWithLocationSource_ReturnedUnchanged()
         {
             var controller = CreateController();
-            const string payloadJson = """{"name":"Alikiba","city":"Dar es Salaam","country":"Tanzania","country_code":"TZ","location_source":"audiomack"}""";
+            const string payloadJson = """{"name":"Alikiba","city":"Dar es Salaam","country":"Tanzania","country_code":"TZ","location_source":"audiomack","audiomack_location_schema":2}""";
 
             var result = await InvokeAttachAsync(controller, payloadJson);
 
@@ -844,7 +886,8 @@ public sealed class AudiomackArtistLocationTest
             Assert.Equal("Dar es Salaam", profile.Location!.City);
             Assert.Equal("Tanzania", profile.Location.Country);
             Assert.Equal("TZ", profile.Location.CountryCode);
-            Assert.Equal("Dar es Salaam,Tanzania", profile.Location.RawLocation);
+            Assert.Equal("Dar es Salaam, Tanzania", profile.Location.RawLocation);
+            Assert.Equal("Dar es Salaam,Tanzania", profile.Location.Hometown);
             Assert.NotNull(profile.Biography);
             Assert.StartsWith("Ally Saleh Kiba", profile.Biography);
 
@@ -899,6 +942,19 @@ public sealed class AudiomackArtistLocationTest
             var (service, _) = CreateService("<html><body>no flight chunks here</body></html>");
 
             Assert.Null(await service.ResolveProfileAsync("Alikiba", CancellationToken.None));
+        }
+
+        [Fact]
+        public async Task MatchedProfileWithoutLocalArtistChecksExactUploaderIdentity()
+        {
+            var (service, _) = CreateService(ReadFixture("artist-page-flight.txt"));
+            var result = await service.ResolveMatchedProfileAsync("16579133", "Alikiba",
+                "https://audiomack.com/alikiba/song/test-song", CancellationToken.None);
+            Assert.Equal("Dar es Salaam", result?.Location?.City);
+            Assert.Equal("Tanzania", result?.Location?.Country);
+            Assert.Equal("https://audiomack.com/alikiba", result?.SourceReference);
+            Assert.Null(await service.ResolveMatchedProfileAsync("wrong-id", "Alikiba",
+                "https://audiomack.com/alikiba/song/test-song", CancellationToken.None));
         }
 
         private static (AudiomackArtistLocationService Service, StubHttpClientFactory Factory) CreateService(

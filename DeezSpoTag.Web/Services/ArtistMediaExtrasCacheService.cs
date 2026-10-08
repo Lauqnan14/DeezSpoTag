@@ -343,16 +343,10 @@ public sealed class ArtistMediaExtrasCacheService
         string? tidalArtistId,
         string artistName)
     {
-        var mapped = new List<JsonElement>();
-        foreach (var raw in items)
-        {
-            var item = UnwrapTidalItem(raw);
-            if (!TidalHasAtmos(item) || !MatchesTidalArtist(item, tidalArtistId, artistName))
-            {
-                continue;
-            }
-
-            mapped.Add(JsonSerializer.SerializeToElement(new
+        var mapped = items
+            .Select(UnwrapTidalItem)
+            .Where(item => TidalHasAtmos(item) && MatchesTidalArtist(item, tidalArtistId, artistName))
+            .Select(item => JsonSerializer.SerializeToElement(new
             {
                 source = TidalProvider,
                 __kind = kind,
@@ -362,8 +356,8 @@ public sealed class ArtistMediaExtrasCacheService
                 image = BuildTidalImage(item),
                 tidalId = ReadTidalId(item),
                 hasAtmos = true
-            }, _json));
-        }
+            }, _json))
+            .ToList();
 
         return mapped;
     }
@@ -373,16 +367,10 @@ public sealed class ArtistMediaExtrasCacheService
         string? tidalArtistId,
         string artistName)
     {
-        var mapped = new List<JsonElement>();
-        foreach (var raw in items)
-        {
-            var item = UnwrapTidalItem(raw);
-            if (!MatchesTidalArtist(item, tidalArtistId, artistName))
-            {
-                continue;
-            }
-
-            mapped.Add(JsonSerializer.SerializeToElement(new
+        var mapped = items
+            .Select(UnwrapTidalItem)
+            .Where(item => MatchesTidalArtist(item, tidalArtistId, artistName))
+            .Select(item => JsonSerializer.SerializeToElement(new
             {
                 source = TidalProvider,
                 type = "video",
@@ -393,8 +381,8 @@ public sealed class ArtistMediaExtrasCacheService
                 image = BuildTidalImage(item),
                 tidalId = ReadTidalId(item),
                 hasAtmos = TidalHasAtmos(item)
-            }, _json));
-        }
+            }, _json))
+            .ToList();
 
         return mapped;
     }
@@ -429,13 +417,11 @@ public sealed class ArtistMediaExtrasCacheService
 
         if (item.TryGetProperty("artists", out var artists) && artists.ValueKind == JsonValueKind.Array)
         {
-            foreach (var artist in artists.EnumerateArray())
+            foreach (var id in artists.EnumerateArray()
+                         .Select(ReadTidalId)
+                         .Where(id => !string.IsNullOrWhiteSpace(id)))
             {
-                var id = ReadTidalId(artist);
-                if (!string.IsNullOrWhiteSpace(id))
-                {
-                    ids.Add(id);
-                }
+                ids.Add(id);
             }
         }
 
@@ -512,15 +498,8 @@ public sealed class ArtistMediaExtrasCacheService
             return true;
         }
 
-        foreach (var propertyName in new[] { "audioModes", "audioMode", "mediaMetadata", "tags" })
-        {
-            if (item.TryGetProperty(propertyName, out var property) && JsonContainsAtmos(property))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return new[] { "audioModes", "audioMode", "mediaMetadata", "tags" }
+            .Any(candidate => item.TryGetProperty(candidate, out var property) && JsonContainsAtmos(property));
     }
 
     private static bool JsonContainsAtmos(JsonElement element)

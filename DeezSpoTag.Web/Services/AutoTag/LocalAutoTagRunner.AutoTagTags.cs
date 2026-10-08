@@ -102,7 +102,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             [ReplayGainTag] = SupportedTag.ReplayGain,
             [SourceTag] = SupportedTag.Source,
             [RatingTag] = SupportedTag.Rating,
-            [LanguageTag] = SupportedTag.Language
+            [LanguageTag] = SupportedTag.Language,
+            [ArtistCountryTag] = SupportedTag.ArtistCountry,
+            [ArtistCityTag] = SupportedTag.ArtistCity,
+            [ArtistRegionTag] = SupportedTag.ArtistRegion,
+            [ArtistLanguageTag] = SupportedTag.ArtistLanguage
         };
 
         SupportedTagFeatureMappings.AddAudioFeatureTags(map);
@@ -144,6 +148,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             tags.Add(tag);
         }
 
+        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames)
+            if (field.Key != LanguageTag) Add(field.Key, GetArtistFieldValues(track, field.Key).Count > 0);
         AddAutoTagMetadataTags(track, Add);
         AddAutoTagFeatureTags(track, Add);
         AddAutoTagNumericAndDateTags(track, Add);
@@ -227,7 +233,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         add(DescriptionTag, HasOtherTagValues(track, DescriptionTag) || HasOtherTagValues(track, DescriptionRawTag) || HasOtherTagValues(track, CommentRawTag));
         add(SourceTag, HasOtherTagValues(track, SourceTag));
         add(RatingTag, HasOtherTagValues(track, RatingTag));
-        add(LanguageTag, HasOtherTagValues(track, LanguageTag));
+        add(LanguageTag, GetTrackLanguageValues(track).Count > 0);
     }
 
     private static bool HasOtherKey(IEnumerable<string> keys, string target)

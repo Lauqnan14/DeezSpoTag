@@ -286,10 +286,9 @@ function setSpotifyArtistLocation(location) {
     const city = String(location?.city || '').trim();
     const country = String(location?.country || '').trim();
     const flag = flagEmojiFromCountryCode(location?.country_code);
-    let text = '';
-    if (city && country) text = `${flag ? `${flag} ` : ''}${city}, ${country}`;
-    else if (country) text = `${flag ? `${flag} ` : ''}${country}`;
-    else if (city) text = city;
+    const region = String(location?.region || '').trim();
+    const place = [city, region, country].filter(Boolean).join(', ') || String(location?.location || '').trim();
+    const text = `${flag && place ? `${flag} ` : ''}${place}`;
 
     if (!text) {
         element.replaceChildren();
@@ -331,7 +330,10 @@ function setSpotifyArtistStats(artist) {
         }
     });
 
-    setSpotifyArtistLocation(artist.location);
+    // Cached/discography Spotify responses omit the independently loaded location.
+    if (artist.location != null) {
+        setSpotifyArtistLocation(artist.location);
+    }
 
     const verifiedBadgeEl = document.getElementById('artistVerifiedBadge');
     if (verifiedBadgeEl) {

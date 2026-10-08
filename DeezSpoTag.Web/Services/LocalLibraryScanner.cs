@@ -1298,7 +1298,7 @@ public sealed class LocalLibraryScanner
             .ToList();
     }
 
-    private static List<LocalTrackOtherTag> ExtractOtherTags(TagLib.File file)
+    internal static List<LocalTrackOtherTag> ExtractOtherTags(TagLib.File file)
     {
         var knownKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -1317,7 +1317,8 @@ public sealed class LocalLibraryScanner
             "RELEASEDATE", "RELEASE_DATE", "PUBLISHDATE", "PUBLISH_DATE",
             "URL", "RELEASE_ID", "RELEASEID", "TRACK_ID", "TRACKID",
             "MUSICBRAINZ_RELEASEID", "MUSICBRAINZ_RELEASE_ID", "MUSICBRAINZ_TRACKID", "MUSICBRAINZ_TRACK_ID",
-            "1T_TAGGEDDATE"
+            "1T_TAGGEDDATE",
+            "ARTISTCOUNTRY", "ARTISTCITY", "ARTISTREGION", "ARTISTLANGUAGE", "LANGUAGE"
         };
 
         var results = new List<LocalTrackOtherTag>();
@@ -1340,6 +1341,34 @@ public sealed class LocalLibraryScanner
                 {
                     results.Add(new LocalTrackOtherTag(key, normalized));
                 }
+            }
+        }
+
+        // Artist metadata and track language raw fields are first-class fields written by
+        // AutoTag; read them explicitly across all supported containers so they round-trip
+        // into the track's other-tags storage regardless of container.
+        var extension = Path.GetExtension(file.Name);
+        foreach (var rawName in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames.Values)
+        {
+            IEnumerable<string> values;
+            try
+            {
+                values = DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.ReadRawTagValues(file, extension, rawName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                values = Array.Empty<string>();
+            }
+
+            foreach (var normalized in values
+                .SelectMany(value => rawName is "ARTISTLANGUAGE" or "LANGUAGE"
+                    ? SplitTagValues(value) : new List<string> { value })
+                .Select(NormalizeTagValue)
+                .OfType<string>()
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                results.Add(new LocalTrackOtherTag(rawName, normalized));
             }
         }
 

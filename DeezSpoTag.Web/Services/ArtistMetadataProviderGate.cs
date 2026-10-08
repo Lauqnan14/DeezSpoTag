@@ -87,7 +87,14 @@ public sealed class ArtistMetadataProviderGate
             catch (TimeoutException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                operationCancellation.CancelAfter(TimeSpan.Zero);
+
+                // Cancel synchronously so the abandoned provider is actually torn down. This must not
+                // be CancelAfter(TimeSpan.Zero): that only schedules delivery on the timer queue, and
+                // the 'using' scope below disposes this source as soon as we return. Disposal cancels
+                // a pending timer, so the cancellation was silently dropped and the timed-out
+                // operation kept running. Cancel() completes delivery before Dispose can race it.
+                // The cancellation is still not awaited, so a slow callback cannot stall the gate.
+                operationCancellation.Cancel();
                 if (operation is not null)
                 {
                     ObserveLateCompletion(operation);

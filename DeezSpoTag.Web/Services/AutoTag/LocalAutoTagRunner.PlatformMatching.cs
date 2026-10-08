@@ -522,6 +522,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                                 ? confirmedApple
                                 : null));
             }
+            await RunBoundedOptionalStepAsync(
+                context,
+                "artist metadata",
+                LyricsResolutionTimeout,
+                stepToken => PopulateArtistMetadataAsync(match.Track, stepToken, context.Platform, context.File,
+                    context.Plan.TagSettings.SingleAlbumArtist
+                    || string.Equals(context.Plan.TagSettings.MultiArtistSeparator, MultiArtistSeparatorNothing, StringComparison.OrdinalIgnoreCase)));
             var writeResult = await TagFileAsync(
                 context.File,
                 match.Track,

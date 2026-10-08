@@ -68,7 +68,11 @@ public enum SupportedTag
     Language,
     Lyricist,
     Publisher,
-    Description
+    Description,
+    ArtistCountry,
+    ArtistCity,
+    ArtistRegion,
+    ArtistLanguage
 }
 
 public sealed class PlatformInfo

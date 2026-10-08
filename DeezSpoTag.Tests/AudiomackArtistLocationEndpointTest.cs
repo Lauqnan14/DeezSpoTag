@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Controllers.Api;
+using DeezSpoTag.Web.Services.ArtistLocation;
 using DeezSpoTag.Web.Services.Audiomack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -108,6 +109,17 @@ public sealed class AudiomackIndependentLocationEndpointTest
         SetField(controller, "_repository", repository);
         SetField(controller, "_locationOverrides", overrides);
         SetField(controller, "_audiomackArtistLocation", service);
+        // The route no longer decides precedence itself; it delegates. No
+        // MusicBrainz source is wired here, so Audiomack answers — which is
+        // exactly the fallback behaviour this route has to keep serving.
+        SetField(
+            controller,
+            "_locationResolver",
+            new ArtistLocationResolver(
+                NullLogger<ArtistLocationResolver>.Instance,
+                musicBrainz: null,
+                audiomack: ArtistLocationResolver.CreateAudiomackSource(service),
+                overrides: overrides));
         SetField(controller, "_logger", NullLogger<LibraryArtistSourceMetadataApiController>.Instance);
         return (controller, overrides, artistId);
     }

@@ -5,6 +5,7 @@ using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata.Qobuz;
@@ -19,10 +20,31 @@ public sealed partial class ArtistArtworkCatalogService
     private const string CandidateRole = "candidate";
 
     /// <summary>
+    ///     The engine ids below are aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     Every use is either a switch that selects a resolver or a key an artist source id is
+    ///     stored and read back under. A copy that drifted from the vocabulary the rows were
+    ///     written with would fall through its switch to the default arm and read back no id, so the
+    ///     engine would silently contribute no artwork at all. The names are kept local because they
+    ///     read better at the dispatch sites; the value is defined once.
+    /// </remarks>
+    private const string AppleSource = DownloadTagSourceHelper.AppleSource;
+
+    private const string DeezerSource = DownloadTagSourceHelper.DeezerSource;
+
+    private const string SpotifySource = DownloadTagSourceHelper.SpotifySource;
+
+    private const string TidalSource = DownloadTagSourceHelper.TidalSource;
+
+    private const string QobuzSource = DownloadTagSourceHelper.QobuzSource;
+
+    /// <summary>
     /// Artist image sources offered by the artwork-order control, in its default order. Kept in
     /// step with ARTIST_ARTWORK_SOURCE_ORDER in autotag.js.
     /// </summary>
-    private static readonly string[] DefaultArtistArtworkSourceOrder = ["apple", "deezer", "spotify", "lastfm"];
+    private static readonly string[] DefaultArtistArtworkSourceOrder =
+        [AppleSource, DeezerSource, SpotifySource, "lastfm"];
     private readonly LibraryRepository _repository;
     private readonly SpotifyArtistService _spotify;
     private readonly DeezerClient _deezer;
@@ -157,7 +179,7 @@ public sealed partial class ArtistArtworkCatalogService
 
         foreach (var providerDir in Directory.EnumerateDirectories(_cacheRoot))
         {
-            var artistDir = Path.Combine(providerDir, artistId.ToString());
+            var artistDir = Path.Join(providerDir, artistId.ToString());
             if (!Directory.Exists(artistDir))
             {
                 continue;
@@ -220,9 +242,13 @@ public sealed partial class ArtistArtworkCatalogService
         bool forceProviderRefresh = false,
         ArtistMetadataProviderGate? providerGate = null,
         bool includeGallery = true,
-        bool allowArtistPageScrape = true)
+        bool allowArtistPageScrape = true,
+        IReadOnlyList<string>? artistLookupNames = null)
     {
-        var rematchedProviders = await EnsureMatchedSourceIdsAsync(artistId, artistName, cancellationToken);
+        // Ordered provider lookup names for an Artist Alias artist (canonical/preferred first,
+        // then aliases). Null or a single entry keeps every existing caller on today's path.
+        var lookupNames = NormalizeLookupNames(artistName, artistLookupNames);
+        var rematchedProviders = await EnsureMatchedSourceIdsAsync(artistId, artistName, cancellationToken, lookupNames);
         var existing = await _repository.GetArtistArtworkCacheAsync(artistId, cancellationToken);
         var staleBefore = DateTimeOffset.UtcNow.AddDays(-7);
         bool HasFreshCachedArtwork(string provider) => existing.Any(item =>
@@ -250,7 +276,7 @@ public sealed partial class ArtistArtworkCatalogService
             || !HasFreshCachedArtwork(provider);
         bool Includes(string provider) => string.IsNullOrWhiteSpace(onlyProvider)
             || string.Equals(provider, onlyProvider, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(onlyProvider, "apple", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(onlyProvider, AppleSource, StringComparison.OrdinalIgnoreCase)
                && string.Equals(provider, "itunes", StringComparison.OrdinalIgnoreCase);
 
         var gate = providerGate ?? new ArtistMetadataProviderGate(_logger);
@@ -273,7 +299,7 @@ public sealed partial class ArtistArtworkCatalogService
                 token => RunProviderAsync(
                     artistId,
                     provider,
-                    inner => ResolveRemoteProviderAsync(provider, artistId, artistName, includeGallery, allowArtistPageScrape, inner),
+                    inner => ResolveRemoteProviderAsync(provider, artistId, artistName, includeGallery, allowArtistPageScrape, inner, lookupNames),
                     token),
                 cancellationToken);
         }
@@ -332,17 +358,42 @@ public sealed partial class ArtistArtworkCatalogService
         string artistName,
         bool includeGallery,
         bool allowArtistPageScrape,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? lookupNames = null)
         => provider switch
         {
-            "spotify" => ResolveSpotifyAsync(artistId, artistName, includeGallery, cancellationToken),
-            "deezer" => ResolveDeezerAsync(artistId, artistName, cancellationToken),
-            "apple" or "itunes" => ResolveItunesAsync(artistId, artistName, allowArtistPageScrape, cancellationToken),
-            "tidal" => ResolveTidalAsync(artistId, cancellationToken),
-            "qobuz" => ResolveQobuzAsync(artistId, cancellationToken),
-            "lastfm" => ResolveLastFmAsync(artistName, includeGallery, cancellationToken),
+            SpotifySource => ResolveSpotifyAsync(artistId, artistName, includeGallery, cancellationToken),
+            DeezerSource => ResolveDeezerAsync(artistId, artistName, cancellationToken),
+            AppleSource or "itunes" => ResolveItunesAsync(artistId, artistName, allowArtistPageScrape, cancellationToken, lookupNames),
+            TidalSource => ResolveTidalAsync(artistId, cancellationToken),
+            QobuzSource => ResolveQobuzAsync(artistId, cancellationToken),
+            "lastfm" => ResolveLastFmAsync(artistName, includeGallery, cancellationToken, lookupNames),
             _ => Task.FromResult<IReadOnlyList<RemoteCandidate>>(Array.Empty<RemoteCandidate>())
         };
+
+    /// <summary>
+    /// Canonical name first, then the Artist Alias names, deduplicated case-insensitively.
+    /// Callers that pass nothing get a single-entry list and therefore behave exactly as before.
+    /// </summary>
+    private static IReadOnlyList<string> NormalizeLookupNames(string artistName, IReadOnlyList<string>? artistLookupNames)
+    {
+        var canonical = (artistName ?? string.Empty).Trim();
+        if (artistLookupNames is not { Count: > 1 })
+        {
+            return [canonical];
+        }
+
+        var ordered = new List<string>(artistLookupNames.Count) { canonical };
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { canonical };
+        foreach (var trimmed in artistLookupNames
+                     .Select(name => (name ?? string.Empty).Trim())
+                     .Where(trimmed => trimmed.Length > 0 && seen.Add(trimmed)))
+        {
+            ordered.Add(trimmed);
+        }
+
+        return ordered;
+    }
 
     private async Task AddRemoteProviderAsync(
         List<ProviderResolution> resolutions,
@@ -446,7 +497,7 @@ public sealed partial class ArtistArtworkCatalogService
 
         var candidates = page.Artist.Images
             .Where(image => !string.IsNullOrWhiteSpace(image.Url))
-            .Select(image => new RemoteCandidate("spotify", $"spotify:profile:{image.Url}", image.Url!, image.Width, image.Height))
+            .Select(image => new RemoteCandidate(SpotifySource, $"spotify:profile:{image.Url}", image.Url, image.Width, image.Height))
             .ToList();
         AddSpotifyCandidate(candidates, page.Artist.HeaderImageUrl, "header");
         if (includeGallery)
@@ -467,29 +518,30 @@ public sealed partial class ArtistArtworkCatalogService
     {
         if (!string.IsNullOrWhiteSpace(url))
         {
-            candidates.Add(new RemoteCandidate("spotify", $"spotify:{kind}:{url}", url, null, null));
+            candidates.Add(new RemoteCandidate(SpotifySource, $"spotify:{kind}:{url}", url, null, null));
         }
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveDeezerAsync(long artistId, string artistName, CancellationToken token)
     {
-        var deezerId = await _repository.GetArtistSourceIdAsync(artistId, "deezer", token);
+        var deezerId = await _repository.GetArtistSourceIdAsync(artistId, DeezerSource, token);
         if (string.IsNullOrWhiteSpace(deezerId))
         {
             return Array.Empty<RemoteCandidate>();
         }
 
-        var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, deezerId, ResolveRequestSize("deezer"), _logger, token);
-        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("deezer", $"deezer:{deezerId}", url!, null, null) };
+        var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, deezerId, ResolveRequestSize(DeezerSource), _logger, token);
+        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate(DeezerSource, $"deezer:{deezerId}", url, null, null) };
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveItunesAsync(
         long artistId,
         string artistName,
         bool allowArtistPageScrape,
-        CancellationToken token)
+        CancellationToken token,
+        IReadOnlyList<string>? lookupNames = null)
     {
-        var appleId = await _repository.GetArtistSourceIdAsync(artistId, "apple", token);
+        var appleId = await _repository.GetArtistSourceIdAsync(artistId, AppleSource, token);
         if (!string.IsNullOrWhiteSpace(appleId))
         {
             var resolved = await _apple.ResolveByArtistIdAsync(appleId, artistName, token, allowArtistPageScrape: false);
@@ -505,28 +557,36 @@ public sealed partial class ArtistArtworkCatalogService
             return Array.Empty<RemoteCandidate>();
         }
 
-        var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
-            _httpClients,
-            artistName,
-            ResolveRequestSize("apple"),
-            _logger,
-            token,
-            allowArtistPageScrape);
-        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("itunes", $"itunes:{url}", url, null, null) };
+        foreach (var name in lookupNames is { Count: > 1 } ? lookupNames : [artistName])
+        {
+            var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
+                _httpClients,
+                name,
+                ResolveRequestSize(AppleSource),
+                _logger,
+                token,
+                allowArtistPageScrape);
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                return new[] { new RemoteCandidate("itunes", $"itunes:{url}", url, null, null) };
+            }
+        }
+
+        return Array.Empty<RemoteCandidate>();
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveQobuzAsync(long artistId, CancellationToken token)
     {
-        var stored = await _repository.GetArtistSourceIdAsync(artistId, "qobuz", token);
+        var stored = await _repository.GetArtistSourceIdAsync(artistId, QobuzSource, token);
         if (!int.TryParse(stored, out var id) || id <= 0) return Array.Empty<RemoteCandidate>();
         var artist = await _qobuz.GetArtistAsync(id, "us-en", token);
         var url = FirstNonEmpty(artist?.Image?.Mega, artist?.Image?.ExtraLarge, artist?.Image?.Large, artist?.Image?.Medium);
-        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("qobuz", $"qobuz:{id}", url!, null, null) };
+        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate(QobuzSource, $"qobuz:{id}", url, null, null) };
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveTidalAsync(long artistId, CancellationToken token)
     {
-        var stored = await _repository.GetArtistSourceIdAsync(artistId, "tidal", token);
+        var stored = await _repository.GetArtistSourceIdAsync(artistId, TidalSource, token);
         if (string.IsNullOrWhiteSpace(stored)) return Array.Empty<RemoteCandidate>();
         var accessToken = await _tidalTokens.GetAccessTokenAsync(token);
         var country = await _tidalTokens.GetCountryCodeAsync(token) ?? "US";
@@ -549,13 +609,34 @@ public sealed partial class ArtistArtworkCatalogService
         }
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
         if (!TryFindTidalArtworkHref(document.RootElement, out var href)) return Array.Empty<RemoteCandidate>();
-        return new[] { new RemoteCandidate("tidal", $"tidal:{stored}", href, null, null) };
+        return new[] { new RemoteCandidate(TidalSource, $"tidal:{stored}", href, null, null) };
     }
 
-    private async Task<IReadOnlyList<RemoteCandidate>> ResolveLastFmAsync(string artistName, bool includeGallery, CancellationToken token)
-        => (await _lastFm.SearchArtistImagesAsync(artistName, includeGallery ? 8 : 1, token))
-            .Where(x => !string.IsNullOrWhiteSpace(x.Url))
-            .Select(x => new RemoteCandidate("lastfm", $"lastfm:{x.Url}", x.Url, null, null)).ToList();
+    private async Task<IReadOnlyList<RemoteCandidate>> ResolveLastFmAsync(
+        string artistName,
+        bool includeGallery,
+        CancellationToken token,
+        IReadOnlyList<string>? lookupNames = null)
+    {
+        // Last.fm is name-only: it has no persisted identity, so each known lookup name is
+        // attempted until one yields artwork. Each attempt keeps Last.fm's own returned-name
+        // validation, so an autocorrected redirect to an unrelated artist is rejected instead
+        // of ending the search before the alias is tried.
+        foreach (var name in lookupNames is { Count: > 1 } ? lookupNames : [artistName])
+        {
+            var candidates = await _lastFm.SearchArtistImagesAsync(name, includeGallery ? 8 : 1, token);
+            var mapped = candidates
+                .Where(x => !string.IsNullOrWhiteSpace(x.Url))
+                .Select(x => new RemoteCandidate("lastfm", $"lastfm:{x.Url}", x.Url, null, null))
+                .ToList();
+            if (mapped.Count > 0)
+            {
+                return mapped;
+            }
+        }
+
+        return Array.Empty<RemoteCandidate>();
+    }
 
     private async Task<string?> CacheCandidateAsync(long artistId, RemoteCandidate candidate, CancellationToken token)
     {
@@ -616,17 +697,18 @@ public sealed partial class ArtistArtworkCatalogService
     {
         href = string.Empty;
         if (!root.TryGetProperty("included", out var included) || included.ValueKind != JsonValueKind.Array) return false;
-        foreach (var item in included.EnumerateArray())
+        foreach (var files in included.EnumerateArray()
+            .Where(item => item.TryGetProperty("type", out var type)
+                && type.GetString() == "artworks"
+                && item.TryGetProperty("attributes", out var attributes)
+                && attributes.TryGetProperty("files", out _))
+            .Select(item => item.GetProperty("attributes").GetProperty("files")))
         {
-            if (!item.TryGetProperty("type", out var type) || type.GetString() != "artworks" ||
-                !item.TryGetProperty("attributes", out var attributes) || !attributes.TryGetProperty("files", out var files)) continue;
-            foreach (var file in files.EnumerateArray())
+            foreach (var file in files.EnumerateArray().Where(file => file.TryGetProperty("href", out var value)
+                && !string.IsNullOrWhiteSpace(value.GetString())))
             {
-                if (file.TryGetProperty("href", out var value) && !string.IsNullOrWhiteSpace(value.GetString()))
-                {
-                    href = value.GetString()!;
-                    return true;
-                }
+                href = file.GetProperty("href").GetString()!;
+                return true;
             }
         }
         return false;

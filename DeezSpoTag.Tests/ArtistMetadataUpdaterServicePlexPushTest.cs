@@ -31,11 +31,9 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
     private readonly List<string> _tempPaths = new();
 
     [Fact]
-    public async Task PushToPlexAsync_AddsWarning_WhenPlexIsNotConfigured()
+    public async Task PushToPlexAsync_ReportsNotConfigured_SoASelectedTargetIsNeverSilentlyIgnored()
     {
         var service = CreateService(CreatePlexClient(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
-        var updates = CreateUpdates();
-        var warnings = new List<string>();
         var request = CreateRequest(
             localArtistId: 0,
             auth: new PlatformAuthState { Plex = null },
@@ -43,20 +41,18 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
             backgroundPath: null,
             biography: null);
 
-        await InvokePushToPlexAsync(service, request, updates, warnings);
+        var result = await InvokePushToPlexAsync(service, request);
 
-        Assert.Contains("Plex is not configured.", warnings);
-        Assert.False(GetUpdateFlag(updates, "AvatarUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BackgroundUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BioUpdated"));
+        Assert.Equal("plex", result.Target);
+        Assert.Equal(ArtistTargetOutcome.NotConfigured, result.Outcome);
+        Assert.Contains("Plex is not configured.", result.LimitationList);
+        Assert.Empty(result.UpdatedFieldList);
     }
 
     [Fact]
-    public async Task PushToPlexAsync_AddsNotFoundWarning_WhenArtistCannotBeResolved()
+    public async Task PushToPlexAsync_ReportsNotFound_WhenArtistCannotBeResolved()
     {
         var service = CreateService(CreatePlexClient(BuildArtistNotFoundResponder()));
-        var updates = CreateUpdates();
-        var warnings = new List<string>();
         var request = CreateRequest(
             localArtistId: 0,
             auth: CreatePlexAuth(),
@@ -64,20 +60,16 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
             backgroundPath: null,
             biography: null);
 
-        await InvokePushToPlexAsync(service, request, updates, warnings);
+        var result = await InvokePushToPlexAsync(service, request);
 
-        Assert.Contains("Plex artist not found.", warnings);
-        Assert.False(GetUpdateFlag(updates, "AvatarUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BackgroundUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BioUpdated"));
+        Assert.Equal(ArtistTargetOutcome.NotFound, result.Outcome);
+        Assert.Empty(result.UpdatedFieldList);
     }
 
     [Fact]
-    public async Task PushToPlexAsync_UpdatesArtworkAndBiography_AndWarnsWhenLockFails()
+    public async Task PushToPlexAsync_ReportsUpdatedFields_AndFails_WhenArtworkLockFails()
     {
         var service = CreateService(CreatePlexClient(BuildHappyPathWithLockFailureResponder()));
-        var updates = CreateUpdates();
-        var warnings = new List<string>();
         var avatarPath = CreateTempFile(".jpg");
         var backgroundPath = CreateTempFile(".png");
         var request = CreateRequest(
@@ -87,12 +79,16 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
             backgroundPath: backgroundPath,
             biography: "Biography text");
 
-        await InvokePushToPlexAsync(service, request, updates, warnings);
+        var result = await InvokePushToPlexAsync(service, request);
 
-        Assert.True(GetUpdateFlag(updates, "AvatarUpdated"));
-        Assert.True(GetUpdateFlag(updates, "BackgroundUpdated"));
-        Assert.True(GetUpdateFlag(updates, "BioUpdated"));
-        Assert.Contains("Plex artwork lock failed; Plex may revert avatar/background on refresh.", warnings);
+        Assert.Contains(ArtistTargetFields.Avatar, result.UpdatedFieldList);
+        Assert.Contains(ArtistTargetFields.Background, result.UpdatedFieldList);
+        Assert.Contains(ArtistTargetFields.Biography, result.UpdatedFieldList);
+
+        // A failed artwork lock is a real, actionable failure and is attributed to Plex, rather than
+        // being an anonymous entry in a shared warning list.
+        Assert.Equal(ArtistTargetOutcome.Failed, result.Outcome);
+        Assert.Contains("Plex artwork lock failed; Plex may revert avatar/background on refresh.", result.Error);
     }
 
     [Fact]
@@ -118,8 +114,6 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }));
-        var updates = CreateUpdates();
-        var warnings = new List<string>();
         var request = CreateRequest(
             localArtistId: 0,
             auth: CreatePlexAuth(),
@@ -127,12 +121,11 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
             backgroundPath: null,
             biography: "   ");
 
-        await InvokePushToPlexAsync(service, request, updates, warnings);
+        var result = await InvokePushToPlexAsync(service, request);
 
-        Assert.Empty(warnings);
-        Assert.False(GetUpdateFlag(updates, "AvatarUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BackgroundUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BioUpdated"));
+        Assert.Null(result.Error);
+        Assert.Empty(result.UpdatedFieldList);
+        Assert.Equal(ArtistTargetOutcome.Unchanged, result.Outcome);
         Assert.DoesNotContain(seenRequests, entry => entry.Contains("/posters", StringComparison.Ordinal));
         Assert.DoesNotContain(seenRequests, entry => entry.Contains("/arts", StringComparison.Ordinal));
         Assert.DoesNotContain(seenRequests, entry => entry.Contains("thumb.locked=1", StringComparison.Ordinal));
@@ -140,14 +133,12 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
     }
 
     [Fact]
-    public async Task PushToPlexAsync_AddsFailureWarning_WhenPlexClientThrows()
+    public async Task PushToPlexAsync_ReportsFailedOutcome_WhenPlexClientThrows()
     {
         var service = CreateService(CreatePlexClient(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("not xml")
         }));
-        var updates = CreateUpdates();
-        var warnings = new List<string>();
         var request = CreateRequest(
             localArtistId: 0,
             auth: CreatePlexAuth(),
@@ -155,12 +146,11 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
             backgroundPath: null,
             biography: null);
 
-        await InvokePushToPlexAsync(service, request, updates, warnings);
+        var result = await InvokePushToPlexAsync(service, request);
 
-        Assert.Contains("Plex update failed.", warnings);
-        Assert.False(GetUpdateFlag(updates, "AvatarUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BackgroundUpdated"));
-        Assert.False(GetUpdateFlag(updates, "BioUpdated"));
+        Assert.Equal(ArtistTargetOutcome.Failed, result.Outcome);
+        Assert.Contains("Plex update failed.", result.Error);
+        Assert.Empty(result.UpdatedFieldList);
     }
 
     [Fact]
@@ -717,19 +707,17 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
         return Assert.IsType<bool>(prop!.GetValue(updates));
     }
 
-    private static async Task InvokePushToPlexAsync(
+    private static async Task<ArtistTargetResult> InvokePushToPlexAsync(
         ArtistMetadataUpdaterService service,
-        object request,
-        object updates,
-        List<string> warnings)
+        object request)
     {
         var method = typeof(ArtistMetadataUpdaterService).GetMethod("PushToPlexAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         var task = method!.Invoke(
             service,
-            [request, updates, warnings, CancellationToken.None]);
-        var runningTask = Assert.IsAssignableFrom<Task>(task);
-        await runningTask;
+            [request, new List<string>(), CancellationToken.None]);
+        var runningTask = Assert.IsAssignableFrom<Task<ArtistTargetResult>>(task);
+        return await runningTask;
     }
 
     private static Task<object> InvokePrepareVisualsAsync(

@@ -1338,6 +1338,9 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 ServiceScopeFactory = sp.GetRequiredService<IServiceScopeFactory>(),
                 TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
                 PlatformRegistry = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>(),
+                ArtistLocationResolver = sp.GetService<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>(),
+                ArtistPageCache = sp.GetService<DeezSpoTag.Services.Library.ArtistPageCacheRepository>(),
+                ArtistLibraryRepository = sp.GetService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 AlbumIdentityStorePath = Path.Join(
                     AppDataPaths.GetDataRoot(sp.GetRequiredService<IWebHostEnvironment>()),
                     "autotag",
@@ -1524,6 +1527,20 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Services.Library.ArtistLocationOverrideStore>();
+        // Artist location precedence: MusicBrainz answers when it can, Audiomack
+        // is the fallback, and a manual override beats both. Registered here,
+        // before the metadata holder that consumes it.
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistLocation.MusicBrainzArtistLocationService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>(sp =>
+            new DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver(
+                sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>>(),
+                new DeezSpoTag.Web.Services.ArtistLocation.IArtistLocationSource[] {
+                sp.GetRequiredService<DeezSpoTag.Web.Services.ArtistLocation.MusicBrainzArtistLocationService>(),
+                // Audiomack stays as the fallback for the many artists MusicBrainz
+                // has no geography for.
+                DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver.CreateAudiomackSource(
+                    sp.GetRequiredService<DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService>()) },
+                sp.GetRequiredService<DeezSpoTag.Services.Library.ArtistLocationOverrideStore>()));
         services.AddSingleton<DeezSpoTag.Services.Library.ArtistAliasService>();
         services.AddSingleton<DeezSpoTag.Services.Library.ArtistAliasMergeService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataServices>();

@@ -197,6 +197,79 @@ public static partial class ArtistIdentityTextNormalizer
     }
 
     /// <summary>
+    /// A graded album-overlap result: how many of the albums we hold the
+    /// candidate also has, what fraction that is, and which titles agreed.
+    /// </summary>
+    /// <param name="MatchedCount">Held album titles found in the candidate's set.</param>
+    /// <param name="HeldCount">Distinct held album titles considered.</param>
+    /// <param name="Ratio"><paramref name="MatchedCount"/> over <paramref name="HeldCount"/>, or 0 when nothing was held.</param>
+    /// <param name="MatchedTitles">The held titles that matched, for logging and diagnosis.</param>
+    public sealed record AlbumOverlapScore(
+        int MatchedCount,
+        int HeldCount,
+        double Ratio,
+        IReadOnlyList<string> MatchedTitles)
+    {
+        /// <summary>
+        /// Whether any album is shared. A candidate with no overlap is never a
+        /// match, whatever its name score: this is the guard against a different
+        /// artist who happens to share a name.
+        /// </summary>
+        public bool HasOverlap => MatchedCount > 0;
+    }
+
+    /// <summary>
+    /// Grades a name-search candidate by how much of the artist's catalogue the
+    /// two sides share.
+    /// </summary>
+    /// <remarks>
+    /// This is <see cref="CountAlbumOverlap"/> plus the evidence needed to choose
+    /// between several same-name candidates and to explain a rejection. The
+    /// counting itself is deliberately the same rule, so the graded result can
+    /// never disagree with the ungraded one.
+    ///
+    /// Held titles are de-duplicated first: a library that stores one album as
+    /// several rows must not inflate the count.
+    /// </remarks>
+    public static AlbumOverlapScore ScoreAlbumOverlap(
+        IReadOnlyCollection<string> heldAlbumTitles,
+        IEnumerable<string> candidateAlbumTitles)
+    {
+        ArgumentNullException.ThrowIfNull(heldAlbumTitles);
+        ArgumentNullException.ThrowIfNull(candidateAlbumTitles);
+
+        var held = FilterResolvableTitles(heldAlbumTitles);
+        var heldDistinct = held
+            .Select(title => title.Trim())
+            .Where(title => title.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (heldDistinct.Count == 0)
+        {
+            return new AlbumOverlapScore(0, 0, 0d, Array.Empty<string>());
+        }
+
+        var candidateKeys = candidateAlbumTitles
+            .Select(NormalizeAlbumTitle)
+            .Where(key => key.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (candidateKeys.Count == 0)
+        {
+            return new AlbumOverlapScore(0, heldDistinct.Count, 0d, Array.Empty<string>());
+        }
+
+        var matched = heldDistinct
+            .Where(title => candidateKeys.Contains(NormalizeAlbumTitle(title)))
+            .ToList();
+
+        return new AlbumOverlapScore(
+            matched.Count,
+            heldDistinct.Count,
+            matched.Count / (double)heldDistinct.Count,
+            matched);
+    }
+
+    /// <summary>
     /// Lowercases and collapses non-alphanumerics to single spaces.
     /// Ported from SpotifyArtistService.NormalizeTitle.
     /// </summary>

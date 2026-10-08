@@ -94,6 +94,10 @@ public static class TaggingProfileCanonicalizer
         new("mood", c => c.Mood, (c, v) => c.Mood = v),
         new("activity", c => c.Activity, (c, v) => c.Activity = v),
         new("language", c => c.Language, (c, v) => c.Language = v),
+        new("artistCountry", c => c.ArtistCountry, (c, v) => c.ArtistCountry = v),
+        new("artistCity", c => c.ArtistCity, (c, v) => c.ArtistCity = v),
+        new("artistRegion", c => c.ArtistRegion, (c, v) => c.ArtistRegion = v),
+        new("artistLanguage", c => c.ArtistLanguage, (c, v) => c.ArtistLanguage = v),
         new("url", c => c.Url, (c, v) => c.Url = v),
         new("otherTags", c => c.OtherTags, (c, v) => c.OtherTags = v),
         new("metaTags", c => c.MetaTags, (c, v) => c.MetaTags = v)

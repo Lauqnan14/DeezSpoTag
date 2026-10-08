@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Web.Services.ArtistLocation;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -66,6 +67,41 @@ public sealed class LibraryArtistsApiControllerTest : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    [Theory]
+    [InlineData("de02d778-2f56-4702-bb80-a93563a375f0")]
+    [InlineData("https://musicbrainz.org/artist/de02d778-2f56-4702-bb80-a93563a375f0")]
+    public async Task UpdateMusicBrainzId_PersistsNormalizedArtistIdentity(string input)
+    {
+        var artistId = await SeedLocalArtistAsync("Same Artist");
+        var controller = CreateSourceMetadataController();
+        var result = await controller.UpdateMusicBrainzId(artistId,
+            new LibraryArtistSourceMetadataApiController.MusicBrainzIdUpdateRequest(input), CancellationToken.None);
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal("de02d778-2f56-4702-bb80-a93563a375f0", await _repository.GetArtistSourceIdAsync(artistId, "musicbrainz", CancellationToken.None));
+        Assert.IsType<OkObjectResult>(await controller.GetMusicBrainzId(artistId, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("not-an-id")]
+    [InlineData("https://example.com/artist/de02d778-2f56-4702-bb80-a93563a375f0")]
+    [InlineData("https://musicbrainz.org/release/de02d778-2f56-4702-bb80-a93563a375f0")]
+    public async Task UpdateMusicBrainzId_RejectsInvalidOrWrongEntityUrls(string input)
+    {
+        var artistId = await SeedLocalArtistAsync("Same Artist");
+        var result = await CreateSourceMetadataController().UpdateMusicBrainzId(artistId,
+            new LibraryArtistSourceMetadataApiController.MusicBrainzIdUpdateRequest(input), CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Null(await _repository.GetArtistSourceIdAsync(artistId, "musicbrainz", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UpdateMusicBrainzId_ReturnsNotFoundForMissingArtist()
+    {
+        var result = await CreateSourceMetadataController().UpdateMusicBrainzId(999999,
+            new LibraryArtistSourceMetadataApiController.MusicBrainzIdUpdateRequest(Guid.NewGuid().ToString()), CancellationToken.None);
+        Assert.IsType<NotFoundResult>(result);
+    }
+
     [Fact]
     public async Task UpdateSpotifyId_ReturnsNotFound_WhenArtistDoesNotExist()
     {
@@ -123,7 +159,11 @@ public sealed class LibraryArtistsApiControllerTest : IAsyncLifetime
             artistVisualSelectionService: null!,
             environment: _environment,
             audiomackArtistLocation: null!,
-            locationOverrides: null!);
+            locationOverrides: null!,
+            // No provider and no override store, so location resolution yields
+            // null. These tests are about Spotify identity, not location.
+            locationResolver: new ArtistLocationResolver(
+                NullLogger<ArtistLocationResolver>.Instance));
 
         return new LibraryArtistSourceMetadataApiController(
             _repository,

@@ -259,6 +259,14 @@ public partial class AutoTagService
             NormalizeSupportedTagKey);
     }
 
+    private static readonly HashSet<string> CommonArtistEnrichmentKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "artistCountry",
+        "artistCity",
+        "artistRegion",
+        "artistLanguage"
+    };
+
     private static string NormalizeDownloadTagSource(string? downloadTagSource)
     {
         return DownloadTagSourceHelper.NormalizeStoredSource(downloadTagSource, AutoTagLiterals.DeezerSource);

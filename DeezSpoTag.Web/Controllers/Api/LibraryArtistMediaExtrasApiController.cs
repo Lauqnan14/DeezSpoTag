@@ -40,8 +40,8 @@ public sealed class LibraryArtistMediaExtrasApiController : ControllerBase
             return Ok(new
             {
                 available = false,
-                appleId = (string?)null,
-                tidalId = (string?)null,
+                appleId = default(string?),
+                tidalId = default(string?),
                 atmos = Array.Empty<object>(),
                 videos = Array.Empty<object>(),
                 hasMoreVideos = false

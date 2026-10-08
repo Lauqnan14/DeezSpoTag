@@ -122,6 +122,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             var persisted = tag switch
             {
+                SupportedTag.ArtistCountry => VerifyArtistField("artistCountry"),
+                SupportedTag.ArtistCity => VerifyArtistField("artistCity"),
+                SupportedTag.ArtistRegion => VerifyArtistField("artistRegion"),
+                SupportedTag.ArtistLanguage => VerifyArtistField("artistLanguage"),
+                SupportedTag.Language => VerifyArtistField("language"),
                 SupportedTag.OtherTags => VerifyOtherTagsPersisted(file, extension, track),
                 SupportedTag.TtmlLyrics => IOFile.Exists(Path.ChangeExtension(filePath, TtmlExtension)),
                 SupportedTag.ReleaseGroupId => HasTag(file, extension, tag, config, platformId)

@@ -9,7 +9,8 @@ public sealed partial class ArtistArtworkCatalogService
     private async Task<HashSet<string>> EnsureMatchedSourceIdsAsync(
         long artistId,
         string artistName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? lookupNames = null)
     {
         var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var titles = await LoadLocalTitlesAsync(artistId, cancellationToken);
@@ -18,6 +19,10 @@ public sealed partial class ArtistArtworkCatalogService
             return changed;
         }
 
+        // Existing name-based discovery for an Artist Alias artist: the canonical name first,
+        // then an alias only when that name produced nothing usable. A single-entry list keeps
+        // every non-alias artist on exactly today's single-name lookup.
+        var names = lookupNames is { Count: > 1 } ? lookupNames : [artistName];
         var localAlbumTitles = await GetLocalAlbumTitlesForOverlapAsync(artistId, cancellationToken);
         var resolvableAlbums = ArtistIdentityTextNormalizer.FilterResolvableTitles(localAlbumTitles);
         var requireOverlap = ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(resolvableAlbums);
@@ -25,84 +30,84 @@ public sealed partial class ArtistArtworkCatalogService
 
         if (await MatchSourceIdSafelyAsync(
                 artistId,
-                "spotify",
+                SpotifySource,
                 async token =>
                 {
-                    var previousId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", token);
+                    var previousId = await _repository.GetArtistSourceIdAsync(artistId, SpotifySource, token);
                     await _spotify.EnsureSpotifyArtistIdAsync(artistId, artistName, token);
-                    var nextId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", token);
+                    var nextId = await _repository.GetArtistSourceIdAsync(artistId, SpotifySource, token);
                     if (string.Equals(previousId, nextId, StringComparison.OrdinalIgnoreCase))
                     {
                         return false;
                     }
 
-                    await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, "spotify", token);
+                    await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, SpotifySource, token);
                     return true;
                 },
                 providerGate,
                 cancellationToken))
         {
-            changed.Add("spotify");
+            changed.Add(SpotifySource);
         }
 
         if (await MatchSourceIdSafelyAsync(
                 artistId,
-                "deezer",
+                DeezerSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
                     artistId,
-                    "deezer",
-                    await MatchDeezerArtistIdAsync(artistName, titles, token)
-                    ?? await MatchArtistIdByAlbumOverlapAsync("deezer", artistName, resolvableAlbums, requireOverlap, token),
+                    DeezerSource,
+                    await MatchDeezerArtistIdAsync(names, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync(DeezerSource, names, resolvableAlbums, requireOverlap, token),
                     token),
                 providerGate,
                 cancellationToken))
         {
-            changed.Add("deezer");
+            changed.Add(DeezerSource);
         }
 
         if (await MatchSourceIdSafelyAsync(
                 artistId,
-                "apple",
+                AppleSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
                     artistId,
-                    "apple",
-                    await _apple.ResolveArtistIdFromLocalTracksAsync(artistName, titles, token),
+                    AppleSource,
+                    await _apple.ResolveArtistIdFromLocalTracksAsync(names, titles, token),
                     token),
                 providerGate,
                 cancellationToken))
         {
-            changed.Add("apple");
+            changed.Add(AppleSource);
             changed.Add("itunes");
         }
 
         if (await MatchSourceIdSafelyAsync(
                 artistId,
-                "tidal",
+                TidalSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
                     artistId,
-                    "tidal",
-                    await MatchTidalArtistIdAsync(artistName, titles, token)
-                    ?? await MatchArtistIdByAlbumOverlapAsync("tidal", artistName, resolvableAlbums, requireOverlap, token),
+                    TidalSource,
+                    await MatchTidalArtistIdAsync(names, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync(TidalSource, names, resolvableAlbums, requireOverlap, token),
                     token),
                 providerGate,
                 cancellationToken))
         {
-            changed.Add("tidal");
+            changed.Add(TidalSource);
         }
 
         if (await MatchSourceIdSafelyAsync(
                 artistId,
-                "qobuz",
+                QobuzSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
                     artistId,
-                    "qobuz",
-                    await MatchQobuzArtistIdAsync(artistName, titles, token)
-                    ?? await MatchArtistIdByAlbumOverlapAsync("qobuz", artistName, resolvableAlbums, requireOverlap, token),
+                    QobuzSource,
+                    await MatchQobuzArtistIdAsync(names, titles, token)
+                    ?? await MatchArtistIdByAlbumOverlapAsync(QobuzSource, names, resolvableAlbums, requireOverlap, token),
                     token),
                 providerGate,
                 cancellationToken))
         {
-            changed.Add("qobuz");
+            changed.Add(QobuzSource);
         }
 
         return changed;
@@ -165,7 +170,7 @@ public sealed partial class ArtistArtworkCatalogService
 
         await _repository.UpsertArtistSourceIdAsync(artistId, source, matchedId, cancellationToken);
         await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, source, cancellationToken);
-        if (string.Equals(source, "apple", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase))
         {
             await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, "itunes", cancellationToken);
         }
@@ -174,6 +179,23 @@ public sealed partial class ArtistArtworkCatalogService
     }
 
     private async Task<string?> MatchDeezerArtistIdAsync(
+        IReadOnlyList<string> lookupNames,
+        IReadOnlyList<string> titles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var artistName in lookupNames)
+        {
+            var matched = await MatchDeezerArtistIdForNameAsync(artistName, titles, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(matched))
+            {
+                return matched;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> MatchDeezerArtistIdForNameAsync(
         string artistName,
         IReadOnlyList<string> titles,
         CancellationToken cancellationToken)
@@ -207,6 +229,23 @@ public sealed partial class ArtistArtworkCatalogService
     }
 
     private async Task<string?> MatchQobuzArtistIdAsync(
+        IReadOnlyList<string> lookupNames,
+        IReadOnlyList<string> titles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var artistName in lookupNames)
+        {
+            var matched = await MatchQobuzArtistIdForNameAsync(artistName, titles, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(matched))
+            {
+                return matched;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> MatchQobuzArtistIdForNameAsync(
         string artistName,
         IReadOnlyList<string> titles,
         CancellationToken cancellationToken)
@@ -234,6 +273,23 @@ public sealed partial class ArtistArtworkCatalogService
     }
 
     private async Task<string?> MatchTidalArtistIdAsync(
+        IReadOnlyList<string> lookupNames,
+        IReadOnlyList<string> titles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var artistName in lookupNames)
+        {
+            var matched = await MatchTidalArtistIdForNameAsync(artistName, titles, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(matched))
+            {
+                return matched;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> MatchTidalArtistIdForNameAsync(
         string artistName,
         IReadOnlyList<string> titles,
         CancellationToken cancellationToken)

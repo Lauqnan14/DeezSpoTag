@@ -80,7 +80,7 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         {
             return null;
         }
-        var imageUrl = artist?.ImageUrl;
+        var imageUrl = artist.ImageUrl;
         if (!string.IsNullOrWhiteSpace(imageUrl) && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Spotify artist image resolved by name: {Artist}", artistName);

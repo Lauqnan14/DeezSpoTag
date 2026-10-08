@@ -136,7 +136,7 @@ public sealed class ArtistAliasesApiController : ControllerBase
             return Ok(new
             {
                 group,
-                merge = (object?)null,
+                merge = default(object?),
                 enhancementJobIds = jobIds,
                 error = $"The alias group was saved but the merge failed: {ex.Message}"
             });

@@ -99,6 +99,7 @@ public sealed class LibraryArtistMetadataQueueService : BackgroundService
     {
         await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
         {
+            var finished = false;
             try
             {
                 await _cacheRefresh.RefreshArtistAsync(
@@ -108,12 +109,25 @@ public sealed class LibraryArtistMetadataQueueService : BackgroundService
                     includePopularSongs: true,
                     includeDiscography: true,
                     stoppingToken);
+                finished = true;
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown interrupted this artist. It must stay in the durable queue so the
+                // snapshot replay picks it up on the next start; completing the item here would drop
+                // the work permanently.
+                _logger.LogInformation(
+                    "Artist metadata fetch interrupted for {ArtistName}; leaving it queued for the next start.",
+                    item.ArtistName);
+                throw;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Artist metadata fetch failed for {ArtistName}.", item.ArtistName);
+                finished = true;
             }
-            finally
+
+            if (finished)
             {
                 PersistentArtistQueueStore.CompleteItem(
                     item,

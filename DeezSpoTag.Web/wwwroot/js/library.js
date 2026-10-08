@@ -6120,6 +6120,52 @@ async function initAudiomackIdEditor(artistIdValue) {
     });
 }
 
+async function initMusicBrainzIdEditor(artistIdValue) {
+    const editButton = document.getElementById('musicBrainzIdEdit');
+    if (!editButton || !artistIdValue || editButton.dataset.bound === 'true') return;
+    editButton.dataset.bound = 'true';
+
+    editButton.addEventListener('click', async () => {
+        let current = '';
+        try {
+            const stored = await fetchJson(`/api/library/artists/${artistIdValue}/musicbrainz-id`);
+            current = String(stored?.musicBrainzId || '');
+        } catch {
+            // Best effort only: an empty prompt value is fine.
+        }
+
+        const updated = await DeezSpoTag.ui.prompt('MusicBrainz artist MBID or artist URL', {
+            title: 'Update MusicBrainz ID',
+            value: current,
+            placeholder: 'https://musicbrainz.org/artist/…'
+        });
+        if (updated === null) return;
+        const trimmed = updated.trim();
+        if (!trimmed) {
+            showToast('MusicBrainz ID is required.', true);
+            return;
+        }
+
+        editButton.disabled = true;
+        try {
+            await fetchJson(`/api/library/artists/${artistIdValue}/musicbrainz-id`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ musicBrainzId: trimmed })
+            });
+            showToast('MusicBrainz ID updated. Refreshing location…');
+            if (typeof globalThis.setSpotifyArtistLocation === 'function') {
+                globalThis.setSpotifyArtistLocation(null);
+            }
+            await loadArtistLocation(artistIdValue);
+        } catch (error) {
+            showToast(`MusicBrainz ID update failed: ${error.message}`, true);
+        } finally {
+            editButton.disabled = false;
+        }
+    });
+}
+
 // Provider-independent location: Audiomack resolves its own artist location, so an
 // artist with no Spotify node still renders one. The manual override wins server-side.
 async function loadArtistLocation(artistIdValue) {

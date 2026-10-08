@@ -46,6 +46,27 @@ public sealed partial class ArtistArtworkCatalogService
     /// </summary>
     private async Task<string?> MatchArtistIdByAlbumOverlapAsync(
         string source,
+        IReadOnlyList<string> lookupNames,
+        IReadOnlyList<string> localAlbumTitles,
+        bool requireOverlap,
+        CancellationToken cancellationToken)
+    {
+        // Canonical name first; an alias is consulted only when the previous name produced no
+        // overlapping candidate. A single-entry list keeps today's single-name search.
+        foreach (var artistName in lookupNames)
+        {
+            var matched = await MatchArtistIdByAlbumOverlapForNameAsync(source, artistName, localAlbumTitles, requireOverlap, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(matched))
+            {
+                return matched;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> MatchArtistIdByAlbumOverlapForNameAsync(
+        string source,
         string artistName,
         IReadOnlyList<string> localAlbumTitles,
         bool requireOverlap,
@@ -376,7 +397,7 @@ public sealed partial class ArtistArtworkCatalogService
 
             var replacement = await MatchArtistIdByAlbumOverlapAsync(
                 source,
-                artistName,
+                [artistName],
                 localAlbums,
                 requireOverlap: true,
                 cancellationToken);

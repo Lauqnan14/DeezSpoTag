@@ -74,9 +74,28 @@ public sealed class ArtistArtworkLastResortTest
         var start = FindAlbumArtworkMethodDefinition();
         var body = ReadHelperSource()[start..(start + 3000)];
 
-        Assert.Contains("\"apple\" =>", body, System.StringComparison.Ordinal);
-        Assert.Contains("\"deezer\" =>", body, System.StringComparison.Ordinal);
-        Assert.Contains("\"spotify\" =>", body, System.StringComparison.Ordinal);
+        // Each engine must have a last-resort album-artwork arm. They are referenced through their
+        // canonical constants now rather than as repeated literals, so this accepts either spelling.
+        // The constant's own declaration is pinned separately, so a name that matched here while
+        // holding a different value could not pass.
+        foreach (var engine in new[] { "AppleProvider", "DeezerProvider", "SpotifyProvider" })
+        {
+            Assert.True(
+                body.Contains($"\"{engine.Replace("Provider", string.Empty).ToLowerInvariant()}\" =>",
+                    System.StringComparison.Ordinal)
+                || body.Contains($"{engine} =>", System.StringComparison.Ordinal),
+                $"the last-resort album artwork switch must handle {engine}");
+        }
+
+        foreach (var declaration in new[]
+                 {
+                     "private const string AppleProvider = DownloadTagSourceHelper.AppleSource;",
+                     "private const string DeezerProvider = DownloadTagSourceHelper.DeezerSource;",
+                     "private const string SpotifyProvider = DownloadTagSourceHelper.SpotifySource;",
+                 })
+        {
+            Assert.Contains(declaration, ReadHelperSource(), System.StringComparison.Ordinal);
+        }
     }
 
     /// <summary>
