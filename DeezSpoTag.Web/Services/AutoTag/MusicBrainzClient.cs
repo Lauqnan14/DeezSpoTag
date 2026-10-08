@@ -76,6 +76,100 @@ public sealed class MusicBrainzClient
         return await DeserializeAsync<Recording>(response, cancellationToken);
     }
 
+    /// <summary>
+    /// Searches artists by name.
+    /// </summary>
+    /// <remarks>
+    /// The query is built as <c>artist:"name"</c> so the Lucene parser treats the
+    /// whole artist name as one phrase. Without the field prefix and quoting, a
+    /// multi-word name is split into separate terms and the search degrades into a
+    /// loose match across unrelated artists.
+    ///
+    /// The caller must still confirm the artist by album overlap: this returns
+    /// scored candidates, not a decision.
+    /// </remarks>
+    public async Task<ArtistSearchResults?> SearchArtistsAsync(
+        string artistName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return null;
+        }
+
+        var resolvedLimit = Math.Clamp(limit, 1, 100);
+        var query = $"artist:\"{artistName.Trim()}\"";
+        var response = await GetAsync(
+            $"artist?query={Uri.EscapeDataString(query)}&limit={resolvedLimit}&fmt=json",
+            cancellationToken);
+        if (response == null)
+        {
+            return null;
+        }
+
+        return await DeserializeAsync<ArtistSearchResults>(response, cancellationToken);
+    }
+
+    /// <summary>
+    /// Looks an artist up by MBID. Aliases are included so the caller can still
+    /// confirm the name when the canonical one differs from what the library holds.
+    /// </summary>
+    public async Task<MusicBrainzArtist?> GetArtistAsync(string artistMbid, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistMbid))
+        {
+            return null;
+        }
+
+        var response = await GetAsync(
+            $"artist/{Uri.EscapeDataString(artistMbid.Trim())}?inc=aliases&fmt=json",
+            cancellationToken);
+        if (response == null)
+        {
+            return null;
+        }
+
+        return await DeserializeAsync<MusicBrainzArtist>(response, cancellationToken);
+    }
+
+    public async Task<Area?> GetAreaAsync(string areaId, CancellationToken cancellationToken)
+    {
+        var response = await GetAsync($"area/{Uri.EscapeDataString(areaId)}?fmt=json", cancellationToken);
+        return response is null ? null : await DeserializeAsync<Area>(response, cancellationToken);
+    }
+
+    /// <summary>
+    /// Lists an artist's release groups, which is the album-level catalogue used
+    /// for the overlap cross-check.
+    /// </summary>
+    /// <remarks>
+    /// Release groups rather than releases, because a library "album" is an
+    /// album: comparing against individual releases would count one twelve-track
+    /// release twelve times and inflate every overlap score.
+    /// </remarks>
+    public async Task<ReleaseGroupBrowseResults?> GetArtistReleaseGroupsAsync(
+        string artistMbid,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistMbid))
+        {
+            return null;
+        }
+
+        var resolvedLimit = Math.Clamp(limit, 1, 100);
+        var response = await GetAsync(
+            $"release-group?artist={Uri.EscapeDataString(artistMbid.Trim())}&limit={resolvedLimit}&fmt=json",
+            cancellationToken);
+        if (response == null)
+        {
+            return null;
+        }
+
+        return await DeserializeAsync<ReleaseGroupBrowseResults>(response, cancellationToken);
+    }
+
     private async Task<HttpResponseMessage?> GetAsync(string path, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 5; attempt++)

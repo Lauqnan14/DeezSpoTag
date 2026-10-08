@@ -4321,6 +4321,7 @@ async function loadAlbums(artistId) {
     initTidalIdEditor(artistIdValue);
     initQobuzIdEditor(artistIdValue);
     initAudiomackIdEditor(artistIdValue);
+    initMusicBrainzIdEditor(artistIdValue);
     initArtistLocationEditor(artistIdValue);
     loadArtistLocation(artistIdValue);
 }

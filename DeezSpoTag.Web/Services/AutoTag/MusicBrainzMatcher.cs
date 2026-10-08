@@ -41,7 +41,7 @@ public sealed class MusicBrainzMatcher
 
         if (resolvedConfig.MatchById)
         {
-            var byIdResult = await TryMatchRecordingIdAsync(info, matchingConfig, preferences, cancellationToken);
+            var byIdResult = await TryMatchRecordingIdAsync(info, matchingConfig, resolvedConfig, preferences, cancellationToken);
             if (byIdResult != null)
             {
                 return byIdResult;
@@ -77,7 +77,7 @@ public sealed class MusicBrainzMatcher
                 .Take(resolvedConfig.SearchLimit)
                 .Select(r => ToTrack(r, preferences))
                 .ToList();
-            var result = await TryBuildMatchResultAsync(info, tracks, matchingConfig, preferences, cancellationToken);
+            var result = await TryBuildMatchResultAsync(info, tracks, matchingConfig, resolvedConfig, preferences, cancellationToken);
             if (result != null)
             {
                 return result;
@@ -109,6 +109,7 @@ public sealed class MusicBrainzMatcher
     private async Task<AutoTagMatchResult?> TryMatchRecordingIdAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig matchingConfig,
+        MusicBrainzMatchConfig config,
         MusicBrainzPreferences preferences,
         CancellationToken cancellationToken)
     {
@@ -124,7 +125,7 @@ public sealed class MusicBrainzMatcher
 
                 var track = ToTrack(recording, preferences);
                 await ExtendTrackAsync(info, track, preferences, cancellationToken);
-                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
+                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig, config))
                 {
                     continue;
                 }
@@ -166,31 +167,32 @@ public sealed class MusicBrainzMatcher
             .Take(config.SearchLimit)
             .Select(r => ToTrack(r, preferences))
             .ToList();
-        return await TryBuildMatchResultAsync(info, tracks, matchingConfig, preferences, cancellationToken);
+        return await TryBuildMatchResultAsync(info, tracks, matchingConfig, config, preferences, cancellationToken);
     }
 
     private async Task<AutoTagMatchResult?> TryBuildMatchResultAsync(
         AutoTagAudioInfo info,
         List<MusicBrainzTrack> tracks,
         AutoTagMatchingConfig matchingConfig,
+        MusicBrainzMatchConfig config,
         MusicBrainzPreferences preferences,
         CancellationToken cancellationToken)
     {
         // Ranked candidates: when the best-scored candidate fails the compatibility
         // gate (e.g. a variant-titled recording), fall through to the next-ranked
         // candidate instead of dropping MusicBrainz for the file.
-        var candidates = MatchTracks(info, tracks, matchingConfig);
+        var candidates = MatchTracks(info, tracks, matchingConfig, config);
         foreach (var candidate in candidates)
         {
             // The compatibility gate only reads title/artists/duration, which are
             // populated before the release lookup — gate first, extend only the winner.
-            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig))
+            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig, config))
             {
                 continue;
             }
 
             await ExtendTrackAsync(info, candidate.Track, preferences, cancellationToken);
-            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig))
+            if (!IsCandidateCompatibleWithSource(info, candidate.Track, matchingConfig, config))
             {
                 continue;
             }
@@ -228,12 +230,12 @@ public sealed class MusicBrainzMatcher
 
     private static string EscapeQuery(string input) => input.Replace("\"", "\\\"");
 
-    private static List<MatchCandidate> MatchTracks(AutoTagAudioInfo info, List<MusicBrainzTrack> tracks, AutoTagMatchingConfig config)
+    private static List<MatchCandidate> MatchTracks(AutoTagAudioInfo info, List<MusicBrainzTrack> tracks, AutoTagMatchingConfig config, MusicBrainzMatchConfig providerConfig)
     {
         var ranked = OneTaggerMatching.MatchTrackRanked(
             info,
             tracks,
-            config,
+            WithRankingCompatibility(config, providerConfig),
             new OneTaggerMatching.TrackSelectors<MusicBrainzTrack>(
                 track => track.Title,
                 _ => null,
@@ -245,6 +247,25 @@ public sealed class MusicBrainzMatcher
         return ranked
             .Select(match => new MatchCandidate(match.Accuracy, match.Track))
             .ToList();
+    }
+
+    /// <summary>
+    /// Ranking compatibility: only the duration window is widened by the configured floor
+    /// (via the same Math.Max combination used by the identity gate). The strictness used
+    /// for score admission stays the global value — the provider artist floor is enforced
+    /// by the compatibility gate that runs on every ranked candidate, not by rescoring.
+    /// </summary>
+    private static AutoTagMatchingConfig WithRankingCompatibility(AutoTagMatchingConfig config, MusicBrainzMatchConfig? providerConfig)
+    {
+        var configuredDurationFloor = Math.Clamp(providerConfig?.MinDurationDifferenceSeconds ?? 45, 0, 300);
+        return new AutoTagMatchingConfig
+        {
+            Strictness = config.Strictness,
+            MatchDuration = config.MatchDuration,
+            MaxDurationDifferenceSeconds = Math.Max(config.MaxDurationDifferenceSeconds, configuredDurationFloor),
+            MultipleMatches = config.MultipleMatches,
+            PreferredReleaseType = config.PreferredReleaseType
+        };
     }
 
     private static MusicBrainzTrack ToTrack(Recording recording, MusicBrainzPreferences preferences)
@@ -304,14 +325,15 @@ public sealed class MusicBrainzMatcher
                 return;
             }
 
-            // Anchor the release on the file's own album id when present: tracks of one
-            // album downloaded in different sessions must resolve to the same release.
+            // The runner supplies the established album's provider-specific ID here.
+            // Honor it before the preliminary recording release; without an anchor,
+            // rank the detailed candidates by country order and ordinary release scores.
             var fileAlbumId = ReadFileAlbumId(info);
             var release = SelectBestRelease(
                 releases.Releases,
                 track.ReleaseDate,
                 preferences,
-                string.IsNullOrWhiteSpace(track.ReleaseId) ? fileAlbumId : track.ReleaseId,
+                fileAlbumId,
                 info.Album);
             if (release == null)
             {
@@ -741,7 +763,8 @@ public sealed class MusicBrainzMatcher
     {
         var preferredYear = ParseYear(preferredDate);
         return releases
-            .OrderByDescending(r => ScoreReleaseSmall(r, preferredYear, preferences))
+            .OrderBy(r => ReleaseCountryTier(r.Country, preferences.PreferredCountries))
+            .ThenByDescending(r => ScoreReleaseSmall(r, preferredYear, preferences))
             .ThenBy(r => r.Date ?? "9999-99-99", StringComparer.Ordinal)
             .ThenBy(r => r.Id, StringComparer.Ordinal)
             .FirstOrDefault();
@@ -753,7 +776,6 @@ public sealed class MusicBrainzMatcher
             release.ReleaseGroup?.SecondaryTypes,
             release.Status,
             release.ReleaseGroup?.PrimaryType,
-            release.Country,
             release.Date,
             preferredYear,
             preferences);
@@ -795,7 +817,8 @@ public sealed class MusicBrainzMatcher
 
         var preferredYear = preferredDate?.Year;
         return releases
-            .OrderByDescending(r => ScoreRelease(r, preferredYear, preferences, preferredAlbum))
+            .OrderBy(r => ReleaseCountryTier(r.Country, preferences.PreferredCountries))
+            .ThenByDescending(r => ScoreRelease(r, preferredYear, preferences, preferredAlbum))
             .ThenBy(r => r.Date ?? "9999-99-99", StringComparer.Ordinal)
             .ThenBy(r => r.Id, StringComparer.Ordinal)
             .FirstOrDefault();
@@ -807,7 +830,6 @@ public sealed class MusicBrainzMatcher
             release.ReleaseGroup?.SecondaryTypes,
             release.Status,
             release.ReleaseGroup?.PrimaryType,
-            release.Country,
             release.Date,
             preferredYear,
             preferences);
@@ -853,7 +875,6 @@ public sealed class MusicBrainzMatcher
         List<string>? secondaryTypes,
         string? status,
         string? primaryType,
-        string? country,
         string? releaseDate,
         int? preferredYear,
         MusicBrainzPreferences preferences)
@@ -881,8 +902,6 @@ public sealed class MusicBrainzMatcher
                 : PenaltyFromWeight(preferences.PrimaryTypeWeight);
         }
 
-        score += ScoreCountryRank(country, preferences.PreferredCountries) * preferences.CountryWeight;
-
         var year = ParseYear(releaseDate);
         if (preferences.PreferReleaseYear && preferredYear.HasValue && year.HasValue)
         {
@@ -902,22 +921,18 @@ public sealed class MusicBrainzMatcher
         return -Math.Max(1, weight / 3);
     }
 
-    private static int ScoreCountryRank(string? releaseCountry, IReadOnlyList<string> preferredCountries)
+    private static int ReleaseCountryTier(string? releaseCountry, IReadOnlyList<string> preferredCountries)
     {
-        if (preferredCountries.Count == 0 || string.IsNullOrWhiteSpace(releaseCountry))
-        {
-            return 0;
-        }
-
         for (var index = 0; index < preferredCountries.Count; index++)
         {
             if (string.Equals(preferredCountries[index], releaseCountry, StringComparison.OrdinalIgnoreCase))
             {
-                return (preferredCountries.Count - index) * 3;
+                return index;
             }
         }
 
-        return -1;
+        // Other/unknown countries compete only after every listed country.
+        return preferredCountries.Count;
     }
 
     private static int ScoreFormatRank(List<ReleaseMedia> media, IReadOnlyList<string> preferredFormats)
@@ -971,27 +986,30 @@ public sealed class MusicBrainzMatcher
     private static bool IsCandidateCompatibleWithSource(
         AutoTagAudioInfo info,
         MusicBrainzTrack track,
-        AutoTagMatchingConfig config)
+        AutoTagMatchingConfig config,
+        MusicBrainzMatchConfig? providerConfig)
     {
         if (!IsTitleCompatibleWithSource(info, track, config))
         {
             return false;
         }
 
+        var artistFloor = Math.Clamp(providerConfig?.MinStrictness ?? 65, 0, 100) / 100.0;
         var sourceArtists = info.Artists.Count > 0
             ? info.Artists
             : string.IsNullOrWhiteSpace(info.Artist) ? [] : new List<string> { info.Artist };
         var candidateArtists = track.Artists.Count > 0 ? track.Artists : track.AlbumArtists;
         if (sourceArtists.Count > 0
             && candidateArtists.Count > 0
-            && !OneTaggerMatching.MatchArtist(sourceArtists, candidateArtists, Math.Clamp(config.Strictness, 0.65d, 0.98d)))
+            && !OneTaggerMatching.MatchArtist(sourceArtists, candidateArtists, Math.Clamp(config.Strictness, artistFloor, Math.Max(0.98d, artistFloor))))
         {
             return false;
         }
 
+        var configuredDurationFloor = Math.Clamp(providerConfig?.MinDurationDifferenceSeconds ?? 45, 0, 300);
         if (info.DurationSeconds is > 0
             && track.Duration > TimeSpan.Zero
-            && Math.Abs(info.DurationSeconds.Value - (int)Math.Round(track.Duration.TotalSeconds)) > Math.Max(config.MaxDurationDifferenceSeconds, 45))
+            && Math.Abs(info.DurationSeconds.Value - (int)Math.Round(track.Duration.TotalSeconds)) > Math.Max(config.MaxDurationDifferenceSeconds, configuredDurationFloor))
         {
             return false;
         }
@@ -1220,7 +1238,6 @@ public sealed class MusicBrainzMatcher
         public int OfficialWeight { get; init; }
         public int CompilationPenaltyWeight { get; init; }
         public int PrimaryTypeWeight { get; init; }
-        public int CountryWeight { get; init; }
         public int FormatWeight { get; init; }
         public int YearWeight { get; init; }
 
@@ -1240,14 +1257,15 @@ public sealed class MusicBrainzMatcher
                 ExcludeCompilations = config.ExcludeCompilations,
                 PreferReleaseYear = config.PreferReleaseYear,
                 PreferredPrimaryType = preferredType,
-                PreferredCountries = ParseCsv(config.PreferredReleaseCountries),
+                PreferredCountries = ParseCsv(string.IsNullOrWhiteSpace(config.PreferredReleaseCountries)
+                    ? "US"
+                    : config.PreferredReleaseCountries),
                 PreferredFormats = ParseCsv(config.PreferredMediaFormats),
                 UseAliases = config.UseAliases,
                 PreferredLocales = ParseCsv(config.PreferredLocales),
                 OfficialWeight = config.OfficialWeight,
                 CompilationPenaltyWeight = config.CompilationPenaltyWeight,
                 PrimaryTypeWeight = config.PrimaryTypeWeight,
-                CountryWeight = config.CountryWeight,
                 FormatWeight = config.FormatWeight,
                 YearWeight = config.YearWeight
             };

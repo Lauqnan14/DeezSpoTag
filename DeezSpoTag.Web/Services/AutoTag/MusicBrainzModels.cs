@@ -235,7 +235,7 @@ public sealed class MusicBrainzMatchConfig
     public string PreferredPrimaryType { get; set; } = "Any";
 
     [JsonPropertyName("preferred_release_countries")]
-    public string PreferredReleaseCountries { get; set; } = "";
+    public string PreferredReleaseCountries { get; set; } = "US";
 
     [JsonPropertyName("preferred_media_formats")]
     public string PreferredMediaFormats { get; set; } = "Digital Media,CD";
@@ -245,6 +245,12 @@ public sealed class MusicBrainzMatchConfig
 
     [JsonPropertyName("official_weight")]
     public int OfficialWeight { get; set; } = 10;
+
+    [JsonPropertyName("min_strictness")]
+    public int MinStrictness { get; set; } = 65;
+
+    [JsonPropertyName("min_duration_difference_seconds")]
+    public int MinDurationDifferenceSeconds { get; set; } = 45;
 
     [JsonPropertyName("compilation_penalty_weight")]
     public int CompilationPenaltyWeight { get; set; } = 20;
@@ -260,4 +266,108 @@ public sealed class MusicBrainzMatchConfig
 
     [JsonPropertyName("year_weight")]
     public int YearWeight { get; set; } = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Artist identity and geography
+//
+// Separate from the recording models above because these answer "who is this
+// artist and where are they from", which is an artist-metadata question. The
+// wire names are hyphenated in MusicBrainz's JSON, hence the explicit mapping
+// on every property that contains one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// A geographic area. MusicBrainz types areas as Country, Subdivision, County,
+/// Municipality, City, District or Island, and the distinction matters: only a
+/// city-level area is a city, and only a country-level one is a country.
+/// </summary>
+public sealed class Area
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("iso-3166-1-codes")]
+    public List<string>? Iso3166_1Codes { get; set; }
+
+    /// <summary>True when the area is a city or a municipality.</summary>
+    public bool IsCityLevel =>
+        string.Equals(Type, "City", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Type, "Municipality", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when the area is a country.</summary>
+    public bool IsCountryLevel =>
+        string.Equals(Type, "Country", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// A MusicBrainz artist, as returned by both artist search and artist lookup.
+/// </summary>
+public sealed class MusicBrainzArtist
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("sort-name")]
+    public string? SortName { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("disambiguation")]
+    public string? Disambiguation { get; set; }
+
+    /// <summary>ISO 3166-1 alpha-2, supplied by MusicBrainz already validated.</summary>
+    [JsonPropertyName("country")]
+    public string? CountryCode { get; set; }
+
+    /// <summary>The artist's main associated area, usually the country.</summary>
+    [JsonPropertyName("area")]
+    public Area? Area { get; set; }
+
+    /// <summary>Where the artist began: a birth city for a person, a formation city for a group.</summary>
+    [JsonPropertyName("begin-area")]
+    public Area? BeginArea { get; set; }
+
+    [JsonPropertyName("end-area")]
+    public Area? EndArea { get; set; }
+
+    [JsonPropertyName("aliases")]
+    public List<Alias>? Aliases { get; set; }
+
+    /// <summary>Search relevance, 0-100. Absent on a direct lookup.</summary>
+    [JsonPropertyName("score")]
+    public int? Score { get; set; }
+}
+
+/// <summary>Response of <c>/ws/2/artist?query=…</c>.</summary>
+public sealed class ArtistSearchResults
+{
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("offset")]
+    public int Offset { get; set; }
+
+    [JsonPropertyName("artists")]
+    public List<MusicBrainzArtist> Artists { get; set; } = new();
+}
+
+/// <summary>Response of <c>/ws/2/release-group?artist=…</c>.</summary>
+public sealed class ReleaseGroupBrowseResults
+{
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("release-groups")]
+    public List<ReleaseGroup> ReleaseGroups { get; set; } = new();
 }

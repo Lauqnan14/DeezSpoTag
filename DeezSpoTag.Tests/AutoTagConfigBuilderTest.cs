@@ -21,6 +21,36 @@ public sealed class AutoTagConfigBuilderTest
     private static readonly string[] ExpectedReleaseDateOnlyTags = { "releaseDate" };
     private static readonly string[] ExpectedPreservedEnhancementTags = { "label" };
 
+    [Theory]
+    [InlineData("FR,US")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void BuildConfigJson_PreservesSavedMusicBrainzCountryPreferences(string? countries)
+    {
+        var musicBrainz = new Dictionary<string, object> { ["country_weight"] = 17, ["prefer_official"] = false };
+        if (countries is not null)
+            musicBrainz["preferred_release_countries"] = countries;
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>
+                {
+                    ["custom"] = JsonSerializer.SerializeToElement(new { musicbrainz = musicBrainz })
+                }
+            }
+        };
+        using var document = JsonDocument.Parse(new AutoTagConfigBuilder().BuildConfigJson(profile)!);
+        var saved = document.RootElement.GetProperty("custom").GetProperty("musicbrainz");
+        Assert.Equal(17, saved.GetProperty("country_weight").GetInt32());
+        Assert.False(saved.GetProperty("prefer_official").GetBoolean());
+        if (countries is null)
+            Assert.False(saved.TryGetProperty("preferred_release_countries", out _));
+        else
+            Assert.Equal(countries, saved.GetProperty("preferred_release_countries").GetString());
+    }
+
     [Fact]
     public void BuildConfigJson_DerivesTagArraysFromTagConfig_WhenAutoTagDataIsEmpty()
     {

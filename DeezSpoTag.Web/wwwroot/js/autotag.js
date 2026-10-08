@@ -70,7 +70,8 @@
             clientId: null,
             clientSecret: null
         },
-        custom: {},
+        // Fresh/reset settings only; saved profiles retain their own custom options.
+        custom: { musicbrainz: { preferred_release_countries: "US" } },
         enhancement: {
             gapFilling: {
                 folderIds: [],
@@ -2606,7 +2607,11 @@
             state.config.custom[platformId] = {};
         }
         (options || []).forEach((option) => {
-            if (state.config.custom[platformId][option.id] === undefined) {
+            const currentValue = state.config.custom[platformId][option.id];
+            const unsetReleaseCountries = normalizePlatformId(platformId) === "musicbrainz"
+                && option.id === "preferred_release_countries"
+                && (currentValue == null || (typeof currentValue === "string" && currentValue.trim() === ""));
+            if (currentValue === undefined || unsetReleaseCountries) {
                 state.config.custom[platformId][option.id] = option.value?.value ?? null;
             }
         });

@@ -17,6 +17,39 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class ProviderAlbumIdentityReconciliationTest
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void MusicBrainzPreMatchHint_UsesConfirmedProviderIdentityAndLeavesSourceUntouched(bool hasConfirmedMusicBrainz)
+    {
+        var releaseId = Guid.NewGuid().ToString();
+        var source = new AutoTagAudioInfo
+        {
+            Tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["MUSICBRAINZ_RELEASE_ID"] = ["unconfirmed-mb-release"],
+                ["SPOTIFY_RELEASE_ID"] = ["unconfirmed-spotify-release"],
+                ["TITLE"] = ["Song"]
+            }
+        };
+        var identity = AlbumIdentity.Empty.WithProviderIdentity("spotify", new ProviderAlbumIdentity("sp-album", "sp-release", null), overwrite: true);
+        if (hasConfirmedMusicBrainz)
+            identity = identity.WithProviderIdentity("musicbrainz", new ProviderAlbumIdentity(releaseId, releaseId, null), overwrite: true);
+        var apply = typeof(LocalAutoTagRunner).GetMethod("ApplyConfirmedProviderReleaseIdHint", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var prepared = (AutoTagAudioInfo)apply.Invoke(null, [source, identity, "musicbrainz"])!;
+        if (hasConfirmedMusicBrainz)
+        {
+            Assert.Equal(releaseId, Assert.Single(prepared.Tags["MUSICBRAINZ_ALBUMID"]));
+            Assert.Equal(releaseId, Assert.Single(prepared.Tags["MUSICBRAINZ_RELEASE_ID"]));
+        }
+        else
+            Assert.False(prepared.Tags.ContainsKey("MUSICBRAINZ_RELEASE_ID"));
+        Assert.False(prepared.Tags.ContainsKey("SPOTIFY_RELEASE_ID"));
+        Assert.Equal("Song", Assert.Single(prepared.Tags["TITLE"]));
+        Assert.Equal("unconfirmed-mb-release", Assert.Single(source.Tags["MUSICBRAINZ_RELEASE_ID"]));
+        Assert.Equal("unconfirmed-spotify-release", Assert.Single(source.Tags["SPOTIFY_RELEASE_ID"]));
+    }
+
     [Fact]
     public void Registry_KeepsAlbumAndReleaseIdsSeparatePerProvider()
     {

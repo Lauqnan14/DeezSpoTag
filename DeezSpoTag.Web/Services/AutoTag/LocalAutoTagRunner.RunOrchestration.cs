@@ -528,17 +528,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             throw new AutoTagRunPausedException(shazamResult.Error ?? "Shazam is unavailable.");
         }
 
-        if (isManualEnrichment && shazamResult.FailureKind == ShazamFailureKind.NoMatch)
-        {
-            EmitReviewStatus(
-                context,
-                "Shazam could not identify the staged audio file.",
-                usedShazamForStatus,
-                AutoTagReviewMetadata.FromSourceOnly(validationInfo));
-            context.Plan.ReviewedFiles.Add(context.File);
-            return;
-        }
-
+        // A Shazam miss is a recognizer that could not hear this file, not a verdict on the file. The
+        // external-file operations used to review and return here, which meant MusicBrainz and every later
+        // platform were never consulted: a track the recognizer missed but a catalogue could identify came
+        // back as a review card, indistinguishable from a file no platform could identify at all. Review now
+        // happens only when the whole enabled chain has been exhausted (see IsLastPlatform above the
+        // rejection helpers), which is the condition the reader actually needs to see.
         if (shazamResult.FailureKind == ShazamFailureKind.NoMatch
             && !string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
         {

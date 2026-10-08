@@ -2336,6 +2336,9 @@ public sealed partial class MediaServerSoundtrackService
 
         try
         {
+            // Provider order is intentional: Deezer first, Spotify as the fallback,
+            // MusicBrainz curated records last. Deezer exposes unauthenticated
+            // album/playlist search, so it answers without a session.
             var bestMatch = defaultMatch;
             var spotifyMatch = await TryResolveSpotifySoundtrackMatchAsync(item, queries, cancellationToken);
             bestMatch = SelectHigherScore(bestMatch, spotifyMatch);

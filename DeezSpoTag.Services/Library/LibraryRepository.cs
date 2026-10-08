@@ -15142,9 +15142,46 @@ LIMIT @limit;";
         return items;
     }
 
-    public async Task<string?> GetArtistSourceIdAsync(long artistId, string source, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// The MusicBrainz artist id (MBID) found in the artist's own file tags.
+    /// </summary>
+    /// <remarks>
+    /// AutoTag stamps MUSICBRAINZ_ARTISTID, so for an AutoTagged library this
+    /// answers the artist's identity without any network call. Several spellings
+    /// exist across taggers, so all of them are accepted.
+    ///
+    /// Ordered by how many tracks carry the value, so the majority identity wins
+    /// on an artist whose files disagree. Returns null when nothing is tagged.
+    /// </remarks>
+    public async Task<string?> GetArtistMusicBrainzArtistIdAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT other.tag_value
+FROM track_other_tag AS other
+JOIN track AS t ON t.id = other.track_id
+JOIN album AS al ON al.id = t.album_id
+WHERE al.artist_id = @artistId
+  AND UPPER(other.tag_key) IN ('MUSICBRAINZ_ARTISTID', 'MUSICBRAINZ_ARTIST_ID')
+GROUP BY other.tag_value
+ORDER BY COUNT(DISTINCT other.track_id) DESC, other.tag_value
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        if (result is null or DBNull)
+        {
+            return null;
+        }
+
+        var value = Convert.ToString(result)?.Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    public async Task<string?> GetArtistSourceIdAsync(long artistId, string source, CancellationToken cancellationToken = default)
+    {        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source_id
 FROM artist_source
