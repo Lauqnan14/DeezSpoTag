@@ -157,17 +157,13 @@ internal static class AutoTagIdentityTags
         }
 
         var normalizedTagName = tagName.Trim();
-        foreach (var provider in KnownProviders)
+        foreach (var provider in KnownProviders
+            .Where(provider => Enum.GetValues<ProviderIdentityField>()
+                .Any(field => ResolveFamily(provider, field).CleanupNames.Contains(
+                    normalizedTagName,
+                    StringComparer.OrdinalIgnoreCase))))
         {
-            foreach (var field in Enum.GetValues<ProviderIdentityField>())
-            {
-                if (ResolveFamily(provider, field).CleanupNames.Contains(
-                        normalizedTagName,
-                        StringComparer.OrdinalIgnoreCase))
-                {
-                    return NormalizeProviderId(provider);
-                }
-            }
+            return NormalizeProviderId(provider);
         }
 
         return null;

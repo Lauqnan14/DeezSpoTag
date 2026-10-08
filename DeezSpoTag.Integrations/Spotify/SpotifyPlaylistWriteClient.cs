@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -100,7 +101,7 @@ public sealed class SpotifyPlaylistWriteClient
     /// <summary>What the web player needs on every call.</summary>
     public sealed record SpotifyWebPlayerSession(string AccessToken, string ClientToken, string ClientVersion)
     {
-        public static bool IsUsable(SpotifyWebPlayerSession? session)
+        public static bool IsUsable([NotNullWhen(true)] SpotifyWebPlayerSession? session)
             => session is not null
                 && !string.IsNullOrWhiteSpace(session.AccessToken)
                 && !string.IsNullOrWhiteSpace(session.ClientToken);
@@ -167,7 +168,7 @@ public sealed class SpotifyPlaylistWriteClient
             {
                 CharSet = "UTF-8",
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session!.AccessToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
             request.Headers.UserAgent.ParseAdd(UserAgent);
             response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
@@ -237,7 +238,7 @@ public sealed class SpotifyPlaylistWriteClient
 
         try
         {
-            var userId = await ReadCurrentUserIdAsync(session!, cancellationToken).ConfigureAwait(false);
+            var userId = await ReadCurrentUserIdAsync(session, cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(userId))
             {
                 return;
@@ -286,7 +287,7 @@ public sealed class SpotifyPlaylistWriteClient
                 },
             });
 
-            using var write = await SendSpclientAsync(HttpMethod.Post, rootlistUrl + "/changes", session!, changeBody, cancellationToken)
+            using var write = await SendSpclientAsync(HttpMethod.Post, rootlistUrl + "/changes", session, changeBody, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -761,7 +762,7 @@ public sealed class SpotifyPlaylistWriteClient
                     Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
                 };
                 request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session!.AccessToken);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
                 request.Headers.Add("Client-Token", session.ClientToken);
                 request.Headers.Add("Spotify-App-Version", session.ClientVersion);
                 request.Headers.Add("App-Platform", "WebPlayer");

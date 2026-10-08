@@ -563,12 +563,9 @@ public sealed class LastFmTagService
         }
 
         var now = DateTimeOffset.UtcNow;
-        foreach (var pair in cache)
+        foreach (var pair in cache.Where(pair => pair.Value.ExpiresAtUtc <= now))
         {
-            if (pair.Value.ExpiresAtUtc <= now)
-            {
-                cache.TryRemove(pair.Key, out _);
-            }
+            cache.TryRemove(pair.Key, out _);
         }
 
         var overflow = cache.Count - maxEntries;

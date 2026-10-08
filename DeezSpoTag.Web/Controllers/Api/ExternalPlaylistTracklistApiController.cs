@@ -1144,17 +1144,14 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             return string.Empty;
         }
 
-        foreach (var key in new[] { "LARGE", "MEDIUM", "SMALL" })
+        foreach (var url in new[] { "LARGE", "MEDIUM", "SMALL" }
+                     .Select(key => images.TryGetProperty(key, out var image)
+                         && image.ValueKind == JsonValueKind.Object
+                             ? GetString(image, "url")
+                             : string.Empty)
+                     .Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
         {
-            if (images.TryGetProperty(key, out var image)
-                && image.ValueKind == JsonValueKind.Object)
-            {
-                var url = GetString(image, "url");
-                if (!string.IsNullOrWhiteSpace(url))
-                {
-                    return url;
-                }
-            }
+            return url;
         }
 
         return string.Empty;
@@ -1259,15 +1256,8 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             return true;
         }
 
-        foreach (var propertyName in new[] { "audioModes", "audioMode", "mediaMetadata", "tags" })
-        {
-            if (item.TryGetProperty(propertyName, out var property) && JsonElementContainsAtmos(property))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return new[] { "audioModes", "audioMode", "mediaMetadata", "tags" }
+            .Any(candidate => item.TryGetProperty(candidate, out var property) && JsonElementContainsAtmos(property));
     }
 
     private static bool JsonElementContainsAtmos(JsonElement element)
@@ -2095,13 +2085,11 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
     private static string GetAnyString(JsonElement element, params string[] propertyNames)
     {
-        foreach (var propertyName in propertyNames)
+        foreach (var value in propertyNames
+                     .Select(name => GetAnyString(element, name))
+                     .Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
         {
-            var value = GetAnyString(element, propertyName);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return string.Empty;

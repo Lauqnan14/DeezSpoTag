@@ -3126,12 +3126,10 @@ public sealed class SpotifyPathfinderMetadataClient
         }
 
         var now = DateTimeOffset.UtcNow;
-        foreach (var pair in ArtistSearchEnrichmentCache)
+        foreach (var pair in ArtistSearchEnrichmentCache
+                     .Where(candidate => now - candidate.Value.Stamp > ArtistSearchEnrichmentCacheTtl))
         {
-            if (now - pair.Value.Stamp > ArtistSearchEnrichmentCacheTtl)
-            {
-                ArtistSearchEnrichmentCache.TryRemove(pair.Key, out _);
-            }
+            ArtistSearchEnrichmentCache.TryRemove(pair.Key, out _);
         }
 
         var overflow = ArtistSearchEnrichmentCache.Count - MaxArtistSearchEnrichmentCacheEntries;
@@ -3163,12 +3161,10 @@ public sealed class SpotifyPathfinderMetadataClient
         var now = DateTimeOffset.UtcNow;
         if (ttl > TimeSpan.Zero)
         {
-            foreach (var pair in cache)
+            foreach (var pair in cache
+                         .Where(candidate => now - candidate.Value.Stamp > ttl))
             {
-                if (now - pair.Value.Stamp > ttl)
-                {
-                    cache.TryRemove(pair.Key, out _);
-                }
+                cache.TryRemove(pair.Key, out _);
             }
         }
 
@@ -3349,13 +3345,12 @@ public sealed class SpotifyPathfinderMetadataClient
             new object[] { "album", "coverArt", "sources", 0, "url" }
         };
 
-        foreach (var path in preferred)
+        foreach (var path in preferred
+                     .Where(candidatePath => TryReadStringPath(element, candidatePath, out var candidate)
+                         && IsSpotifyImageHostUrl(candidate)))
         {
-            if (TryReadStringPath(element, path, out var candidate)
-                && IsSpotifyImageHostUrl(candidate))
-            {
-                return candidate;
-            }
+            TryReadStringPath(element, path, out var candidate);
+            return candidate;
         }
 
         return null;
@@ -3556,18 +3551,13 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        var names = new List<string>();
-        foreach (var artist in items.EnumerateArray())
-        {
-            var name = artist.TryGetProperty("profile", out var profile)
-                       && profile.TryGetProperty("name", out var profileName)
+        var names = items.EnumerateArray()
+            .Select(artist => artist.TryGetProperty("profile", out var profile)
+                && profile.TryGetProperty("name", out var profileName)
                 ? profileName.ToString()
-                : null;
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                names.Add(name);
-            }
-        }
+                : null)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
 
         return names.Count > 0 ? string.Join(", ", names) : null;
     }

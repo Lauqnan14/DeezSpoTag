@@ -411,7 +411,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             {
                 destinationDirectory = discRelativePath == "."
                     ? establishedAlbumRoot
-                    : Path.Combine(establishedAlbumRoot, discRelativePath);
+                    : Path.Join(establishedAlbumRoot, discRelativePath);
             }
         }
 

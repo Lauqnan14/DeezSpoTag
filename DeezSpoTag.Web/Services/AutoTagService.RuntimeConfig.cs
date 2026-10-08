@@ -263,13 +263,12 @@ public partial class AutoTagService
         // requested. This does not advertise them as capabilities of every provider
         // and does not change run eligibility.
         var retained = new HashSet<string>(filtered, StringComparer.OrdinalIgnoreCase);
-        foreach (var tag in requested)
+        foreach (var normalized in requested
+                     .Select(NormalizeSupportedTagKey)
+                     .Where(normalized => normalized is not null && CommonArtistEnrichmentKeys.Contains(normalized))
+                     .Select(normalized => normalized!))
         {
-            var normalized = NormalizeSupportedTagKey(tag);
-            if (normalized is not null && CommonArtistEnrichmentKeys.Contains(normalized))
-            {
-                retained.Add(normalized);
-            }
+            retained.Add(normalized);
         }
 
         return requested

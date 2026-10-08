@@ -1003,16 +1003,12 @@ public class ActivitiesController : Controller
                 return null;
             }
 
-            foreach (var property in document.RootElement.EnumerateObject())
+            foreach (var value in document.RootElement.EnumerateObject()
+                         .Where(property => property.Value.ValueKind == JsonValueKind.String)
+                         .Select(property => property.Value.GetString())
+                         .Where(value => !string.IsNullOrWhiteSpace(value)))
             {
-                if (property.Value.ValueKind == JsonValueKind.String)
-                {
-                    var value = property.Value.GetString();
-                    if (!string.IsNullOrWhiteSpace(value))
-                    {
-                        return value;
-                    }
-                }
+                return value;
             }
         }
         catch (JsonException)
@@ -1025,12 +1021,9 @@ public class ActivitiesController : Controller
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value.Trim();
-            }
+            return value!.Trim();
         }
 
         return null;

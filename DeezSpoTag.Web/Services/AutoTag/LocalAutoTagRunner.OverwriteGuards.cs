@@ -44,12 +44,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var present = new HashSet<SupportedTag>();
         using var file = TagLib.File.Create(filePath);
         var extension = Path.GetExtension(filePath);
-        foreach (var tag in tags)
+        foreach (var tag in tags.Where(candidate => HasTag(file, extension, candidate, config, platformId)))
         {
-            if (HasTag(file, extension, tag, config, platformId))
-            {
-                present.Add(tag);
-            }
+            present.Add(tag);
         }
 
         return present;

@@ -66,7 +66,7 @@ public sealed class LastFmMatcher
         }
         if (response is null || response.Error.HasValue || !IdentityMatches(response.Toptags?.Attributes, artist, title)) return null;
 
-        var tags = ClassifyTags(response.Toptags?.Tag, config);
+        var tags = ClassifyTags(response.Toptags!.Tag, config);
         if (tags.Length == 0)
         {
             var artistResponse = await FetchArtistTagsAsync(apiKey, artist, cancellationToken);

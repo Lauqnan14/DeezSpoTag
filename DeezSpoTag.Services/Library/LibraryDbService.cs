@@ -293,8 +293,7 @@ public sealed class LibraryDbService
 
         foreach (var rawLine in sql.Split('\n'))
         {
-            var line = rawLine;
-            var trimmed = line.Trim();
+            var trimmed = rawLine.Trim();
 
             // Preserve newlines so views and triggers keep their original text.
             if (current.Length > 0)
@@ -304,7 +303,7 @@ public sealed class LibraryDbService
 
             if (!inTrigger)
             {
-                current.Append(line);
+                current.Append(rawLine);
                 if (trimmed.StartsWith("CREATE TRIGGER", StringComparison.OrdinalIgnoreCase)
                     || trimmed.StartsWith("CREATE TEMP TRIGGER", StringComparison.OrdinalIgnoreCase)
                     || trimmed.StartsWith("CREATE TEMPORARY TRIGGER", StringComparison.OrdinalIgnoreCase))
@@ -314,7 +313,7 @@ public sealed class LibraryDbService
             }
             else
             {
-                current.Append(line);
+                current.Append(rawLine);
             }
 
             if (!inTrigger && trimmed.EndsWith(';'))

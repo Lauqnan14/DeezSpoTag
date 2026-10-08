@@ -60,7 +60,7 @@ public sealed class AcoustIdFingerprintService
             timeoutCts.CancelAfter(ProcessTimeout);
             process.Start();
             var outputTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var errorTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            _ = process.StandardError.ReadToEndAsync(timeoutCts.Token);
 
             try
             {

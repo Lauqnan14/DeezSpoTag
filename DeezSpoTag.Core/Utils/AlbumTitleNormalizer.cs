@@ -181,14 +181,6 @@ public static class AlbumTitleNormalizer
     private static bool ContainsEditionMarker(string value)
     {
         var normalized = NormalizeText(value);
-        foreach (var marker in EditionMarkers)
-        {
-            if (normalized.Contains(marker, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return EditionMarkers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal));
     }
 }

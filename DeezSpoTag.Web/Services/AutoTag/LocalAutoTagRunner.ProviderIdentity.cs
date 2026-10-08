@@ -199,19 +199,18 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         TryOpenTagLibFile(filePath, out var file);
-        try
+        using (file)
         {
-            var backend = ResolveProviderIdentityBackend(filePath, file);
-            using var session = ProviderIdentityTagSession.Open(filePath, backend, file);
-            return session.Read(rawName);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return null;
-        }
-        finally
-        {
-            file?.Dispose();
+            try
+            {
+                var backend = ResolveProviderIdentityBackend(filePath, file);
+                using var session = ProviderIdentityTagSession.Open(filePath, backend, file);
+                return session.Read(rawName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return null;
+            }
         }
     }
 
@@ -265,81 +264,80 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var backend = ResolveProviderIdentityBackend(filePath, file);
         var written = new List<(ProviderIdentityField Field, string Value)>();
 
-        try
+        using (file)
         {
-            using var session = ProviderIdentityTagSession.Open(filePath, backend, file);
-            foreach (var field in ProviderIdentityFieldOrder)
+            try
             {
-                if (!enabledFields.Contains(field))
+                using var session = ProviderIdentityTagSession.Open(filePath, backend, file);
+                foreach (var field in ProviderIdentityFieldOrder)
                 {
-                    continue;
-                }
-
-                var value = payload.ValueFor(field);
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
-                var family = AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field);
-                try
-                {
-                    if (payload.ForceOverwrite || ShouldOverwriteTag(config, family.SupportedTag))
+                    if (!enabledFields.Contains(field))
                     {
-                        foreach (var alias in family.CleanupNames)
-                        {
-                            session.Remove(alias);
-                        }
-                    }
-                    else if (family.CleanupNames.Any(session.Has))
-                    {
-                        // A missing authoritative value (or a retained existing one) leaves
-                        // the aliases untouched — never delete what we are not overwriting.
                         continue;
                     }
 
-                    var persisted = true;
-                    foreach (var writeName in family.WriteNames)
+                    var value = payload.ValueFor(field);
+                    if (string.IsNullOrWhiteSpace(value))
                     {
-                        persisted &= session.Write(writeName, value.Trim());
+                        continue;
                     }
 
-                    if (!persisted)
+                    var family = AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field);
+                    try
+                    {
+                        if (payload.ForceOverwrite || ShouldOverwriteTag(config, family.SupportedTag))
+                        {
+                            foreach (var alias in family.CleanupNames)
+                            {
+                                session.Remove(alias);
+                            }
+                        }
+                        else if (family.CleanupNames.Any(session.Has))
+                        {
+                            // A missing authoritative value (or a retained existing one) leaves
+                            // the aliases untouched — never delete what we are not overwriting.
+                            continue;
+                        }
+
+                        var persisted = true;
+                        foreach (var writeName in family.WriteNames)
+                        {
+                            persisted &= session.Write(writeName, value.Trim());
+                        }
+
+                        if (!persisted)
+                        {
+                            failures.Add(new ProviderIdentityPersistenceFailure(
+                                format,
+                                payload.ProviderId,
+                                field,
+                                "the container cannot persist the provider identity field"));
+                            continue;
+                        }
+
+                        written.Add((field, value.Trim()));
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         failures.Add(new ProviderIdentityPersistenceFailure(
                             format,
                             payload.ProviderId,
                             field,
-                            "the container cannot persist the provider identity field"));
-                        continue;
+                            ex.GetType().Name + ": " + ex.Message));
                     }
+                }
 
-                    written.Add((field, value.Trim()));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    failures.Add(new ProviderIdentityPersistenceFailure(
-                        format,
-                        payload.ProviderId,
-                        field,
-                        ex.GetType().Name + ": " + ex.Message));
-                }
+                session.Save();
             }
-
-            session.Save();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            failures.Add(new ProviderIdentityPersistenceFailure(
-                format,
-                payload.ProviderId,
-                ProviderIdentityField.TrackId,
-                ex.GetType().Name + ": " + ex.Message));
-            written.Clear();
-        }
-        finally
-        {
-            file?.Dispose();
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failures.Add(new ProviderIdentityPersistenceFailure(
+                    format,
+                    payload.ProviderId,
+                    ProviderIdentityField.TrackId,
+                    ex.GetType().Name + ": " + ex.Message));
+                written.Clear();
+            }
         }
 
         foreach (var (field, value) in written)
@@ -362,16 +360,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var genericAfter = CaptureGenericIdentityCompatibilityFields(filePath);
-        foreach (var name in GenericIdentityCompatibilityFields)
+        foreach (var name in GenericIdentityCompatibilityFields
+            .Where(name => !string.Equals(
+                genericBefore.GetValueOrDefault(name),
+                genericAfter.GetValueOrDefault(name),
+                StringComparison.Ordinal)))
         {
-            if (!string.Equals(genericBefore.GetValueOrDefault(name), genericAfter.GetValueOrDefault(name), StringComparison.Ordinal))
-            {
-                failures.Add(new ProviderIdentityPersistenceFailure(
-                    format,
-                    payload.ProviderId,
-                    ProviderIdentityField.Url,
-                    $"generic compatibility field {name} changed during the provider identity pass"));
-            }
+            failures.Add(new ProviderIdentityPersistenceFailure(
+                format,
+                payload.ProviderId,
+                ProviderIdentityField.Url,
+                $"generic compatibility field {name} changed during the provider identity pass"));
         }
 
         return Task.FromResult(new ProviderIdentityWriteResult(attempted, failures));

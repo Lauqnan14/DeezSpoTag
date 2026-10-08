@@ -139,16 +139,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static string? ReadFirstRawTagValue(AutoTagAudioInfo info, string[] tagNames)
     {
-        foreach (var tagName in tagNames)
+        foreach (var value in tagNames
+                     .Where(candidate => info.Tags.TryGetValue(candidate, out var values)
+                         && values is { Count: > 0 })
+                     .SelectMany(tagName => info.Tags[tagName])
+                     .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            if (info.Tags.TryGetValue(tagName, out var values) && values is { Count: > 0 })
-            {
-                var value = values.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value.Trim();
-                }
-            }
+            return value.Trim();
         }
 
         return null;

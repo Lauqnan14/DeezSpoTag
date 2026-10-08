@@ -467,13 +467,11 @@ public sealed class TidalSearchApiController : ControllerBase
         if (item.TryGetProperty("artists", out var artistsElement)
             && artistsElement.ValueKind == JsonValueKind.Array)
         {
-            foreach (var artist in artistsElement.EnumerateArray())
+            foreach (var id in artistsElement.EnumerateArray()
+                         .Select(artist => GetAnyString(artist, "id"))
+                         .Where(id => !string.IsNullOrWhiteSpace(id)))
             {
-                var id = GetAnyString(artist, "id");
-                if (!string.IsNullOrWhiteSpace(id))
-                {
-                    ids.Add(id);
-                }
+                ids.Add(id);
             }
         }
 
@@ -579,15 +577,9 @@ public sealed class TidalSearchApiController : ControllerBase
             return true;
         }
 
-        foreach (var propertyName in new[] { "audioModes", "audioMode", "mediaMetadata", "tags" })
-        {
-            if (item.TryGetProperty(propertyName, out var property) && JsonElementContainsAtmos(property))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return new[] { "audioModes", "audioMode", "mediaMetadata", "tags" }
+            .Any(propertyName => item.TryGetProperty(propertyName, out var property)
+                && JsonElementContainsAtmos(property));
     }
 
     private static bool JsonElementContainsAtmos(JsonElement element)

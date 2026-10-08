@@ -442,15 +442,12 @@ public partial class AutoTagService
             var checkpointDirectory = GetRunTagDiffCheckpointDirectory(jobId);
             if (Directory.Exists(checkpointDirectory))
             {
-                foreach (var checkpointPath in Directory.EnumerateFiles(checkpointDirectory, "*.json"))
-                {
-                    var checkpoint = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
+                foreach (var checkpoint in Directory.EnumerateFiles(checkpointDirectory, "*.json")
+                    .Select(checkpointPath => JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
                         File.ReadAllText(checkpointPath, Encoding.UTF8),
-                        _jsonOptions);
-                    if (checkpoint == null)
-                    {
-                        continue;
-                    }
+                        _jsonOptions))
+                    .OfType<Dictionary<string, AutoTagTagDiff>>())
+                {
                     foreach (var (pathKey, diff) in checkpoint)
                     {
                         resolved[pathKey] = diff;

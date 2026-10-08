@@ -1243,12 +1243,9 @@ public class DeezSpoTagSettingsService : ISettingsService
                      {
                          DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.YouLyPlus,
                          DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.BetterLyrics
-                     })
+                     }.Where(provider => !existing.Contains(provider, StringComparer.OrdinalIgnoreCase)))
             {
-                if (!existing.Contains(provider, StringComparer.OrdinalIgnoreCase))
-                {
-                    existing.Add(provider);
-                }
+                existing.Add(provider);
             }
             settings.LyricsFallbackOrder = string.Join(",", existing);
             settings.LyricsProviderRegistryVersion = 1;

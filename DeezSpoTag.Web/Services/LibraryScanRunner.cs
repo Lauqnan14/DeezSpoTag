@@ -1412,10 +1412,6 @@ public sealed class LibraryScanRunner
             await EnqueueArtistImagesAsync(cancellationToken);
         }
 
-        if (cacheSpotifyImages)
-        {
-        }
-
         await EnqueueBackgroundShazamRefreshAsync(enabledFolders, cancellationToken);
     }
 

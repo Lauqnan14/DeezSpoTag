@@ -73,7 +73,7 @@ public static class AssetUrl
         }
 
         var root = Path.GetFullPath(webRoot);
-        var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var candidate = Path.GetFullPath(Path.Join(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         var rootPrefix = root.EndsWith(Path.DirectorySeparatorChar)
             ? root
             : root + Path.DirectorySeparatorChar;

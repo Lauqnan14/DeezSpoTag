@@ -92,7 +92,7 @@ public sealed class YouTubeDataApiClient
         string redirectUri,
         CancellationToken cancellationToken = default)
     {
-        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["client_id"] = clientId,
             ["client_secret"] = clientSecret,
@@ -111,7 +111,7 @@ public sealed class YouTubeDataApiClient
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
-        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["client_id"] = clientId,
             ["client_secret"] = clientSecret,

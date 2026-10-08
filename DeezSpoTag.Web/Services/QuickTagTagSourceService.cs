@@ -270,12 +270,9 @@ public sealed class QuickTagTagSourceService
         }
 
         var builder = new System.Text.StringBuilder(value.Length);
-        foreach (var character in value)
+        foreach (var character in value.Where(character => char.IsLetterOrDigit(character)))
         {
-            if (char.IsLetterOrDigit(character))
-            {
-                builder.Append(char.ToLowerInvariant(character));
-            }
+            builder.Append(char.ToLowerInvariant(character));
         }
 
         return builder.ToString();

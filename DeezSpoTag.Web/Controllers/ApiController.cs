@@ -3120,14 +3120,9 @@ namespace DeezSpoTag.Web.Controllers
             JsonElement items,
             string filter)
         {
-            foreach (var item in items.EnumerateArray())
-            {
-                var release = BuildTidalReleaseEntry(item, filter);
-                if (release != null)
-                {
-                    result.Add(release);
-                }
-            }
+            result.AddRange(items.EnumerateArray()
+                .Select(item => BuildTidalReleaseEntry(item, filter))
+                .OfType<Dictionary<string, object>>());
         }
 
         private async Task<List<Dictionary<string, object>>> FetchTidalArtistTopTracksAsync(
@@ -3195,15 +3190,10 @@ namespace DeezSpoTag.Web.Controllers
                 return new List<Dictionary<string, object>>();
             }
 
-            var videos = new List<Dictionary<string, object>>();
-            foreach (var item in items.EnumerateArray())
-            {
-                var video = BuildTidalArtistVideoEntry(item);
-                if (video != null)
-                {
-                    videos.Add(video);
-                }
-            }
+            var videos = items.EnumerateArray()
+                .Select(item => BuildTidalArtistVideoEntry(item))
+                .OfType<Dictionary<string, object>>()
+                .ToList();
 
             return videos;
         }
@@ -3385,13 +3375,11 @@ namespace DeezSpoTag.Web.Controllers
 
             if (video.TryGetProperty("artists", out var artists) && artists.ValueKind == JsonValueKind.Array)
             {
-                foreach (var item in artists.EnumerateArray())
+                foreach (var name in artists.EnumerateArray()
+                    .Select(item => GetString(item, NameField))
+                    .Where(name => !string.IsNullOrWhiteSpace(name)))
                 {
-                    var name = GetString(item, NameField);
-                    if (!string.IsNullOrWhiteSpace(name))
-                    {
-                        return name;
-                    }
+                    return name!;
                 }
             }
 
@@ -3452,14 +3440,11 @@ namespace DeezSpoTag.Web.Controllers
                 return null;
             }
 
-            foreach (var file in files.EnumerateArray())
+            foreach (var uuid in files.EnumerateArray()
+                .Select(file => ExtractTidalImageUuid(GetString(file, "href")))
+                .Where(uuid => !string.IsNullOrWhiteSpace(uuid)))
             {
-                var href = GetString(file, "href");
-                var uuid = ExtractTidalImageUuid(href);
-                if (!string.IsNullOrWhiteSpace(uuid))
-                {
-                    return uuid;
-                }
+                return uuid!;
             }
 
             return null;

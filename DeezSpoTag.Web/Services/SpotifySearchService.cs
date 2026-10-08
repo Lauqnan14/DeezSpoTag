@@ -369,15 +369,10 @@ public sealed class SpotifySearchService
             return new List<SpotifySearchItem>();
         }
 
-        var mapped = new List<SpotifySearchItem>();
-        foreach (var item in items.EnumerateArray())
-        {
-            var track = MapWebApiTrack(item);
-            if (track != null)
-            {
-                mapped.Add(track);
-            }
-        }
+        var mapped = items.EnumerateArray()
+            .Select(MapWebApiTrack)
+            .OfType<SpotifySearchItem>()
+            .ToList();
 
         return mapped;
     }

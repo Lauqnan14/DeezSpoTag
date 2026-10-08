@@ -119,12 +119,9 @@ public sealed class NotificationPreferences
     public void EnsureDefaults()
     {
         Events ??= new Dictionary<string, NotificationChannelPreference>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kind in NotificationKinds.All)
+        foreach (var kind in NotificationKinds.All.Where(kind => !Events.ContainsKey(kind)))
         {
-            if (!Events.ContainsKey(kind))
-            {
-                Events[kind] = new NotificationChannelPreference { InApp = true, Webhook = false };
-            }
+            Events[kind] = new NotificationChannelPreference { InApp = true, Webhook = false };
         }
 
         foreach (var key in Events.Keys.Where(key => !NotificationKinds.IsKnown(key)).ToList())

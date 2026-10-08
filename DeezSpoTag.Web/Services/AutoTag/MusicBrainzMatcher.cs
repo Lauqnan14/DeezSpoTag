@@ -434,10 +434,10 @@ public sealed class MusicBrainzMatcher
                 switch (relation.Type)
                 {
                     case "composer":
-                        AddComposer(name, relation.Artist?.Id);
+                        AddComposer(name, relation.Artist!.Id);
                         break;
                     case "writer":
-                        AddComposer(name, relation.Artist?.Id);
+                        AddComposer(name, relation.Artist!.Id);
                         break;
                     case "lyricist":
                         if (!lyricists.Contains(name, StringComparer.OrdinalIgnoreCase))
@@ -497,12 +497,10 @@ public sealed class MusicBrainzMatcher
                     && !string.IsNullOrWhiteSpace(relation.Work?.Id))
                 {
                     AddOtherValue(track.Other, "MUSICBRAINZ_WORKID", relation.Work!.Id);
-                    foreach (var workRelation in relation.Work?.Relations ?? new List<Relation>())
+                    foreach (var workRelation in (relation.Work!.Relations ?? new List<Relation>())
+                                 .Where(candidate => candidate.TargetType?.Equals("artist", StringComparison.OrdinalIgnoreCase) == true))
                     {
-                        if (workRelation.TargetType?.Equals("artist", StringComparison.OrdinalIgnoreCase) == true)
-                        {
-                            CollectArtistRelation(workRelation);
-                        }
+                        CollectArtistRelation(workRelation);
                     }
                 }
             }
@@ -578,19 +576,15 @@ public sealed class MusicBrainzMatcher
             return null;
         }
 
-        foreach (var preferredLocale in preferredLocales)
+        foreach (var localeMatches in preferredLocales
+                     .Select(preferredLocale => aliases
+                         .Where(alias => !string.IsNullOrWhiteSpace(alias.Name)
+                             && !string.IsNullOrWhiteSpace(alias.Locale)
+                             && (string.Equals(alias.Locale, preferredLocale, StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(alias.Locale.Split('_')[0], preferredLocale, StringComparison.OrdinalIgnoreCase)))
+                         .ToList())
+                     .Where(matches => matches.Count > 0))
         {
-            var localeMatches = aliases
-                .Where(alias => !string.IsNullOrWhiteSpace(alias.Name)
-                    && !string.IsNullOrWhiteSpace(alias.Locale)
-                    && (string.Equals(alias.Locale, preferredLocale, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(alias.Locale.Split('_')[0], preferredLocale, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-            if (localeMatches.Count == 0)
-            {
-                continue;
-            }
-
             var primary = localeMatches.FirstOrDefault(alias => alias.Primary == true);
             return (primary ?? localeMatches.First()).Name;
         }
@@ -783,16 +777,12 @@ public sealed class MusicBrainzMatcher
 
     private static string? ReadFileAlbumId(AutoTagAudioInfo info)
     {
-        foreach (var key in new[] { "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID" })
+        foreach (var value in new[] { "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ALBUM_ID", "ALBUMID", "MB_ALBUM_ID" }
+                     .Where(key => info.Tags.TryGetValue(key, out var values) && values is { Count: > 0 })
+                     .Select(key => info.Tags[key].FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)))
+                     .Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
         {
-            if (info.Tags.TryGetValue(key, out var values) && values is { Count: > 0 })
-            {
-                var value = values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value.Trim();
-                }
-            }
+            return value!.Trim();
         }
 
         return null;

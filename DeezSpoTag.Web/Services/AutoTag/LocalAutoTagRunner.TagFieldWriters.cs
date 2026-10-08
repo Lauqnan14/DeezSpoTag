@@ -325,13 +325,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var parts = value.Split(
                 effectiveSeparator,
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var part in parts)
+            foreach (var trimmed in parts
+                         .Select(part => part.Trim())
+                         .Where(candidate => candidate.Length > 0 && seen.Add(candidate)))
             {
-                var trimmed = part.Trim();
-                if (trimmed.Length > 0 && seen.Add(trimmed))
-                {
-                    normalized.Add(trimmed);
-                }
+                normalized.Add(trimmed);
             }
         }
 
@@ -651,9 +649,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteArtistMetadataTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames)
+        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames
+                     .Where(candidate => candidate.Key != LanguageTag && context.EnabledTags.Contains(candidate.Key)))
         {
-            if (field.Key == LanguageTag || !context.EnabledTags.Contains(field.Key)) continue;
             var values = GetArtistFieldValues(context.SourceTrack, field.Key);
             if (values.Count > 0) SetRawIfAllowed(tagWriteContext, field.Key, field.Value, values);
         }

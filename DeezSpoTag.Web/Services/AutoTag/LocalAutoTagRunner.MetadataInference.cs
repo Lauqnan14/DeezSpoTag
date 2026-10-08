@@ -87,12 +87,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        foreach (var albumRoot in albumRoots)
+        foreach (var albumRoot in albumRoots.Where(albumRoot => !string.IsNullOrWhiteSpace(albumRoot)))
         {
-            if (!string.IsNullOrWhiteSpace(albumRoot))
-            {
-                return albumRoot;
-            }
+            return albumRoot;
         }
 
         return string.IsNullOrWhiteSpace(fallback) ? null : fallback;

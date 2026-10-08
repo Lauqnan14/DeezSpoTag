@@ -394,7 +394,6 @@ public static class AppDataPathResolver
             return legacyHasAnchors;
         }
         if (legacyHasAnchors
-            && scopedHasAnchors
             && legacyWithRows.RowCount != scopedWithRows.RowCount)
         {
             return legacyWithRows.RowCount > scopedWithRows.RowCount;

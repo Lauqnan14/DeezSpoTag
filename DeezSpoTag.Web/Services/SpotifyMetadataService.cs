@@ -1859,12 +1859,10 @@ public sealed class SpotifyMetadataService
 
         var isrcMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var librespotTracks = await FetchLibrespotTracksAsync(missing, cancellationToken);
-        foreach (var track in librespotTracks)
+        foreach (var track in librespotTracks
+                     .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Id) && IsValidIsrc(candidate.Isrc)))
         {
-            if (!string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))
-            {
-                isrcMap[track.Id] = track.Isrc!;
-            }
+            isrcMap[track.Id] = track.Isrc!;
         }
 
         if (isrcMap.Count == 0)

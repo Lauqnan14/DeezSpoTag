@@ -140,23 +140,8 @@ public static class TrackTitleMatcher
     private static bool ContainsAnyVariantMarker(string value)
     {
         var normalized = NormalizeText(value);
-        foreach (var marker in StrictVariantMarkers)
-        {
-            if (normalized.Contains(marker, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        foreach (var marker in ToxicVariantMarkers)
-        {
-            if (normalized.Contains(marker, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return StrictVariantMarkers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal))
+            || ToxicVariantMarkers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal));
     }
 
     /// <summary>

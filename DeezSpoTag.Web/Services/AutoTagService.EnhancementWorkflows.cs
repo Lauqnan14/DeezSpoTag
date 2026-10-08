@@ -1196,12 +1196,12 @@ public partial class AutoTagService
             var stagedProfileSettings = resolveFileIdentityFromTags
                 ? stagedSettings ??= BuildStagedSidecarSettings(configRoot)
                 : null;
-            var lyricsPlan = handlesLyrics && lyricsRefreshOptions is not null
+            var lyricsPlan = handlesLyrics
                 ? resolveFileIdentityFromTags && stagedProfileSettings is not null
-                    ? _lyricsRefreshQueueService.PlanStagedFileRefresh(filePath, stagedProfileSettings, lyricsRefreshOptions)
+                    ? _lyricsRefreshQueueService.PlanStagedFileRefresh(filePath, stagedProfileSettings, lyricsRefreshOptions!)
                     : await _lyricsRefreshQueueService.PlanTrackRefreshAsync(
                         trackId,
-                        lyricsRefreshOptions,
+                        lyricsRefreshOptions!,
                         cancellationToken)
                 : null;
 
@@ -2484,9 +2484,8 @@ public partial class AutoTagService
                 static move => NormalizePathForJob(move.Destination!),
                 StringComparer.OrdinalIgnoreCase);
         var processedInBatch = 0;
-        foreach (var source in successfulBatchFiles)
+        foreach (var normalizedSource in successfulBatchFiles.Select(NormalizePathForJob))
         {
-            var normalizedSource = NormalizePathForJob(source);
             var destination = moveMap.TryGetValue(normalizedSource, out var moved) ? moved : normalizedSource;
             identities.TryGetValue(normalizedSource, out var identity);
             processedInBatch++;
@@ -2512,13 +2511,13 @@ public partial class AutoTagService
                 artistImageUrl: ResolveIdentityArtworkUrl(destination, identity?.Artist, true),
                 albumImageUrl: ResolveIdentityArtworkUrl(destination, identity?.Album, false));
         }
-        foreach (var operation in folderReports
+        foreach (var parsed in folderReports
                      .SelectMany(static report => report.Entries)
                      .Select(TryParseFolderUniformityOperation)
                      .Where(static operation => operation != null
-                         && (operation.ItemKind == "folder" || operation.OperationKind is "quarantined" or "replaced" or "reconciled")))
+                         && (operation.ItemKind == "folder" || operation.OperationKind is "quarantined" or "replaced" or "reconciled"))
+                     .Select(static operation => operation!))
         {
-            var parsed = operation!;
             RecordEnhancementItemStatus(
                 job,
                 AutoTagLiterals.EnhancementFeatureFolderUniformity,
@@ -2708,15 +2707,11 @@ public partial class AutoTagService
                 static move => NormalizePathForJob(move.Destination!),
                 StringComparer.OrdinalIgnoreCase);
         var current = new List<string>();
-        foreach (var file in files.Select(NormalizePathForJob).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var candidate in files.Select(NormalizePathForJob).Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Select(file => moves.TryGetValue(file, out var moved) ? moved : file)
+                     .Where(path => File.Exists(path) && !current.Contains(path, StringComparer.OrdinalIgnoreCase)))
         {
-            var candidate = moves.TryGetValue(file, out var moved)
-                ? moved
-                : file;
-            if (File.Exists(candidate) && !current.Contains(candidate, StringComparer.OrdinalIgnoreCase))
-            {
-                current.Add(candidate);
-            }
+            current.Add(candidate);
         }
 
         return current;
@@ -3732,9 +3727,8 @@ public partial class AutoTagService
         // global multi-quality destination staying as the fallback.
         var atmosDestinationFolderId = ResolveAtmosDestinationFolderId(qualityChecks);
 
-        if (options.QueueTechnicalProfileUpgrades)
-        {
-            if (await RunQualityScannerPassAsync(
+        if (options.QueueTechnicalProfileUpgrades
+            && await RunQualityScannerPassAsync(
                 job,
                 qualityChecks,
                 scopedFolderIds,
@@ -3743,14 +3737,12 @@ public partial class AutoTagService
                 options.TechnicalProfiles,
                 "technical-quality-upgrade",
                 cancellationToken))
-            {
-                return true;
-            }
+        {
+            return true;
         }
 
-        if (options.QueueAtmosAlternatives)
-        {
-            if (await RunQualityScannerPassAsync(
+        if (options.QueueAtmosAlternatives
+            && await RunQualityScannerPassAsync(
                 job,
                 qualityChecks,
                 scopedFolderIds,
@@ -3760,9 +3752,8 @@ public partial class AutoTagService
                 "atmos-alternatives",
                 cancellationToken,
                 atmosDestinationFolderId: atmosDestinationFolderId))
-            {
-                return true;
-            }
+        {
+            return true;
         }
 
         return false;
@@ -4101,18 +4092,18 @@ public partial class AutoTagService
     private static IReadOnlyCollection<CoverSourceName> ResolveProfileCoverSources(DeezSpoTagSettings settings)
     {
         var sources = new List<CoverSourceName>();
-        foreach (var raw in (settings.ArtworkFallbackOrder ?? string.Empty)
-                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var source in (settings.ArtworkFallbackOrder ?? string.Empty)
+                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Select(raw => raw.Trim().ToLowerInvariant() switch
+                     {
+                         "apple" or "applemusic" or "itunes" => (CoverSourceName?)CoverSourceName.Itunes,
+                         "deezer" => CoverSourceName.Deezer,
+                         "discogs" => CoverSourceName.Discogs,
+                         "lastfm" or "last.fm" => CoverSourceName.LastFm,
+                         "coverartarchive" => CoverSourceName.CoverArtArchive,
+                         _ => null
+                     }))
         {
-            var source = raw.Trim().ToLowerInvariant() switch
-            {
-                "apple" or "applemusic" or "itunes" => (CoverSourceName?)CoverSourceName.Itunes,
-                "deezer" => CoverSourceName.Deezer,
-                "discogs" => CoverSourceName.Discogs,
-                "lastfm" or "last.fm" => CoverSourceName.LastFm,
-                "coverartarchive" => CoverSourceName.CoverArtArchive,
-                _ => null
-            };
             if (source.HasValue && !sources.Contains(source.Value))
             {
                 sources.Add(source.Value);
@@ -4136,14 +4127,14 @@ public partial class AutoTagService
             return fallback;
         }
 
-        foreach (var raw in (settings.ArtworkFallbackOrder ?? string.Empty)
-                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var aliases in (settings.ArtworkFallbackOrder ?? string.Empty)
+                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Select(raw => raw.Trim().ToLowerInvariant() switch
+                     {
+                         "apple" or "applemusic" => new[] { "itunes", "applemusic" },
+                         _ => new[] { raw.Trim().ToLowerInvariant() }
+                     }))
         {
-            var aliases = raw.Trim().ToLowerInvariant() switch
-            {
-                "apple" or "applemusic" => new[] { "itunes", "applemusic" },
-                _ => new[] { raw.Trim().ToLowerInvariant() }
-            };
             foreach (var alias in aliases)
             {
                 if (custom[alias] is not JsonObject platform

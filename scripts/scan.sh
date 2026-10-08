@@ -66,26 +66,51 @@ coverage_dir="${ROOT_DIR}/.sonar-coverage"
 coverage_opencover_reports_path="${coverage_dir}/**/coverage.opencover.xml"
 scan_lock_file="${ROOT_DIR}/.scan.lock"
 
+scan_lock_holder=""
+
 cleanup_local_scan_state() {
   rm -rf "${ROOT_DIR}/.sonarqube" "$coverage_dir"
 }
 
-if [[ "$sonar_keep_local_scan_state" != "true" ]]; then
-  trap cleanup_local_scan_state EXIT
-fi
+# The lock records this scan's PID. Dropping the flock descriptor is deliberate:
+# bash has no way to mark a redirection close-on-exec, so any lock fd taken by
+# this shell is inherited by every child, including the long-lived Roslyn
+# VBCSCompiler server. That server outlives the scan, which left the lock held
+# forever after a scan died. A PID carries no descriptor to leak, and it is read
+# through kill -0, so a scan that dies leaves a stale PID the next scan can reuse.
+release_scan_lock() {
+  if [[ -n "$scan_lock_holder" && -f "$scan_lock_file" ]]; then
+    rm -f "$scan_lock_file"
+  fi
+  scan_lock_holder=""
+}
+
+on_exit() {
+  release_scan_lock
+  if [[ "$sonar_keep_local_scan_state" != "true" ]]; then
+    cleanup_local_scan_state
+  fi
+}
+
+trap on_exit EXIT
 
 acquire_scan_lock() {
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "Warning: flock not found; skipping scan lock." >&2
-    return
+  local holder_pid=""
+
+  if [[ -f "$scan_lock_file" ]]; then
+    holder_pid="$(tr -d '[:space:]' < "$scan_lock_file" 2>/dev/null || true)"
   fi
 
-  exec 9>"$scan_lock_file"
-  if ! flock -n 9; then
-    echo "Another Sonar scan is already running for this workspace." >&2
+  # An empty or non-numeric file, or a PID that no longer exists, is left over
+  # from a scan that ended however it ended. Only a live PID holds the lock.
+  if [[ "$holder_pid" =~ ^[0-9]+$ ]] && kill -0 "$holder_pid" 2>/dev/null; then
+    echo "Another Sonar scan is already running for this workspace (PID $holder_pid)." >&2
     echo "Wait for it to finish, then rerun ./scan.sh." >&2
     exit 1
   fi
+
+  printf '%s\n' "$$" > "$scan_lock_file"
+  scan_lock_holder="$$"
 }
 
 declare -a coverage_projects=()
@@ -122,6 +147,9 @@ declare -a default_sonar_exclusions=(
   "**/DeezSpoTag.CoverPortTests/**"
   "**/meloday-main/**"
   "**/scripts/spotify/**"
+  # Vendored upstream librespot. Its SHA-1 usage is Spotify's wire format, so
+  # scanning it only ever reports hashing we cannot change.
+  "**/Tools/spotify_librespot/**"
   "**/smb_/**"
   "**/Music Video Downloads/**"
   "**/Data/analysis/**"

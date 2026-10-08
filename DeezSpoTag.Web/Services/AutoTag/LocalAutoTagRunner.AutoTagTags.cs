@@ -148,8 +148,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             tags.Add(tag);
         }
 
-        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames)
-            if (field.Key != LanguageTag) Add(field.Key, GetArtistFieldValues(track, field.Key).Count > 0);
+        foreach (var field in DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames
+                     .Where(candidate => candidate.Key != LanguageTag))
+            Add(field.Key, GetArtistFieldValues(track, field.Key).Count > 0);
         AddAutoTagMetadataTags(track, Add);
         AddAutoTagFeatureTags(track, Add);
         AddAutoTagNumericAndDateTags(track, Add);

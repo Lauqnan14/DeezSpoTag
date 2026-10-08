@@ -78,7 +78,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             var root = Path.GetFullPath(libraryRoot)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
+            var candidate = Path.GetFullPath(Path.Join(root, relativePath));
             var relative = Path.GetRelativePath(root, candidate);
             if (relative == ".."
                 || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
@@ -320,9 +320,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var identityProviders = (identity.ProviderIdentities?.Keys ?? Array.Empty<string>())
                 .Concat(plan.EffectivePlatforms)
                 .Distinct(StringComparer.OrdinalIgnoreCase);
-            foreach (var platform in identityProviders)
+            foreach (var providerId in identityProviders.Select(AlbumIdentity.NormalizeProviderId))
             {
-                var providerId = AlbumIdentity.NormalizeProviderId(platform);
                 var providerIdentity = identity.GetProviderIdentity(providerId);
                 if (providerIdentity is null || providerIdentity.IsEmpty)
                 {

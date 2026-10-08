@@ -727,12 +727,9 @@ public sealed partial class ShazamDiscoveryService
         lock (SessionCardCacheTrimLock)
         {
             var now = DateTimeOffset.UtcNow;
-            foreach (var pair in SessionCardCache)
+            foreach (var pair in SessionCardCache.Where(candidate => candidate.Value.ExpiresAtUtc <= now))
             {
-                if (pair.Value.ExpiresAtUtc <= now)
-                {
-                    SessionCardCache.TryRemove(pair.Key, out _);
-                }
+                SessionCardCache.TryRemove(pair.Key, out _);
             }
 
             var overflow = SessionCardCache.Count - MaxSessionCardCacheEntries;

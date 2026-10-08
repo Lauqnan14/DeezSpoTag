@@ -547,12 +547,9 @@ public sealed class DeezerClient : IDisposable
     /// </remarks>
     private static string FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!))
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return string.Empty;

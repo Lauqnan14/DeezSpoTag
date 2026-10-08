@@ -542,7 +542,7 @@ public class AutoTagJobsController : ControllerBase
 
     private static bool IsPipelineOwnedPath(string candidate, IReadOnlyList<string> ownedPaths)
     {
-        var candidateWithoutExtension = Path.Combine(
+        var candidateWithoutExtension = Path.Join(
             Path.GetDirectoryName(candidate) ?? string.Empty,
             Path.GetFileNameWithoutExtension(candidate));
         foreach (var ownedPath in ownedPaths)
@@ -555,7 +555,7 @@ public class AutoTagJobsController : ControllerBase
             {
                 return true;
             }
-            var ownedWithoutExtension = Path.Combine(
+            var ownedWithoutExtension = Path.Join(
                 Path.GetDirectoryName(ownedPath) ?? string.Empty,
                 Path.GetFileNameWithoutExtension(ownedPath));
             if (string.Equals(candidateWithoutExtension, ownedWithoutExtension, StringComparison.OrdinalIgnoreCase))
@@ -646,7 +646,7 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var root = Path.GetPathRoot(left) ?? string.Empty;
-        return Path.Combine(new[] { root }.Concat(commonParts).ToArray());
+        return Path.Join(new[] { root }.Concat(commonParts).ToArray());
     }
 
     private static List<string> NormalizeEnhancementTargetFiles(
@@ -1117,9 +1117,9 @@ public class AutoTagJobsController : ControllerBase
             runIntent = AutoTagLiterals.RunIntentDefault,
             profileId,
             profileName,
-            enhancementFeature = (string?)null,
-            enhancementGroupId = (string?)null,
-            currentPhase = (string?)null,
+            enhancementFeature = default(string?),
+            enhancementGroupId = default(string?),
+            currentPhase = default(string?),
             currentBatch = 0,
             batchCount = 0,
             batchProcessed = 0,

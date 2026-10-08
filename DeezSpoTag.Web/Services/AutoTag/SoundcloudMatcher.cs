@@ -302,24 +302,18 @@ public sealed class SoundcloudMatcher
 
     private static string? TryResolveSoundCloudUrl(AutoTagAudioInfo info)
     {
-        foreach (var key in TrackIdTagKeys)
+        foreach (var url in TrackIdTagKeys
+                     .Select(key => NormalizeToUrl(AutoTagTagValueReader.ReadFirstTagValue(info, [key])))
+                     .Where(url => url is not null))
         {
-            var value = AutoTagTagValueReader.ReadFirstTagValue(info, [key]);
-            var url = NormalizeToUrl(value);
-            if (url is not null)
-            {
-                return url;
-            }
+            return url;
         }
 
-        foreach (var key in TrackUrlTagKeys)
+        foreach (var url in TrackUrlTagKeys
+                     .Select(key => NormalizeToUrl(AutoTagTagValueReader.ReadFirstTagValue(info, [key])))
+                     .Where(url => url is not null))
         {
-            var value = AutoTagTagValueReader.ReadFirstTagValue(info, [key]);
-            var url = NormalizeToUrl(value);
-            if (url is not null)
-            {
-                return url;
-            }
+            return url;
         }
 
         return null;
@@ -357,13 +351,11 @@ public sealed class SoundcloudMatcher
     /// </summary>
     private static string? TryResolveSoundCloudId(AutoTagAudioInfo info)
     {
-        foreach (var key in TrackIdTagKeys)
+        foreach (var value in TrackIdTagKeys
+                     .Select(key => AutoTagTagValueReader.ReadFirstTagValue(info, [key]))
+                     .Where(value => !string.IsNullOrWhiteSpace(value) && NormalizeToUrl(value) is null))
         {
-            var value = AutoTagTagValueReader.ReadFirstTagValue(info, [key]);
-            if (!string.IsNullOrWhiteSpace(value) && NormalizeToUrl(value) is null)
-            {
-                return value.Trim();
-            }
+            return value!.Trim();
         }
 
         return null;

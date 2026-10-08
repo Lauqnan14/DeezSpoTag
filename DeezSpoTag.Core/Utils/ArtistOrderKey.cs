@@ -79,20 +79,10 @@ public static class ArtistOrderKey
             candidates.AddRange(ExpandArtists(artistFallback));
         }
 
-        string? best = null;
-        foreach (var candidate in candidates)
-        {
-            var normalized = NormalizeArtistName(candidate);
-            if (normalized.Length == 0)
-            {
-                continue;
-            }
-
-            if (best is null || string.Compare(normalized, best, StringComparison.Ordinal) < 0)
-            {
-                best = normalized;
-            }
-        }
+        var best = candidates
+            .Select(NormalizeArtistName)
+            .Where(normalized => normalized.Length > 0)
+            .MinBy(normalized => normalized, StringComparer.Ordinal);
 
         return best ?? string.Empty;
     }

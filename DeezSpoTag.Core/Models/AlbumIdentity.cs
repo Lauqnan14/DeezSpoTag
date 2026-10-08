@@ -124,14 +124,11 @@ public sealed record AlbumIdentity(
 
         var values = new Dictionary<string, ProviderAlbumIdentity>(StringComparer.OrdinalIgnoreCase);
         AddProviderIdentities(values, ProviderIdentities);
-        if (!overwrite && values.TryGetValue(key, out var established) && !established.IsEmpty)
-        {
-            values[key] = established.CoalesceWith(value);
-        }
-        else
-        {
-            values[key] = overwrite ? value : (values.TryGetValue(key, out var current) ? current.CoalesceWith(value) : value);
-        }
+        values[key] = !overwrite && values.TryGetValue(key, out var established) && !established.IsEmpty
+            ? established.CoalesceWith(value)
+            : (overwrite
+                ? value
+                : (values.TryGetValue(key, out var current) ? current.CoalesceWith(value) : value));
 
         return this with { ProviderIdentities = values.Count == 0 ? null : values };
     }
@@ -395,12 +392,11 @@ public sealed record AlbumIdentity(
             return;
         }
 
-        foreach (var value in values)
+        foreach (var normalized in values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim().ToUpperInvariant()))
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                target.Add(value.Trim().ToUpperInvariant());
-            }
+            target.Add(normalized);
         }
     }
 
