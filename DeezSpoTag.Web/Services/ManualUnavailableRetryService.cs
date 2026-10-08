@@ -135,11 +135,25 @@ public sealed class ManualUnavailableRetryService : BackgroundService
             Quality = FirstNonEmpty(track.Quality, ReadString(payload, "Quality", "quality")) ?? string.Empty,
             ContentType = FirstNonEmpty(track.ContentType, ReadString(payload, "ContentType", "contentType"), "music") ?? "music",
             DestinationFolderId = track.DestinationFolderId ?? ReadInt64(payload, "DestinationFolderId", "destinationFolderId"),
-            DurationMs = ReadInt32(payload, "DurationMs", "durationMs") ?? 0,
-            TrackNumber = ReadInt32(payload, "TrackNumber", "trackNumber", "SpotifyTrackNumber", "spotifyTrackNumber") ?? 0,
-            DiscNumber = ReadInt32(payload, "DiscNumber", "discNumber", "SpotifyDiscNumber", "spotifyDiscNumber") ?? 0,
-            TrackTotal = ReadInt32(payload, "TrackTotal", "trackTotal", "SpotifyTotalTracks", "spotifyTotalTracks") ?? 0,
-            ReleaseDate = FirstNonEmpty(ReadString(payload, "ReleaseDate", "releaseDate"), string.Empty) ?? string.Empty
+            DurationMs = FirstPositive(
+                track.DurationMs,
+                ReadPositiveInt32(payload, "DurationMs", "durationMs"),
+                ReadDurationSecondsAsMilliseconds(payload)) ?? 0,
+            TrackNumber = FirstPositive(
+                track.TrackNumber,
+                ReadPositiveInt32(payload, "TrackNumber", "trackNumber", "SpotifyTrackNumber", "spotifyTrackNumber")) ?? 0,
+            TrackTotal = FirstPositive(
+                track.TrackTotal,
+                ReadPositiveInt32(payload, "TrackTotal", "trackTotal", "SpotifyTotalTracks", "spotifyTotalTracks")) ?? 0,
+            DiscNumber = FirstPositive(
+                track.DiscNumber,
+                ReadPositiveInt32(payload, "DiscNumber", "discNumber", "SpotifyDiscNumber", "spotifyDiscNumber")) ?? 0,
+            DiscTotal = FirstPositive(
+                track.DiscTotal,
+                ReadPositiveInt32(payload, "DiscTotal", "discTotal")) ?? 0,
+            ReleaseDate = FirstNonEmpty(track.ReleaseDate, ReadString(payload, "ReleaseDate", "releaseDate", "release_date")) ?? string.Empty,
+            // Absent stays absent: a null here is not the same claim as false.
+            Explicit = FirstNullable(track.Explicit, ReadBoolean(payload, "Explicit", "explicit", "explicit_lyrics"))
         };
     }
 

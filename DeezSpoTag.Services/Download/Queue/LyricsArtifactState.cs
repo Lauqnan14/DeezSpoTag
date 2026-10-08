@@ -133,12 +133,10 @@ public sealed class LyricsArtifactState
         Revision++;
         ProvidersAttempted = NormalizeTokens(result.ProvidersAttempted);
         ProviderOutcomes = result.ProviderOutcomes?.ToList() ?? new List<LyricsProviderOutcome>();
-        foreach (var format in NormalizeFormats(result.ResolvedFormats))
+        foreach (var format in NormalizeFormats(result.ResolvedFormats)
+            .Where(format => !ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase)))
         {
-            if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
-            {
-                ResolvedFormats.Add(format);
-            }
+            ResolvedFormats.Add(format);
         }
         foreach (var pair in result.SourcesByFormat.Where(pair =>
                      ResolvedFormats.Contains(pair.Key, StringComparer.OrdinalIgnoreCase)))
@@ -172,6 +170,28 @@ public sealed class LyricsArtifactState
         {
             IncompleteReason = progress.Detail;
         }
+
+        // Publish formats as they resolve so the queue can render badges while later capability
+        // rounds are still running, instead of only once the whole chain has drained. The timing
+        // is only overwritten when the resolver actually reported one, so a value derived from
+        // an already written sidecar is never clobbered mid-chain.
+        var resolvedFormats = NormalizeFormats(progress.ResolvedFormats);
+        if (resolvedFormats.Count > 0)
+        {
+            foreach (var format in resolvedFormats
+                .Where(format => !ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase)))
+            {
+                ResolvedFormats.Add(format);
+            }
+
+            if (!string.IsNullOrWhiteSpace(progress.LrcTiming))
+            {
+                LrcTiming = progress.LrcTiming.Trim().ToLowerInvariant();
+            }
+
+            SuppressPlainWhenRichExists();
+        }
+
         if (!string.Equals(progress.Phase, "completed", StringComparison.OrdinalIgnoreCase))
         {
             Status = "fetching";
@@ -196,12 +216,10 @@ public sealed class LyricsArtifactState
             })
             .Where(pair => !string.IsNullOrWhiteSpace(pair.Hash))
             .ToDictionary(pair => pair.Key, pair => pair.Hash!, StringComparer.OrdinalIgnoreCase);
-        foreach (var format in DownloadedFormats)
+        foreach (var format in DownloadedFormats
+            .Where(format => !ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase)))
         {
-            if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
-            {
-                ResolvedFormats.Add(format);
-            }
+            ResolvedFormats.Add(format);
         }
         LrcTiming = ResolveLrcTiming();
         SuppressPlainWhenRichExists();

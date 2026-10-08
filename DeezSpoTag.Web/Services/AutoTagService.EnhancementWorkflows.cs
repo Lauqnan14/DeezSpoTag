@@ -923,6 +923,94 @@ public partial class AutoTagService
     }
 
     /// <summary>
+    ///     Runs the enabled sidecar categories against staged audio, before it moves into the library.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The staged files are the ones the tagging chain just finished with, at their already-materialized
+    ///         template paths. Running here means the lyrics and cover are written beside the audio and travel
+    ///         with it, and it means the provider ids and final tags the chain wrote are the identity the
+    ///         lookup uses.
+    ///     </para>
+    ///     <para>
+    ///         Deliberately no library ingestion. The previous arrangement moved first and ingested the moved
+    ///         paths in order to obtain track ids, which meant staging a file into the library purely to ask a
+    ///         question about it. A staged file has no library identity and does not need one.
+    ///     </para>
+    ///     <para>
+    ///         A category with nothing enabled does no work at all - no plan, no network call, no outcome -
+    ///         which is the same rule the enhancement-run path follows and what keeps a lyrics-only profile
+    ///         from touching artwork.
+    ///     </para>
+    /// </remarks>
+    private async Task RunExternalFileStagedSidecarsAsync(
+        AutoTagJob job,
+        string rootPath,
+        string configPath,
+        IReadOnlyDictionary<string, FileTagOutcome> fileOutcomes,
+        CancellationToken cancellationToken)
+    {
+        var root = LoadConfigRoot(configPath);
+        if (root is null)
+        {
+            return;
+        }
+
+        var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
+
+        // Nothing enabled means nothing to do. Checked before any path is enumerated so a disabled profile
+        // costs no filesystem work either.
+        var stagedSidecarEnabled = enhancementRoot["sidecars"] is JsonObject sidecarNode
+            && ReadBool(sidecarNode, EnabledField) == true;
+        var runLyrics = EnhancementWorkflowSelection.HasSidecarLyricsActions(enhancementRoot);
+        var runCovers = EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot);
+        if (!stagedSidecarEnabled || (!runLyrics && !runCovers))
+        {
+            AppendLog(job, $"{DescribeExternalFileEnrichment(job.RunIntent)}: no sidecar actions are enabled.");
+            return;
+        }
+
+        var stagedFiles = fileOutcomes
+            .Where(entry => entry.Value is { Tagged: true } || entry.Value is { CompletedWithoutChanges: true })
+            .Select(entry => NormalizePathForJob(entry.Key))
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (stagedFiles.Count == 0)
+        {
+            AppendLog(job, $"{DescribeExternalFileEnrichment(job.RunIntent)}: no enriched staged file remained for sidecars.");
+            return;
+        }
+
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        AppendLog(
+            job,
+            $"{DescribeExternalFileEnrichment(job.RunIntent)}: running sidecars on {stagedFiles.Count} staged file(s) before the move "
+            + $"(lyrics={runLyrics}, covers={runCovers}).");
+
+        await RunEnhancementWorkflowAsync(
+            job,
+            AutoTagLiterals.EnhancementFeatureSidecars,
+            token => RunConfiguredSidecarsAsync(
+                job,
+                rootPath,
+                root,
+                enhancementRoot,
+                enabledFolders,
+                configPath,
+                token,
+                stagedFiles,
+                // Not forced: the gate above has already established which categories are enabled, and
+                // forcing lyrics here would run a lookup the profile never asked for. Forcing also silently
+                // suppressed the artwork pass, so an artwork-enabled profile resolved no cover at all.
+                forceProfileLyrics: false,
+                resolveFileIdentityFromTags: true),
+            cancellationToken);
+
+        SaveJob(job);
+    }
+
+    /// <summary>
     /// Manual enrichment sidecars run on the files at their moved destination paths.
     /// The destination library folder is the containment root for the cover pass, and
     /// the library has already ingested the moved paths, so the lyrics lookup resolves
@@ -981,14 +1069,19 @@ public partial class AutoTagService
         string configPath,
         CancellationToken cancellationToken,
         IReadOnlyList<string>? batchFiles = null,
-        bool forceProfileLyrics = false)
+        bool forceProfileLyrics = false,
+        bool resolveFileIdentityFromTags = false)
     {
         var sidecarEnabled = enhancementRoot["sidecars"] is JsonObject sidecars
             && ReadBool(sidecars, EnabledField) == true;
         var runLyrics = forceProfileLyrics
             || (sidecarEnabled && EnhancementWorkflowSelection.HasSidecarLyricsActions(enhancementRoot));
-        var runCovers = !forceProfileLyrics
-            && sidecarEnabled
+
+        // Forcing the profile's lyrics must not switch the album artwork off. These flags answer two
+        // independent questions - "should lyrics run" and "should artwork run" - and coupling them meant an
+        // artwork-enabled profile did no cover work at all on a forced-lyrics run, which is every external-file
+        // operation. The reader asked for artwork and got a silent pass over it.
+        var runCovers = sidecarEnabled
             && EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot);
         if (!runLyrics && !runCovers)
         {
@@ -1076,10 +1169,12 @@ public partial class AutoTagService
                 : null;
             var lyricsRefreshOptions = handlesLyrics ? BuildLyricsRefreshOptions(lyricsOptions) : null;
             var lyricsPlan = handlesLyrics && lyricsRefreshOptions is not null
-                ? await _lyricsRefreshQueueService.PlanTrackRefreshAsync(
-                    trackId,
-                    lyricsRefreshOptions,
-                    cancellationToken)
+                ? resolveFileIdentityFromTags && stagedProfileSettings is not null
+                    ? _lyricsRefreshQueueService.PlanStagedFileRefresh(filePath, stagedProfileSettings, lyricsRefreshOptions)
+                    : await _lyricsRefreshQueueService.PlanTrackRefreshAsync(
+                        trackId,
+                        lyricsRefreshOptions,
+                        cancellationToken)
                 : null;
 
             var needs = ResolveSidecarFileNeeds(ownsAlbumArtwork, coverPlan, handlesLyrics, lyricsPlan);
@@ -1169,6 +1264,20 @@ public partial class AutoTagService
                 var lyricsStep = await RunSidecarFetchStepAsync(
                     async token =>
                     {
+                        // A staged file is written to beside itself rather than through the library-batch
+                        // path, which needs a library track id. Same resolution, same save rules, same
+                        // outcome wording - only where the identity came from differs.
+                        if (resolveFileIdentityFromTags && stagedProfileSettings is not null && lyricsRefreshOptions is not null)
+                        {
+                            lyricsResult = await _lyricsRefreshQueueService.RefreshStagedFileNowAsync(
+                                filePath,
+                                stagedProfileSettings,
+                                lyricsRefreshOptions,
+                                token,
+                                lyricsBudget.BeginWrite);
+                            return true;
+                        }
+
                         await RunLyricsRefreshForBatchAsync(
                             job,
                             [trackId],
@@ -1672,10 +1781,21 @@ public partial class AutoTagService
             _runLyrics = runLyrics;
         }
 
-        public SidecarFetchScope Resolve(string filePath, long trackId)
+        /// <param name="filePath">The file whose album may own the artwork.</param>
+        /// <param name="trackId">
+        ///     The library track, or 0 for a staged file. A staged file has no library row, and refusing
+        ///     lyrics for it meant the entire staged pass silently did nothing for the one sidecar category
+        ///     a reader is most likely to want.
+        /// </param>
+        /// <param name="identityResolvedFromTags">
+        ///     Whether the file's identity came from its own tags rather than a library row. When it did, the
+        ///     absence of a track id says nothing about whether lyrics can be resolved - the provider ids the
+        ///     tagging chain wrote onto the file are what the lookup uses.
+        /// </param>
+        public SidecarFetchScope Resolve(string filePath, long trackId, bool identityResolvedFromTags = false)
         {
             var ownsAlbumArtwork = _runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath));
-            var handlesLyrics = _runLyrics && trackId > 0;
+            var handlesLyrics = _runLyrics && (trackId > 0 || identityResolvedFromTags);
             return new SidecarFetchScope(ownsAlbumArtwork, handlesLyrics);
         }
     }
@@ -1900,6 +2020,69 @@ public partial class AutoTagService
             .OrderBy(ResolveSidecarAlbumKey, StringComparer.OrdinalIgnoreCase)
             .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    /// <summary>
+    ///     The staged files a sidecar pass runs against, with no library ingestion.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Staged audio has no library track id, and manufacturing one means ingesting the file into the
+    ///         library in order to ask a question about it. That leaves library rows behind for files that are
+    ///         still mid-enrichment, and it makes the answer depend on an ingest that may not have completed.
+    ///     </para>
+    ///     <para>
+    ///         Identity instead comes from the file itself: the provider ids and final tags the tagging chain
+    ///         wrote are on disk at this point, which is exactly the information the lookup needs.
+    ///     </para>
+    /// </remarks>
+    /// <summary>
+    ///     The settings a staged file's sidecar work runs under, from the job's injected profile block.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A staged file belongs to no library folder yet, so the library path cannot resolve a profile for
+    ///         it by folder id. The runtime config already carries that profile's technical block - it was
+    ///         injected when the job started - so it is applied here directly, through the same applier the
+    ///         library path uses.
+    ///     </para>
+    ///     <para>
+    ///         That is what makes the formats, naming and technical lyrics settings the same ones the file
+    ///         will keep once it is a library track, rather than whatever the global defaults happen to be at
+    ///         the moment the lookup runs.
+    ///     </para>
+    /// </remarks>
+    private DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings? BuildStagedSidecarSettings(JsonObject configRoot)
+    {
+        if (configRoot["technical"] is not JsonObject technicalNode)
+        {
+            return null;
+        }
+
+        var technical = technicalNode.Deserialize<DeezSpoTag.Core.Models.Settings.TechnicalTagSettings>(_jsonOptions);
+        if (technical is null)
+        {
+            return null;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        DeezSpoTag.Services.Download.Shared.TechnicalLyricsSettingsApplier.Apply(settings, technical);
+
+        return settings;
+    }
+
+    private static IReadOnlyList<string> ResolveStagedSidecarFiles(IReadOnlyList<string>? stagedFiles)
+    {
+        if (stagedFiles is null || stagedFiles.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return stagedFiles
+            .Select(NormalizePathForJob)
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 
     private async Task<IReadOnlyList<string>> ResolveSidecarRunFilesAsync(
         AutoTagJob job,

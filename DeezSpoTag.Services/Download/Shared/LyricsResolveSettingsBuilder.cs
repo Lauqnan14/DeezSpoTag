@@ -60,12 +60,9 @@ internal static class LyricsResolveSettingsBuilder
 
         if (tagSettings.SyncedLyrics && allowsSynced)
         {
-            foreach (var type in new[] { LyricsType, SyllableLyricsType, "ttml-lyrics" })
+            foreach (var type in new[] { LyricsType, SyllableLyricsType, "ttml-lyrics" }.Where(type => selected.Contains(type)))
             {
-                if (selected.Contains(type))
-                {
-                    types.Add(type);
-                }
+                types.Add(type);
             }
         }
 

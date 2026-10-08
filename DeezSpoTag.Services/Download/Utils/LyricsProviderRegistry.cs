@@ -20,6 +20,16 @@ public static class LyricsProviderRegistry
     public const string YouLyPlus = "youlyplus";
     public const string BetterLyrics = "betterlyrics";
 
+    /// <summary>
+    ///     Lyrics the Soulseek peer shipped in the same folder as the audio.
+    /// </summary>
+    /// <remarks>
+    ///     Resolvable only from a file already fetched from the peer, and only when the reader has explicitly
+    ///     asked for it. It is never consulted for a track that did not come from Soulseek, and it yields
+    ///     nothing when no peer file was taken, so registering it cannot change any other download.
+    /// </remarks>
+    public const string Peer = "peer";
+
     private static readonly IReadOnlyList<LyricsProviderDescriptor> Providers =
     [
         new(Apple, "Apple Music", true, true, true, true, false,
@@ -31,7 +41,12 @@ public static class LyricsProviderRegistry
         new(YouLyPlus, "YouLy+", true, true, true, false, true,
             ["youly", "youly+", "youly-plus", "lyricsplus"]),
         new(BetterLyrics, "BetterLyrics", true, true, true, true, true,
-            ["better-lyrics", "better_lyrics", "better lyrics"])
+            ["better-lyrics", "better_lyrics", "better lyrics"]),
+
+        // Listed last and never part of the configured default order, so it cannot be reached by accident.
+        // It is only ever consulted ahead of the chain when the reader turned it on and the download actually
+        // carried a peer lyrics or cue file.
+        new(Peer, "Peer-supplied", true, true, false, false, false, ["peer-supplied", "soulseek"])
     ];
 
     private static readonly IReadOnlyDictionary<string, LyricsProviderDescriptor> ProvidersById =
@@ -39,8 +54,19 @@ public static class LyricsProviderRegistry
 
     public static IReadOnlyList<LyricsProviderDescriptor> All => Providers;
 
+    /// <summary>
+    ///     The providers a download consults when the reader has expressed no preference.
+    /// </summary>
+    /// <remarks>
+    ///     The peer source is deliberately absent. A default-order entry would be consulted for every track in
+    ///     the app, including the many that never came from a peer and so can only ever answer "nothing". It is
+    ///     reached exactly once, explicitly, by a download that actually carries a peer file.
+    /// </remarks>
     public static IReadOnlyList<string> DefaultOrder { get; } =
-        Providers.Select(provider => provider.Id).ToArray();
+        Providers
+            .Where(provider => provider.Id != Peer)
+            .Select(provider => provider.Id)
+            .ToArray();
 
     public static bool IsRegistered(string? provider)
         => TryNormalize(provider, out _);

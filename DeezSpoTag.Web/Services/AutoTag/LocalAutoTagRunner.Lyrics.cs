@@ -281,7 +281,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var existingLrcIsWord = sidecarState.HasLrc
             && LrcContent.IsWordSynchronized(ReadFileOrEmpty(Path.ChangeExtension(filePath, ".lrc")));
         var lrcSatisfies = sidecarState.HasLrc
-            && (wantsWordLrc ? existingLrcIsWord : true);
+            && (!wantsWordLrc || existingLrcIsWord);
         if (lrcSatisfies)
         {
             requestFlags = requestFlags with { WantsSynced = false, WantsUnsynced = false };
@@ -480,13 +480,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        foreach (var name in new[] { "cover.jpg", "cover.png", "folder.jpg", "folder.png" })
+        foreach (var candidate in new[] { "cover.jpg", "cover.png", "folder.jpg", "folder.png" }
+            .Select(name => Path.Join(directory, name))
+            .Where(candidate => IOFile.Exists(candidate)))
         {
-            var candidate = Path.Join(directory, name);
-            if (IOFile.Exists(candidate))
-            {
-                return $"/api/library/image?path={Uri.EscapeDataString(candidate)}&size=240";
-            }
+            return $"/api/library/image?path={Uri.EscapeDataString(candidate)}&size=240";
         }
 
         return null;
@@ -699,6 +697,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         WriteSourceTag(tagWriteContext, context);
         WriteRatingTag(tagWriteContext, context);
         WriteLanguageTag(tagWriteContext, context);
+        WriteArtistMetadataTags(tagWriteContext, context);
         WriteSyncedLyrics(file, context);
         WriteUnsyncedLyrics(file, context);
         WriteExplicitTag(tagWriteContext, context);

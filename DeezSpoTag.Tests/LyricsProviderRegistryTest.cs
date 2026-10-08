@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using DeezSpoTag.Core.Models;
@@ -27,6 +28,22 @@ public sealed class LyricsProviderRegistryTest
                 "betterlyrics"
             ],
             LyricsProviderRegistry.DefaultOrder);
+    }
+
+    /// <summary>
+    ///     The peer source is registered but never part of the default order.
+    /// </summary>
+    /// <remarks>
+    ///     A default-order entry would be consulted for every track in the app, including the overwhelming
+    ///     majority that never came from a peer and can therefore only ever answer "nothing". It has to be
+    ///     reached explicitly, by a download that actually carries a peer lyrics or cue file.
+    /// </remarks>
+    [Fact]
+    public void Registry_PeerSourceIsRegisteredButNotInTheDefaultOrder()
+    {
+        Assert.Contains(LyricsProviderRegistry.Peer, LyricsProviderRegistry.All.Select(provider => provider.Id));
+
+        Assert.DoesNotContain(LyricsProviderRegistry.Peer, LyricsProviderRegistry.DefaultOrder);
     }
 
     [Theory]

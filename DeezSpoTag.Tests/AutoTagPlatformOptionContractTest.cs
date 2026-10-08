@@ -49,6 +49,18 @@ public sealed class AutoTagPlatformOptionContractTest
         ("shazam", typeof(ShazamPlatform), typeof(ShazamMatchConfig)),
     ];
 
+    [Fact]
+    public void MusixmatchCard_DeclaresRequireLyricsEnabledFromSharedOptions()
+    {
+        var options = DeclaredOptions(typeof(MusixmatchPlatform));
+        var requireLyrics = Assert.Single(options, option =>
+            string.Equals(option.Id, "require_lyrics", StringComparison.OrdinalIgnoreCase));
+
+        var declared = Assert.IsType<PlatformCustomOptionBoolean>(requireLyrics.Value);
+        Assert.True(declared.Value);
+        Assert.True(new DeezSpoTag.Core.Models.Settings.MusixmatchOptions().RequireLyrics);
+    }
+
     /// <summary>
     /// Config properties that intentionally have no UI control. Kept explicit so that adding a new
     /// unattached property is a deliberate, reviewed act rather than a silent drift.

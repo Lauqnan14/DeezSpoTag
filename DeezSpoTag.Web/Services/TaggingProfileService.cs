@@ -393,12 +393,10 @@ public sealed class TaggingProfileService
         if (technical.LyricsSchemaVersion < 2)
         {
             var providers = SplitNormalized(technical.LyricsFallbackOrder);
-            foreach (var provider in DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder)
+            foreach (var provider in DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder
+                         .Where(candidate => !providers.Contains(candidate, StringComparer.OrdinalIgnoreCase)))
             {
-                if (!providers.Contains(provider, StringComparer.OrdinalIgnoreCase))
-                {
-                    providers.Add(provider);
-                }
+                providers.Add(provider);
             }
             technical.LyricsFallbackOrder = string.Join(",", providers);
 
@@ -466,21 +464,20 @@ public sealed class TaggingProfileService
     private static List<string> NormalizeLyricsFormats(string? value)
     {
         var formats = new List<string>();
-        foreach (var token in SplitNormalized(value))
+        foreach (var expanded in SplitNormalized(value)
+                     .Select(static token => token switch
+                     {
+                         "both" or "richlyrics" or "rich-lyrics" or "lyrics" => new[] { "lrc", "ttml" },
+                         "lrc+ttml" or "ttml+lrc" => new[] { "lrc", "ttml" },
+                         "elrc" or "enhanced-lrc" or "enhanced-synchronized-lyrics" => new[] { "lrc" },
+                         _ => new[] { token }
+                     }))
         {
-            var expanded = token switch
+            foreach (var format in expanded
+                         .Where(static format => format is "lrc" or "ttml")
+                         .Where(candidate => !formats.Contains(candidate, StringComparer.OrdinalIgnoreCase)))
             {
-                "both" or "richlyrics" or "rich-lyrics" or "lyrics" => new[] { "lrc", "ttml" },
-                "lrc+ttml" or "ttml+lrc" => new[] { "lrc", "ttml" },
-                "elrc" or "enhanced-lrc" or "enhanced-synchronized-lyrics" => new[] { "lrc" },
-                _ => new[] { token }
-            };
-            foreach (var format in expanded.Where(static format => format is "lrc" or "ttml"))
-            {
-                if (!formats.Contains(format, StringComparer.OrdinalIgnoreCase))
-                {
-                    formats.Add(format);
-                }
+                formats.Add(format);
             }
         }
         if (formats.Count == 0)

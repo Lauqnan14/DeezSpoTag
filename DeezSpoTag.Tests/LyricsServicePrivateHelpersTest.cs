@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Threading;
 using System.Xml.Linq;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
@@ -20,6 +21,306 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LyricsServicePrivateHelpersTest
 {
+    internal static async Task<(LyricsResolutionResult Result, List<LyricsResolutionProgress> Progress)> ResolveWithCachedLyricsAsync(
+        DeezSpoTagSettings settings, IReadOnlyDictionary<string, LyricsBase> providers)
+    {
+        var track = CreateLyricsTestTrack();
+        track.Title = "Lyrics regression " + Guid.NewGuid().ToString("N");
+        var cache = typeof(LyricsService).GetField("ProviderResultCache", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        var entryType = typeof(LyricsService).GetNestedType("CachedLyricsResult", BindingFlags.NonPublic)!;
+        var indexer = cache.GetType().GetProperty("Item")!;
+        var keys = new List<string>();
+        try
+        {
+            foreach (var pair in providers)
+            {
+                var key = InvokeStatic<string>("BuildProviderCacheKey", pair.Key, track, settings);
+                var entry = Activator.CreateInstance(entryType, DateTimeOffset.UtcNow.AddMinutes(5), pair.Value)!;
+                indexer.SetValue(cache, entry, [key]);
+                keys.Add(key);
+            }
+            var progress = new List<LyricsResolutionProgress>();
+            var result = await CreateUninitializedLyricsService().ResolveLyricsWithDetailsAsync(
+                track, settings, null, (value, _) =>
+                {
+                    progress.Add(value);
+                    return ValueTask.CompletedTask;
+                }, CancellationToken.None);
+            return (result, progress);
+        }
+        finally
+        {
+            var remove = cache.GetType().GetMethod("TryRemove", [typeof(string), entryType.MakeByRefType()])!;
+            foreach (var key in keys) remove.Invoke(cache, [key, null]);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResolveLyrics_RichSuccessSkipsPlainLookupAndRequirement(bool ttml)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LrcFormat = ttml ? "ttml" : "lrc",
+            LyricsFallbackOrder = ttml ? "apple,lrclib" : "musixmatch,lrclib"
+        };
+        var rich = ttml ? CreateWordTimedTtmlLyrics() : CreateEnhancedTestLyrics();
+        rich.UnsyncedLyrics = null;
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            [ttml ? "apple" : "musixmatch"] = rich,
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Unneeded plain text" }
+        });
+
+        Assert.Equal([ttml ? "apple" : "musixmatch"], result.ProvidersAttempted);
+        Assert.Equal([ttml ? "ttml" : "lrc"], result.ResolvedFormats);
+        Assert.All(progress, tick => Assert.DoesNotContain("plain-text", tick.RemainingOutputs));
+        Assert.Empty(progress[^1].RemainingOutputs);
+    }
+
+    [Theory]
+    [InlineData("prefer-enhanced", true)]
+    [InlineData("word-enhanced", false)]
+    public async Task ResolveLyrics_LinePayloadIsAcceptedOnlyWhenPermitted(string mode, bool acceptsLine)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics", LrcTimingPreference = mode,
+            LyricsFallbackOrder = "musixmatch,lrclib"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            },
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Fallback plain" }
+        });
+
+        Assert.Equal(acceptsLine ? new[] { "lrc" } : new[] { "txt" }, result.ResolvedFormats);
+        Assert.Equal(acceptsLine ? new[] { "musixmatch" } : new[] { "musixmatch", "lrclib" }, result.ProvidersAttempted);
+        Assert.Null(result.Error);
+        if (acceptsLine)
+        {
+            Assert.Empty(progress[^1].RemainingOutputs);
+            Assert.Equal("line", progress[^1].LrcTiming);
+        }
+        else
+        {
+            Assert.All(progress, tick => Assert.DoesNotContain("lrc", tick.ResolvedFormats));
+            Assert.Null(progress[^1].LrcTiming);
+            Assert.DoesNotContain("plain-text", progress[^1].RemainingOutputs);
+            Assert.Contains(progress, tick => tick.RemainingOutputs.Contains("plain-text"));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResolveLyrics_ConfiguredPlainFallbackRemainsAvailable(bool plainOnly)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = !plainOnly, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics", LyricsFallbackOrder = "musixmatch,lrclib"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = LyricsNew.CreateError("No lyrics available"),
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Fallback plain" }
+        });
+
+        Assert.Equal(["txt"], result.ResolvedFormats);
+        Assert.Equal("Fallback plain", result.Lyrics!.UnsyncedLyrics);
+        Assert.Null(result.Error);
+        Assert.False(result.Incomplete);
+        Assert.DoesNotContain("plain-text", progress[^1].RemainingOutputs);
+        Assert.Contains(progress, tick => tick.ResolvedOutputs.Contains("plain-text"));
+    }
+
+    [Fact]
+    public void EnrichmentLyricsSettings_PreserveSharedProviderOptions()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true,
+            Lrclib = new LrclibOptions { DurationToleranceSeconds = 3, UseDurationHint = false, SearchFallback = false, PreferSynced = false },
+            Musixmatch = new MusixmatchOptions { DurationToleranceSeconds = 4, SearchPageSize = 25, RichsyncMaxDeviationSeconds = 6, SubtitleMaxDeviationSeconds = 7, RequireLyrics = false }
+        };
+        var method = typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner).GetMethod("BuildLyricsLookupSettings", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var result = (DeezSpoTagSettings)method.Invoke(null, new object[] { settings, true, true, false })!;
+        Assert.Equal(3, result.Lrclib.DurationToleranceSeconds);
+        Assert.False(result.Lrclib.UseDurationHint);
+        Assert.False(result.Lrclib.SearchFallback);
+        Assert.False(result.Lrclib.PreferSynced);
+        Assert.Equal(4, result.Musixmatch.DurationToleranceSeconds);
+        Assert.Equal(25, result.Musixmatch.SearchPageSize);
+        Assert.Equal(6, result.Musixmatch.RichsyncMaxDeviationSeconds);
+        Assert.Equal(7, result.Musixmatch.SubtitleMaxDeviationSeconds);
+        Assert.False(result.Musixmatch.RequireLyrics);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_ExhaustsWordProvidersBeforeLineFallback()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics", LyricsFallbackOrder = "lrclib,musixmatch,youlyplus,spotify"
+        };
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = LyricsNew.CreateError("No lyrics available"),
+            ["youlyplus"] = LyricsNew.CreateError("No lyrics available"),
+            ["lrclib"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            },
+            ["spotify"] = new LyricsSource { UnsyncedLyrics = "Unneeded plain" }
+        });
+
+        Assert.Equal(["musixmatch", "youlyplus", "lrclib"], result.ProvidersAttempted);
+        Assert.Equal(["lrc"], result.ResolvedFormats);
+        Assert.False(result.Incomplete);
+        Assert.Empty(progress[^1].RemainingOutputs);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_PreservesMissingRichRequirements()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics", LyricsFallbackOrder = "apple,musixmatch,lrclib"
+        };
+        var rich = CreateEnhancedTestLyrics();
+        rich.UnsyncedLyrics = null;
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["apple"] = LyricsNew.CreateError("No lyrics available"),
+            ["musixmatch"] = rich,
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Unneeded plain" }
+        });
+
+        Assert.Equal(["apple", "musixmatch"], result.ProvidersAttempted);
+        Assert.Equal(["lrc"], result.ResolvedFormats);
+        Assert.False(result.Incomplete);
+        Assert.Equal(["word-ttml"], progress[^1].RemainingOutputs);
+    }
+
+    [Fact]
+    public async Task ResolveLyrics_ProgressKeepsWordPreferenceUntilWordProvidersAreExhausted()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics", LyricsFallbackOrder = "musixmatch,youlyplus,lrclib"
+        };
+        var rich = CreateEnhancedTestLyrics();
+        rich.UnsyncedLyrics = null;
+        var (result, progress) = await ResolveWithCachedLyricsAsync(settings, new Dictionary<string, LyricsBase>
+        {
+            ["musixmatch"] = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc,
+                UnsyncedLyrics = "Provisional plain"
+            },
+            ["youlyplus"] = rich,
+            ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Unneeded plain" }
+        });
+        var provisional = Assert.Single(progress.Where(tick => tick.Phase == "provider-completed" && tick.Provider == "musixmatch"));
+
+        Assert.Equal(["enhanced-lrc"], provisional.RemainingOutputs);
+        Assert.Empty(provisional.ResolvedFormats);
+        Assert.Null(provisional.LrcTiming);
+        Assert.Equal(["musixmatch", "youlyplus"], result.ProvidersAttempted);
+        Assert.Equal("youlyplus", result.SourcesByFormat["lrc"]);
+        Assert.Equal("word", progress[^1].LrcTiming);
+        Assert.Empty(progress[^1].RemainingOutputs);
+    }
+
+    [Fact]
+    public void BuildResolutionResult_PreservesOperationalFailureWhenRichOutputIsMissing()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"
+        };
+        var state = CreateLyricsResolutionState(CreateEnhancedTestLyrics());
+        var outcomes = (List<LyricsProviderOutcome>)state.GetType().GetProperty("ProviderOutcomes")!.GetValue(state)!;
+        outcomes.Add(new LyricsProviderOutcome("apple", "authentication-failure", "Token unavailable"));
+        var result = InvokeStatic<LyricsResolutionResult>("BuildResolutionResult", state,
+            LyricsService.DescribeResolutionPlan(settings), InvokeStatic<object>("ResolveOutputRequirements", settings), null!);
+
+        Assert.True(result.Incomplete);
+        Assert.Equal(["lrc"], result.ResolvedFormats);
+        Assert.Contains(result.ProviderOutcomes!, outcome => outcome.Provider == "apple" && outcome.IsOperationalFailure);
+        Assert.NotNull(result.Error);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SaveLyricsAsync_StrictPlainFallbackDoesNotTreatLineLrcAsAcceptedRichOutput(bool existingLine)
+    {
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var lrcPath = Path.Join(directory, "track.lrc");
+            if (existingLine) await File.WriteAllTextAsync(lrcPath, "[00:01.00]Existing line\n");
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true, SaveLyrics = true, LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+                LrcFormat = "lrc", LrcTimingPreference = LrcTimingModes.WordEnhanced
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc,
+                UnsyncedLyrics = "Fallback plain"
+            };
+
+            var result = await CreateUninitializedLyricsService().SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Equal(["txt"], result.FilesByFormat.Keys);
+            Assert.Equal("Fallback plain", await File.ReadAllTextAsync(Path.Join(directory, "track.txt")));
+            if (existingLine) Assert.Equal("[00:01.00]Existing line\n", await File.ReadAllTextAsync(lrcPath));
+            else Assert.False(File.Exists(lrcPath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_DoesNotReportExistingUnrequestedTxtAsFallback()
+    {
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var txtPath = Path.Join(directory, "track.txt");
+            await File.WriteAllTextAsync(txtPath, "Existing plain");
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true, SaveLyrics = false, LrcType = "ttml-lyrics", LrcFormat = "ttml",
+                SynthesizeTtmlFromLrc = false
+            };
+
+            var result = await CreateUninitializedLyricsService().SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Empty(result.FilesByFormat);
+            Assert.Equal("Existing plain", await File.ReadAllTextAsync(txtPath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     private static MethodInfo GetStaticMethod(string name)
     {
         return typeof(LyricsService).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
@@ -632,6 +933,181 @@ public sealed class LyricsServicePrivateHelpersTest
         AssertRequirement(requirements, "WantsEnhancedSynchronizedLyrics", expected: true);
         AssertRequirement(requirements, "WantsTtmlLyrics", expected: true);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
+    }
+
+    [Theory]
+    [InlineData("line", true, "lyrics,syllable-lyrics", false, false)]
+    [InlineData("word-enhanced", false, "lyrics,syllable-lyrics", true, true)]
+    [InlineData("prefer-enhanced", false, "lyrics,syllable-lyrics", true, false)]
+    [InlineData("", false, "lyrics,syllable-lyrics", false, false)]
+    [InlineData("", true, "lyrics,syllable-lyrics", true, false)]
+    [InlineData("prefer-enhanced", true, "lyrics", false, false)]
+    [InlineData("prefer-enhanced", true, "ttml-lyrics", false, false)]
+    public void ResolveOutputRequirements_UsesNormalizedTimingAndSelectedTypes(
+        string mode, bool legacyPreference, string types, bool enhanced, bool strict)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, LrcFormat = "lrc", LrcType = types,
+            LrcTimingPreference = mode, PreferEnhancedLrc = legacyPreference,
+            SynthesizeLrcFromTtml = false
+        };
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+
+        AssertRequirement(requirements, "WantsLrcLyrics", types != "ttml-lyrics");
+        AssertRequirement(requirements, "WantsEnhancedSynchronizedLyrics", enhanced);
+        AssertRequirement(requirements, "RequiresEnhancedSynchronizedLyrics", strict);
+    }
+
+    [Theory]
+    [InlineData("line", "syllable-lyrics")]
+    [InlineData("word-enhanced", "lyrics")]
+    public void ResolveOutputRequirements_DoesNotRequestAnUnselectedTimingType(string mode, string types)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = false, LrcFormat = "lrc", LrcType = types,
+            LrcTimingPreference = mode
+        };
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+
+        AssertRequirement(requirements, "WantsLrcLyrics", false);
+        AssertRequirement(requirements, "WantsEnhancedSynchronizedLyrics", false);
+        Assert.Empty(LyricsService.DescribeResolutionPlan(settings).RequestedFormats);
+    }
+
+    [Theory]
+    [InlineData("y", "prefer-enhanced")]
+    [InlineData("t", "prefer-enhanced")]
+    [InlineData("y", "word-enhanced")]
+    [InlineData("t", "word-enhanced")]
+    public async Task SaveLyricsAsync_OverwriteEnabledCannotDowngradePreferredWordLrc(string overwrite, string mode)
+    {
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var path = Path.Join(directory, "track.lrc");
+            const string existing = "[00:09.00]<00:09.000>Kept <00:09.400>words\n";
+            await File.WriteAllTextAsync(path, existing);
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true, LrcType = "lyrics,syllable-lyrics", LrcFormat = "lrc",
+                LrcTimingPreference = mode, OverwriteFile = overwrite
+            };
+            var line = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+            };
+
+            await CreateUninitializedLyricsService().SaveLyricsAsync(line, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Equal(existing, await File.ReadAllTextAsync(path));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("line", true, false)]
+    [InlineData("word-enhanced", false, true)]
+    [InlineData("prefer-enhanced", false, true)]
+    public async Task SaveLyricsAsync_ExplicitModeOverridesLegacyPreference(string mode, bool legacyPreference, bool words)
+    {
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true, LrcType = "lyrics,syllable-lyrics", LrcFormat = "lrc",
+                LrcTimingPreference = mode, PreferEnhancedLrc = legacyPreference
+            };
+
+            await CreateUninitializedLyricsService().SaveLyricsAsync(CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            var body = await File.ReadAllTextAsync(Path.Join(directory, "track.lrc"));
+            Assert.Equal(words, LrcContent.IsWordSynchronized(body));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public void MergeLyricsData_KeepsConvertedWordTimingOverDirectLineTiming()
+    {
+        var target = CreateEnhancedTestLyrics();
+        target.SyncedLyricsSourceFormat = LyricsSourceFormat.ConvertedFromTtml;
+        var lines = target.SyncedLyrics;
+        var candidate = new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        };
+
+        GetStaticMethod("MergeLyricsData").Invoke(null, [target, candidate]);
+
+        Assert.Same(lines, target.SyncedLyrics);
+        Assert.True(target.HasEnhancedSynchronizedLyrics());
+        Assert.Equal(LyricsSourceFormat.ConvertedFromTtml, target.SyncedLyricsSourceFormat);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MergeProviderLyrics_AttributesOnlyAcceptedLrc(bool candidateHasWords)
+    {
+        var initial = CreateEnhancedTestLyrics();
+        initial.SyncedLyricsSourceFormat = LyricsSourceFormat.ConvertedFromTtml;
+        var state = CreateLyricsResolutionState(initial);
+        var sources = (Dictionary<string, string>)state.GetType().GetProperty("SourcesByFormat")!.GetValue(state)!;
+        sources["lrc"] = "apple";
+        var candidate = candidateHasWords ? CreateEnhancedTestLyrics() : new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        };
+
+        GetStaticMethod("MergeProviderLyrics").Invoke(null, [state, candidate, "musixmatch"]);
+
+        Assert.Equal(candidateHasWords ? "musixmatch" : "apple", sources["lrc"]);
+        Assert.True(initial.HasEnhancedSynchronizedLyrics());
+    }
+
+    [Fact]
+    public void MergeProviderLyrics_AttributesWordUpgrade()
+    {
+        var state = CreateLyricsResolutionState(new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric("Line only", "[00:02.00]", 2000)],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        });
+        var sources = (Dictionary<string, string>)state.GetType().GetProperty("SourcesByFormat")!.GetValue(state)!;
+        sources["lrc"] = "deezer";
+
+        GetStaticMethod("MergeProviderLyrics").Invoke(null, [state, CreateEnhancedTestLyrics(), "musixmatch"]);
+
+        Assert.Equal("musixmatch", sources["lrc"]);
+        Assert.True(((LyricsBase)state.GetType().GetProperty("ResolvedLyrics")!.GetValue(state)!).HasEnhancedSynchronizedLyrics());
+    }
+
+    [Fact]
+    public void MergeProviderLyrics_AttributesNativeTtmlUpgrade()
+    {
+        var state = CreateLyricsResolutionState(new LyricsSource
+        {
+            TtmlLyrics = SynthesizedWordTimedTtml,
+            TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings
+        });
+        var sources = (Dictionary<string, string>)state.GetType().GetProperty("SourcesByFormat")!.GetValue(state)!;
+        sources["ttml"] = "musixmatch";
+
+        GetStaticMethod("MergeProviderLyrics").Invoke(null, [state, CreateWordTimedTtmlLyrics(), "apple"]);
+        Assert.Equal("apple", sources["ttml"]);
+
+        GetStaticMethod("MergeProviderLyrics").Invoke(null, [state, new LyricsSource
+        {
+            TtmlLyrics = SynthesizedWordTimedTtml,
+            TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings
+        }, "youlyplus"]);
+        Assert.Equal("apple", sources["ttml"]);
     }
 
     [Fact]
@@ -1851,7 +2327,7 @@ public sealed class LyricsServicePrivateHelpersTest
                 new("q_artist", "The Weeknd"),
                 new("usertoken", "token")
             },
-            "b3dc8788299f5806a70a6a20a0cb0ffc");
+            "test-musixmatch-signing-secret");
 
         Assert.StartsWith("https://apic.musixmatch.com/ws/1.1/track.search?", signedUrl);
         Assert.Contains("app_id=web-desktop-app-v1.0", signedUrl);
@@ -1863,6 +2339,46 @@ public sealed class LyricsServicePrivateHelpersTest
         Assert.DoesNotContain("&t=", signedUrl);
         Assert.DoesNotContain("user_language=", signedUrl);
         Assert.DoesNotContain("apic-desktop.musixmatch.com", signedUrl);
+    }
+
+    [Fact]
+    public void BuildMusixmatchSearchRequestFields_TrueSendsHasLyricsRestriction()
+    {
+        var fields = InvokeStatic<List<KeyValuePair<string, string>>>(
+            "BuildMusixmatchSearchRequestFields",
+            "Blinding Lights",
+            "The Weeknd",
+            "token",
+            new MusixmatchOptions());
+
+        Assert.Contains(fields, field => field.Key == "f_has_lyrics" && field.Value == "1");
+
+        var signedUrl = InvokeStatic<string>(
+            "BuildMusixmatchSignedUrl",
+            "track.search",
+            fields,
+            "test-musixmatch-signing-secret");
+        Assert.Contains("f_has_lyrics=1", signedUrl, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMusixmatchSearchRequestFields_FalseOmitsHasLyricsRestriction()
+    {
+        var fields = InvokeStatic<List<KeyValuePair<string, string>>>(
+            "BuildMusixmatchSearchRequestFields",
+            "Blinding Lights",
+            "The Weeknd",
+            "token",
+            new MusixmatchOptions { RequireLyrics = false });
+
+        Assert.DoesNotContain(fields, field => field.Key == "f_has_lyrics");
+
+        var signedUrl = InvokeStatic<string>(
+            "BuildMusixmatchSignedUrl",
+            "track.search",
+            fields,
+            "test-musixmatch-signing-secret");
+        Assert.DoesNotContain("f_has_lyrics", signedUrl, StringComparison.Ordinal);
     }
 
     [Fact]

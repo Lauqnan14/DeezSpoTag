@@ -22,11 +22,19 @@ public sealed class MusixmatchOptions
     /// <summary>Drift allowance for line-level (subtitle) synchronisation.</summary>
     public int SubtitleMaxDeviationSeconds { get; set; } = 10;
 
+    /// <summary>
+    /// When true (default), the Musixmatch track search is restricted to recordings that
+    /// have lyrics. When false, the request omits that restriction and also surfaces
+    /// instrumental/lyrics-less results.
+    /// </summary>
+    public bool RequireLyrics { get; set; } = true;
+
     public MusixmatchOptions Clone() => new()
     {
         DurationToleranceSeconds = DurationToleranceSeconds,
         SearchPageSize = SearchPageSize,
         RichsyncMaxDeviationSeconds = RichsyncMaxDeviationSeconds,
-        SubtitleMaxDeviationSeconds = SubtitleMaxDeviationSeconds
+        SubtitleMaxDeviationSeconds = SubtitleMaxDeviationSeconds,
+        RequireLyrics = RequireLyrics
     };
 }

@@ -9,6 +9,20 @@ public sealed class AppleMusicSettings
     public string MediaUserToken { get; set; } = string.Empty;
 
     /// <summary>
+    /// Base address of the public Apple Music lyrics API used as the Apple provider's fallback
+    /// whenever the authenticated amp-api path cannot supply word-timed TTML, including when no
+    /// media user token is configured or the configured token is inactive.
+    /// </summary>
+    public string PublicLyricsApiUrl { get; set; } = "https://lyrics.paxsenix.org";
+
+    /// <summary>
+    /// Timeout in seconds for public Apple Music lyrics lookups. Kept deliberately short and
+    /// independent of the shared lyrics client so one stalled host cannot hold up the remaining
+    /// capability rounds. Clamped to 3-60 seconds when read.
+    /// </summary>
+    public int PublicLyricsTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
     /// Optional bearer token for Apple API calls when scraping fails.
     /// </summary>
     public string AuthorizationToken { get; set; } = string.Empty;

@@ -23,6 +23,8 @@ public enum AppleTtmlTimingKind
 
 public sealed class AppleLyricsService
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
     private readonly record struct TypedLyricsRequestContext(
         string Token,
         string AppleId,
@@ -192,6 +194,13 @@ public sealed class AppleLyricsService
         bool synthesizeLrcFromTtml,
         CancellationToken cancellationToken)
     {
+        // Checked before the catalog token is scraped: with no media user token the authenticated
+        // endpoints cannot be called at all, so paying for a catalog token first is wasted latency.
+        if (string.IsNullOrWhiteSpace(mediaUserToken))
+        {
+            return null;
+        }
+
         var token = await _catalogService.GetCatalogTokenAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(token))
         {
@@ -200,10 +209,6 @@ public sealed class AppleLyricsService
 
         var languageCandidates = BuildLanguageCandidates(language);
         var typeCandidates = BuildLyricsTypeCandidates(lrcType, synthesizeLrcFromTtml);
-        if (string.IsNullOrWhiteSpace(mediaUserToken))
-        {
-            return null;
-        }
 
         using var client = _httpClientFactory.CreateClient();
         return await TryFetchLyricsFromTypedEndpointsAsync(
@@ -234,6 +239,13 @@ public sealed class AppleLyricsService
         {
             foreach (var lang in languageCandidates)
             {
+                // Word-timed TTML is the highest quality result, so stop fanning out across the
+                // remaining type/language combinations once it is in hand.
+                if (wordTtml != null)
+                {
+                    return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml);
+                }
+
                 var url = BuildLyricsTypeUrl(context.Storefront, context.AppleId, type, lang);
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -249,6 +261,21 @@ public sealed class AppleLyricsService
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
+                    // 401/403 means the media user token is inactive or rejected. Stop immediately
+                    // so the caller can fall back to the public API instead of burning the rest of
+                    // the type/language matrix on requests that cannot succeed.
+                    if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                    {
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug(
+                                "Apple lyrics media user token was rejected with {StatusCode}; falling back to the public lyrics API.",
+                                response.StatusCode);
+                        }
+
+                        return new AppleLyricsCandidates(null, lineTtml, plainTextTtml);
+                    }
+
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
                         _logger.LogDebug("Apple lyrics request failed: status={StatusCode} type={Type} lang={Lang}", response.StatusCode, type, lang);                    }
@@ -602,7 +629,8 @@ public sealed class AppleLyricsService
             string.Join(' ', words),
             @"\s+([,.;:!?])",
             "$1",
-            RegexOptions.CultureInvariant);
+            RegexOptions.CultureInvariant,
+            RegexTimeout);
     }
 
     private static string NormalizeLyricText(string? value)
@@ -610,7 +638,8 @@ public sealed class AppleLyricsService
                 value?.Trim() ?? string.Empty,
                 @"\s+",
                 " ",
-                RegexOptions.CultureInvariant)
+                RegexOptions.CultureInvariant,
+                RegexTimeout)
             .Trim();
 
     private static string? ReadRoleText(XElement paragraph, string role)

@@ -52,21 +52,24 @@ public static class LyricsSettingsPolicy
 
         var formats = ParseOutputFormats(settings.LrcFormat);
         var types = ParseSelectedTypes(settings.LrcType);
+        var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
         return formats.Contains("lrc")
-            && (types.Contains(LyricsType)
-                || types.Contains(SyllableLyricsType)
+            && ((types.Contains(LyricsType) && !LrcTimingModes.RequiresWordTiming(timingPreference))
+                || (types.Contains(SyllableLyricsType) && LrcTimingModes.ImpliesEnhanced(timingPreference))
                 || (settings.SynthesizeLrcFromTtml && types.Contains(TtmlLyricsType)));
     }
 
     public static bool WantsEnhancedLrc(DeezSpoTagSettings settings)
         => WantsLrcOutput(settings)
            && ParseSelectedTypes(settings.LrcType).Contains(SyllableLyricsType)
-           && LrcTimingModes.ImpliesEnhanced(settings.LrcTimingPreference);
+           && LrcTimingModes.ImpliesEnhanced(
+               LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc));
 
     public static bool WantsLineSyncedLrc(DeezSpoTagSettings settings)
         => WantsLrcOutput(settings)
            && ParseSelectedTypes(settings.LrcType).Contains(LyricsType)
-           && !LrcTimingModes.RequiresWordTiming(settings.LrcTimingPreference);
+           && !LrcTimingModes.RequiresWordTiming(
+               LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc));
 
     public static bool WantsUnsyncedTextOutput(DeezSpoTagSettings settings)
         => settings.SaveLyrics

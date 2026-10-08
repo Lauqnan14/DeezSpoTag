@@ -15,6 +15,7 @@ using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Apple;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Xml;
 
@@ -23,6 +24,15 @@ namespace DeezSpoTag.Services.Download.Utils;
 public sealed class LyricsProviderOptions
 {
     public LrclibLyricsProviderOptions? Lrclib { get; init; }
+
+    /// <summary>
+    ///     The lyrics or cue file a Soulseek peer shipped, when the reader asked for it and one arrived.
+    /// </summary>
+    /// <remarks>
+    ///     Null for every other engine and for every Soulseek download where the setting was off or the file
+    ///     did not arrive, which is what keeps the peer provider inert unless it has something real to offer.
+    /// </remarks>
+    public string? PeerLyricsPath { get; init; }
 }
 
 public sealed class LrclibLyricsProviderOptions
@@ -48,6 +58,35 @@ public sealed record LyricsResolutionPlan(
     IReadOnlyList<string> Providers,
     bool PlainFallbackAllowed);
 
+/// <summary>
+/// Capability tiers used to resolve lyrics. Rounds are attempted in declaration order and
+/// gate each other: a later round is only entered when the earlier round's goal is unmet.
+/// Providers inside a round are sequenced by the configured lyrics fallback order.
+/// </summary>
+public enum LyricsCapabilityRound
+{
+    /// <summary>Native word-timed TTML. Only providers that serve a real TTML document qualify.</summary>
+    NativeTtml = 0,
+
+    /// <summary>Word-timed (enhanced/karaoke) LRC. A line-synced LRC does not satisfy this round.</summary>
+    WordSynchronizedLrc = 1,
+
+    /// <summary>Line-synced LRC. Entered only when a line-synced fallback is acceptable.</summary>
+    LineSynchronizedLrc = 2,
+
+    /// <summary>Unsynced plain text, reached only when no provider offered rich lyrics.</summary>
+    PlainText = 3
+}
+
+/// <summary>
+/// One capability round: the goal, a human readable label, and the providers able to satisfy it
+/// in lyrics fallback order.
+/// </summary>
+public sealed record LyricsRoundPlan(
+    LyricsCapabilityRound Round,
+    string Goal,
+    IReadOnlyList<string> Providers);
+
 public sealed record LyricsProviderOutcome(
     [property: JsonPropertyName("provider")] string Provider,
     [property: JsonPropertyName("status")] string Status,
@@ -64,7 +103,22 @@ public sealed record LyricsResolutionProgress(
     IReadOnlyList<string> ResolvedOutputs,
     IReadOnlyList<string> RemainingOutputs,
     string? Detail = null,
-    bool Incomplete = false);
+    bool Incomplete = false)
+{
+    /// <summary>
+    /// Formats resolved so far (ttml/lrc/txt). Published on every progress tick so the
+    /// download queue can render lyrics badges as soon as a provider answers instead of
+    /// only after the whole capability chain has drained.
+    /// </summary>
+    public IReadOnlyList<string> ResolvedFormats { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Timing of the resolved LRC ("word" or "line"), or null when no LRC is resolved yet.
+    /// Lets the queue badge distinguish enhanced from line-synced lyrics before the sidecar
+    /// file has been written to disk.
+    /// </summary>
+    public string? LrcTiming { get; init; }
+}
 
 public sealed record LyricsResolutionResult(
     LyricsBase? Lyrics,
@@ -103,6 +157,8 @@ public class LyricsService
     private readonly SemaphoreSlim _musixmatchTokenGate = new(1, 1);
     private string? _cachedMusixmatchUserToken;
     private string? _cachedMusixmatchSecret;
+    private DateTime _musixmatchSecretRetryAfterUtc = DateTime.MinValue;
+    private const int MusixmatchSecretRetryCooldownMinutes = 10;
     private const int GwTokenTtlMinutes = 45;
     private const string DefaultSpotifyWebPlayerUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
     private const string AppleProvider = LyricsProviderRegistry.Apple;
@@ -114,11 +170,20 @@ public class LyricsService
     private const string BetterLyricsProvider = LyricsProviderRegistry.BetterLyrics;
     private const string MusixmatchBaseUrl = "https://apic.musixmatch.com/ws/1.1/";
     private const string MusixmatchWebSearchUrl = "https://www.musixmatch.com/search";
-    private const string MusixmatchDefaultSecret = "b3dc8788299f5806a70a6a20a0cb0ffc";
     private const string MusixmatchUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-    private const string PaxsenixBaseUrl = "https://lyrics.paxsenix.org";
+    private const string DefaultPublicLyricsApiBaseUrl = "https://lyrics.paxsenix.org";
+    private const int DefaultPublicLyricsTimeoutSeconds = 10;
+    private const int MinPublicLyricsTimeoutSeconds = 3;
+    private const int MaxPublicLyricsTimeoutSeconds = 60;
     private const string ApplicationJson = "application/json";
     private const string LyricsClientName = "LyricsService";
+
+    /// <summary>
+    /// Named client for the public Apple Music lyrics API. Its own timeout is only a backstop;
+    /// the effective per-lookup budget comes from <see cref="ResolvePublicLyricsTimeout"/>.
+    /// </summary>
+    private const string PublicLyricsClientName = "LyricsPublicApi";
+
     private const string UserAgentHeader = "User-Agent";
     private const string LyricsType = "lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
@@ -176,6 +241,7 @@ public class LyricsService
         public string? TtmlFallback { get; set; }
         public LyricsSourceFormat TtmlFallbackSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
         public LyricsBase? ResolvedLyrics { get; set; }
+        public LyricsCapabilityRound? CurrentRound { get; set; }
         public bool DeezerAttempted { get; set; }
         public bool DeezerMissingAuth { get; set; }
         public List<string> ProvidersAttempted { get; } = new();
@@ -252,38 +318,50 @@ public class LyricsService
         }
 
         var outputRequirements = ResolveOutputRequirements(settings);
-        var providers = plan.Providers;
+        var providers = ResolveLyricsProvidersForDownload(settings, providerOptions?.PeerLyricsPath);
 
         var state = new LyricsResolutionState();
         await ReportProgressAsync(progress, "started", null, null, outputRequirements, state, null, false, cancellationToken);
 
-        foreach (var provider in providers)
+        foreach (var round in BuildCapabilityRounds(outputRequirements, providers))
         {
-            if (!ProviderCanContribute(provider, outputRequirements, state.ResolvedLyrics))
+            if (!ShouldEnterRound(round.Round, outputRequirements)
+                || (round.Round == LyricsCapabilityRound.PlainText
+                    && HasResolvedRichOutput(outputRequirements, state.ResolvedLyrics))
+                || IsRoundSatisfied(round.Round, state.ResolvedLyrics))
             {
-                continue;
-            }
-            state.ProvidersAttempted.Add(provider);
-            await ReportProgressAsync(progress, "provider-started", provider, null, outputRequirements, state, null, false, cancellationToken);
-            var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
-            var providerOutcome = state.ProviderOutcomes.LastOrDefault(outcome =>
-                string.Equals(outcome.Provider, provider, StringComparison.OrdinalIgnoreCase));
-            if (providerLyrics == null || !providerLyrics.IsLoaded())
-            {
-                await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
-                    outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
                 continue;
             }
 
-            MergeProviderLyrics(state, providerLyrics, provider);
-            await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
-                outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
-            if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: true))
+            state.CurrentRound = round.Round;
+            await ReportProgressAsync(progress, "round-started", null, null, outputRequirements, state,
+                round.Goal, false, cancellationToken);
+
+            foreach (var provider in FilterRoundProviders(round, state.ProvidersAttempted))
             {
-                var completed = BuildResolutionResult(state, plan, outputRequirements, null);
-                await ReportProgressAsync(progress, "completed", provider, providerOutcome?.Status,
-                    outputRequirements, state, completed.Error, completed.Incomplete, cancellationToken);
-                return completed;
+                state.ProvidersAttempted.Add(provider);
+                await ReportProgressAsync(progress, "provider-started", provider, null, outputRequirements, state, null, false, cancellationToken);
+                var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
+                var providerOutcome = state.ProviderOutcomes.LastOrDefault(outcome =>
+                    string.Equals(outcome.Provider, provider, StringComparison.OrdinalIgnoreCase));
+                if (providerLyrics == null || !providerLyrics.IsLoaded())
+                {
+                    await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
+                        outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
+                    continue;
+                }
+
+                MergeProviderLyrics(state, providerLyrics, provider);
+                await ReportProgressAsync(progress, "provider-completed", provider, providerOutcome?.Status,
+                    outputRequirements, state, providerOutcome?.Detail, false, cancellationToken);
+
+                // The round stops at its first success so the remaining providers in the tier
+                // are never called. A round satisfied here may still leave later rounds needed
+                // for other requested outputs, so the loop continues rather than returning.
+                if (IsRoundSatisfied(round.Round, state.ResolvedLyrics))
+                {
+                    break;
+                }
             }
         }
 
@@ -318,15 +396,9 @@ public class LyricsService
             return completed;
         }
 
-        string error;
-        if (state.DeezerAttempted && state.DeezerMissingAuth && string.IsNullOrEmpty(state.Arl))
-        {
-            error = "No ARL available for lyrics fetching";
-        }
-        else
-        {
-            error = "No lyrics available from configured providers";
-        }
+        var error = state.DeezerAttempted && state.DeezerMissingAuth && string.IsNullOrEmpty(state.Arl)
+            ? "No ARL available for lyrics fetching"
+            : "No lyrics available from configured providers";
 
         state.ResolvedLyrics = LyricsNew.CreateError(error);
         var unavailable = BuildResolutionResult(state, plan, outputRequirements, error);
@@ -351,9 +423,34 @@ public class LyricsService
             return;
         }
 
-        var requested = DescribeRequestedOutputs(requirements);
-        var resolved = DescribeResolvedOutputs(requirements, state.ResolvedLyrics);
+        var progressRequirements = requirements;
+        if (phase != "completed"
+            && requirements.WantsEnhancedSynchronizedLyrics
+            && state.CurrentRound is not (LyricsCapabilityRound.LineSynchronizedLrc or LyricsCapabilityRound.PlainText))
+        {
+            progressRequirements = requirements with { RequiresEnhancedSynchronizedLyrics = true };
+        }
+
+        var requested = DescribeRequestedOutputs(requirements).ToList();
+        if (requirements.WantsEnhancedSynchronizedLyrics
+            && HasResolvedLrcOutput(progressRequirements, state.ResolvedLyrics)
+            && !state.ResolvedLyrics!.HasEnhancedSynchronizedLyrics())
+        {
+            requested.Remove("enhanced-lrc");
+            requested.Add("line-lrc");
+        }
+        if (requirements.WantsPlainLyrics
+            && requirements.WantsRichLyrics
+            && !HasResolvedRichOutput(requirements, state.ResolvedLyrics)
+            && (state.CurrentRound == LyricsCapabilityRound.PlainText || phase == "completed"))
+        {
+            requested.Add("plain-text");
+        }
+        var resolved = DescribeResolvedOutputs(progressRequirements, state.ResolvedLyrics)
+            .Where(output => requested.Contains(output, StringComparer.OrdinalIgnoreCase)).ToArray();
         var remaining = requested.Except(resolved, StringComparer.OrdinalIgnoreCase).ToArray();
+        var formats = DescribeResolvedFormats(progressRequirements, state.ResolvedLyrics)
+            .Where(format => format != "txt" || requested.Contains("plain-text", StringComparer.OrdinalIgnoreCase)).ToArray();
         await callback(new LyricsResolutionProgress(
             phase,
             provider,
@@ -362,8 +459,56 @@ public class LyricsService
             resolved,
             remaining,
             DeezSpoTag.Core.Security.LogSanitizer.OneLine(detail),
-            incomplete), cancellationToken);
+            incomplete)
+        {
+            ResolvedFormats = formats,
+            LrcTiming = HasResolvedLrcOutput(progressRequirements, state.ResolvedLyrics)
+                ? (requirements.WantsEnhancedSynchronizedLyrics ? DescribeResolvedLrcTiming(state.ResolvedLyrics) : "line")
+                : null
+        }, cancellationToken);
     }
+
+    private static string? DescribeResolvedLrcTiming(LyricsBase? lyrics)
+    {
+        if (lyrics?.HasEnhancedSynchronizedLyrics() == true)
+        {
+            return "word";
+        }
+
+        return lyrics?.CanSaveLrcSidecar() == true ? "line" : null;
+    }
+
+    /// <summary>
+    /// Maps whatever is resolved so far onto sidecar format tokens so the download queue can
+    /// publish badges incrementally. Rich formats suppress plain text, matching the persisted
+    /// artifact rules.
+    /// </summary>
+    private static string[] DescribeResolvedFormats(LyricsOutputRequirements requirements, LyricsBase? lyrics)
+    {
+        var formats = new List<string>(3);
+        if (requirements.WantsTtmlLyrics && AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics))
+        {
+            formats.Add("ttml");
+        }
+        if (HasResolvedLrcOutput(requirements, lyrics))
+        {
+            formats.Add("lrc");
+        }
+        if (formats.Count == 0 && requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics))
+        {
+            formats.Add("txt");
+        }
+        return formats.ToArray();
+    }
+
+    private static bool HasResolvedLrcOutput(LyricsOutputRequirements requirements, LyricsBase? lyrics)
+        => requirements.WantsLrcLyrics
+            && lyrics?.CanSaveLrcSidecar() == true
+            && (!requirements.RequiresEnhancedSynchronizedLyrics || lyrics.HasEnhancedSynchronizedLyrics());
+
+    private static bool HasResolvedRichOutput(LyricsOutputRequirements requirements, LyricsBase? lyrics)
+        => HasResolvedLrcOutput(requirements, lyrics)
+            || (requirements.WantsTtmlLyrics && AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics));
 
     private static string[] DescribeRequestedOutputs(LyricsOutputRequirements requirements)
     {
@@ -371,7 +516,7 @@ public class LyricsService
         if (requirements.WantsTtmlLyrics) outputs.Add("word-ttml");
         if (requirements.WantsEnhancedSynchronizedLyrics) outputs.Add("enhanced-lrc");
         else if (requirements.WantsLrcLyrics) outputs.Add("line-lrc");
-        if (requirements.WantsPlainLyrics) outputs.Add("plain-text");
+        if (requirements.WantsPlainLyrics && !requirements.WantsRichLyrics) outputs.Add("plain-text");
         return outputs.ToArray();
     }
 
@@ -379,9 +524,14 @@ public class LyricsService
     {
         var outputs = new List<string>(4);
         if (requirements.WantsTtmlLyrics && AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics)) outputs.Add("word-ttml");
-        if (requirements.WantsEnhancedSynchronizedLyrics && lyrics?.HasEnhancedSynchronizedLyrics() == true) outputs.Add("enhanced-lrc");
-        else if (requirements.WantsLrcLyrics && lyrics?.CanSaveLrcSidecar() == true) outputs.Add("line-lrc");
-        if (requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics)) outputs.Add("plain-text");
+        if (HasResolvedLrcOutput(requirements, lyrics))
+        {
+            outputs.Add(requirements.WantsEnhancedSynchronizedLyrics && lyrics!.HasEnhancedSynchronizedLyrics()
+                ? "enhanced-lrc" : "line-lrc");
+        }
+        if (!HasResolvedRichOutput(requirements, lyrics)
+            && requirements.WantsPlainLyrics
+            && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics)) outputs.Add("plain-text");
         return outputs.ToArray();
     }
 
@@ -415,23 +565,8 @@ public class LyricsService
         LyricsOutputRequirements requirements,
         string? error)
     {
-        var resolved = new List<string>(4);
         var lyrics = state.ResolvedLyrics;
-        var hasTtml = lyrics != null && AppleLyricsService.IsWordSyncedTtml(lyrics.TtmlLyrics);
-        var hasEnhanced = lyrics?.HasEnhancedSynchronizedLyrics() == true;
-        var hasLrc = lyrics?.CanSaveLrcSidecar() == true;
-        if (requirements.WantsTtmlLyrics && hasTtml)
-        {
-            resolved.Add("ttml");
-        }
-        if ((requirements.WantsLrcLyrics || requirements.WantsEnhancedSynchronizedLyrics) && (hasLrc || hasEnhanced))
-        {
-            resolved.Add("lrc");
-        }
-        if (resolved.Count == 0 && requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics))
-        {
-            resolved.Add("txt");
-        }
+        var resolved = DescribeResolvedFormats(requirements, lyrics);
 
         var sources = state.SourcesByFormat
             .Where(pair => resolved.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
@@ -558,7 +693,8 @@ public class LyricsService
             {
                 continue;
             }
-            if ((missingTtml && (descriptor.SupportsNativeTtml || descriptor.SupportsWordSynchronized))
+            var supportsMissingTtml = missingTtml && (descriptor.SupportsNativeTtml || descriptor.SupportsWordSynchronized);
+            if (supportsMissingTtml
                 || (missingEnhanced && descriptor.SupportsWordSynchronized)
                 || (missingLrc && descriptor.SupportsLineSynchronized))
             {
@@ -596,30 +732,106 @@ public class LyricsService
         public bool WantsRichLyrics => WantsLrcLyrics || WantsEnhancedSynchronizedLyrics || WantsTtmlLyrics;
     }
 
-    private static bool ProviderCanContribute(
-        string provider,
+    /// <summary>
+    /// Builds the ordered capability rounds for a resolution. Providers keep the lyrics
+    /// fallback order supplied by the caller, so the configured order decides who is asked
+    /// first <em>within</em> a round and never reorders the rounds themselves. Providers that
+    /// cannot serve a round's goal are excluded, and rounds left without any provider are
+    /// dropped so the caller never enters a round it cannot satisfy.
+    /// </summary>
+    private static IReadOnlyList<LyricsRoundPlan> BuildCapabilityRounds(
         LyricsOutputRequirements requirements,
-        LyricsBase? resolved)
+        IReadOnlyList<string> orderedProviders)
     {
-        if (!LyricsProviderRegistry.TryGet(provider, out var descriptor))
+        var candidates = orderedProviders
+            .Where(static provider => !string.IsNullOrWhiteSpace(provider))
+            .Select(static provider => provider.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var rounds = new List<LyricsRoundPlan>(4);
+        foreach (var round in Enum.GetValues<LyricsCapabilityRound>())
         {
-            return false;
+            var providers = candidates
+                .Where(provider => LyricsProviderRegistry.TryGet(provider, out var descriptor)
+                    && ProviderSupportsRound(descriptor, round))
+                .ToList();
+            if (providers.Count > 0)
+            {
+                rounds.Add(new LyricsRoundPlan(round, DescribeRoundGoal(round), providers));
+            }
         }
 
-        var needsTtml = requirements.WantsTtmlLyrics
-            && !AppleLyricsService.IsWordSyncedTtml(resolved?.TtmlLyrics);
-        var needsEnhanced = requirements.WantsEnhancedSynchronizedLyrics
-            && resolved?.HasEnhancedSynchronizedLyrics() != true;
-        var needsLrc = requirements.WantsLrcLyrics
-            && resolved?.CanSaveLrcSidecar() != true;
-        var needsPlain = requirements.WantsPlainLyrics
-            && string.IsNullOrWhiteSpace(resolved?.UnsyncedLyrics);
-
-        return (needsTtml && (descriptor.SupportsNativeTtml || descriptor.SupportsWordSynchronized))
-            || (needsEnhanced && descriptor.SupportsWordSynchronized)
-            || (needsLrc && descriptor.SupportsLineSynchronized)
-            || (needsPlain && descriptor.SupportsPlain);
+        return rounds;
     }
+
+    /// <summary>
+    /// Drops providers that an earlier round already attempted. Apple and BetterLyrics qualify for
+    /// both the native-TTML and word-timed-LRC rounds, so without this a provider that already
+    /// failed in round 1 would be asked again in round 2.
+    /// </summary>
+    private static IReadOnlyList<string> FilterRoundProviders(
+        LyricsRoundPlan round,
+        IReadOnlyCollection<string> alreadyAttempted)
+    {
+        if (alreadyAttempted.Count == 0)
+        {
+            return round.Providers;
+        }
+
+        var attempted = new HashSet<string>(alreadyAttempted, StringComparer.OrdinalIgnoreCase);
+        return round.Providers.Where(provider => !attempted.Contains(provider)).ToList();
+    }
+
+    private static bool ProviderSupportsRound(LyricsProviderDescriptor descriptor, LyricsCapabilityRound round)        => round switch
+        {
+            LyricsCapabilityRound.NativeTtml => descriptor.SupportsNativeTtml,
+            LyricsCapabilityRound.WordSynchronizedLrc => descriptor.SupportsWordSynchronized,
+            LyricsCapabilityRound.LineSynchronizedLrc => descriptor.SupportsLineSynchronized,
+            LyricsCapabilityRound.PlainText => descriptor.SupportsPlain,
+            _ => false
+        };
+
+    private static string DescribeRoundGoal(LyricsCapabilityRound round)
+        => round switch
+        {
+            LyricsCapabilityRound.NativeTtml => "word-synced TTML",
+            LyricsCapabilityRound.WordSynchronizedLrc => "word-timed LRC",
+            LyricsCapabilityRound.LineSynchronizedLrc => "line-synced LRC",
+            LyricsCapabilityRound.PlainText => "plain lyrics",
+            _ => "lyrics"
+        };
+
+    /// <summary>
+    /// Decides whether a round still needs to run for the requested output set. The line-synced
+    /// round is skipped when word timing was explicitly required, so a strict "word-enhanced"
+    /// profile never silently accepts a downgraded line-synced fallback.
+    /// </summary>
+    private static bool ShouldEnterRound(LyricsCapabilityRound round, LyricsOutputRequirements requirements)
+        => round switch
+        {
+            LyricsCapabilityRound.NativeTtml => requirements.WantsTtmlLyrics,
+            LyricsCapabilityRound.WordSynchronizedLrc => requirements.WantsEnhancedSynchronizedLyrics,
+            LyricsCapabilityRound.LineSynchronizedLrc => requirements.WantsLrcLyrics
+                && !requirements.RequiresEnhancedSynchronizedLyrics,
+            LyricsCapabilityRound.PlainText => requirements.WantsPlainLyrics,
+            _ => false
+        };
+
+    /// <summary>
+    /// Determines whether a round's goal has been met. The word-timed round is satisfied only by
+    /// genuine word timings: a line-synced LRC must fall through to the line-synced round so the
+    /// caller can still record which providers were consulted.
+    /// </summary>
+    private static bool IsRoundSatisfied(LyricsCapabilityRound round, LyricsBase? lyrics)
+        => round switch
+        {
+            LyricsCapabilityRound.NativeTtml => AppleLyricsService.IsWordSyncedTtml(lyrics?.TtmlLyrics),
+            LyricsCapabilityRound.WordSynchronizedLrc => lyrics?.HasEnhancedSynchronizedLyrics() == true,
+            LyricsCapabilityRound.LineSynchronizedLrc => lyrics?.CanSaveLrcSidecar() == true,
+            LyricsCapabilityRound.PlainText => !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics),
+            _ => false
+        };
 
     private static bool ShouldReturnResolvedLyrics(
         LyricsResolutionState state,
@@ -652,23 +864,8 @@ public class LyricsService
             return false;
         }
 
-        if (requirements.WantsRichLyrics)
-        {
-            if (requirements.RequiresEnhancedSynchronizedLyrics && !hasEnhanced)
-            {
-                return false;
-            }
-            return (requirements.WantsTtmlLyrics && hasTtml)
-                || (requirements.WantsEnhancedSynchronizedLyrics && hasEnhanced)
-                || (requirements.WantsLrcLyrics && hasLrc);
-        }
-
-        if (requirements.WantsPlainLyrics && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
-        {
-            return false;
-        }
-
-        return true;
+        return HasResolvedRichOutput(requirements, lyrics)
+            || (requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics));
     }
 
     private async Task<LyricsBase?> TryResolveProviderLyricsAsync(
@@ -722,8 +919,135 @@ public class LyricsService
                 track,
                 settings,
                 () => ResolveBetterLyricsAsync(track, settings, cancellationToken)),
+
+            // Not cached. The file is already on disk beside the audio that was just downloaded, so caching it
+            // would only add a second copy of something the pipeline can read directly, and a cached peer
+            // lyric would outlive the file it came from.
+            LyricsProviderRegistry.Peer => await ResolvePeerLyricsAsync(providerOptions?.PeerLyricsPath, cancellationToken),
             _ => LogUnknownLyricsProvider(provider)
         };
+    }
+
+    /// <summary>
+    ///     Reads lyrics a Soulseek peer shipped in the same folder as the audio.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A file that was not taken, or was never fetched, is simply nothing - which is what keeps this
+    ///         provider inert for every other engine and for a Soulseek download where the reader left the
+    ///         setting off.
+    ///     </para>
+    ///     <para>
+    ///         An <c>.lrc</c> is read as synchronised lyrics because that is what its timestamps mean. A
+    ///         <c>.cue</c> sheet carries the same lyric block a separate file would, and is far more common in a
+    ///         peer's folder, so its lines are read as plain lyrics.
+    ///     </para>
+    ///     <para>
+    ///         A malformed or empty file yields nothing rather than an error: the configured chain runs as if
+    ///         this provider had not answered, which is the right outcome for a stranger's stray file.
+    ///     </para>
+    /// </remarks>
+    private static async Task<LyricsBase?> ResolvePeerLyricsAsync(string? path, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        string content;
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        if (Path.GetExtension(path).Equals(".cue", StringComparison.OrdinalIgnoreCase))
+        {
+            // A cue sheet holds the lyric block a separate file would have carried, as plain lines. Metadata
+            // lines such as TITLE and PERFORMER are not lyrics and are not taken.
+            var lines = ExtractCueLyrics(content);
+            if (lines.Count == 0)
+            {
+                return null;
+            }
+
+            return new LyricsSource
+            {
+                UnsyncedLyrics = string.Join(Environment.NewLine, lines),
+                UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText,
+                ProviderId = LyricsProviderRegistry.Peer
+            };
+        }
+
+        // The same LRC parser the rest of this file already uses, so a peer file is read exactly the way a
+        // provider's lyrics are rather than by a second parser that could disagree about timestamps.
+        var synced = ParseLrcLines(content);
+        if (synced.Count == 0)
+        {
+            return null;
+        }
+
+        return new LyricsSource
+        {
+            SyncedLyrics = synced,
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc,
+            ProviderId = LyricsProviderRegistry.Peer
+        };
+    }
+
+    /// <summary>
+    ///     The lyric lines from a cue sheet, if it has any.
+    /// </summary>
+    /// <remarks>
+    ///     A cue sheet interleaves the release's track structure with its lyric block, and the two are told
+    ///     apart by the command keyword. Only <c>LYRICS</c> and the older <c>LYRIC</c> blocks are lyrics;
+    ///     treating TITLE, PERFORMER or FILE as lyric text would embed a peer's file naming as song words.
+    /// </remarks>
+    private static List<string> ExtractCueLyrics(string content)
+    {
+        var lines = new List<string>();
+        var insideLyrics = false;
+        foreach (var line in content.Split('\n').Select(raw => raw.TrimEnd('\r')))
+        {
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                insideLyrics = line.Equals("[LYRICS]", StringComparison.OrdinalIgnoreCase)
+                    || line.Equals("[LYRIC]", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (!insideLyrics)
+            {
+                continue;
+            }
+
+            // Two spaces is the cue sheet's own column separator between timing and text.
+            var separator = line.IndexOf("  ", StringComparison.Ordinal);
+            var text = (separator >= 0 ? line[(separator + 2)..] : line).Trim();
+            if (text.Length > 0)
+            {
+                lines.Add(text);
+            }
+        }
+
+        return lines;
     }
 
     private static async Task<LyricsBase?> ResolveLoadedLyricsOrNullAsync(Func<Task<LyricsBase>> resolver)
@@ -784,29 +1108,11 @@ public class LyricsService
 
     private static void MergeProviderLyrics(LyricsResolutionState state, LyricsBase providerLyrics, string provider)
     {
-        if (AppleLyricsService.IsWordSyncedTtml(providerLyrics.TtmlLyrics))
-        {
-            state.SourcesByFormat.TryAdd("ttml", provider);
-        }
-        if (providerLyrics.HasEnhancedSynchronizedLyrics())
-        {
-            state.SourcesByFormat["lrc"] = provider;
-        }
-        if (providerLyrics.CanSaveLrcSidecar())
-        {
-            if (providerLyrics.SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml)
-            {
-                state.SourcesByFormat.TryAdd("lrc", provider);
-            }
-            else
-            {
-                state.SourcesByFormat["lrc"] = provider;
-            }
-        }
-        if (!string.IsNullOrWhiteSpace(providerLyrics.UnsyncedLyrics))
-        {
-            state.SourcesByFormat.TryAdd("txt", provider);
-        }
+        var previousLines = state.ResolvedLyrics?.SyncedLyrics;
+        var previousTtml = state.ResolvedLyrics?.TtmlLyrics;
+        var previousTtmlFormat = state.ResolvedLyrics?.TtmlLyricsSourceFormat;
+        var incomingTtml = providerLyrics.TtmlLyrics;
+        var incomingTtmlFormat = providerLyrics.TtmlLyricsSourceFormat;
 
         if (DeezSpoTag.Services.Apple.AppleLyricsService.IsWordSyncedTtml(providerLyrics.TtmlLyrics)
             && OutranksTtml(providerLyrics.TtmlLyricsSourceFormat, state.TtmlFallback, state.TtmlFallbackSourceFormat))
@@ -825,24 +1131,44 @@ public class LyricsService
         if (state.ResolvedLyrics == null)
         {
             state.ResolvedLyrics = providerLyrics;
-            return;
+        }
+        else
+        {
+            MergeLyricsData(state.ResolvedLyrics, providerLyrics);
         }
 
-        MergeLyricsData(state.ResolvedLyrics, providerLyrics);
+        var resolved = state.ResolvedLyrics;
+        if (resolved.CanSaveLrcSidecar()
+            && ReferenceEquals(resolved.SyncedLyrics, providerLyrics.SyncedLyrics)
+            && (!ReferenceEquals(previousLines, resolved.SyncedLyrics) || !state.SourcesByFormat.ContainsKey("lrc")))
+        {
+            state.SourcesByFormat["lrc"] = provider;
+        }
+        if (AppleLyricsService.IsWordSyncedTtml(resolved.TtmlLyrics)
+            && resolved.TtmlLyrics == incomingTtml
+            && resolved.TtmlLyricsSourceFormat == incomingTtmlFormat
+            && (previousTtml != resolved.TtmlLyrics
+                || previousTtmlFormat != resolved.TtmlLyricsSourceFormat
+                || !state.SourcesByFormat.ContainsKey("ttml")))
+        {
+            state.SourcesByFormat["ttml"] = provider;
+        }
+        if (!string.IsNullOrWhiteSpace(providerLyrics.UnsyncedLyrics))
+        {
+            state.SourcesByFormat.TryAdd("txt", provider);
+        }
     }
 
     private static LyricsOutputRequirements ResolveOutputRequirements(DeezSpoTagSettings settings)
     {
         var selectedTypes = ParseSelectedLyricsTypes(settings);
-        var wantsTimedLyrics = settings.SyncedLyrics
-            && (selectedTypes.Contains(LyricsType)
-                || selectedTypes.Contains(SyllableLyricsType)
-                || selectedTypes.Contains(TtmlLyricsType));
+        var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
         var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
-        var wantsLrcLyrics = wantsTimedLyrics && outputFormats.Contains("lrc");
-        var wantsEnhancedSynchronizedLyrics = wantsTimedLyrics && settings.PreferEnhancedLrc && outputFormats.Contains("lrc");
-        var requiresEnhancedSynchronizedLyrics = wantsEnhancedSynchronizedLyrics
-            && LrcTimingModes.RequiresWordTiming(settings.LrcTimingPreference);
+        var wantsLrcLyrics = ShouldSaveSyncedLrc(settings);
+        var wantsEnhancedSynchronizedLyrics = ShouldSaveEnhancedSynchronizedLyrics(settings);
+        var requiresEnhancedSynchronizedLyrics = wantsLrcLyrics
+            && (LrcTimingModes.RequiresWordTiming(timingPreference)
+                || (selectedTypes.Contains(SyllableLyricsType) && !selectedTypes.Contains(LyricsType)));
         var wantsTtmlLyrics = settings.SyncedLyrics
             && selectedTypes.Contains(TtmlLyricsType)
             && outputFormats.Contains("ttml");
@@ -890,15 +1216,12 @@ public class LyricsService
             target.TtmlLyricsSourceFormat = candidate.TtmlLyricsSourceFormat;
         }
 
-        if ((!HasLyricsLines(target.SyncedLyrics)
-             || (target.SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml
-                 && candidate.SyncedLyricsSourceFormat != LyricsSourceFormat.ConvertedFromTtml))
-            && HasLyricsLines(candidate.SyncedLyrics))
-        {
-            target.SyncedLyrics = candidate.SyncedLyrics;
-            target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
-        }
-        else if (!target.HasEnhancedSynchronizedLyrics() && candidate.HasEnhancedSynchronizedLyrics())
+        if (HasLyricsLines(candidate.SyncedLyrics)
+            && (!HasLyricsLines(target.SyncedLyrics)
+                || (!target.HasEnhancedSynchronizedLyrics() && candidate.HasEnhancedSynchronizedLyrics())
+                || (target.HasEnhancedSynchronizedLyrics() == candidate.HasEnhancedSynchronizedLyrics()
+                    && target.SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml
+                    && candidate.SyncedLyricsSourceFormat != LyricsSourceFormat.ConvertedFromTtml)))
         {
             target.SyncedLyrics = candidate.SyncedLyrics;
             target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
@@ -954,6 +1277,30 @@ public class LyricsService
             settings.LyricsFallbackOrder,
             DefaultLyricsProviderOrder,
             NormalizeLyricsProviderToken);
+    }
+
+    /// <summary>
+    ///     The provider order for one download, with the peer source put first when this download has one.
+    /// </summary>
+    /// <remarks>
+    ///     A lyrics file the peer shipped with the audio is a better answer than a fuzzy catalogue match, so
+    ///     when the reader opted in and a file actually arrived it is consulted before the configured chain.
+    ///     It is never in the default order and never appears here without a real file, so no other download
+    ///     and no other engine can reach it.
+    /// </remarks>
+    private static List<string> ResolveLyricsProvidersForDownload(DeezSpoTagSettings settings, string? peerLyricsPath)
+    {
+        var providers = ResolveLyricsProviders(settings);
+        if (string.IsNullOrWhiteSpace(peerLyricsPath) || providers.Contains(LyricsProviderRegistry.Peer, StringComparer.OrdinalIgnoreCase))
+        {
+            return providers;
+        }
+
+        // Inserted rather than appended, and never duplicated, so a reader who has also listed the peer
+        // provider by hand keeps their own order.
+        var ordered = new List<string>(providers.Count + 1) { LyricsProviderRegistry.Peer };
+        ordered.AddRange(providers);
+        return ordered;
     }
 
     private static string NormalizeLyricsProviderToken(string? provider)
@@ -1022,6 +1369,27 @@ public class LyricsService
         return AppleIdParser.Resolve(candidate, candidate);
     }
 
+    private static string ResolvePublicLyricsApiBaseUrl(DeezSpoTagSettings settings)
+    {
+        var configured = settings.AppleMusic?.PublicLyricsApiUrl?.Trim();
+        return string.IsNullOrWhiteSpace(configured) ? DefaultPublicLyricsApiBaseUrl : configured.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// Clamps the configured public API timeout into a sane band. Short by design: a stalled
+    /// public host must not consume the whole budget while the remaining capability rounds wait.
+    /// </summary>
+    internal static TimeSpan ResolvePublicLyricsTimeout(DeezSpoTagSettings settings)
+    {
+        var seconds = settings.AppleMusic?.PublicLyricsTimeoutSeconds ?? DefaultPublicLyricsTimeoutSeconds;
+        if (seconds <= 0)
+        {
+            seconds = DefaultPublicLyricsTimeoutSeconds;
+        }
+
+        return TimeSpan.FromSeconds(Math.Clamp(seconds, MinPublicLyricsTimeoutSeconds, MaxPublicLyricsTimeoutSeconds));
+    }
+
     private async Task<LyricsBase?> ResolvePaxsenixAppleLyricsByIdAsync(
         Track track,
         DeezSpoTagSettings settings,
@@ -1033,8 +1401,13 @@ public class LyricsService
             return null;
         }
 
-        var url = $"{PaxsenixBaseUrl}/apple-music/lyrics?id={Uri.EscapeDataString(appleId)}&ttml=true";
-        var body = await FetchPaxsenixLyricsBodyAsync(url, AppleProvider, "Apple Music", cancellationToken);
+        var url = $"{ResolvePublicLyricsApiBaseUrl(settings)}/apple-music/lyrics?id={Uri.EscapeDataString(appleId)}&ttml=true";
+        var body = await FetchPublicLyricsBodyAsync(
+            url,
+            AppleProvider,
+            "Apple Music",
+            ResolvePublicLyricsTimeout(settings),
+            cancellationToken);
         if (string.IsNullOrWhiteSpace(body))
         {
             return null;
@@ -1075,14 +1448,12 @@ public class LyricsService
             return track.SourceId.Trim();
         }
 
-        foreach (var value in EnumerateAppleIdentityCandidates(track))
+        foreach (var resolved in EnumerateAppleIdentityCandidates(track)
+            .Select(value => AppleIdParser.Resolve(value, value))
+            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)
+                && long.TryParse(resolved, out _)))
         {
-            var resolved = AppleIdParser.Resolve(value, value);
-            if (!string.IsNullOrWhiteSpace(resolved)
-                && long.TryParse(resolved, out _))
-            {
-                return resolved;
-            }
+            return resolved;
         }
 
         return null;
@@ -1100,41 +1471,65 @@ public class LyricsService
             yield break;
         }
 
-        foreach (var key in new[] { "apple_track_id", "apple_id", "appleid", "apple", "apple_url", "source_url" })
+        foreach (var value in new[] { "apple_track_id", "apple_id", "appleid", "apple", "apple_url", "source_url" }
+            .Select(key => track.Urls.TryGetValue(key, out var candidate)
+                && !string.IsNullOrWhiteSpace(candidate)
+                ? candidate
+                : null)
+            .Where(value => value is not null))
         {
-            if (track.Urls.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                yield return value;
-            }
+            yield return value!;
         }
     }
 
-    private async Task<string?> FetchPaxsenixLyricsBodyAsync(
+    /// <summary>
+    /// Fetches lyrics from the configured public Apple Music API. Uses a dedicated short-lived
+    /// timeout so a stalled public host cannot hold up the remaining capability rounds, and logs
+    /// the observed latency so the configured budget can be tuned from real measurements.
+    /// </summary>
+    private async Task<string?> FetchPublicLyricsBodyAsync(
         string url,
         string source,
         string sourceName,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        var startedAt = Stopwatch.GetTimestamp();
         try
         {
-            using var client = _httpClientFactory.CreateClient(LyricsClientName);
+            using var client = _httpClientFactory.CreateClient(PublicLyricsClientName);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation(UserAgentHeader, DefaultSpotifyWebPlayerUserAgent);
             request.Headers.TryAddWithoutValidation("Accept", $"{ApplicationJson}, text/plain, application/xml, text/xml");
 
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Paxsenix {Source} lyrics fallback request failed with status {StatusCode}", sourceName, response.StatusCode);
+                _logger.LogDebug("Public Apple lyrics request failed with status {StatusCode} for {Source}", response.StatusCode, sourceName);
                 return null;
             }
 
-            return await response.Content.ReadAsStringAsync(cancellationToken);
+            return await response.Content.ReadAsStringAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Paxsenix {Source} lyrics fallback request failed.", sourceName);
+            _logger.LogDebug(ex, "Public Apple lyrics request failed for {Source}.", sourceName);
             return null;
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            _logger.LogInformation(
+                "Apple public lyrics lookup for {Source} finished in {ElapsedMs} ms (budget {BudgetMs} ms).",
+                sourceName,
+                (long)elapsed.TotalMilliseconds,
+                (long)timeout.TotalMilliseconds);
         }
     }
 
@@ -1230,14 +1625,17 @@ public class LyricsService
                 }
                 break;
             case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
+            {
+                var items = element.EnumerateArray();
+                while (items.MoveNext())
                 {
-                    if (TryFindStringByName(item, namePredicate, out value))
+                    if (TryFindStringByName(items.Current, namePredicate, out value))
                     {
                         return true;
                     }
                 }
                 break;
+            }
         }
 
         return false;
@@ -1272,9 +1670,10 @@ public class LyricsService
         }
         else if (element.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in element.EnumerateArray())
+            var items = element.EnumerateArray();
+            while (items.MoveNext())
             {
-                if (TryFindStringArrayByName(item, namePredicate, out values))
+                if (TryFindStringArrayByName(items.Current, namePredicate, out values))
                 {
                     return true;
                 }
@@ -2107,6 +2506,30 @@ public class LyricsService
         return LyricsNew.CreateError("No lyrics available from Musixmatch");
     }
 
+    private static List<KeyValuePair<string, string>> BuildMusixmatchSearchRequestFields(
+        string title,
+        string artist,
+        string token,
+        MusixmatchOptions options)
+    {
+        var fields = new List<KeyValuePair<string, string>>
+        {
+            new("q_track", title),
+            new("q_artist", artist),
+            new("page_size", Math.Clamp(options.SearchPageSize, 1, 100).ToString(CultureInfo.InvariantCulture)),
+            new("usertoken", token)
+        };
+
+        // Musixmatch: f_has_lyrics=1 returns only content containing lyrics; omitting the
+        // restriction returns both. Driven by the shared profile option (default true).
+        if (options.RequireLyrics)
+        {
+            fields.Insert(2, new KeyValuePair<string, string>("f_has_lyrics", "1"));
+        }
+
+        return fields;
+    }
+
     private static string ResolveMusixmatchArtist(Track track)
     {
         if (track.MainArtist is { Name: { Length: > 0 } mainArtistName } && !string.IsNullOrWhiteSpace(mainArtistName))
@@ -2143,16 +2566,7 @@ public class LyricsService
 
         using var searchDocument = await GetMusixmatchSignedJsonAsync(
             "track.search",
-            new List<KeyValuePair<string, string>>
-            {
-                new("q_track", title),
-                new("q_artist", artist),
-                // Fixed on. Musixmatch: 1 returns only content containing lyrics, 0 returns both.
-                // Never surfaced as a control, so there is nothing to read it from.
-                new("f_has_lyrics", "1"),
-                new("page_size", Math.Clamp(options.SearchPageSize, 1, 100).ToString(CultureInfo.InvariantCulture)),
-                new("usertoken", token)
-            },
+            BuildMusixmatchSearchRequestFields(title, artist, token, options),
             cancellationToken);
 
         if (searchDocument == null)
@@ -2244,6 +2658,11 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         var secret = await GetMusixmatchSecretAsync(cancellationToken);
+        if (secret is null)
+        {
+            return null;
+        }
+
         var url = BuildMusixmatchSignedUrl(action, query, secret);
 
         using var client = _httpClientFactory.CreateClient(LyricsClientName);
@@ -2268,11 +2687,20 @@ public class LyricsService
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
-    private async Task<string> GetMusixmatchSecretAsync(CancellationToken cancellationToken)
+    private async Task<string?> GetMusixmatchSecretAsync(CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(_cachedMusixmatchSecret))
         {
-            return _cachedMusixmatchSecret!;
+            return _cachedMusixmatchSecret;
+        }
+
+        // Musixmatch signs its web API with a rotating client token that it ships
+        // in its own public JavaScript. The token is derived by scraping and
+        // decoding that bundle; there is deliberately no bundled fallback because
+        // any pinned value is stale as soon as Musixmatch rotates it.
+        if (DateTime.UtcNow < _musixmatchSecretRetryAfterUtc)
+        {
+            return null;
         }
 
         try
@@ -2294,7 +2722,7 @@ public class LyricsService
                 TimeSpan.FromMilliseconds(500));
             if (!appJsMatch.Success)
             {
-                return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+                return DeferMusixmatchSecret();
             }
 
             using var jsRequest = new HttpRequestMessage(HttpMethod.Get, appJsMatch.Groups["url"].Value);
@@ -2312,7 +2740,7 @@ public class LyricsService
                 TimeSpan.FromMilliseconds(500));
             if (!secretMatch.Success)
             {
-                return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+                return DeferMusixmatchSecret();
             }
 
             var encodedSecret = secretMatch.Groups["secret"].Value;
@@ -2324,15 +2752,26 @@ public class LyricsService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Musixmatch web secret lookup failed; using bundled signing secret.");
+                _logger.LogDebug(ex, "Musixmatch web secret lookup failed; skipping signed requests until the next retry.");
             }
-            return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+            return DeferMusixmatchSecret();
         }
     }
 
-    private string CacheMusixmatchSecret(string secret)
+    private string? DeferMusixmatchSecret()
     {
-        _cachedMusixmatchSecret = string.IsNullOrWhiteSpace(secret) ? MusixmatchDefaultSecret : secret;
+        _musixmatchSecretRetryAfterUtc = DateTime.UtcNow.AddMinutes(MusixmatchSecretRetryCooldownMinutes);
+        return null;
+    }
+
+    private string? CacheMusixmatchSecret(string secret)
+    {
+        if (string.IsNullOrWhiteSpace(secret))
+        {
+            return DeferMusixmatchSecret();
+        }
+
+        _cachedMusixmatchSecret = secret;
         return _cachedMusixmatchSecret;
     }
 
@@ -3697,12 +4136,18 @@ public class LyricsService
     private static LyricsSaveResult CreateLyricsSaveResult(LyricsSaveState state)
     {
         var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        AddWrittenLyricsFile(files, "lrc", state.LrcPath);
-        if (IsWordSynchronizedTtmlFile(state.TtmlPath))
+        if (state.HasAcceptedLrc)
+        {
+            AddWrittenLyricsFile(files, "lrc", state.LrcPath);
+        }
+        if (state.HasAcceptedTtml)
         {
             AddWrittenLyricsFile(files, "ttml", state.TtmlPath);
         }
-        AddWrittenLyricsFile(files, "txt", state.TxtPath);
+        if (files.Count == 0 && state.PlainOutputRequested)
+        {
+            AddWrittenLyricsFile(files, "txt", state.TxtPath);
+        }
         return files.Count == 0 ? LyricsSaveResult.Empty : new LyricsSaveResult(files);
     }
 
@@ -3773,13 +4218,17 @@ public class LyricsService
         public string LrcPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.lrc");
         public string TtmlPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.ttml");
         public string TxtPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.txt");
-        public bool RichOutputRequested { get; } = ShouldSaveSyncedLrc(settings) || ShouldSaveEnhancedSynchronizedLyrics(settings) || ShouldOutputTtmlBySettings(settings);
+        private LyricsOutputRequirements Requirements { get; } = ResolveOutputRequirements(settings);
+        public bool RichOutputRequested => Requirements.WantsRichLyrics;
+        public bool PlainOutputRequested => Requirements.WantsPlainLyrics;
+        public bool HasAcceptedLrc => Requirements.WantsLrcLyrics
+            && System.IO.File.Exists(LrcPath)
+            && (!Requirements.RequiresEnhancedSynchronizedLyrics || ReadExistingLrcTiming(LrcPath) == LrcTimingKind.Word);
+        public bool HasAcceptedTtml => Requirements.WantsTtmlLyrics && IsWordSynchronizedTtmlFile(TtmlPath);
         public bool HadExistingLrc { get; set; }
         public bool HadExistingTtml { get; set; }
         public bool HadExistingTxt { get; set; }
         public bool SavedLyrics { get; set; }
-        public bool SavedLrc { get; set; }
-        public bool SavedTtml { get; set; }
     }
 
     private async Task TrySaveLrcSidecarAsync(
@@ -3835,6 +4284,15 @@ public class LyricsService
                 return;
             }
 
+            if (!usedEnhanced
+                && LrcTimingModes.ImpliesEnhanced(timingPreference)
+                && state.HadExistingLrc
+                && IsExistingLrcWordSynchronized(state.LrcPath))
+            {
+                state.SavedLyrics = true;
+                return;
+            }
+
             var upgradesToWordTiming = usedEnhanced
                 && state.HadExistingLrc
                 && !IsExistingLrcWordSynchronized(state.LrcPath);
@@ -3858,7 +4316,6 @@ public class LyricsService
                 }
             }
             state.SavedLyrics = true;
-            state.SavedLrc = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3916,7 +4373,6 @@ public class LyricsService
                 }
             }
             state.SavedLyrics = true;
-            state.SavedTtml = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3950,13 +4406,7 @@ public class LyricsService
 
     private static bool ShouldSkipUnsyncedTxtWrite(LyricsSaveState state)
     {
-        var hasExistingRichLyrics = state.SavedLrc
-            || state.SavedTtml
-            || state.HadExistingLrc
-            || state.HadExistingTtml
-            || System.IO.File.Exists(state.LrcPath)
-            || System.IO.File.Exists(state.TtmlPath);
-        return state.RichOutputRequested && (state.SavedLrc || state.SavedTtml || hasExistingRichLyrics);
+        return state.RichOutputRequested && (state.HasAcceptedLrc || state.HasAcceptedTtml);
     }
 
     private async Task TryWriteUnsyncedTxtAsync(
@@ -3991,7 +4441,7 @@ public class LyricsService
     private void RemoveTxtWhenRichLyricsExist(LyricsSaveState state)
     {
         if (!state.RichOutputRequested
-            || !(state.SavedLrc || state.SavedTtml || state.HadExistingLrc || state.HadExistingTtml)
+            || !(state.HasAcceptedLrc || state.HasAcceptedTtml)
             || !System.IO.File.Exists(state.TxtPath))
         {
             return;
@@ -4030,11 +4480,12 @@ public class LyricsService
     private static bool ShouldSaveSyncedLrc(DeezSpoTagSettings settings)
     {
         var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
+        var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
         return settings.SyncedLyrics
             && IsLyricsGateEnabled(settings)
             && outputFormats.Contains("lrc")
-            && (IsLyricsTypeSelected(settings, LyricsType)
-                || IsLyricsTypeSelected(settings, SyllableLyricsType)
+            && ((IsLyricsTypeSelected(settings, LyricsType) && !LrcTimingModes.RequiresWordTiming(timingPreference))
+                || (IsLyricsTypeSelected(settings, SyllableLyricsType) && LrcTimingModes.ImpliesEnhanced(timingPreference))
                 || (settings.SynthesizeLrcFromTtml
                     && IsLyricsTypeSelected(settings, TtmlLyricsType)));
     }
@@ -4043,7 +4494,8 @@ public class LyricsService
     {
         var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
         return settings.SyncedLyrics
-            && settings.PreferEnhancedLrc
+            && LrcTimingModes.ImpliesEnhanced(
+                LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc))
             && IsLyricsGateEnabled(settings)
             && outputFormats.Contains("lrc")
             && IsLyricsTypeSelected(settings, SyllableLyricsType);

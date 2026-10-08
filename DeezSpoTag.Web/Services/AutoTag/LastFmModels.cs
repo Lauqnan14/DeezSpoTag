@@ -17,6 +17,10 @@ public sealed class LastFmConfig
     /// </summary>
     [JsonPropertyName("minRelativeWeight")]
     public double MinRelativeWeight { get; set; } = 15d;
+
+    /// <summary>Explicit percent units for new card values; absent preserves legacy fractional profiles.</summary>
+    [JsonPropertyName("minRelativeWeightUnit")]
+    public string? MinRelativeWeightUnit { get; set; }
 }
 
 public sealed class LastFmTopTagsResponse

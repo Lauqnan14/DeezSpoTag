@@ -15,6 +15,22 @@ namespace DeezSpoTag.Web.Services;
 public sealed class LyricsRefreshQueueService : BackgroundService
 {
     public const string JobTypeLyricsRefresh = "lyrics_refresh";
+
+    /// <summary>
+    ///     The engine ids below are aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     Each one is both the key a track link is stored under in the job's url map and the value
+    ///     the job records as its source. A copy that drifted would resolve the id from one map and
+    ///     record it under another, so a queued lyrics refresh would find no track id and silently
+    ///     fetch nothing.
+    /// </remarks>
+    private const string DeezerSource = DownloadTagSourceHelper.DeezerSource;
+
+    private const string SpotifySource = DownloadTagSourceHelper.SpotifySource;
+
+    private const string AppleSource = DownloadTagSourceHelper.AppleSource;
+
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex LeadingTrackNumberRegex = new(
         @"^\s*(?:\d+\s*[-._)\]]\s*)+",
@@ -374,6 +390,198 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         var settings = _settingsService.LoadSettings();
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 
+        return await ProcessResolvedFileLyricsAsync(
+            trackId,
+            info,
+            track,
+            settings,
+            options,
+            onWritePhaseStarted,
+            onLookupProgress,
+            cancellationToken);
+    }
+
+    /// <summary>
+    ///     Plans the lyrics work for a staged audio file that has no library track.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A file being enriched is not a library track, and manufacturing one in order to look its
+    ///         lyrics up by id is the wrong shape of work: the provider ids and final tags the tagging chain
+    ///         just wrote are already on the file.
+    ///     </para>
+    ///     <para>
+    ///         The plan is the same computation the library path runs - what is on disk, and what the profile
+    ///         asks for - because it is a pure function of the path and the settings.
+    ///     </para>
+    /// </remarks>
+    public LyricsRefreshPlan PlanStagedFileRefresh(
+        string filePath,
+        DeezSpoTagSettings settings,
+        LyricsRefreshOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return LyricsRefreshPlan.Skip(0, filePath, "Audio file is unavailable.");
+        }
+
+        return PlanExistingLyrics(0, filePath, settings, options ?? LyricsRefreshOptions.Default);
+    }
+
+    /// <summary>
+    ///     Resolves and writes lyrics for a staged audio file, beside it, before it moves.
+    /// </summary>
+    /// <remarks>
+    ///     The write target is the staged file's own directory and stem, so the lyrics it produces share that
+    ///     stem and travel with the audio when the move carries the sidecars. <paramref name="trackId" /> is
+    ///     carried only for reporting; a staged file has none.
+    /// </remarks>
+    public async Task<LyricsRefreshTrackResult> RefreshStagedFileNowAsync(
+        string filePath,
+        DeezSpoTagSettings settings,
+        LyricsRefreshOptions options,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted = null,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? onLookupProgress = null)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return LyricsRefreshTrackResult.Skipped(0, filePath, "Audio file is unavailable.");
+        }
+
+        var stagedInfo = ReadStagedTrackInfo(filePath);
+        var stagedTrack = BuildStagedTrack(stagedInfo);
+
+        return await ProcessResolvedFileLyricsAsync(
+            0,
+            stagedInfo,
+            stagedTrack,
+            settings,
+            options ?? LyricsRefreshOptions.Default,
+            onWritePhaseStarted,
+            onLookupProgress,
+            cancellationToken);
+    }
+
+    /// <summary>
+    ///     Reads a staged audio file's own identity: the tags the tagging chain wrote, not a library row.
+    /// </summary>
+    private static TrackAudioInfoDto ReadStagedTrackInfo(string filePath)
+    {
+        try
+        {
+            using var audio = TagLib.File.Create(filePath);
+            var title = audio.Tag.Title?.Trim() ?? string.Empty;
+            var artist = string.Join(
+                ", ",
+                audio.Tag.Performers.Where(name => !string.IsNullOrWhiteSpace(name)));
+            var album = audio.Tag.Album?.Trim() ?? string.Empty;
+
+            return new TrackAudioInfoDto(
+                TrackId: 0,
+                Title: title,
+                ArtistName: string.IsNullOrWhiteSpace(artist) ? audio.Tag.Performers.FirstOrDefault() ?? string.Empty : artist,
+                AlbumTitle: album,
+                DurationMs: audio.Tag.Track is > 0 ? (int)audio.Tag.Track : null,
+                FilePath: filePath,
+                CoverPath: null,
+                // No library folder: a staged file belongs to no folder yet. The profile's technical
+                // settings arrive through the settings the caller supplies, which is what actually decides
+                // lyrics format and naming here.
+                DestinationFolderId: 0);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TagLib.CorruptFileException)
+        {
+            // Unreadable tags are not a failure: the lookup can still run on whatever identity is available,
+            // and a file whose tags cannot be read is reported rather than silently skipped.
+            return new TrackAudioInfoDto(0, string.Empty, string.Empty, string.Empty, null, filePath, null, 0);
+        }
+    }
+
+    /// <summary>
+    ///     Builds a lookup track from a staged file's tags, carrying the confirmed provider ids forward.
+    /// </summary>
+    /// <remarks>
+    ///     The provider ids are the point: the tagging chain wrote them onto the file, and they are what let a
+    ///     lyrics provider answer with the right words instead of guessing from a title. A file with none
+    ///     still gets looked up - by title, artist and album - it simply has nothing to confirm against.
+    /// </remarks>
+    private static Track BuildStagedTrack(TrackAudioInfoDto info)
+    {
+        var urls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var isrc = string.Empty;
+
+        try
+        {
+            using var audio = TagLib.File.Create(info.FilePath);
+            var extension = Path.GetExtension(info.FilePath);
+            isrc = audio.Tag.ISRC?.Trim() ?? string.Empty;
+
+            // The runner's own raw tag reader, rather than a second one here. It already knows the format
+            // quirks - MP4 needs the ATL path, Apple dash-box frames are a different box again - and a
+            // second reader would quietly disagree with the tags the tagging chain actually wrote.
+            AddStagedProviderId(audio, extension, urls, "deezer_track_id", "DEEZER_TRACK_ID", "DEEZERID", "DEEZER_ID");
+            AddStagedProviderId(audio, extension, urls, "spotify_track_id", "SPOTIFY_TRACK_ID", "SPOTIFY_ID");
+            AddStagedProviderId(audio, extension, urls, "apple_track_id", "ITUNES_TRACK_ID", "APPLE_MUSIC_TRACK_ID");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TagLib.CorruptFileException)
+        {
+            // Fall through: an unreadable tag block still leaves the textual identity to look up by.
+        }
+
+        return new Track
+        {
+            Id = urls.TryGetValue("deezer_track_id", out var deezerId) ? deezerId : string.Empty,
+            Title = info.Title,
+            Duration = Math.Max(0, (info.DurationMs ?? 0) / 1000),
+            MainArtist = new Artist(info.ArtistName),
+            Album = new Album(info.AlbumTitle),
+            ISRC = isrc,
+            Source = urls.ContainsKey("deezer_track_id") ? DeezerSource : string.Empty,
+            SourceId = urls.TryGetValue("deezer_track_id", out var sourceId) ? sourceId : string.Empty,
+            Urls = urls,
+            DownloadURL = string.Empty
+        };
+    }
+
+    private static void AddStagedProviderId(
+        TagLib.File audio,
+        string extension,
+        IDictionary<string, string> urls,
+        string urlKey,
+        params string[] tagNames)
+    {
+        foreach (var tagName in tagNames)
+        {
+            var value = AutoTag.LocalAutoTagRunner.ReadRawTagValues(audio, extension, tagName)
+                .FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate));
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                urls[urlKey] = value.Trim();
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     The library-agnostic half of a lyrics refresh: given a resolved identity and a path, plan, fetch
+    ///     and write beside the audio.
+    /// </summary>
+    /// <remarks>
+    ///     Extracted so the library path and the staged path cannot drift. Both need the same decision about
+    ///     what is on disk, the same provider chain, the same save rules and the same outcome wording; only
+    ///     where the identity came from differs.
+    /// </remarks>
+    private async Task<LyricsRefreshTrackResult> ProcessResolvedFileLyricsAsync(
+        long trackId,
+        TrackAudioInfoDto info,
+        Track track,
+        DeezSpoTagSettings settings,
+        LyricsRefreshOptions options,
+        Func<CancellationToken, ValueTask>? onWritePhaseStarted,
+        Func<LyricsResolutionProgress, CancellationToken, ValueTask>? onLookupProgress,
+        CancellationToken cancellationToken)
+    {
         var directory = Path.GetDirectoryName(info.FilePath);
         var filename = Path.GetFileNameWithoutExtension(info.FilePath);
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(filename))
@@ -557,9 +765,9 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         AddUrl(urls, "deezer_track_id", links?.DeezerTrackId);
         AddUrl(urls, "spotify_track_id", links?.SpotifyTrackId);
         AddUrl(urls, "apple_track_id", links?.AppleTrackId);
-        AddUrl(urls, "deezer", links?.DeezerUrl);
-        AddUrl(urls, "spotify", links?.SpotifyUrl);
-        AddUrl(urls, "apple", links?.AppleUrl);
+        AddUrl(urls, DeezerSource, links?.DeezerUrl);
+        AddUrl(urls, SpotifySource, links?.SpotifyUrl);
+        AddUrl(urls, AppleSource, links?.AppleUrl);
         AddUrl(urls, "source_url", links?.DeezerUrl ?? links?.SpotifyUrl ?? links?.AppleUrl);
 
         return new Track
@@ -668,15 +876,15 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     {
         if (!string.IsNullOrWhiteSpace(links?.DeezerTrackId))
         {
-            return "deezer";
+            return DeezerSource;
         }
         if (!string.IsNullOrWhiteSpace(links?.SpotifyTrackId))
         {
-            return "spotify";
+            return SpotifySource;
         }
         if (!string.IsNullOrWhiteSpace(links?.AppleTrackId))
         {
-            return "apple";
+            return AppleSource;
         }
         return null;
     }
@@ -685,9 +893,9 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     {
         return source switch
         {
-            "deezer" => links?.DeezerTrackId,
-            "spotify" => links?.SpotifyTrackId,
-            "apple" => links?.AppleTrackId,
+            DeezerSource => links?.DeezerTrackId,
+            SpotifySource => links?.SpotifyTrackId,
+            AppleSource => links?.AppleTrackId,
             _ => null
         };
     }

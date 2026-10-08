@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Models;
+using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
@@ -11,6 +13,42 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LyricsArtifactStateTest
 {
+    [Fact]
+    public async Task ApplyProgress_ResolvedRichLyricsHaveNoPhantomPlainRequirement()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, SaveLyrics = true, LrcFormat = "lrc",
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics", LyricsFallbackOrder = "musixmatch,lrclib"
+        };
+        var (result, progress) = await LyricsServicePrivateHelpersTest.ResolveWithCachedLyricsAsync(settings,
+            new Dictionary<string, LyricsBase>
+            {
+                ["musixmatch"] = new LyricsSource
+                {
+                    SyncedLyrics = [new SynchronizedLyric("Word lyrics", "[00:01.00]", 1000)
+                    {
+                        Words = [new SynchronizedLyricWord("Word", 1000, 1500), new SynchronizedLyricWord(" lyrics", 1500, 2000)]
+                    }],
+                    SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson
+                },
+                ["lrclib"] = new LyricsSource { UnsyncedLyrics = "Unneeded plain" }
+            });
+        var artifacts = LyricsArtifactState.Fetching(result.Plan);
+        foreach (var tick in progress)
+        {
+            artifacts.ApplyProgress(tick);
+            Assert.DoesNotContain("plain-text", artifacts.RemainingOutputs);
+        }
+        artifacts.ApplyResolution(result);
+
+        Assert.Empty(artifacts.RemainingOutputs);
+        Assert.Null(artifacts.IncompleteReason);
+        Assert.Equal("resolved", artifacts.Status);
+        Assert.Equal("word", artifacts.LrcTiming);
+        Assert.Equal(["lrc"], artifacts.ResolvedFormats);
+    }
+
     [Theory]
     [InlineData("lrc", "lrc")]
     [InlineData("ttml", "ttml")]

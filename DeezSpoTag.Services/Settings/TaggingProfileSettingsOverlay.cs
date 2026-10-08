@@ -145,6 +145,11 @@ public static class TaggingProfileSettingsOverlay
             options.SubtitleMaxDeviationSeconds = Math.Clamp(subtitleDeviation, 0, 60);
         }
 
+        if (TryReadBool(musixmatch, "require_lyrics", out var requireLyrics))
+        {
+            options.RequireLyrics = requireLyrics;
+        }
+
         return options;
     }
 

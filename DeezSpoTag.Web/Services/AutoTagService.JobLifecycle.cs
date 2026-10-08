@@ -294,7 +294,24 @@ public partial class AutoTagService
         SuccessPostProcessingContext context,
         CancellationToken cancellationToken)
     {
-        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
+        var isExternalFileEnrichment = IsExternalFileEnrichmentRunIntent(job.RunIntent);
+
+        // Sidecars run BEFORE the move for both external-file operations. They are written beside the
+        // staged audio and travel with it into the library, which is what lets them be resolved from the
+        // provider identity the tagging chain just wrote. Running them afterwards meant ingesting the moved
+        // files into the library purely to obtain track ids to look lyrics up by - staging a file into the
+        // library in order to ask about it, and leaving the library carrying rows for files that are still
+        // in the middle of being enriched.
+        if (isExternalFileEnrichment)
+        {
+            await RunExternalFileStagedSidecarsAsync(
+                job,
+                path,
+                context.ConfigPath,
+                context.FileOutcomes,
+                cancellationToken);
+        }
+
         var autoMove = await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
         if (isManualEnrichment && !autoMove.Completed)
         {

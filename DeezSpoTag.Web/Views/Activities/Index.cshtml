@@ -5993,7 +5993,9 @@ async function clearCanceledTasks() {
 		            delete queueProgressTextAnimationByTask[taskId];
 		        }
 
-	        const displayedError = task.error || task.lyricsIncompleteReason;
+	        // Lyrics are an optional sidecar artifact: a missing or incomplete lyrics format must
+	        // never render as a download error. The reason stays on the payload for diagnostics.
+	        const displayedError = task.error;
 	        const errorHtml = displayedError
 	            ? `<div class="error-message">⚠ ${escapeHtml(displayedError)}</div>`
 	            : '';

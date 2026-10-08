@@ -52,7 +52,7 @@ public sealed class LastFmMatcher
         var title = NormalizeDisplay(OneTaggerMatching.CleanTitle(info.Title));
         if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
 
-        var cacheKey = $"{NormalizeKey(artist)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{NormalizeRelativeWeight(config.MinRelativeWeight):0.###}";
+        var cacheKey = $"{NormalizeKey(artist)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{NormalizeRelativeWeight(config.MinRelativeWeight, config.MinRelativeWeightUnit):R}";
         if (_cache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
         {
             return BuildResult(info, cached.Tags);
@@ -120,7 +120,7 @@ public sealed class LastFmMatcher
             .OrderByDescending(tag => tag.Count)
             .ToList() ?? new();
         var leading = weighted.FirstOrDefault()?.Count ?? 0;
-        var minRelativeWeight = NormalizeRelativeWeight(config.MinRelativeWeight);
+        var minRelativeWeight = NormalizeRelativeWeight(config.MinRelativeWeight, config.MinRelativeWeightUnit);
         return weighted
             .Where(tag => tag.Count >= Math.Max(0, config.MinTagCount))
             .Where(tag => leading <= 0 || tag.Count / (double)leading >= minRelativeWeight)
@@ -134,11 +134,12 @@ public sealed class LastFmMatcher
 
     /// <summary>
     /// The UI exposes the minimum tag share as a percentage (15 = 15%); the comparison needs a
-    /// 0-1 fraction. Values above 1 are treated as percentages so stored profiles stay valid.
+    /// 0-1 fraction. Explicit percentages always divide by 100; unmarked profiles retain legacy fraction compatibility.
     /// </summary>
-    private static double NormalizeRelativeWeight(double raw)
+    private static double NormalizeRelativeWeight(double raw, string? unit)
     {
-        var value = raw > 1d ? raw / 100d : raw;
+        var value = string.Equals(unit, "percent", StringComparison.OrdinalIgnoreCase) || raw > 1d
+            ? raw / 100d : raw;
         return Math.Clamp(value, 0d, 1d);
     }
 

@@ -8,6 +8,39 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LyricsSettingsPolicyTest
 {
+    [Theory]
+    [InlineData("line", "syllable-lyrics")]
+    [InlineData("word-enhanced", "lyrics")]
+    public void WantsLrcOutput_DoesNotRequestAnUnselectedTimingType(string mode, string types)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, LrcFormat = "lrc", LrcType = types, LrcTimingPreference = mode
+        };
+
+        Assert.False(LyricsSettingsPolicy.WantsLrcOutput(settings));
+        Assert.False(LyricsSettingsPolicy.WantsEnhancedLrc(settings));
+        Assert.False(LyricsSettingsPolicy.WantsLineSyncedLrc(settings));
+    }
+
+    [Theory]
+    [InlineData("line", true, false, true)]
+    [InlineData("word-enhanced", false, true, false)]
+    [InlineData("prefer-enhanced", false, true, true)]
+    [InlineData("", false, false, true)]
+    [InlineData("", true, true, true)]
+    public void TimingPolicy_NormalizesExplicitAndLegacyPreferences(string mode, bool legacy, bool enhanced, bool line)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true, LrcType = "lyrics,syllable-lyrics", LrcFormat = "lrc",
+            LrcTimingPreference = mode, PreferEnhancedLrc = legacy
+        };
+
+        Assert.Equal(enhanced, LyricsSettingsPolicy.WantsEnhancedLrc(settings));
+        Assert.Equal(line, LyricsSettingsPolicy.WantsLineSyncedLrc(settings));
+    }
+
     [Fact]
     public void CanFetchLyrics_ReturnsFalse_WhenAllGatesDisabled()
     {

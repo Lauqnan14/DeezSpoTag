@@ -1876,6 +1876,140 @@ WHERE next_retry_at_utc IS NULL OR trim(next_retry_at_utc) = '';";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private static readonly string[] ManualUnavailableCoverKeys =
+        ["cover", "Cover", "coverUrl", "CoverUrl", "albumCover", "AlbumCover"];
+    private static readonly string[] ManualUnavailableDurationMsKeys = ["DurationMs", "durationMs"];
+    private static readonly string[] ManualUnavailableDurationSecondsKeys = ["DurationSeconds", "durationSeconds"];
+    private static readonly string[] ManualUnavailableTrackNumberKeys =
+        ["TrackNumber", "trackNumber", "SpotifyTrackNumber", "spotifyTrackNumber"];
+    private static readonly string[] ManualUnavailableTrackTotalKeys =
+        ["TrackTotal", "trackTotal", "SpotifyTotalTracks", "spotifyTotalTracks"];
+    private static readonly string[] ManualUnavailableDiscNumberKeys =
+        ["DiscNumber", "discNumber", "SpotifyDiscNumber", "spotifyDiscNumber"];
+    private static readonly string[] ManualUnavailableDiscTotalKeys = ["DiscTotal", "discTotal"];
+    private static readonly string[] ManualUnavailableReleaseDateKeys =
+        ["ReleaseDate", "releaseDate", "release_date"];
+    private static readonly string[] ManualUnavailableExplicitKeys =
+        ["Explicit", "explicit", "explicit_lyrics"];
+
+    /// <summary>
+    /// Repairs existing records from their own <c>payload_json</c>. The payload was always written, so
+    /// nothing has to be re-fetched from a remote source and no user has to recreate a record.
+    /// </summary>
+    /// <remarks>
+    /// Only absent values are filled. For the numeric and boolean columns "absent" means strictly
+    /// NULL: a stored 0 or negative number is a committed fact, not a gap, because the model treats
+    /// "not supplied" and "supplied" as different answers and a repair must not revise one. For the
+    /// two text columns an empty or whitespace-only value also counts as absent, which is the only
+    /// such state a write can produce (the repository maps blank text to NULL). The payload is read
+    /// with <see cref="QueuePayloadJsonParser"/>, the SAME reader the live path uses, so a record
+    /// written now and a record repaired from an old payload resolve to the same value. Re-implementing
+    /// the parse in SQL is what previously made the two paths disagree.
+    /// </remarks>
+    private static async Task BackfillManualUnavailableMetadataAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await ReadManualUnavailableMetadataBackfillCandidatesAsync(connection, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        // COALESCE keeps the EXISTING value and only falls back to the payload. A stored 0 or
+        // negative number is therefore preserved, not treated as a gap.
+        const string sql = @"
+UPDATE manual_unavailable_track
+SET cover_url = COALESCE(NULLIF(trim(cover_url), ''), @coverUrl),
+    duration_ms = COALESCE(duration_ms, @durationMs),
+    track_number = COALESCE(track_number, @trackNumber),
+    track_total = COALESCE(track_total, @trackTotal),
+    disc_number = COALESCE(disc_number, @discNumber),
+    disc_total = COALESCE(disc_total, @discTotal),
+    release_date = COALESCE(NULLIF(trim(release_date), ''), @releaseDate),
+    explicit = COALESCE(explicit, @explicit)
+WHERE id = @id;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        var coverUrl = command.Parameters.Add("@coverUrl", SqliteType.Text);
+        var durationMs = command.Parameters.Add("@durationMs", SqliteType.Integer);
+        var trackNumber = command.Parameters.Add("@trackNumber", SqliteType.Integer);
+        var trackTotal = command.Parameters.Add("@trackTotal", SqliteType.Integer);
+        var discNumber = command.Parameters.Add("@discNumber", SqliteType.Integer);
+        var discTotal = command.Parameters.Add("@discTotal", SqliteType.Integer);
+        var releaseDate = command.Parameters.Add("@releaseDate", SqliteType.Text);
+        var explicitFlag = command.Parameters.Add("@explicit", SqliteType.Integer);
+        var id = command.Parameters.Add("@id", SqliteType.Integer);
+
+        foreach (var candidate in candidates)
+        {
+            // A payload that is malformed, empty or silent on a field yields null here, and COALESCE
+            // then leaves that column exactly as it was.
+            var payload = QueuePayloadJsonParser.Parse(candidate.PayloadJson);
+            coverUrl.Value = (object?)QueuePayloadJsonParser.ReadCoverUrl(payload, ManualUnavailableCoverKeys)
+                             ?? DBNull.Value;
+            durationMs.Value = (object?)QueuePayloadJsonParser.ResolveDurationMs(
+                payload,
+                queueDurationMs: null,
+                ManualUnavailableDurationMsKeys,
+                ManualUnavailableDurationSecondsKeys) ?? DBNull.Value;
+            trackNumber.Value = (object?)QueuePayloadJsonParser.ReadPositiveInt32(payload, ManualUnavailableTrackNumberKeys) ?? DBNull.Value;
+            trackTotal.Value = (object?)QueuePayloadJsonParser.ReadPositiveInt32(payload, ManualUnavailableTrackTotalKeys) ?? DBNull.Value;
+            discNumber.Value = (object?)QueuePayloadJsonParser.ReadPositiveInt32(payload, ManualUnavailableDiscNumberKeys) ?? DBNull.Value;
+            discTotal.Value = (object?)QueuePayloadJsonParser.ReadPositiveInt32(payload, ManualUnavailableDiscTotalKeys) ?? DBNull.Value;
+            releaseDate.Value = (object?)QueuePayloadJsonParser.ReadValue(payload, ManualUnavailableReleaseDateKeys) ?? DBNull.Value;
+            explicitFlag.Value = QueuePayloadJsonParser.ReadBoolean(payload, ManualUnavailableExplicitKeys) is { } flag
+                ? (flag ? 1 : 0)
+                : DBNull.Value;
+            id.Value = candidate.Id;
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Rows that could gain something: a usable payload, and at least one column still absent.
+    /// json_valid() is checked before the payload is handed to the reader as a cheap guard against
+    /// malformed JSON; the reader is tolerant of it either way.
+    /// </summary>
+    /// <remarks>
+    /// "Absent" has to mean the same thing here as in the UPDATE that follows, or a row would be
+    /// skipped while still missing a value it could have gained. Blank text counts as absent to match
+    /// COALESCE(NULLIF(trim(...), ''), ...); a stored number never does, so 0 and negatives are kept.
+    /// </remarks>
+    private static async Task<List<ManualUnavailableBackfillCandidate>> ReadManualUnavailableMetadataBackfillCandidatesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT id, payload_json
+FROM manual_unavailable_track
+WHERE payload_json IS NOT NULL
+  AND json_valid(payload_json) = 1
+  AND (cover_url IS NULL OR trim(cover_url) = ''
+    OR duration_ms IS NULL
+    OR track_number IS NULL
+    OR track_total IS NULL
+    OR disc_number IS NULL
+    OR disc_total IS NULL
+    OR release_date IS NULL OR trim(release_date) = ''
+    OR explicit IS NULL);";
+
+        var candidates = new List<ManualUnavailableBackfillCandidate>();
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            candidates.Add(new ManualUnavailableBackfillCandidate(
+                reader.GetInt64(0),
+                await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1)));
+        }
+
+        return candidates;
+    }
+
+    private sealed record ManualUnavailableBackfillCandidate(long Id, string? PayloadJson);
+
     private static async Task RepairPlaylistCandidateAndTargetSyncRuntimeAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)

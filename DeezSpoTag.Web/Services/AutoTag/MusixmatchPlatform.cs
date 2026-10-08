@@ -68,6 +68,13 @@ public sealed class MusixmatchPlatform : AutoTagPlatformBase
                     },
                     new()
                     {
+                        Id = "require_lyrics",
+                        Label = "Require lyrics on Musixmatch results",
+                        Tooltip = "When enabled, the Musixmatch search is restricted to recordings that have lyrics. Disable to also match recordings without lyrics.",
+                        Value = new PlatformCustomOptionBoolean { Value = true }
+                    },
+                    new()
+                    {
                         Id = "subtitle_max_deviation_seconds",
                         Label = "Line-sync drift allowance (seconds)",
                         Tooltip = "The same allowance for line-level (subtitle) synchronisation.",

@@ -78,6 +78,93 @@ public sealed class DeezSpoTagSettingsServiceProfileOverlayTest : IDisposable
         Assert.True(settings.Tags.SyncedLyrics);
     }
 
+    [Theory]
+    [InlineData("{}", 10, true, 10, 10)]
+    [InlineData("{\"lrclib\":{\"duration_tolerance_seconds\":3,\"search_fallback\":false},\"musixmatch\":{\"search_page_size\":25,\"richsync_max_deviation_seconds\":6}}", 3, false, 25, 6)]
+    [InlineData("{\"lrclib\":{\"duration_tolerance_seconds\":9999},\"musixmatch\":{\"search_page_size\":0,\"richsync_max_deviation_seconds\":-1}}", 60, true, 1, 0)]
+    [InlineData("{\"lrclib\":{\"duration_tolerance_seconds\":\"bad\",\"search_fallback\":{}},\"musixmatch\":{\"search_page_size\":[],\"richsync_max_deviation_seconds\":null}}", 10, true, 10, 10)]
+    public void LyricsProfileOptions_ReachSharedRuntimeAndCloneIndependently(string json, int tolerance, bool search, int pageSize, int deviation)
+    {
+        var profile = BuildDefaultProfile();
+        profile.AutoTag.Data["custom"] = JsonDocument.Parse(json).RootElement.Clone();
+        var settings = new DeezSpoTagSettings();
+        TaggingProfileSettingsOverlay.ApplyProfileToSettings(settings, profile);
+        Assert.Equal(tolerance, settings.Lrclib.DurationToleranceSeconds);
+        Assert.Equal(search, settings.Lrclib.SearchFallback);
+        Assert.Equal(pageSize, settings.Musixmatch.SearchPageSize);
+        Assert.Equal(deviation, settings.Musixmatch.RichsyncMaxDeviationSeconds);
+        Assert.True(settings.Lrclib.UseDurationHint);
+        Assert.True(settings.Lrclib.PreferSynced);
+        Assert.Equal(10, settings.Musixmatch.DurationToleranceSeconds);
+        Assert.Equal(10, settings.Musixmatch.SubtitleMaxDeviationSeconds);
+        var type = typeof(TaggingProfileSettingsOverlay).Assembly.GetType("DeezSpoTag.Services.Download.Shared.LyricsResolveSettingsBuilder")!;
+        var copy = (DeezSpoTagSettings)type.GetMethod("Build")!.Invoke(null, new object[] { settings, new TagSettings() })!;
+        Assert.Equal(tolerance, copy.Lrclib.DurationToleranceSeconds);
+        Assert.Equal(search, copy.Lrclib.SearchFallback);
+        Assert.Equal(pageSize, copy.Musixmatch.SearchPageSize);
+        Assert.Equal(deviation, copy.Musixmatch.RichsyncMaxDeviationSeconds);
+        copy.Lrclib.DurationToleranceSeconds = 42;
+        copy.Musixmatch.SearchPageSize = 42;
+        Assert.Equal(tolerance, settings.Lrclib.DurationToleranceSeconds);
+        Assert.Equal(pageSize, settings.Musixmatch.SearchPageSize);
+    }
+
+    [Fact]
+    public void LyricsProfile_AllEightValuesReachDownloadConsumer()
+    {
+        var profile = BuildDefaultProfile();
+        profile.AutoTag.Data["custom"] = JsonDocument.Parse("""{"lrclib":{"duration_tolerance_seconds":4,"use_duration_hint":false,"search_fallback":false,"prefer_synced":false},"musixmatch":{"duration_tolerance_seconds":5,"search_page_size":26,"richsync_max_deviation_seconds":7,"subtitle_max_deviation_seconds":8}}""").RootElement.Clone();
+        var settings = new DeezSpoTagSettings();
+        TaggingProfileSettingsOverlay.ApplyProfileToSettings(settings, profile);
+        var type = typeof(TaggingProfileSettingsOverlay).Assembly.GetType("DeezSpoTag.Services.Download.Shared.LyricsResolveSettingsBuilder")!;
+        var copy = (DeezSpoTagSettings)type.GetMethod("Build")!.Invoke(null, new object[] { settings, new TagSettings() })!;
+        Assert.Equal(4, copy.Lrclib.DurationToleranceSeconds);
+        Assert.False(copy.Lrclib.UseDurationHint);
+        Assert.False(copy.Lrclib.SearchFallback);
+        Assert.False(copy.Lrclib.PreferSynced);
+        Assert.Equal(5, copy.Musixmatch.DurationToleranceSeconds);
+        Assert.Equal(26, copy.Musixmatch.SearchPageSize);
+        Assert.Equal(7, copy.Musixmatch.RichsyncMaxDeviationSeconds);
+        Assert.Equal(8, copy.Musixmatch.SubtitleMaxDeviationSeconds);
+    }
+
+    [Theory]
+    [InlineData("{}", true)]
+    [InlineData("{\"musixmatch\":{\"require_lyrics\":true}}", true)]
+    [InlineData("{\"musixmatch\":{\"require_lyrics\":false}}", false)]
+    [InlineData("{\"musixmatch\":{\"require_lyrics\":\"false\"}}", false)]
+    [InlineData("{\"musixmatch\":{\"require_lyrics\":\"bad\"}}", true)]
+    [InlineData("{\"musixmatch\":{\"require_lyrics\":{}}}", true)]
+    [InlineData("{\"musixmatch\":null}", true)]
+    public void MusixmatchRequireLyrics_MapsThroughOverlayAndRetainsProfileDefault(string customJson, bool expected)
+    {
+        var profile = BuildDefaultProfile();
+        profile.AutoTag.Data["custom"] = JsonDocument.Parse(customJson).RootElement.Clone();
+        var settings = new DeezSpoTagSettings();
+
+        TaggingProfileSettingsOverlay.ApplyProfileToSettings(settings, profile);
+
+        Assert.Equal(expected, settings.Musixmatch.RequireLyrics);
+        var type = typeof(TaggingProfileSettingsOverlay).Assembly.GetType("DeezSpoTag.Services.Download.Shared.LyricsResolveSettingsBuilder")!;
+        var copy = (DeezSpoTagSettings)type.GetMethod("Build")!.Invoke(null, new object[] { settings, new TagSettings() })!;
+        Assert.Equal(expected, copy.Musixmatch.RequireLyrics);
+        copy.Musixmatch.RequireLyrics = !expected;
+        Assert.Equal(expected, settings.Musixmatch.RequireLyrics);
+    }
+
+    [Fact]
+    public void MusixmatchOptions_ClonePreservesRequireLyricsIndependently()
+    {
+        var options = new MusixmatchOptions { RequireLyrics = false };
+
+        var copy = options.Clone();
+
+        Assert.False(copy.RequireLyrics);
+        copy.RequireLyrics = true;
+        Assert.False(options.RequireLyrics);
+        Assert.True(new MusixmatchOptions().RequireLyrics);
+    }
+
     private void WriteProfilesFile(string fileName, params TaggingProfile[] profiles)
     {
         var autoTagDir = Path.Join(_tempRoot, "autotag");

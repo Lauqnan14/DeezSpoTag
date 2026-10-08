@@ -2957,6 +2957,83 @@ public sealed class AutoTagDownloadMoveService
         return DownloadPathResolver.NormalizeDisplayPath(destinationPath);
     }
 
+    /// <summary>
+    ///     Carries the audio file's sidecars across with it when it moves to the library.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A staged file's lyrics and cover are written beside it, so they share its stem. Moving only
+    ///         the audio would strand every one of them in the staging area and leave the library track with
+    ///         no artwork and no lyrics - and the staging copy would look like a duplicate of a file that has
+    ///         already been dealt with.
+    ///     </para>
+    ///     <para>
+    ///         The extension filter is the same one the duplicate-quarantine path uses, so a move and a
+    ///         quarantine agree on what counts as a sidecar. Each sidecar gets its own unique name, because
+    ///         the destination may already hold one belonging to a different track.
+    ///     </para>
+    ///     <para>
+    ///         Best-effort by design: a sidecar that cannot travel must never fail the audio move, which is
+    ///         the deliverable.
+    ///     </para>
+    /// </remarks>
+    private static void MoveAdjacentSidecarsWithAudio(string sourcePath, string destinationPath)
+    {
+        var sourceDirectory = Path.GetDirectoryName(sourcePath);
+        if (string.IsNullOrWhiteSpace(sourceDirectory) || !Directory.Exists(sourceDirectory))
+        {
+            return;
+        }
+
+        var sourceStem = Path.GetFileNameWithoutExtension(sourcePath);
+        if (string.IsNullOrWhiteSpace(sourceStem))
+        {
+            return;
+        }
+
+        foreach (var sidecarPath in Directory.EnumerateFiles(sourceDirectory, sourceStem + ".*"))
+        {
+            var extension = Path.GetExtension(sidecarPath);
+            if (!EnhancementReplacementSidecarExtensions.Contains(extension)
+                || string.Equals(sidecarPath, destinationPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                var sidecarTarget = Path.ChangeExtension(destinationPath, extension);
+                var targetDirectory = Path.GetDirectoryName(sidecarTarget);
+                if (string.IsNullOrWhiteSpace(targetDirectory))
+                {
+                    continue;
+                }
+
+                // The stem is the pairing. Deriving the name from the audio's FINAL destination is what keeps
+                // the two together when the audio itself was renamed to avoid a collision - a sidecar named
+                // from the pre-collision name would no longer match, and nothing in the library would pair
+                // them. Renaming the sidecar independently, which this used to do, produced exactly that:
+                // "01 Track (1).flac" beside "01 Track (1) (1).lrc".
+                //
+                // So the derived name is used as-is. If it is genuinely occupied, the sidecar stays in staging
+                // rather than being renamed into a file nothing will ever pair it with. Overwriting the
+                // occupant would destroy another track's lyrics or cover, which is worse than leaving our own
+                // behind where a later pass can still see it.
+                if (IOFile.Exists(sidecarTarget))
+                {
+                    continue;
+                }
+
+                IOFile.Move(sidecarPath, sidecarTarget);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The audio has already moved. A cover or lyrics file that stayed behind is a lesser
+                // problem than a track that did not arrive, and is reported by the sidecar phase itself.
+            }
+        }
+    }
+
     private static string? ResolveAlreadyMovedPathUnderRoot(
         string stagingRoot,
         string sourcePath,

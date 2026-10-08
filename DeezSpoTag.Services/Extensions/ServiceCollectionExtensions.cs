@@ -88,6 +88,11 @@ public static class ServiceCollectionExtensions
         AddInsecureTlsClient(services, "JwtTokenService", TimeSpan.FromSeconds(30), LinuxChrome96UserAgent);
         AddInsecureTlsClient(services, "LyricsService", TimeSpan.FromSeconds(30), LinuxChrome96UserAgent);
 
+        // Public Apple Music lyrics API. Kept on its own client so a stalled public host is bounded
+        // by AppleMusicSettings.PublicLyricsTimeoutSeconds (enforced per request) and never shares
+        // a budget with the other lyrics providers. The client timeout is only a backstop ceiling.
+        AddInsecureTlsClient(services, "LyricsPublicApi", TimeSpan.FromSeconds(60), LinuxChrome96UserAgent);
+
         // EXACT deezspotag implementation: DeezerClient with SSL bypass for media URLs
         services.AddHttpClient("DeezerClient", client =>
         {

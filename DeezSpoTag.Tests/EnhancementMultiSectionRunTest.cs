@@ -819,14 +819,18 @@ public sealed class EnhancementMultiSectionRunTest
 
         // The first file of an album fetches the artwork; every file handles its own lyrics.
         // The once-per-album ownership rule lives in the explicit plan the loop resolves.
-        Assert.Contains("var fetchScope = sidecarRunPlan.Resolve(filePath, trackId);", body, StringComparison.Ordinal);
+        // A third argument says the file's identity came from its own tags rather than a library row,
+        // which is how a staged file is allowed to handle lyrics without a track id.
+        Assert.Contains("var fetchScope = sidecarRunPlan.Resolve(filePath, trackId, resolveFileIdentityFromTags);", body, StringComparison.Ordinal);
         Assert.Contains("var ownsAlbumArtwork = fetchScope.OwnsAlbumArtwork;", body, StringComparison.Ordinal);
         Assert.Contains("var handlesLyrics = fetchScope.HandlesLyrics;", body, StringComparison.Ordinal);
         var planStart = workflows.IndexOf("internal sealed class SidecarFetchPlan", StringComparison.Ordinal);
         Assert.True(planStart > 0);
         var planBody = workflows[planStart..(planStart + 1500)];
         Assert.Contains("_runCovers && _artworkAlbums.Add(ResolveSidecarAlbumKey(filePath))", planBody, StringComparison.Ordinal);
-        Assert.Contains("_runLyrics && trackId > 0", planBody, StringComparison.Ordinal);
+        // Lyrics still require a library id OR a tag-resolved identity. The old bare "trackId > 0"
+        // meant every staged file was reported as handling no lyrics at all.
+        Assert.Contains("_runLyrics && (trackId > 0 || identityResolvedFromTags)", planBody, StringComparison.Ordinal);
 
         // Detection happens first: what the file actually still needs decides both the message
         // and whether the pass does any network work at all.

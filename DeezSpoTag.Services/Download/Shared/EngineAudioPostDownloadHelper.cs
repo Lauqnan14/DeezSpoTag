@@ -3015,7 +3015,7 @@ public static partial class EngineAudioPostDownloadHelper
         var resolution = await execution.Request.LyricsService.ResolveLyricsWithDetailsAsync(
             lyricsTrack,
             execution.Request.Settings,
-            providerOptions: null,
+            new LyricsProviderOptions { PeerLyricsPath = ResolvePeerLyricsPath(execution) },
             async (progress, progressToken) =>
             {
                 runState.LyricsArtifacts.ApplyProgress(progress);
