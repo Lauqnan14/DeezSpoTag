@@ -142,9 +142,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private const string ArtistTag = "artist";
     private const string BoomplayPlatform = "boomplay";
     private const string AudiomackPlatform = "audiomack";
+    private const string SoundcloudPlatform = "soundcloud";
     private const string DiscNumberTag = "discNumber";
     private const string DiscTotalTag = "discTotal";
-    private const string GenreTag = "genre";
+    internal const string GenreTag = "genre";
     private const string ExplicitTag = "explicit";
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string TrackTotalRawTag = "TRACKTOTAL";
@@ -206,9 +207,20 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private const string MediaRawTag = "MEDIA";
     private const string RatingTag = "rating";
     private const string RatingRawTag = "RATING";
-    private const string LanguageTag = "language";
-    private const string LanguageRawTag = "LANGUAGE";
-    private const string StyleTag = "style";
+    internal const string LanguageTag = "language";
+    internal const string LanguageRawTag = "LANGUAGE";
+    internal const string ArtistCountryTag = "artistCountry";
+    internal const string ArtistCityTag = "artistCity";
+    internal const string ArtistRegionTag = "artistRegion";
+    internal const string ArtistLanguageTag = "artistLanguage";
+    internal const string ArtistCountryRawTag = DeezSpoTag.Core.Models.ArtistEnrichmentFields.CountryRawName;
+    internal const string ArtistCityRawTag = DeezSpoTag.Core.Models.ArtistEnrichmentFields.CityRawName;
+    internal const string ArtistRegionRawTag = DeezSpoTag.Core.Models.ArtistEnrichmentFields.RegionRawName;
+    internal const string ArtistLanguageRawTag = DeezSpoTag.Core.Models.ArtistEnrichmentFields.ArtistLanguageRawName;
+
+    /// <summary>Shared semantic tag name constants, so Genre Intelligence and AutoTag resolve the same physical fields.</summary>
+    internal const string LanguageTagName = LanguageRawTag;
+    internal const string StyleTag = "style";
     private const string PublishDateTag = "publishDate";
     private const string TrackIdTag = "trackId";
     private const string RecordingIdTag = "recordingId";
@@ -285,6 +297,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         RatingRawTag,
         LanguageTag,
         LanguageRawTag,
+        ArtistCountryTag,
+        ArtistCountryRawTag,
+        ArtistCityTag,
+        ArtistCityRawTag,
+        ArtistRegionTag,
+        ArtistRegionRawTag,
+        ArtistLanguageTag,
+        ArtistLanguageRawTag,
         DiscTotalTag,
         DiscTotalRawTag
     };
@@ -405,11 +425,20 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         "SHAZAM_META_CONTENT_RATING",
         "SHAZAM_META_KEY"
     ];
-    private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "other",
-        "others"
-    };
+    /// <summary>
+    /// The fallback block list used only when a caller supplies none.
+    /// </summary>
+    /// <remarks>
+    /// The shipped Genre Normalization defaults are the single authority for what
+    /// DeezSpoTag blocks out of the box. This used to be a second, shorter list
+    /// (<c>other</c> and <c>others</c> only), so a caller that reached the fallback
+    /// would have blocked less than every other path. In practice the shared
+    /// <see cref="GenreNormalizationSnapshot"/> always supplies a list and the
+    /// fallback is unreachable, which is exactly why the divergence could go
+    /// unnoticed.
+    /// </remarks>
+    private static readonly HashSet<string> BlockedGenres =
+        new(GenreTagAliasNormalizer.DefaultBlockedGenres, StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobTokens = new();
     private readonly ConcurrentDictionary<string, JobMatchCacheState> _jobMatchCaches = new();
     private readonly ILogger<LocalAutoTagRunner> _logger;
@@ -426,6 +455,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private readonly LastFmMatcher _lastFmMatcher;
     private readonly BoomplayMatcher _boomplayMatcher;
     private readonly AudiomackMatcher _audiomackMatcher;
+    private readonly SoundcloudMatcher _soundcloudMatcher;
     private readonly ShazamMatcher _shazamMatcher;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly AppleLyricsService _appleLyricsService;
@@ -435,6 +465,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly PortedPlatformRegistry? _platformRegistry;
+    private readonly DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver? _artistLocationResolver;
+    private readonly DeezSpoTag.Services.Library.ArtistPageCacheRepository? _artistPageCache;
+    private readonly DeezSpoTag.Services.Library.LibraryRepository? _artistLibraryRepository;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -463,6 +496,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         _lastFmMatcher = collaborators.LastFmMatcher;
         _boomplayMatcher = collaborators.BoomplayMatcher;
         _audiomackMatcher = collaborators.AudiomackMatcher;
+        _soundcloudMatcher = collaborators.SoundcloudMatcher;
         _shazamMatcher = collaborators.ShazamMatcher;
         _shazamRecognitionService = collaborators.ShazamRecognitionService;
         _appleLyricsService = collaborators.AppleLyricsService;
@@ -472,6 +506,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         _serviceScopeFactory = collaborators.ServiceScopeFactory;
         _trackIdentityResolver = collaborators.TrackIdentityResolver;
         _platformRegistry = collaborators.PlatformRegistry;
+        _artistLocationResolver = collaborators.ArtistLocationResolver;
+        _artistPageCache = collaborators.ArtistPageCache;
+        _artistLibraryRepository = collaborators.ArtistLibraryRepository;
     }
 
     private static readonly string[] AlbumIdentitySeedExtensions =

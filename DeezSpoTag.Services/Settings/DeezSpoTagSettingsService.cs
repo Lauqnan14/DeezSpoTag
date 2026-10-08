@@ -73,9 +73,18 @@ public class DeezSpoTagSettingsService : ISettingsService
     private long _cachedSettingsLength = -1;
     private readonly HashSet<string> _loggedFixFields = new(StringComparer.OrdinalIgnoreCase);
 
-    public DeezSpoTagSettingsService(ILogger<DeezSpoTagSettingsService> logger)
+    /// <summary>
+    /// Supplies the genre-normalization preferences that Genre Intelligence owns.
+    /// Optional, so a caller without a library database can still load settings.
+    /// </summary>
+    private readonly GenreNormalizationProvider? _genreNormalizationProvider;
+
+    public DeezSpoTagSettingsService(
+        ILogger<DeezSpoTagSettingsService> logger,
+        GenreNormalizationProvider? genreNormalizationProvider = null)
     {
         _logger = logger;
+        _genreNormalizationProvider = genreNormalizationProvider;
         var configRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
         if (string.IsNullOrWhiteSpace(configRoot))
         {
@@ -245,7 +254,9 @@ public class DeezSpoTagSettingsService : ISettingsService
 
         if (!System.IO.File.Exists(_settingsFilePath))
         {
-            return CreateDefaultSettings(logLoad);
+            var defaults = CreateDefaultSettings(logLoad);
+            ApplyGenreNormalizationTo(defaults);
+            return defaults;
         }
 
         var settings = ReadSettingsFromFile();
@@ -257,6 +268,11 @@ public class DeezSpoTagSettingsService : ISettingsService
             SaveSettingsLocked(settings);
         }
 
+        // Genre normalization is Genre Intelligence's now. The values on this
+        // object are read once, for the migration, and are then supplied from the
+        // Genre Intelligence store on every load.
+        ApplyGenreNormalizationTo(settings);
+
         if (logLoad)
         {
             _logger.LogInformation("Settings loaded successfully");
@@ -264,6 +280,50 @@ public class DeezSpoTagSettingsService : ISettingsService
 
         return settings;
     }
+
+    /// <summary>
+    /// Attaches the genre-normalization preferences to the settings being returned.
+    ///
+    /// The preferences are Genre Intelligence's, already loaded into the provider's
+    /// cache during startup. This only copies them onto the object the tag-writing
+    /// paths read, because those paths are synchronous and cannot reach the store.
+    ///
+    /// Where there is no provider — the worker and API hosts, which have no library
+    /// database — the values still in the configuration file are used, so those
+    /// hosts keep behaving exactly as they did. They have not been migrated, so
+    /// reading the old properties there is the only place their values exist.
+    /// </summary>
+    private void ApplyGenreNormalizationTo(DeezSpoTagSettings settings)
+    {
+        var snapshot = _genreNormalizationProvider?.Current;
+        settings.GenreNormalization = snapshot is null
+            ? BuildUnmigratedCarrier(settings)
+            : new GenreNormalizationOptions
+            {
+                Enabled = snapshot.Enabled,
+                AliasMap = snapshot.AliasMap,
+                BlockList = snapshot.BlockList
+            };
+    }
+
+    /// <summary>
+    /// Builds the carrier from the configuration file, for hosts that do not
+    /// register the Genre Intelligence store.
+    ///
+    /// This is a compatibility path, not ownership: nothing writes these values
+    /// back, and once every host registers the store this disappears.
+    /// </summary>
+#pragma warning disable CS0618 // The only read of the deprecated properties outside the migration.
+    private static GenreNormalizationOptions BuildUnmigratedCarrier(DeezSpoTagSettings settings)
+        => new()
+        {
+            Enabled = settings.NormalizeGenreTags,
+            AliasMap = settings.NormalizeGenreTags
+                ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules ?? [])
+                : new Dictionary<string, string>(StringComparer.Ordinal),
+            BlockList = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList)
+        };
+#pragma warning restore CS0618
 
     private void EnsureConfigDirectoryExists()
     {

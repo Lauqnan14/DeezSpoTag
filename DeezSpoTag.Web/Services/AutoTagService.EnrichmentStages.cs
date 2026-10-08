@@ -203,12 +203,13 @@ public partial class AutoTagService
         skipReason = "tags not configured";
         strippedKeys = new List<string>();
 
-        if (plan.RequestedTags.Count == 0)
+        var genreIntelligenceEnabled = IsGenreIntelligenceEnabled(baseRoot);
+        if (plan.RequestedTags.Count == 0 && !genreIntelligenceEnabled)
         {
             return false;
         }
 
-        if (plan.Platforms.Count == 0)
+        if (plan.Platforms.Count == 0 && !genreIntelligenceEnabled)
         {
             skipReason = string.IsNullOrWhiteSpace(plan.ExcludedPlatform)
                 ? "no eligible enrichment platforms enabled"
@@ -223,7 +224,7 @@ public partial class AutoTagService
         }
 
         var filtered = FilterSupportedTags(requested, plan.Platforms, platformCaps);
-        if (filtered.Count == 0)
+        if (filtered.Count == 0 && !genreIntelligenceEnabled)
         {
             skipReason = "no supported enrichment tags for enabled platforms";
             return false;

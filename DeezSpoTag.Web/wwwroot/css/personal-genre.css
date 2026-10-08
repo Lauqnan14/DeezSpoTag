@@ -1,0 +1,208 @@
+.pg-card-head {
+    margin-bottom: 16px;
+}
+
+.pg-card-head--toolbar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.pg-card-head p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.pg-btn {
+    appearance: none;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: 8px;
+    min-height: 38px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.pg-btn:hover {
+    border-color: var(--primary-color);
+}
+
+.pg-btn--primary {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--bg-primary);
+    font-weight: 650;
+}
+
+.pg-btn--small {
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 0.8rem;
+}
+
+.pg-muted {
+    color: var(--text-muted);
+}
+
+@media (max-width: 1100px) {
+    .pg-card-head--toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}
+
+.pg-track-card {
+    margin-top: 16px;
+}
+
+.pg-track-classifications {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.pg-track-classification {
+    display: grid;
+    grid-template-columns: minmax(140px, 0.8fr) minmax(90px, 0.45fr) minmax(120px, 0.55fr) minmax(220px, 1.3fr);
+    gap: 10px;
+    align-items: center;
+    padding: 9px 11px;
+    border: 1px solid var(--border-primary);
+    border-radius: 9px;
+    background: var(--bg-primary);
+    font-size: 0.84rem;
+}
+
+.pg-track-classification__name {
+    font-weight: 650;
+}
+
+.pg-track-classification__confidence {
+    font-variant-numeric: tabular-nums;
+}
+
+.pg-track-classification__sources {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.pg-track-classification.is-locked {
+    border-color: var(--primary-color);
+}
+
+.pg-track-locks {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: end;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-primary);
+}
+
+.pg-track-lock-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.pg-track-lock-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--primary-color);
+    border-radius: 999px;
+    padding: 4px 8px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.pg-track-lock-pill button {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.pg-track-lock-editor {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.pg-track-lock-editor select {
+    min-width: 220px;
+    min-height: 34px;
+    padding: 6px 8px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+}
+
+@media (max-width: 900px) {
+    .pg-track-classification {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .pg-track-locks {
+        grid-template-columns: 1fr;
+    }
+
+    .pg-track-lock-editor {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .pg-track-lock-editor select {
+        min-width: 0;
+        width: 100%;
+    }
+}
+
+.pg-track-history {
+    margin-top: 16px;
+    border-top: 1px solid var(--border-primary);
+    padding-top: 12px;
+}
+
+.pg-track-history summary {
+    cursor: pointer;
+    font-weight: 650;
+}
+
+.pg-track-history-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.pg-track-history-item {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.8fr) minmax(120px, 0.7fr) minmax(100px, 0.5fr) minmax(220px, 1.2fr);
+    gap: 10px;
+    padding: 9px 11px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    font-size: 0.82rem;
+}
+
+.pg-track-history-item__decision {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+    .pg-track-history-item {
+        grid-template-columns: 1fr;
+    }
+}

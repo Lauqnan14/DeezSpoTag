@@ -646,6 +646,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private sealed class AutoTagRunnerConfig
     {
+        public AutoTagGenreIntelligenceSettings GenreIntelligence { get; set; } = new();
         public List<string> Platforms { get; set; } = new();
         public string? DownloadTagSource { get; set; }
         public string? Path { get; set; }

@@ -1,0 +1,303 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "sc1-research-2026-10-07-v1",
+  "candidates": [
+    {
+      "ruleId": "ASAKAA-001",
+      "version": "1",
+      "targetStyleId": "asakaa",
+      "enabled": false,
+      "inferenceAllowed": false,
+      "researchDisposition": "RecognitionOnly",
+      "requiredAll": [],
+      "supporting": [],
+      "forbiddenAny": [],
+      "allowedEvidenceOrigins": [
+        "ExplicitFile",
+        "UserMapped",
+        "UserRule"
+      ],
+      "allowedScopes": [
+        "Track"
+      ],
+      "researchSources": [
+        {
+          "title": "African Music Library: Asakaa",
+          "url": "https://www.africanmusiclibrary.org/genre/Asakaa",
+          "sourceType": "Specialist reference",
+          "access": "Page text reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Kumasi association, drill ancestry and commonly described language practices."
+          ]
+        },
+        {
+          "title": "Msia Kibona Clark: Ghana, Global Hip Hop Studies",
+          "url": "https://www.researchgate.net/publication/377517216_Ghana",
+          "sourceType": "Academic chapter/article",
+          "access": "Author-uploaded text reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Ghanaian hip-hop history and distinction from hiplife; drill localization does not define a computational classifier."
+          ]
+        },
+        {
+          "title": "The Native: Sounds From This Side, Asakaa Drill",
+          "url": "https://thenativemag.com/cover-story/sounds-from-this-side-asakaa-drill/",
+          "sourceType": "Specialist artist interviews",
+          "access": "Article/interviews reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Artists describe local production, language mixing and international collaborations; 2020 visibility."
+          ]
+        },
+        {
+          "title": "Pan African Music: Reggie Osei, Asakaa Drill",
+          "url": "https://pan-african-music.com/en/reggie-osei-asakaa-drill/",
+          "sourceType": "Primary artist interview",
+          "access": "Article/interview reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Reggie describes 2019 drill interest and adoption beyond Ghana; artist identity cannot qualify every recording."
+          ]
+        },
+        {
+          "title": "Dodzi K. Aveh: The Woo Dance vs Kete",
+          "url": "https://www.hiphopdancealmanac.com/ink-cypher-the-woo-dance-vs-kete",
+          "sourceType": "Academic practitioner essay with interviews",
+          "access": "Essay reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Producer/dance accounts discuss local rhythmic interpretation including Soloku; no universal audio predicate is established."
+          ]
+        }
+      ],
+      "researchRationale": "Historical scene and production descriptions do not establish sufficient predicates in current GI evidence. Keep recognition separate from construction.",
+      "research": {
+        "definition": "Asakaa is a Kumasi-associated Ghanaian hip-hop scene and musical practice drawing on drill while articulating local identities and production choices. Its boundaries are contested; it is not a universal synonym for Ghanaian rap.",
+        "musicalAncestry": "Specialist descriptions connect US and UK drill with Ghanaian hip-hop and hiplife influences. Artist and producer accounts stress local production and rhythmic practices rather than translation alone.",
+        "requiredParentGenres": "Hip-Hop is the descriptive ancestry. The reviewed sources do not establish a machine-testable parent-Genre conjunction sufficient to identify every Asakaa recording.",
+        "existingStyleRelationships": "Drill is a substantial relationship. Trap and hiplife influences are descriptive; a Drill tag is neither a complete definition nor a sufficient construction predicate.",
+        "sceneRelationship": "The Kumasi collective/scene is central to historical accounts, including Kumerica and local Saka usage. Current GI has no researched Asakaa-scene identity or per-recording affiliation evidence.",
+        "countryRelationship": "Ghana is the historical scene association, not a proved nationality or birthplace requirement for every participant or recording. Reggie explicitly describes the practice as open beyond Ghana.",
+        "cityRelationship": "Kumasi is the documented scene origin. The sources do not make current residence, birth in Kumasi, or an album artist location a necessary or sufficient recording-level condition.",
+        "languageRelationship": "Twi, English and local Saka appear in artist accounts. Language use cannot be reduced to a required Twi tag; multilingual and collaborative practices undermine such a shortcut.",
+        "emergencePeriod": "Accounts place drill uptake in the late 2010s, with a major visibility increase around 2020. Reggie describes interest in drill in 2019.",
+        "eraRequirement": "Descriptive history only. A release-year cutoff is not a researched musical requirement, and GI dates are not qualified era evidence.",
+        "geographyRequirement": "Scene affiliation matters descriptively; nationality, city and country tags are not equivalent to affiliation. No universally sufficient geographic condition is established.",
+        "recognitionAliases": [
+          "No additional recognition aliases approved. Ghanaian Drill is a descriptive comparison, not an asserted canonical equivalence."
+        ],
+        "sufficientEvidence": "No defensible deterministic sufficient condition is established in the qualified SC-1 fact vocabulary. An explicit canonical Asakaa tag may be recognized by Cleanup; it does not establish an inference rule.",
+        "insufficientEvidence": [
+          "Ghana plus Hip-Hop plus Drill, individually or together.",
+          "Twi, a Kumasi location, a 2020s year, or artist membership without recording-level evidence.",
+          "Vibe/community tags, weighted agreement, or alias text not qualified by GI."
+        ],
+        "falsePositives": [
+          "Other Ghanaian hip-hop or drill mistaken for Asakaa.",
+          "A non-Asakaa recording by an artist associated with the scene.",
+          "A collaboration classified from the featured or album artist location alone."
+        ],
+        "disqualifyingCases": [
+          "For any future scene-affiliation predicate, explicit contradictory recording affiliation would require review; absent scene evidence is missing, not a contradiction.",
+          "An independently established non-drill recording would contradict a future rule that explicitly requires drill; the sources do not authorize that predicate universally.",
+          "Unknown/featured artist role cannot prove a required main-artist binding."
+        ],
+        "researchGaps": [
+          "No formal recording-level membership criteria or sufficiency theorem in the reviewed sources.",
+          "Local rhythmic/production traits lack validated typed evidence in GI.",
+          "Scene identity, participation and artist roles are not retained as qualified facts."
+        ]
+      }
+    },
+    {
+      "ruleId": "KENYAN-DRILL-001",
+      "version": "1",
+      "targetStyleId": "kenyan-drill",
+      "enabled": false,
+      "inferenceAllowed": false,
+      "researchDisposition": "RecognitionOnly",
+      "requiredAll": [],
+      "supporting": [],
+      "forbiddenAny": [],
+      "allowedEvidenceOrigins": [
+        "ExplicitFile",
+        "UserMapped",
+        "UserRule"
+      ],
+      "allowedScopes": [
+        "Track"
+      ],
+      "researchSources": [
+        {
+          "title": "Pan African Music: Buruklyn Boyz put Kenyan Drill on the map",
+          "url": "https://pan-african-music.com/en/buruklyn-boys-put-kenyan-drill-on-the-map/",
+          "sourceType": "Primary artist interviews",
+          "access": "Article/interviews reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "UK drill influence, Buruburu origin, 2019 formation, multilingual practice and diverse hip-hop catalog."
+          ]
+        },
+        {
+          "title": "The Rave Report: Kenyan Drill, Buruklyn Boyz",
+          "url": "https://www.theravereport.com/blog/kenyan-drill-buruklyn-boyz",
+          "sourceType": "Primary artist interview",
+          "access": "Article/interview reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Ajay describes UK drill listening from 2016 and choosing Swahili for local expression."
+          ]
+        },
+        {
+          "title": "Performing symbolic protest and young masculinity in Kenyan popular music",
+          "url": "https://www.royalliteglobal.com/njhs/article/view/2823",
+          "sourceType": "Peer-reviewed research",
+          "access": "Journal article page and research summary reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Thematic/semiotic study treats Kenyan Drill alongside distinct Kenyan popular-music forms; it provides no sufficient Style classifier."
+          ]
+        }
+      ],
+      "researchRationale": "Illustrative artist histories and localized drill descriptions do not authorize a country-plus-genre shortcut.",
+      "research": {
+        "definition": "Kenyan Drill describes localized drill practice within Kenyan hip-hop. Buruklyn Boyz are prominent documented participants, but one group does not define the whole scene or every recording.",
+        "musicalAncestry": "Hip-hop with UK drill influence is documented in artist interviews. Nairobi popular music includes Genge, Kapuka and Gengetone, which are not interchangeable with Kenyan Drill.",
+        "requiredParentGenres": "Hip-Hop is descriptive ancestry. Hip-Hop alone, or with a generic Drill label, is not sufficient; no universal computable parent rule was established.",
+        "existingStyleRelationships": "UK drill is a documented influence; heavy bass and sparse rhythmic descriptions are not validated GI audio predicates. Drill labels do not establish Kenyan scene participation.",
+        "sceneRelationship": "Local scene identity and practice matter. Interviews illustrate Buruklyn Boyz and Buruburu, but do not prove that affiliation with one group or neighborhood defines all Kenyan Drill.",
+        "countryRelationship": "Kenya describes localization and scene context. Citizenship, birthplace and the album artist country are not sufficient track-level evidence.",
+        "cityRelationship": "Nairobi and Buruburu are prominent in the reviewed artist accounts. A city or neighborhood requirement would overgeneralize these examples to an entire Style.",
+        "languageRelationship": "English, Sheng and Kiswahili are documented. Ajay discusses Swahili as an artistic choice; no single language is established as universally necessary.",
+        "emergencePeriod": "Reviewed accounts describe UK drill listening from 2016, group formation in 2019, and wider visibility in 2020–2021. These are artist/scene histories, not release-date gates.",
+        "eraRequirement": "Descriptive only; neither a release year nor an artist debut date proves Style.",
+        "geographyRequirement": "Kenyan scene localization is descriptive. No sufficient geographic predicate is established; residence or nationality is not recording-level affiliation.",
+        "recognitionAliases": [
+          "Kenya Drill is an existing built-in recognition alias; no new alias is registered by this research dataset."
+        ],
+        "sufficientEvidence": "No defensible deterministic sufficient condition is established using qualified SC-1 semantic facts. Explicit Kenyan Drill recognition is supported independently by Cleanup.",
+        "insufficientEvidence": [
+          "Kenya plus Hip-Hop plus Drill, including a Nairobi artist address.",
+          "Swahili/Sheng or a neighborhood name without localized recording evidence.",
+          "Artist reputation, violence/protest themes, or a generic drill audio description."
+        ],
+        "falsePositives": [
+          "Genge, Kapuka, Gengetone or other Kenyan rap classified as drill.",
+          "A non-drill recording by a drill-associated performer.",
+          "A foreign drill recording classified from a featured Kenyan artist or album-artist association."
+        ],
+        "disqualifyingCases": [
+          "A proved non-drill recording would contradict a future rule explicitly requiring drill; mere absence of a Drill tag is only missing evidence.",
+          "Featured/unknown artist association cannot satisfy a main-artist requirement.",
+          "Contradictory recording-level scene evidence would require review; no universal exclusion by nationality, language or lyrical theme is asserted."
+        ],
+        "researchGaps": [
+          "No general recording-level definition supplying necessary and sufficient predicates.",
+          "No validated typed drill-production evidence or Kenyan-scene participation contract.",
+          "Interviews are illustrative cases, not population-wide membership tests."
+        ]
+      }
+    },
+    {
+      "ruleId": "KOREAN-HIP-HOP-001",
+      "version": "1",
+      "targetStyleId": "korean-hip-hop",
+      "enabled": false,
+      "inferenceAllowed": false,
+      "researchDisposition": "RecognitionOnly",
+      "requiredAll": [],
+      "supporting": [],
+      "forbiddenAny": [],
+      "allowedEvidenceOrigins": [
+        "ExplicitFile",
+        "UserMapped",
+        "UserRule"
+      ],
+      "allowedScopes": [
+        "Track"
+      ],
+      "researchSources": [
+        {
+          "title": "Sarah Hare and Andrea Baker: Keepin’ It Real, SAGE Open (2017)",
+          "url": "https://journals.sagepub.com/doi/pdf/10.1177/2158244017710294",
+          "sourceType": "Peer-reviewed research",
+          "access": "Full article text reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "2016 Seoul interviews discuss authenticity, transnational rappers and multilingual practices; 1990s historical development."
+          ]
+        },
+        {
+          "title": "Ute Fendler: Roots and Routes of Korean Hip Hop (2017)",
+          "url": "https://archium.ateneo.edu/kk/vol1/iss29/10/",
+          "sourceType": "Peer-reviewed research",
+          "access": "Abstract/repository page only; full download unavailable",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Abstract frames hybrid routes, cultural practice and authenticity; no full-text sufficiency claim is made."
+          ]
+        },
+        {
+          "title": "Korea University: local Korean hip-hop scenes thesis",
+          "url": "https://dcollection.korea.ac.kr/srch/srchDetail/000000072914",
+          "sourceType": "University thesis",
+          "access": "Repository record/summary reviewed",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Local-scene study includes Gunsan, Gwangju, Busan and Jangsu; Seoul is not the only scene."
+          ]
+        },
+        {
+          "title": "Hae-kyung Um: Korean hip-hop and cultural reterritorialisation (2013)",
+          "url": "https://www.cambridge.org/core/journals/popular-music/article/abs/poetics-of-resistance-and-the-politics-of-crossing-borders-korean-hiphop-and-cultural-reterritorialisation1/5CCDA5261C540FE99C3CFAAD53DE9C13",
+          "sourceType": "Peer-reviewed research",
+          "access": "Abstract only",
+          "observedAt": "2026-10-07",
+          "supportedClaims": [
+            "Abstract examines resistance, border crossing and localization, not a necessary-and-sufficient tag rule."
+          ]
+        }
+      ],
+      "researchRationale": "A transnational hip-hop field cannot be reduced to nationality, language, residence or an unqualified scene label.",
+      "research": {
+        "definition": "Korean Hip-Hop is a historically localized hip-hop field with underground, commercial and transnational practices. Nationality and Korean-language vocals are not interchangeable with participation in this field.",
+        "musicalAncestry": "Hip-hop ancestry is clear. Research discusses localization, authenticity, resistance and reterritorialisation rather than a uniform sonic subtype.",
+        "requiredParentGenres": "Hip-Hop is descriptive ancestry. A Hip-Hop tag cannot distinguish the Korean field; no sufficient canonical parent conjunction is established.",
+        "existingStyleRelationships": "The field contains multiple rap/hip-hop practices and production approaches. No single existing Style relationship is established as required for every recording.",
+        "sceneRelationship": "Underground networks and local scenes are documented, including activity beyond Seoul. Current GI has no qualified canonical Korean-hip-hop scene-participation fact.",
+        "countryRelationship": "South Korea is the historical field association. Research includes transnational participants; ethnicity, citizenship and birthplace cannot be treated as sufficient or universal requirements.",
+        "cityRelationship": "Seoul is prominent in fieldwork, while local-scene research includes Gunsan, Gwangju, Busan and Jangsu. No Seoul-only or single-city rule is defensible.",
+        "languageRelationship": "Korean is common, but multilingual practice includes English and other languages. Korean lyrics alone also fail to distinguish hip-hop from other music.",
+        "emergencePeriod": "Research situates localization and mainstream presence in the 1990s, with underground institutions developing later in that decade. These dates describe history, not track-level eligibility.",
+        "eraRequirement": "Descriptive only. No release-era cutoff is asserted.",
+        "geographyRequirement": "Scene/cultural participation is descriptive and transnational. Country/location without proved recording association and artist role is insufficient.",
+        "recognitionAliases": [
+          "khip-hop is the researched recognition alias; k-hiphop is recognized by existing normalized lookup. This dataset does not change aliases."
+        ],
+        "sufficientEvidence": "No defensible deterministic sufficient condition is established in qualified SC-1 semantic facts. An explicit Korean Hip-Hop value is recognition, not a new inferred Style.",
+        "insufficientEvidence": [
+          "South Korean artist location plus Hip-Hop.",
+          "Korean language plus Hip-Hop, or Korean nationality alone.",
+          "K-pop marketing, a Korean featured artist, Seoul residence or an artist-level tag attached to every recording."
+        ],
+        "falsePositives": [
+          "Korean-language pop containing a rap passage mistaken for hip-hop field membership.",
+          "A non-hip-hop recording by a Korean hip-hop performer.",
+          "A transnational collaboration classified solely from one featured performer or album artist."
+        ],
+        "disqualifyingCases": [
+          "A recording independently established outside hip-hop would contradict a future explicit Hip-Hop requirement; absent genre metadata is missing evidence.",
+          "A location attached to an unknown/featured role cannot satisfy main-artist evidence.",
+          "Nationality, English vocals, diaspora or a non-Seoul location are not asserted disqualifiers."
+        ],
+        "researchGaps": [
+          "Academic accounts explain field boundaries but supply no deterministic recording classifier.",
+          "GI lacks qualified scene participation and track-level artist-role contracts.",
+          "No universal language, country, city or existing-Style predicate is supported."
+        ]
+      }
+    }
+  ]
+}

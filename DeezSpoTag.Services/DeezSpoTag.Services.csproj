@@ -23,6 +23,8 @@
     <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="NAudio.Vorbis" Version="1.5.0" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <!-- SoundCloud page hydration extraction. Same version the web host already uses. -->
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
   </ItemGroup>
 
   <ItemGroup>
@@ -33,6 +35,13 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Library/Schema/library.sql" />
+    <!--
+      The researched Genre/Style master, generated from the research spreadsheet by
+      scripts/genre/build_genre_taxonomy.py. Embedded so the shipped build carries
+      the catalog and never needs the spreadsheet or a loose file at runtime.
+    -->
+    <EmbeddedResource Include="Genre/Data/genre-intelligence-taxonomy.json" />
+    <EmbeddedResource Include="Genre/Data/style-construction-rules.json" />
   </ItemGroup>
 
   <ItemGroup>

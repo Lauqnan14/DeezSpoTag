@@ -1858,39 +1858,9 @@
             </div>
         </div>
 
-        <div class="settings-section" id="genre-normalization-settings">
-            <div class="settings-header">
-                <span class="material-icons">auto_fix_high</span>
-                Normalize Genre Tags
-            </div>
-            <div class="settings-content">
-                <div class="checkbox-group">
-                    <div class="checkbox-item"><input type="checkbox" id="normalizeGenreTags">
-                    <label for="normalizeGenreTags">Normalize genre tags with alias list</label></div>
-                </div>
-                <div class="warning-text">Aliases normalize equivalent names such as Afro-Pop and Afropop before tags are written.</div>
-
-                <div class="form-group" id="genreTagAliasRulesGroup">
-                    <div class="form-label">Genre alias rules</div>
-                    <div class="genre-alias-list">
-                        <div class="genre-alias-header">
-                            <span>Alias</span>
-                            <span>Canonical value</span>
-                            <span></span>
-                        </div>
-                        <div id="genreTagAliasRows"></div>
-                        <p class="genre-alias-empty" id="genreTagAliasEmpty">No rules added yet.</p>
-                        <button type="button" class="btn btn-secondary" id="addGenreTagAliasRule">Add rule</button>
-                    </div>
-                </div>
-
-                <div class="form-group" id="genreTagBlockListGroup">
-                    <label for="genreTagBlockList">Blocked genres</label>
-                    <textarea id="genreTagBlockList" rows="4" placeholder="One genre per line, or comma-separated"></textarea>
-                    <div class="warning-text">Blocked genres are removed before genre tags are written. Other, Others, and Worldwide are blocked by default.</div>
-                </div>
-            </div>
-        </div>
+        @* Genre normalization moved to AutoTag → Genre Intelligence. The values
+           are still deserialized from this file for a one-time import, but the
+           Settings page no longer edits them and no runtime code reads them. *@
 
         <div class="settings-section" id="artist-aliases-settings">
             <div class="settings-header">

@@ -2521,10 +2521,13 @@ public sealed class QuickTagService
         try
         {
             var settings = _settingsService.LoadSettings();
-            var blockList = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
-            return settings.NormalizeGenreTags
-                ? (GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules), blockList, true)
-                : (new Dictionary<string, string>(StringComparer.Ordinal), blockList, false);
+            // Genre Intelligence owns these preferences; the settings object only
+            // carries them. The block list applies whether or not normalization is
+            // enabled, which is why it is read outside the conditional.
+            var normalization = settings.GenreNormalization;
+            return normalization.Enabled
+                ? (normalization.AliasMap, normalization.BlockList, true)
+                : (new Dictionary<string, string>(StringComparer.Ordinal), normalization.BlockList, false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

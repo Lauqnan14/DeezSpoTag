@@ -1771,6 +1771,11 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
             StartupWorkerCategory.Deferred,
             "Spotify auth environment warmup after HTTP readiness with a hard timeout.");
         services.AddSingleton<LibraryDbService>();
+        services.AddSingleton<DeezSpoTag.Services.Genre.PersonalGenreStore>();
+        // Owns the genre-normalization preferences and serves them to the
+        // tag-writing paths, so those no longer read the general settings.
+        services.AddSingleton<DeezSpoTag.Services.Genre.GenreNormalizationProvider>();
+        services.AddSingleton<DeezSpoTag.Web.Services.PersonalGenreService>();
         services.AddSingleton<DeezSpoTag.Services.Library.LibraryRepository>();
         services.AddSingleton<DeezSpoTag.Services.Library.AudioQualitySignalAnalyzer>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpectrogramService>();
@@ -2008,6 +2013,23 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
 
         await EnforceIdentityStartupStateAsync(scope.ServiceProvider);
         RecordStartupCheckpoint(startupState, app.Logger, "identity ensured");
+
+        // Import any pre-existing genre-normalization preferences into Genre
+        // Intelligence, then prime the cache the synchronous tag-writing paths read.
+        // Awaited here so those paths never have to reach the database themselves.
+        var genreNormalization = scope.ServiceProvider
+            .GetService<DeezSpoTag.Services.Genre.GenreNormalizationProvider>();
+        if (genreNormalization is not null)
+        {
+            var settingsService = scope.ServiceProvider
+                .GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>();
+            await genreNormalization.MigrateAndPrimeAsync(
+#pragma warning disable CS0618 // The single, deliberate read of the deprecated values.
+                settingsService.LoadSettings(),
+#pragma warning restore CS0618
+                app.Lifetime.ApplicationStopping);
+            RecordStartupCheckpoint(startupState, app.Logger, "genre normalization ready");
+        }
     }
 
     static async Task RunStartupMigrationsAsync(IServiceProvider services, ILogger logger)

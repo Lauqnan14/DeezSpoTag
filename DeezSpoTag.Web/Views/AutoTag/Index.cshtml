@@ -190,6 +190,11 @@
                 </button>
             </li>
             <li class="nav-item">
+                <button class="nav-link" id="autotag-genre-intelligence-tab" data-bs-toggle="tab" data-bs-target="#autotag-genre-intelligence-panel" type="button" role="tab" aria-controls="autotag-genre-intelligence-panel" aria-selected="false">
+                    <i class="fas fa-tags me-2"></i>Genre Intelligence
+                </button>
+            </li>
+            <li class="nav-item">
                 <button class="nav-link" id="autotag-technical-tab" data-bs-toggle="tab" data-bs-target="#autotag-technical-panel" type="button" role="tab">
                     <i class="fas fa-cog me-2"></i>Technical
                 </button>
@@ -1497,7 +1502,42 @@
             </div>
         </div>
 
-        <!-- ==================== TAB 7: TECHNICAL ==================== -->
+        <div class="tab-pane fade" id="autotag-genre-intelligence-panel" role="tabpanel" aria-labelledby="autotag-genre-intelligence-tab">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-tags"></i></div>
+                <div class="stage-title"><h5>Genre Intelligence</h5><p>Classify and organise the genre tags in your files. Run settings belong to the loaded profile; vocabulary, mappings and rules are shared.</p></div>
+            </div>
+            <div class="card bg-darker border-secondary mb-4 autotag-quality-background">
+                <div class="card-header"><h5 class="mb-0"><i class="fas fa-sliders me-2"></i>Profile runtime settings</h5></div>
+                <div class="card-body autotag-card-body">
+                    <p class="helper mb-3">For the loaded profile. Use Save Preferences above to save these run settings.</p>
+                    <div class="download-section genre-intelligence-checkbox-grid">
+                        <div class="download-section-title">Execution</div>
+                        <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceEnabled" /><label for="autotagGenreIntelligenceEnabled">Enable Genre Intelligence as the final AutoTag platform</label></div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Resolution</div>
+                        <div class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
+                            <div class="form-group"><label for="autotagGenreIntelligenceMaxGenres">Maximum final genres</label><input type="number" id="autotagGenreIntelligenceMaxGenres" min="1" max="10" value="3" /></div>
+                            <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceProviderFallback" checked /><label for="autotagGenreIntelligenceProviderFallback">Preserve tags the taxonomy does not recognise</label></div>
+                            <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceIncludeParents" /><label for="autotagGenreIntelligenceIncludeParents">Include parent genres</label></div>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Additional semantic tags</div>
+                        <div class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
+                            <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceWriteSubstyle" /><label for="autotagGenreIntelligenceWriteSubstyle">Write SUBSTYLE</label></div>
+                            <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceWriteContext" /><label for="autotagGenreIntelligenceWriteContext">Write CONTEXT</label></div>
+                            <div class="checkbox-group"><input type="checkbox" id="autotagGenreIntelligenceWriteScene" /><label for="autotagGenreIntelligenceWriteScene">Write SCENE</label></div>
+                        </div>
+                        <p class="helper mt-3 mb-0">Genre, Style and Language follow the run's selected AutoTag tags. A file tag the taxonomy does not recognise is written back to the field it was read from rather than deleted. Empty results leave existing fields unchanged. These options are saved with the profile; enabling them does not run AutoTag immediately.</p>
+                    </div>
+                </div>
+            </div>
+            @await Html.PartialAsync("_GenreIntelligence")
+        </div>
+
+        <!-- ==================== TAB 8: TECHNICAL ==================== -->
         <div class="tab-pane fade" id="autotag-technical-panel" role="tabpanel">
             <div class="stage-header">
                 <div class="stage-number"><i class="fas fa-cog"></i></div>
@@ -2314,4 +2354,5 @@ document.addEventListener('DOMContentLoaded', function() {
 <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-bootstrap.js")"></script>
 <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/enhancement-resume.js")"></script>
 <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/autotag.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/personal-genre.js")"></script>
 }

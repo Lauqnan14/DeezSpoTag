@@ -25,6 +25,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Formats.Png;
+using GenreSemanticSnapshot = DeezSpoTag.Services.Genre.GenreSemanticSnapshot;
 using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
@@ -34,6 +35,304 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
+    /// <summary>
+    /// Records the file's own semantic tags before any AutoTag platform runs.
+    ///
+    /// This is not the resolution input — the post-platform read is. It exists so
+    /// a value the user wrote themselves cannot be destroyed by a rewrite, and so
+    /// history can show the file's true starting state. A resumed run past the
+    /// first platform cannot reconstruct it, because the file has already been
+    /// overwritten, so that case stops the file rather than guessing.
+    /// </summary>
+    private async Task CapturePreAutoTagSemanticSnapshotAsync(AutoTagFileRunContext context)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Genre.PersonalGenreStore>();
+        // A file already marked unusable stays unusable for the whole job. A
+        // retry must not re-read the file and quietly start trusting it again,
+        // because by then the file may have been partially written.
+        if (await HasSnapshotErrorMarkerAsync(context))
+        {
+            throw new InvalidOperationException(
+                "Genre Intelligence has an incomplete semantic snapshot; existing metadata was preserved.");
+        }
+
+        if (await store.GetSnapshotAsync(
+                context.Plan.JobId, context.File, DeezSpoTag.Services.Genre.GenreSnapshotStage.PreAutoTag, context.Token) is not null)
+        {
+            return;
+        }
+
+        if (context.Plan.IsResumedRun && context.PlatformIndex > 0)
+        {
+            await store.MarkAutoTagSnapshotErrorAsync(context.Plan.JobId, context.File, CancellationToken.None);
+            throw new InvalidOperationException(
+                "Genre Intelligence cannot resume without the pre-AutoTag file snapshot; the file's original " +
+                "semantic values have already been overwritten and cannot be reconstructed.");
+        }
+
+        var extension = Path.GetExtension(context.File);
+        GenreSemanticSnapshot snapshot;
+        try
+        {
+            using var file = TagLib.File.Create(context.File);
+            snapshot = GenreSemanticTagIo.ReadSnapshot(
+                file, extension, ResolveStylesTagName(context.Plan.Config, extension));
+        }
+        catch
+        {
+            // The file could not be read, so the stage must not guess what it
+            // contained. Marking it keeps any later attempt for this job from
+            // treating the file as safe to rewrite.
+            await store.MarkAutoTagSnapshotErrorAsync(context.Plan.JobId, context.File, CancellationToken.None);
+            throw;
+        }
+
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        var trackId = await repository.GetTrackIdForFilePathAsync(context.File, context.Token);
+        await store.SaveSnapshotAsync(
+            context.Plan.JobId,
+            context.File,
+            DeezSpoTag.Services.Genre.GenreSnapshotStage.PreAutoTag,
+            snapshot,
+            trackId,
+            context.Token);
+    }
+
+    private async Task<bool> HasSnapshotErrorMarkerAsync(AutoTagFileRunContext context)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Genre.PersonalGenreStore>()
+            .HasSnapshotErrorMarkerAsync(context.Plan.JobId, context.File, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The final AutoTag stage: classify the tags the platforms just wrote, then
+    /// rewrite the file consistently.
+    /// </summary>
+    private async Task ProcessGenreIntelligenceAsync(AutoTagFileRunContext context)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Genre.PersonalGenreStore>();
+        try
+        {
+            context.Token.ThrowIfCancellationRequested();
+            EmitTaggingStatus(context, null, false);
+            if (!await store.IsAutoTagSnapshotValidAsync(context.Plan.JobId, context.File, context.Token))
+            {
+                throw new InvalidOperationException(
+                    "Genre Intelligence has an incomplete semantic snapshot; existing metadata was preserved.");
+            }
+
+            var extension = Path.GetExtension(context.File);
+            if (!GenreSemanticTagIo.IsSupportedExtension(extension))
+            {
+                throw new NotSupportedException(
+                    "Genre Intelligence semantic write-back supports MP3, FLAC and MP4-family files.");
+            }
+
+            // §6: the file as it stands after every ordinary platform has run. This
+            // is the state Genre Intelligence is being asked to clean up, and it is
+            // the primary input.
+            var stylesTagName = ResolveStylesTagName(context.Plan.Config, extension);
+            var postSnapshot = PersonalGenreService.ReadFileSnapshot(context.File, stylesTagName);
+            var preSnapshot = await store.GetSnapshotAsync(
+                context.Plan.JobId, context.File, DeezSpoTag.Services.Genre.GenreSnapshotStage.PreAutoTag, context.Token);
+
+            // §25: the post-AutoTag state is recorded as its own snapshot. It is
+            // the file as the provider left it, which is not the same as the
+            // resolver's input once values have been carried forward.
+            await store.SaveSnapshotAsync(
+                context.Plan.JobId,
+                context.File,
+                DeezSpoTag.Services.Genre.GenreSnapshotStage.PostAutoTag,
+                postSnapshot,
+                null,
+                context.Token);
+
+            var service = scope.ServiceProvider.GetRequiredService<PersonalGenreService>();
+            var knownTrackId = await store.GetAutoTagTrackIdAsync(context.Plan.JobId, context.File, context.Token)
+                ?? await scope.ServiceProvider.GetRequiredService<LibraryRepository>()
+                    .GetTrackIdForFilePathAsync(context.File, context.Token);
+            var resolved = await service.ResolveFileAsync(
+                knownTrackId,
+                context.File,
+                postSnapshot,
+                preSnapshot,
+                context.Plan.Config.GenreIntelligence,
+                context.Token);
+            var result = resolved.Result;
+            var resolution = result.Resolution;
+
+            // §27: the complete final payload is built and the decision record made
+            // durable before any tag is touched, so a failure mid-write leaves a
+            // full record of what was found rather than a half-written file.
+            var plan = GenreSemanticTagIo.PlanFields(resolution, context.Plan.Config.CapitalizeGenres);
+
+            // The proposed transformation is computed from the same plan the writer
+            // consumes, and it is computed before the write. Describing the moves
+            // afterwards would only ever report what already happened, which cannot
+            // be reviewed before it happens.
+            var moves = GenreSemanticTagIo.DescribeFieldMoves(result.PostAutoTagSnapshot!.Observations, plan);
+            // The removals come from the resolution context rather than being
+            // recomputed, so the blocked values this stage reports are exactly the
+            // ones the resolver was told about — the same list the cleanup preview
+            // endpoint shows for this file.
+            var preview = GenreCleanupPreviewBuilder.Build(
+                resolution, postSnapshot.Observations, resolved.Context.RemovedByNormalization);
+
+            await store.SaveAutoTagResultAsync(
+                context.Plan.JobId, context.File, knownTrackId, resolution, "resolved", context.Token);
+            context.Token.ThrowIfCancellationRequested();
+
+            var written = WriteGenreIntelligenceTags(context.File, context.Plan.Config, resolution, plan);
+            context.Token.ThrowIfCancellationRequested();
+
+            // §27: confirm the write by reading the file back, so a silently
+            // ignored field is reported as a failure rather than a success.
+            var verify = GenreSemanticTagIo.VerifyWrittenFields(
+                context.File,
+                extension,
+                stylesTagName,
+                plan,
+                context.Plan.Config.GenreIntelligence,
+                BuildConfiguredTagSet(context.Plan.Config.Tags));
+            if (verify.Count > 0)
+            {
+                await store.SaveAutoTagResultAsync(
+                    context.Plan.JobId, context.File, knownTrackId, resolution, "write_failed", context.Token);
+                throw new IOException(
+                    "Genre Intelligence could not write these semantic fields: " + string.Join("; ", verify) +
+                    ". The file may be partially updated.");
+            }
+
+            await store.SaveAutoTagResultAsync(
+                context.Plan.JobId, context.File, knownTrackId, resolution, "written:" + string.Join(",", written), context.Token);
+
+            var message = resolution.Genres.Count == 0 ? "no canonical genre" : resolution.PrimaryGenre;
+            context.LogCallback(
+                $"Genre Intelligence: read {postSnapshot.Observations.Count} file tag values; " +
+                $"{resolution.Classifications.Count} classifications; " +
+                $"{resolution.Preserved.Count} preserved unmapped; " +
+                $"{preview.Removed.Count} removed; " +
+                $"{preview.Moved.Count} moved; " +
+                $"{preview.Canonicalized.Count} canonicalized; " +
+                $"{preview.PreservedUnknown.Count} kept as unknown; " +
+                $"vocabulary {preview.CatalogVersion}; " +
+                $"{(resolution.Classifications.Any(item => item.UserLocked) ? "user lock applied" : "no user lock")}; " +
+                $"tags written: {(written.Count == 0 ? "none" : string.Join(", ", written))}." +
+                (moves.Count == 0 ? string.Empty : " Corrections: " + string.Join("; ", moves) + "."));
+            EmitStatus(context, written.Count == 0 ? "skipped" : "tagged", message, null, false,
+                outcome: written.Count == 0
+                    ? (resolution.Genres.Count == 0 ? "no_canonical_result" : "no_selected_semantic_values")
+                    : "genre_intelligence_written");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // §28: the file is left as it is. A failure here is recoverable for the
+            // rest of the run and is surfaced rather than swallowed.
+            context.LogCallback($"Genre Intelligence failed for {Path.GetFileName(context.File)}: {ex.Message}");
+            EmitErrorStatus(context, ex.Message, false, "genre_intelligence_error");
+        }
+    }
+
+    /// <summary>
+    /// Writes one raw semantic tag, used by the Genre Intelligence tests to build
+    /// a fixture through the same encoder a real run uses. A second parser in the
+    /// test would drift from the real one and hide encoding bugs.
+    /// </summary>
+    internal static void SetSemanticRawTagForTest(string path, string rawName, string[] values)
+    {
+        var config = new AutoTagRunnerConfig();
+        var extension = Path.GetExtension(path);
+        using var file = TagLib.File.Create(path);
+        var context = new TagWriteContext(
+            file,
+            extension,
+            config,
+            ResolveSeparatorForFormat(config, extension),
+            "genre-intelligence",
+            config.Technical?.UseNullSeparator == true,
+            new Dictionary<string, string>(),
+            Array.Empty<string>(),
+            false,
+            new HashSet<SupportedTag>());
+        SetRaw(context, rawName, SupportedTag.OtherTags, values.ToList(), force: true);
+        file.Save();
+    }
+
+    /// <summary>
+    /// Writes the final semantic state.
+    ///
+    /// Each enabled dimension is replaced wholesale rather than merged into what
+    /// the providers left, because the whole point of this stage is to leave a
+    /// coherent classification instead of a provider's opinion plus corrections.
+    /// Every write is forced, so a dimension the run did not select for AutoTag is
+    /// still finalised here, and an existing value is never left in front of the
+    /// resolved one.
+    ///
+    /// StylesOptions is deliberately not applied. Those transformations belong to
+    /// the provider stage, and re-running them over an already-classified result
+    /// would undo the classification.
+    /// </summary>
+    private static IReadOnlyList<string> WriteGenreIntelligenceTags(
+        string path,
+        AutoTagRunnerConfig config,
+        DeezSpoTag.Services.Genre.PersonalGenreResolution resolution,
+        IReadOnlyDictionary<DeezSpoTag.Services.Genre.PersonalGenreTaxonKind, List<string>> plan)
+    {
+        var extension = Path.GetExtension(path);
+        if (!GenreSemanticTagIo.IsSupportedExtension(extension))
+        {
+            throw new NotSupportedException("Genre Intelligence semantic write-back supports MP3, FLAC and MP4-family files.");
+        }
+
+        var writeConfig = JsonSerializer.Deserialize<AutoTagRunnerConfig>(JsonSerializer.Serialize(config))!;
+        writeConfig.OverwriteTags = [GenreTag, StyleTag, LanguageTag];
+        var selected = BuildConfiguredTagSet(config.Tags);
+        var stylesTagName = ResolveStylesTagName(config, extension);
+        var written = new List<string>();
+
+        using var file = TagLib.File.Create(path);
+        var context = new TagWriteContext(file, extension, writeConfig,
+            ResolveSeparatorForFormat(config, extension), "genre-intelligence",
+            config.Technical?.UseNullSeparator == true,
+            new Dictionary<string, string>(), Array.Empty<string>(), false, new HashSet<SupportedTag>());
+
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Genre, selected.Contains(GenreTag),
+            values => SetField(context, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), values));
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Style, selected.Contains(StyleTag),
+            values => SetRaw(context, stylesTagName, SupportedTag.Style, values, force: true));
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Language, selected.Contains(LanguageTag),
+            values => SetRaw(context, LanguageRawTag, SupportedTag.Language, values, force: true));
+
+        // The extra dimensions are opt-in: a user who never asked for a SUBSTYLE
+        // tag should not start getting one.
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Substyle, config.GenreIntelligence.WriteSubstyle,
+            values => SetRaw(context, "SUBSTYLE", SupportedTag.OtherTags, values, force: true));
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Context, config.GenreIntelligence.WriteContext,
+            values => SetRaw(context, "CONTEXT", SupportedTag.OtherTags, values, force: true));
+        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Scene, config.GenreIntelligence.WriteScene,
+            values => SetRaw(context, "SCENE", SupportedTag.OtherTags, values, force: true));
+
+        if (written.Count > 0)
+        {
+            file.Save();
+        }
+
+        return written;
+
+        void Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind field, bool enabled, Action<List<string>> writer)
+        {
+            if (!enabled || !plan.TryGetValue(field, out var values) || values.Count == 0)
+            {
+                return;
+            }
+
+            writer(values);
+            written.Add(field.ToString());
+        }
+    }
 
     private static ProviderTagPlan BuildProviderTagPlan(AutoTagFileRunContext context)
     {
@@ -47,7 +346,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.Plan.PlatformSupportedTags.TryGetValue(context.Platform, out var supported))
         {
+            var common = configured.Where(tag => tag is SupportedTag.ArtistCountry or SupportedTag.ArtistCity
+                or SupportedTag.ArtistRegion or SupportedTag.ArtistLanguage).ToArray();
             configured.IntersectWith(supported);
+            configured.UnionWith(common);
         }
 
         var retained = new HashSet<SupportedTag>();
@@ -294,7 +596,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private async Task<TagFileWriteResult> WriteTagsOnetaggerStyleAsync(
+    internal async Task<TagFileWriteResult> WriteTagsOnetaggerStyleAsync(
         TagWriteRequest request,
         CancellationToken token)
     {
@@ -354,15 +656,19 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return new TagFileWriteResult(context.AttemptedTags);
     }
 
-    private static TagWriteExecutionContext BuildTagWriteExecutionContext(TagWriteRequest request)
+    internal static TagWriteExecutionContext BuildTagWriteExecutionContext(TagWriteRequest request)
     {
         var extension = Path.GetExtension(request.FilePath);
         var enabledTags = BuildConfiguredTagSet(request.Config.Tags);
-        var normalizeGenreTags = request.Settings.NormalizeGenreTags;
-        var genreAliasMap = normalizeGenreTags
-            ? GenreTagAliasNormalizer.BuildAliasMap(request.Settings.GenreTagAliasRules)
-            : new Dictionary<string, string>(StringComparer.Ordinal);
-        var genreBlockList = GenreTagAliasNormalizer.NormalizeBlockedValues(request.Settings.GenreTagBlockList);
+        // Genre Intelligence owns the genre-spelling preferences. The provider
+        // stage still applies them, as it did before, because a downloaded or
+        // provider-supplied value is normalized on the way in. The terminal
+        // Genre Intelligence stage does not re-apply them: its output is already
+        // classified, and normalizing it again would undo that.
+        var genreNormalization = request.Settings.GenreNormalization;
+        var normalizeGenreTags = genreNormalization.Enabled;
+        var genreAliasMap = genreNormalization.AliasMap;
+        var genreBlockList = genreNormalization.BlockList;
         var allowsSyncedByToggle = request.Settings.SyncedLyrics;
         var allowsUnsyncedByToggle = request.Settings.SaveLyrics;
         var allowsLyricsBySettings = allowsSyncedByToggle || allowsUnsyncedByToggle;
@@ -488,6 +794,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var existingStyleSet = new HashSet<string>(existingStyles, StringComparer.OrdinalIgnoreCase);
             existingStyles.AddRange(styleValues.Where(existingStyleSet.Add));
             styleValues = existingStyles;
+        }
+
+        if (context.Config.CapitalizeGenres)
+        {
+            styleValues = styleValues.Select(CapitalizeGenre).ToList();
         }
 
         var rawName = context.Config.StylesOptions.Equals("customTag", StringComparison.OrdinalIgnoreCase)
@@ -639,6 +950,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 var existingStyleSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
                 existing.AddRange(styleValues.Where(existingStyleSet.Add));
                 styleValues = existing;
+            }
+
+            if (config.CapitalizeGenres)
+            {
+                styleValues = styleValues.Select(CapitalizeGenre).ToList();
             }
 
             var styleRaw = config.StylesOptions.Equals("customTag", StringComparison.OrdinalIgnoreCase)

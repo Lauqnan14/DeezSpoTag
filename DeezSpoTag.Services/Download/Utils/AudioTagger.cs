@@ -261,23 +261,13 @@ public class AudioTagger
             return _genreAliasMap;
         }
 
-        try
-        {
-            var settings = _settingsService.LoadSettings();
-            _genreTagNormalizationEnabled = settings.NormalizeGenreTags;
-            _genreBlockList = settings.GenreTagBlockList;
-            _genreAliasMap = settings.NormalizeGenreTags
-                ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
-                : new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to load genre alias map; continuing without genre alias normalization.");
-            _genreTagNormalizationEnabled = false;
-            _genreBlockList = GenreTagAliasNormalizer.DefaultBlockedGenres;
-            _genreAliasMap = new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-
+        // The preferences are Genre Intelligence's. Reading them through the
+        // settings carrier keeps the block list and the toggle in step, which
+        // reading the two separately used to risk.
+        var normalization = _settingsService.LoadSettings().GenreNormalization;
+        _genreTagNormalizationEnabled = normalization.Enabled;
+        _genreBlockList = normalization.BlockList;
+        _genreAliasMap = normalization.AliasMap;
         return _genreAliasMap;
     }
 

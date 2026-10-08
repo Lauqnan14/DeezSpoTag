@@ -458,6 +458,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
             context.File = materializedPath;
             context.Plan.Files[context.FileIndex] = context.File;
+            if (context.Plan.Config.GenreIntelligence?.Enabled == true && originalFile != materializedPath)
+            {
+                using var evidenceScope = _serviceScopeFactory.CreateScope();
+                var evidenceStore = evidenceScope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Genre.PersonalGenreStore>();
+                // The file has already moved: carry the pre-AutoTag snapshot to the
+                // new path even if cancellation arrived during materialisation, then
+                // honour the token. Losing it would erase the user's original values.
+                await evidenceStore.CopyAutoTagCheckpointAsync(context.Plan.JobId, originalFile, materializedPath, CancellationToken.None);
+            }
             // The captured payload only becomes a confirmed identity once the match passed
             // validation: fallback, inherited, shape-only and rejected matches never do.
             context.Plan.RecordConfirmedProviderIdentity(context.FileIndex, capturedIdentity);

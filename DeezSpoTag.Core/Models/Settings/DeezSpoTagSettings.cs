@@ -78,8 +78,34 @@ public class DeezSpoTagSettings
     public BetterLyricsOptions BetterLyrics { get; set; } = new();
     public int LyricsProviderRegistryVersion { get; set; }
     public int LyricsFormatSchemaVersion { get; set; }
+
+    /// <summary>
+    /// The current genre-normalization preferences, supplied by Genre Intelligence
+    /// when settings are loaded.
+    ///
+    /// This is a carrier, not a second source of truth. It exists so the models
+    /// and helpers in this assembly can apply the user's preferences without
+    /// referencing the store. Nothing persists it; assigning it here is what makes
+    /// a settings load authoritative.
+    /// </summary>
+    [JsonIgnore]
+    public GenreNormalizationOptions GenreNormalization { get; set; } = GenreNormalizationOptions.Default;
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEPRECATED — MIGRATION ONLY. Genre Intelligence owns these now.
+    //
+    // They are still deserialized so an existing configuration file keeps
+    // loading, and they are imported exactly once into Genre Intelligence. After
+    // that no runtime code reads them, nothing writes them, and the Settings page
+    // does not expose them. They exist only so a user's existing preferences can
+    // be carried across, and can be deleted in a later schema cleanup.
+    // ─────────────────────────────────────────────────────────────────────────
+    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.NormalizeGenreTags instead.")]
     public bool NormalizeGenreTags { get; set; } = false;
+
+    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.GenreTagBlockList instead.")]
     public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
+
+    [Obsolete("Owned by Genre Intelligence. Read PersonalGenreSettings.GenreTagAliasRules instead.")]
     public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
     {
         new GenreTagAliasRule
@@ -367,6 +393,29 @@ public sealed class GenreTagAliasRule
 {
     public string Alias { get; set; } = string.Empty;
     public string Canonical { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The genre-normalization preferences, in the form every tag-writing path can
+/// use.
+///
+/// Genre Intelligence owns these values. This record lives here because
+/// <see cref="Track"/> and the download tagger live in this assembly and cannot
+/// reference the store. It is a carrier, not a second source of truth: the values
+/// are copied from Genre Intelligence when settings are applied.
+/// </summary>
+public sealed record GenreNormalizationOptions
+{
+    public static GenreNormalizationOptions Default { get; } = new();
+
+    /// <summary>Whether the user's spelling preferences are applied.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>Alias lookup, or empty when normalization is off.</summary>
+    public IReadOnlyDictionary<string, string> AliasMap { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    public IReadOnlyList<string> BlockList { get; init; } = GenreTagAliasNormalizer.DefaultBlockedGenres;
 }
 
 /// <summary>

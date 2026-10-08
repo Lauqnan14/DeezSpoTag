@@ -216,12 +216,17 @@ public sealed class JellyfinPlaylistBatchingTest
 
     private sealed class JsonHandler(HttpStatusCode statusCode, string json) : HttpMessageHandler
     {
+        public List<Uri> Requests { get; } = [];
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
-            => Task.FromResult(new HttpResponseMessage(statusCode)
+        {
+            Requests.Add(request.RequestUri!);
+            return Task.FromResult(new HttpResponseMessage(statusCode)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             });
+        }
     }
 }

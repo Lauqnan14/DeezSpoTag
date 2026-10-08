@@ -409,7 +409,8 @@ public partial class AutoTagService
         skipReason = "gap-fill tags not configured";
         strippedKeys = new List<string>();
 
-        if (!EnhancementWorkflowSelection.IsGapFillRunnable(baseRoot))
+        var genreIntelligenceEnabled = IsGenreIntelligenceEnabled(baseRoot);
+        if (!EnhancementWorkflowSelection.IsGapFillRunnable(baseRoot) && !genreIntelligenceEnabled)
         {
             return false;
         }
@@ -418,14 +419,14 @@ public partial class AutoTagService
         var platforms = eligiblePlatforms
             .Where(platform => !IsLyricsProviderPlatform(platform))
             .ToList();
-        if (platforms.Count == 0)
+        if (platforms.Count == 0 && !genreIntelligenceEnabled)
         {
             skipReason = "no eligible enhancement platforms enabled";
             return false;
         }
 
         var filtered = FilterSupportedTags(requested, platforms, platformCaps);
-        if (filtered.Count == 0)
+        if (filtered.Count == 0 && !genreIntelligenceEnabled)
         {
             skipReason = "no supported enhancement tags for enabled platforms";
             return false;
@@ -542,6 +543,7 @@ public partial class AutoTagService
             "jpegImageQuality",
             "runTrigger",
             "technical",
+            "genreIntelligence",
             "folderStructure",
             "materializeToTemplatePath",
             "profileId",
@@ -573,6 +575,9 @@ public partial class AutoTagService
 
         return keys;
     }
+
+    private static bool IsGenreIntelligenceEnabled(JsonObject root)
+        => root["genreIntelligence"] is JsonObject options && ReadBool(options, "enabled") == true;
 
     private static List<string> ApplyStageSchema(JsonObject root, HashSet<string> allowedKeys)
     {

@@ -18,6 +18,53 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LastFmAutoTagMatcherTest
 {
+    [Theory]
+    [InlineData(1, "percent", true)]
+    [InlineData(0, "percent", true)]
+    [InlineData(100, "percent", false)]
+    [InlineData(.15, null, true)]
+    [InlineData(15, "percent", true)]
+    [InlineData(1, null, false)]
+    public async Task RelativeWeight_RespectsExplicitPercentAndLegacyFractions(double value, string? unit, bool keepsSecondary)
+    {
+        var handler = new StubHandler("""{"toptags":{"@attr":{"artist":"Cher","track":"Believe"},"tag":[{"name":"pop","count":100},{"name":"rock","count":20}]}}""");
+        var (matcher, auth) = CreateMatcher(handler);
+        await auth.UpdateAsync(state => state.LastFm = new LastFmAuth { ApiKey = "test-key" });
+        var json = System.Text.Json.JsonSerializer.Serialize(new { minRelativeWeight = value, minRelativeWeightUnit = unit });
+        var config = System.Text.Json.JsonSerializer.Deserialize<LastFmConfig>(json)!;
+        var result = await matcher.MatchAsync(new AutoTagAudioInfo { Artist = "Cher", Title = "Believe" }, config, CancellationToken.None);
+        Assert.NotNull(result);
+        Assert.Equal(keepsSecondary, result!.Track.Genres.Contains("Rock"));
+        if (unit is not null) Assert.Contains("percent", System.Text.Json.JsonSerializer.Serialize(config));
+    }
+
+    [Fact]
+    public async Task RelativeWeight_CacheSeparatesExplicitOnePercentFromLegacyOne()
+    {
+        var handler = new StubHandler(Enumerable.Repeat("""{"toptags":{"@attr":{"artist":"Cher","track":"Believe"},"tag":[{"name":"pop","count":100},{"name":"rock","count":20}]}}""", 2));
+        var (matcher, auth) = CreateMatcher(handler);
+        await auth.UpdateAsync(state => state.LastFm = new LastFmAuth { ApiKey = "test-key" });
+        var info = new AutoTagAudioInfo { Artist = "Cher", Title = "Believe" };
+        var legacy = await matcher.MatchAsync(info, new LastFmConfig { MinRelativeWeight = 1 }, CancellationToken.None);
+        var percent = System.Text.Json.JsonSerializer.Deserialize<LastFmConfig>("""{"minRelativeWeight":1,"minRelativeWeightUnit":"percent"}""")!;
+        var current = await matcher.MatchAsync(info, percent, CancellationToken.None);
+        Assert.DoesNotContain("Rock", legacy!.Track.Genres);
+        Assert.Contains("Rock", current!.Track.Genres);
+    }
+
+    [Fact]
+    public async Task RelativeWeight_CachePreservesCloseEffectiveThresholds()
+    {
+        var handler = new StubHandler(Enumerable.Repeat("""{"toptags":{"@attr":{"artist":"Cher","track":"Believe"},"tag":[{"name":"pop","count":100},{"name":"rock","count":20}]}}""", 2));
+        var (matcher, auth) = CreateMatcher(handler);
+        await auth.UpdateAsync(state => state.LastFm = new LastFmAuth { ApiKey = "test-key" });
+        var info = new AutoTagAudioInfo { Artist = "Cher", Title = "Believe" };
+        var below = System.Text.Json.JsonSerializer.Deserialize<LastFmConfig>("""{"minRelativeWeight":19.99,"minRelativeWeightUnit":"percent"}""")!;
+        var above = System.Text.Json.JsonSerializer.Deserialize<LastFmConfig>("""{"minRelativeWeight":20.01,"minRelativeWeightUnit":"percent"}""")!;
+        Assert.Contains("Rock", (await matcher.MatchAsync(info, below, CancellationToken.None))!.Track.Genres);
+        Assert.DoesNotContain("Rock", (await matcher.MatchAsync(info, above, CancellationToken.None))!.Track.Genres);
+    }
+
     [Fact]
     public async Task MatchAsync_LoadsCentralCredentialAndClassifiesWeightedTags()
     {
@@ -100,6 +147,12 @@ public sealed class LastFmAutoTagMatcherTest
         Assert.Equal(["Pop"], result!.Track.Genres);
         Assert.Equal(["Dance Pop"], result.Track.Styles);
         Assert.Equal("Happy", result.Track.Mood);
+        // The artist-scope fallback is cached with the same tags, so the second
+        // call must return the same result without refetching.
+        var cached = await matcher.MatchAsync(new AutoTagAudioInfo { Artist = "Alicios", Title = "Example" },
+            new LastFmConfig { MaxTags = 12, MinTagCount = 10, MinRelativeWeight = .15 }, CancellationToken.None);
+        Assert.Equal(["Pop"], cached!.Track.Genres);
+        Assert.Equal(["Dance Pop"], cached.Track.Styles);
         Assert.Equal(2, handler.RequestUris.Count);
         Assert.Contains("method=track.gettoptags", handler.RequestUris[0].Query, StringComparison.Ordinal);
         Assert.Contains("method=artist.gettoptags", handler.RequestUris[1].Query, StringComparison.Ordinal);

@@ -1120,6 +1120,271 @@ body.autotag-col-resizing * {
     margin-top: 0;
 }
 
+#autotag-genre-intelligence-panel .genre-intelligence-checkbox-grid > .checkbox-group {
+    align-items: center;
+    min-height: 38px;
+    padding: 9px 11px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-checkbox-grid > .checkbox-group label {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-checkbox-grid > .checkbox-group input[type="checkbox"],
+#autotag-genre-intelligence-panel .genre-intelligence-checkbox-grid > .checkbox-group input[type="radio"] {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-actions {
+    grid-column: 1 / -1;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-row-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-row-actions > .action-btn {
+    justify-content: center;
+    white-space: nowrap;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 9px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 48%, var(--border-secondary));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--primary-color) 15%, var(--bg-tertiary));
+    color: var(--primary-color);
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-transform: capitalize;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-badge-custom {
+    background: color-mix(in srgb, var(--primary-color) 24%, var(--bg-tertiary));
+}
+
+/* Regional taxonomy organisation. Regions group the vocabulary for browsing only;
+   they never gate resolution, so nothing here can change how a genre is classified. */
+#autotag-genre-intelligence-panel .genre-intelligence-badge-global {
+    background: color-mix(in srgb, var(--text-muted) 18%, var(--bg-tertiary));
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-badge-region {
+    background: color-mix(in srgb, var(--primary-color) 18%, var(--bg-tertiary));
+}
+
+/* A universal term is no longer marked up in the name cell. The name cell used to
+   carry a "Global" pill so that a universal term stayed visually distinct when listed
+   alongside a region's own vocabulary. The Regions column already renders that pill on
+   every row, including universal ones, so the name-cell copy duplicated it, sat in the
+   wrong column, and read as if it described the term rather than its region.
+   The .genre-intelligence-row-universal class is still set by the client and is still
+   counted in search results; only the duplicated pill is gone. */
+
+/* The vocabulary offers the user exactly two categories: In-built and Custom. The
+   researched master is protected and read-only exactly like the legacy core terms,
+   so it is badged In-built too. A separate "researched" badge existed with no
+   producer; it is deliberately not reintroduced, because a third visible origin
+   would contradict the two-category model the UI and its tests both enforce. */
+
+/* Paging for the vocabulary table. The list is a reference surface with thousands of
+   terms, so it is paged deterministically rather than scrolled continuously. */
+#autotag-genre-intelligence-panel .genre-intelligence-pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 12px;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-pager-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-map-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+}
+
+/* The map is fetched on demand rather than inlined: the country paths are large
+   enough that shipping them in the page would slow every AutoTag load. */
+#autotag-genre-intelligence-panel #pgRegionMap svg {
+    display: block;
+    width: 100%;
+    max-width: 720px;
+    height: auto;
+}
+
+#autotag-genre-intelligence-panel #pgRegionMap svg path {
+    fill: color-mix(in srgb, var(--text-muted) 14%, var(--bg-primary));
+    stroke: var(--border-secondary);
+    stroke-width: 0.6;
+    stroke-linejoin: round;
+    transition: fill 140ms ease-out;
+}
+
+/* One rule per region, so highlighting is pure CSS driven by a single attribute
+   on the wrapper. Membership is many-to-many, so a country filed under two regions
+   lights up for either of them. */
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="africa"] svg path[data-regions~="africa"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="north-america"] svg path[data-regions~="north-america"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="latin-america-caribbean"] svg path[data-regions~="latin-america-caribbean"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="europe"] svg path[data-regions~="europe"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="mena"] svg path[data-regions~="mena"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="central-asia"] svg path[data-regions~="central-asia"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="south-asia"] svg path[data-regions~="south-asia"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="east-asia"] svg path[data-regions~="east-asia"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="southeast-asia"] svg path[data-regions~="southeast-asia"],
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="oceania-pacific"] svg path[data-regions~="oceania-pacific"],
+/* Global and All are not a region, they are the absence of one: a universal genre
+   belongs to everywhere, so the whole map is lit for them. Leaving the map dark
+   there would wrongly imply the world had no vocabulary at all. */
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="global"] svg path,
+#autotag-genre-intelligence-panel #pgRegionMap[data-active-region="all"] svg path {
+    fill: color-mix(in srgb, var(--primary-color) 62%, var(--bg-primary));
+    stroke: var(--primary-color);
+    stroke-width: 1;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-map-note {
+    text-align: center;
+    font-size: 0.78rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #autotag-genre-intelligence-panel #pgRegionMap svg path {
+        transition: none;
+    }
+}
+
+/* Long region names ("Latin America & Caribbean") must scroll rather than squeeze
+   the labels into unreadable columns on a narrow screen. */
+#autotag-genre-intelligence-panel .genre-intelligence-region-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-region-tabs .nav-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-region-tabs .nav-link {
+    white-space: nowrap;
+}
+
+/* The panes are filter targets rather than content, so they take no vertical space. */
+#autotag-genre-intelligence-panel .genre-intelligence-region-panes {
+    display: none;
+}
+
+/* The region picker spans the whole form grid so nine checkboxes read as one block
+   rather than as three unrelated columns. */
+#autotag-genre-intelligence-panel .genre-intelligence-region-picker {
+    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+@media (max-width: 900px) {
+    #autotag-genre-intelligence-panel .genre-intelligence-map-wrap {
+        padding: 8px;
+    }
+}
+
+/* Genre Intelligence uses the same controls and card rhythm as AutoTag. */
+#autotag-genre-intelligence-panel .pg-muted {
+    color: var(--text-muted);
+}
+
+#autotag-genre-intelligence-panel textarea,
+#autotag-genre-intelligence-panel #pgAliasRulesBody input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+#autotag-genre-intelligence-panel textarea {
+    display: block;
+    resize: vertical;
+}
+
+#autotag-genre-intelligence-panel input:focus-visible,
+#autotag-genre-intelligence-panel select:focus-visible,
+#autotag-genre-intelligence-panel textarea:focus-visible,
+#autotag-genre-intelligence-panel button:focus-visible,
+#autotag-genre-intelligence-panel summary:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+#autotag-genre-intelligence-panel #pgAliasRulesGroup .autotag-diff-table {
+    min-width: 460px;
+    table-layout: fixed;
+}
+
+#autotag-genre-intelligence-panel #pgAliasRulesGroup th:last-child {
+    width: 100px;
+}
+
+#autotag-genre-intelligence-panel .autotag-diff-table td {
+    vertical-align: middle;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-vocabulary-table {
+    max-height: 420px;
+    overflow: auto;
+}
+
+#autotag-genre-intelligence-panel summary {
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 600;
+    padding: 8px 0;
+}
+
+#autotag-genre-intelligence-panel .genre-intelligence-help[open] > summary {
+    margin-bottom: 16px;
+}
+
 @media (max-width: 992px) {
     .lyrics-timing-card-grid {
         grid-template-columns: 1fr;
@@ -1310,6 +1575,11 @@ body.autotag-col-resizing * {
         flex-direction: column;
     }
 
+    #autotag-genre-intelligence-panel .genre-intelligence-actions > .action-btn {
+        width: 100%;
+        min-width: 0;
+    }
+
     .autotag-sticky-shell {
         padding-top: 6px;
     }
@@ -1478,7 +1748,7 @@ body.autotag-col-resizing * {
 
 .folder-table-header {
     display: grid;
-    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.6fr) minmax(300px, 1.5fr) minmax(190px, 1fr) minmax(160px, 0.95fr) minmax(150px, 0.85fr) minmax(200px, 0.95fr);
+    grid-template-columns: var(--folder-columns);
     gap: 10px;
     align-items: center;
     padding: 12px 14px;
@@ -1495,7 +1765,7 @@ body.autotag-col-resizing * {
 
 .folder-row .table-row {
     display: grid;
-    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.55fr) minmax(300px, 1.45fr) minmax(190px, 0.95fr) minmax(160px, 0.9fr) minmax(150px, 0.85fr) minmax(200px, 0.95fr);
+    grid-template-columns: var(--folder-columns);
     gap: 10px;
     align-items: center;
     padding: 12px 14px;
@@ -1629,7 +1899,9 @@ body.autotag-col-resizing * {
 
 .folder-row .actions {
     display: flex;
-    flex-wrap: wrap;
+    /* Three buttons and two gaps need 134px. The column is sized for that, so wrapping here can only
+       ever push the row onto a second line, which is what it did when the column was 8px too narrow. */
+    flex-wrap: nowrap;
     gap: 8px;
     justify-content: flex-start;
 }
@@ -2292,6 +2564,7 @@ body.autotag-col-resizing * {
     .folder-row .table-row > span:nth-child(5)::before { content: "Enhancement"; }
     .folder-row .table-row > span:nth-child(6)::before { content: "Status"; }
     .folder-row .table-row > span:nth-child(7)::before { content: "Actions"; }
+    .folder-row .table-row > span:nth-child(8)::before { content: "Share"; }
 
     .folder-row .table-row > span:nth-child(2) {
         overflow-wrap: anywhere;

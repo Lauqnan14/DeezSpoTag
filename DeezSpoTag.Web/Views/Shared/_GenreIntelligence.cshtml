@@ -1,0 +1,257 @@
+<div id="personalGenrePage">
+    <div class="helper mb-3" id="pgStatus" role="status" aria-live="polite">Loading Personal Genre…</div>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-spell-check me-2"></i>Genre Normalization</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <div class="download-section-title">Normalize equivalent names</div>
+                <p class="helper mb-3">Use one spelling for equivalent names, such as <em>Hip-Hop</em> and <em>Hip Hop</em>. Cleanup runs before classification for downloads, QuickTag and AutoTag.</p>
+                <div class="download-grid download-grid-2 genre-intelligence-checkbox-grid">
+                    <div class="checkbox-group"><input id="pgNormalizeGenreTags" type="checkbox" /><label for="pgNormalizeGenreTags">Normalize genre tags with alias list</label></div>
+                </div>
+            </div>
+            <div class="download-section" id="pgAliasRulesGroup">
+                <div class="download-section-title">Alias rules</div>
+                <p class="helper mb-3">Choose the spelling to write for each value. These editable replacements are separate from aliases that define vocabulary terms.</p>
+                <div class="autotag-diff-table-wrap"><table class="autotag-diff-table"><thead><tr><th>Value found</th><th>Replace with</th><th></th></tr></thead><tbody id="pgAliasRulesBody"></tbody></table></div>
+                <p class="pg-muted" id="pgAliasRulesEmpty">No alias rules yet.</p>
+                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgAliasRuleAdd">Add rule</button></div>
+            </div>
+            <div class="download-section" id="pgBlockListGroup">
+                <div class="download-section-title">Blocked genres</div>
+                <p class="helper mb-3">Blocked values are removed before genre tags are written. <em>other</em>, <em>others</em> and <em>Worldwide</em> are blocked by default.</p>
+                <div class="form-group"><label for="pgGenreBlockList">One genre per line, or comma-separated</label><textarea id="pgGenreBlockList" rows="4"></textarea></div>
+            </div>
+            <div class="download-section">
+                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgSaveNormalization">Save Genre Normalization</button></div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-sitemap me-2"></i>Genre vocabulary</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <p class="helper mb-3">Built-ins are a protected foundation. Add custom Genre, Style, Substyle, Context, Scene or Language terms, and file them under a region so the vocabulary stays easy to browse. Regions organise what you see; they never decide which genres can be used.</p>
+                <div class="genre-intelligence-map-wrap" id="pgRegionMap" data-active-region="global">
+                    <p class="helper pg-muted genre-intelligence-map-note mb-0">Highlighted to match the region you are browsing. Regions overlap, so a country can belong to more than one. The map is a guide; the tabs above are the navigation.</p>
+                </div>
+                <ul class="nav nav-tabs nav-fill ds-mobile-tabs genre-intelligence-region-tabs mb-3" id="genreIntelligenceRegionTabs" role="tablist" aria-label="Taxonomy regions">
+                    <li class="nav-item">
+                        <button class="nav-link active" id="pgRegionTab-global" type="button" role="tab" data-bs-toggle="tab" data-bs-target="#pgRegionPanel-global" aria-controls="pgRegionPanel-global" aria-selected="true" data-pg-region="global"><i class="fas fa-globe me-2"></i>Global</button>
+                    </li>
+                    @foreach (var region in PersonalGenreRegions.All)
+                    {
+                        <li class="nav-item">
+                            <button class="nav-link" id="pgRegionTab-@region.Slug" type="button" role="tab" data-bs-toggle="tab" data-bs-target="#pgRegionPanel-@region.Slug" aria-controls="pgRegionPanel-@region.Slug" aria-selected="false" data-pg-region="@region.Slug">
+                                @if (!string.IsNullOrEmpty(region.Icon))
+                                {
+                                    <i class="fas @region.Icon me-2"></i>
+                                }
+                                @region.Name
+                            </button>
+                        </li>
+                    }
+                    <li class="nav-item">
+                        <button class="nav-link" id="pgRegionTab-all" type="button" role="tab" data-bs-toggle="tab" data-bs-target="#pgRegionPanel-all" aria-controls="pgRegionPanel-all" aria-selected="false" data-pg-region="all"><i class="fas fa-list me-2"></i>All</button>
+                    </li>
+                </ul>
+                <div class="tab-content genre-intelligence-region-panes">
+                    <div class="tab-pane fade show active" id="pgRegionPanel-global" role="tabpanel" aria-labelledby="pgRegionTab-global"></div>
+                    <div class="tab-pane fade" id="pgRegionPanel-all" role="tabpanel" aria-labelledby="pgRegionTab-all"></div>
+                    @foreach (var region in PersonalGenreRegions.All)
+                    {
+                        <div class="tab-pane fade" id="pgRegionPanel-@region.Slug" role="tabpanel" aria-labelledby="pgRegionTab-@region.Slug"></div>
+                    }
+                </div>
+            </div>
+            <div class="download-section">
+                <p class="helper mb-3" id="pgRegionScopeHint">Showing global and universal terms. Pick a region to see the vocabulary filed under it.</p>
+                <div class="download-grid download-grid-4">
+                    <div class="form-group"><label for="pgTaxonomySearch">Search taxonomy</label><input id="pgTaxonomySearch" type="search" placeholder="Search taxonomy…" /></div>
+                    <div class="form-group">
+                        <label for="pgTaxonomyKindFilter">Kind</label>
+                        <select id="pgTaxonomyKindFilter">
+                            <option value="">All kinds</option><option value="genre">Genre</option><option value="style">Style</option>
+                            <option value="substyle">Substyle</option><option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="pgTaxonomyOriginFilter">Origin</label>
+                        <select id="pgTaxonomyOriginFilter">
+                            <option value="">All origins</option>
+                            <option value="built-in">In-built</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="pgTaxonomySort">Sort</label>
+                        <select id="pgTaxonomySort">
+                            <option value="name">Name</option>
+                            <option value="kind">Kind</option>
+                            <option value="origin">Origin</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <details class="download-section">
+                <summary class="download-section-title mb-0">Add or update custom taxon</summary>
+                <form id="pgTaxonForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid mt-3">
+                    <div class="form-group"><label for="pgTaxonId">ID</label><input id="pgTaxonId" required placeholder="e.g. reggaeton" /></div>
+                    <div class="form-group"><label for="pgTaxonName">Name</label><input id="pgTaxonName" required placeholder="e.g. Reggaeton" /></div>
+                    <div class="form-group"><label for="pgTaxonKind">Kind</label><select id="pgTaxonKind"><option value="genre">Genre</option><option value="style">Style</option><option value="substyle">Substyle</option><option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option></select></div>
+                    <div class="form-group"><label for="pgTaxonParents">Parent IDs</label><input id="pgTaxonParents" placeholder="hip-hop, pop" /><span class="helper">Comma separated; multiple parents are allowed.</span></div>
+                    <div class="form-group"><label for="pgTaxonAliases">Aliases</label><input id="pgTaxonAliases" placeholder="Reggaeton Music, Reggaetón" /><span class="helper">Comma-separated raw labels.</span></div>
+                    <div class="checkbox-group"><input id="pgTaxonContextOnly" type="checkbox" /><label for="pgTaxonContextOnly">Non-genre dimension</label></div>
+                    <div class="genre-intelligence-region-picker">
+                        <div class="download-section-title">Regions</div>
+                        <p class="helper mb-2">Optional, and any combination is allowed. Leave every box clear to file the term globally. Regions only organise this vocabulary for browsing, so changing them never changes the term's ID, its parents, or how it is classified.</p>
+                        <div class="download-grid download-grid-4">
+                            @foreach (var region in PersonalGenreRegions.All)
+                            {
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="pgTaxonRegion-@region.Slug" value="@region.Slug" data-pg-region-option="@region.Slug" />
+                                    <label for="pgTaxonRegion-@region.Slug">@region.Name</label>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="submit">Save Custom Taxon</button><button class="action-btn action-btn-sm" type="button" id="pgTaxonReset">Clear</button></div>
+                </form>
+            </details>
+            <div class="download-section">
+                <div class="autotag-diff-table-wrap genre-intelligence-vocabulary-table"><table class="autotag-diff-table"><thead><tr><th>Name</th><th>Kind</th><th>Parents</th><th>Aliases</th><th>Regions</th><th>Origin</th><th></th></tr></thead><tbody id="pgTaxonomyBody"></tbody></table></div>
+                @* Paging rather than continuous loading: this is an administrative
+                   reference list, so a deterministic page of rows is easier to read
+                   back, to test, and to reach a known term in. *@
+                <div class="genre-intelligence-pager">
+                    <span class="pg-muted" id="pgTaxonomyPagerSummary" role="status" aria-live="polite"></span>
+                    <div class="genre-intelligence-pager-controls">
+                        <label class="pg-muted" for="pgTaxonomyPageSize">Rows per page</label>
+                        <select id="pgTaxonomyPageSize">
+                            <option value="50">50</option>
+                            <option value="100" selected="selected">100</option>
+                            <option value="250">250</option>
+                        </select>
+                        <span class="pg-muted" id="pgTaxonomyPagerPosition"></span>
+                        <button class="action-btn action-btn-sm" type="button" id="pgTaxonomyPrev">Previous</button>
+                        <button class="action-btn action-btn-sm" type="button" id="pgTaxonomyNext">Next</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-right-left me-2"></i>Tag Mappings</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <div class="download-section-title">Interpret a value found in a file</div>
+                <p class="helper mb-3">A mapping answers one question: when this value is found in a file, how should it be understood? Leave the field blank to match the value in any field, or restrict it to the field it actually appears in.</p>
+                <form id="pgMappingForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
+                    <input id="pgMappingId" type="hidden" value="0" />
+                    <div class="form-group"><label for="pgMappingValue">Value in the file</label><input id="pgMappingValue" required placeholder="e.g. My Afro Mix" /></div>
+                    <div class="form-group"><label for="pgMappingSource">File field</label><select id="pgMappingSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Substyle">Substyle</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
+                    <div class="form-group"><label for="pgMappingAction">Action</label><select id="pgMappingAction"><option value="0">Map</option><option value="1">Context only</option><option value="2">Ignore</option><option value="3">Ambiguous</option></select></div>
+                    <div class="form-group"><label for="pgMappingTarget">Target taxon</label><select id="pgMappingTarget" required></select><span class="helper">Used by Map and Context-only actions.</span></div>
+                    <div class="form-group"><label for="pgMappingPriority">Priority</label><input id="pgMappingPriority" type="number" value="100" /></div>
+                    <div class="checkbox-group"><input id="pgMappingEnabled" type="checkbox" checked /><label for="pgMappingEnabled">Enabled</label></div>
+                    <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="submit">Save Mapping</button><button class="action-btn action-btn-sm" type="button" id="pgMappingReset">Clear</button></div>
+                </form>
+            </div>
+            <div class="download-section">
+                <div class="autotag-diff-table-wrap"><table class="autotag-diff-table"><thead><tr><th>Value in the file</th><th>File field</th><th>Action</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody id="pgMappingsBody"></tbody></table></div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-list-check me-2"></i>User Rules</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <p class="helper mb-3">Rules outrank tag mappings and built-in matching. Locks remain absolute with Track &gt; Album &gt; Artist precedence.</p>
+                <form id="pgRuleForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
+                    <input id="pgRuleId" type="hidden" value="0" />
+                    <div class="form-group"><label for="pgRuleValue">Match value</label><input id="pgRuleValue" required placeholder="e.g. Sunday Worship" /></div>
+                    <div class="form-group"><label for="pgRuleSource">File field</label><select id="pgRuleSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Substyle">Substyle</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
+                    <div class="form-group"><label for="pgRuleTarget">Target taxon</label><select id="pgRuleTarget" required></select></div>
+                    <div class="form-group"><label for="pgRulePriority">Priority</label><input id="pgRulePriority" type="number" value="1000" /></div>
+                    <div class="checkbox-group"><input id="pgRuleEnabled" type="checkbox" checked /><label for="pgRuleEnabled">Enabled</label></div>
+                    <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="submit">Save Rule</button><button class="action-btn action-btn-sm" type="button" id="pgRuleReset">Clear</button></div>
+                </form>
+            </div>
+            <div class="download-section">
+                <div class="autotag-diff-table-wrap"><table class="autotag-diff-table"><thead><tr><th>Match value</th><th>File field</th><th>Target</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody id="pgRulesBody"></tbody></table></div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="fas fa-sliders-h me-2"></i>Shared resolver settings</h5>
+        </div>
+        <div class="card-body autotag-card-body">
+            <form id="pgSettingsForm">
+                <div class="download-section">
+                    <p class="helper mb-3">These settings control how the genre-related tags already in your audio files are classified. AutoTag runtime choices remain profile-specific above.</p>
+                    <div class="download-grid download-grid-2 genre-intelligence-checkbox-grid">
+                        <div class="checkbox-group"><input id="pgEnabled" type="checkbox" /><label for="pgEnabled">Enable Personal Genre classification</label></div>
+                        <div class="form-group"><label for="pgMaxGenres">Maximum final genres</label><input id="pgMaxGenres" type="number" min="1" max="10" value="3" /></div>
+                        <div class="checkbox-group"><input id="pgPreserveUnmappedTags" type="checkbox" /><label for="pgPreserveUnmappedTags">Preserve tags the taxonomy does not recognise</label></div>
+                        <div class="checkbox-group"><input id="pgIncludeParents" type="checkbox" /><label for="pgIncludeParents">Include parent genres</label></div>
+                    </div>
+                </div>
+                <div class="download-section">
+                    <div class="download-section-title">Maintenance</div>
+                    <p class="helper mb-3" id="pgRebuildStatus">Rebuild re-reads each file's tags and re-resolves them. It does not re-run audio analysis and does not write tags to files.</p>
+                    <div class="autotag-actions genre-intelligence-actions">
+                        <button class="action-btn action-btn-sm" type="submit">Save Resolver Settings</button>
+                        <button class="action-btn action-btn-sm" type="button" id="pgRebuildButton">Rebuild Existing Results</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-file-export me-2"></i>Import and export</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <div class="download-section-title">Export</div>
+                <p class="helper mb-3">Export resolver settings, custom taxonomy, tag mappings and user rules. Library-specific locks and track results are excluded.</p>
+                <div class="autotag-actions genre-intelligence-actions"><button id="pgExportButton" class="action-btn action-btn-sm" type="button">Export JSON</button></div>
+            </div>
+            <div class="download-section">
+                <div class="download-section-title">Import</div>
+                <p class="helper mb-3">Import by merging; equivalent mappings and rules are skipped.</p>
+                <div class="download-grid download-grid-2">
+                    <div class="form-group"><label for="pgImportFile">Personal Genre JSON file</label><input id="pgImportFile" type="file" accept="application/json,.json" /></div>
+                    <div class="autotag-actions genre-intelligence-actions"><button id="pgImportButton" class="action-btn action-btn-sm" type="button">Import JSON</button></div>
+                </div>
+                <p class="warning-text mb-0">Import changes shared classification configuration only. Audio files are written only by an enabled AutoTag run.</p>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-file-audio me-2"></i>Help</h5></div>
+        <div class="card-body autotag-card-body">
+            <details class="genre-intelligence-help">
+                <summary>How classification works</summary>
+            <div class="download-section">
+                <div class="download-section-title">The audio file is the source</div>
+                <p class="helper mb-0">Genre Intelligence reads the genre-related metadata in your audio files, classifies those values using the canonical and personal taxonomy, applies your mappings, rules and preferences, records the result, and rewrites the semantic tags consistently. It does not query any metadata service for genres, and it does not combine or vote on provider labels — by the time this stage runs, there is only the file.</p>
+            </div>
+            <div class="download-section">
+                <div class="download-section-title">Your own vocabulary is respected</div>
+                <p class="helper mb-0">A tag such as <em>My Personal Genre</em> is not an error. It is preserved and written back to the field it was read from, so your own tagging survives. Recognise it properly by adding a custom term, an alias, a mapping or a rule.</p>
+            </div>
+            <div class="download-section">
+                <div class="download-section-title">Classification boundary</div>
+                <p class="helper mb-0">Umbrella terms such as <em>Afrosounds</em> stay Context, while established musical forms such as <em>Bongo Flava</em> remain canonical Genres. The same separation applies to every region.</p>
+            </div>
+            </details>
+        </div>
+    </article>
+</div>

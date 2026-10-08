@@ -32,3 +32,19 @@ globalThis.addEventListener("activate", (event) => {
 globalThis.addEventListener("fetch", () => {
   // Intentionally no-op. Network should flow directly without SW caching.
 });
+
+async function deliverDownloadRequest() {
+  const clientList = await globalThis.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true
+  });
+
+  const existing = clientList.find((client) => "focus" in client);
+  if (existing) {
+    await existing.focus();
+    existing.postMessage({ type: DOWNLOAD_MESSAGE });
+    return;
+  }
+
+  await globalThis.clients.openWindow("/");
+}

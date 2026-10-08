@@ -4213,12 +4213,12 @@ public sealed class DownloadIntentService
             return _genreAliasMap;
         }
 
-        var settings = _settingsService.LoadSettings();
-        _genreTagNormalizationEnabled = settings.NormalizeGenreTags;
-        _genreBlockList = settings.GenreTagBlockList;
-        _genreAliasMap = settings.NormalizeGenreTags
-            ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
-            : new Dictionary<string, string>(StringComparer.Ordinal);
+        // Genre Intelligence owns the genre-spelling preferences; the settings
+        // object carries them so this stays a single load.
+        var normalization = _settingsService.LoadSettings().GenreNormalization;
+        _genreTagNormalizationEnabled = normalization.Enabled;
+        _genreBlockList = normalization.BlockList;
+        _genreAliasMap = normalization.AliasMap;
         return _genreAliasMap;
     }
 

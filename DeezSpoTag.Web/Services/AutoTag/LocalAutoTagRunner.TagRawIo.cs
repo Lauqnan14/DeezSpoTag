@@ -272,7 +272,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         if (binding.Tag == SupportedTag.Genre)
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
-            values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
+            if (context.PlatformId != "genre-intelligence")
+                values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
         }
 
         if (values.Count == 0)
@@ -309,7 +310,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
-            values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
+            if (context.PlatformId != "genre-intelligence")
+                values = PreserveGenreOrderWhenSetEqual(values, context.File.Tag?.Genres);
             if (values.Count == 0)
             {
                 return;
@@ -458,7 +460,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 : new List<string>());
     }
 
-    private static List<string> ReadRawTagValues(TagLib.File file, string extension, string name)
+    internal static List<string> ReadRawTagValues(TagLib.File file, string extension, string name)
     {
         return ReadRawTagValuesCore(file, extension, name, ReadAppleDashBox);
     }

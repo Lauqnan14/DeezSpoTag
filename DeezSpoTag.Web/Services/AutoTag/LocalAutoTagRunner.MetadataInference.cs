@@ -35,7 +35,7 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 {
 
-    private static bool IsMp4Family(string extension)
+    internal static bool IsMp4Family(string extension)
     {
         return AtlTagHelper.IsMp4Family(extension);
     }
@@ -114,7 +114,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         return Directory.EnumerateFiles(rootPath, "*.*", option)
-            .Where(path => SupportedExtensions.Contains(Path.GetExtension(path))
+            .Where(path => !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(rootPath, path)
+                && SupportedExtensions.Contains(Path.GetExtension(path))
                 && !AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(path));
     }
 

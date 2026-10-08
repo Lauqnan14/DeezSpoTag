@@ -490,6 +490,12 @@ public class Track : AudioFeaturesBase
         }
     }
 
+    /// <summary>
+    /// Applies the user's genre-spelling preferences to the album's genres.
+    ///
+    /// The preferences are Genre Intelligence's. They arrive on the settings
+    /// object purely as a carrier, because this model cannot reach the store.
+    /// </summary>
     private void ApplyGenreTagNormalization(DeezSpoTagSettings settings)
     {
         if (Album?.Genre == null || Album.Genre.Count == 0)
@@ -497,14 +503,12 @@ public class Track : AudioFeaturesBase
             return;
         }
 
-        var aliasMap = settings.NormalizeGenreTags
-            ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
-            : null;
+        var normalization = settings.GenreNormalization;
         Album.Genre = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
             Album.Genre,
-            aliasMap,
-            settings.NormalizeGenreTags,
-            settings.GenreTagBlockList);
+            normalization.AliasMap,
+            normalization.Enabled,
+            normalization.BlockList);
     }
 
     /// <summary>

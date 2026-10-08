@@ -37,10 +37,16 @@ public static class DeezSpoTagServiceExtensions
 
         // Settings service
         // PHASE 3: Enhanced settings service with complete deezspotag configuration
+        //
+        // The genre-normalization preferences are supplied by Genre Intelligence, so
+        // the settings service is constructed with that provider when one is
+        // registered. It is resolved lazily because this extension method also runs
+        // in hosts that do not register a library database.
         services.AddSingleton<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(provider =>
         {
             var logger = provider.GetRequiredService<ILogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>>();
-            return new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(logger);
+            var genreNormalization = provider.GetService<DeezSpoTag.Services.Genre.GenreNormalizationProvider>();
+            return new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(logger, genreNormalization);
         });
         services.AddSingleton<ISettingsService>(provider => provider.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>());
 

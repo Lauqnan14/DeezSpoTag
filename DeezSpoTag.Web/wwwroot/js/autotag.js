@@ -3020,6 +3020,14 @@
             }
         };
 
+        const genreIntelligence = state.config.genreIntelligence || {};
+        setChecked("autotagGenreIntelligenceEnabled", genreIntelligence.enabled === true);
+        el("autotagGenreIntelligenceMaxGenres").value = genreIntelligence.maxGenres ?? 3;
+        setChecked("autotagGenreIntelligenceProviderFallback", genreIntelligence.preserveUnmappedTags !== false);
+        setChecked("autotagGenreIntelligenceIncludeParents", genreIntelligence.includeParentGenres === true);
+        setChecked("autotagGenreIntelligenceWriteSubstyle", genreIntelligence.writeSubstyle === true);
+        setChecked("autotagGenreIntelligenceWriteContext", genreIntelligence.writeContext === true);
+        setChecked("autotagGenreIntelligenceWriteScene", genreIntelligence.writeScene === true);
         setChecked("autotag-overwrite", state.config.overwrite);
         setChecked("autotag-id3v24", state.config.id3v24);
         setChecked("autotag-edition-conflict-review", state.config.editionConflictReview);
@@ -3487,7 +3495,7 @@
         if (!target.closest("#autotagTabsContent")) {
             return false;
         }
-        if (target.closest("#autotag-folders-panel")) {
+        if (target.closest("#autotag-folders-panel") || target.closest("#personalGenrePage")) {
             return false;
         }
         return target.id !== "autotag-profile-select";
@@ -4047,6 +4055,15 @@
     }
 
     function readConfigFromUI() {
+        state.config.genreIntelligence = {
+            enabled: el("autotagGenreIntelligenceEnabled")?.checked === true,
+            maxGenres: Math.max(1, Math.min(10, Number(el("autotagGenreIntelligenceMaxGenres")?.value) || 3)),
+            preserveUnmappedTags: el("autotagGenreIntelligenceProviderFallback")?.checked !== false,
+            includeParentGenres: el("autotagGenreIntelligenceIncludeParents")?.checked === true,
+            writeSubstyle: el("autotagGenreIntelligenceWriteSubstyle")?.checked === true,
+            writeContext: el("autotagGenreIntelligenceWriteContext")?.checked === true,
+            writeScene: el("autotagGenreIntelligenceWriteScene")?.checked === true
+        };
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
         ensureEnhancementDefaults();

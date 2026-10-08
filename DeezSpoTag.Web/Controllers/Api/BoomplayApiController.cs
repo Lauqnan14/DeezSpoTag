@@ -111,6 +111,27 @@ public sealed class BoomplayApiController : ControllerBase
             _ => "Boomplay item could not be resolved."
         };
 
+    private IActionResult SourceFailure(BoomplaySourceException exception, bool includeAvailability = false)
+    {
+        var statusCode = exception.FailureCode is BoomplayFailureCodes.SessionMissing
+            or BoomplayFailureCodes.SessionChallenged
+                ? StatusCodes.Status401Unauthorized
+                : StatusCodes.Status422UnprocessableEntity;
+        var payload = includeAvailability
+            ? new
+            {
+                available = false,
+                error = exception.FailureCode,
+                message = ResolveSourceFailureMessage(exception.FailureCode)
+            }
+            : (object)new
+            {
+                error = exception.FailureCode,
+                message = ResolveSourceFailureMessage(exception.FailureCode)
+            };
+        return StatusCode(statusCode, payload);
+    }
+
     [HttpGet("search")]
     public async Task<IActionResult> Search(
         [FromQuery] string query,
@@ -138,6 +159,10 @@ public sealed class BoomplayApiController : ControllerBase
                 total = results.Count,
                 tracks = results
             });
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return SourceFailure(ex);
         }
         catch (OperationCanceledException)
         {
@@ -331,6 +356,10 @@ public sealed class BoomplayApiController : ControllerBase
 
             return BadRequest(new { error = "Unsupported Boomplay type." });
         }
+        catch (BoomplaySourceException ex)
+        {
+            return SourceFailure(ex);
+        }
         catch (OperationCanceledException)
         {
             throw;
@@ -437,6 +466,10 @@ public sealed class BoomplayApiController : ControllerBase
                 sections = MapPlaylistRecommendationSections(sections)
             });
         }
+        catch (BoomplaySourceException ex)
+        {
+            return SourceFailure(ex, includeAvailability: true);
+        }
         catch (OperationCanceledException)
         {
             throw;
@@ -481,6 +514,10 @@ public sealed class BoomplayApiController : ControllerBase
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             await stream.CopyToAsync(Response.Body, cancellationToken);
             return new EmptyResult();
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return SourceFailure(ex);
         }
         catch (OperationCanceledException)
         {

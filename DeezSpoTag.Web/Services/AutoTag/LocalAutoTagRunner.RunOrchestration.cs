@@ -462,8 +462,26 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        if (context.Plan.Config.GenreIntelligence?.Enabled == true)
+        {
+            try
+            {
+                await CapturePreAutoTagSemanticSnapshotAsync(context);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                EmitErrorStatus(context, ex.Message, false, "genre_intelligence_checkpoint_error");
+                return;
+            }
+            if (context.Platform == "genre-intelligence")
+            {
+                await ProcessGenreIntelligenceAsync(context);
+                return;
+            }
+        }
+
         var tagPlan = BuildProviderTagPlan(context);
-        if (tagPlan.Eligible.Count == 0)
+        if (tagPlan.Eligible.Count == 0 && context.Plan.Config.GenreIntelligence?.Enabled != true)
         {
             EmitSkippedStatus(
                 context,
@@ -745,6 +763,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             tagPlatforms.Add(LyricsPlatform);
         }
 
+        if (config.GenreIntelligence?.Enabled == true)
+        {
+            tagPlatforms.Add("genre-intelligence");
+        }
         return tagPlatforms;
     }
 

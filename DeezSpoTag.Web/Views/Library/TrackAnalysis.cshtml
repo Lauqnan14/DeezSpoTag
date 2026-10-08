@@ -8,6 +8,7 @@
 }
 
 <link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/personal-genre.css")" />
 
 <div class="library-page library-track-analysis-page" data-track-id="@ViewData["TrackId"]">
     <div class="library-breadcrumbs">
@@ -25,6 +26,63 @@
         <div class="track-analysis-stats-row" id="trackAnalysisPrimary"></div>
         <div class="track-analysis-stats-row track-analysis-stats-row--secondary" id="trackAnalysisSecondary"></div>
         <div class="track-analysis-path" id="trackAnalysisPath"></div>
+    </section>
+
+    <section class="track-analysis-card pg-track-card" id="personalGenreTrackCard">
+        <div class="pg-card-head pg-card-head--toolbar">
+            <div>
+                <h2>Personal Genre</h2>
+                <p>Classified from the genre-related tags in this audio file, using the canonical and your own taxonomy. A user lock overrides automation for its classification kind.</p>
+            </div>
+            <button type="button" class="pg-btn pg-btn--small" id="pgTrackResolve">Re-resolve from file</button>
+        </div>
+        <div id="pgTrackStatus" class="pg-muted">Loading Personal Genre…</div>
+        @* The cleanup preview is what an enabled AutoTag run would do to this file.
+           It is produced by reading the file and never writes, so it is shown before
+           anything is changed rather than reported afterwards. *@
+        <details class="pg-track-history">
+            <summary>What cleanup would change</summary>
+            <div id="pgTrackCleanup" class="pg-track-history-list"></div>
+        </details>
+        <details class="pg-track-history">
+            <summary>Style Construction preview</summary>
+            <div id="pgTrackConstruction" class="pg-track-history-list"></div>
+        </details>
+        <div id="pgTrackClassifications" class="pg-track-classifications"></div>
+        <details class="pg-track-history" open>
+            <summary>Tags read from the file</summary>
+            <div id="pgTrackObserved" class="pg-track-history-list"></div>
+        </details>
+        <details class="pg-track-history">
+            <summary>Unrecognised tags kept where they were</summary>
+            <div id="pgTrackPreserved" class="pg-track-history-list"></div>
+        </details>
+        <div class="pg-track-locks">
+            <div>
+                <strong>User locks</strong>
+                <div id="pgTrackLockList" class="pg-track-lock-list"></div>
+            </div>
+            <div class="pg-track-lock-editor">
+                <select id="pgTrackLockScope" aria-label="Lock scope">
+                    <option value="track">This track</option>
+                    <option value="album">This album</option>
+                    <option value="artist">This artist</option>
+                </select>
+                <select id="pgTrackLockTaxon" aria-label="Taxon to lock"></select>
+                <button type="button" class="pg-btn pg-btn--primary pg-btn--small" id="pgTrackLockAdd">Lock selected</button>
+            </div>
+        </div>
+        <details class="pg-track-history">
+            <summary>Why each value was classified this way</summary>
+            <div id="pgTrackDecisions" class="pg-track-history-list"></div>
+        </details>
+        @* The pre-AutoTag snapshot is what the file held before AutoTag ran. It is
+           kept so a change can be explained, and so a personal tag the provider
+           dropped can be restored. *@
+        <details class="pg-track-history">
+            <summary>Resolution history</summary>
+            <div id="pgTrackHistory" class="pg-track-history-list"></div>
+        </details>
     </section>
 
     <section class="track-analysis-plot-card">

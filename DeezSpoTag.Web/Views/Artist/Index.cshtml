@@ -2399,18 +2399,11 @@ function getArtistTabCacheKey(artistId, source) {
     return `artist-page-tab:${String(source || 'deezer').toLowerCase()}:${artistId}`;
 }
 
-function isTabPreferenceEnabled() {
-    try {
-        const stored = localStorage.getItem('tabs-preference-enabled');
-        if (stored === null || stored === '') {
-            return true;
-        }
-
-        return stored === 'true';
-    } catch {
-        return true;
-    }
-}
+// The "remember last tab" setting, the storage read/write and the server-side mirror
+// are all owned by tab-preferences.js. This page keeps its own per-artist key
+// (artist-page-tab:{source}:{artistId}) because it remembers a tab within one artist
+// rather than a page-level tab, and changing it would orphan values already saved by
+// existing installs.
 
 function loadArtistPayloadFromCache(artistId, source) {
     const key = getArtistPayloadCacheKey(artistId, source);
@@ -2457,50 +2450,14 @@ function saveArtistPayloadToCache(artistId, source, payload) {
 }
 
 function loadArtistTabFromCache(artistId, source) {
-    if (!isTabPreferenceEnabled()) {
-        return '';
-    }
-
     const key = getArtistTabCacheKey(artistId, source);
-    if (!key) {
-        return '';
-    }
-    try {
-        return localStorage.getItem(key) || '';
-    } catch {
-        return '';
-    }
+    return window.TabPreferences?.read?.(key) || '';
 }
 
 function saveArtistTabToCache(artistId, source, tab) {
-    const key = getArtistTabCacheKey(artistId, source);
-    if (!key) {
-        return;
-    }
-
-    if (!isTabPreferenceEnabled()) {
-        try {
-            localStorage.removeItem(key);
-        } catch {
-        }
-        if (window.UserPrefs?.setTabSelection) {
-            window.UserPrefs.setTabSelection(key, '');
-        }
-        return;
-    }
-
-    if (!tab) {
-        return;
-    }
-
-    try {
-        localStorage.setItem(key, tab);
-    } catch {
-    }
-
-    if (window.UserPrefs?.setTabSelection) {
-        window.UserPrefs.setTabSelection(key, tab);
-    }
+    // Writing an empty value, or writing while the setting is off, clears the entry;
+    // tab-preferences.js owns that behaviour so it stays identical across all groups.
+    window.TabPreferences?.write?.(getArtistTabCacheKey(artistId, source), tab);
 }
 
 function getReleaseCount(payload) {

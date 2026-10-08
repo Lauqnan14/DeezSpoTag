@@ -117,7 +117,8 @@ public sealed class BoomplayClassificationMetadataTest
                 {
                     Cookie = "sessionID=authenticated",
                     UserAgent = "Mozilla/5.0 TestBrowser/1.0",
-                    SessionValid = true
+                    SessionValid = true,
+                    LastStatus = "session_verified"
                 };
                 return state.Boomplay;
             });
@@ -230,7 +231,8 @@ public sealed class BoomplayClassificationMetadataTest
                 {
                     Cookie = cookie,
                     UserAgent = userAgent,
-                    SessionValid = true
+                    SessionValid = true,
+                    LastStatus = "session_verified"
                 };
                 return state.Boomplay;
             });
@@ -353,7 +355,8 @@ public sealed class BoomplayClassificationMetadataTest
                 {
                     Cookie = "sessionID=authenticated; cf_clearance=expired",
                     UserAgent = "Mozilla/5.0 SavedBoomplayBrowser/1.0",
-                    SessionValid = true
+                    SessionValid = true,
+                    LastStatus = "session_verified"
                 };
                 return state.Boomplay;
             });
@@ -503,6 +506,17 @@ public sealed class BoomplayClassificationMetadataTest
                 environment,
                 NullLogger<PlatformAuthService>.Instance,
                 DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = new BoomplayAuth
+                {
+                    Cookie = "sessionID=authenticated",
+                    UserAgent = "Mozilla/5.0 SearchTest/1.0",
+                    SessionValid = true,
+                    LastStatus = "session_verified"
+                };
+                return state.Boomplay;
+            });
             using var httpClientFactory = new RoutingHttpClientFactory(request =>
             {
                 var path = request.RequestUri?.AbsolutePath ?? string.Empty;
@@ -540,6 +554,15 @@ public sealed class BoomplayClassificationMetadataTest
             Assert.Equal("Pombe Niache", track.Title);
             Assert.Equal("Ay Masta", track.Artist);
             Assert.Equal("https://www.boomplay.com/songs/EQvxdsV7BtNqM5LQor545Dvb?from=search", track.Url);
+
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = null;
+                return state.Boomplay;
+            });
+            var exception = await Assert.ThrowsAsync<BoomplaySourceException>(
+                () => service.SearchSongsAsync("AY Masta Pombe Niache", 12, CancellationToken.None));
+            Assert.Equal(BoomplayFailureCodes.SessionMissing, exception.FailureCode);
         }
         finally
         {

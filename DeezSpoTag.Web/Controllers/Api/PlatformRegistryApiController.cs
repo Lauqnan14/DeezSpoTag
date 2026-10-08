@@ -18,7 +18,8 @@ public class PlatformRegistryApiController : ControllerBase
     private const string TidalPlatform = "tidal";
     private const string SoulseekPlatform = "soulseek";
     private const string BoomplayPlatform = "boomplay";
-    private const string NavidromePlatform = "navidrome";
+    private const string NavidromePlatform = MediaServerTargetServices.Navidrome;
+    private const string YouTubeMusicPlatform = "ytmusic";
     private const string YouLyPlusPlatform = "youlyplus";
     private const string BetterLyricsPlatform = "betterlyrics";
 
@@ -51,9 +52,6 @@ public class PlatformRegistryApiController : ControllerBase
         .Select((id, index) => new { id, index })
         .ToDictionary(item => item.id, item => item.index, StringComparer.OrdinalIgnoreCase);
 
-    // Boomplay is deliberately NOT in this set: it works without any login (playlist
-    // fetching rides the sessionless mobile API), so it must not show the
-    // "requires an account" padlock or gate platform selection on a session.
     private static readonly HashSet<string> AuthRequiredPlatforms = new(StringComparer.OrdinalIgnoreCase)
     {
         "deezer",
@@ -88,7 +86,8 @@ public class PlatformRegistryApiController : ControllerBase
         ["beatport"] = "beatport-login",
         ["plex"] = "plex-login",
         ["jellyfin"] = "jellyfin-login",
-        [NavidromePlatform] = "navidrome-login"
+        [NavidromePlatform] = "navidrome-login",
+        [YouTubeMusicPlatform] = "ytmusic-login"
     };
 
     private static readonly Dictionary<string, string> DisplayNameOverrides = new(StringComparer.OrdinalIgnoreCase)
@@ -103,7 +102,8 @@ public class PlatformRegistryApiController : ControllerBase
         [TidalPlatform] = "Tidal",
         [SoulseekPlatform] = "Soulseek",
         [BoomplayPlatform] = "Boomplay",
-        [NavidromePlatform] = "Navidrome"
+        [NavidromePlatform] = "Navidrome",
+        [YouTubeMusicPlatform] = "YouTube Music"
     };
 
     private readonly AutoTagMetadataService _metadataService;

@@ -211,6 +211,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return new AutoTagRunnerConfig
         {
             Platforms = raw.Platforms ?? new List<string>(),
+            GenreIntelligence = raw.GenreIntelligence ?? new AutoTagGenreIntelligenceSettings(),
             DownloadTagSource = raw.DownloadTagSource,
             Path = raw.Path,
             TargetFiles = raw.TargetFiles?.Where(path => !string.IsNullOrWhiteSpace(path)).ToList(),

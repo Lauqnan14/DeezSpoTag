@@ -25,6 +25,10 @@ public sealed class BoomplayMetadataService
     private const string BoomplayWebHost = "www.boomplay.com";
     private const string BoomplayRootHost = "boomplay.com";
     private const string BoomplayApiBaseUrl = "https://api.boomplaymusic.com/BoomPlayer";
+    private const string BoomplayApiHost = "api.boomplaymusic.com";
+    private const string BoomplayAndroidApiHost = "android.boomplaymusic.com";
+    private const string BpCompHeaderName = "bp-comp";
+    private const string BoomplayWebChannel = "WEB";
     private const string BoomplaySourceBaseUrl = "https://source.boomplaymusic.com/";
     private const string DefaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
     private const int PlaylistSongFetchConcurrency = 3;
@@ -258,11 +262,6 @@ public sealed class BoomplayMetadataService
 
         var normalizedUrl = url!.Trim();
         var session = await GetBoomplaySessionAsync();
-        if (!session.HasSession)
-        {
-            throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
-        }
-
         var html = await GetHtmlAsync(normalizedUrl, session, cancellationToken);
         if (string.IsNullOrWhiteSpace(html))
         {
@@ -290,6 +289,8 @@ public sealed class BoomplayMetadataService
         {
             return null;
         }
+
+        _ = await GetBoomplaySessionAsync();
 
         var normalizedType = type.Trim().ToLowerInvariant();
         var normalized = idOrUrl.Trim();
@@ -383,6 +384,16 @@ public sealed class BoomplayMetadataService
         return string.IsNullOrWhiteSpace(candidate) || IsNumericBoomplayId(candidate) ? null : candidate;
     }
 
+    /// <summary>
+    /// Verifies a saved Boomplay session against the mobile API account endpoint.
+    /// <para>
+    /// This deliberately does not scrape www.boomplay.com. The web pages are client-rendered
+    /// shells that are byte-identical for anonymous and authenticated visitors, so a
+    /// <c>data-cid</c> check proved nothing about login; that host is also the only Boomplay
+    /// endpoint behind the Cloudflare interstitial. The mobile API is Cloudflare-free and
+    /// answers with either the account's private playlists or an explicit re-login error.
+    /// </para>
+    /// </summary>
     public async Task<BoomplaySessionValidationResult> ValidateSessionAsync(
         string? cookie,
         string? userAgent,
@@ -398,11 +409,12 @@ public sealed class BoomplayMetadataService
         if (!TryParseBoomplayUrl(verificationUrl, out var type, out var publicId)
             || type is "trending")
         {
-            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.SessionMissing, null);
         }
 
+        // The "validation:" cache-key prefix is what stops a Cloudflare challenge seen here
+        // from being recorded as a challenged session; that flag belongs to real fetches only.
         var session = new BoomplaySessionSnapshot(
-            true,
             normalizedCookie,
             normalizedUserAgent,
             $"validation:{ComputeSessionCacheKey(normalizedCookie)}");
@@ -414,20 +426,84 @@ public sealed class BoomplayMetadataService
                 return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
             }
 
-            var doc = new HtmlDocument();
-            doc.LoadHtml(html);
-            var nodeId = string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase)
-                ? "playlistsDetails"
-                : "songsDetails";
-            var numericId = doc.GetElementbyId(nodeId)?.GetAttributeValue("data-cid", string.Empty)?.Trim();
-            return IsNumericBoomplayId(numericId)
-                ? new BoomplaySessionValidationResult(true, string.Empty, numericId)
-                : new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+            }
+
+            if (root.TryGetProperty("cols", out var cols) && cols.ValueKind == JsonValueKind.Array)
+            {
+                return new BoomplaySessionValidationResult(true, string.Empty, null);
+            }
+
+            // Boomplay answers an unauthenticated account call with code 2000 and a
+            // "please re-login" description rather than an HTTP error.
+            if (TryReadBoomplayReloginCode(root))
+            {
+                return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.SessionMissing, null);
+            }
+
+            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+        }
+        catch (JsonException)
+        {
+            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
         }
         catch (BoomplaySourceException ex)
         {
             return new BoomplaySessionValidationResult(false, ex.FailureCode, null);
         }
+    }
+
+    private static bool TryReadBoomplayReloginCode(JsonElement root)
+    {
+        if (!root.TryGetProperty("code", out var code))
+        {
+            return false;
+        }
+
+        var codeText = code.ValueKind == JsonValueKind.String
+            ? code.GetString()
+            : code.ValueKind == JsonValueKind.Number
+                ? code.GetRawText()
+                : null;
+
+        return string.Equals(codeText, BoomplayReloginCode, StringComparison.Ordinal);
+    }
+
+    private const string BoomplayReloginCode = "2000";
+
+    /// <summary>
+    /// Calls the private account-playlists endpoint. An authenticated session returns the
+    /// account's <c>cols</c>; an anonymous one returns the re-login payload.
+    /// </summary>
+    private async Task<string> GetBoomplayAccountColsAsync(
+        BoomplaySessionSnapshot session,
+        CancellationToken cancellationToken)
+    {
+        var client = CreateClient(session);
+        var url = $"{BoomplayApiBaseUrl}/user/getPublishCols";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("accept", "application/json");
+        request.Headers.TryAddWithoutValidation("x-boomplay-ref", "Boomplay_ANDROID");
+        ApplyBoomplaySession(request, session, url);
+        using var response = await client.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        var cloudflareChallenge = response.StatusCode == HttpStatusCode.Forbidden
+                                  || response.Headers.TryGetValues("cf-mitigated", out var mitigationValues)
+                                     && mitigationValues.Any(value => value.Contains("challenge", StringComparison.OrdinalIgnoreCase))
+                                  || responseBody.Contains("<title>Just a moment...", StringComparison.OrdinalIgnoreCase)
+                                  || responseBody.Contains("/cdn-cgi/challenge-platform/", StringComparison.OrdinalIgnoreCase);
+        if (cloudflareChallenge)
+        {
+            // Never mark the saved session challenged from a validation probe: this method is
+            // the login check itself, so a challenge here is a failed login, not a stale session.
+            throw new BoomplaySourceException(BoomplayFailureCodes.SessionChallenged);
+        }
+
+        return response.IsSuccessStatusCode ? responseBody : string.Empty;
     }
 
     private static string ResolveContentPath(string type)
@@ -532,6 +608,8 @@ public sealed class BoomplayMetadataService
         {
             return Array.Empty<BoomplayTrackMetadata>();
         }
+
+        _ = await GetBoomplaySessionAsync();
 
         var results = await FetchSongsFirstPassAsync(ids, cancellationToken);
         var firstPassById = results.ToDictionary(static item => item.Id, StringComparer.Ordinal);
@@ -660,6 +738,8 @@ public sealed class BoomplayMetadataService
         {
             return Array.Empty<BoomplayTrackMetadata>();
         }
+
+        _ = await GetBoomplaySessionAsync();
 
         limit = Math.Clamp(limit, 1, 30);
         var cacheKey = $"{query.Trim().ToLowerInvariant()}::{limit}";
@@ -872,6 +952,8 @@ public sealed class BoomplayMetadataService
         {
             return null;
         }
+
+        _ = await GetBoomplaySessionAsync();
 
         if (TryGetCachedSong(songId, bypassCache, out var cached))
         {
@@ -1377,11 +1459,6 @@ public sealed class BoomplayMetadataService
         }
 
         var url = $"{BoomplayBaseUrl}/playlists/{playlistId}";
-        if (!session.HasSession && !IsNumericBoomplayId(playlistId))
-        {
-            throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
-        }
-
         // API-first: numeric playlist IDs resolve entirely through the mobile API
         // (getMusicsByColID), which is not behind the web Cloudflare challenge. The HTML page
         // fetch is only a fallback for slug resolution with a saved session, where the API
@@ -1904,8 +1981,7 @@ public sealed class BoomplayMetadataService
                                       || responseBody.Contains("/cdn-cgi/challenge-platform/", StringComparison.OrdinalIgnoreCase);
             if (cloudflareChallenge)
             {
-                if (session.HasSession
-                    && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal))
+                if (!session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal))
                 {
                     await MarkBoomplayCloudflareChallengedAsync(session.Cookie);
                 }
@@ -4323,7 +4399,6 @@ public sealed class BoomplayMetadataService
     }
 
     private readonly record struct BoomplaySessionSnapshot(
-        bool HasSession,
         string? Cookie,
         string? UserAgent,
         string CacheKeySuffix);
@@ -4335,13 +4410,14 @@ public sealed class BoomplayMetadataService
         var auth = (await _platformAuthService.LoadAsync()).Boomplay;
         if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie)
             || !BoomplaySessionCookie.TryNormalizeUserAgent(auth?.UserAgent, out var userAgent)
-            || auth?.SessionValid != true)
+            || auth?.SessionValid != true
+            || !BoomplaySessionCookie.TryExtractSessionId(cookie, out _)
+            || !string.Equals(auth.LastStatus, "session_verified", StringComparison.Ordinal))
         {
-            return new BoomplaySessionSnapshot(false, null, null, "anon");
+            throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
         }
 
         return new BoomplaySessionSnapshot(
-            true,
             cookie,
             userAgent,
             $"auth:{ComputeSessionCacheKey(cookie)}");
@@ -4382,9 +4458,27 @@ public sealed class BoomplayMetadataService
         });
     }
 
+    /// <summary>
+    /// Builds the <c>bp-comp</c> client header that Boomplay's mobile API authenticates with.
+    /// The API hosts sit on a different registrable domain than www.boomplay.com and ignore the
+    /// <c>Cookie</c> header entirely, so a saved browser cookie only works when the session is
+    /// replayed through this header.
+    /// <para>
+    /// The payload is deliberately minimal: <c>channel</c> must be exactly "WEB" and the session
+    /// id is mandatory. Omitting <c>curClientVersionCode</c>/<c>imei</c>/<c>ua</c> avoids the
+    /// device-binding check, which rejects the session with code 2005
+    /// ("logged in on another device") whenever those three are sent without agreeing with each other.
+    /// </para>
+    /// </summary>
+    internal static string BuildBoomplayBpComp(string sessionId)
+    {
+        var payload = JsonSerializer.Serialize(new BoomplayBpCompPayload(BoomplayWebChannel, sessionId));
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+    }
+
     private static void ApplyBoomplaySession(HttpRequestMessage request, BoomplaySessionSnapshot session, string url)
     {
-        if (!session.HasSession || string.IsNullOrWhiteSpace(session.Cookie))
+        if (string.IsNullOrWhiteSpace(session.Cookie))
         {
             return;
         }
@@ -4395,6 +4489,28 @@ public sealed class BoomplayMetadataService
         }
 
         request.Headers.Add("Cookie", session.Cookie);
+
+        // The mobile API authenticates from bp-comp, not from Cookie.
+        if (!IsBoomplayApiHost(uri.Host)
+            || !BoomplaySessionCookie.TryExtractSessionId(session.Cookie, out var sessionId))
+        {
+            return;
+        }
+
+        request.Headers.Remove(BpCompHeaderName);
+        request.Headers.TryAddWithoutValidation(BpCompHeaderName, BuildBoomplayBpComp(sessionId));
+    }
+
+    private static bool IsBoomplayApiHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return false;
+        }
+
+        var normalizedHost = host.Trim().TrimEnd('.');
+        return normalizedHost.Equals(BoomplayApiHost, StringComparison.OrdinalIgnoreCase)
+               || normalizedHost.Equals(BoomplayAndroidApiHost, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsBoomplayRequestHost(string? host)
@@ -4405,15 +4521,14 @@ public sealed class BoomplayMetadataService
         }
 
         var normalizedHost = host.Trim().TrimEnd('.');
-        return IsBoomplayHost(normalizedHost)
-               || normalizedHost.Equals("api.boomplaymusic.com", StringComparison.OrdinalIgnoreCase);
+        return IsBoomplayHost(normalizedHost) || IsBoomplayApiHost(normalizedHost);
     }
 
     private HttpClient CreateClient(BoomplaySessionSnapshot? session = null)
     {
         var client = _httpClientFactory.CreateClient(nameof(BoomplayMetadataService));
         client.Timeout = TimeSpan.FromSeconds(25);
-        if (session is { HasSession: true } authenticatedSession
+        if (session is { } authenticatedSession
             && !string.IsNullOrWhiteSpace(authenticatedSession.UserAgent))
         {
             client.DefaultRequestHeaders.Remove("User-Agent");
@@ -4538,6 +4653,12 @@ public static class BoomplayFailureCodes
 }
 
 public sealed record BoomplaySessionValidationResult(bool Success, string FailureCode, string? NumericId);
+
+/// <summary>
+/// The JSON shape carried by Boomplay's <c>bp-comp</c> header. Property names are
+/// case-sensitive because the API reads them verbatim.
+/// </summary>
+internal sealed record BoomplayBpCompPayload(string channel, string sessionID);
 
 public sealed class BoomplaySourceException(string failureCode) : Exception(failureCode)
 {

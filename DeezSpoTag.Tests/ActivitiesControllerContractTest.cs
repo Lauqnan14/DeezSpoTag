@@ -149,7 +149,18 @@ public sealed class ActivitiesControllerContractTest
         Assert.Contains("connection.on('removedFinishedDownloads'", source, StringComparison.Ordinal);
         Assert.Contains("connection.on('addedToQueue'", source, StringComparison.Ordinal);
         Assert.Contains("refreshQueueViewState", source, StringComparison.Ordinal);
-        Assert.Contains("isActiveQueueTask", source, StringComparison.Ordinal);
+        // The removedFromQueue handler must drop the card through removeVisibleQueueTasks. The
+        // previously asserted isActiveQueueTask helper was dead code and no longer implemented this.
+        var removedFromQueueHandler = source.IndexOf(
+            "connection.on('removedFromQueue'",
+            StringComparison.Ordinal);
+        Assert.True(removedFromQueueHandler >= 0, "The removedFromQueue subscription is missing.");
+        var removalCall = source.IndexOf(
+            "removeVisibleQueueTasks(taskIds)",
+            removedFromQueueHandler,
+            StringComparison.Ordinal);
+        Assert.True(removalCall >= 0, "The removedFromQueue handler must remove the visible queue tasks.");
+        Assert.Contains("function removeVisibleQueueTasks(taskIds)", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -348,6 +359,75 @@ public sealed class ActivitiesControllerContractTest
 
         Assert.Contains("_deezspotagListener.SendRemovedFromQueue(request.Uuid);", source, StringComparison.Ordinal);
         Assert.Contains("MarkActivitiesClearedByUuidAsync(request.Uuid", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeleteFailed_DeletesBeforeHidingAndReportsFailureWhenNothingRemoved()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Controllers/ActivitiesController.cs"));
+
+        var deleteFailed = ExtractMethodSource(source, "DeleteFailed");
+        var deleteIndex = deleteFailed.IndexOf("DeleteClearableByUuidAsync", StringComparison.Ordinal);
+        var hideIndex = deleteFailed.IndexOf("MarkActivitiesClearedByUuidAsync", StringComparison.Ordinal);
+
+        Assert.True(deleteIndex >= 0, "DeleteFailed must delete the queue row.");
+        Assert.True(hideIndex >= 0, "DeleteFailed must still clear the activities marker.");
+        Assert.True(
+            deleteIndex < hideIndex,
+            "DeleteFailed must delete the row before hiding it, otherwise a refused delete leaves an invisible orphan.");
+
+        // A refused delete has to surface as a failure instead of a success the UI trusts.
+        Assert.Contains("if (deleted == 0)", deleteFailed, StringComparison.Ordinal);
+        Assert.Contains("Conflict(", deleteFailed, StringComparison.Ordinal);
+        var conflictIndex = deleteFailed.IndexOf("Conflict(", StringComparison.Ordinal);
+        Assert.True(
+            conflictIndex < hideIndex,
+            "DeleteFailed must return the conflict before hiding the row.");
+    }
+
+    [Fact]
+    public void PauseTask_DelegatesToDownloadAppPauseSoRetryScheduleIsCleared()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Controllers/ActivitiesController.cs"));
+
+        var pauseTask = ExtractMethodSource(source, "PauseTask");
+
+        // A queued or retrying item must go through the app so the retry schedule is cleared and the
+        // user-pause intent is recorded; a raw status write lets the processor overwrite the pause.
+        Assert.Contains("PauseDownloadAsync(request.Uuid)", pauseTask, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateStatusAsync(request.Uuid, PausedStatus", pauseTask, StringComparison.Ordinal);
+    }
+
+    private static string ExtractMethodSource(string source, string methodName)
+    {
+        var signatureIndex = source.IndexOf("Task<IActionResult> " + methodName + "(", StringComparison.Ordinal);
+        Assert.True(signatureIndex >= 0, $"{methodName} was not found.");
+        var bodyStart = source.IndexOf('{', signatureIndex);
+        Assert.True(bodyStart >= 0, $"{methodName} has no body.");
+
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source[bodyStart..(index + 1)];
+                }
+            }
+        }
+
+        Assert.Fail($"{methodName} has an unterminated body.");
+        return string.Empty;
     }
 
     [Fact]
