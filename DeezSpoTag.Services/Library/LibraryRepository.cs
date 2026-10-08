@@ -2704,28 +2704,7 @@ LEFT JOIN track_shazam_cache c ON c.track_id = lt.track_id;";
             command.Parameters.AddWithValue(parameterNames[index], ids[index]);
         }
 
-        command.CommandText = $@"
-SELECT requested.id,
-       c.status,
-       c.shazam_track_id,
-       c.title,
-       c.artist,
-       c.isrc,
-       c.related_tracks_json,
-       c.scanned_at_utc,
-       c.error,
-       c.file_path,
-       c.file_size,
-       c.file_modified_utc,
-       c.spotify_id,
-       c.apple_id,
-       c.deezer_id,
-       c.album,
-       c.release_date,
-       c.explicit
-FROM track requested
-LEFT JOIN track_shazam_cache c ON c.track_id = requested.id
-WHERE requested.id IN ({string.Join(", ", parameterNames)});";
+        command.CommandText = BuildShazamCacheByTrackIdsSql(parameterNames);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var map = new Dictionary<long, ShazamTrackCacheDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -12310,6 +12289,132 @@ ORDER BY unavailable_next_retry_utc DESC, updated_at DESC;";
 
     private static List<string> AddInParameters(string prefix, IReadOnlyList<string> values)
         => values.Select((_, index) => $"@{prefix}{index}").ToList();
+
+    private static string BuildUpsertWatchOffsetSql(string column)
+        => $@"
+INSERT INTO artist_watch_state (artist_id, {column})
+VALUES (@artistId, @nextOffset)
+ON CONFLICT(artist_id) DO UPDATE SET
+    {column} = excluded.{column},
+    updated_at = CURRENT_TIMESTAMP;";
+
+    private static string BuildShazamCacheByTrackIdsSql(string[] parameterNames)
+        => @"
+SELECT requested.id,
+       c.status,
+       c.shazam_track_id,
+       c.title,
+       c.artist,
+       c.isrc,
+       c.related_tracks_json,
+       c.scanned_at_utc,
+       c.error,
+       c.file_path,
+       c.file_size,
+       c.file_modified_utc,
+       c.spotify_id,
+       c.apple_id,
+       c.deezer_id,
+       c.album,
+       c.release_date,
+       c.explicit
+FROM track requested
+LEFT JOIN track_shazam_cache c ON c.track_id = requested.id
+WHERE requested.id IN (" + SqlTextComposer.JoinParameterNames(parameterNames) + ");";
+
+    private static string BuildBoomplayDeezerMappingsSql(string[] parameterNames)
+        => @"
+SELECT boomplay_track_id,
+       deezer_track_id,
+       isrc,
+       title,
+       artist,
+       album,
+       cover_url,
+       duration_ms,
+       source_fingerprint,
+       matcher_version,
+       status,
+       last_error,
+       next_retry_utc,
+       updated_at
+FROM boomplay_deezer_track_mapping
+WHERE boomplay_track_id IN (" + SqlTextComposer.JoinParameterNames(parameterNames) + ");";
+
+    private static string BuildUnavailablePlaylistWatchTracksSql(
+        List<string> trackSourceParameters,
+        List<string> isrcParameters)
+    {
+        var predicates = new List<string>();
+        if (trackSourceParameters.Count > 0)
+        {
+            predicates.Add("track_source_id IN (" + SqlTextComposer.JoinParameterNames(trackSourceParameters) + ")");
+        }
+
+        if (isrcParameters.Count > 0)
+        {
+            predicates.Add("isrc IN (" + SqlTextComposer.JoinParameterNames(isrcParameters) + ")");
+        }
+
+        return @"
+SELECT track_source_id,
+       isrc,
+       status,
+       COALESCE(updated_at, created_at, '') AS updated_at,
+       unavailable_reason,
+       unavailable_since_utc,
+       unavailable_last_checked_utc,
+       unavailable_next_retry_utc,
+       unavailable_settings_fingerprint
+FROM playlist_watch_track
+WHERE source = @source
+  AND status = 'unavailable'
+  AND unavailable_settings_fingerprint = @settingsFingerprint
+  AND (" + SqlTextComposer.JoinPredicates(predicates) + @")
+ORDER BY unavailable_next_retry_utc DESC, updated_at DESC;";
+    }
+
+    private const string SkippedAppliedSnapshotPredicate = @"
+  AND NOT EXISTS (
+      SELECT 1 FROM playlist_watch_target_sync_state target
+      WHERE target.source=@source AND target.source_id=@playlistId
+        AND target.target_service=lower(trim(configured.value))
+        AND target.status='applied'
+        AND target.applied_snapshot_id=CASE
+            WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END)";
+
+    private static string BuildEnqueueWatchlistSyncJobsSql(string skipApplied)
+        => @"
+INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id)
+SELECT @source, @playlistId, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP,
+       CASE WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END
+FROM playlist_watch_preferences preference,
+     json_each(CASE
+         WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
+             THEN preference.sync_targets_json
+         ELSE json_array(preference.service)
+     END) configured
+WHERE preference.source=@source AND preference.source_id=@playlistId
+  AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
+  AND (@targetService IS NULL OR lower(trim(configured.value))=@targetService)
+" + skipApplied + @"
+ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
+ attempt_count=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+                    THEN watchlist_sync_job.attempt_count ELSE 0 END,
+ status=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+             THEN watchlist_sync_job.status ELSE 'pending' END,
+ lease_owner=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+                  THEN watchlist_sync_job.lease_owner ELSE NULL END,
+ lease_until_utc=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+                      THEN watchlist_sync_job.lease_until_utc ELSE NULL END,
+ next_attempt_utc=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+                       THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
+ last_error=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
+                 THEN watchlist_sync_job.last_error ELSE NULL END,
+ snapshot_id=excluded.snapshot_id,
+ updated_at=CURRENT_TIMESTAMP
+RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
+          attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error,snapshot_id;";
 
     private static void AddParameterValues(SqliteCommand command, IReadOnlyList<string> parameterNames, IReadOnlyList<string> values)
     {

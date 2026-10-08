@@ -511,49 +511,19 @@ public sealed class QuickTagTagSourceService
         };
     }
 
-    private async Task<QuickTagTagSourceSearchResult> SearchShazamAsync(
+    private Task<QuickTagTagSourceSearchResult> SearchShazamAsync(
         string query,
         CancellationToken cancellationToken)
     {
-        var results = await ShazamDiscoveryService.SearchTracksAsync(query, limit: 50, offset: 0, cancellationToken);
-        var items = results
-            .Select(card =>
-            {
-                var year = ParseYear(card.ReleaseDate);
-                var detailsParts = new List<string>();
-                if (!string.IsNullOrWhiteSpace(card.Album))
-                {
-                    detailsParts.Add(card.Album);
-                }
-                if (year.HasValue)
-                {
-                    detailsParts.Add(year.Value.ToString());
-                }
-                if (card.DurationMs.HasValue && card.DurationMs.Value > 0)
-                {
-                    detailsParts.Add(FormatDuration(TimeSpan.FromMilliseconds(card.DurationMs.Value)));
-                }
-
-                return new QuickTagTagSourceSearchItem
-                {
-                    Id = card.Id,
-                    Title = string.IsNullOrWhiteSpace(card.Title) ? UntitledLabel : card.Title,
-                    Subtitle = card.Artist,
-                    Details = string.Join(" • ", detailsParts),
-                    Url = FirstNonEmpty(card.Url, card.AppleMusicUrl, card.SpotifyUrl) ?? string.Empty,
-                    Year = year
-                };
-            })
-            .Take(60)
-            .ToList();
-
-        return new QuickTagTagSourceSearchResult
-        {
-            Provider = ShazamProvider,
-            Supported = true,
-            Message = $"Found {items.Count} result(s) from Shazam.",
-            Items = items
-        };
+        // Shazam retired its text-search endpoints, so this can never return candidates:
+        // shazamio's search_track raises FailedDecodeJson for every query and the upstream
+        // project has deleted the method for that reason. Their chart endpoints are the only
+        // remaining discovery surface and carry no track ids, so they cannot stand in. Say
+        // so rather than answering "Found 0 result(s)". Shazam still works for a track that
+        // arrives by fingerprint, which is what GetShazamDetailAsync serves.
+        return Task.FromResult(Unsupported(
+            ShazamProvider,
+            "Shazam no longer offers text search. Identify a track by its Shazam logo capture, then it can be used as a source."));
     }
 
     private async Task<QuickTagTagSourceSearchResult> SearchBoomplayAsync(

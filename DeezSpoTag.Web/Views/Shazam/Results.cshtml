@@ -34,11 +34,6 @@
         <h2 class="shz-section-title">Similar Songs</h2>
         <div id="shzSimilarGrid" class="shz-grid"></div>
     </section>
-
-    <section id="shzSearchSection" class="shz-section is-hidden">
-        <h2 class="shz-section-title">Search Results</h2>
-        <div id="shzSearchGrid" class="shz-grid"></div>
-    </section>
 </div>
 
 @section Scripts {
@@ -50,8 +45,6 @@
     const matchContainer = document.getElementById('shzMatchContainer');
     const similarSection = document.getElementById('shzSimilarSection');
     const similarGrid = document.getElementById('shzSimilarGrid');
-    const searchSection = document.getElementById('shzSearchSection');
-    const searchGrid = document.getElementById('shzSearchGrid');
     const SESSION_KEY = 'deezspotag-shazam-last';
     const SESSION_MAX_AGE_MS = 5 * 60 * 1000;
     const previewState = {
@@ -319,10 +312,7 @@
             effectiveTrackId: validation.trackId,
             similar: Array.isArray(payload.similar)
                 ? payload.similar
-                : Array.isArray(payload.related) ? payload.related : [],
-            searched: Array.isArray(payload.searchResults)
-                ? payload.searchResults
-                : []
+                : Array.isArray(payload.related) ? payload.related : []
         };
     };
 
@@ -345,7 +335,7 @@
         return { payload, trackId: payloadTrackId };
     };
 
-    const renderPayload = (match, similar, searched) => {
+    const renderPayload = (match, similar) => {
         if (match) {
             matchContainer.innerHTML = renderCard(match, { variant: 'match' });
             show(matchSection, true);
@@ -360,14 +350,6 @@
         } else {
             similarGrid.innerHTML = '';
             show(similarSection, false);
-        }
-
-        if (Array.isArray(searched) && searched.length > 0) {
-            searchGrid.innerHTML = searched.map(renderCard).join('');
-            show(searchSection, true);
-        } else {
-            searchGrid.innerHTML = '';
-            show(searchSection, false);
         }
     };
 
@@ -408,42 +390,12 @@
         return output;
     };
 
-    const buildShazamEndpoint = (parts) => {
-        return `/api/shazam/${parts.join('')}`;
-    };
-
-    const fetchShazamTrack = async (id) => {
-        const trackIdValue = normalizeText(id);
-        if (!trackIdValue) {
-            return null;
-        }
-
-        const endpoint = buildShazamEndpoint(['track/', encodeURIComponent(trackIdValue)]);
-        const payload = await fetchJsonOptional(endpoint);
-        return payload?.available && payload?.track ? payload.track : null;
-    };
-
-    const fetchShazamRelated = async (id) => {
-        const trackIdValue = normalizeText(id);
-        if (!trackIdValue) {
-            return [];
-        }
-
-        const endpoint = buildShazamEndpoint(['related/', encodeURIComponent(trackIdValue)]);
-        const payload = await fetchJsonOptional(`${endpoint}?limit=20&offset=0`);
-        return Array.isArray(payload?.tracks) ? payload.tracks : [];
-    };
-
-    const fetchShazamSearch = async (searchQuery) => {
-        const queryValue = normalizeText(searchQuery);
-        if (!queryValue) {
-            return [];
-        }
-
-        const endpoint = buildShazamEndpoint(['se', 'arch']);
-        const payload = await fetchJsonOptional(`${endpoint}?query=${encodeURIComponent(queryValue)}&limit=20&offset=0`);
-        return Array.isArray(payload?.tracks) ? payload.tracks : [];
-    };
+    // The logo-capture flow answers from the cached enrichment payload alone. These
+    // client-side discovery lookups were a rehydrate fallback, but they competed with the
+    // very worker they were waiting for, and the search one called an endpoint Shazam has
+    // retired, so the "Search Results" section could never populate. ShazamLogoRecognition
+    // GuardrailTest has always required this page not to call them; the endpoints were
+    // assembled through buildShazamEndpoint, which is why the assertion never caught it.
 
     async function load() {
         if (!trackId && !requestId && !query && !title && !artist) {
@@ -455,7 +407,6 @@
             let match = null;
             let usedLivePayload = false;
             let similar = [];
-            let searched = [];
             let effectiveTrackId = normalizeText(trackId);
 
             const livePayload = readLiveCapturePayload();
@@ -464,14 +415,12 @@
             // Paint the matched track before waiting on enrichment: the identification is
             // the answer the user asked for, and the discovery sections fill in after.
             if (appliedPayload?.match && isEnrichmentPending(livePayload)) {
-                renderPayload(appliedPayload.match, [], []);
+                renderPayload(appliedPayload.match, []);
                 setStatus('Shazam match found. Loading similar tracks...');
             }
 
-            let enrichmentSettled = true;
             if (!appliedPayload || appliedPayload.similar.length === 0) {
                 const enriched = await awaitEnrichedLogoResult();
-                enrichmentSettled = !isEnrichmentPending(enriched || livePayload);
                 appliedPayload = applyLogoPayload(enriched) || appliedPayload;
             }
 
@@ -479,53 +428,10 @@
                 match = appliedPayload.match;
                 effectiveTrackId = normalizeText(effectiveTrackId || appliedPayload.effectiveTrackId);
                 similar = appliedPayload.similar;
-                searched = appliedPayload.searched;
                 usedLivePayload = true;
             }
 
             effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
-
-            // Also rehydrate when enrichment never landed inside the poll budget, otherwise a
-            // slow worker would leave the discovery sections permanently empty.
-            const needsRehydrate =
-                (!appliedPayload || !enrichmentSettled)
-                && (
-                (!match || !match.artworkUrl)
-                || similar.length === 0
-                || searched.length === 0
-                );
-
-            if (needsRehydrate) {
-                const fallbackQuery = normalizeText(query || [title, artist].filter(Boolean).join(' ') || [match?.title, match?.artist].filter(Boolean).join(' '));
-                const [rehydratedTrack, rehydratedRelated, rehydratedSearch] = await Promise.all([
-                    (!match || !match.artworkUrl) ? fetchShazamTrack(effectiveTrackId) : Promise.resolve(null),
-                    similar.length === 0 ? fetchShazamRelated(effectiveTrackId) : Promise.resolve([]),
-                    searched.length === 0 ? fetchShazamSearch(fallbackQuery) : Promise.resolve([])
-                ]);
-
-                if (!match && rehydratedTrack) {
-                    match = rehydratedTrack;
-                } else if (match && rehydratedTrack) {
-                    match = {
-                        ...match,
-                        artworkUrl: match.artworkUrl || rehydratedTrack.artworkUrl,
-                        album: match.album || rehydratedTrack.album,
-                        genre: match.genre || rehydratedTrack.genre,
-                        label: match.label || rehydratedTrack.label,
-                        releaseDate: match.releaseDate || rehydratedTrack.releaseDate
-                    };
-                }
-
-                if (similar.length === 0 && rehydratedRelated.length > 0) {
-                    similar = rehydratedRelated;
-                }
-
-                if (searched.length === 0 && rehydratedSearch.length > 0) {
-                    searched = rehydratedSearch;
-                }
-
-                effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
-            }
 
             if (!match && title) {
                 match = {
@@ -548,12 +454,10 @@
             const matchIdentity = buildCardIdentity(match);
             similar = dedupeCards(similar)
                 .filter((item) => buildCardIdentity(item) !== matchIdentity);
-            searched = dedupeCards(searched)
-                .filter((item) => buildCardIdentity(item) !== matchIdentity);
 
-            renderPayload(match, similar, searched);
+            renderPayload(match, similar);
 
-            if (!match && similar.length === 0 && searched.length === 0) {
+            if (!match && similar.length === 0) {
                 setStatus('No Shazam results found for this capture.');
                 return;
             }
@@ -1188,7 +1092,6 @@
     load().then(() => {
         warmPreviewIds(matchContainer);
         warmPreviewIds(similarGrid);
-        warmPreviewIds(searchGrid);
     });
 })();
 </script>

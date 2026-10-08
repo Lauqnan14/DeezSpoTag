@@ -136,7 +136,7 @@ public sealed class ShazamLiveCaptureGuardrailTest
 
         // The identification is the answer the user asked for; it must not wait on the
         // discovery sections.
-        Assert.Contains("renderPayload(appliedPayload.match, [], []);", source, StringComparison.Ordinal);
+        Assert.Contains("renderPayload(appliedPayload.match, []);", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -207,7 +207,6 @@ public sealed class ShazamLiveCaptureGuardrailTest
                 recognition,
                 "Matched Song Matched Artist",
                 null,
-                Array.Empty<ShazamTrackCard>(),
                 Array.Empty<ShazamTrackCard>(),
                 "logo",
                 "final",

@@ -403,6 +403,19 @@ public sealed class ShazamMatcher
         AddOtherIfNotEmpty(track, "SHAZAM_LYRICIST", recognized.Lyricist);
         AddOtherIfNotEmpty(track, "SHAZAM_PUBLISHER", recognized.Publisher);
         AddOtherIfNotEmpty(track, "language", recognized.Language);
+        // Shazam's Language/Lang value is not proven to be the recording's language;
+        // keep it as Unknown-scope evidence rather than qualifying it as Track language.
+        if (!string.IsNullOrWhiteSpace(recognized.Language))
+        {
+            var existing = track.TrackLanguageEvidence?.ToList() ?? new List<DeezSpoTag.Core.Models.LanguageMetadataEvidence>();
+            existing.Add(new DeezSpoTag.Core.Models.LanguageMetadataEvidence(
+                new List<string> { recognized.Language.Trim() },
+                DeezSpoTag.Core.Models.LanguageMetadataScope.Unknown,
+                "shazam",
+                recognized.TrackId,
+                DateTimeOffset.UtcNow));
+            track.TrackLanguageEvidence = existing;
+        }
         AddOtherIfNotEmpty(track, "composer", recognized.Composer);
         AddOtherIfNotEmpty(track, "lyricist", recognized.Lyricist);
         AddOtherIfNotEmpty(track, "publisher", recognized.Publisher);

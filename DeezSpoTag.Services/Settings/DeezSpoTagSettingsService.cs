@@ -1319,54 +1319,33 @@ public class DeezSpoTagSettingsService : ISettingsService
             nameof(settings.ApiToken));
     }
 
-    private static void NormalizeGenreTagAliasRules(
-        DeezSpoTagSettings settings,
-        DeezSpoTagSettings defaultSettings,
-        SettingsFixTracker fixes)
-    {
-        if (settings.GenreTagAliasRules == null)
-        {
-            settings.GenreTagAliasRules = CloneGenreTagAliasRules(defaultSettings.GenreTagAliasRules);
-            fixes.Mark(nameof(settings.GenreTagAliasRules));
-            return;
-        }
 
-        var normalizedAliasRules = GenreTagAliasNormalizer.NormalizeRules(settings.GenreTagAliasRules);
-        var normalizedDefaultAliasRules = GenreTagAliasNormalizer.NormalizeRules(defaultSettings.GenreTagAliasRules);
-        var aliasKeys = new HashSet<string>(
-            normalizedAliasRules.Select(rule => GenreTagAliasNormalizer.ToLookupKey(rule.Alias)),
-            StringComparer.Ordinal);
-
-        foreach (var defaultRule in normalizedDefaultAliasRules)
-        {
-            var aliasKey = GenreTagAliasNormalizer.ToLookupKey(defaultRule.Alias);
-            if (!string.IsNullOrWhiteSpace(aliasKey) && aliasKeys.Add(aliasKey))
-            {
-                normalizedAliasRules.Add(new GenreTagAliasRule
-                {
-                    Alias = defaultRule.Alias,
-                    Canonical = defaultRule.Canonical
-                });
-            }
-
-    private static void NormalizeGenreTagBlockList(
-        DeezSpoTagSettings settings,
-        SettingsFixTracker fixes)
-    {
-        var normalized = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
-        if (!AreStringListsEqual(settings.GenreTagBlockList, normalized))
-        {
-            settings.GenreTagBlockList = normalized;
-            fixes.Mark(nameof(settings.GenreTagBlockList));
-        }
+    private const int MinShazamCaptureDurationSeconds = 12;
+    private const int MaxShazamCaptureDurationSeconds = 20;
 
     private static void NormalizeShazamSettings(
         DeezSpoTagSettings settings,
         DeezSpoTagSettings defaultSettings,
         SettingsFixTracker fixes)
     {
+        // The recognizer needs a 12s window to fingerprint reliably (see
+        // ShazamRecognitionApiController.SignatureWindowSeconds), so a capture shorter than
+        // that cannot match. The old floor was 3.
+        if (settings.ShazamCaptureSettingsVersion < 1)
+        {
+            if (settings.ShazamCaptureDurationSeconds < MinShazamCaptureDurationSeconds)
+            {
+                settings.ShazamCaptureDurationSeconds = defaultSettings.ShazamCaptureDurationSeconds;
+                fixes.Mark(nameof(settings.ShazamCaptureDurationSeconds));
+            }
+
+            settings.ShazamCaptureSettingsVersion = 1;
+            fixes.Mark(nameof(settings.ShazamCaptureSettingsVersion));
+        }
+
         ApplyFixIf(
-            settings.ShazamCaptureDurationSeconds < 3 || settings.ShazamCaptureDurationSeconds > 20,
+            settings.ShazamCaptureDurationSeconds < MinShazamCaptureDurationSeconds
+            || settings.ShazamCaptureDurationSeconds > MaxShazamCaptureDurationSeconds,
             () => settings.ShazamCaptureDurationSeconds = defaultSettings.ShazamCaptureDurationSeconds,
             fixes,
             nameof(settings.ShazamCaptureDurationSeconds));

@@ -141,9 +141,13 @@ public class DeezSpoTagSettings
     // Shazam UI/capture settings
     public bool ShazamEnabled { get; set; } = true;
     public bool ShazamUseCenteredOverlay { get; set; } = true;
-    public int ShazamCaptureDurationSeconds { get; set; } = 11;
+    // Must be >= the 12s signature window the recognizer needs to match, plus room for the
+    // early attempt to answer before the capture ends. Normalized on load, so a persisted
+    // value below the floor is lifted rather than kept.
+    public int ShazamCaptureDurationSeconds { get; set; } = 16;
     public bool ShazamAllowHttpFileFallback { get; set; } = true;
     public bool ShazamRemoteMemoryOnly { get; set; } = true;
+    public int ShazamCaptureSettingsVersion { get; set; }
 
     // Spotizerr-phoenix download behavior and retries
     public int MaxConcurrentDownloads { get; set; } = 3;

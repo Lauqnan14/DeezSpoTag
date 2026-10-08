@@ -191,7 +191,7 @@ public sealed class DownloadVerificationService
         a = NormalizeForComparison(a);
         b = NormalizeForComparison(b);
         if (a == b) return 1.0;
-        var distance = ShazamSharedParsing.LevenshteinDistance(a, b);
+        var distance = DeezSpoTag.Core.Utils.TextMatchUtils.LevenshteinDistance(a, b);
         var maxLen = Math.Max(a.Length, b.Length);
         return 1.0 - ((double)distance / maxLen);
     }

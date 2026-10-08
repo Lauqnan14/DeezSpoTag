@@ -455,6 +455,298 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         int batchSize)
         => EnhancementBatchPlanner.BuildRanges(files, fileCount, batchSize);
 
+    /// <summary>
+    ///     Identifies every file in a batch and organizes the album groups, before any platform writes tags.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is the boundary that makes an album arrive in one folder. It walks the enabled platforms
+    ///         in their configured order per file and stops at the first match that passes the same acceptance
+    ///         guards the tagging path applies - release preference, provider reliability, global mismatch and
+    ///         edition conflict - then groups the accepted files by the album identity they established and
+    ///         moves each group into one shared root, applying the folder and file templates to the whole
+    ///         group at once.
+    ///     </para>
+    ///     <para>
+    ///         No tag is written here. A file that no platform can identify is simply left alone: it stays
+    ///         where it is, and the ordinary tagging pass reaches it and decides whether to review it. That
+    ///         keeps this a pure organization step and leaves every existing failure path exactly where it
+    ///         was.
+    ///     </para>
+    ///     <para>
+    ///         The match found here is not discarded. It is stored in the job match cache keyed by the same
+    ///         platform and audio info the tagging pass will use, so re-reaching this file on its own tagging
+    ///         platform costs no network call - the lookup is reused rather than repeated, and the confirmed
+    ///         provider identity it established is preserved.
+    ///     </para>
+    /// </remarks>
+    private async Task OrganizeExternalFileBatchBeforeTaggingAsync(
+        AutoTagRunPlan plan,
+        JobMatchCacheState jobMatchCache,
+        Action<TaggingStatusWrap> statusCallback,
+        int batchStart,
+        int batchEnd,
+        Action<string> logCallback,
+        CancellationToken token)
+    {
+        if (!IsExternalFileOrganizationRun(plan.Config.ManualReleasePreference, plan.Config.ManualDestinationFolderId)
+            || plan.Config.MaterializeToTemplatePath != true)
+        {
+            return;
+        }
+
+        var recognized = new Dictionary<int, (AutoTagAudioInfo Info, AutoTagTrack Track)>();
+        for (var fileIndex = batchStart; fileIndex < batchEnd; fileIndex++)
+        {
+            token.ThrowIfCancellationRequested();
+            if (plan.OrganizedFileIndices.Contains(fileIndex))
+            {
+                // Already organized by an earlier pass or an earlier attempt of this run.
+                continue;
+            }
+
+            var path = plan.Files[fileIndex];
+            if (plan.PreSkippedFiles.Contains(path)
+                || plan.ReviewedFiles.Contains(path)
+                || plan.MaterializedManualPaths.ContainsKey(fileIndex))
+            {
+                continue;
+            }
+
+            var accepted = await TryRecognizeFileBeforeTaggingAsync(
+                plan,
+                jobMatchCache,
+                statusCallback,
+                fileIndex,
+                path,
+                logCallback,
+                token);
+
+            if (accepted is not null)
+            {
+                recognized[fileIndex] = (accepted.Value.Info, accepted.Value.Track);
+            }
+        }
+
+        if (recognized.Count == 0)
+        {
+            return;
+        }
+
+        // Group by the album identity each accepted match established. Tracks of one release share a key and
+        // therefore share a root; different releases stay apart.
+        var groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        foreach (var entry in recognized)
+        {
+            var key = plan.AlbumReleaseContexts.TryGetValue(entry.Key, out var releaseContext)
+                ? releaseContext.ReleaseKey
+                : $"file:{entry.Key}";
+            if (!groups.TryGetValue(key, out var members))
+            {
+                members = [];
+                groups[key] = members;
+            }
+
+            members.Add(entry.Key);
+        }
+
+        foreach (var group in groups.Values)
+        {
+            token.ThrowIfCancellationRequested();
+            OrganizeExternalFileAlbumGroup(plan, group, recognized, logCallback);
+        }
+    }
+
+    /// <summary>
+    ///     Moves one recognized album group into a single shared root, applying templates to the whole group.
+    /// </summary>
+    private void OrganizeExternalFileAlbumGroup(
+        AutoTagRunPlan plan,
+        List<int> group,
+        IReadOnlyDictionary<int, (AutoTagAudioInfo Info, AutoTagTrack Track)> recognized,
+        Action<string> logCallback)
+    {
+        // One root for the entire group, decided before anything moves.
+        var sharedRoot = ResolveSharedAlbumRoot(
+            [.. group.Select(index => plan.AlbumReleaseContexts.TryGetValue(index, out var ctx) ? ctx.AlbumRoot : null)],
+            plan.TargetPath);
+
+        if (string.IsNullOrWhiteSpace(sharedRoot))
+        {
+            return;
+        }
+
+        var moved = 0;
+        foreach (var fileIndex in group)
+        {
+            var sourcePath = plan.Files[fileIndex];
+            var recognized1 = recognized[fileIndex];
+
+            // The album templates are applied to the group at once, and the established root keeps every
+            // member on the same folder and disc.
+            var materializedPath = MaterializeFileToTemplatePath(
+                sourcePath,
+                recognized1.Track,
+                plan.Config,
+                plan.Settings,
+                plan.TagSettings,
+                sharedRoot);
+
+            plan.MaterializedManualPaths[fileIndex] = materializedPath;
+            plan.Files[fileIndex] = materializedPath;
+            plan.OrganizedFileIndices.Add(fileIndex);
+            PersistManualMaterializedTargetPath(plan, sourcePath, materializedPath);
+
+            if (!PathsReferToSameFile(sourcePath, materializedPath))
+            {
+                moved++;
+            }
+        }
+
+        logCallback(
+            $"onetagger_autotag: organized album group of {group.Count} file(s) into {sharedRoot} before tagging ({moved} moved)");
+    }
+
+    /// <summary>
+    ///     Walks the enabled platforms for one file and returns its first accepted match, or null.
+    /// </summary>
+    /// <remarks>
+    ///     "Accepted" means the guards actually passed, not that a provider returned something. A candidate
+    ///     that the release preference, the provider reliability guard, the global mismatch guard or the
+    ///     edition check rejects is not an identity, and treating it as one would organize the file into a
+    ///     folder the tagging pass then refuses.
+    /// </remarks>
+    private async Task<(AutoTagAudioInfo Info, AutoTagTrack Track)?> TryRecognizeFileBeforeTaggingAsync(
+        AutoTagRunPlan plan,
+        JobMatchCacheState jobMatchCache,
+        Action<TaggingStatusWrap> statusCallback,
+        int fileIndex,
+        string filePath,
+        Action<string> logCallback,
+        CancellationToken token)
+    {
+        var validationInfo = BuildAudioInfo(
+            filePath,
+            plan.TargetPath,
+            plan.Config.ParseFilename,
+            plan.Config.TracknameTemplate,
+            plan.Config.TitleRegex);
+
+        foreach (var platform in plan.EffectivePlatforms)
+        {
+            token.ThrowIfCancellationRequested();
+            if (IsPlatformUnavailable(jobMatchCache, platform) || IsLyricsOnlyPlatform(platform))
+            {
+                continue;
+            }
+
+            var context = new AutoTagFileRunContext
+            {
+                Plan = plan,
+                JobMatchCache = jobMatchCache,
+                Platform = platform,
+                PlatformIndex = Math.Max(0, plan.EffectivePlatforms.IndexOf(platform)),
+                FileIndex = fileIndex,
+                File = filePath,
+                Progress = 0,
+                NextPlatformIndex = 0,
+                NextFileIndex = fileIndex + 1,
+                StatusCallback = statusCallback,
+                LogCallback = logCallback,
+                Token = token
+            };
+
+            var info = CloneAudioInfo(validationInfo);
+            if (TryApplyShazam(
+                    filePath,
+                    info,
+                    plan.Config,
+                    plan.EnableShazamFallback,
+                    plan.ForceShazamMatch,
+                    plan.ShazamCache,
+                    logCallback,
+                    token) is { IsFatal: true } fatal)
+            {
+                logCallback($"onetagger_autotag: shazam unavailable during pre-tag recognition: {fatal.Error}");
+                continue;
+            }
+
+            var match = await ResolvePlatformMatchAsync(context, PrepareProviderMatchInfo(context, info));
+            if (match is null)
+            {
+                continue;
+            }
+
+            if (!IsAcceptableFirstMatch(context, validationInfo, match))
+            {
+                continue;
+            }
+
+            // Establish the album identity now, while every track of the group is still a candidate, so the
+            // folder decision below sees the whole release rather than one file at a time.
+            var (capturedIdentity, hasAuthoritativeResult) = ResolveCapturedIdentity(context, match);
+            match.ProviderIdentity = capturedIdentity;
+            ApplyAlbumIdentityConsensus(
+                context,
+                validationInfo,
+                match.Track,
+                capturedIdentity,
+                hasAuthoritativeProviderResult: hasAuthoritativeResult);
+
+            return (info, match.Track);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Whether a candidate clears every guard that decides it is this file's identity.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately the same set the tagging path applies, and deliberately silent: nothing is emitted
+    ///     here, because a rejected candidate is not an outcome. The tagging pass will reach the same verdict
+    ///     on its own and report it normally.
+    /// </remarks>
+    private static bool IsAcceptableFirstMatch(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo validationInfo,
+        AutoTagMatchResult match)
+    {
+        if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(EvaluateBoomplayReliabilityGuard(validationInfo, match, context.Plan.MatchingConfig)))
+        {
+            return false;
+        }
+
+        if (!AutoTagReleaseCategory.MatchesPreference(
+                match.Track.ReleaseType,
+                match.Track.TrackTotal,
+                context.Plan.Config.ManualReleasePreference))
+        {
+            return false;
+        }
+
+        var validationBasis = validationInfo;
+        if (!string.IsNullOrWhiteSpace(EvaluateGlobalMismatchGuard(
+                validationBasis,
+                match,
+                context.Plan.MatchingConfig,
+                context.File,
+                treatSourceAsUntrusted: !HasTrustworthyEmbeddedIdentity(validationBasis, context.File))))
+        {
+            return false;
+        }
+
+        // An edition conflict is only fatal when the profile opts into reviewing it.
+        if (PreserveAlbumEditionIdentity(validationBasis, match.Track)
+            && context.Plan.Config.EditionConflictReview == true)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
     {
         if (TryHandlePreSkippedFile(context))

@@ -9,6 +9,13 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 internal static class OneTaggerMatching
 {
+    /// <summary>
+    ///     Compares two ranking scores for equality within a tolerance. Scores are
+    ///     combined from floating-point components, so exact equality would fail to group
+    ///     values that are equal for ranking purposes.
+    /// </summary>
+    internal static bool ScoresEqual(double left, double right) => Math.Abs(left - right) < 1e-9;
+
     public sealed record TrackSelectors<T>(
         Func<T, string> GetTitle,
         Func<T, string?> GetVersion,
@@ -227,7 +234,7 @@ internal static class OneTaggerMatching
             while (index < fuzzy.Count)
             {
                 var runEnd = index + 1;
-                while (runEnd < fuzzy.Count && fuzzy[runEnd].Score.Equals(fuzzy[index].Score))
+                while (runEnd < fuzzy.Count && ScoresEqual(fuzzy[runEnd].Score, fuzzy[index].Score))
                 {
                     runEnd++;
                 }
@@ -506,7 +513,7 @@ internal static class OneTaggerMatching
 
     private static int LevenshteinDistance(string a, string b)
     {
-        return ShazamSharedParsing.LevenshteinDistance(a, b);
+        return DeezSpoTag.Core.Utils.TextMatchUtils.LevenshteinDistance(a, b);
     }
 
     internal sealed record MatchSelection<T>(double Accuracy, T Track);

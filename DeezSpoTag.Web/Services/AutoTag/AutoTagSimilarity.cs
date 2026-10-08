@@ -31,7 +31,7 @@ internal static class AutoTagSimilarity
             return 1d;
         }
 
-        var distance = ShazamSharedParsing.LevenshteinDistance(left, right);
+        var distance = DeezSpoTag.Core.Utils.TextMatchUtils.LevenshteinDistance(left, right);
         var maxLength = Math.Max(left.Length, right.Length);
         if (maxLength <= 0)
         {

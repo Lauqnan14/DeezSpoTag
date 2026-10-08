@@ -13,7 +13,9 @@
     const defaultConfig = {
         enabled: true,
         useCenteredOverlay: true,
-        captureDurationSeconds: 11,
+        // Must be at least the 12s signature window, plus room for the early attempt to
+        // answer before the capture ends. The settings service clamps to the same floor.
+        captureDurationSeconds: 16,
         allowHttpFileFallback: true,
         remoteMemoryOnly: true
     };
@@ -37,14 +39,24 @@
     let overlay = null;
     let fallbackInput = null;
 
-    const EARLY_ATTEMPT_SECONDS = 5;
-    const EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS = 2;
+    // A capture shorter than the 12s signature window cannot fingerprint, so the client
+    // clamps to the same floor the settings service enforces.
+    const MIN_CAPTURE_SECONDS = 12;
+
+    const EARLY_ATTEMPT_SECONDS = 12;
+    const EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS = 4;
+    // The recognizer needs ~2.7s per attempt, so the early attempt has to be in flight
+    // early enough to answer before the capture ends or it is aborted mid-flight and
+    // wasted. This much slack past the window is what keeps that true.
+    const EARLY_ATTEMPT_FIRE_SLOP_MS = 300;
 
     const CAPTURE_BLOCK_SIZE = 4096;
     // Shazam fingerprints are computed at 16 kHz mono; a context at that rate makes the
     // browser resample with a proper anti-aliasing filter and shrinks the upload.
     const TARGET_SAMPLE_RATE = 16000;
-    const RECOGNITION_REQUEST_TIMEOUT_MS = 20000;
+    // Above the server's 15s recognizer process timeout, so a stuck lookup reports the
+    // server's precise reason instead of a generic client-side timeout.
+    const RECOGNITION_REQUEST_TIMEOUT_MS = 30000;
     // document.currentScript is only valid while this module is being evaluated.
     const captureWorkletUrl = document.currentScript?.dataset?.captureWorkletSrc
         || '/js/shazam-capture-processor.js';
@@ -713,6 +725,21 @@
         return null;
     };
 
+    // A dc_offset sample is not silent: it has signal, just a large constant offset, which
+    // is what a phone resting on a table next to a speaker picks up. Telling the user the
+    // microphone "captured almost no sound" sent them to check permissions for audio that
+    // was plainly loud enough to be rejected on its shape.
+    const describeUnusableReason = (reason) => {
+        switch (reason) {
+            case 'clipped':
+                return 'The microphone input was too loud and distorted to identify. Move away from the speaker and retry.';
+            case 'dc_offset':
+                return 'The microphone picked up a constant rumble rather than clean audio. Hold the device away from a surface or the speaker and retry.';
+            default:
+                return 'The microphone captured almost no sound. Check the input level or mic permissions and retry.';
+        }
+    };
+
     const persistPayloadForResults = (payload) => {
         if (!shouldPersistCapturePayload()) {
             return;
@@ -1036,7 +1063,7 @@
             return;
         }
 
-        const configuredSeconds = Math.max(3, Math.min(20, Number(captureSeconds) || defaultConfig.captureDurationSeconds));
+        const configuredSeconds = Math.max(MIN_CAPTURE_SECONDS, Math.min(20, Number(captureSeconds) || defaultConfig.captureDurationSeconds));
         if (configuredSeconds < EARLY_ATTEMPT_SECONDS + EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS) {
             return;
         }
@@ -1044,7 +1071,7 @@
         earlyAttemptTimer = globalThis.setTimeout(() => {
             earlyAttemptTimer = null;
             void runEarlyAttempt();
-        }, EARLY_ATTEMPT_SECONDS * 1000);
+        }, EARLY_ATTEMPT_SECONDS * 1000 + EARLY_ATTEMPT_FIRE_SLOP_MS);
     };
 
     const runEarlyAttempt = async () => {
@@ -1152,7 +1179,7 @@
             };
             await initializeLiveCapture();
 
-            const captureSeconds = Math.max(3, Math.min(20, Number(config.captureDurationSeconds || defaultConfig.captureDurationSeconds)));
+            const captureSeconds = Math.max(MIN_CAPTURE_SECONDS, Math.min(20, Number(config.captureDurationSeconds || defaultConfig.captureDurationSeconds)));
             setState('listening');
             scheduleEarlyAttempt(captureSeconds);
 
@@ -1326,12 +1353,7 @@
         if (unusable) {
             console.debug('Shazam final attempt rejected before upload.', unusable);
             setState('error');
-            notify(
-                unusable.reason === 'clipped'
-                    ? 'The microphone input was too loud and distorted to identify. Move away from the speaker and retry.'
-                    : 'The microphone captured almost no sound. Check the input level or mic permissions and retry.',
-                'warning'
-            );
+            notify(describeUnusableReason(unusable.reason), 'warning');
             globalThis.setTimeout(() => setState('idle'), 2200);
             return;
         }
@@ -1405,7 +1427,7 @@
         if (!Number.isFinite(config.captureDurationSeconds)) {
             config.captureDurationSeconds = defaultConfig.captureDurationSeconds;
         }
-        config.captureDurationSeconds = Math.max(3, Math.min(20, Math.round(config.captureDurationSeconds)));
+        config.captureDurationSeconds = Math.max(MIN_CAPTURE_SECONDS, Math.min(20, Math.round(config.captureDurationSeconds)));
         config.allowHttpFileFallback = settings?.shazamAllowHttpFileFallback !== false;
         config.remoteMemoryOnly = settings?.shazamRemoteMemoryOnly !== false;
     };

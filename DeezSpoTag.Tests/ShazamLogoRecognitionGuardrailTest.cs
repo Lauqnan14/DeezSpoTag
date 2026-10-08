@@ -9,7 +9,7 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ShazamLogoRecognitionGuardrailTest
 {
-    private static readonly string[] ExpectedSimilarIds = ["related-1", "search-1"];
+    private static readonly string[] ExpectedSimilarIds = ["related-1"];
 
     [Fact]
     public void LogoCapture_UsesSingleSessionWithOneEarlyAndOneFinalAttempt()
@@ -51,11 +51,12 @@ public sealed class ShazamLogoRecognitionGuardrailTest
         Assert.Contains("captureAttempt,", source, StringComparison.Ordinal);
         Assert.Contains("logoSessionId,", source, StringComparison.Ordinal);
         Assert.Contains("related = relatedList", source, StringComparison.Ordinal);
-        Assert.Contains("var similarList = MergeSimilarCards(relatedList, searchList, payload.Track, payload.Recognition);", source, StringComparison.Ordinal);
+        // Related-only: Shazam retired its text-search endpoints, so the search half of the
+        // merge could only ever be empty and is gone from the payload with it.
+        Assert.Contains("var similarList = MergeSimilarCards(relatedList, payload.Track, payload.Recognition);", source, StringComparison.Ordinal);
         Assert.Contains("AddCards(related, cards, seen, matchedIdentity);", source, StringComparison.Ordinal);
-        Assert.Contains("AddCards(searchResults, cards, seen, matchedIdentity);", source, StringComparison.Ordinal);
         Assert.Contains("similar = similarList", source, StringComparison.Ordinal);
-        Assert.Contains("searchResults = searchList", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("searchResults", source, StringComparison.Ordinal);
         Assert.Contains("[HttpGet(\"logo-result/{clientRequestId}\")]", source, StringComparison.Ordinal);
         Assert.Contains("CacheLogoResult(clientRequestId, payload);", source, StringComparison.Ordinal);
         Assert.Contains("reason = \"enrichment_failed\"", source, StringComparison.Ordinal);
@@ -97,7 +98,7 @@ public sealed class ShazamLogoRecognitionGuardrailTest
     }
 
     [Fact]
-    public void LogoRecognitionPayload_MergesRelatedAndSearchResultsIntoSimilar()
+    public void LogoRecognitionPayload_MergesRelatedTracksIntoSimilarAndDropsTheMatchedTrack()
     {
         var method = typeof(DeezSpoTag.Web.Controllers.Api.ShazamRecognitionApiController)
             .GetMethod("BuildMatchPayload", BindingFlags.NonPublic | BindingFlags.Static);
@@ -113,15 +114,12 @@ public sealed class ShazamLogoRecognitionGuardrailTest
             Artist = "Matched Artist"
         };
         var matchedTrack = CreateCard("match-1", "Matched Song", "Matched Artist");
+        // Related echoes the matched track back, as the related-similarities endpoint does.
         var related = new[]
         {
             CreateCard("match-1", "Matched Song", "Matched Artist"),
-            CreateCard("related-1", "Related Song", "Related Artist")
-        };
-        var search = new[]
-        {
             CreateCard("related-1", "Related Song", "Related Artist"),
-            CreateCard("search-1", "Search Song", "Search Artist")
+            CreateCard("related-1", "Related Song", "Related Artist")
         };
 
         var matchPayload = Activator.CreateInstance(payloadType!, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null, new object?[]
@@ -130,7 +128,6 @@ public sealed class ShazamLogoRecognitionGuardrailTest
             "Matched Song Matched Artist",
             matchedTrack,
             related,
-            search,
             "logo",
             "final",
             "logo-1",

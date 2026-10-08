@@ -47,7 +47,8 @@ public class PlatformRegistryApiController : ControllerBase
         "itunes",
         "bandcamp",
         "musixmatch",
-        "shazam"
+        "shazam",
+        YouTubeMusicPlatform
     ];
 
     private static readonly Dictionary<string, int> SidebarOrderIndex = SidebarOrder

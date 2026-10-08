@@ -145,20 +145,14 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         ShazamTrackCard? track = null;
         IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
 
-        // Search runs alongside the catalog lookups rather than as a fallback: the results
-        // page renders it as its own section, so skipping it would drop page content.
-        var searchTask = SafeSearchTracksAsync(discovery, request.Query, cancellationToken);
-
         if (!string.IsNullOrWhiteSpace(trackId))
         {
             var trackTask = SafeGetTrackAsync(discovery, trackId, cancellationToken);
             var relatedTask = SafeGetRelatedTracksAsync(discovery, trackId, cancellationToken);
-            await Task.WhenAll(trackTask, relatedTask, searchTask);
+            await Task.WhenAll(trackTask, relatedTask);
             track = await trackTask;
             related = await relatedTask;
         }
-
-        var searchResults = await searchTask;
 
         var payload = ShazamRecognitionApiController.BuildMatchPayload(
             new ShazamRecognitionApiController.ShazamLogoMatchPayload(
@@ -166,7 +160,6 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
                 Query: request.Query,
                 Track: track,
                 Related: related,
-                SearchResults: searchResults,
                 CapturePhase: request.CapturePhase,
                 CaptureAttempt: request.CaptureAttempt,
                 LogoSessionId: request.LogoSessionId,
@@ -177,11 +170,10 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Shazam enrichment published: clientRequestId={ClientRequestId}, trackResolved={TrackResolved}, relatedCount={RelatedCount}, searchResultCount={SearchResultCount}.",
+                "Shazam enrichment published: clientRequestId={ClientRequestId}, trackResolved={TrackResolved}, relatedCount={RelatedCount}.",
                 request.ClientRequestId,
                 track != null,
-                related.Count,
-                searchResults.Count);
+                related.Count);
         }
     }
 
@@ -221,31 +213,6 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
-            return Array.Empty<ShazamTrackCard>();
-        }
-    }
-
-    private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(
-        ShazamDiscoveryService discovery,
-        string? query,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        try
-        {
-            return await discovery.SearchTracksAsync(query, MaxDiscoveryResults, offset: 0, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Shazam search lookup failed during enrichment.");
             return Array.Empty<ShazamTrackCard>();
         }
     }

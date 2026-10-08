@@ -10,16 +10,18 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class ShazamRecognitionService : IDisposable
 {
-    public enum RecognitionMode
-    {
-        SearchAssisted = 0,
-        AudioOnly = 1
-    }
-
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
+    // Measured against the live Shazam API (N=60 paired, identical capture): a 10s
+    // signature window matches ~55% of tracks and a 12s window ~93%, with 12s never
+    // losing a track that 10s won. Windows of 16s and above matched 0/17 while still
+    // returning well-formed, ever-larger signatures, so the usable band is ~12-14s.
+    // This array therefore pairs one weak attempt with one that cannot succeed, which
+    // is why the file/auto-tag path barely benefits from retrying. Left as-is pending
+    // its own validation: changing it also moves which audio each window covers, and
+    // SelectBestAudioOnlyAttempt discards the result when the two windows disagree.
     private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 18];
     private static readonly TimeSpan RecognizerProcessTimeout = TimeSpan.FromSeconds(15);
     // Leaves room for interpreter startup and for the script to print its error JSON
@@ -280,7 +282,6 @@ public sealed class ShazamRecognitionService : IDisposable
         foreach (var attempt in AudioOnlySignatureRetryWindowsSeconds.Select(signatureWindowSeconds => RecognizeWithDetails(
                      filePath,
                      signatureWindowSeconds: signatureWindowSeconds,
-                     mode: RecognitionMode.AudioOnly,
                      cancellationToken: cancellationToken)))
         {
             if (attempt.Matched)
@@ -436,7 +437,6 @@ public sealed class ShazamRecognitionService : IDisposable
     public ShazamRecognitionAttempt RecognizeWithDetails(
         string filePath,
         int? signatureWindowSeconds = null,
-        RecognitionMode mode = RecognitionMode.AudioOnly,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -447,32 +447,16 @@ public sealed class ShazamRecognitionService : IDisposable
             return invalidInputAttempt;
         }
 
+        // Fingerprint only. The former RecognitionMode.SearchAssisted branch fingerprinted
+        // first and then scored text-search candidates; no caller ever requested it, so the
+        // whole candidate pipeline was unreachable.
         var portedStatus = EvaluatePortedRecognizer(filePath, signatureWindowSeconds, out var matchedFromPorted, cancellationToken);
         if (matchedFromPorted != null)
         {
             return matchedFromPorted;
         }
 
-        if (mode == RecognitionMode.AudioOnly)
-        {
-            return BuildFailureAttempt(portedStatus);
-        }
-
-        var context = BuildLookupContext(filePath);
-        var queries = BuildSearchQueries(context, filePath);
-        if (queries.Count == 0)
-        {
-            return BuildFailureAttempt(portedStatus);
-        }
-
-        var candidates = CollectCandidates(queries, context, filePath, cancellationToken);
-        if (candidates.Count == 0)
-        {
-            return BuildFailureAttempt(portedStatus);
-        }
-
-        var matchedFromCandidates = TryBuildMatchedAttempt(candidates, context, cancellationToken);
-        return matchedFromCandidates ?? BuildFailureAttempt(portedStatus);
+        return BuildFailureAttempt(portedStatus);
     }
 
     private static ShazamRecognitionAttempt? BuildInvalidInputAttempt(string filePath)
@@ -523,90 +507,6 @@ public sealed class ShazamRecognitionService : IDisposable
         }
 
         return PortedFailureState.None;
-    }
-
-    private Dictionary<string, ScoredCard> CollectCandidates(
-        IEnumerable<string> queries,
-        LookupContext context,
-        string filePath,
-        CancellationToken cancellationToken)
-    {
-        var candidates = new Dictionary<string, ScoredCard>(StringComparer.OrdinalIgnoreCase);
-        foreach (var query in queries)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var results = SearchCandidates(query, filePath, cancellationToken);
-            foreach (var card in results)
-            {
-                AddOrReplaceCandidate(candidates, card, context);
-            }
-        }
-
-        return candidates;
-    }
-
-    private IReadOnlyList<ShazamTrackCard> SearchCandidates(string query, string filePath, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return _discoveryService.SearchTracksAsync(query, limit: 12, cancellationToken: cancellationToken).GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(
-                ex,
-                "Shazam search failed for query '{Query}' and file {Path}. Returning no search candidates for this query.",
-                LogSanitizer.OneLine(query),
-                LogSanitizer.OneLine(filePath));
-            return Array.Empty<ShazamTrackCard>();
-        }
-    }
-
-    private static void AddOrReplaceCandidate(
-        Dictionary<string, ScoredCard> candidates,
-        ShazamTrackCard card,
-        LookupContext context)
-    {
-        var scored = ScoreCandidate(card, context);
-        var key = !string.IsNullOrWhiteSpace(card.Id)
-            ? card.Id.Trim()
-            : $"{card.Title}|{card.Artist}";
-        if (!candidates.TryGetValue(key, out var current) || scored.Score > current.Score)
-        {
-            candidates[key] = scored;
-        }
-    }
-
-    private ShazamRecognitionAttempt? TryBuildMatchedAttempt(
-        Dictionary<string, ScoredCard> candidates,
-        LookupContext context,
-        CancellationToken cancellationToken)
-    {
-        var best = candidates.Values
-            .OrderByDescending(value => value.IsIsrcExact)
-            .ThenByDescending(value => value.Score)
-            .First();
-        if (!PassesThreshold(best, context))
-        {
-            return null;
-        }
-
-        var bestCard = EnrichCard(best.Card, cancellationToken);
-        var info = BuildInfo(bestCard);
-        if (!info.HasCoreMetadata)
-        {
-            return null;
-        }
-
-        return new ShazamRecognitionAttempt
-        {
-            Outcome = ShazamRecognitionOutcome.Matched,
-            Recognition = info
-        };
     }
 
     private static ShazamRecognitionAttempt BuildFailureAttempt(PortedFailureState state)
@@ -1460,32 +1360,6 @@ public sealed class ShazamRecognitionService : IDisposable
         return infoFallback;
     }
 
-    private ShazamTrackCard EnrichCard(ShazamTrackCard card, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(card.Id) || card.Id.StartsWith("am:", StringComparison.OrdinalIgnoreCase))
-        {
-            return card;
-        }
-
-        try
-        {
-            var detailed = _discoveryService.GetTrackAsync(card.Id, cancellationToken).GetAwaiter().GetResult();
-            return detailed ?? card;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(
-                ex,
-                "Shazam detail lookup failed for track {TrackId}. Keeping search result metadata.",
-                card.Id);
-            return card;
-        }
-    }
-
     private static ShazamRecognitionInfo BuildInfo(ShazamTrackCard card)
     {
         var tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -1593,147 +1467,6 @@ public sealed class ShazamRecognitionService : IDisposable
         };
     }
 
-    private static LookupContext BuildLookupContext(string filePath)
-    {
-        var context = new LookupContext
-        {
-            FileStem = Path.GetFileNameWithoutExtension(filePath)?.Trim()
-        };
-
-        try
-        {
-            using var tagFile = TagLib.File.Create(filePath);
-            context.Title = FirstNonEmpty(tagFile.Tag.Title);
-            context.Artist = FirstNonEmpty(tagFile.Tag.Performers.FirstOrDefault());
-            context.Album = FirstNonEmpty(tagFile.Tag.Album);
-            context.Isrc = FirstNonEmpty(tagFile.Tag.ISRC);
-            if (tagFile.Properties.Duration.TotalMilliseconds > 0)
-            {
-                context.DurationMs = (long)Math.Round(tagFile.Properties.Duration.TotalMilliseconds);
-            }
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            // Best-effort only.
-        }
-
-        if (string.IsNullOrWhiteSpace(context.Title))
-        {
-            context.Title = CleanupFileStem(context.FileStem);
-        }
-
-        return context;
-    }
-
-    private static List<string> BuildSearchQueries(LookupContext context, string filePath)
-    {
-        var queries = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        static string NormalizeQuery(string raw)
-        {
-            return ReplaceWithTimeout(raw, @"\s+", " ").Trim();
-        }
-
-        void Add(string? query)
-        {
-            if (string.IsNullOrWhiteSpace(query))
-            {
-                return;
-            }
-
-            var normalized = NormalizeQuery(query);
-            if (normalized.Length < 2)
-            {
-                return;
-            }
-
-            if (seen.Add(normalized))
-            {
-                queries.Add(normalized);
-            }
-        }
-
-        Add(context.Isrc);
-        Add($"{context.Artist} {context.Title}");
-        Add($"{context.Artist} {context.Title} {context.Album}");
-        Add(context.Title);
-        Add(CleanupFileStem(Path.GetFileNameWithoutExtension(filePath)));
-        Add(context.FileStem);
-
-        return queries;
-    }
-
-    private static ScoredCard ScoreCandidate(ShazamTrackCard card, LookupContext context)
-    {
-        var score = 0.0;
-
-        var isIsrcExact = !string.IsNullOrWhiteSpace(context.Isrc)
-            && !string.IsNullOrWhiteSpace(card.Isrc)
-            && string.Equals(context.Isrc.Trim(), card.Isrc.Trim(), StringComparison.OrdinalIgnoreCase);
-        if (isIsrcExact)
-        {
-            score += 120;
-        }
-
-        if (!string.IsNullOrWhiteSpace(context.Title))
-        {
-            score += Similarity(context.Title, card.Title) * 60.0;
-        }
-
-        if (!string.IsNullOrWhiteSpace(context.Artist))
-        {
-            score += Similarity(context.Artist, card.Artist) * 40.0;
-        }
-
-        if (!string.IsNullOrWhiteSpace(context.Album) && !string.IsNullOrWhiteSpace(card.Album))
-        {
-            score += Similarity(context.Album, card.Album) * 15.0;
-        }
-
-        if (context.DurationMs.HasValue && card.DurationMs.HasValue)
-        {
-            var diffSeconds = Math.Abs(context.DurationMs.Value - card.DurationMs.Value) / 1000.0;
-            score += diffSeconds switch
-            {
-                <= 2 => 20,
-                <= 5 => 12,
-                <= 8 => 6,
-                <= 15 => 0,
-                _ => -10
-            };
-        }
-
-        return new ScoredCard(card, score, isIsrcExact);
-    }
-
-    private static bool PassesThreshold(ScoredCard candidate, LookupContext context)
-    {
-        if (candidate.IsIsrcExact)
-        {
-            return true;
-        }
-
-        var hasStrongInput = !string.IsNullOrWhiteSpace(context.Title) || !string.IsNullOrWhiteSpace(context.Artist);
-        return hasStrongInput
-            ? candidate.Score >= 45
-            : candidate.Score >= 65;
-    }
-
-    private static string CleanupFileStem(string? fileStem)
-    {
-        if (string.IsNullOrWhiteSpace(fileStem))
-        {
-            return string.Empty;
-        }
-
-        var cleaned = fileStem.Trim();
-        cleaned = ReplaceWithTimeout(cleaned, @"^\s*\d+\s*[-._)\]]\s*", string.Empty);
-        cleaned = cleaned.Replace('_', ' ');
-        cleaned = ReplaceWithTimeout(cleaned, @"\s+", " ").Trim();
-        return cleaned;
-    }
-
     private static List<string> SplitArtists(string? artists)
     {
         if (string.IsNullOrWhiteSpace(artists))
@@ -1747,30 +1480,6 @@ public sealed class ShazamRecognitionService : IDisposable
             .Select(value => value.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static double Similarity(string? left, string? right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-        {
-            return 0;
-        }
-
-        var a = NormalizeForSimilarity(left);
-        var b = NormalizeForSimilarity(right);
-        if (a == b)
-        {
-            return 1;
-        }
-
-        var distance = ShazamSharedParsing.LevenshteinDistance(a, b);
-        var maxLen = Math.Max(a.Length, b.Length);
-        return maxLen == 0 ? 0 : 1.0 - ((double)distance / maxLen);
-    }
-
-    private static string NormalizeForSimilarity(string value)
-    {
-        return ReplaceWithTimeout(value.ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
     }
 
     private static string? GetTag(Dictionary<string, List<string>> tags, params string[] keys)
@@ -1889,16 +1598,6 @@ public sealed class ShazamRecognitionService : IDisposable
             .FirstOrDefault();
     }
 
-    private sealed class LookupContext
-    {
-        public string? Title { get; set; }
-        public string? Artist { get; set; }
-        public string? Album { get; set; }
-        public string? Isrc { get; set; }
-        public long? DurationMs { get; set; }
-        public string? FileStem { get; set; }
-    }
-
     private sealed class PortedRecognitionResult
     {
         public string? TrackId { get; set; }
@@ -1925,7 +1624,6 @@ public sealed class ShazamRecognitionService : IDisposable
 
     private sealed record FingerprintCandidate(ShazamRecognitionAttempt Attempt, string Identity);
     private sealed record FingerprintCandidateGroup(string Identity, int Count, ShazamRecognitionAttempt BestAttempt);
-    private sealed record ScoredCard(ShazamTrackCard Card, double Score, bool IsIsrcExact);
     private sealed record RecognizerRuntimeProbe(bool IsAvailable, string? Error);
 }
 

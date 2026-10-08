@@ -1667,8 +1667,8 @@
                 </div>
                 <div class="form-group">
                     <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
-                    <input type="number" id="shazamCaptureDurationSeconds" min="3" max="20" value="11">
-                    <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
+                    <input type="number" id="shazamCaptureDurationSeconds" min="12" max="20" value="16">
+                    <div class="warning-text">12 seconds is the minimum a Shazam fingerprint can match from. Longer durations add little and increase wait time.</div>
                 </div>
             </div>
         </div>
@@ -5087,7 +5087,7 @@ function loadSettings(settings) {
     updateGenreTagAliasRulesState();
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
     setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
-    setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 11);
+    setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 16);
     setCheckboxValue('shazamAllowHttpFileFallback', settings.shazamAllowHttpFileFallback !== false);
     setCheckboxValue('shazamRemoteMemoryOnly', settings.shazamRemoteMemoryOnly !== false);
     
@@ -5372,7 +5372,7 @@ function collectFormData() {
         apiToken: baseSettings.apiToken || '',
         shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
         shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),
-        shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 11),
+        shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 16),
         shazamAllowHttpFileFallback: getChecked('shazamAllowHttpFileFallback', baseSettings.shazamAllowHttpFileFallback !== false),
         shazamRemoteMemoryOnly: getChecked('shazamRemoteMemoryOnly', baseSettings.shazamRemoteMemoryOnly !== false),
         clearQueueOnExit: baseSettings.clearQueueOnExit ?? false,

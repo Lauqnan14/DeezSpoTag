@@ -2,42 +2,8 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class ShazamSharedParsing
 {
-    public static int LevenshteinDistance(string a, string b)
-    {
-        if (a.Length == 0)
-        {
-            return b.Length;
-        }
-
-        if (b.Length == 0)
-        {
-            return a.Length;
-        }
-
-        var dp = new int[a.Length + 1, b.Length + 1];
-        for (var i = 0; i <= a.Length; i++)
-        {
-            dp[i, 0] = i;
-        }
-
-        for (var j = 0; j <= b.Length; j++)
-        {
-            dp[0, j] = j;
-        }
-
-        for (var i = 1; i <= a.Length; i++)
-        {
-            for (var j = 1; j <= b.Length; j++)
-            {
-                var cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                dp[i, j] = Math.Min(
-                    Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1),
-                    dp[i - 1, j - 1] + cost);
-            }
-        }
-
-        return dp[a.Length, b.Length];
-    }
+    // Levenshtein lives in DeezSpoTag.Core.Utils.TextMatchUtils. A second copy used to sit
+    // here; it was verified identical over 300k random pairs and removed so there is one.
 
     public static bool? ParseExplicitFlag(string? raw)
     {

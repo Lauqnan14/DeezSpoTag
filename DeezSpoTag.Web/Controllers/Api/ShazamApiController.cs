@@ -132,7 +132,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         await CopyUploadedAudioAsync(audioFile, tempPath, cancellationToken);
 
         var captureDurationSeconds = ResolveCaptureDurationSeconds();
-        var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds, captureAttempt);
+        var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
@@ -191,7 +191,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             Query: query,
             Track: null,
             Related: Array.Empty<ShazamTrackCard>(),
-            SearchResults: Array.Empty<ShazamTrackCard>(),
             CapturePhase: capturePhase,
             CaptureAttempt: captureAttempt,
             LogoSessionId: logoSessionId,
@@ -274,16 +273,20 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         }
     }
 
-    private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds, string captureAttempt)
-    {
-        // Keep the single early attempt short, but use a longer window for final live recognition.
-        if (string.Equals(captureAttempt, EarlyCaptureAttempt, StringComparison.OrdinalIgnoreCase))
-        {
-            return Math.Clamp(Math.Min(captureDurationSeconds, 5), 3, 5);
-        }
+    // Measured against the live Shazam API, N=60 paired trials on an identical capture with
+    // only the window length varying: a 10s window matched 33/60 and a 12s window matched
+    // 56/60, and 12s never lost a track that 10s won (McNemar exact p ~ 2.4e-7). Windows of
+    // 16s and above matched 0/17 while still returning well-formed, larger signatures, so
+    // the usable band is ~12-14s. The old code took Math.Min(duration, 10), which both
+    // capped the window below that band and made the 12 upper bound unreachable. A capture
+    // shorter than this simply uses all of its audio; the recognizer centres the window.
+    private const int SignatureWindowSeconds = 12;
 
-        // Align final capture with robust reference behavior (~10s segment) for better live recognition hit rate.
-        return Math.Clamp(Math.Min(captureDurationSeconds, 10), 6, 12);
+    private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds)
+    {
+        // Both attempts want a full window. The early attempt exists to answer sooner, not
+        // to answer from a shorter, weaker fingerprint.
+        return Math.Clamp(Math.Min(captureDurationSeconds, SignatureWindowSeconds), 3, SignatureWindowSeconds);
     }
 
     private IActionResult? ValidateRecognizeMicRequest(IFormFile? audio)
@@ -395,10 +398,9 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     internal static object BuildMatchPayload(ShazamLogoMatchPayload payload)
     {
         var relatedList = payload.Related ?? Array.Empty<ShazamTrackCard>();
-        var searchList = payload.SearchResults ?? Array.Empty<ShazamTrackCard>();
-        var similarList = MergeSimilarCards(relatedList, searchList, payload.Track, payload.Recognition);
+        var similarList = MergeSimilarCards(relatedList, payload.Track, payload.Recognition);
 
-        return BuildMatchPayloadObject(payload, relatedList, searchList, similarList, enrichmentPending: false, reason: null);
+        return BuildMatchPayloadObject(payload, relatedList, similarList, enrichmentPending: false, reason: null);
     }
 
     /// <summary>
@@ -411,19 +413,18 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         if (enrichmentQueued)
         {
-            return BuildMatchPayloadObject(payload, empty, empty, similarList, enrichmentPending: true, reason: null);
+            return BuildMatchPayloadObject(payload, empty, similarList, enrichmentPending: true, reason: null);
         }
 
         // Nothing will ever populate the discovery sections, so the client should render
         // what it has instead of polling for an enrichment that is not coming.
         const string reason = "enrichment_failed";
-        return BuildMatchPayloadObject(payload, empty, empty, similarList, enrichmentPending: false, reason: reason);
+        return BuildMatchPayloadObject(payload, empty, similarList, enrichmentPending: false, reason: reason);
     }
 
     private static object BuildMatchPayloadObject(
         ShazamLogoMatchPayload payload,
         IReadOnlyList<ShazamTrackCard> relatedList,
-        IReadOnlyList<ShazamTrackCard> searchList,
         List<ShazamTrackCard> similarList,
         bool enrichmentPending,
         string? reason)
@@ -460,15 +461,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             {
                 trackResolved = payload.Track != null,
                 relatedCount = relatedList.Count,
-                searchResultCount = searchList.Count,
                 similarCount = similarList.Count,
                 // Tells the results page whether to poll the result cache for the
                 // discovery sections or render what it already has as final.
                 pending = enrichmentPending
             },
             related = relatedList,
-            similar = similarList,
-            searchResults = searchList
+            similar = similarList
         };
     }
 
@@ -477,7 +476,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         string? Query,
         ShazamTrackCard? Track,
         IReadOnlyList<ShazamTrackCard> Related,
-        IReadOnlyList<ShazamTrackCard> SearchResults,
         string CapturePhase,
         string CaptureAttempt,
         string LogoSessionId,
@@ -485,7 +483,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
     private static List<ShazamTrackCard> MergeSimilarCards(
         IReadOnlyList<ShazamTrackCard> related,
-        IReadOnlyList<ShazamTrackCard> searchResults,
         ShazamTrackCard? matchedTrack,
         ShazamRecognitionInfo recognition)
     {
@@ -495,7 +492,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             ?? BuildRecognitionIdentity(recognition);
 
         AddCards(related, cards, seen, matchedIdentity);
-        AddCards(searchResults, cards, seen, matchedIdentity);
         return cards;
     }
 

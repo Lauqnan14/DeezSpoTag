@@ -1,2 +1,3 @@
-shazamio==0.8.0
+shazamio==0.8.1
 shazamio_core==1.1.2
+anyio==4.14.2

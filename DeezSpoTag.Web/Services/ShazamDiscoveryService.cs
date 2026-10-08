@@ -298,12 +298,16 @@ public sealed partial class ShazamDiscoveryService
             var stderr = (await stderrTask).Trim();
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
             {
+                // discover.py reports its failure as {"ok": false, "error": ...} on stdout and
+                // exits 1, so logging stderr alone recorded "none" for every real failure and
+                // hid the cause entirely. Surface both streams.
                 _logger.LogWarning(
-                    "Shazam port discovery failed: mode={Mode} code={Code} python={Python} script={Script} stderr={Stderr}",
+                    "Shazam port discovery failed: mode={Mode} code={Code} python={Python} script={Script} stdout={Stdout} stderr={Stderr}",
                     mode,
                     process.ExitCode,
                     python,
                     scriptPath,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.IsNullOrWhiteSpace(stdout) ? "none" : stdout),
                     string.IsNullOrWhiteSpace(stderr) ? "none" : stderr);
                 return null;
             }
