@@ -6,6 +6,10 @@
 
 Bridge streaming services and your local libraries with one web app. DeezSpoTag handles discovery, queueing, downloading, tagging, conversion, and organization workflows for self-hosted music stacks.
 
+<p>
+  <a href="https://github.com/Lauqnan14/DeezSpoTag/actions/workflows/docker-publish.yml"><img src="https://img.shields.io/github/actions/workflow/status/Lauqnan14/DeezSpoTag/docker-publish.yml?branch=main&label=Build&labelColor=black&logo=github" alt="Build" /></a><a href="https://github.com/Lauqnan14/DeezSpoTag#run-with-docker-compose"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?labelColor=black&logo=docker&logoColor=white" alt="Docker Compose" /></a><a href="https://github.com/Lauqnan14/DeezSpoTag#run-with-docker-compose"><img src="https://img.shields.io/badge/Linux-amd64-FCC624?labelColor=black&logo=linux&logoColor=white" alt="Linux amd64" /></a><a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10-512BD4?labelColor=black&logo=dotnet&logoColor=white" alt=".NET 10" /></a><a href="https://t.me/+YbvDmhuy5zQ5MTA0"><img src="https://img.shields.io/badge/Announcements-369eff?labelColor=black&logo=telegram&logoColor=white" alt="Telegram Announcements" /></a>
+</p>
+
 Support: [GitHub Issues](https://github.com/Lauqnan14/DeezSpoTag/issues)
 
 ---
