@@ -85,7 +85,7 @@ public sealed class BoomplayMatcher
 
         if (boomplayConfig.MatchById)
         {
-            var byId = await TryMatchByIdAsync(info, config, cancellationToken);
+            var byId = await TryMatchByIdAsync(info, config, boomplayConfig, cancellationToken);
             if (byId != null)
             {
                 return byId;
@@ -113,11 +113,12 @@ public sealed class BoomplayMatcher
     private async Task<AutoTagMatchResult?> TryMatchByIdAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
+        BoomplayConfig boomplayConfig,
         CancellationToken cancellationToken)
     {
         foreach (var id in CollectCandidateIds(info))
         {
-            var matched = await TryMatchSingleIdAsync(info, config, id, cancellationToken);
+            var matched = await TryMatchSingleIdAsync(info, config, boomplayConfig, id, cancellationToken);
             if (matched != null)
             {
                 return matched;
@@ -130,13 +131,14 @@ public sealed class BoomplayMatcher
     private async Task<AutoTagMatchResult?> TryMatchSingleIdAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
+        BoomplayConfig boomplayConfig,
         string id,
         CancellationToken cancellationToken)
     {
         try
         {
             var track = await _metadataService.GetSongAsync(id, cancellationToken);
-            if (track == null || !IsUsableTrack(track) || ShouldRejectIdCandidate(info, track, config, id))
+            if (track == null || !IsUsableTrack(track) || ShouldRejectIdCandidate(info, track, config, boomplayConfig, id))
             {
                 return null;
             }
@@ -166,9 +168,10 @@ public sealed class BoomplayMatcher
         AutoTagAudioInfo info,
         BoomplayTrackMetadata track,
         AutoTagMatchingConfig config,
+        BoomplayConfig boomplayConfig,
         string id)
     {
-        if (IsIdMatchCandidateConsistent(info, track, config))
+        if (IsIdMatchCandidateConsistent(info, track, config, boomplayConfig))
         {
             return false;
         }
@@ -307,12 +310,15 @@ public sealed class BoomplayMatcher
     private static bool IsIdMatchCandidateConsistent(
         AutoTagAudioInfo info,
         BoomplayTrackMetadata track,
-        AutoTagMatchingConfig config)
+        AutoTagMatchingConfig config,
+        BoomplayConfig boomplayConfig)
     {
         if (HasConflictingIsrc(info.Isrc, track.Isrc))
         {
             return false;
         }
+
+        var strictnessFloor = Math.Clamp(boomplayConfig?.MinStrictness ?? 92, 0, 100) / 100.0;
 
         var sourceArtists = ResolveSourceArtists(info);
         var hasSourceTitle = !string.IsNullOrWhiteSpace(Normalize(info.Title));
@@ -337,12 +343,12 @@ public sealed class BoomplayMatcher
             return OneTaggerMatching.MatchArtist(
                 sourceArtists,
                 ParseArtists(track.Artist),
-                Math.Max(config.Strictness, 0.92));
+                Math.Max(config.Strictness, strictnessFloor));
         }
 
         var validationConfig = new AutoTagMatchingConfig
         {
-            Strictness = Math.Max(config.Strictness, 0.92),
+            Strictness = Math.Max(config.Strictness, strictnessFloor),
             MatchDuration = false,
             MaxDurationDifferenceSeconds = config.MaxDurationDifferenceSeconds,
             MultipleMatches = config.MultipleMatches
@@ -539,15 +545,27 @@ public sealed class BoomplayMatcher
         }
 
         var language = Normalize(track.Language);
+        List<DeezSpoTag.Core.Models.LanguageMetadataEvidence>? languageEvidence = null;
         if (!string.IsNullOrWhiteSpace(language))
         {
             other["language"] = new List<string> { language };
+            // Song-level inLanguage/language for the matched recording is Track-scoped evidence.
+            languageEvidence =
+            [
+                new DeezSpoTag.Core.Models.LanguageMetadataEvidence(
+                    new List<string> { language },
+                    DeezSpoTag.Core.Models.LanguageMetadataScope.Track,
+                    "boomplay",
+                    track.Id,
+                    DateTimeOffset.UtcNow)
+            ];
         }
 
         var (mood, activity) = ClassifyMoodContexts(track.Moods);
 
         return new AutoTagTrack
         {
+            TrackLanguageEvidence = languageEvidence,
             Title = Normalize(track.Title),
             Artists = artists,
             AlbumArtists = albumArtists,

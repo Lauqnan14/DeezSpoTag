@@ -1,5 +1,6 @@
 @using Microsoft.AspNetCore.Antiforgery
 @inject DeezSpoTag.Web.Services.UserPreferencesStore _userPrefsStore
+@inject DeezSpoTag.Web.Services.AppVersionInfo AppVersionInfo
 @inject IAntiforgery _antiforgery
 @{
     var _serverPrefs = await _userPrefsStore.LoadAsync();
@@ -972,6 +973,15 @@
                 <button type="button" class="theme-swatch" data-theme="amoled-purple" title="AMOLED Purple" aria-label="AMOLED Purple theme" aria-pressed="false"></button>
                 <button type="button" class="theme-swatch" data-theme="amoled-inverse" title="AMOLED Inverse" aria-label="AMOLED Inverse theme" aria-pressed="false"></button>
             </div>
+        </div>
+        <div class="app-version" id="appVersionBlock" data-menu-action="true">
+            <div class="app-version-row">
+                <a class="app-version-current" id="appVersionCurrent" href="@AppVersionInfo.BranchUrl" target="_blank" rel="noopener noreferrer" title="View the @AppVersionInfo.Branch branch on GitHub">@AppVersionInfo.CurrentVersion</a>
+                <span class="app-version-dot" id="appVersionDot" hidden aria-hidden="true"></span>
+            </div>
+            <div class="app-version-latest" id="appVersionLatest" hidden></div>
+            <button type="button" class="app-version-check" id="appVersionCheck" title="Check the @AppVersionInfo.Branch branch for a new release">Check for updates</button>
+            <div class="app-version-status" id="appVersionStatus" role="status" aria-live="polite" hidden></div>
         </div>
     </nav>
     

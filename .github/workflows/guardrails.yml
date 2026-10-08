@@ -49,7 +49,15 @@ jobs:
 
       - name: Run guardrails
         shell: bash
+        env:
+          SIXLABORS_LICENSE: ${{ secrets.SIXLABORS_LICENSE }}
         run: |
           set -euo pipefail
+          if [[ -n "$SIXLABORS_LICENSE" ]]; then
+            export SixLaborsLicenseFile="$RUNNER_TEMP/sixlabors.lic"
+            umask 077
+            printf '%s' "$SIXLABORS_LICENSE" > "$SixLaborsLicenseFile"
+            trap 'rm -f "$SixLaborsLicenseFile"' EXIT
+          fi
           chmod +x scripts/guardrails.sh
           ./scripts/guardrails.sh

@@ -1011,6 +1011,126 @@ textarea::placeholder {
     }
 }
 
+/* Version block, below the theme picker */
+.app-version {
+    padding: 0 16px 4px;
+    display: flex;
+    flex-direction: column;
+    /* The menu is flex: 1, so pin the version block against it and never let it be squeezed out. */
+    flex-shrink: 0;
+    gap: 4px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.app-version-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 18px;
+}
+
+.app-version-current {
+    color: var(--text-primary);
+    opacity: 0.85;
+    text-decoration: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.app-version-current:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
+.app-version-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success-color);
+    flex-shrink: 0;
+}
+
+.app-version.has-update .app-version-dot {
+    background: var(--warning-color);
+}
+
+.app-version-latest {
+    color: var(--text-primary);
+    opacity: 0.7;
+}
+
+.app-version-latest-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.app-version-latest-link:hover {
+    text-decoration: underline;
+}
+
+.app-version.has-update .app-version-latest,
+.app-version.has-update .app-version-latest-link {
+    color: var(--warning-color);
+    opacity: 1;
+}
+
+.app-version-check {
+    align-self: flex-start;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.app-version-check:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary-color) 35%, var(--border-primary));
+}
+
+.app-version-check:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.app-version-status {
+    color: var(--text-primary);
+    opacity: 0.55;
+    font-size: 11px;
+}
+
+.sidebar.collapsed .app-version {
+    align-items: center;
+    padding: 0 8px 4px;
+}
+
+.sidebar.collapsed .app-version-latest,
+.sidebar.collapsed .app-version-check,
+.sidebar.collapsed .app-version-status,
+.sidebar.collapsed .app-version-current {
+    display: none;
+}
+
+.sidebar.collapsed .app-version-row {
+    justify-content: center;
+    width: 100%;
+}
+
+.sidebar.collapsed .app-version-dot {
+    display: block;
+}
+
+html.sidebar-precollapsed .sidebar .app-version-current {
+    display: none;
+}
+
+html.sidebar-precollapsed .sidebar .app-version-latest,
+html.sidebar-precollapsed .sidebar .app-version-check,
+html.sidebar-precollapsed .sidebar .app-version-status {
+    display: none;
+}
+
 .theme-swatch[data-theme="blue"] { background: #00bfff; }
 .theme-swatch[data-theme="purple"] { background: #9c27b0; }
 .theme-swatch[data-theme="green"] { background: #4caf50; }

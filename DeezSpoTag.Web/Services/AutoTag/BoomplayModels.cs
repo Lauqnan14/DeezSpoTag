@@ -9,4 +9,7 @@ public sealed class BoomplayConfig
 
     [JsonPropertyName("search_limit")]
     public int SearchLimit { get; set; } = 12;
+
+    [JsonPropertyName("min_strictness")]
+    public int MinStrictness { get; set; } = 92;
 }

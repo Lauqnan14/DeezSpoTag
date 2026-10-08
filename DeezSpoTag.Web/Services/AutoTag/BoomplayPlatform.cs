@@ -85,6 +85,13 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                         Id = "search_limit",
                         Label = "Search candidates to evaluate",
                         Value = new PlatformCustomOptionNumber { Min = 5, Max = 30, Step = 1, Value = 12, Slider = true }
+                    },
+                    new()
+                    {
+                        Id = "min_strictness",
+                        Label = "Minimum matching strictness (%)",
+                        Tooltip = "Floor for the artist/title identity gate, expressed as a percentage. Combined with the global strictness setting; defaults to 92%.",
+                        Value = new PlatformCustomOptionNumber { Min = 0, Max = 100, Step = 1, Value = 92, Slider = true }
                     }
                 }
             }

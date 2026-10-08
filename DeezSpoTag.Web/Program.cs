@@ -115,6 +115,8 @@ public partial class Program
         ConfigureIdentityServices(builder.Services, identityConnectionString);
         builder.Services.Configure<LoginConfiguration>(builder.Configuration.GetSection("LoginConfiguration"));
         builder.Services.Configure<QobuzApiConfig>(builder.Configuration.GetSection("Qobuz"));
+        builder.Services.Configure<DeezSpoTag.Web.Services.Updates.AppVersionOptions>(
+            builder.Configuration.GetSection(DeezSpoTag.Web.Services.Updates.AppVersionOptions.SectionName));
         RegisterApplicationServices(builder.Services, builder.Configuration);
 
         var app = builder.Build();
@@ -725,6 +727,8 @@ public partial class Program
                   });
           });
         services.AddHttpClient<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.Updates.GitHubReleaseClient>(client =>
+            client.Timeout = TimeSpan.FromSeconds(20));
         services.AddSignalR();
         services.AddDeezSpoTagQueue();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>();
@@ -889,8 +893,7 @@ public partial class Program
     static void LogBuildDetails(WebApplication app)
     {
         var entryAssembly = typeof(Program).Assembly;
-        var assemblyVersion = entryAssembly.GetName().Version?.ToString() ?? UnknownValue;
-        var displayVersion = ResolveBuildDisplayVersion(entryAssembly, assemblyVersion);
+        var displayVersion = app.Services.GetRequiredService<DeezSpoTag.Web.Services.AppVersionInfo>().CurrentVersion;
         var assemblyLocation = entryAssembly.Location;
         var buildTimestamp = (!string.IsNullOrWhiteSpace(assemblyLocation) && File.Exists(assemblyLocation))
             ? File.GetLastWriteTimeUtc(assemblyLocation).ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
@@ -2112,6 +2115,13 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
             "Quality scanner automation after HTTP readiness.");
         services.Configure<DeezSpoTag.Web.Services.MelodayOptions>(configuration.GetSection("Meloday"));
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayCollaborators>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AppVersionInfo>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Updates.UpdateCheckService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Updates.UpdateCheckHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.Updates.UpdateCheckHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Release check for the configured branch after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodaySettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayRunStateStore>();

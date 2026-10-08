@@ -9,7 +9,9 @@ WORKDIR /src
 COPY . .
 
 RUN dotnet restore DeezSpoTag.Web/DeezSpoTag.Web.csproj
-RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publish --no-restore \
+RUN --mount=type=secret,id=sixlabors_license,required=true \
+    SixLaborsLicenseFile=/run/secrets/sixlabors_license \
+    dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publish --no-restore \
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
@@ -161,6 +163,21 @@ required = [
 missing = [name for name in required if getattr(es, name, None) is None]
 if missing:
     raise SystemExit(f"Essentia runtime missing required algorithms: {', '.join(missing)}")
+
+# The enhanced acoustic genre branch (MAEST embeddings -> Discogs519 head) and the
+# EffNet/Discogs400 fallback both depend on these. Without them the image still
+# probes as "enhanced" but silently emits no genre evidence, so fail the build.
+import essentia
+
+genre_required = ["TensorflowPredictMAEST", "TensorflowPredict", "TensorflowPredictEffnetDiscogs"]
+missing_genre = [name for name in genre_required if getattr(es, name, None) is None]
+if getattr(essentia, "Pool", None) is None:
+    missing_genre.append("essentia.Pool")
+if missing_genre:
+    raise SystemExit(
+        "Essentia runtime cannot provide the enhanced genre models: " + ", ".join(missing_genre)
+    )
+print("Essentia enhanced genre algorithms present: " + ", ".join(genre_required))
 PY
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker

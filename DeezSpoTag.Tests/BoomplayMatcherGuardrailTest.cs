@@ -22,6 +22,99 @@ public sealed class BoomplayMatcherGuardrailTest
         ?? throw new InvalidOperationException("BoomplayMatcher.IsIdMatchCandidateConsistent not found.");
 
     [Fact]
+    public void BoomplayConfig_DefaultMinStrictness_Is92()
+    {
+        Assert.Equal(92, new BoomplayConfig().MinStrictness);
+    }
+
+    [Fact]
+    public void IsIdMatchCandidateConsistent_DefaultFloor_PreservesLegacy92IdentityGate()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = string.Empty,
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" }
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "Anything",
+            Artist = "Some Artist"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(
+            null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
+
+        Assert.False(isConsistent);
+    }
+
+    [Fact]
+    public void IsIdMatchCandidateConsistent_HonorsConfiguredLowerFloor()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = string.Empty,
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" }
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "Anything",
+            Artist = "Some Artist"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(
+            null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig { MinStrictness = 70 } }));
+
+        Assert.True(isConsistent);
+    }
+
+    [Fact]
+    public void IsIdMatchCandidateConsistent_OutOfBoundsFloor_IsClampedAndSafe()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = string.Empty,
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" }
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "Anything",
+            Artist = "Some Artist"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var tooHigh = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(
+            null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig { MinStrictness = 250 } }));
+        var tooLow = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(
+            null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig { MinStrictness = -40 } }));
+
+        Assert.False(tooHigh);
+        Assert.True(tooLow);
+    }
+
+    [Fact]
     public void CollectCandidateIds_IgnoresNonBoomplaySongUrls()
     {
         var info = new AutoTagAudioInfo
@@ -60,7 +153,7 @@ public sealed class BoomplayMatcherGuardrailTest
             MaxDurationDifferenceSeconds = 4
         };
 
-        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
 
         Assert.False(isConsistent);
     }
@@ -89,7 +182,7 @@ public sealed class BoomplayMatcherGuardrailTest
             MaxDurationDifferenceSeconds = 4
         };
 
-        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
 
         Assert.False(isConsistent);
     }
@@ -118,7 +211,7 @@ public sealed class BoomplayMatcherGuardrailTest
             MaxDurationDifferenceSeconds = 4
         };
 
-        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
 
         Assert.False(isConsistent);
     }
@@ -147,7 +240,7 @@ public sealed class BoomplayMatcherGuardrailTest
             MaxDurationDifferenceSeconds = 4
         };
 
-        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
 
         Assert.False(isConsistent);
     }
@@ -176,7 +269,7 @@ public sealed class BoomplayMatcherGuardrailTest
             MaxDurationDifferenceSeconds = 4
         };
 
-        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig, new BoomplayConfig() }));
 
         Assert.True(isConsistent);
     }

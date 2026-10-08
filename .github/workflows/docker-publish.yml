@@ -90,6 +90,7 @@ jobs:
     outputs:
       app_changed: ${{ steps.scope.outputs.app_changed }}
       apple_wrapper_changed: ${{ steps.scope.outputs.apple_wrapper_changed }}
+      selected_images: ${{ steps.scope.outputs.selected_images }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,6 +137,34 @@ jobs:
           echo "apple_wrapper_changed=${apple_wrapper_changed}" >> "$GITHUB_OUTPUT"
           echo "app_changed=${app_changed}"
           echo "apple_wrapper_changed=${apple_wrapper_changed}"
+
+          # Mirror the publish job's image_scope decision so the release notes can
+          # require exactly the digest artifacts of the images selected to publish.
+          selected=()
+          if [[ "$app_changed" == "true" ]]; then
+            selected+=("deezspotag")
+          fi
+          wrapper_publish="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            wrapper_requested="${{ github.event.inputs.publish_apple_wrapper }}"
+            if [[ "$wrapper_requested" == "yes" ]]; then
+              wrapper_publish="true"
+            elif [[ "$wrapper_requested" == "auto" && "$apple_wrapper_changed" == "true" ]]; then
+              wrapper_publish="true"
+            fi
+          elif [[ "$apple_wrapper_changed" == "true" ]]; then
+            wrapper_publish="true"
+          fi
+          if [[ "$wrapper_publish" == "true" ]]; then
+            selected+=("deezspotag-apple-wrapper")
+          fi
+
+          selected_csv=""
+          if [[ ${#selected[@]} -gt 0 ]]; then
+            selected_csv="$(IFS=,; echo "${selected[*]}")"
+          fi
+          echo "selected_images=${selected_csv}" >> "$GITHUB_OUTPUT"
+          echo "selected_images=${selected_csv}"
 
   bump-version:
     needs: [validate, change-scope]
@@ -352,6 +381,8 @@ jobs:
       - name: Build app audit image
         if: matrix.image_name == 'deezspotag'
         shell: bash
+        env:
+          SIXLABORS_LICENSE: ${{ secrets.SIXLABORS_LICENSE }}
         run: |
           set -euo pipefail
           retry_buildx() {
@@ -367,6 +398,7 @@ jobs:
             done
           }
           retry_buildx \
+            --secret id=sixlabors_license,env=SIXLABORS_LICENSE \
             --platform linux/amd64 \
             --network host \
             --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
@@ -471,6 +503,7 @@ jobs:
 
       - name: Build and push
         if: matrix.image_name == 'deezspotag-apple-wrapper' && steps.image_scope.outputs.publish == 'true'
+        id: push_wrapper
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -566,6 +599,36 @@ jobs:
               ./scripts/apple-wrapper-runtime-smoke.sh "$ref"
           done
 
+      - name: Write container digest reference
+        if: steps.image_scope.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          if [[ "${{ matrix.image_name }}" == 'deezspotag' ]]; then
+            digest="${{ steps.push_tested_app.outputs.tested_digest }}"
+          else
+            digest="${{ steps.push_wrapper.outputs.digest }}"
+          fi
+          if [[ -z "$digest" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Missing or malformed published digest for ${{ matrix.image_name }}: $digest" >&2
+            exit 1
+          fi
+          out_dir="${RUNNER_TEMP}/container-digest"
+          mkdir -p "$out_dir"
+          reference="ghcr.io/${owner}/${{ matrix.image_name }}@${digest}"
+          jq -n --arg image "${{ matrix.image_name }}" --arg reference "$reference" \
+            '{image: $image, published: true, reference: $reference}' > "$out_dir/${{ matrix.image_name }}.json"
+          echo "Selected published digest: $reference"
+
+      - name: Upload container digest artifact
+        if: steps.image_scope.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-digest-${{ matrix.image_name }}
+          path: ${{ runner.temp }}/container-digest/${{ matrix.image_name }}.json
+          if-no-files-found: error
+
   release:
     needs: [release-context, change-scope, bump-version, publish]
     if: ${{ github.server_url == 'https://github.com' && always() && github.ref == 'refs/heads/main' && needs.change-scope.outputs.app_changed == 'true' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
@@ -581,6 +644,13 @@ jobs:
           set -euo pipefail
           git fetch origin main --tags
           git checkout -B main origin/main
+
+      - name: Download published digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: container-digest-*
+          path: ${{ runner.temp }}/container-digests
+          merge-multiple: true
 
       - name: Create GitHub release entry
         env:
@@ -726,6 +796,61 @@ jobs:
           if ! grep -q '^- ' "${notes_file}"; then
             echo "- No new commits captured for this release range." >> "${notes_file}"
           fi
+
+          {
+            echo
+            echo "## Container Digests"
+            echo
+            digest_artifacts="${RUNNER_TEMP}/container-digests"
+            selected_csv="${{ needs.change-scope.outputs.selected_images }}"
+            declare -A expected_images=()
+            if [[ -n "${selected_csv}" ]]; then
+              IFS=',' read -ra expected_parts <<< "${selected_csv}"
+              for expected_part in "${expected_parts[@]}"; do
+                trimmed="$(echo "${expected_part}" | tr -d '[:space:]')"
+                [[ -n "${trimmed}" ]] && expected_images["${trimmed}"]=1
+              done
+            fi
+
+            digest_lines=()
+            declare -A seen_images=()
+            shopt -s nullglob
+            for artifact in "${digest_artifacts}"/*.json; do
+              if ! jq -e '.image and .published == true and .reference' "${artifact}" >/dev/null 2>&1; then
+                echo "Malformed digest artifact: ${artifact}" >&2
+                exit 1
+              fi
+              artifact_image="$(jq -r '.image' "${artifact}")"
+              artifact_reference="$(jq -r '.reference' "${artifact}")"
+              if [[ -z "${expected_images[${artifact_image}]:-}" ]]; then
+                echo "Digest artifact for non-selected image: ${artifact_image}" >&2
+                exit 1
+              fi
+              if [[ -n "${seen_images[${artifact_image}]:-}" ]]; then
+                echo "Duplicate digest artifact: ${artifact_image}" >&2
+                exit 1
+              fi
+              if [[ ! "${artifact_reference}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]]; then
+                echo "Non-immutable digest reference for ${artifact_image}: ${artifact_reference}" >&2
+                exit 1
+              fi
+              seen_images["${artifact_image}"]=1
+              digest_lines+=("- \`${artifact_image}\`: \`${artifact_reference}\`")
+            done
+
+            for expected_image in "${!expected_images[@]}"; do
+              if [[ -z "${seen_images[${expected_image}]:-}" ]]; then
+                echo "Missing digest artifact for selected image: ${expected_image}" >&2
+                exit 1
+              fi
+            done
+
+            if [[ "${#digest_lines[@]}" -eq 0 ]]; then
+              echo "- No container images were published in this run."
+            else
+              printf '%s\n' "${digest_lines[@]}" | sort -t'`' -k2
+            fi
+          } >> "${notes_file}"
 
           notes="$(cat "${notes_file}")"
 

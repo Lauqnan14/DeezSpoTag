@@ -122,6 +122,55 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("git ls-files --others --exclude-standard", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DockerPublish_RecordsAndAggregatesPublishedContainerDigests()
+    {
+        var root = ResolveSrcRoot();
+        var workflow = File.ReadAllText(Path.Join(root, ".github", "workflows", "docker-publish.yml"));
+
+        // Per-image artifacts are uploaded only after the published-image/platform/runtime checks.
+        var writeIndex = workflow.IndexOf("name: Write container digest reference", StringComparison.Ordinal);
+        Assert.True(writeIndex > workflow.IndexOf("Published digest matches parity-tested digest", StringComparison.Ordinal),
+            "Digest reference must be recorded after the tested/published digest verification.");
+        Assert.True(writeIndex > workflow.IndexOf("name: Run published app parity smoke audit", StringComparison.Ordinal),
+            "Digest reference must be recorded after the published parity audit.");
+        Assert.True(writeIndex > workflow.IndexOf("Verify published manifest platforms", StringComparison.Ordinal),
+            "Digest reference must be recorded after the platform verification.");
+        Assert.Contains("name: Upload container digest artifact", workflow, StringComparison.Ordinal);
+        Assert.Contains("uses: actions/upload-artifact@v4", workflow, StringComparison.Ordinal);
+        Assert.Contains("container-digest-${{ matrix.image_name }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("tested_digest", workflow, StringComparison.Ordinal);
+        // The digest artifact write/upload is conditioned on the image selection.
+        Assert.Contains("if: steps.image_scope.outputs.publish == 'true'\n        shell: bash\n        run: |\n          set -euo pipefail\n          owner=", workflow, StringComparison.Ordinal);
+        Assert.Contains("if-no-files-found: error", workflow, StringComparison.Ordinal);
+        // Immutable published references only.
+        Assert.Contains("^sha256:[0-9a-f]{64}$", workflow, StringComparison.Ordinal);
+        Assert.Contains("@${digest}", workflow, StringComparison.Ordinal);
+        // Selected image scope is computed and reused for verification.
+        Assert.Contains("selected_images", workflow, StringComparison.Ordinal);
+        Assert.Contains("needs.change-scope.outputs.selected_images", workflow, StringComparison.Ordinal);
+        // Release job aggregates the same run's per-image artifacts (no explicit run id override).
+        var downloadIndex = workflow.IndexOf("name: Download published digest artifacts", StringComparison.Ordinal);
+        Assert.True(downloadIndex > writeIndex, "Release job must download the artifacts the publish job uploaded.");
+        Assert.Contains("uses: actions/download-artifact@v4", workflow, StringComparison.Ordinal);
+        Assert.Contains("pattern: container-digest-*", workflow, StringComparison.Ordinal);
+        Assert.Contains("merge-multiple: true", workflow, StringComparison.Ordinal);
+        // Notes inclusion: digest section is appended before both create and update paths.
+        var digestNotesIndex = workflow.IndexOf("## Container Digests", StringComparison.Ordinal);
+        Assert.True(digestNotesIndex > downloadIndex, "Digest notes must be built after artifact download.");
+        var updateIndex = workflow.IndexOf("--raw-field body=\"${notes}\"", StringComparison.Ordinal);
+        var createIndex = workflow.IndexOf("gh release create", StringComparison.Ordinal);
+        Assert.True(digestNotesIndex > 0 && digestNotesIndex < updateIndex, "Digest notes must be appended before the update path.");
+        Assert.True(digestNotesIndex < createIndex, "Digest notes must be appended before the create path.");
+        // Skipped scopes: no digest and no artifact required — the expected set comes from selected_images
+        // and a missing artifact for a selected image is a hard failure.
+        Assert.Contains("expected_images[", workflow, StringComparison.Ordinal);
+        Assert.Contains("Missing digest artifact for selected image", workflow, StringComparison.Ordinal);
+        Assert.Contains("Digest artifact for non-selected image", workflow, StringComparison.Ordinal);
+        // Digest format is validated before admission to the notes.
+        Assert.Contains("@sha256:[0-9a-f]{64}$", workflow, StringComparison.Ordinal);
+    }
+
     private static string ResolveSrcRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
