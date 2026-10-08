@@ -418,12 +418,10 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
     {
         var normalized = Normalize(value);
         var markers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var marker in new[] { "live", "remix", "acoustic", "instrumental", "radio edit", "extended", "clean", "explicit", "remaster" })
+        foreach (var marker in new[] { "live", "remix", "acoustic", "instrumental", "radio edit", "extended", "clean", "explicit", "remaster" }
+            .Where(marker => normalized.Contains(marker, StringComparison.OrdinalIgnoreCase)))
         {
-            if (normalized.Contains(marker, StringComparison.OrdinalIgnoreCase))
-            {
-                markers.Add(marker);
-            }
+            markers.Add(marker);
         }
         return markers;
     }
@@ -432,12 +430,10 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
     {
         var normalized = Normalize(value);
         var markers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var marker in new[] { "deluxe", "extended", "anniversary", "remaster", "compilation", "ep", "single" })
+        foreach (var marker in new[] { "deluxe", "extended", "anniversary", "remaster", "compilation", "ep", "single" }
+            .Where(marker => normalized.Contains(marker, StringComparison.OrdinalIgnoreCase)))
         {
-            if (normalized.Contains(marker, StringComparison.OrdinalIgnoreCase))
-            {
-                markers.Add(marker);
-            }
+            markers.Add(marker);
         }
         return markers;
     }
@@ -467,17 +463,10 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
         UnifiedTagConfig config,
         IReadOnlySet<string> populatedTags)
     {
-        var score = 0;
-        foreach (var property in typeof(UnifiedTagConfig).GetProperties(BindingFlags.Instance | BindingFlags.Public))
-        {
-            if (property.PropertyType == typeof(TagSource)
+        return typeof(UnifiedTagConfig).GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .Count(property => property.PropertyType == typeof(TagSource)
                 && (TagSource)(property.GetValue(config) ?? TagSource.None) != TagSource.None
-                && populatedTags.Contains(property.Name))
-            {
-                score++;
-            }
-        }
-        return score;
+                && populatedTags.Contains(property.Name));
     }
 
     private static string? ExtractId(Regex regex, string? value)

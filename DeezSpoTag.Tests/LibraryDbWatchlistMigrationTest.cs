@@ -470,6 +470,585 @@ WHERE name = 'Legacy Playlist';";
         Assert.Equal("playlist:spotify:legacy-playlist", reader.GetString(2));
     }
 
+    private static readonly string[] ManualUnavailableMetadataColumns =
+    [
+        "cover_url",
+        "duration_ms",
+        "track_number",
+        "track_total",
+        "disc_number",
+        "disc_total",
+        "release_date",
+        "explicit"
+    ];
+
+    /// <summary>
+    /// Behavioural counterpart to the library.sql source assertions: a database created from the
+    /// running code, inspected through SQLite itself.
+    /// </summary>
+    [Fact]
+    public async Task EnsureSchema_CreatesManualUnavailableMetadataColumnsOnAFreshDatabase()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        var columns = await ReadColumnNamesAsync(connection, "manual_unavailable_track");
+
+        foreach (var column in ManualUnavailableMetadataColumns)
+        {
+            Assert.Contains(column, columns);
+        }
+    }
+
+    [Fact]
+    public async Task EnsureSchema_BackfillsManualUnavailableMetadataFromLegacyPayload()
+    {
+        await CreateLegacyManualUnavailableTableAsync(
+            "legacy-queue",
+            @"{""Cover"":""https://example.test/original-album.jpg"",""DurationSeconds"":205," +
+            @"""TrackNumber"":4,""TrackTotal"":12,""DiscNumber"":2,""DiscTotal"":3," +
+            @"""ReleaseDate"":""2025-07-18"",""Explicit"":true}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT cover_url, duration_ms, track_number, track_total, disc_number, disc_total, release_date, explicit
+FROM manual_unavailable_track
+WHERE queue_uuid = 'legacy-queue';";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("https://example.test/original-album.jpg", reader.GetString(0));
+        Assert.Equal(205000, reader.GetInt32(1));
+        Assert.Equal(4, reader.GetInt32(2));
+        Assert.Equal(12, reader.GetInt32(3));
+        Assert.Equal(2, reader.GetInt32(4));
+        Assert.Equal(3, reader.GetInt32(5));
+        Assert.Equal("2025-07-18", reader.GetString(6));
+        Assert.Equal(1, reader.GetInt32(7));
+    }
+
+    [Fact]
+    public async Task EnsureSchema_BackfillsManualUnavailableMetadataFromCamelCasePayload()
+    {
+        await CreateLegacyManualUnavailableTableAsync(
+            "camel-queue",
+            @"{""coverUrl"":""https://example.test/camel.jpg"",""durationMs"":42000," +
+            @"""spotifyTrackNumber"":7,""spotifyTotalTracks"":9,""spotifyDiscNumber"":1," +
+            @"""release_date"":""2024-01-02"",""explicit_lyrics"":""true""}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT cover_url, duration_ms, track_number, track_total, disc_number, release_date, explicit
+FROM manual_unavailable_track
+WHERE queue_uuid = 'camel-queue';";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("https://example.test/camel.jpg", reader.GetString(0));
+        Assert.Equal(42000, reader.GetInt32(1));
+        Assert.Equal(7, reader.GetInt32(2));
+        Assert.Equal(9, reader.GetInt32(3));
+        Assert.Equal(1, reader.GetInt32(4));
+        Assert.Equal("2024-01-02", reader.GetString(5));
+        Assert.Equal(1, reader.GetInt32(6));
+    }
+
+    [Fact]
+    public async Task EnsureSchema_DoesNotOverwriteExistingManualUnavailableMetadata()
+    {
+        await CreateLegacyManualUnavailableTableAsync(
+            "kept-queue",
+            @"{""Cover"":""https://example.test/payload.jpg"",""DurationSeconds"":205," +
+            @"""TrackNumber"":4,""ReleaseDate"":""2025-07-18"",""Explicit"":true}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        // Re-point the normalised values at something the payload never mentions.
+        await using (var seedConnection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await seedConnection.OpenAsync();
+            await using var seed = seedConnection.CreateCommand();
+            seed.CommandText = @"
+UPDATE manual_unavailable_track
+SET cover_url = 'https://example.test/kept.jpg',
+    duration_ms = 111000,
+    track_number = 2,
+    release_date = '1999-12-31',
+    explicit = 0
+WHERE queue_uuid = 'kept-queue';";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        // A second startup pass must leave every populated value alone.
+        var rerun = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await rerun.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT cover_url, duration_ms, track_number, release_date, explicit
+FROM manual_unavailable_track
+WHERE queue_uuid = 'kept-queue';";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("https://example.test/kept.jpg", reader.GetString(0));
+        Assert.Equal(111000, reader.GetInt32(1));
+        Assert.Equal(2, reader.GetInt32(2));
+        Assert.Equal("1999-12-31", reader.GetString(3));
+        Assert.Equal(0, reader.GetInt32(4));
+    }
+
+    [Fact]
+    public async Task EnsureSchema_LeavesMalformedManualUnavailablePayloadUntouched()
+    {
+        await CreateLegacyManualUnavailableTableAsync("broken-queue", "{ not json ");
+        await CreateLegacyManualUnavailableTableAsync("empty-queue", "");
+        // Valid JSON, but none of the metadata keys. Nothing may be invented from it.
+        await CreateLegacyManualUnavailableTableAsync("bare-queue", @"{""title"":""Just A Title""}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT queue_uuid, cover_url, duration_ms, track_number, track_total, disc_number, disc_total, release_date, explicit
+FROM manual_unavailable_track
+WHERE queue_uuid IN ('broken-queue', 'empty-queue', 'bare-queue')
+ORDER BY queue_uuid;";
+        await using var reader = await command.ExecuteReaderAsync();
+        var seen = 0;
+        while (await reader.ReadAsync())
+        {
+            seen++;
+            for (var ordinal = 1; ordinal < 9; ordinal++)
+            {
+                Assert.True(
+                    await reader.IsDBNullAsync(ordinal),
+                    $"column {ordinal} must stay unknown for {reader.GetString(0)}");
+            }
+        }
+
+        Assert.Equal(3, seen);
+    }
+
+    [Fact]
+    public async Task ManualUnavailableRepository_RoundTripsNormalizedMetadata()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+
+        var upserted = await repository.UpsertManualUnavailableTrackAsync(new ManualUnavailableTrackUpsertInput(
+            QueueUuid: "round-trip-queue",
+            Title: "Round Trip",
+            Artist: "Round Artist",
+            Album: "Round Album",
+            AlbumArtist: "Round Album Artist",
+            CoverUrl: "https://example.test/round-trip.jpg",
+            DurationMs: 205000,
+            TrackNumber: 4,
+            TrackTotal: 12,
+            DiscNumber: 2,
+            DiscTotal: 3,
+            ReleaseDate: "2025-07-18",
+            Explicit: true,
+            Isrc: "USSM12345678",
+            Engine: "deezer",
+            SourceService: "deezer",
+            SourceUrl: "https://example.test/round-trip",
+            DeezerId: "deezer-1",
+            SpotifyId: "spotify-1",
+            AppleId: null,
+            QobuzId: null,
+            TidalId: null,
+            AmazonId: null,
+            DestinationFolderId: 7,
+            ExpectedFinalPath: "/music/Round Trip.flac",
+            Quality: "FLAC",
+            ContentType: "music",
+            Reason: "unavailable",
+            PayloadJson: @"{""Cover"":""https://example.test/round-trip.jpg""}"));
+
+        Assert.NotNull(upserted);
+        AssertManualUnavailableMetadata(upserted!, "https://example.test/round-trip.jpg");
+
+        // Reading back through the query projections, not just the RETURNING clause.
+        var all = await repository.GetManualUnavailableTracksAsync();
+        var listed = Assert.Single(all, item => item.QueueUuid == "round-trip-queue");
+        AssertManualUnavailableMetadata(listed, "https://example.test/round-trip.jpg");
+
+        // The due-retries projection has to carry the same values as the plain listing.
+        var due = await repository.GetDueManualUnavailableTracksAsync(DateTimeOffset.UtcNow.AddDays(30), 50);
+        var dueTrack = Assert.Single(due, item => item.QueueUuid == "round-trip-queue");
+        AssertManualUnavailableMetadata(dueTrack, "https://example.test/round-trip.jpg");
+    }
+
+    [Fact]
+    public async Task ManualUnavailableRepository_UpsertRefreshesNormalizedMetadata()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+
+        await repository.UpsertManualUnavailableTrackAsync(CreateUpsertInput(
+            queueUuid: "refresh-queue",
+            coverUrl: "https://example.test/stale.jpg",
+            durationMs: 1000,
+            trackNumber: 1,
+            trackTotal: 2,
+            discNumber: 1,
+            discTotal: 1,
+            releaseDate: "2000-01-01",
+            @explicit: false));
+
+        // A later failure of the same queue row must publish the metadata the newest payload carried,
+        // not leave the first, poorer observation on screen.
+        var refreshed = await repository.UpsertManualUnavailableTrackAsync(CreateUpsertInput(
+            queueUuid: "refresh-queue",
+            coverUrl: "https://example.test/fresh.jpg",
+            durationMs: 205000,
+            trackNumber: 4,
+            trackTotal: 12,
+            discNumber: 2,
+            discTotal: 3,
+            releaseDate: "2025-07-18",
+            @explicit: true));
+
+        Assert.NotNull(refreshed);
+        Assert.Equal("https://example.test/fresh.jpg", refreshed!.CoverUrl);
+        Assert.Equal(205000, refreshed.DurationMs);
+        Assert.Equal(4, refreshed.TrackNumber);
+        Assert.Equal(12, refreshed.TrackTotal);
+        Assert.Equal(2, refreshed.DiscNumber);
+        Assert.Equal(3, refreshed.DiscTotal);
+        Assert.Equal("2025-07-18", refreshed.ReleaseDate);
+        Assert.True(refreshed.Explicit);
+
+        var reread = Assert.Single(
+            await repository.GetManualUnavailableTracksAsync(),
+            item => item.QueueUuid == "refresh-queue");
+        Assert.Equal("https://example.test/fresh.jpg", reread.CoverUrl);
+        Assert.Equal("2025-07-18", reread.ReleaseDate);
+        Assert.True(reread.Explicit);
+    }
+
+    [Fact]
+    public async Task ManualUnavailableRepository_PreservesUnknownExplicitAsNull()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+
+        await repository.UpsertManualUnavailableTrackAsync(CreateUpsertInput(
+            queueUuid: "unknown-explicit-queue",
+            coverUrl: "https://example.test/clean.jpg",
+            durationMs: 205000,
+            trackNumber: 4,
+            trackTotal: 12,
+            discNumber: 2,
+            discTotal: 3,
+            releaseDate: "2025-07-18",
+            @explicit: null));
+
+        var stored = Assert.Single(
+            await repository.GetManualUnavailableTracksAsync(),
+            item => item.QueueUuid == "unknown-explicit-queue");
+
+        // Not supplied upstream is not "false". Reading it back as false would file a clean track
+        // under an explicit rating nobody reported.
+        Assert.Null(stored.Explicit);
+        Assert.Equal(205000, stored.DurationMs);
+        Assert.Equal(4, stored.TrackNumber);
+        Assert.Equal("2025-07-18", stored.ReleaseDate);
+    }
+
+    private static void AssertManualUnavailableMetadata(ManualUnavailableTrackDto track, string expectedCoverUrl)
+    {
+        Assert.Equal(expectedCoverUrl, track.CoverUrl);
+        Assert.Equal(205000, track.DurationMs);
+        Assert.Equal(4, track.TrackNumber);
+        Assert.Equal(12, track.TrackTotal);
+        Assert.Equal(2, track.DiscNumber);
+        Assert.Equal(3, track.DiscTotal);
+        Assert.Equal("2025-07-18", track.ReleaseDate);
+        Assert.True(track.Explicit);
+
+        // The columns sitting either side of the new block must not have shifted.
+        Assert.Equal("Round Album", track.Album);
+        Assert.Equal("Round Album Artist", track.AlbumArtist);
+        Assert.Equal("USSM12345678", track.Isrc);
+        Assert.Equal("deezer", track.Engine);
+        Assert.Equal("deezer", track.SourceService);
+        Assert.Equal("https://example.test/round-trip", track.SourceUrl);
+        Assert.Equal("deezer-1", track.DeezerId);
+        Assert.Equal("spotify-1", track.SpotifyId);
+        Assert.Null(track.AppleId);
+        Assert.Equal(7, track.DestinationFolderId);
+        Assert.Equal("/music/Round Trip.flac", track.ExpectedFinalPath);
+        Assert.Equal("FLAC", track.Quality);
+        Assert.Equal("music", track.ContentType);
+        Assert.Equal("unavailable", track.Reason);
+        Assert.NotNull(track.PayloadJson);
+
+        // The four trailing timestamps sit after payload_json and must still land in their own
+        // columns; a single extra column anywhere would silently shift one of these.
+        var now = DateTimeOffset.UtcNow;
+        Assert.InRange(track.FirstUnavailableAtUtc, now.AddMinutes(-5), now.AddMinutes(5));
+        Assert.InRange(track.AddedAtUtc, now.AddMinutes(-5), now.AddMinutes(5));
+        Assert.InRange(track.UpdatedAtUtc, now.AddMinutes(-5), now.AddMinutes(5));
+        Assert.InRange(track.NextRetryAtUtc, now.AddDays(7).AddMinutes(-5), now.AddDays(7).AddMinutes(5));
+    }
+
+    private static ManualUnavailableTrackUpsertInput CreateUpsertInput(
+        string queueUuid,
+        string? coverUrl,
+        int? durationMs,
+        int? trackNumber,
+        int? trackTotal,
+        int? discNumber,
+        int? discTotal,
+        string? releaseDate,
+        bool? @explicit)
+        => new(
+            QueueUuid: queueUuid,
+            Title: "Metadata Track",
+            Artist: "Metadata Artist",
+            Album: "Metadata Album",
+            AlbumArtist: "Metadata Album Artist",
+            CoverUrl: coverUrl,
+            DurationMs: durationMs,
+            TrackNumber: trackNumber,
+            TrackTotal: trackTotal,
+            DiscNumber: discNumber,
+            DiscTotal: discTotal,
+            ReleaseDate: releaseDate,
+            Explicit: @explicit,
+            Isrc: "USSM12345678",
+            Engine: "deezer",
+            SourceService: "deezer",
+            SourceUrl: "https://example.test/metadata",
+            DeezerId: "deezer-1",
+            SpotifyId: "spotify-1",
+            AppleId: null,
+            QobuzId: null,
+            TidalId: null,
+            AmazonId: null,
+            DestinationFolderId: 7,
+            ExpectedFinalPath: "/music/Metadata Track.flac",
+            Quality: "FLAC",
+            ContentType: "music",
+            Reason: "unavailable",
+            PayloadJson: "{}");
+
+    [Fact]
+    public async Task EnsureSchema_DoesNotBackfillTheQueueArtworkPlaceholderAsTrackArtwork()
+    {
+        // QueuePayloadBuilder writes this path into a payload's "cover" whenever no artwork was found.
+        // It is a presentation placeholder, so repairing a record with it would put the
+        // "Unavailable Tracks" playlist image on an individual track row.
+        await CreateLegacyManualUnavailableTableAsync(
+            "placeholder-only-queue",
+            @"{""Cover"":""/images/unavailable/unavailable.jpg"",""DurationSeconds"":205}");
+        await CreateLegacyManualUnavailableTableAsync(
+            "placeholder-then-real-queue",
+            @"{""cover"":""/images/default-cover.png"",""albumCover"":""https://example.test/real.jpg""}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT queue_uuid, cover_url
+FROM manual_unavailable_track
+WHERE queue_uuid IN ('placeholder-only-queue', 'placeholder-then-real-queue')
+ORDER BY queue_uuid;";
+        await using var reader = await command.ExecuteReaderAsync();
+        var covers = new Dictionary<string, string?>(StringComparer.Ordinal);
+        while (await reader.ReadAsync())
+        {
+            covers.Add(
+                reader.GetString(0),
+                await reader.IsDBNullAsync(1) ? null : reader.GetString(1));
+        }
+
+        Assert.Equal(2, covers.Count);
+        Assert.Null(covers["placeholder-only-queue"]);
+        Assert.Equal("https://example.test/real.jpg", covers["placeholder-then-real-queue"]);
+    }
+
+    [Fact]
+    public async Task EnsureSchema_PreservesStoredZeroAndNegativeMetadata()
+    {
+        // The model distinguishes "not supplied" (NULL) from a supplied value, so a committed 0 or
+        // negative number is a fact and a repair must not revise it.
+        await CreateLegacyManualUnavailableTableAsync(
+            "zero-queue",
+            @"{""Cover"":""https://example.test/payload.jpg"",""DurationSeconds"":205," +
+            @"""TrackNumber"":4,""TrackTotal"":12,""DiscNumber"":2,""DiscTotal"":3," +
+            @"""ReleaseDate"":""2025-07-18"",""Explicit"":true}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        // Commit zeros and a negative alongside the still-absent fields.
+        await using (var seedConnection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await seedConnection.OpenAsync();
+            await using var seed = seedConnection.CreateCommand();
+            seed.CommandText = @"
+UPDATE manual_unavailable_track
+SET track_number = 0,
+    duration_ms = 0,
+    disc_total = -1,
+    explicit = 0,
+    cover_url = ''
+WHERE queue_uuid = 'zero-queue';";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var rerun = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await rerun.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT track_number, duration_ms, disc_total, explicit, cover_url
+FROM manual_unavailable_track
+WHERE queue_uuid = 'zero-queue';";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(0, reader.GetInt32(0));
+        Assert.Equal(0, reader.GetInt32(1));
+        Assert.Equal(-1, reader.GetInt32(2));
+        Assert.Equal(0, reader.GetInt32(3));
+
+        // An empty-string cover is still "no cover stored", so it is the one column a repair may fill.
+        Assert.Equal("https://example.test/payload.jpg", reader.GetString(4));
+    }
+
+    [Fact]
+    public async Task EnsureSchema_BackfillsManualUnavailableMetadataTheSameWayTheLivePathReadsIt()
+    {
+        // Every case the live path resolves, driven through the legacy repair instead. The two used to
+        // disagree: the repair ignored numbers written as strings, and rounded fractional ones.
+        await CreateLegacyManualUnavailableTableAsync(
+            "string-number-queue",
+            @"{""TrackNumber"":""12"",""DurationSeconds"":""205"",""DiscTotal"":""9""}");
+        await CreateLegacyManualUnavailableTableAsync(
+            "fractional-queue",
+            @"{""TrackNumber"":4.7,""DurationSeconds"":205.5,""DiscTotal"":2.5}");
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT t.queue_uuid, t.track_number, t.duration_ms, t.disc_total
+FROM manual_unavailable_track t
+WHERE t.queue_uuid IN ('string-number-queue', 'fractional-queue')
+ORDER BY t.queue_uuid;";
+        await using var reader = await command.ExecuteReaderAsync();
+        var rows = new Dictionary<string, (int? TrackNumber, int? DurationMs, int? DiscTotal)>(StringComparer.Ordinal);
+        while (await reader.ReadAsync())
+        {
+            rows.Add(
+                reader.GetString(0),
+                (
+                    await reader.IsDBNullAsync(1) ? null : reader.GetInt32(1),
+                    await reader.IsDBNullAsync(2) ? null : reader.GetInt32(2),
+                    await reader.IsDBNullAsync(3) ? null : reader.GetInt32(3)));
+        }
+
+        Assert.Equal(2, rows.Count);
+
+        // A whole number written as a string is a real number and must not be dropped.
+        Assert.Equal(12, rows["string-number-queue"].TrackNumber);
+        Assert.Equal(205000, rows["string-number-queue"].DurationMs);
+        Assert.Equal(9, rows["string-number-queue"].DiscTotal);
+
+        // A fractional value states no whole number, so it must be left unknown rather than rounded.
+        Assert.Null(rows["fractional-queue"].TrackNumber);
+        Assert.Null(rows["fractional-queue"].DurationMs);
+        Assert.Null(rows["fractional-queue"].DiscTotal);
+    }
+
+    private async Task CreateLegacyManualUnavailableTableAsync(string queueUuid, string payloadJson)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+CREATE TABLE IF NOT EXISTS manual_unavailable_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_uuid TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT,
+    album_artist TEXT,
+    isrc TEXT,
+    engine TEXT,
+    source_service TEXT,
+    source_url TEXT,
+    deezer_track_id TEXT,
+    spotify_track_id TEXT,
+    apple_track_id TEXT,
+    qobuz_track_id TEXT,
+    tidal_track_id TEXT,
+    amazon_track_id TEXT,
+    destination_folder_id INTEGER,
+    expected_final_path TEXT,
+    quality TEXT,
+    content_type TEXT,
+    reason TEXT,
+    payload_json TEXT,
+    first_unavailable_at_utc TEXT NOT NULL,
+    added_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+INSERT INTO manual_unavailable_track (
+    queue_uuid, title, artist, payload_json,
+    first_unavailable_at_utc, added_at_utc, updated_at_utc)
+VALUES (
+    $queueUuid, 'Legacy Track', 'Legacy Artist', $payloadJson,
+    '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00');";
+        command.Parameters.AddWithValue("$queueUuid", queueUuid);
+        command.Parameters.AddWithValue("$payloadJson", payloadJson);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<HashSet<string>> ReadColumnNamesAsync(SqliteConnection connection, string table)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        await using var reader = await command.ExecuteReaderAsync();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(1));
+        }
+
+        return names;
+    }
+
     [Fact]
     public async Task AddWatchlistHistoryAsync_ReturnsInsertedEntry_And_SinceQueryReturnsNewerRows()
     {

@@ -217,6 +217,13 @@
             const img = document.createElement("img");
             img.src = playlist.coverUrl;
             img.alt = "";
+            img.loading = "lazy";
+            img.addEventListener("error", () => {
+                img.remove();
+                if (!cover.querySelector(".watchlist-card-art-placeholder")) {
+                    cover.appendChild(createCoverPlaceholder());
+                }
+            });
             cover.appendChild(img);
         } else {
             cover.appendChild(createCoverPlaceholder());

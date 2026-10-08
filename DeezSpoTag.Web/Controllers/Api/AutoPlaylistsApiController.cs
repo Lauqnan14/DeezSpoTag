@@ -65,6 +65,55 @@ public class AutoPlaylistsApiController : ControllerBase
     public async Task<IActionResult> GetPlaylists([FromQuery] string? librarySectionId, CancellationToken cancellationToken)
     {
         var state = await _authService.LoadAsync();
+        var monitored = await LoadMonitoredPlaylistKeysAsync(cancellationToken);
+        var warnings = new List<string>();
+
+        var plexSection = await BuildPlexSectionAsync(state, librarySectionId, monitored, cancellationToken, warnings);
+        var jellyfinSection = await BuildJellyfinSectionAsync(state, librarySectionId, monitored, cancellationToken, warnings);
+        var navidromeSection = await BuildNavidromeSectionAsync(state, librarySectionId, monitored, cancellationToken, warnings);
+
+        var sections = new[] { plexSection, jellyfinSection, navidromeSection }
+            .Where(static section => section is { Playlists.Count: > 0 })
+            .Select(static section => section!)
+            .ToArray();
+
+        return Ok(new
+        {
+            sections,
+            totalCount = sections.Sum(static section => section.Playlists.Count),
+            warning = warnings.Count > 0 ? string.Join(" ", warnings) : null
+        });
+    }
+
+    private async Task<HashSet<string>> LoadMonitoredPlaylistKeysAsync(CancellationToken cancellationToken)
+    {
+        var monitored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!_libraryRepository.IsConfigured)
+        {
+            return monitored;
+        }
+
+        var items = await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken);
+        foreach (var item in items)
+        {
+            if (!string.IsNullOrWhiteSpace(item.Source) && !string.IsNullOrWhiteSpace(item.SourceId))
+            {
+                monitored.Add(BuildPlaylistKey(item.Source, item.SourceId));
+            }
+        }
+
+        return monitored;
+    }
+
+    private static string BuildPlaylistKey(string source, string sourceId) => $"{source}:{sourceId}";
+
+    private async Task<LibraryPlaylistSection?> BuildPlexSectionAsync(
+        PlatformAuthState state,
+        string? librarySectionId,
+        HashSet<string> monitored,
+        CancellationToken cancellationToken,
+        List<string> warnings)
+    {
         var plex = state.Plex;
         if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
         {

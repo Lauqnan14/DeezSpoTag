@@ -1,3 +1,4 @@
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using System.Collections.Generic;
@@ -9,9 +10,44 @@ using Microsoft.Net.Http.Headers;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Controllers.Api;
+
+/// <summary>Body for setting one library playlist's sync schedule.</summary>
+public sealed class PlaylistSyncScheduleRequest
+{
+    public string? Source { get; set; }
+
+    public string? SourcePlaylistId { get; set; }
+
+    /// <summary>One of Manual, Every15Minutes, Hourly, Every6Hours, Daily.</summary>
+    public string? Cadence { get; set; }
+
+    /// <summary>The destinations to mirror this playlist to. Ignored when the cadence is Manual.</summary>
+    public List<string>? Targets { get; set; }
+
+    /// <summary>
+    /// Tracks that must not be copied out of this playlist to any destination.
+    /// <para>
+    /// Deliberately separate from the watchlist blocklist. That blocks a track from being added to
+    /// a playlist at all; this only stops it being copied out of one that already exists. They are
+    /// stored on the schedule rather than in the shared blocklist so excluding a track here cannot
+    /// have any effect on how the app collects or tags tracks.
+    /// </para>
+    /// </summary>
+    public List<string>? ExcludedTrackIds { get; set; }
+
+    /// <summary>
+    /// Cover art as a data URL. Square and up to 15MB, JPEG/PNG/WebP/GIF so animated artwork
+    /// works. Validated server-side as well as in the browser.
+    /// </summary>
+    public string? ArtworkDataUrl { get; set; }
+
+    /// <summary>The description to send to each destination.</summary>
+    public string? Description { get; set; }
+}
 
 public sealed class LibraryPlaylistWatchlistDependencies
 {
@@ -19,6 +55,10 @@ public sealed class LibraryPlaylistWatchlistDependencies
     public required LibraryConfigStore ConfigStore { get; init; }
     public required PlaylistWatchReconciler PlaylistWatchReconciler { get; init; }
     public required PlaylistSyncService PlaylistSyncService { get; init; }
+      public PlaylistSyncTargetRegistry? PlaylistSyncTargetRegistry { get; init; }
+
+    /// <summary>Per-playlist sync schedules. Optional so a deployment without the store still serves.</summary>
+    public PlaylistSyncScheduleStore? PlaylistSyncScheduleStore { get; init; }
     public required PlaylistVisualService PlaylistVisualService { get; init; }
     public required DownloadQueueRepository QueueRepository { get; init; }
     public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
@@ -42,6 +82,8 @@ public partial class WatchlistApiController : ControllerBase
     private readonly LibraryConfigStore _configStore;
     private readonly PlaylistWatchReconciler _playlistWatchReconciler;
     private readonly PlaylistSyncService _playlistSyncService;
+    private readonly PlaylistSyncTargetRegistry? _playlistSyncTargetRegistry;
+    private readonly PlaylistSyncScheduleStore? _playlistSyncScheduleStore;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
@@ -56,6 +98,8 @@ public partial class WatchlistApiController : ControllerBase
         _configStore = dependencies.ConfigStore;
         _playlistWatchReconciler = dependencies.PlaylistWatchReconciler;
         _playlistSyncService = dependencies.PlaylistSyncService;
+        _playlistSyncTargetRegistry = dependencies.PlaylistSyncTargetRegistry;
+        _playlistSyncScheduleStore = dependencies.PlaylistSyncScheduleStore;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _profileResolutionService = dependencies.ProfileResolutionService;
         _boomplayMetadataService = dependencies.BoomplayMetadataService;
@@ -226,6 +270,29 @@ public partial class WatchlistApiController : ControllerBase
                 },
             circuits,
             targetCircuits,
+            // Platform-level snapshot progress, so the UI reports one line per platform instead of
+            // an activity message per playlist head request. Empty whenever no cycle is in flight.
+            platforms = runtime?.PlatformProgress
+                .Select(static platform => new
+                {
+                    source = platform.Source,
+                    label = platform.Label,
+                    summary = platform.Summary,
+                    totalPlaylists = platform.TotalPlaylists,
+                    headsChecked = platform.HeadsChecked,
+                    unchanged = platform.Unchanged,
+                    changed = platform.Changed,
+                    @new = platform.New,
+                    requiresExpansion = platform.RequiresExpansion,
+                    failed = platform.Failed,
+                    completed = platform.Completed,
+                    incomplete = platform.Incomplete,
+                    headPhaseMs = platform.HeadPhaseMs,
+                    totalMs = platform.TotalMs,
+                    startedUtc = platform.StartedUtc,
+                    completedUtc = platform.CompletedUtc
+                })
+                .ToList() ?? [],
             stateDrift = new
             {
                 hasDrift = drift.HasDrift,
@@ -423,7 +490,7 @@ public partial class WatchlistApiController : ControllerBase
         var sourceStorefront = string.IsNullOrWhiteSpace(request.SourceStorefront)
             ? null
             : request.SourceStorefront.Trim().ToLowerInvariant();
-        if (string.Equals(normalizedSource, "apple", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(normalizedSource, AppleSource, StringComparison.OrdinalIgnoreCase))
         {
             if (!string.IsNullOrWhiteSpace(sourceUrl))
             {
@@ -1021,6 +1088,177 @@ public partial class WatchlistApiController : ControllerBase
         string? ExistingPlexPlaylistId,
         string? ExistingJellyfinPlaylistId,
         string? ExistingNavidromePlaylistId);
+
+    /// <summary>
+    /// The servers that can actually receive a sync right now. The merge panel uses this so it
+    /// never offers a target the per-target writers would reject as unconfigured, which
+    /// previously surfaced as a silent or partial failure.
+    /// </summary>
+    /// <summary>
+    /// Connected servers, shared by the merge panel and the per-playlist sync menus so the two
+    /// can never disagree about what is available.
+    /// </summary>
+    /// <summary>
+    /// Reads one library playlist's sync schedule.
+    /// </summary>
+    [HttpGet("sync-schedule")]
+    public async Task<IActionResult> GetSyncSchedule(
+        [FromQuery] string source,
+        [FromQuery] string sourceId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return BadRequest("A schedule needs a source and a playlist id.");
+        }
+
+        if (_playlistSyncScheduleStore is null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { message = "Playlist schedules are not available in this deployment." });
+        }
+
+        var entry = await _playlistSyncScheduleStore.GetAsync(source, sourceId, cancellationToken);
+        return Ok(entry is null
+            ? new
+            {
+                cadence = "manual",
+                targets = Array.Empty<string>(),
+                excludedTrackIds = Array.Empty<string>(),
+                description = default(string?),
+                hasArtwork = false,
+            }
+            : new
+            {
+                cadence = entry.Cadence.ToString(),
+                targets = entry.Targets,
+                excludedTrackIds = entry.ExcludedTrackIds,
+                description = entry.Description,
+                hasArtwork = entry.Artwork is { Length: > 0 },
+                lastRunAtUtc = entry.LastRunAtUtc,
+                lastRunMessage = entry.LastRunMessage,
+                lastRunSucceeded = entry.LastRunSucceeded,
+                nextRunAtUtc = entry.Cadence == PlaylistSyncCadence.Manual ? null : entry.NextRunAtUtc,
+            });
+    }
+
+    /// <summary>
+    /// Sets one library playlist's sync schedule.
+    /// <para>
+    /// A playlist is only ever synced on a schedule to destinations the user picked here. A cadence
+    /// with no destinations is refused rather than stored, because a schedule that could fire with
+    /// nowhere to send the playlist would report success while doing nothing.
+    /// </para>
+    /// </summary>
+    [HttpPost("sync-schedule")]
+    public async Task<IActionResult> SetSyncSchedule(
+        [FromBody] PlaylistSyncScheduleRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request is null
+            || string.IsNullOrWhiteSpace(request.Source)
+            || string.IsNullOrWhiteSpace(request.SourcePlaylistId))
+        {
+            return BadRequest("A schedule needs a source and a playlist id.");
+        }
+
+        if (_playlistSyncScheduleStore is null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { message = "Playlist schedules are not available in this deployment." });
+        }
+
+        if (!Enum.TryParse<PlaylistSyncCadence>(request.Cadence, ignoreCase: true, out var cadence)
+            || !Enum.IsDefined(cadence))
+        {
+            return BadRequest("That sync frequency is not one this app offers.");
+        }
+
+        if (cadence != PlaylistSyncCadence.Manual)
+        {
+            if (request.Targets is null || request.Targets.Count == 0)
+            {
+                return BadRequest("Choose at least one destination to sync this playlist to.");
+            }
+
+            // Only destinations this deployment can actually write to are accepted. Silently storing
+            // an unknown id would produce a schedule that fails on every pass, and the user would see
+            // repeated failures for a destination they thought was connected.
+            var known = (await _playlistSyncService.GetConfiguredTargetServicesAsync(cancellationToken))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var unknown = request.Targets
+                .Where(target => !string.IsNullOrWhiteSpace(target))
+                .Select(target => target.Trim())
+                .Where(target => !known.Contains(target))
+                .ToList();
+            if (unknown.Count > 0)
+            {
+                return BadRequest(
+                    $"Not a connected destination: {string.Join(", ", unknown)}.");
+            }
+        }
+
+        // The artwork and description are validated by the store, which throws a plain
+        // ArgumentException for a bad type or an oversized upload. That is a client mistake, so it
+        // becomes a 400 with the reason rather than a 500.
+        PlaylistSyncScheduleEntry entry;
+        try
+        {
+            entry = await _playlistSyncScheduleStore.SaveAsync(
+                request.Source,
+                request.SourcePlaylistId,
+                cadence,
+                request.Targets,
+                request.ExcludedTrackIds,
+                request.ArtworkDataUrl,
+                request.Description,
+                cancellationToken);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+
+        return Ok(new
+        {
+            cadence = entry.Cadence.ToString(),
+            targets = entry.Targets,
+            excludedTrackIds = entry.ExcludedTrackIds,
+            description = entry.Description,
+            hasArtwork = entry.Artwork is { Length: > 0 },
+            nextRunAtUtc = entry.Cadence == PlaylistSyncCadence.Manual ? null : entry.NextRunAtUtc,
+        });
+    }
+
+    [HttpGet("sync-targets")]
+    public async Task<IActionResult> GetSyncTargets(CancellationToken cancellationToken)
+    {
+        var targets = await _playlistSyncService.GetConfiguredTargetServicesAsync(cancellationToken);
+        // The kind is returned so a caller can offer platforms without also offering the
+        // self-hosted servers, which those surfaces sync through other paths.
+        return Ok(targets.Select(target => new
+        {
+            value = target,
+            kind = _playlistSyncTargetRegistry.Find(target)?.TargetKind.ToString().ToLowerInvariant()
+                   ?? (PlaylistTargetPresentation.IsLibraryServer(target)
+                       ? PlaylistTargetPresentation.LibraryKind
+                       : PlaylistTargetPresentation.PlatformKind),
+            label = PlaylistTargetPresentation.Label(target)
+        }));
+    }
+
+    [HttpGet("merge-target-servers")]
+    public async Task<IActionResult> GetMergeTargetServers(CancellationToken cancellationToken)
+    {
+        var targets = await _playlistSyncService.GetConfiguredTargetServicesAsync(cancellationToken);
+        return Ok(targets.Select(target => new
+        {
+            value = target,
+            label = PlaylistTargetPresentation.Label(target)
+        }));
+    }
 
     [HttpGet("merge-target-playlists")]
     public async Task<IActionResult> GetMergeTargetPlaylists([FromQuery] string? target, CancellationToken cancellationToken)
@@ -1729,12 +1967,12 @@ public partial class WatchlistApiController : ControllerBase
             track_position = index + 1,
             link = sourceUrl,
             sourceUrl,
-            spotifyId = string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
-            appleId = string.Equals(source, "apple", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
-            tidalId = string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
-            qobuzId = string.Equals(source, "qobuz", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
-            amazonId = string.Equals(source, "amazon", StringComparison.OrdinalIgnoreCase) || string.Equals(source, "amazonmusic", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
-            deezerId = string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            spotifyId = string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            appleId = string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            tidalId = string.Equals(source, TidalSource, StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            qobuzId = string.Equals(source, QobuzSource, StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            amazonId = string.Equals(source, AmazonSource, StringComparison.OrdinalIgnoreCase) || string.Equals(source, "amazonmusic", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            deezerId = string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
             locationStatus = new
             {
                 status = locationStatus.Status,
@@ -1755,11 +1993,11 @@ public partial class WatchlistApiController : ControllerBase
         var escaped = Uri.EscapeDataString(trackSourceId);
         return source.Trim().ToLowerInvariant() switch
         {
-            "deezer" => $"https://www.deezer.com/track/{escaped}",
-            "spotify" => $"https://open.spotify.com/track/{escaped}",
-            "tidal" => $"https://tidal.com/track/{escaped}",
-            "qobuz" => $"https://www.qobuz.com/track/{escaped}",
-            "apple" => $"https://music.apple.com/song/{escaped}",
+            DeezerSource => $"https://www.deezer.com/track/{escaped}",
+            SpotifySource => $"https://open.spotify.com/track/{escaped}",
+            TidalSource => $"https://tidal.com/track/{escaped}",
+            QobuzSource => $"https://www.qobuz.com/track/{escaped}",
+            AppleSource => $"https://music.apple.com/song/{escaped}",
             "boomplay" => $"https://www.boomplay.com/songs/{escaped}",
             _ => string.Empty
         };

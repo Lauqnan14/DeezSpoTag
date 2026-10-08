@@ -828,7 +828,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
     }
 
     [Fact]
-    public void WatchlistCycle_DoesNotUseDeadlinesOrPerPlaylistTargetSlices()
+    public void WatchlistCycle_UsesBoundedDrainAndAttemptDeadlineWithoutPerPlaylistTargetSlices()
     {
         var hostedSource = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..",
@@ -846,7 +846,11 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         Assert.DoesNotContain("WatchSmoothSyncEnabled", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SliceMembershipMaxJobs", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResidualTargetSyncMaxJobs", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("DrainTargetSyncMaxJobs", syncSource, StringComparison.Ordinal);
+        // Cycle-end drain is capped by a fixed job count and every attempt is deadline-bounded.
+        // Neither is a wall-clock cycle budget, and neither reintroduces per-playlist slicing.
+        Assert.Contains("MaxDrainJobsPerCycle", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncAttemptDeadline", syncSource, StringComparison.Ordinal);
+        Assert.Contains("CancelAfter(TargetSyncAttemptDeadline)", syncSource, StringComparison.Ordinal);
         Assert.Contains("PersistPlaylistProgressAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WaitForFullRunDeadlineAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("UpdateWatchlistCycleStateAsync", hostedSource, StringComparison.Ordinal);

@@ -214,6 +214,8 @@ public sealed class WatchlistStateService
 public sealed class WatchlistQueueAdmissionService
 {
     private readonly WatchlistPublicApiReadinessService? _publicApiReadiness;
+    private readonly ILogger<WatchlistQueueAdmissionService> _logger =
+        NullLogger<WatchlistQueueAdmissionService>.Instance;
     private readonly object _gate = new();
     private readonly AsyncLocal<long> _executionGeneration = new();
     private readonly HashSet<string> _attemptedIdentities = new(StringComparer.OrdinalIgnoreCase);
@@ -227,9 +229,11 @@ public sealed class WatchlistQueueAdmissionService
     }
 
     public WatchlistQueueAdmissionService(
-        WatchlistPublicApiReadinessService publicApiReadiness)
+        WatchlistPublicApiReadinessService publicApiReadiness,
+        ILogger<WatchlistQueueAdmissionService>? logger = null)
     {
         _publicApiReadiness = publicApiReadiness;
+        _logger = logger ?? NullLogger<WatchlistQueueAdmissionService>.Instance;
     }
 
     internal static bool ShouldAdmitBeforeRunEnd(int eligibleRows, int remainingQuota)
@@ -368,16 +372,9 @@ public sealed class WatchlistQueueAdmissionService
                 return false;
             }
 
-            foreach (var key in identityKeys)
-            {
-                if (!string.IsNullOrWhiteSpace(key) && _attemptedIdentities.Contains(key.Trim()))
-                {
-                    return true;
-                }
-            }
+            return identityKeys.Any(candidate => !string.IsNullOrWhiteSpace(candidate)
+                && _attemptedIdentities.Contains(candidate.Trim()));
         }
-
-        return false;
     }
 
     public void RememberAttemptedIdentities(IEnumerable<string> identityKeys)
@@ -394,12 +391,9 @@ public sealed class WatchlistQueueAdmissionService
                 return;
             }
 
-            foreach (var key in identityKeys)
+            foreach (var key in identityKeys.Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
             {
-                if (!string.IsNullOrWhiteSpace(key))
-                {
-                    _attemptedIdentities.Add(key.Trim());
-                }
+                _attemptedIdentities.Add(key.Trim());
             }
         }
     }
@@ -408,10 +402,31 @@ public sealed class WatchlistQueueAdmissionService
     {
         lock (_gate)
         {
-            return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
-                ? 0
-                : _remaining;
+            // A run is open but this caller cannot see the ambient generation, which means execution
+            // context did not flow into it. Left silent this would defer every track forever while
+            // the coordinator reported a healthy cycle, so it is surfaced once per run instead.
+            if (_activeGeneration != 0 && _executionGeneration.Value != _activeGeneration)
+            {
+                WarnExecutionContextNotFlowed(_activeGeneration);
+                return 0;
+            }
+
+            return _activeGeneration == 0 ? 0 : _remaining;
         }
+    }
+
+    private long _contextFlowWarningGeneration;
+
+    private void WarnExecutionContextNotFlowed(long activeGeneration)
+    {
+        if (Interlocked.Exchange(ref _contextFlowWarningGeneration, activeGeneration) == activeGeneration)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Watchlist queue admission could not see the active run (run {RunGeneration}) because execution context did not flow into the caller. Track admission will report zero remaining budget for this call. If this recurs, the run budget's ambient context is being lost and queue admission must be changed to take an explicit scope token.",
+            activeGeneration);
     }
 
     public bool TryReserve(int queueItemCount)

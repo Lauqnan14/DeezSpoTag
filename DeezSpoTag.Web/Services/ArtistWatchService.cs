@@ -215,8 +215,10 @@ public sealed class ArtistWatchService
 
     private static IReadOnlyList<string> ResolveArtistAlbumGroups(WatchlistArtistDto artist)
     {
-        var normalized = NormalizeAlbumGroups(artist.WatchedAlbumGroups);
-        return normalized.Count > 0 ? normalized : DefaultArtistAlbumGroups;
+        // A null group list means the artist was never configured and already resolves to the
+        // first-run default inside NormalizeAlbumGroups. An explicitly empty list is a real
+        // choice ("top songs only") and must stay empty.
+        return NormalizeAlbumGroups(artist.WatchedAlbumGroups);
     }
 
     private async Task QueueSpotifyAlbumReleasesAsync(
@@ -788,7 +790,9 @@ public sealed class ArtistWatchService
             filters.Add(TidalEpsAndSinglesFilter);
         }
 
-        return filters.Count > 0 ? filters : new List<string> { TidalAlbumsFilter };
+        // An empty list means "no album releases selected" - the caller then issues no Tidal
+        // album requests at all. It must not fall back to albums.
+        return filters;
     }
 
     private async Task<JsonDocument?> TryGetTidalArtistAlbumsAsync(
@@ -1412,22 +1416,22 @@ public sealed class ArtistWatchService
 
     internal static IReadOnlyList<string> NormalizeAlbumGroups(IEnumerable<string>? configuredGroups)
     {
-        var groups = new SortedSet<string>(StringComparer.Ordinal);
-
-        if (configuredGroups != null)
+        if (configuredGroups is null)
         {
-            foreach (var normalized in configuredGroups
-                .Select(NormalizeAlbumGroup)
-                .Where(static group => !string.IsNullOrWhiteSpace(group)))
-            {
-                groups.Add(normalized!);
-            }
+            // Never configured - apply the first-run default. Copied so callers can never
+            // mutate the shared default through the returned collection.
+            return new List<string>(DefaultArtistAlbumGroups);
         }
 
-        if (groups.Count == 0)
+        // An explicitly empty selection is meaningful: "top songs only" or "latest releases only".
+        // It must stay empty so callers can tell it apart from an unconfigured artist.
+        var groups = new SortedSet<string>(StringComparer.Ordinal);
+
+        foreach (var normalized in configuredGroups
+            .Select(NormalizeAlbumGroup)
+            .Where(static group => !string.IsNullOrWhiteSpace(group)))
         {
-            groups.Add(AlbumGroup);
-            groups.Add(SingleGroup);
+            groups.Add(normalized!);
         }
 
         return groups.ToList();
@@ -1470,11 +1474,16 @@ public sealed class ArtistWatchService
             .Select(static image => image.Url)
             .FirstOrDefault();
 
-    private static bool ShouldIncludeAlbumGroup(string? albumGroup, IReadOnlyCollection<string> groups)
+    // internal so the Spotify release page can filter with the same vocabulary instead of
+    // duplicating it - the watch groups and the provider release groups must agree.
+    internal static bool ShouldIncludeAlbumGroup(string? albumGroup, IReadOnlyCollection<string> groups)
     {
+        // An empty group list is an explicit "no album releases" choice, not "no preference".
+        // Treating it as "include everything" would pull the whole discography for an artist
+        // that only asked for top songs.
         if (groups.Count == 0)
         {
-            return true;
+            return false;
         }
 
         var normalized = NormalizeAlbumGroup(albumGroup);
@@ -1496,6 +1505,9 @@ public sealed class ArtistWatchService
         {
             AlbumGroup => AlbumGroup,
             SingleGroup => SingleGroup,
+            // Spotify reports EPs as their own release type but groups them with singles
+            // (ResolveDiscographySection buckets both as "singles_eps"), so match them here too.
+            "ep" => SingleGroup,
             CompilationGroup => CompilationGroup,
             "compile" => CompilationGroup,
             "compilations" => CompilationGroup,

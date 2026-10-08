@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Text.Json;
+using DeezSpoTag.Web.Controllers;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -221,8 +223,12 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.DoesNotContain("No playlist sync targets configured", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunBudgetedTargetSyncAsync(", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolvePreSweepDrainBudget(", hostedSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("DrainTargetSyncMaxJobs", hostedSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("DrainTargetSyncMaxJobs", postDownloadSource, StringComparison.Ordinal);
+        // The cycle-end drain is bounded by a fixed, named job count so cycle teardown always
+        // reaches its end. Jobs past the cap are never claimed, so they stay durably queued.
+        Assert.Contains("MaxDrainJobsPerCycle", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("MaxDrainJobsPerCycle = 25", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("DrainBounded", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("MaxJobs", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunResidualTargetSyncAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WaitForFullRunDeadlineAsync", hostedSource, StringComparison.Ordinal);
@@ -230,7 +236,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.DoesNotContain("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetNextWakeAsync", hostedSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("TargetSyncJobTimeout", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncAttemptDeadline", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -257,8 +263,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.DoesNotContain("HasWatchlistReconciliationRequestAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Task.WhenAll(jobs", postDownloadSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("TargetOperationTimeout", postDownloadSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("operationCancellation.CancelAfter", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncAttemptDeadline", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("CancelAfter(TargetSyncAttemptDeadline)", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -359,6 +365,50 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
     }
 
     [Fact]
+    public void QueuedPayloadResolution_PropagatesTheRealFailureMessage()
+    {
+        // The resolver used to substitute a constant "track unavailable" message, which
+        // IsTrackUnavailableFailure classifies as a terminal catalogue miss. Every transient
+        // resolution failure (timeout, rate limit, missing credentials) was therefore filed as
+        // a missing track and never retried.
+        var resolverSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentQueuedPayloadResolver.cs");
+        var appSource = ReadSource("DeezSpoTag.Services/Download/Shared/DeezSpoTagApp.cs");
+
+        Assert.DoesNotContain("private const string FailedMessage", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("var error = result.Error.Trim();", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("QueuePreResolutionPayload.ApplyFailed(payload, error, DateTimeOffset.UtcNow)", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("Error = error", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("                error);", resolverSource, StringComparison.Ordinal);
+
+        // The caller decides whether to schedule a retry by reading Status, so the classified
+        // status has to be the one it reads back.
+        Assert.Contains("return resolution.Item with { Status = terminalStatus, Error = resolution.Error };", appSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // A genuine catalogue miss stays terminal and monitorable.
+    [InlineData("Qobuz track not found for ISRC or metadata.", "failed", "unavailable")]
+    [InlineData("Enabled fallback sources could not resolve this track after tidal failed.", "failed", "unavailable")]
+    // A transient provider failure is retried instead of being recorded as a missing track.
+    [InlineData("Tidal operation timed out or was canceled by an external provider.", "failed", "failed")]
+    [InlineData("Amazon download API returned HTTP 429: Too Many Requests", "failed", "failed")]
+    [InlineData("Qobuz official credentials are missing.", "failed", "failed")]
+    public void PreResolutionFailure_ClassifiesTransientErrorsAsRetryable(
+        string error,
+        string resolverStampedStatus,
+        string expectedPersistedStatus)
+    {
+        // Mirrors the resolver stamp and the app's ternary over the same message.
+        var classified = DeezSpoTag.Services.Download.Shared.EngineAudioPostDownloadHelper
+            .IsTrackUnavailableFailure(error)
+            ? "unavailable"
+            : "failed";
+
+        Assert.Equal(resolverStampedStatus, "failed");
+        Assert.Equal(expectedPersistedStatus, classified);
+    }
+
+    [Fact]
     public void ManualUnavailablePlaylist_RendersAsLastNormalTracklistWithRetryColumn()
     {
         var watchlistSource = ReadSource("DeezSpoTag.Web/wwwroot/js/library-watchlists.js");
@@ -398,10 +448,508 @@ public sealed class WatchlistQueueCoordinationGuardrailTest
         Assert.Contains("GetDueManualUnavailableTracksAsync", repositorySource, StringComparison.Ordinal);
         Assert.Contains("ScheduleManualUnavailableTrackRetryAsync", repositorySource, StringComparison.Ordinal);
         Assert.Contains("intentService.EnqueueManualAsync(intent", retryServiceSource, StringComparison.Ordinal);
+
+        // The track's own metadata belongs in the record, not only inside the opaque payload blob.
+        // A fresh database must carry every one of these columns; the runtime migration in
+        // LibraryDbWatchlistMigrationTest verifies an existing database gains them too.
+        foreach (var column in new[]
+                 {
+                     "cover_url TEXT",
+                     "duration_ms INTEGER",
+                     "track_number INTEGER",
+                     "track_total INTEGER",
+                     "disc_number INTEGER",
+                     "disc_total INTEGER",
+                     "release_date TEXT",
+                     "explicit INTEGER"
+                 })
+        {
+            Assert.Contains(column, schemaSource, StringComparison.Ordinal);
+        }
+
+        // The original queue row survives at a failed/unavailable status, so a fresh enqueue is
+        // rejected as a queue duplicate and the track was never re-attempted. The retry must reuse
+        // that row instead, and must not revive one the user cancelled.
+        Assert.Contains("app.RetryDownloadAsync(track.QueueUuid", retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("app.GetQueueItemAsync(track.QueueUuid", retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("IsCanceledStatus(existing.Status)", retryServiceSource, StringComparison.Ordinal);
         Assert.Contains("DateTimeOffset.UtcNow.Add(RetryDelay)", retryServiceSource, StringComparison.Ordinal);
         Assert.Contains("DeleteManualUnavailableTrackAsync(track.Id", retryServiceSource, StringComparison.Ordinal);
         Assert.Contains("ManualUnavailableRetryService", programSource, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// A track row is a track, not a playlist tile. The "Unavailable Tracks" artwork belongs to the
+    /// playlist card and page header; painting it onto every row destroyed the one piece of metadata
+    /// the record actually had. The mapper is exercised directly so this cannot regress silently.
+    /// </summary>
+    [Fact]
+    public void ManualUnavailableTracklist_UsesTrackMetadataInsteadOfPlaylistPresentationMetadata()
+    {
+        const string unavailablePlaylistImage = "/images/unavailable/unavailable.jpg";
+
+        var mapped = JsonSerializer.SerializeToElement(ActivitiesController.MapManualUnavailableTrack(
+            CreateManualUnavailableTrack(
+                coverUrl: "https://example.test/album-cover.jpg",
+                durationMs: 205000,
+                trackNumber: 4,
+                trackTotal: 12,
+                discNumber: 2,
+                discTotal: 3,
+                releaseDate: "2025-07-18",
+                @explicit: true),
+            index: 7));
+
+        var album = mapped.GetProperty("album");
+        Assert.Equal("https://example.test/album-cover.jpg", album.GetProperty("cover_medium").GetString());
+        Assert.Equal("https://example.test/album-cover.jpg", album.GetProperty("cover_big").GetString());
+        Assert.Equal(205, mapped.GetProperty("duration").GetInt32());
+        Assert.Equal(205000, mapped.GetProperty("durationMs").GetInt32());
+        Assert.Equal(4, mapped.GetProperty("track_position").GetInt32());
+        Assert.Equal(12, mapped.GetProperty("track_total").GetInt32());
+        Assert.Equal(2, mapped.GetProperty("disk_number").GetInt32());
+        Assert.Equal(3, mapped.GetProperty("disk_total").GetInt32());
+        Assert.Equal("2025-07-18", mapped.GetProperty("release_date").GetString());
+        Assert.True(mapped.GetProperty("explicit_lyrics").GetBoolean());
+
+        // The playlist image may only ever appear on the playlist card, never on a track row.
+        Assert.NotEqual(unavailablePlaylistImage, album.GetProperty("cover_medium").GetString());
+        Assert.NotEqual(unavailablePlaylistImage, album.GetProperty("cover_big").GetString());
+
+        // Unknown artwork stays unknown. Substituting the playlist image would fabricate a cover the
+        // record never had.
+        var withoutCover = JsonSerializer.SerializeToElement(ActivitiesController.MapManualUnavailableTrack(
+            CreateManualUnavailableTrack(
+                coverUrl: null,
+                durationMs: null,
+                trackNumber: null,
+                trackTotal: null,
+                discNumber: null,
+                discTotal: null,
+                releaseDate: null,
+                @explicit: null),
+            index: 2));
+
+        var bareAlbum = withoutCover.GetProperty("album");
+        Assert.Equal(string.Empty, bareAlbum.GetProperty("cover_medium").GetString());
+        Assert.Equal(string.Empty, bareAlbum.GetProperty("cover_big").GetString());
+        Assert.Equal(0, withoutCover.GetProperty("durationMs").GetInt32());
+        Assert.Equal(0, withoutCover.GetProperty("duration").GetInt32());
+        Assert.Equal(3, withoutCover.GetProperty("track_position").GetInt32());
+        Assert.Equal(0, withoutCover.GetProperty("track_total").GetInt32());
+        Assert.Equal(0, withoutCover.GetProperty("disk_number").GetInt32());
+        Assert.Equal(0, withoutCover.GetProperty("disk_total").GetInt32());
+        Assert.Equal(string.Empty, withoutCover.GetProperty("release_date").GetString());
+
+        // An unknown explicit status must reach the client as null, not as false. Collapsing it would
+        // tell the reader the track is confirmed clean when nobody ever said so.
+        Assert.Equal(
+            JsonValueKind.Null,
+            withoutCover.GetProperty("explicit_lyrics").ValueKind);
+
+        // A record that did state "false" still has to say false, not null.
+        var knownClean = JsonSerializer.SerializeToElement(ActivitiesController.MapManualUnavailableTrack(
+            CreateManualUnavailableTrack(
+                coverUrl: null,
+                durationMs: null,
+                trackNumber: null,
+                trackTotal: null,
+                discNumber: null,
+                discTotal: null,
+                releaseDate: null,
+                @explicit: false),
+            index: 0));
+        Assert.False(knownClean.GetProperty("explicit_lyrics").GetBoolean());
+    }
+
+    [Fact]
+    public void BuildManualUnavailableTrackInput_ExtractsCompleteQueueMetadata()
+    {
+        // PascalCase payload, the shape the queue writes.
+        var input = BuildInput(
+            @"{""Title"":""Real Title"",""Artist"":""Real Artist"",""Album"":""Real Album""," +
+            @"""Cover"":""https://example.test/pascal.jpg"",""DurationSeconds"":205," +
+            @"""TrackNumber"":4,""TrackTotal"":12,""DiscNumber"":2,""DiscTotal"":3," +
+            @"""ReleaseDate"":""2025-07-18"",""Explicit"":true,""Isrc"":""USSM12345678""}",
+            queueDurationMs: null);
+
+        Assert.Equal("Real Title", input.Title);
+        Assert.Equal("https://example.test/pascal.jpg", input.CoverUrl);
+        Assert.Equal(205000, input.DurationMs);
+        Assert.Equal(4, input.TrackNumber);
+        Assert.Equal(12, input.TrackTotal);
+        Assert.Equal(2, input.DiscNumber);
+        Assert.Equal(3, input.DiscTotal);
+        Assert.Equal("2025-07-18", input.ReleaseDate);
+        Assert.True(input.Explicit);
+        Assert.Equal("USSM12345678", input.Isrc);
+
+        // camelCase and alternate provider keys resolve the same way.
+        var camel = BuildInput(
+            @"{""coverUrl"":""https://example.test/camel.jpg"",""durationMs"":42000," +
+            @"""spotifyTrackNumber"":7,""spotifyTotalTracks"":9,""spotifyDiscNumber"":1," +
+            @"""discTotal"":2,""release_date"":""2024-01-02"",""explicit_lyrics"":""true""}",
+            queueDurationMs: null);
+
+        Assert.Equal("https://example.test/camel.jpg", camel.CoverUrl);
+        Assert.Equal(42000, camel.DurationMs);
+        Assert.Equal(7, camel.TrackNumber);
+        Assert.Equal(9, camel.TrackTotal);
+        Assert.Equal(1, camel.DiscNumber);
+        Assert.Equal(2, camel.DiscTotal);
+        Assert.Equal("2024-01-02", camel.ReleaseDate);
+        Assert.True(camel.Explicit);
+
+        Assert.Equal("https://example.test/album-cover.jpg", BuildInput(
+            @"{""AlbumCover"":""https://example.test/album-cover.jpg""}",
+            queueDurationMs: null).CoverUrl);
+
+        // The queue writes a placeholder into "cover" when it found no artwork
+        // (QueuePayloadBuilder.DefaultCoverPath). It is not a cover and must not be stored as one.
+        Assert.Null(BuildInput(@"{""cover"":""/images/unavailable/unavailable.jpg""}", null).CoverUrl);
+        Assert.Null(BuildInput(@"{""cover"":""/images/default-cover.png""}", null).CoverUrl);
+        Assert.Null(BuildInput(@"{""Cover"":"" /images/unavailable/unavailable.jpg ""}", null).CoverUrl);
+
+        // A real cover further down the key list still wins over the placeholder.
+        Assert.Equal(
+            "https://example.test/real.jpg",
+            BuildInput(
+                @"{""cover"":""/images/unavailable/unavailable.jpg"",""albumCover"":""https://example.test/real.jpg""}",
+                null).CoverUrl);
+    }
+
+    [Fact]
+    public void BuildManualUnavailableTrackInput_UsesDurationSecondsWhenMillisecondsAreAbsent()
+    {
+        Assert.Equal(205000, BuildInput(@"{""DurationSeconds"":205}", null).DurationMs);
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":null,""DurationSeconds"":205}", null).DurationMs);
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":0,""DurationSeconds"":205}", null).DurationMs);
+
+        // A seconds value that would overflow Int32 on conversion is dropped, not wrapped negative.
+        Assert.Null(BuildInput(@"{""DurationSeconds"":9999999999}", null).DurationMs);
+    }
+
+    [Fact]
+    public void BuildManualUnavailableTrackInput_PrefersQueueDurationMilliseconds()
+    {
+        // The queue row is the resolved answer; a stale payload must not contradict it.
+        Assert.Equal(205000, BuildInput(@"{""DurationSeconds"":999}", 205000).DurationMs);
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":1}", 205000).DurationMs);
+
+        // A missing or non-positive queue duration still falls through to the payload.
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":205000}", null).DurationMs);
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":205000}", 0).DurationMs);
+        Assert.Equal(205000, BuildInput(@"{""DurationMs"":205000}", -1).DurationMs);
+    }
+
+    [Fact]
+    public void BuildManualUnavailableTrackInput_LeavesAbsentMetadataUnknown()
+    {
+        var input = BuildInput(@"{""Title"":""Only A Title""}", null);
+
+        Assert.Null(input.CoverUrl);
+        Assert.Null(input.DurationMs);
+        Assert.Null(input.TrackNumber);
+        Assert.Null(input.TrackTotal);
+        Assert.Null(input.DiscNumber);
+        Assert.Null(input.DiscTotal);
+        Assert.Null(input.ReleaseDate);
+        Assert.Null(input.Explicit);
+
+        // A value that cannot be read as metadata stays unknown instead of being guessed at.
+        var malformed = BuildInput(
+            @"{""TrackNumber"":""not-a-number"",""TrackTotal"":0,""DiscNumber"":-3,""DiscTotal"":""12"",""DurationMs"":""abc""}",
+            null);
+        Assert.Null(malformed.TrackNumber);
+        Assert.Null(malformed.TrackTotal);
+        Assert.Null(malformed.DiscNumber);
+        Assert.Equal(12, malformed.DiscTotal);
+        Assert.Null(malformed.DurationMs);
+
+        // Explicit is stated as a JSON boolean, an integer and a string; all three resolve.
+        Assert.True(BuildInput(@"{""Explicit"":true}", null).Explicit);
+        Assert.False(BuildInput(@"{""Explicit"":false}", null).Explicit);
+        Assert.True(BuildInput(@"{""Explicit"":1}", null).Explicit);
+        Assert.False(BuildInput(@"{""Explicit"":0}", null).Explicit);
+        Assert.True(BuildInput(@"{""Explicit"":""TRUE""}", null).Explicit);
+        Assert.False(BuildInput(@"{""Explicit"":""False""}", null).Explicit);
+        Assert.True(BuildInput(@"{""Explicit"":""1""}", null).Explicit);
+        Assert.False(BuildInput(@"{""Explicit"":""0""}", null).Explicit);
+
+        // Unreadable as a boolean means unknown, never false.
+        Assert.Null(BuildInput(@"{""Explicit"":""maybe""}", null).Explicit);
+        Assert.Null(BuildInput(@"{""Explicit"":5}", null).Explicit);
+
+        // A whole number written as a JSON string is still a number, exactly as the legacy repair
+        // path reads it. The two paths used to disagree here.
+        Assert.Equal(12, BuildInput(@"{""TrackNumber"":""12""}", null).TrackNumber);
+        Assert.Equal(205000, BuildInput(@"{""DurationSeconds"":""205""}", null).DurationMs);
+        Assert.Equal(9, BuildInput(@"{""DiscTotal"":""9""}", null).DiscTotal);
+
+        // A fractional value is not a track number. Rounding it would state a number the source never
+        // gave, so it stays unknown instead.
+        Assert.Null(BuildInput(@"{""TrackNumber"":4.7}", null).TrackNumber);
+        Assert.Null(BuildInput(@"{""DurationSeconds"":205.5}", null).DurationMs);
+        Assert.Null(BuildInput(@"{""DiscTotal"":2.5}", null).DiscTotal);
+    }
+
+    [Fact]
+    public void ManualUnavailableRetry_ReconstructsCompleteIntentFromNormalizedMetadata()
+    {
+        var intent = DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(
+            CreateManualUnavailableTrack(
+                coverUrl: "https://example.test/album-cover.jpg",
+                durationMs: 205000,
+                trackNumber: 4,
+                trackTotal: 12,
+                discNumber: 2,
+                discTotal: 3,
+                releaseDate: "2025-07-18",
+                @explicit: true));
+
+        Assert.Equal("https://example.test/album-cover.jpg", intent.Cover);
+        Assert.Equal(205000, intent.DurationMs);
+        Assert.Equal(4, intent.TrackNumber);
+        Assert.Equal(12, intent.TrackTotal);
+        Assert.Equal(2, intent.DiscNumber);
+        Assert.Equal(3, intent.DiscTotal);
+        Assert.Equal("2025-07-18", intent.ReleaseDate);
+        Assert.True(intent.Explicit);
+
+        // Fields already represented on the record must keep their existing behaviour.
+        Assert.Equal("Track Title", intent.Title);
+        Assert.Equal("Track Artist", intent.Artist);
+        Assert.Equal("Track Album", intent.Album);
+        Assert.Equal("Album Artist", intent.AlbumArtist);
+        Assert.Equal("USSM12345678", intent.Isrc);
+        Assert.Equal("deezer", intent.PreferredEngine);
+        Assert.Equal("FLAC", intent.Quality);
+        Assert.Equal(7, intent.DestinationFolderId);
+    }
+
+    [Fact]
+    public void ManualUnavailableRetry_RecoversLegacyDurationSeconds()
+    {
+        // A record written before the normalised columns existed: everything is null and only the
+        // payload knows anything. The queue duration used to be rebuilt as zero from this.
+        var legacy = CreateManualUnavailableTrack(
+            coverUrl: null,
+            durationMs: null,
+            trackNumber: null,
+            trackTotal: null,
+            discNumber: null,
+            discTotal: null,
+            releaseDate: null,
+            @explicit: null);
+        legacy = legacy with { PayloadJson = @"{""Cover"":""https://example.test/legacy.jpg"",""DurationSeconds"":205}" };
+
+        var intent = DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(legacy);
+
+        Assert.Equal(205000, intent.DurationMs);
+        Assert.Equal("https://example.test/legacy.jpg", intent.Cover);
+
+        // Nothing was stated, so nothing is invented.
+        Assert.Null(intent.Explicit);
+        Assert.Equal(0, intent.TrackNumber);
+        Assert.Equal(0, intent.TrackTotal);
+        Assert.Equal(0, intent.DiscNumber);
+        Assert.Equal(0, intent.DiscTotal);
+        Assert.Equal(string.Empty, intent.ReleaseDate);
+    }
+
+    [Fact]
+    public void ManualUnavailableRetry_NeverUsesUnavailablePlaylistArtwork()
+    {
+        // Cover is read by the post-download artwork pipeline and ends up in the file's tags. A record
+        // with no artwork of its own must produce an empty cover, not the playlist placeholder.
+        var noArtwork = CreateManualUnavailableTrack(
+            coverUrl: null,
+            durationMs: null,
+            trackNumber: null,
+            trackTotal: null,
+            discNumber: null,
+            discTotal: null,
+            releaseDate: null,
+            @explicit: null);
+
+        var intent = DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(noArtwork);
+        Assert.Equal(string.Empty, intent.Cover);
+        Assert.NotEqual("/images/unavailable/unavailable.jpg", intent.Cover);
+
+        // The queue writes this placeholder into "cover" whenever it found no artwork, so a legacy
+        // payload can carry it. Cover feeds the tagging pipeline, so it must not be promoted.
+        var placeholderPayload = noArtwork with
+        {
+            PayloadJson = @"{""cover"":""/images/unavailable/unavailable.jpg"",""albumCover"":""https://example.test/real.jpg""}"
+        };
+        var fromPlaceholder = DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(placeholderPayload);
+        Assert.Equal("https://example.test/real.jpg", fromPlaceholder.Cover);
+
+        Assert.Equal(
+            string.Empty,
+            DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(
+                noArtwork with { PayloadJson = @"{""cover"":""/images/unavailable/unavailable.jpg""}" }).Cover);
+
+        // The normalised value is what reaches the intent, so a stale payload cover cannot displace it.
+        var withCover = CreateManualUnavailableTrack(
+            coverUrl: "https://example.test/normalized.jpg",
+            durationMs: null,
+            trackNumber: null,
+            trackTotal: null,
+            discNumber: null,
+            discTotal: null,
+            releaseDate: null,
+            @explicit: null) with { PayloadJson = @"{""Cover"":""https://example.test/payload.jpg""}" };
+
+        Assert.Equal(
+            "https://example.test/normalized.jpg",
+            DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(withCover).Cover);
+    }
+
+    [Fact]
+    public void ManualUnavailableRetry_FallsBackToLegacyPayloadForEveryMetadataField()
+    {
+        // A record whose normalised columns are empty but whose payload states everything, in the
+        // camelCase shape and with explicit given as a string.
+        var legacy = CreateManualUnavailableTrack(
+            coverUrl: null,
+            durationMs: null,
+            trackNumber: null,
+            trackTotal: null,
+            discNumber: null,
+            discTotal: null,
+            releaseDate: null,
+            @explicit: null) with
+        {
+            PayloadJson = @"{""coverUrl"":""https://example.test/legacy.jpg"",""durationMs"":42000," +
+                          @"""spotifyTrackNumber"":7,""spotifyTotalTracks"":9,""spotifyDiscNumber"":1," +
+                          @"""discTotal"":2,""release_date"":""2024-01-02"",""explicit_lyrics"":""TRUE""}"
+        };
+
+        var intent = DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(legacy);
+
+        Assert.Equal("https://example.test/legacy.jpg", intent.Cover);
+        Assert.Equal(42000, intent.DurationMs);
+        Assert.Equal(7, intent.TrackNumber);
+        Assert.Equal(9, intent.TrackTotal);
+        Assert.Equal(1, intent.DiscNumber);
+        Assert.Equal(2, intent.DiscTotal);
+        Assert.Equal("2024-01-02", intent.ReleaseDate);
+        Assert.True(intent.Explicit);
+
+        // The retry fallback reads the same payload through its own JsonObject reader, so it has to
+        // agree with the live path and the legacy repair on what counts as a number.
+        var stringNumber = BuildIntentFromPayload(
+            @"{""TrackNumber"":""12"",""DurationSeconds"":""205"",""DiscTotal"":""9""}");
+        Assert.Equal(12, stringNumber.TrackNumber);
+        Assert.Equal(205000, stringNumber.DurationMs);
+        Assert.Equal(9, stringNumber.DiscTotal);
+
+        var fractional = BuildIntentFromPayload(
+            @"{""TrackNumber"":4.7,""DurationSeconds"":205.5,""DiscTotal"":2.5}");
+        Assert.Equal(0, fractional.TrackNumber);
+        Assert.Equal(0, fractional.DurationMs);
+        Assert.Equal(0, fractional.DiscTotal);
+    }
+
+    private static DeezSpoTag.Services.Download.Shared.Models.DownloadIntent BuildIntentFromPayload(string payloadJson)
+        => DeezSpoTag.Web.Services.ManualUnavailableRetryService.BuildIntent(
+            CreateManualUnavailableTrack(
+                coverUrl: null,
+                durationMs: null,
+                trackNumber: null,
+                trackTotal: null,
+                discNumber: null,
+                discTotal: null,
+                releaseDate: null,
+                @explicit: null) with { PayloadJson = payloadJson });
+
+    private static DeezSpoTag.Services.Library.ManualUnavailableTrackUpsertInput BuildInput(
+        string payloadJson,
+        int? queueDurationMs)
+    {
+        var createdAt = DateTimeOffset.UnixEpoch;
+        var item = new DeezSpoTag.Services.Download.Queue.DownloadQueueItem(
+            Id: 1,
+            QueueUuid: "probe-queue",
+            Engine: "deezer",
+            ArtistName: "Item Artist",
+            TrackTitle: "Item Title",
+            Isrc: "USSM00000000",
+            DeezerTrackId: "deezer-item",
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: queueDurationMs,
+            DestinationFolderId: 7,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: "music",
+            FinalizationStatus: null,
+            EnrichmentStatus: null,
+            Status: "unavailable",
+            PayloadJson: payloadJson,
+            Progress: null,
+            Downloaded: null,
+            Failed: 1,
+            Error: "not available from enabled sources",
+            CreatedAt: createdAt,
+            UpdatedAt: createdAt);
+
+        return ActivitiesController.BuildManualUnavailableTrackInput(
+            item,
+            DeezSpoTag.Services.Download.Shared.QueuePayloadJsonParser.Parse(payloadJson));
+    }
+
+    private static DeezSpoTag.Services.Library.ManualUnavailableTrackDto CreateManualUnavailableTrack(
+        string? coverUrl,
+        int? durationMs,
+        int? trackNumber,
+        int? trackTotal,
+        int? discNumber,
+        int? discTotal,
+        string? releaseDate,
+        bool? @explicit)
+        => new(
+            Id: 1,
+            QueueUuid: "queue-uuid",
+            Title: "Track Title",
+            Artist: "Track Artist",
+            Album: "Track Album",
+            AlbumArtist: "Album Artist",
+            Isrc: "USSM12345678",
+            Engine: "deezer",
+            SourceService: "deezer",
+            SourceUrl: "https://example.test/track",
+            DeezerId: "deezer-1",
+            SpotifyId: "spotify-1",
+            AppleId: null,
+            QobuzId: null,
+            TidalId: null,
+            AmazonId: null,
+            DestinationFolderId: 7,
+            ExpectedFinalPath: "/music/Track Title.flac",
+            Quality: "FLAC",
+            ContentType: "music",
+            Reason: "unavailable",
+            PayloadJson: "{}",
+            FirstUnavailableAtUtc: DateTimeOffset.UnixEpoch,
+            NextRetryAtUtc: DateTimeOffset.UnixEpoch,
+            AddedAtUtc: DateTimeOffset.UnixEpoch,
+            UpdatedAtUtc: DateTimeOffset.UnixEpoch,
+            CoverUrl: coverUrl,
+            DurationMs: durationMs,
+            TrackNumber: trackNumber,
+            TrackTotal: trackTotal,
+            DiscNumber: discNumber,
+            DiscTotal: discTotal,
+            ReleaseDate: releaseDate,
+            Explicit: @explicit);
 
     [Fact]
     public void ActiveWatchCycle_ProcessesArtistLedgerAdmissionAfterPlaylistWork()

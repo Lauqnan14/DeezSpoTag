@@ -175,7 +175,8 @@ public sealed class WatchlistApiContractTest : IAsyncLifetime
             {
                 Cookie = "sessionID=authenticated",
                 UserAgent = "Mozilla/5.0 TestBrowser/1.0",
-                SessionValid = true
+                SessionValid = true,
+                LastStatus = "session_verified"
             };
             return state.Boomplay;
         });

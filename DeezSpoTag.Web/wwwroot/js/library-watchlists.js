@@ -109,7 +109,7 @@ async function loadWatchlist() {
                 item.deezerId ? `<span class="watchlist-card-badge" title="Deezer"><i class="fa-solid fa-music"></i></span>` : '',
                 item.appleId ? `<span class="watchlist-card-badge" title="Apple Music"><i class="fab fa-apple"></i></span>` : '',
                 item.qobuzId ? `<span class="watchlist-card-badge" title="Qobuz"><i class="fa-solid fa-compact-disc"></i></span>` : '',
-                item.tidalId ? `<span class="watchlist-card-badge" title="Tidal"><i class="fa-solid fa-wave-square"></i></span>` : ''
+                item.tidalId ? `<span class="watchlist-card-badge" title="Tidal"><span class="watchlist-card-badge-icon watchlist-card-badge-icon--tidal" aria-hidden="true"></span></span>` : ''
             ].filter(Boolean).join('');
 
             const detectedCount = detectedByItemKey[`artist:${item.artistId}`] || 0;
@@ -136,7 +136,7 @@ async function loadWatchlist() {
                         <i class="fa-solid fa-ellipsis-vertical"></i>
                     </button>
                     <div class="watchlist-action-dropdown watchlist-action-dropdown--hover" data-artist-menu="${escapeHtml(String(item.artistId || ''))}" hidden>
-                        <button class="dropdown-item" data-artist-action="settings" data-artist-id="${escapeHtml(String(item.artistId || ''))}" data-artist-name="${escapeHtml(item.artistName)}" data-artist-folder="${escapeHtml(item.destinationFolderId == null ? '' : String(item.destinationFolderId))}" data-artist-folder-override="${escapeHtml(item.destinationFolderOverride == null ? '' : String(item.destinationFolderOverride))}" data-artist-groups="${escapeHtml(JSON.stringify(item.watchedAlbumGroups || []))}" data-artist-top-songs="${escapeHtml(item.topSongsEnabled == null ? '' : String(item.topSongsEnabled))}" data-artist-latest="${escapeHtml(item.latestReleasesOnly == null ? '' : String(item.latestReleasesOnly))}" data-artist-engine="${escapeHtml(item.preferredEngine || '')}" data-artist-engine-order="${escapeHtml(JSON.stringify(item.downloadEngineOrder || null))}" data-artist-routing-rules="${escapeHtml(JSON.stringify(item.routingRules || []))}" data-artist-atmos-folder="${escapeHtml(item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId))}" data-artist-atmos-folder-override="${escapeHtml(item.atmosDestinationFolderOverride == null ? '' : String(item.atmosDestinationFolderOverride))}" data-artist-download-mode="${escapeHtml(item.downloadVariantMode || '')}" data-artist-top-songs-sync="${escapeHtml(item.topSongsSyncMode || 'mirror')}" data-artist-discography="${escapeHtml(item.downloadDiscographyEnabled == null ? '' : String(item.downloadDiscographyEnabled))}" data-artist-block-rules="${escapeHtml(JSON.stringify(item.ignoreRules || []))}" type="button">
+                        <button class="dropdown-item" data-artist-action="settings" data-artist-id="${escapeHtml(String(item.artistId || ''))}" data-artist-name="${escapeHtml(item.artistName)}" data-artist-folder="${escapeHtml(item.destinationFolderId == null ? '' : String(item.destinationFolderId))}" data-artist-folder-override="${escapeHtml(item.destinationFolderOverride == null ? '' : String(item.destinationFolderOverride))}" data-artist-groups="${escapeHtml(JSON.stringify(item.watchedAlbumGroups ?? null))}" data-artist-top-songs="${escapeHtml(item.topSongsEnabled == null ? '' : String(item.topSongsEnabled))}" data-artist-latest="${escapeHtml(item.latestReleasesOnly == null ? '' : String(item.latestReleasesOnly))}" data-artist-engine="${escapeHtml(item.preferredEngine || '')}" data-artist-engine-order="${escapeHtml(JSON.stringify(item.downloadEngineOrder || null))}" data-artist-routing-rules="${escapeHtml(JSON.stringify(item.routingRules || []))}" data-artist-atmos-folder="${escapeHtml(item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId))}" data-artist-atmos-folder-override="${escapeHtml(item.atmosDestinationFolderOverride == null ? '' : String(item.atmosDestinationFolderOverride))}" data-artist-download-mode="${escapeHtml(item.downloadVariantMode || '')}" data-artist-top-songs-sync="${escapeHtml(item.topSongsSyncMode || 'mirror')}" data-artist-discography="${escapeHtml(item.downloadDiscographyEnabled == null ? '' : String(item.downloadDiscographyEnabled))}" data-artist-block-rules="${escapeHtml(JSON.stringify(item.ignoreRules || []))}" type="button">
                             <i class="fa-solid fa-gear"></i>
                             <span>Settings</span>
                         </button>
@@ -537,11 +537,16 @@ function renderSharedPlaylistActions(options = {}) {
 }
 
 function parseArtistSettingsGroups(rawValue) {
+    const raw = String(rawValue ?? '').trim();
+    if (raw === '' || raw === 'null') {
+        // Never configured - distinct from an explicitly empty selection.
+        return null;
+    }
     try {
-        const parsed = JSON.parse(String(rawValue || '[]'));
-        return Array.isArray(parsed) ? parsed.map(value => String(value || '').toLowerCase()) : [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.map(value => String(value || '').toLowerCase()) : null;
     } catch {
-        return [];
+        return null;
     }
 }
 
@@ -598,9 +603,14 @@ function resolveRoutingOperatorOptions(field) {
 }
 
 function resolveArtistSettingsDefaults(currentGroups, currentTopSongs, currentLatestOnly, globalSettings) {
+    // A non-empty list is the saved selection; an empty list is a deliberate "none"
+    // (for example top songs only); null means the artist was never configured.
+    const isExplicitNone = Array.isArray(currentGroups) && currentGroups.length === 0;
     const selectedGroups = Array.isArray(currentGroups) && currentGroups.length > 0
         ? currentGroups
-        : ['album', 'single'];
+        : isExplicitNone
+            ? []
+            : ['album', 'single'];
     const topSongsEnabled = currentTopSongs === ''
         ? false
         : currentTopSongs === 'true';
@@ -1708,6 +1718,20 @@ async function loadPlaylistWatchlist() {
         if (Number(runtimeHealth.lastRecoveredClaimCount || 0) > 0) {
             runtimeHealthParts.push(`recovered ${runtimeHealth.lastRecoveredClaimCount} stale claim(s)`);
         }
+        // Platform-level snapshot progress: one compact line per platform instead of an activity
+        // message per playlist. Per-playlist detail stays on each card and in watchlist history.
+        const platformProgress = Array.isArray(runtime?.platforms) ? runtime.platforms : [];
+        platformProgress.forEach(platform => {
+            if (!platform) {
+                return;
+            }
+            const label = String(platform.label || platform.source || '').trim();
+            const summary = String(platform.summary || '').trim();
+            if (!label) {
+                return;
+            }
+            runtimeHealthParts.push(summary ? `${label} · ${summary}` : label);
+        });
         if (Number(claimHealth.orphanedPending || 0) > 0) {
             runtimeHealthParts.push(`${claimHealth.orphanedPending} orphaned pending claim(s)`);
         }
@@ -2463,6 +2487,41 @@ function syncMergeArtworkAvailability(sourceList, artworkState) {
     }
 }
 
+/// <summary>
+/// The servers that can actually receive a merge right now. A server that is not connected is
+/// never offered, because the sync writers reject it and the merge would fail or half-succeed.
+/// </summary>
+async function loadMergeTargetServers() {
+    try {
+        const targets = await fetchJson('/api/library/playlists/merge-target-servers');
+        if (!Array.isArray(targets)) {
+            return [];
+        }
+
+        return targets
+            .map(target => ({
+                value: String(target?.value || '').trim().toLowerCase(),
+                label: String(target?.label || '').trim() || target?.value || ''
+            }))
+            .filter(target => target.value && target.label);
+    } catch {
+        return [];
+    }
+}
+
+/// <summary>
+/// Stand-in for a server that is not connected, so the payload and validation keep the same
+/// three booleans without ever offering the option.
+/// </summary>
+function createDisabledMergeTargetCheckbox() {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = false;
+    checkbox.disabled = true;
+    checkbox.className = 'form-check-input';
+    return checkbox;
+}
+
 function buildMergeTargetRow(label, checked) {
     const row = document.createElement('label');
     row.className = 'merge-target-row';
@@ -2558,8 +2617,15 @@ function validateMergeSelection(selectedPlaylists, controls, artworkState) {
         return false;
     }
 
+    const availableTargets = ['plex', 'jellyfin', 'navidrome']
+        .filter(target => controls[`${target}Check`] && !controls[`${target}Check`].disabled);
+    if (availableTargets.length === 0) {
+        showToast('No media server is connected. Connect Plex, Jellyfin or Navidrome in Login first.', true);
+        return false;
+    }
+
     if (!controls.plexCheck.checked && !controls.jellyfinCheck.checked && !controls.navidromeCheck.checked) {
-        showToast('Select at least one merge target (Plex, Jellyfin, or Navidrome).', true);
+        showToast('Select at least one merge target.', true);
         return false;
     }
 
@@ -2655,19 +2721,40 @@ async function openPlaylistMergePanel(items) {
         descriptionInput,
         'Source attribution will include your DeezSpoTag username.'));
 
+    // Only servers that are actually connected are offered. Offering an unconfigured one made
+    // the merge fail or only partially succeed with no clear explanation.
     const targetSection = document.createElement('div');
     targetSection.className = 'playlist-settings-section';
     targetSection.innerHTML = '<div class="playlist-settings-section-title">Sync targets</div>';
     const targetList = document.createElement('div');
     targetList.className = 'routing-rules-list merge-target-list';
-    const { row: plexRow, checkbox: plexCheck } = buildMergeTargetRow('Plex', true);
-    const { row: jellyfinRow, checkbox: jellyfinCheck } = buildMergeTargetRow('Jellyfin', false);
-    const { row: navidromeRow, checkbox: navidromeCheck } = buildMergeTargetRow('Navidrome', false);
-    targetList.appendChild(plexRow);
-    targetList.appendChild(jellyfinRow);
-    targetList.appendChild(navidromeRow);
+    const targetStatus = document.createElement('div');
+    targetStatus.className = 'playlist-settings-section-label';
+    targetStatus.textContent = 'Checking connected servers…';
+    targetSection.appendChild(targetStatus);
     targetSection.appendChild(targetList);
     panel.appendChild(targetSection);
+
+    const configuredTargets = await loadMergeTargetServers();
+    targetStatus.remove();
+    const mergeTargetControls = {};
+    if (configuredTargets.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'playlist-settings-section-label';
+        empty.textContent = 'No media server is connected. Connect Plex, Jellyfin or Navidrome in Login to sync a merged playlist.';
+        targetSection.appendChild(empty);
+    } else {
+        configuredTargets.forEach((target, index) => {
+            const { row, checkbox } = buildMergeTargetRow(target.label, index === 0);
+            row.dataset.mergeTarget = target.value;
+            targetList.appendChild(row);
+            mergeTargetControls[target.value] = checkbox;
+        });
+    }
+
+    const plexCheck = mergeTargetControls.plex || createDisabledMergeTargetCheckbox();
+    const jellyfinCheck = mergeTargetControls.jellyfin || createDisabledMergeTargetCheckbox();
+    const navidromeCheck = mergeTargetControls.navidrome || createDisabledMergeTargetCheckbox();
 
     const existingTargetSection = document.createElement('div');
     existingTargetSection.className = 'playlist-settings-section';
@@ -2766,6 +2853,9 @@ async function openPlaylistMergePanel(items) {
         ]
     });
     if (confirmed?.value !== 'merge') {
+        // Dismissing the modal used to return silently, which looked like the merge had run
+        // and done nothing.
+        showToast('Merge cancelled. No playlist was synced.');
         return;
     }
 
@@ -2786,14 +2876,21 @@ async function openPlaylistMergePanel(items) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const targetSummary = Array.isArray(result?.targets)
-            ? result.targets
-                .map(target => `${String(target.target || '').toUpperCase()}: ${target.success ? 'ok' : 'failed'} (${target.syncedTracks || 0})`)
-                .join(' | ')
-            : '';
-        const statusMessage = result?.message || 'Merge sync completed.';
-        const summarySuffix = targetSummary ? ` ${targetSummary}` : '';
-        showToast(`${statusMessage}${summarySuffix}`);
+        // A partial failure used to read as a total one. Name the servers that failed.
+        const failed = (Array.isArray(result?.targets) ? result.targets : [])
+            .filter(target => target && target.success !== true);
+        if (Array.isArray(result?.targets) && result.targets.length > 0) {
+            const summary = result.targets
+                .map(target => `${String(target.target || '').toUpperCase()}: ${target.success ? `${target.syncedTracks || 0} synced` : `failed${target.message ? ` (${target.message})` : ''}`}`)
+                .join(' | ');
+            if (failed.length > 0) {
+                showToast(`${result?.message || 'Merge sync partially failed.'} ${summary}`, true);
+            } else {
+                showToast(`${result?.message || 'Merge sync completed.'} ${summary}`);
+            }
+        } else {
+            showToast(result?.message || 'Merge sync completed.');
+        }
     } catch (error) {
         showToast(`Playlist merge failed: ${error?.message || 'Unknown error'}`, true);
     }

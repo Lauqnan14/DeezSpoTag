@@ -1729,6 +1729,75 @@ VALUES
         Assert.DoesNotContain(dueAfter, row => row.TrackSourceId == "live-track");
     }
 
+    [Fact]
+    public async Task UpdateWatchlistPreferences_ExplicitEmptyAlbumGroups_RoundTripsAsEmptyNotNull()
+    {
+        // "Spotify's Top Songs" only. The empty list must survive the round trip as an empty
+        // list; storing it as NULL would make it indistinguishable from "never configured",
+        // which then resolves to the album+single default.
+        await _repository.AddWatchlistAsync(4242, "Empty Groups", "artist-empty", null);
+
+        var updated = await _repository.UpdateWatchlistPreferencesAsync(
+            PreferenceInput(4242, Array.Empty<string>(), topSongsEnabled: true));
+
+        Assert.True(updated);
+
+        var stored = Assert.Single(await _repository.GetWatchlistAsync(), item => item.ArtistId == 4242);
+        Assert.NotNull(stored.WatchedAlbumGroups);
+        Assert.Empty(stored.WatchedAlbumGroups!);
+        Assert.True(stored.TopSongsEnabled);
+    }
+
+    [Fact]
+    public async Task UpdateWatchlistPreferences_NeverConfiguredAlbumGroups_StayNull()
+    {
+        await _repository.AddWatchlistAsync(4243, "Never Configured", "artist-never", null);
+
+        var updated = await _repository.UpdateWatchlistPreferencesAsync(
+            PreferenceInput(4243, null, topSongsEnabled: true));
+
+        Assert.True(updated);
+
+        var stored = Assert.Single(await _repository.GetWatchlistAsync(), item => item.ArtistId == 4243);
+        Assert.Null(stored.WatchedAlbumGroups);
+    }
+
+    [Fact]
+    public async Task UpdateWatchlistPreferences_GenuineAlbumAndSingleSelection_IsUnchanged()
+    {
+        // Users who really selected albums and singles must keep exactly that.
+        await _repository.AddWatchlistAsync(4244, "Genuine", "artist-genuine", null);
+
+        var updated = await _repository.UpdateWatchlistPreferencesAsync(
+            PreferenceInput(4244, new[] { "album", "single" }, topSongsEnabled: true));
+
+        Assert.True(updated);
+
+        var stored = Assert.Single(await _repository.GetWatchlistAsync(), item => item.ArtistId == 4244);
+        Assert.Equal(new[] { "album", "single" }, stored.WatchedAlbumGroups);
+    }
+
+    private static LibraryRepository.ArtistWatchPreferenceUpdateInput PreferenceInput(
+        long artistId,
+        IReadOnlyCollection<string>? albumGroups,
+        bool topSongsEnabled)
+        => new(
+            artistId,
+            DestinationFolderId: null,
+            DestinationFolderOverride: null,
+            AlbumGroups: albumGroups,
+            TopSongsEnabled: topSongsEnabled,
+            LatestReleasesOnly: false,
+            PreferredEngine: null,
+            DownloadEngineOrder: null,
+            RoutingRules: null,
+            AtmosDestinationFolderId: null,
+            AtmosDestinationFolderOverride: null,
+            DownloadVariantMode: null,
+            TopSongsSyncMode: null,
+            DownloadDiscographyEnabled: false,
+            IgnoreRules: null);
+
     private LibraryRepository NewRepository()
         => new(_configuration, NullLogger<LibraryRepository>.Instance);
 

@@ -23,6 +23,12 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     // schedules. A shared circuit lets them all back off together as one unit.
     private const int TargetCircuitFailureThreshold = 5;
     private const int TargetCircuitCooldownSeconds = 300;
+    // A single target-sync attempt must never be able to run unbounded. Without this the cycle
+    // teardown awaits this work and the whole coordinator stops scheduling forever, so a target
+    // that accepts the connection and then stalls (rather than refusing it) can wedge every
+    // future watch run. The deadline is per attempt, not per cycle: it bounds one media-server
+    // conversation while still leaving a healthy playlist with several targets room to finish.
+    internal static readonly TimeSpan TargetSyncAttemptDeadline = TimeSpan.FromMinutes(2);
     private const string PlaylistJobTrackId = "playlist";
     private const string ArtworkJobTrackIdPrefix = "artwork:";
     private readonly WatchlistRunSignal _coordinatorSignal;
@@ -96,6 +102,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         CancellationToken cancellationToken)
     {
         var processed = 0;
+        var hitJobCap = false;
         try
         {
             await RepairIncompleteJobsIfNeededAsync(cancellationToken);
@@ -119,6 +126,16 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 {
                     break;
                 }
+
+                // Checked BEFORE claiming. Claiming first and stopping afterwards would leave the
+                // job that crossed the cap in 'processing' with a live lease, so it would sit
+                // invisible until the lease expired. Leaving it unclaimed keeps it durably queued.
+                if (budget.MaxJobs is { } maxJobs && processed >= maxJobs)
+                {
+                    hitJobCap = true;
+                    break;
+                }
+
                 var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(
                     TargetSyncClaimBatchSize,
                     ProcessingLease,
@@ -156,6 +173,16 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Watchlist coordinator target sync phase failed; the next coordinator cycle will retry.");
+        }
+
+        if (hitJobCap)
+        {
+            // Informational, not a failure: the remaining jobs are untouched and still durably
+            // queued. Surfaced so an operator can tell a healthy capped pass apart from a stall.
+            _logger.LogInformation(
+                "Watchlist target sync drain reached its per-cycle cap of {MaxJobs} job(s) after processing {Processed}; remaining jobs stay queued for the next cycle.",
+                budget.MaxJobs,
+                processed);
         }
 
         return processed;
@@ -233,12 +260,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     {
         string ReadString(JsonElement root, params string[] names)
         {
-            foreach (var name in names)
+            foreach (var name in names
+                         .Where(candidate => root.TryGetProperty(candidate, out var value)
+                             && value.ValueKind == JsonValueKind.String))
             {
-                if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
-                {
-                    return value.GetString() ?? string.Empty;
-                }
+                return root.GetProperty(name).GetString() ?? string.Empty;
             }
             return string.Empty;
         }
@@ -422,19 +448,17 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                             outcome.SourcePlaylistId,
                             cancellationToken)
                         : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
-                    if (completed)
+                    if (completed
+                        && IsPlaylistJob(job.TrackId)
+                        && outcome.AppliedKind is WatchlistAppliedKind.Partial
+                            or WatchlistAppliedKind.WaitingForSeed)
                     {
-                        if (IsPlaylistJob(job.TrackId)
-                            && outcome.AppliedKind is WatchlistAppliedKind.Partial
-                                or WatchlistAppliedKind.WaitingForSeed)
-                        {
-                            await repository.EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
-                                job.Source,
-                                job.PlaylistId,
-                                job.TargetService,
-                                job.SnapshotId ?? string.Empty,
-                                cancellationToken);
-                        }
+                        await repository.EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
+                            job.Source,
+                            job.PlaylistId,
+                            job.TargetService,
+                            job.SnapshotId ?? string.Empty,
+                            cancellationToken);
                     }
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
@@ -564,7 +588,38 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
+    /// <summary>
+    /// Runs one bounded target-sync attempt. The deadline is enforced here rather than inside the
+    /// attempt body so that every remote call the attempt makes -- playlist lookup, artwork apply,
+    /// membership sync -- inherits it, and so that a stalled target is reported as a retryable
+    /// transport failure instead of silently never returning.
+    /// </summary>
     private async Task<SyncAttemptOutcome> TrySyncOnceAsync(
+        SyncRequest request,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        attemptCancellation.CancelAfter(TargetSyncAttemptDeadline);
+        try
+        {
+            return await TrySyncOnceCoreAsync(request, attempt, attemptCancellation.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Watchlist playlist sync attempt {Attempt} for {Source}:{PlaylistId} exceeded the {DeadlineSeconds}s attempt deadline and was abandoned.",
+                attempt,
+                request.Source,
+                request.PlaylistId,
+                (int)TargetSyncAttemptDeadline.TotalSeconds);
+            return SyncAttemptOutcome.Retry(
+                $"{FormatTargetServiceLabel(request.TargetService)} sync exceeded the {(int)TargetSyncAttemptDeadline.TotalSeconds}s attempt deadline.",
+                SyncFailureClass.Transport);
+        }
+    }
+
+    private async Task<SyncAttemptOutcome> TrySyncOnceCoreAsync(
         SyncRequest request,
         int attempt,
         CancellationToken cancellationToken)
@@ -1044,11 +1099,20 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     }
 }
 
+/// <summary>
+/// Bounds a single drain pass. <paramref name="MaxJobs"/> caps how many jobs this pass may claim
+/// and process. Jobs beyond the cap are never claimed, so they stay in their durable queued state
+/// and are picked up by a later cycle -- reaching the cap is a normal outcome, not a failure.
+/// The cap is intentionally a job count rather than a wall-clock budget: the amount of work a
+/// cycle-end pass performs is then a fixed, predictable number regardless of machine speed,
+/// provider latency, or load.
+/// </summary>
 public sealed record TargetSyncBudget(
     (string Source, string PlaylistId)? PlaylistFilter,
     WatchlistSyncJobKind Kind,
     Func<CancellationToken, Task>? OnProgress = null,
-    Func<bool>? ShouldStop = null)
+    Func<bool>? ShouldStop = null,
+    int? MaxJobs = null)
 {
     public static TargetSyncBudget DrainAll(
         WatchlistSyncJobKind kind,
@@ -1059,7 +1123,21 @@ public sealed record TargetSyncBudget(
             PlaylistFilter: playlistFilter,
             Kind: kind,
             OnProgress: onProgress,
-            ShouldStop: shouldStop);
+            ShouldStop: shouldStop,
+            MaxJobs: null);
+
+    public static TargetSyncBudget DrainBounded(
+        WatchlistSyncJobKind kind,
+        int maxJobs,
+        (string Source, string PlaylistId)? playlistFilter = null,
+        Func<CancellationToken, Task>? onProgress = null,
+        Func<bool>? shouldStop = null)
+        => new(
+            PlaylistFilter: playlistFilter,
+            Kind: kind,
+            OnProgress: onProgress,
+            ShouldStop: shouldStop,
+            MaxJobs: Math.Max(1, maxJobs));
 }
 
 public enum SyncFailureClass

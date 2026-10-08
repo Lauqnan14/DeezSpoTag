@@ -826,6 +826,27 @@
     color: #fff;
 }
 
+/* Official provider marks that have no Font Awesome brand glyph. Rendered as a CSS mask so
+   the artwork inherits the badge colour and stays correct in both themes. 13px matches the
+   optical weight of the Font Awesome glyphs the other badges use (11px em box, ~8px ink). */
+.watchlist-card-badge-icon {
+    width: 13px;
+    height: 13px;
+    display: inline-block;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    -webkit-mask-repeat: no-repeat;
+    mask-position: center;
+    -webkit-mask-position: center;
+    mask-size: contain;
+    -webkit-mask-size: contain;
+}
+
+.watchlist-card-badge-icon--tidal {
+    mask-image: url("/images/availability/tidal.svg");
+    -webkit-mask-image: url("/images/availability/tidal.svg");
+}
+
 .playlist-watchlist-priority-badge {
     position: absolute;
     top: 6px;
@@ -1046,7 +1067,9 @@
 .watchlist-artist-card:hover .watchlist-kebab-btn,
 .watchlist-artist-card:focus-within .watchlist-kebab-btn,
 .watchlist-playlist-card-v2:hover .watchlist-kebab-btn,
-.watchlist-playlist-card-v2:focus-within .watchlist-kebab-btn {
+.watchlist-playlist-card-v2:focus-within .watchlist-kebab-btn,
+.library-playlist-card:hover .watchlist-kebab-btn,
+.library-playlist-card:focus-within .watchlist-kebab-btn {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;

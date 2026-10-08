@@ -81,11 +81,18 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTest
             "WatchlistRunCoordinator.cs"));
 
         Assert.DoesNotContain("Task.WhenAll(jobs", worker, StringComparison.Ordinal);
-        Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
-        Assert.DoesNotContain("TargetSyncJobTimeout", worker, StringComparison.Ordinal);
+        // A target that stalls mid-request must not be able to hold the cycle open forever, so
+        // every attempt runs under a per-operation deadline and is reported as a retryable
+        // transport failure (which also feeds the target circuit breaker).
+        Assert.Contains("TargetSyncAttemptDeadline", worker, StringComparison.Ordinal);
+        Assert.Contains("CancelAfter(TargetSyncAttemptDeadline)", worker, StringComparison.Ordinal);
+        Assert.Contains("SyncFailureClass.Transport", worker, StringComparison.Ordinal);
         Assert.Contains("TargetSyncBudget", worker, StringComparison.Ordinal);
+        // Deliberately a job count rather than a wall-clock budget, so the amount of cycle-end
+        // work is deterministic regardless of machine speed, provider latency, or load.
         Assert.DoesNotContain("TimeBudget", worker, StringComparison.Ordinal);
-        Assert.DoesNotContain("while (processed < maxJobs", worker, StringComparison.Ordinal);
+        Assert.Contains("MaxJobs", worker, StringComparison.Ordinal);
+        Assert.Contains("hitJobCap", worker, StringComparison.Ordinal);
         Assert.Contains("while (true)", ExtractMethodBody(worker, "public async Task<int> ProcessTargetSyncWorkAsync("), StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
         Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
@@ -257,8 +264,14 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTest
             "Services",
             "PlaylistSyncService.cs"));
 
+        // Every mirror writer must detect the gap...
         Assert.Equal(3, CountOccurrences(sync, "var partialIdentityGap = HasUnresolvedTargetIdentities"));
-        Assert.Equal(3, CountOccurrences(sync, "var appendMissingOnly = partialIdentityGap"));
+        // ...and must not do a destructive partial mirror. A writer can express that either inline
+        // (the writers that have not moved behind the engine yet) or by handing the gap to the
+        // engine as a force-append reason, which the engine turns into add-only. Between them the
+        // two forms must cover all three writers, or one of them could mirror destructively.
+        Assert.Equal(3, CountOccurrences(sync, "var appendMissingOnly = partialIdentityGap")
+            + CountOccurrences(sync, "forceAppendReason: partialIdentityGap"));
         Assert.DoesNotContain(
             "membership was preserved while locally available tracks wait for stored",
             sync,

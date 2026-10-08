@@ -327,7 +327,9 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("WatchUseSnapshotIdChecking", source, StringComparison.Ordinal);
-        Assert.Contains("var maxCandidates = CompletePlaylistCandidateFetchCount;", source, StringComparison.Ordinal);
+        // One shared, configurable snapshot ceiling replaces the former int.MaxValue sentinel.
+        Assert.Contains("var maxCandidates = ResolveSnapshotTrackLimit();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CompletePlaylistCandidateFetchCount", source, StringComparison.Ordinal);
         Assert.Contains("FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchlistMetadataAsync", source, StringComparison.Ordinal);
         Assert.Contains("RemovePlaylistWatchTracksNotInAsync", source, StringComparison.Ordinal);
@@ -1192,7 +1194,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("request.TargetService", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("TargetOperationTimeout", syncSource, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncAttemptDeadline", syncSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Task.WhenAll(jobs", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync", engineSource, StringComparison.Ordinal);
@@ -1343,6 +1345,30 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
             IdentityStatus: identityStatus,
             SyncStatus: syncStatus,
             TargetService: "plex");
+
+    [Fact]
+    public void ArtistWatchCard_TidalBadgeUsesTheOfficialTidalMark()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var cssSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "css", "library.css"));
+
+        // The official Tidal mark ships in the repo; the badge must not fall back to a
+        // generic Font Awesome glyph just because there is no FA brand icon for Tidal.
+        Assert.Contains("watchlist-card-badge-icon--tidal", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("fa-wave-square", scriptSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "mask-image: url(\"/images/availability/tidal.svg\");",
+            cssSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-webkit-mask-image: url(\"/images/availability/tidal.svg\");",
+            cssSource,
+            StringComparison.Ordinal);
+
+        var tidalAsset = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "images", "availability", "tidal.svg");
+        Assert.True(File.Exists(tidalAsset), $"Missing official Tidal mark: {tidalAsset}");
+    }
 
     private static string ResolveRepoRoot()
     {

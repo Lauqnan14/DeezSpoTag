@@ -1840,6 +1840,11 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Services.Library.ILocalTrackAmbiguityResolver>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistLocalIdentityResolver>());
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine>();
+        // The engine is internal, so this interface is the only way a public controller can read
+        // playlist candidates. Without this alias the consumer's optional parameter silently
+        // resolved to null and its endpoint always reported "no tracks to sync".
+        services.AddSingleton<DeezSpoTag.Web.Services.IWatchlistTrackCandidateSource>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>());
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchReconciler(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
@@ -2161,8 +2166,24 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         using var scope = app.Services.CreateScope();
         var startupState = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Web.Services.StartupStateService>();
         var dbService = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Library.LibraryDbService>();
-        await dbService.EnsureSchemaAsync();
-        RecordStartupCheckpoint(startupState, app.Logger, "schema ensured");
+          try
+          {
+              await dbService.EnsureSchemaAsync();
+              RecordStartupCheckpoint(startupState, app.Logger, "schema ensured");
+          }
+          catch (Exception ex) when (IsRecoverableSchemaFailure(ex))
+          {
+              // The app must still start. Refusing to boot over a schema problem turns a
+              // recoverable issue - a migration that did not apply, a column that needs
+              // adding - into a server that is simply down and cannot be used or diagnosed.
+              // The failure is reported loudly and startup continues; the features that need
+              // the missing schema fail on their own rather than taking the app with them.
+              app.Logger.LogError(
+                  ex,
+                  "Library schema could not be fully applied. Starting in a degraded state; "
+                  + "playlist sync and watchlist features may not work until this is resolved.");
+              RecordStartupCheckpoint(startupState, app.Logger, "schema ensure FAILED: " + ex.Message);
+          }
 
         // Wire the static alias gateway used by non-DI download components.
         DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(

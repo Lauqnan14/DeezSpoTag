@@ -8411,7 +8411,11 @@ LIMIT 1;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var column = source.Trim().ToLowerInvariant() switch
+        // Each supported source has its own fixed column, so the statement is
+        // selected from constants rather than spliced from the caller's string.
+        const string SpotifySql = "SELECT artist_id FROM artist_watchlist WHERE lower(trim(spotify_id))=lower(trim(@sourceId)) LIMIT 1;";
+        const string DeezerSql = "SELECT artist_id FROM artist_watchlist WHERE lower(trim(deezer_id))=lower(trim(@sourceId)) LIMIT 1;";
+        var sql = source.Trim().ToLowerInvariant() switch
         {
             "spotify" => "spotify_id",
             "deezer" => "deezer_id",
@@ -8421,9 +8425,7 @@ LIMIT 1;";
         {
             return null;
         }
-        await using var command = new SqliteCommand(
-            $"SELECT artist_id FROM artist_watchlist WHERE lower(trim({column}))=lower(trim(@sourceId)) LIMIT 1;",
-            connection);
+        await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("sourceId", sourceId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null || result == DBNull.Value ? null : Convert.ToInt64(result);
@@ -14561,47 +14563,8 @@ LIMIT 1;", connection);
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var skipApplied = force
-            ? string.Empty
-            : @"
-  AND NOT EXISTS (
-      SELECT 1 FROM playlist_watch_target_sync_state target
-      WHERE target.source=@source AND target.source_id=@playlistId
-        AND target.target_service=lower(trim(configured.value))
-        AND target.status='applied'
-        AND target.applied_snapshot_id=CASE
-            WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END)";
-        var sql = $@"
-INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id)
-SELECT @source, @playlistId, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP,
-       CASE WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END
-FROM playlist_watch_preferences preference,
-     json_each(CASE
-         WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
-             THEN preference.sync_targets_json
-         ELSE json_array(preference.service)
-     END) configured
-WHERE preference.source=@source AND preference.source_id=@playlistId
-  AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
-  AND (@targetService IS NULL OR lower(trim(configured.value))=@targetService)
-{skipApplied}
-ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
- attempt_count=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-                    THEN watchlist_sync_job.attempt_count ELSE 0 END,
- status=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-             THEN watchlist_sync_job.status ELSE 'pending' END,
- lease_owner=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-                  THEN watchlist_sync_job.lease_owner ELSE NULL END,
- lease_until_utc=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-                      THEN watchlist_sync_job.lease_until_utc ELSE NULL END,
- next_attempt_utc=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-                       THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
- last_error=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
-                 THEN watchlist_sync_job.last_error ELSE NULL END,
- snapshot_id=excluded.snapshot_id,
- updated_at=CURRENT_TIMESTAMP
-RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
-          attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error,snapshot_id;";
+        var skipApplied = force ? string.Empty : SkippedAppliedSnapshotPredicate;
+        var sql = BuildEnqueueWatchlistSyncJobsSql(skipApplied);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);

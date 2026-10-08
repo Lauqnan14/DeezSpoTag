@@ -5,6 +5,9 @@ using System.Text;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Navidrome;
+using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
@@ -94,7 +97,7 @@ public sealed record PlaylistReconciliationResult(
     bool FailureIsIncidentOrigin = true);
 
 [SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
-internal sealed class WatchlistEngine
+internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
 {
     private const string NoTargetServerSelectedMessage = "No target server selected.";
     private const string PlaylistSyncDisabledDownloadMonitoringMessage =
@@ -133,6 +136,15 @@ internal sealed class WatchlistEngine
     private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
     private const string SmartTracklistSource = "smarttracklist";
+
+    /// <summary>
+    /// The self-hosted servers the Library Playlists tab lists. Named here because the sync engine
+    /// keys its source adapters by source name, and without these a playlist on one of them could
+    /// not be read for a sync at all.
+    /// </summary>
+    private const string LibraryServerPlexSource = MediaServerTargetServices.Plex;
+    private const string LibraryServerJellyfinSource = MediaServerTargetServices.Jellyfin;
+    private const string LibraryServerNavidromeSource = MediaServerTargetServices.Navidrome;
     private const string AppleSource = "apple";
     private const string BoomplaySource = "boomplay";
     private const string RecommendationsSource = "recommendations";
@@ -156,7 +168,6 @@ internal sealed class WatchlistEngine
     private const string DeezerLabel = "Deezer";
     private const string SpotifyHomeTrendingSourceId = "home-trending-songs";
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
-    private const int CompletePlaylistCandidateFetchCount = int.MaxValue;
     private const int SpotifyVirtualPlaylistCandidateLimit = 1000;
     private const int MaximumProviderPlaylistPages = 10000;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
@@ -272,7 +283,26 @@ internal sealed class WatchlistEngine
         string? OwnerName,
         string? FailureCode,
         string? FailureIncidentId,
-        bool FailureIsIncidentOrigin);
+        bool FailureIsIncidentOrigin,
+        /// <summary>
+        /// How many source items the provider returned before this engine deduplicated them. Used
+        /// by the completeness check so a duplicated playlist entry is not mistaken for a short read.
+        /// </summary>
+        int? SourceItemsObserved = null)
+    {
+        /// <summary>
+        /// True when the snapshot stopped early because it reached the configured track ceiling
+        /// rather than because the provider failed or misbehaved. This is an intentional, bounded
+        /// result: the provider reported more tracks than were collected, so the snapshot describes
+        /// only the first N. It must never be treated as a source failure, and it must never
+        /// authorise removing anything outside the collected window.
+        /// </summary>
+        public bool SnapshotTruncated =>
+            !IsComplete
+            && FailureCode is null
+            && TrackCount is { } reported
+            && Candidates.Count < reported;
+    }
 
     private sealed record LivePlaylistSnapshotMetadata(
         string? SnapshotId = null,
@@ -286,13 +316,22 @@ internal sealed class WatchlistEngine
         string? OwnerName = null,
         string? FailureCode = null,
         string? FailureIncidentId = null,
-        bool FailureIsIncidentOrigin = true);
+        bool FailureIsIncidentOrigin = true,
+        /// <summary>
+        /// How many source items the provider actually returned, before this engine deduplicated
+        /// them. This is the value the completeness check must compare against the provider's
+        /// declared total: comparing the declared total against the deduplicated candidate count
+        /// would treat a playlist that merely lists the same track twice as a corrupt snapshot and
+        /// retry it forever.
+        /// </summary>
+        int? SourceItemsObserved = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
+        bool forceMediaServerSync = false,
+        PlaylistHeadSnapshot? prefetchedHead = null)
     {
         if (playlist == null)
         {
@@ -316,14 +355,21 @@ internal sealed class WatchlistEngine
             consecutiveFailures: 0,
             cancellationToken);
 
-        var maxCandidates = CompletePlaylistCandidateFetchCount;
+        var maxCandidates = ResolveSnapshotTrackLimit();
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
         var existingCandidateCache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
         var providerReadinessRevision = await BuildProviderReadinessRevisionAsync(source);
         var settings = _settingsService.LoadSettings();
         var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
 
-        var headSnapshot = await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
+        // A head already fetched by the platform snapshot phase is reused verbatim. When null --
+        // which is every existing caller, including the API's forced sync -- the head is fetched
+        // here exactly as before, so nothing about the serial path changes.
+        var headSnapshot = prefetchedHead is not null
+            && string.Equals(prefetchedHead.Source, source, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(prefetchedHead.SourceId, sourceId, StringComparison.Ordinal)
+            ? ToLiveHeadSnapshot(prefetchedHead)
+            : await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
         var liveSnapshot = headSnapshot;
         LivePlaylistSnapshot? fullSnapshotForArtwork = null;
         if (_playlistVisualService != null
@@ -385,6 +431,9 @@ internal sealed class WatchlistEngine
 
         var existingSnapshotId = NormalizeSnapshotId(existingCandidateCache?.SnapshotId);
         var currentSnapshotId = NormalizeSnapshotId(liveSnapshot.SnapshotId);
+        // Starts after the head is already in hand, so this measures the expansion/decision cost
+        // rather than re-reporting the head fetch the platform phase already timed.
+        var snapshotPhaseStartedUtc = DateTimeOffset.UtcNow;
         var tryUseCachedCandidates = settings.WatchUseSnapshotIdChecking
             && SupportsStrictSnapshotReuse(source)
             && !string.IsNullOrWhiteSpace(currentSnapshotId)
@@ -508,7 +557,13 @@ internal sealed class WatchlistEngine
                 cancellationToken);
         }
 
-        if (!liveSnapshot.IsComplete || (candidates.Count == 0 && !liveSnapshot.IsAuthoritativeEmpty))
+        // A snapshot truncated at the configured ceiling is an intentional, bounded result rather
+        // than a provider problem, so it continues into reconciliation with a reduced authoritative
+        // window. A genuine provider error, or an empty snapshot that was never verified as
+        // authoritative, still fails closed and preserves the previous good snapshot.
+        var snapshotTruncated = liveSnapshot.SnapshotTruncated;
+        if (!snapshotTruncated
+            && (!liveSnapshot.IsComplete || (candidates.Count == 0 && !liveSnapshot.IsAuthoritativeEmpty)))
         {
             var playlistScopedFailure = IsPlaylistScopedSourceFailure(liveSnapshot.FailureCode);
             var sourceFailureMessage = !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
@@ -596,7 +651,19 @@ internal sealed class WatchlistEngine
                 WatchlistHistoryStatus.SourceUpdated,
                 cancellationToken);
         }
-        if (HasAuthoritativeCandidateCountDisagreement(liveTrackCount, candidates.Count))
+        // A truncated snapshot is expected to disagree with the provider's reported count -- that
+        // disagreement is the truncation, not a data problem -- so it must not be treated as a
+        // source failure. Failing here would strand any playlist larger than the snapshot ceiling in
+        // a retry loop that never backs off and never trips the circuit breaker.
+        // Completeness is about whether the whole playlist was READ, so it compares the provider's
+        // declared total against how many source items were actually observed. Comparing against the
+        // deduplicated candidate count instead would classify a playlist that simply lists the same
+        // track twice as a corrupt snapshot, and that failure never trips the circuit breaker, so it
+        // would retry silently forever. Providers that do not report an observed count fall back to
+        // the candidate count, which is all they can offer.
+        var observedSourceCount = liveSnapshot.SourceItemsObserved ?? candidates.Count;
+        if (!snapshotTruncated
+            && HasAuthoritativeCandidateCountDisagreement(liveTrackCount, observedSourceCount))
         {
             const string candidateCountMismatchMessage = "Playlist source track count does not match the complete candidate snapshot; reconciliation will retry.";
             await UpdatePlaylistStateAsync(
@@ -691,6 +758,24 @@ internal sealed class WatchlistEngine
             providerReadinessRevision,
             candidateCacheComplete,
             cancellationToken);
+
+        // Snapshot pipeline timing. Structured and free of credentials so the real distribution of
+        // head vs full-fetch cost per provider can be measured rather than estimated.
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Playlist snapshot phase completed. Source={Source} PlaylistId={PlaylistId} TrackCount={TrackCount} FetchedTrackCount={FetchedTrackCount} SnapshotComplete={SnapshotComplete} SnapshotReused={SnapshotReused} SnapshotChanged={SnapshotChanged} Truncated={Truncated} TotalSnapshotMs={TotalSnapshotMs}",
+                source,
+                sourceId,
+                liveTrackCount,
+                candidates.Count,
+                liveSnapshot.IsComplete,
+                !snapshotExpanded,
+                sourceChanged,
+                snapshotTruncated,
+                (long)(DateTimeOffset.UtcNow - snapshotPhaseStartedUtc).TotalMilliseconds);
+        }
+
         if (liveSnapshot.IsComplete)
         {
             await _libraryRepository.RemovePlaylistWatchTracksNotInAsync(
@@ -789,12 +874,18 @@ internal sealed class WatchlistEngine
             source,
             sourceId,
             cancellationToken);
-        var hasOutstandingPlaylistWork = selection.MissingTracks.Count > 0
+        // A truncated snapshot is always reported as incomplete, even when the collected window
+        // happened to reconcile cleanly, so the UI never implies the whole playlist was covered.
+        var hasOutstandingPlaylistWork = snapshotTruncated
+            || selection.MissingTracks.Count > 0
             || remainingQueueableTracks > 0
             || hasIncompleteTargetSync
             || hasOutstandingOperationalWork;
         var reconciliationMessage = (forcedSyncWithoutTargets
                 ? NoTargetServerSelectedMessage
+                : null)
+            ?? (snapshotTruncated
+                ? $"Playlist snapshot was truncated at {candidates.Count} of {liveTrackCount} track(s) by the configured snapshot limit; the collected window was reconciled and tracks beyond it were left untouched."
                 : null)
             ?? (hasConfiguredPlaylistSyncTargets
                 ? "Playlist snapshot reconciled and available local tracks were applied to selected target servers."
@@ -1059,6 +1150,7 @@ internal sealed class WatchlistEngine
         }
 
         var results = new List<PlaylistReconciliationResult>();
+        var folders = await GetLibraryFoldersAsync(cancellationToken);
         foreach (var group in artistRows.GroupBy(
                      row => BuildPlaylistWatchKey(row.Source, row.SourceId),
                      StringComparer.OrdinalIgnoreCase))
@@ -1086,7 +1178,7 @@ internal sealed class WatchlistEngine
                 continue;
             }
 
-            var destinationFolderId = ResolveArtistDestinationFolderId(artist);
+            var destinationFolderId = ResolveArtistDestinationFolderId(artist, folders);
             if (!destinationFolderId.HasValue)
             {
                 results.Add(new PlaylistReconciliationResult(
@@ -1112,7 +1204,7 @@ internal sealed class WatchlistEngine
                 DownloadVariantMode = artist.DownloadVariantMode ?? ResolveGlobalArtistDownloadVariantMode(),
                 AtmosDestinationFolderId = artist.AtmosDestinationFolderOverride == true
                     ? artist.AtmosDestinationFolderId
-                    : _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId,
+                    : ResolveDefaultAtmosDestinationFolderId(folders),
                 RuleSet = new QueueWatchRuleSet(artist.RoutingRules, artist.IgnoreRules),
                 WatchlistOrigin = PlaylistWatchOrigin,
                 CandidateIdentityRevision = group.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.CandidateRevision))?.CandidateRevision,
@@ -1282,6 +1374,7 @@ internal sealed class WatchlistEngine
     {
         var destinationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var inspectedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var folders = await GetLibraryFoldersAsync(cancellationToken);
         foreach (var row in dueRows)
         {
             var key = BuildPlaylistWatchKey(row.Source, row.SourceId ?? string.Empty);
@@ -1294,7 +1387,7 @@ internal sealed class WatchlistEngine
             {
                 if (TryParseArtistWatchContainerId(row.SourceId, out var artistId)
                     && artistsById.TryGetValue(artistId, out var artist)
-                    && ResolveArtistDestinationFolderId(artist).HasValue)
+                    && ResolveArtistDestinationFolderId(artist, folders).HasValue)
                 {
                     destinationKeys.Add(key);
                 }
@@ -1306,7 +1399,7 @@ internal sealed class WatchlistEngine
                 NormalizeWatchSource(row.Source),
                 (row.SourceId ?? string.Empty).Trim(),
                 cancellationToken);
-            if (HasDownloadDestination(preference))
+            if (ResolvePlaylistDestinationFolderId(preference, folders).HasValue)
             {
                 destinationKeys.Add(key);
             }
@@ -1345,6 +1438,7 @@ internal sealed class WatchlistEngine
         }
 
         var results = new List<PlaylistReconciliationResult>();
+        var folders = await GetLibraryFoldersAsync(cancellationToken);
         foreach (var (playlist, rows) in groupedRows)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1356,7 +1450,8 @@ internal sealed class WatchlistEngine
             var source = NormalizeWatchSource(playlist.Source);
             var sourceId = (playlist.SourceId ?? string.Empty).Trim();
             var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
-            if (!HasDownloadDestination(preference))
+            var destinationFolderId = ResolvePlaylistDestinationFolderId(preference, folders);
+            if (!destinationFolderId.HasValue)
             {
                 results.Add(new PlaylistReconciliationResult(
                     false,
@@ -1382,7 +1477,8 @@ internal sealed class WatchlistEngine
                 PreferredEngine = preference?.PreferredEngine,
                 DownloadEngineOrder = preference?.DownloadEngineOrder,
                 DownloadVariantMode = preference?.DownloadVariantMode,
-                AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
+                AtmosDestinationFolderId = preference?.AtmosDestinationFolderId
+                    ?? ResolveDefaultAtmosDestinationFolderId(folders),
                 RuleSet = new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
                 WatchlistOrigin = PlaylistWatchOrigin,
                 CandidateIdentityRevision = rows.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.CandidateRevision))?.CandidateRevision,
@@ -1395,7 +1491,7 @@ internal sealed class WatchlistEngine
                 .ToList();
             var queueResult = await QueueWatchIntentTracksAsync(
                 missingTracks,
-                preference?.DestinationFolderId,
+                destinationFolderId,
                 queueOptions,
                 cancellationToken);
             await AddPlaylistWatchHistoryAsync(source, sourceId, playlist.Name, queueResult, cancellationToken);
@@ -1716,7 +1812,7 @@ internal sealed class WatchlistEngine
             return await FetchLivePlaylistSnapshotAsync(
                 source,
                 sourceId,
-                CompletePlaylistCandidateFetchCount,
+                ResolveSnapshotTrackLimit(),
                 cancellationToken);
         }
 
@@ -2747,19 +2843,19 @@ internal sealed class WatchlistEngine
 
         if (!_libraryRepository.IsConfigured)
         {
-            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, CompletePlaylistCandidateFetchCount, cancellationToken)).Candidates;
+            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, ResolveSnapshotTrackLimit(), cancellationToken)).Candidates;
         }
 
         var isMonitored = await _libraryRepository.IsPlaylistWatchlistedAsync(normalizedSource, normalizedSourceId, cancellationToken);
         if (!isMonitored)
         {
-            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, CompletePlaylistCandidateFetchCount, cancellationToken)).Candidates;
+            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, ResolveSnapshotTrackLimit(), cancellationToken)).Candidates;
         }
 
         var settings = _settingsService.LoadSettings();
         if (!settings.WatchUseSnapshotIdChecking)
         {
-            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, CompletePlaylistCandidateFetchCount, cancellationToken)).Candidates;
+            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, ResolveSnapshotTrackLimit(), cancellationToken)).Candidates;
         }
 
         var watchState = await _libraryRepository.GetPlaylistWatchStateAsync(normalizedSource, normalizedSourceId, cancellationToken);
@@ -2768,7 +2864,7 @@ internal sealed class WatchlistEngine
             && (string.Equals(normalizedSource, QobuzSource, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(normalizedSource, TidalSource, StringComparison.OrdinalIgnoreCase)))
         {
-            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, CompletePlaylistCandidateFetchCount, cancellationToken)).Candidates;
+            return (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, ResolveSnapshotTrackLimit(), cancellationToken)).Candidates;
         }
 
         var cached = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
@@ -2794,7 +2890,7 @@ internal sealed class WatchlistEngine
             }
         }
 
-        var freshSnapshot = await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, CompletePlaylistCandidateFetchCount, cancellationToken);
+        var freshSnapshot = await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, ResolveSnapshotTrackLimit(), cancellationToken);
         var freshCandidates = freshSnapshot.Candidates;
         var freshComplete = freshSnapshot.IsComplete
                             && freshCandidates.All(candidate => PlaylistCandidateContract.IsResolvable(normalizedSource, candidate));
@@ -3127,13 +3223,29 @@ internal sealed class WatchlistEngine
     private IReadOnlyDictionary<string, IPlaylistSourceAdapter> CreateSourceAdapters()
         => new Dictionary<string, IPlaylistSourceAdapter>(StringComparer.OrdinalIgnoreCase)
         {
+            // The three self-hosted servers. The Library Playlists tab lists THEIR playlists and
+            // offers a Sync action on each, but without an adapter here the candidate lookup had
+            // nothing to read and every sync reported "the playlist has no tracks to sync" - which
+            // is indistinguishable from a playlist that really is empty.
+            [LibraryServerPlexSource] = new PlaylistSourceAdapter(
+                LibraryServerPlexSource,
+                (id, max, token) => GetLibraryServerSnapshotAsync(LibraryServerPlexSource, id, max, token),
+                (id, token) => GetLibraryServerSnapshotHeadAsync(LibraryServerPlexSource, id, token)),
+            [LibraryServerJellyfinSource] = new PlaylistSourceAdapter(
+                LibraryServerJellyfinSource,
+                (id, max, token) => GetLibraryServerSnapshotAsync(LibraryServerJellyfinSource, id, max, token),
+                (id, token) => GetLibraryServerSnapshotHeadAsync(LibraryServerJellyfinSource, id, token)),
+            [LibraryServerNavidromeSource] = new PlaylistSourceAdapter(
+                LibraryServerNavidromeSource,
+                (id, max, token) => GetLibraryServerSnapshotAsync(LibraryServerNavidromeSource, id, max, token),
+                (id, token) => GetLibraryServerSnapshotHeadAsync(LibraryServerNavidromeSource, id, token)),
             [SpotifySource] = new PlaylistSourceAdapter(
                 SpotifySource,
                 GetSpotifyPlaylistSnapshotAsync,
                 GetSpotifySnapshotHeadAsync),
             [DeezerSource] = new PlaylistSourceAdapter(
                 DeezerSource,
-                async (id, _, token) => BuildLivePlaylistSnapshot(await GetDeezerTrackCandidatesAsync(id, token)),
+                GetDeezerSnapshotAsync,
                 GetDeezerSnapshotHeadAsync),
             [SmartTracklistSource] = new PlaylistSourceAdapter(
                 SmartTracklistSource,
@@ -3141,11 +3253,11 @@ internal sealed class WatchlistEngine
                 GetSmartTracklistSnapshotHeadAsync),
             [AppleSource] = new PlaylistSourceAdapter(
                 AppleSource,
-                async (id, _, token) => await GetAppleSnapshotAsync(id, token),
+                GetAppleSnapshotAsync,
                 GetAppleSnapshotHeadAsync),
             [BoomplaySource] = new PlaylistSourceAdapter(
                 BoomplaySource,
-                async (id, _, token) => await GetBoomplaySnapshotAsync(id, token),
+                GetBoomplaySnapshotAsync,
                 GetBoomplaySnapshotHeadAsync),
             [RecommendationsSource] = new PlaylistSourceAdapter(
                 RecommendationsSource,
@@ -3153,11 +3265,11 @@ internal sealed class WatchlistEngine
                 static (_, _) => Task.FromResult(new LivePlaylistSnapshotMetadata())),
             [QobuzSource] = new PlaylistSourceAdapter(
                 QobuzSource,
-                async (id, _, token) => BuildLivePlaylistSnapshot(await GetQobuzTrackCandidatesAsync(id, token)),
+                GetQobuzSnapshotAsync,
                 GetQobuzSnapshotHeadAsync),
             [TidalSource] = new PlaylistSourceAdapter(
                 TidalSource,
-                async (id, _, token) => await GetTidalSnapshotAsync(id, token),
+                GetTidalSnapshotAsync,
                 GetTidalSnapshotHeadAsync)
         };
 
@@ -3308,6 +3420,31 @@ internal sealed class WatchlistEngine
             CanClearImageUrl: true);
     }
 
+    /// <summary>
+    /// Builds a provider snapshot while enforcing the shared snapshot ceiling. Providers keep
+    /// their own page size and simply stop collecting once <paramref name="maxCandidates"/> is
+    /// reached; the provider's real total is preserved so the result is recognisably truncated
+    /// rather than silently short, and truncation is never reported as a provider failure.
+    /// </summary>
+    private static LivePlaylistSnapshot BuildPlaylistSnapshot(
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        int? providerTrackCount,
+        LivePlaylistSnapshotMetadata? metadata = null,
+        int? SourceItemsObserved = null)
+    {
+        var reported = providerTrackCount ?? candidates.Count;
+        var wasTruncated = reported > candidates.Count;
+        var baseMetadata = metadata ?? new LivePlaylistSnapshotMetadata();
+        return BuildLivePlaylistSnapshot(
+            candidates,
+            baseMetadata with
+            {
+                TrackCount = reported,
+                IsComplete = baseMetadata.IsComplete && !wasTruncated,
+                SourceItemsObserved = SourceItemsObserved
+            });
+    }
+
     private static LivePlaylistSnapshot BuildLivePlaylistSnapshot(
         IReadOnlyList<PlaylistTrackCandidate> candidates,
         LivePlaylistSnapshotMetadata? metadata = null)
@@ -3326,7 +3463,8 @@ internal sealed class WatchlistEngine
             EmptyToNull(metadata.OwnerName),
             EmptyToNull(metadata.FailureCode),
             EmptyToNull(metadata.FailureIncidentId),
-            metadata.FailureIsIncidentOrigin);
+            metadata.FailureIsIncidentOrigin,
+            metadata.SourceItemsObserved);
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate>? TryDeserializePlaylistTrackCandidates(string candidatesJson)
@@ -3352,6 +3490,28 @@ internal sealed class WatchlistEngine
     private static string? NormalizeSnapshotId(string? snapshotId)
     {
         return string.IsNullOrWhiteSpace(snapshotId) ? null : snapshotId.Trim();
+    }
+
+    /// <summary>
+    /// The single source of the maximum snapshot size, shared by every supported platform. Provider
+    /// page sizes stay independent of this value: providers keep requesting their own valid page
+    /// size and simply stop paging once this many candidates are held. A playlist larger than the
+    /// limit is snapshotted partially and reconciled as incomplete rather than as a source failure.
+    /// </summary>
+    private int ResolveSnapshotTrackLimit()
+    {
+        try
+        {
+            var configured = _settingsService.LoadSettings().PlaylistSnapshotTrackLimit;
+            return configured > 0
+                ? configured
+                : DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings.DefaultPlaylistSnapshotTrackLimit;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Falling back to the default playlist snapshot track limit.");
+            return DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings.DefaultPlaylistSnapshotTrackLimit;
+        }
     }
 
     private static bool SupportsStrictSnapshotReuse(string source)
@@ -3526,10 +3686,20 @@ internal sealed class WatchlistEngine
             }
         }
 
-        if (metadata.TotalTracks.HasValue && sourceItemsConsumed < metadata.TotalTracks.Value)
+        // The loop also exits when the candidate ceiling is reached. That is an intentional
+        // truncation, not the provider falling short, so it must not be reported as an incomplete
+        // source and must not carry a failure code.
+        var hitSnapshotCeiling = candidates.Count >= maxCandidates;
+        if (!hitSnapshotCeiling
+            && metadata.TotalTracks.HasValue
+            && sourceItemsConsumed < metadata.TotalTracks.Value)
         {
             isComplete = false;
             failureCode = "spotify_source_count_incomplete";
+        }
+        if (hitSnapshotCeiling)
+        {
+            isComplete = false;
         }
 
         return BuildLivePlaylistSnapshot(
@@ -3539,7 +3709,12 @@ internal sealed class WatchlistEngine
                 Name: metadata.Name,
                 Description: metadata.Description,
                 ImageUrl: metadata.ImageUrl,
-                TrackCount: candidates.Count,
+                // The provider's own total is preserved so a truncated snapshot is visibly
+                // distinguishable from a complete one.
+                TrackCount: metadata.TotalTracks ?? candidates.Count,
+                // Raw source items, before deduplication, so a playlist that lists the same track
+                // twice is not mistaken for a short read.
+                SourceItemsObserved: sourceItemsConsumed > 0 ? sourceItemsConsumed : null,
                 IsComplete: isComplete,
                 IsAuthoritativeEmpty: isAuthoritativeEmpty,
                 CanClearImageUrl: true,
@@ -3750,8 +3925,9 @@ internal sealed class WatchlistEngine
             EmptyToNull(seed.CoverUrl)));
     }
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetDeezerTrackCandidatesAsync(
+    private async Task<LivePlaylistSnapshot> GetDeezerSnapshotAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -3762,11 +3938,16 @@ internal sealed class WatchlistEngine
 
         var tracks = await _deezerClient.GetPlaylistTracksAsync(sourceId);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var candidates = new List<PlaylistTrackCandidate>(tracks.Count);
+        var candidates = new List<PlaylistTrackCandidate>(Math.Min(tracks.Count, maxCandidates));
 
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (candidates.Count >= maxCandidates)
+            {
+                break;
+            }
+
             if (track.SngId <= 0)
             {
                 continue;
@@ -3791,7 +3972,7 @@ internal sealed class WatchlistEngine
                 EmptyToNull(BuildDeezerCoverUrl(track.AlbPicture))));
         }
 
-        return candidates;
+        return BuildPlaylistSnapshot(candidates, tracks.Count, SourceItemsObserved: tracks.Count);
     }
 
     private sealed record SpotifyTrackSeed(
@@ -3830,6 +4011,7 @@ internal sealed class WatchlistEngine
 
     private async Task<LivePlaylistSnapshot> GetAppleSnapshotAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         var storefront = await GetPersistedAppleStorefrontAsync(sourceId, cancellationToken);
@@ -3842,7 +4024,7 @@ internal sealed class WatchlistEngine
                     FailureCode: "apple_storefront_not_persisted"));
         }
 
-        var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, storefront, cancellationToken);
+        var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, storefront, maxCandidates, cancellationToken);
         if (playlistData is null)
         {
             return BuildLivePlaylistSnapshot(
@@ -3854,12 +4036,18 @@ internal sealed class WatchlistEngine
 
         var candidates = MapWatchIntentTrackCandidates(playlistData.Tracks);
         var declaredTrackCount = playlistData.TrackCount;
+        // Stopping at the shared ceiling is an intentional bounded result, so it is separated from
+        // a genuinely short or mis-paged read: the former is truncation, the latter a failure.
+        var wasTruncated = declaredTrackCount is { } declared
+                           && declared > candidates.Count
+                           && candidates.Count >= maxCandidates;
         var positionsComplete = candidates
             .Select(static candidate => candidate.SourcePosition)
             .Where(static position => position.HasValue)
             .Select(static position => position!.Value)
             .SequenceEqual(Enumerable.Range(1, candidates.Count));
-        var countComplete = !declaredTrackCount.HasValue
+        var countComplete = wasTruncated
+                            || !declaredTrackCount.HasValue
                             || declaredTrackCount.Value <= 0
                             || declaredTrackCount.Value == candidates.Count;
         var isComplete = playlistData.IsComplete
@@ -3874,13 +4062,18 @@ internal sealed class WatchlistEngine
                 TrackCount: declaredTrackCount,
                 IsComplete: isComplete,
                 CanClearImageUrl: true,
-                FailureCode: isComplete
+                // Apple reports the playlist's own total; candidates may be fewer purely because
+                // duplicate entries were collapsed.
+                SourceItemsObserved: declaredTrackCount,
+                // Truncation must not be reported as a provider failure, so it carries no code.
+                FailureCode: isComplete || wasTruncated
                     ? null
                     : "apple_playlist_incomplete"));
     }
 
     private async Task<LivePlaylistSnapshot> GetBoomplaySnapshotAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         BoomplayPlaylistWatchData? playlistData;
@@ -3894,8 +4087,18 @@ internal sealed class WatchlistEngine
                 Array.Empty<PlaylistTrackCandidate>(),
                 new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: ex.FailureCode));
         }
-        var candidates = await MapBoomplayWatchIntentTrackCandidatesAsync(playlistData?.Tracks, cancellationToken);
+        // Cap before the expensive Deezer identity mapping so an oversized playlist cannot multiply
+        // mapping work, and report the provider's real total so truncation stays visible.
         var sourceTrackCount = playlistData?.TrackCount;
+        var sourceTracks = playlistData?.Tracks;
+        var wasTruncated = sourceTrackCount is { } declared
+                           && declared > 0
+                           && sourceTracks is { } availableTracks
+                           && availableTracks.Count > maxCandidates;
+        var tracksToMap = wasTruncated
+            ? sourceTracks!.Take(maxCandidates).ToList()
+            : sourceTracks;
+        var candidates = await MapBoomplayWatchIntentTrackCandidatesAsync(tracksToMap, cancellationToken);
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
@@ -3905,8 +4108,9 @@ internal sealed class WatchlistEngine
                 TrackCount: sourceTrackCount,
                 // Snapshot completeness describes the Boomplay source fetch only. Deezer
                 // mapping is per-track state and must not invalidate a complete playlist.
-                IsComplete: playlistData != null,
-                CanClearImageUrl: true));
+                IsComplete: playlistData != null && !wasTruncated,
+                CanClearImageUrl: true,
+                SourceItemsObserved: sourceTrackCount));
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> MapBoomplayWatchIntentTrackCandidatesAsync(
@@ -3960,6 +4164,7 @@ internal sealed class WatchlistEngine
         var resolvedLibraryId = 0L;
         if (!TryParseRecommendationLibraryId(sourceId, out resolvedLibraryId))
         {
+            if (sourceId.StartsWith("library:", StringComparison.Ordinal)) return Array.Empty<PlaylistTrackCandidate>();
             var libraries = await _libraryRepository.GetLibrariesAsync(cancellationToken);
             resolvedLibraryId = libraries.Count > 0 ? libraries[0].Id : 0;
         }
@@ -3990,7 +4195,7 @@ internal sealed class WatchlistEngine
             }
 
             candidates.Add(new PlaylistTrackCandidate(
-                trackId,
+                track.Source == "spotify" ? $"spotify:track:{trackId}" : trackId,
                 string.IsNullOrWhiteSpace(track.Isrc) ? null : track.Isrc.Trim(),
                 track.Title?.Trim() ?? string.Empty,
                 track.Artist?.Name?.Trim() ?? string.Empty,
@@ -3998,7 +4203,7 @@ internal sealed class WatchlistEngine
                 null,
                 track.Duration > 0 ? track.Duration * 1000 : null,
                 null,
-                Array.Empty<string>()));
+                Array.Empty<string>(), DeezerId: track.DeezerId, MappingStatus: track.MappingStatus, SourceUrl: track.SourceUrl));
         }
 
         return candidates;
@@ -4006,6 +4211,7 @@ internal sealed class WatchlistEngine
 
     private async Task<LivePlaylistSnapshot> GetTidalSnapshotAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         var playlistId = ResolveTidalPlaylistId(sourceId);
@@ -4030,6 +4236,13 @@ internal sealed class WatchlistEngine
                 isComplete = false;
                 break;
             }
+            // Stop paging once the shared snapshot ceiling is reached. The provider's own total is
+            // still reported below, so this surfaces as a truncated snapshot rather than a failure.
+            if (candidates.Count >= maxCandidates)
+            {
+                isComplete = false;
+                break;
+            }
             var page = await FetchTidalPlaylistItemsPageAsync(client, playlistId, token, offset, cancellationToken);
             if (page.Items.ValueKind != JsonValueKind.Array || page.Items.GetArrayLength() == 0)
             {
@@ -4050,6 +4263,13 @@ internal sealed class WatchlistEngine
             total = page.Total > 0 ? page.Total : total;
             foreach (var wrapper in page.Items.EnumerateArray())
             {
+                // Also bound within the page so a final page cannot overshoot the ceiling.
+                if (candidates.Count >= maxCandidates)
+                {
+                    isComplete = false;
+                    break;
+                }
+
                 TryAddTidalTrackCandidate(wrapper, seen, candidates);
             }
 
@@ -4060,7 +4280,8 @@ internal sealed class WatchlistEngine
             candidates,
             new LivePlaylistSnapshotMetadata(
                 TrackCount: total == int.MaxValue ? candidates.Count : total,
-                IsComplete: isComplete && (total == int.MaxValue || offset >= total)));
+                IsComplete: isComplete && candidates.Count < maxCandidates && (total == int.MaxValue || offset >= total),
+                SourceItemsObserved: total == int.MaxValue ? null : (int?)total));
     }
 
     private async Task<LivePlaylistSnapshotMetadata> GetTidalSnapshotHeadAsync(
@@ -4162,27 +4383,28 @@ internal sealed class WatchlistEngine
             Array.Empty<string>()));
     }
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetQobuzTrackCandidatesAsync(
+    private async Task<LivePlaylistSnapshot> GetQobuzSnapshotAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         var playlistUrl = ResolveQobuzPlaylistUrl(sourceId);
         if (string.IsNullOrWhiteSpace(playlistUrl))
         {
-            return Array.Empty<PlaylistTrackCandidate>();
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
         }
 
         var client = _httpClientFactory.CreateClient();
         using var response = await client.GetAsync(playlistUrl, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return Array.Empty<PlaylistTrackCandidate>();
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
         }
 
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(html))
         {
-            return Array.Empty<PlaylistTrackCandidate>();
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
         }
 
         var document = new HtmlDocument();
@@ -4190,13 +4412,20 @@ internal sealed class WatchlistEngine
         var rows = document.DocumentNode.SelectNodes("//div[contains(@class,'track') and @data-track]");
         if (rows == null || rows.Count == 0)
         {
-            return Array.Empty<PlaylistTrackCandidate>();
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
         }
 
+        // Qobuz serves the whole playlist as one HTML page, so the ceiling is applied to the parsed
+        // rows and the row count is the provider's reported total.
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var candidates = new List<PlaylistTrackCandidate>(rows.Count);
+        var candidates = new List<PlaylistTrackCandidate>(Math.Min(rows.Count, maxCandidates));
         foreach (var row in rows)
         {
+            if (candidates.Count >= maxCandidates)
+            {
+                break;
+            }
+
             var trackId = row.GetAttributeValue("data-track", string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(trackId) || !seen.Add(trackId))
             {
@@ -4220,7 +4449,7 @@ internal sealed class WatchlistEngine
                 Array.Empty<string>()));
         }
 
-        return candidates;
+        return BuildPlaylistSnapshot(candidates, rows.Count, SourceItemsObserved: rows.Count);
     }
 
     private async Task<LivePlaylistSnapshotMetadata> GetQobuzSnapshotHeadAsync(
@@ -4444,6 +4673,7 @@ internal sealed class WatchlistEngine
 private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string playlistId,
         string storefront,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(playlistId))
@@ -4482,7 +4712,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             playlistId,
             storefront,
             "en-US",
-            cancellationToken);
+            cancellationToken,
+            maxCandidates);
         var sourcePosition = 0;
         foreach (var track in playlistTracks.Tracks)
         {
@@ -5180,7 +5411,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 .ToList() ?? new List<string>()
         };
 
-        switch (source)
+        switch (sourceService)
         {
             case SpotifySource:
                 intent.SpotifyId = trackId;
@@ -5188,7 +5419,13 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             case DeezerSource:
             case RecommendationsSource:
             case SmartTracklistSource:
-                intent.DeezerId = trackId;
+                // canonicalTrackId, not trackId. A Boomplay playlist is downloaded through
+                // Deezer, so sourceService has already been rewritten to Deezer by the time
+                // it reaches this branch, and trackId is still the Boomplay id here. Deezer
+                // has never heard of that id: the track lookup would miss and the finished
+                // file would be tagged with it. canonicalTrackId is the matched Deezer id,
+                // and it equals trackId for every other source that lands on this branch.
+                intent.DeezerId = canonicalTrackId;
                 break;
             case BoomplaySource:
                 intent.DeezerId = canonicalTrackId;
@@ -5267,10 +5504,34 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return itemDownloadEngineOrder ?? globalSettings.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
-    private long? ResolveArtistDestinationFolderId(WatchlistArtistDto artist)
+    private long? ResolveArtistDestinationFolderId(WatchlistArtistDto artist, IReadOnlyList<FolderDto> folders)
         => artist.DestinationFolderOverride == true
             ? artist.DestinationFolderId
-            : _settingsService.LoadSettings().MultiQuality?.PrimaryDestinationFolderId;
+            : FolderContentTypeResolver.ResolveDefaultFolderId(
+                folders,
+                FolderContentRole.Stereo,
+                _settingsService.LoadSettings().MultiQuality?.PrimaryDestinationFolderId);
+
+    private long? ResolvePlaylistDestinationFolderId(
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<FolderDto> folders)
+        => preference?.DestinationFolderId is > 0
+            ? preference.DestinationFolderId
+            : FolderContentTypeResolver.ResolveDefaultFolderId(
+                folders,
+                FolderContentRole.Stereo,
+                _settingsService.LoadSettings().MultiQuality?.PrimaryDestinationFolderId);
+
+    private long? ResolveDefaultAtmosDestinationFolderId(IReadOnlyList<FolderDto> folders)
+        => FolderContentTypeResolver.ResolveDefaultFolderId(
+            folders,
+            FolderContentRole.Atmos,
+            _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId);
+
+    private async Task<IReadOnlyList<FolderDto>> GetLibraryFoldersAsync(CancellationToken cancellationToken)
+        => _libraryRepository.IsConfigured
+            ? await _libraryRepository.GetFoldersAsync(cancellationToken)
+            : Array.Empty<FolderDto>();
 
     private string ResolveGlobalArtistDownloadVariantMode()
     {
@@ -6767,8 +7028,16 @@ public sealed class PlaylistWatchReconciler
     public Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
-        => _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync);
+        bool forceMediaServerSync = false,
+        PlaylistHeadSnapshot? prefetchedHead = null)
+        => _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync, prefetchedHead);
+
+    /// <summary>Read-only head fetch used by the platform snapshot discovery phase.</summary>
+    public Task<PlaylistHeadSnapshot> FetchPlaylistHeadAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+        => _engine.FetchPlaylistHeadAsync(source, sourceId, cancellationToken);
 
     public Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
         PlaylistWatchlistDto playlist,

@@ -36,6 +36,67 @@ public sealed record WatchlistTriggerResult(WatchlistTriggerStatus Status)
     public bool Scheduled => Status is not WatchlistTriggerStatus.Disabled;
 }
 
+/// <summary>
+/// Structured, platform-level snapshot progress for one cycle.
+///
+/// This exists so the UI can report one line per platform ("Spotify - 18/24 checked - 2 changed")
+/// instead of one activity message per playlist head request. Per-playlist detail is deliberately
+/// NOT summarised here: it stays available on each playlist card, in watchlist history, and in the
+/// logs. Only actionable outcomes (failures, truncation) are surfaced individually.
+/// </summary>
+public sealed record WatchlistPlatformProgress(
+    string Source,
+    string Label,
+    int TotalPlaylists,
+    int HeadsChecked,
+    int Unchanged,
+    int Changed,
+    int New,
+    int RequiresExpansion,
+    int Failed,
+    int Completed = 0,
+    int Incomplete = 0,
+    long HeadPhaseMs = 0,
+    long TotalMs = 0,
+    DateTimeOffset? StartedUtc = null,
+    DateTimeOffset? CompletedUtc = null)
+{
+    /// <summary>Human-readable one-line summary, e.g. "20 checked - 2 changed - 18 unchanged".</summary>
+    public string Summary
+    {
+        get
+        {
+            var parts = new List<string> { $"{HeadsChecked}/{TotalPlaylists} checked" };
+            if (Changed > 0)
+            {
+                parts.Add($"{Changed} changed");
+            }
+
+            if (New > 0)
+            {
+                parts.Add($"{New} new");
+            }
+
+            if (RequiresExpansion > 0)
+            {
+                parts.Add($"{RequiresExpansion} need refresh");
+            }
+
+            if (Incomplete > 0)
+            {
+                parts.Add($"{Incomplete} incomplete");
+            }
+
+            if (Failed > 0)
+            {
+                parts.Add($"{Failed} failed");
+            }
+
+            return string.Join(" · ", parts);
+        }
+    }
+}
+
 public sealed record WatchlistRuntimeHealth(
     bool IsRunning,
     bool TriggerPending,
@@ -43,7 +104,12 @@ public sealed record WatchlistRuntimeHealth(
     DateTimeOffset? LastCycleCompletedUtc,
     string? LastAdmissionBlockReason,
     int LastRecoveredClaimCount,
-    int PendingReconciliationRequests = 0);
+    int PendingReconciliationRequests = 0,
+    IReadOnlyList<WatchlistPlatformProgress>? Platforms = null)
+{
+    /// <summary>Never null, so callers and serializers do not each need their own null handling.</summary>
+    public IReadOnlyList<WatchlistPlatformProgress> PlatformProgress => Platforms ?? [];
+}
 
 public sealed record WatchlistRuntimeResetResult(
     LibraryRepository.WatchlistRuntimeCleanupResult Cleanup,
@@ -66,6 +132,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private const string ArtistWatchType = "artist";
     private const int SourceCircuitFailureThreshold = 2;
     private const int SourceCircuitCooldownSeconds = 300;
+    /// <summary>
+    /// Upper bound on how many target-sync jobs the cycle-end drain may claim in one cycle.
+    /// The drain previously ran until the queue was empty, so a large backlog (or a target
+    /// server answering slowly) made cycle teardown wait on unbounded work and stopped the
+    /// coordinator scheduling altogether. Jobs past the cap are never claimed, so they stay
+    /// durably queued and the next cycle resumes them -- losing nothing, and guaranteeing the
+    /// cycle always ends. Deliberately a job count and not a wall-clock budget so the amount
+    /// of work per cycle does not vary with machine speed or provider latency.
+    /// </summary>
+    internal const int MaxDrainJobsPerCycle = 25;
     private readonly IServiceProvider _serviceProvider;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly WatchlistRunSignal _runSignal;
@@ -404,8 +480,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             cancellationToken,
             shouldStop: () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc);
         await coordinatorWork.ProcessTargetSyncWorkAsync(
-            TargetSyncBudget.DrainAll(
+            TargetSyncBudget.DrainBounded(
                 WatchlistSyncJobKind.All,
+                MaxDrainJobsPerCycle,
                 shouldStop: () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc),
             cancellationToken);
     }
@@ -1273,6 +1350,180 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist watch scheduler loop preserves queue budget, backoff, and circuit-breaker behavior in one control flow.")]
+    /// <summary>
+    /// Phase 1 of the platform-oriented workflow. Fetches every monitored playlist head grouped by
+    /// platform, with bounded per-provider concurrency and per-playlist failure isolation. Returns a
+    /// map keyed by "source:sourceId" so the serial reconciliation loop can reuse each head instead
+    /// of re-fetching it one playlist at a time.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, PlaylistHeadSnapshot>> DiscoverPlatformHeadsAsync(
+        IServiceProvider serviceProvider,
+        LibraryRepository repository,
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+    {
+        var emptyHeads = new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
+        if (playlists.Count == 0)
+        {
+            return emptyHeads;
+        }
+
+        var platformCoordinator = serviceProvider.GetService<PlaylistPlatformSnapshotCoordinator>();
+        if (platformCoordinator is null)
+        {
+            // Discovery is an optimisation of ordering and concurrency, never a requirement: with no
+            // coordinator registered, reconciliation simply fetches its own heads as it always has.
+            return emptyHeads;
+        }
+
+        IReadOnlyList<PlaylistHeadDiscovery> discoveries;
+        try
+        {
+            discoveries = await platformCoordinator.DiscoverHeadsAsync(
+                playlists,
+                async (source, watchType, _) =>
+                {
+                    var state = await repository.GetWatchlistSourceCircuitStateAsync(watchType, source, cancellationToken);
+                    return state is not null && IsCircuitOpen(state);
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // A discovery-phase failure must not abort the run: fall back to per-playlist heads.
+            _logger.LogWarning(
+                ex,
+                "Playlist platform head discovery failed; falling back to per-playlist head fetches for {PlaylistCount} playlist(s).",
+                playlists.Count);
+            return new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var heads = new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
+        foreach (var discovery in discoveries)
+        {
+            // Failed discoveries are deliberately not mapped: the playlist then fetches its own head
+            // during reconciliation, which preserves the existing per-playlist failure handling.
+            if (discovery.ChangeState == PlaylistHeadChangeState.Failed
+                || discovery.Head is null
+                || discovery.Head.IsFailed)
+            {
+                continue;
+            }
+
+            heads[BuildWatchKey(discovery.Source, discovery.SourceId)] = discovery.Head;
+        }
+
+        PublishPlatformProgress(BuildPlatformProgress(discoveries));
+        return heads;
+    }
+
+    /// <summary>
+    /// Collapses per-playlist discovery results into one progress entry per platform so the UI can
+    /// report platform-level status instead of a message per playlist.
+    /// </summary>
+    private static IReadOnlyList<WatchlistPlatformProgress> BuildPlatformProgress(
+        IReadOnlyList<PlaylistHeadDiscovery> discoveries)
+        => discoveries
+            .GroupBy(static discovery => discovery.Source, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new WatchlistPlatformProgress(
+                group.Key,
+                PlatformLabel(group.Key),
+                group.Count(),
+                group.Count(),
+                group.Count(static d => d.ChangeState == PlaylistHeadChangeState.Unchanged),
+                group.Count(static d => d.ChangeState == PlaylistHeadChangeState.Changed),
+                group.Count(static d => d.ChangeState == PlaylistHeadChangeState.New),
+                group.Count(static d => d.ChangeState == PlaylistHeadChangeState.RequiresExpansion),
+                group.Count(static d => d.ChangeState == PlaylistHeadChangeState.Failed),
+                Completed: 0,
+                Incomplete: 0,
+                HeadPhaseMs: group.Sum(static d => d.DurationMs),
+                TotalMs: group.Sum(static d => d.DurationMs),
+                StartedUtc: DateTimeOffset.UtcNow,
+                CompletedUtc: null))
+            .OrderBy(static progress => progress.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    internal static string PlatformLabel(string source)
+        => (source ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "spotify" => "Spotify",
+            "deezer" => "Deezer",
+            "apple" => "Apple Music",
+            "tidal" => "Tidal",
+            "qobuz" => "Qobuz",
+            "boomplay" => "Boomplay",
+            "smarttracklist" => "Smart Tracklists",
+            "recommendations" => "Recommendations",
+            _ => string.IsNullOrWhiteSpace(source) ? "Unknown" : source.Trim()
+        };
+
+    private void PublishPlatformProgress(IReadOnlyList<WatchlistPlatformProgress> platforms)
+    {
+        UpdateRuntimeHealth(health => health with { Platforms = platforms });
+
+        // One realtime event per platform, never one per playlist. Clients that only need the
+        // latest state can ignore intermediate updates entirely.
+        try
+        {
+            _serviceProvider.GetService<ActivitiesRealtimeService>()
+                ?.PublishWatchlistPlatformProgressChanged(platforms);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Progress reporting must never be able to fail a watch run.
+            _logger.LogDebug(ex, "Publishing Watchlist platform progress failed.");
+        }
+    }
+
+    /// <summary>
+    /// Advances one platform's completed/incomplete counters as its playlists finish reconciling,
+    /// keeping the reported progress in step with the serial loop.
+    /// </summary>
+    private void RecordPlatformOutcome(string source, bool succeeded, bool incomplete)
+    {
+        lock (_runtimeHealthGate)
+        {
+            var current = _runtimeHealth.Platforms;
+            if (current is null || current.Count == 0)
+            {
+                return;
+            }
+
+            var updated = new List<WatchlistPlatformProgress>(current.Count);
+            var matched = false;
+            foreach (var platform in current)
+            {
+                if (!string.Equals(platform.Source, source, StringComparison.OrdinalIgnoreCase))
+                {
+                    updated.Add(platform);
+                    continue;
+                }
+
+                matched = true;
+                updated.Add(platform with
+                {
+                    Completed = platform.Completed + (succeeded ? 1 : 0),
+                    Incomplete = platform.Incomplete + (incomplete ? 1 : 0),
+                    CompletedUtc = DateTimeOffset.UtcNow,
+                    TotalMs = platform.HeadPhaseMs
+                });
+            }
+
+            if (matched)
+            {
+                _runtimeHealth = _runtimeHealth with { Platforms = updated };
+            }
+        }
+    }
+
+    private static string BuildWatchKey(string source, string? sourceId)
+        => $"{(source ?? string.Empty).Trim()}:{(sourceId ?? string.Empty).Trim()}";
+
     private async Task<PlaylistRunResult> ProcessPlaylistWatchItemsAsync(
         IReadOnlyList<WatchItem> playlistItems,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
@@ -1297,6 +1548,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             .Where(static playlist => playlist is not null)
             .Select(static playlist => playlist!)
             .ToList();
+
+        // Phase 1: platform-oriented head discovery. All playlist heads for a platform are fetched
+        // together under bounded per-provider concurrency before any reconciliation runs. This is
+        // read-only; every mutation below still happens serially, in the existing priority order.
+        var prefetchedHeads = await DiscoverPlatformHeadsAsync(
+            serviceProvider,
+            repository,
+            playlists,
+            stoppingToken);
+
         foreach (var activeItem in playlistItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
@@ -1323,7 +1584,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
-            var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
+            var execution = await TryProcessItemAsync(
+                activeItem,
+                settings,
+                serviceProvider,
+                stoppingToken,
+                prefetchedHeads.GetValueOrDefault(BuildWatchKey(activeItem.Source, activeItem.Playlist?.SourceId)));
             await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
             await PersistPlaylistProgressAsync(repository, activeItem, stoppingToken);
             await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, stoppingToken);
@@ -1354,6 +1620,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 failed++;
             }
+
+            // Fold this playlist's outcome into its platform's progress line. Truncation and
+            // failure stay visible here; everything else stays in per-playlist state and history.
+            RecordPlatformOutcome(
+                activeItem.Source,
+                execution.Outcome == WatchItemRunOutcome.Success,
+                execution.PlaylistResult?.QueueStopReason is { } stopReason
+                && stopReason.Equals(WatchQueueStopReason.Incomplete.ToString(), StringComparison.OrdinalIgnoreCase));
 
             var playlistResult = execution.PlaylistResult;
             if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
@@ -1524,7 +1798,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken,
+        PlaylistHeadSnapshot? prefetchedHead = null)
     {
         var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
         if (!await itemLock.WaitAsync(0, stoppingToken))
@@ -1546,7 +1821,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 "reconciling",
                 null,
                 stoppingToken);
-            var playlistResult = await RunItemAsync(item, serviceProvider, stoppingToken);
+            var playlistResult = await RunItemAsync(item, serviceProvider, stoppingToken, prefetchedHead);
             _consecutiveFailures.TryRemove(item.Key, out _);
             await PersistArtistRunStateAsync(
                 item,
@@ -1931,12 +2206,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private static async Task<PlaylistReconciliationResult?> RunItemAsync(
         WatchItem item,
         IServiceProvider serviceProvider,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken,
+        PlaylistHeadSnapshot? prefetchedHead = null)
     {
         if (item.Kind == PlaylistKind && item.Playlist != null)
         {
             var watcher = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-            return await watcher.ReconcilePlaylistAsync(item.Playlist, stoppingToken);
+            return await watcher.ReconcilePlaylistAsync(item.Playlist, stoppingToken, false, prefetchedHead);
         }
 
         if (item.Kind == ArtistKind && item.Artist != null)

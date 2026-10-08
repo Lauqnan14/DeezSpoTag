@@ -1,3 +1,4 @@
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using System.Linq;
@@ -7,11 +8,29 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 public partial class WatchlistApiController
 {
-    private const string SpotifySource = "spotify";
-    private const string AppleSource = "apple";
-    private const string DeezerSource = "deezer";
-    private const string TidalSource = "tidal";
-    private const string QobuzSource = "qobuz";
+    /// <summary>
+    ///     The engine ids below are aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These are declared here rather than in a sibling file of this partial controller because
+    ///     a constant is one definition across the whole type: declaring them twice would not compile,
+    ///     and declaring them in only one of the files would leave the others reading a name that
+    ///     appears from nowhere. Each one selects which id column a watchlist entry is stored in, so a
+    ///     copy that drifted would write the id into the wrong column and read it back as empty.
+    /// </remarks>
+    private const string SpotifySource = DownloadTagSourceHelper.SpotifySource;
+
+    private const string AppleSource = DownloadTagSourceHelper.AppleSource;
+
+    private const string DeezerSource = DownloadTagSourceHelper.DeezerSource;
+
+    private const string TidalSource = DownloadTagSourceHelper.TidalSource;
+
+    private const string QobuzSource = DownloadTagSourceHelper.QobuzSource;
+
+    /// <summary>Amazon's source id. Spelled out here because it is not one of the five above.</summary>
+    private const string AmazonSource = DownloadTagSourceHelper.AmazonSource;
+
     private const string AddWatchlistFailedMessage = "Failed to add watchlist entry.";
     [HttpGet("~/api/library/watchlist")]
     public async Task<IActionResult> GetAllArtists(CancellationToken cancellationToken)
