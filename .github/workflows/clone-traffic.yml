@@ -1,0 +1,90 @@
+name: Track All-Time Clone Count
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clone-traffic
+  cancel-in-progress: false
+
+jobs:
+  update-clone-count:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Test clone history accumulator
+        run: python3 -m unittest discover -s scripts/tests -p 'test_update_clone_history.py' -v
+
+      - name: Require GitHub traffic token
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.GH_TRAFFIC_STATS_TOKEN }}
+        run: |
+          if [ -z "$TRAFFIC_TOKEN" ]; then
+            echo "::error::Repository secret GH_TRAFFIC_STATS_TOKEN is required. Use a fine-grained PAT scoped to this repository with Administration: read."
+            exit 1
+          fi
+
+      - name: Fetch current GitHub clone traffic
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.GH_TRAFFIC_STATS_TOKEN }}
+        run: |
+          set -euo pipefail
+          http_code="$(curl --silent --show-error --location \
+            --output /tmp/clone-traffic.json \
+            --write-out '%{http_code}' \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer ${TRAFFIC_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/traffic/clones?per=day")"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::GitHub traffic API returned HTTP ${http_code}."
+            cat /tmp/clone-traffic.json || true
+            exit 1
+          fi
+
+      - name: Load persistent clone history
+        run: |
+          set -euo pipefail
+          git fetch origin traffic-stats
+          git show origin/traffic-stats:clone-history.json > /tmp/clone-history.json
+
+      - name: Merge clone history and render badge data
+        run: |
+          python3 scripts/update_clone_history.py \
+            --traffic /tmp/clone-traffic.json \
+            --history /tmp/clone-history.json \
+            --history-out /tmp/clone-history-next.json \
+            --badge-out /tmp/clone-badge-next.json
+
+      - name: Publish clone statistics to traffic-stats branch
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/deezspotag-traffic-stats
+          git worktree add --detach /tmp/deezspotag-traffic-stats origin/traffic-stats
+
+          cp /tmp/clone-history-next.json /tmp/deezspotag-traffic-stats/clone-history.json
+          cp /tmp/clone-badge-next.json /tmp/deezspotag-traffic-stats/clone-badge.json
+
+          git -C /tmp/deezspotag-traffic-stats config user.name "github-actions[bot]"
+          git -C /tmp/deezspotag-traffic-stats config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C /tmp/deezspotag-traffic-stats add clone-history.json clone-badge.json
+
+          if git -C /tmp/deezspotag-traffic-stats diff --cached --quiet; then
+            echo "Clone statistics are unchanged."
+            exit 0
+          fi
+
+          git -C /tmp/deezspotag-traffic-stats commit -m "chore: update clone traffic statistics"
+          git -C /tmp/deezspotag-traffic-stats push origin HEAD:traffic-stats
