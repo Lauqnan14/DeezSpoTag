@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Library.Dj;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
@@ -949,7 +950,25 @@ VALUES (@timestampUtc, @level, @message);";
             var albumsRemoved = await CountRowsAsync(connection, transaction, AlbumType, cancellationToken);
             var tracksRemoved = await CountRowsAsync(connection, transaction, TrackType, cancellationToken);
 
+            // personal_genre_observation_history cascades from the resolution
+            // history, and personal_genre_snapshot is not FK-linked to a track, so
+            // both are cleared explicitly. Leaving either behind would keep stale
+            // file paths and observations after a library wipe.
+            //
+            // personal_genre_settings and personal_genre_migration are deliberately
+            // not listed. The first is configuration and a wipe is not a reset; the
+            // second is the durable marker that the one-time import of the legacy
+            // normalization values has already happened, and clearing it would let a
+            // later startup re-import the old file over the user's current settings.
             const string sql = @"
+DELETE FROM personal_genre_observation_history;
+DELETE FROM personal_genre_snapshot;
+DELETE FROM personal_genre_autotag;
+DELETE FROM personal_genre_classification_history;
+DELETE FROM personal_genre_resolution_history;
+DELETE FROM personal_genre_scope_lock;
+DELETE FROM personal_genre_lock;
+DELETE FROM personal_genre_track;
 DELETE FROM track_analysis;
 DELETE FROM track_genre;
 DELETE FROM track_local;
@@ -5617,7 +5636,17 @@ SELECT candidate_files.id,
        candidate_files.track_number
 FROM candidate_files
 JOIN selected_tracks ON selected_tracks.id = candidate_files.id
-ORDER BY selected_tracks.library_sort_order,
+-- Alphabetical ordering applies to ALBUMS within a library. Libraries are ordered
+         -- by library_sort_order, which the caller decides (alphabetically by name, or
+         -- by a person's arrangement). Album artist and title are compared
+         -- case-insensitively so 'abbey road' and 'Abbey Road' sort together, and the
+         -- track id follows as a tie-break so the same library always produces the same
+         -- order across runs.
+         ORDER BY selected_tracks.library_sort_order,
+         lower(coalesce(candidate_files.album_artist_name, '')),
+         lower(coalesce(candidate_files.album_title, '')),
+         coalesce(candidate_files.disc_number, 0),
+         coalesce(candidate_files.track_number, 2147483647),
          candidate_files.id,
          candidate_files.variant_sort_order,
          candidate_files.quality_rank DESC NULLS LAST,
@@ -8227,7 +8256,8 @@ SET soulseek_share_scan_status = @status,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = @id;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("enabled", enabled);
+        command.Parameters.AddWithValue("status", (object?)status?.Trim() ?? DBNull.Value);
+        command.Parameters.AddWithValue("scannedAt", (object?)scannedAtUtc?.ToString("O", CultureInfo.InvariantCulture) ?? DBNull.Value);
         command.Parameters.AddWithValue("id", id);
         var rows = await command.ExecuteNonQueryAsync(cancellationToken);
         if (rows == 0)
@@ -8633,6 +8663,14 @@ ORDER BY al.title;";
         }
 
         return albums;
+    }
+
+    public async Task<string?> GetArtistIdentityNameAsync(long artistId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand("SELECT name FROM artist WHERE id = @id", connection);
+        command.Parameters.AddWithValue("@id", artistId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
     }
 
     public async Task<ArtistDetailDto?> GetArtistAsync(long artistId, CancellationToken cancellationToken = default)
@@ -9135,11 +9173,11 @@ LIMIT 1;";
         const string DeezerSql = "SELECT artist_id FROM artist_watchlist WHERE lower(trim(deezer_id))=lower(trim(@sourceId)) LIMIT 1;";
         var sql = source.Trim().ToLowerInvariant() switch
         {
-            "spotify" => "spotify_id",
-            "deezer" => "deezer_id",
+            "spotify" => SpotifySql,
+            "deezer" => DeezerSql,
             _ => null
         };
-        if (column is null || string.IsNullOrWhiteSpace(sourceId))
+        if (sql is null || string.IsNullOrWhiteSpace(sourceId))
         {
             return null;
         }
@@ -9220,6 +9258,9 @@ LIMIT 1;";
     private static async Task<long?> ReadInt64Async(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
         => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt64(ordinal);
 
+    private static async Task<int?> ReadInt32Async(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt32(ordinal);
+
     private static async Task<bool?> ReadBooleanAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
         => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt32(ordinal) != 0;
 
@@ -9255,7 +9296,7 @@ WHERE artist_id = @artistId;";
         command.Parameters.AddWithValue("artistId", input.ArtistId);
         command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("destinationFolderOverride", ToDbBoolean(input.DestinationFolderOverride));
-        command.Parameters.AddWithValue("albumGroupsJson", ToJsonDbValue(input.AlbumGroups));
+        command.Parameters.AddWithValue("albumGroupsJson", ToAlbumGroupsDbValue(input.AlbumGroups));
         command.Parameters.AddWithValue("topSongsEnabled", ToDbBoolean(input.TopSongsEnabled));
         command.Parameters.AddWithValue("latestReleasesOnly", ToDbBoolean(input.LatestReleasesOnly));
         command.Parameters.AddWithValue("preferredEngine", ToLowerTextDbValue(input.PreferredEngine));
@@ -9280,11 +9321,22 @@ WHERE artist_id = @artistId;";
         return value.Value ? 1 : 0;
     }
 
+    private static object ToDbInt32(int? value)
+        => value.HasValue ? value.Value : DBNull.Value;
+
     private static object ToLowerTextDbValue(string? value)
         => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim().ToLowerInvariant();
 
     private static object ToJsonDbValue<T>(IReadOnlyCollection<T>? values)
         => values is { Count: > 0 } ? JsonSerializer.Serialize(values) : DBNull.Value;
+
+    /// <summary>
+    /// Album groups must keep "never configured" (NULL) distinct from "explicitly selected none"
+    /// ("[]"). <see cref="ToJsonDbValue{T}"/> collapses an empty list to NULL, which would erase
+    /// the choice of an artist that only wants top songs or latest releases.
+    /// </summary>
+    private static object ToAlbumGroupsDbValue(IReadOnlyCollection<string>? values)
+        => values is null ? DBNull.Value : JsonSerializer.Serialize(values);
 
     public async Task<bool> RemoveWatchlistAsync(long artistId, CancellationToken cancellationToken = default)
     {
@@ -9406,13 +9458,9 @@ LIMIT 1;";
             return;
         }
 
+        var sql = BuildUpsertWatchOffsetSql(column);
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var sql = $@"
-INSERT INTO artist_watch_state (artist_id, {column})
-VALUES (@artistId, @nextOffset)
-ON CONFLICT(artist_id) DO UPDATE SET
-    {column} = excluded.{column},
-    updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
         command.Parameters.AddWithValue("nextOffset", (object?)nextOffset ?? DBNull.Value);
@@ -9497,7 +9545,7 @@ WHERE deadline_utc IS NOT NULL
   AND datetime(deadline_utc) <= datetime('now')
   AND datetime(COALESCE(heartbeat_utc, updated_at)) <= datetime('now', '-20 minutes')
   AND lower(COALESCE(current_phase,'')) NOT IN
-      ('completed','source_failure','backoff','stale_recovered')
+      ('completed','source_failure','backoff')
   AND NOT EXISTS (
         SELECT 1 FROM watchlist_sync_job j
          WHERE j.source = playlist_watch_state.source
@@ -9519,7 +9567,7 @@ WHERE deadline_utc IS NOT NULL
   AND datetime(deadline_utc) <= datetime('now')
   AND datetime(COALESCE(heartbeat_utc, updated_at)) <= datetime('now', '-20 minutes')
   AND lower(COALESCE(current_phase,'')) NOT IN
-      ('completed','source_failure','backoff','stale_recovered');", connection, transaction);
+      ('completed','source_failure','backoff');", connection, transaction);
         recovered += await artists.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return recovered;
@@ -10767,7 +10815,7 @@ SET navidrome_playlist_id = @playlistId,
 WHERE source = @source AND source_id = @sourceId;",
             _ => null
         };
-        if (sql is null)
+        if (legacySql is not null)
         {
             await using var command = new SqliteCommand(legacySql, connection);
             command.Transaction = transaction;
@@ -11140,16 +11188,30 @@ ORDER BY track_source_id;";
             return null;
         }
 
+        var normalizedService = service.Trim().ToLowerInvariant();
+        const string sql = @"
+SELECT COALESCE(
+    (SELECT m.target_playlist_id
+       FROM playlist_sync_link_member AS m
+      WHERE m.link_id = @linkId
+        AND m.target_id = @service
+        AND NULLIF(TRIM(COALESCE(m.target_playlist_id, '')), '') IS NOT NULL),
+    (SELECT CASE @service
+                WHEN 'plex' THEN p.plex_playlist_id
+                WHEN 'jellyfin' THEN p.jellyfin_playlist_id
+                WHEN 'navidrome' THEN p.navidrome_playlist_id
+            END
+       FROM playlist_watch_preferences AS p
+      WHERE p.source = @source AND p.source_id = @sourceId));";
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("linkId", BuildPlaylistSyncLinkId(normalizedSource, normalizedSourceId));
         command.Parameters.AddWithValue("service", normalizedService);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue(
-            "playlistId",
-            string.IsNullOrWhiteSpace(playlistId) ? DBNull.Value : playlistId.Trim());
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is null || value is DBNull ? null : Convert.ToString(value);
     }
 
     public async Task<PlaylistWatchStateDto?> GetPlaylistWatchStateAsync(
@@ -11994,23 +12056,7 @@ LIMIT 1;", connection);
             command.Parameters.AddWithValue(parameterNames[index], normalizedTrackIds[index]);
         }
 
-        command.CommandText = $@"
-SELECT boomplay_track_id,
-       deezer_track_id,
-       isrc,
-       title,
-       artist,
-       album,
-       cover_url,
-       duration_ms,
-       source_fingerprint,
-       matcher_version,
-       status,
-       last_error,
-       next_retry_utc,
-       updated_at
-FROM boomplay_deezer_track_mapping
-WHERE boomplay_track_id IN ({string.Join(", ", parameterNames)});";
+        command.CommandText = BuildBoomplayDeezerMappingsSql(parameterNames);
 
         var mappings = new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -12267,7 +12313,7 @@ WHERE library_id = @libraryId
         }
 
         var trimmed = value.Trim();
-        return long.TryParse(trimmed, out _) ? trimmed : string.Empty;
+        return long.TryParse(trimmed, out _) || (trimmed.StartsWith("spotify:track:", StringComparison.Ordinal) && trimmed.Length == 36 && trimmed[14..].All(char.IsAsciiLetterOrDigit)) ? trimmed : string.Empty;
     }
 
     /// <summary>
@@ -12872,6 +12918,34 @@ WHERE source = @source
                 .ToList(),
             cancellationToken);
 
+    /// <summary>
+    /// How many tracks this app last recorded for a target playlist. Used as the baseline a
+    /// target read is compared against, so a truncated read cannot be mistaken for a
+    /// deliberate deletion and drive a destructive mirror.
+    /// </summary>
+    public async Task<int> GetPlaylistWatchTargetCountAsync(
+        string targetService,
+        string targetPlaylistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || string.IsNullOrWhiteSpace(targetService) || string.IsNullOrWhiteSpace(targetPlaylistId))
+        {
+            return 0;
+        }
+
+        const string sql = @"
+SELECT COUNT(*)
+FROM playlist_watch_target_membership
+WHERE LOWER(target_service) = LOWER(@targetService)
+  AND target_playlist_id = @targetPlaylistId;";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result is DBNull ? 0 : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+    }
+
     public async Task ReplacePlaylistWatchTargetMembershipAsync(
         string source,
         string sourceId,
@@ -13034,32 +13108,7 @@ LIMIT 1;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var trackSourceParameters = AddInParameters("trackSourceId", trackSourceIds);
         var isrcParameters = AddInParameters("isrc", isrcs);
-        var filters = new List<string>();
-        if (trackSourceParameters.Count > 0)
-        {
-            filters.Add($"track_source_id IN ({string.Join(", ", trackSourceParameters)})");
-        }
-        if (isrcParameters.Count > 0)
-        {
-            filters.Add($"isrc IN ({string.Join(", ", isrcParameters)})");
-        }
-
-        var sql = $@"
-SELECT track_source_id,
-       isrc,
-       status,
-       COALESCE(updated_at, created_at, '') AS updated_at,
-       unavailable_reason,
-       unavailable_since_utc,
-       unavailable_last_checked_utc,
-       unavailable_next_retry_utc,
-       unavailable_settings_fingerprint
-FROM playlist_watch_track
-WHERE source = @source
-  AND status = 'unavailable'
-  AND unavailable_settings_fingerprint = @settingsFingerprint
-  AND ({string.Join(" OR ", filters)})
-ORDER BY unavailable_next_retry_utc DESC, updated_at DESC;";
+        var sql = BuildUnavailablePlaylistWatchTracksSql(trackSourceParameters, isrcParameters);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
@@ -16455,6 +16504,11 @@ LIMIT @limit;";
         long artistId,
         CancellationToken cancellationToken = default)
     {
+        if (artistId <= 0)
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT other.tag_value
@@ -16771,6 +16825,73 @@ WHERE artist_id = @artistId
         command.Parameters.AddWithValue(SourceField, source);
         command.Parameters.AddWithValue(SourceIdField, sourceId);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Makes one provider identity the single primary for a local artist and demotes every
+    /// other identity of the same provider, atomically. Alias merges migrate <c>is_primary</c>
+    /// verbatim, so an artist can otherwise end up with several primaries and the singular
+    /// <see cref="GetArtistSourceIdAsync"/> read becomes ambiguous. Callers must only pass an
+    /// id that is actually attached to this artist; the demote runs first so a bogus id
+    /// cannot leave the artist without a primary.
+    /// </summary>
+    public async Task SetPrimaryArtistSourceIdAsync(
+        long artistId,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var trimmedSourceId = sourceId.Trim();
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            const string demoteSql = @"
+UPDATE artist_source
+SET is_primary = 0
+WHERE artist_id = @artistId
+  AND source = @source
+  AND source_id <> @sourceId;";
+            await using (var demote = new SqliteCommand(demoteSql, connection, (SqliteTransaction)transaction))
+            {
+                demote.Parameters.AddWithValue("artistId", artistId);
+                demote.Parameters.AddWithValue(SourceField, source);
+                demote.Parameters.AddWithValue(SourceIdField, trimmedSourceId);
+                await demote.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            const string promoteSql = @"
+UPDATE artist_source
+SET is_primary = 1
+WHERE artist_id = @artistId
+  AND source = @source
+  AND source_id = @sourceId;";
+            await using (var promote = new SqliteCommand(promoteSql, connection, (SqliteTransaction)transaction))
+            {
+                promote.Parameters.AddWithValue("artistId", artistId);
+                promote.Parameters.AddWithValue(SourceField, source);
+                promote.Parameters.AddWithValue(SourceIdField, trimmedSourceId);
+                var promoted = await promote.ExecuteNonQueryAsync(cancellationToken);
+                if (promoted == 0)
+                {
+                    // The id is not attached to this artist; leave the existing primary alone.
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is SqliteException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
     public async Task<AlbumDetailDto?> GetAlbumAsync(long albumId, CancellationToken cancellationToken = default)
@@ -22069,6 +22190,14 @@ SELECT id,
        artist,
        album,
        album_artist,
+       cover_url,
+       duration_ms,
+       track_number,
+       track_total,
+       disc_number,
+       disc_total,
+       release_date,
+       explicit,
        isrc,
        engine,
        source_service,
@@ -22120,6 +22249,14 @@ SELECT id,
        artist,
        album,
        album_artist,
+       cover_url,
+       duration_ms,
+       track_number,
+       track_total,
+       disc_number,
+       disc_total,
+       release_date,
+       explicit,
        isrc,
        engine,
        source_service,
@@ -22189,12 +22326,16 @@ LIMIT @limit;";
         var nextRetryText = (input.NextRetryAtUtc ?? now.AddDays(7)).UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
         const string sql = @"
 INSERT INTO manual_unavailable_track (
-    queue_uuid, title, artist, album, album_artist, isrc, engine, source_service, source_url,
+    queue_uuid, title, artist, album, album_artist,
+    cover_url, duration_ms, track_number, track_total, disc_number, disc_total, release_date, explicit,
+    isrc, engine, source_service, source_url,
     deezer_track_id, spotify_track_id, apple_track_id, qobuz_track_id, tidal_track_id, amazon_track_id,
     destination_folder_id, expected_final_path, quality, content_type, reason, payload_json,
     first_unavailable_at_utc, next_retry_at_utc, added_at_utc, updated_at_utc)
 VALUES (
-    @queueUuid, @title, @artist, @album, @albumArtist, @isrc, @engine, @sourceService, @sourceUrl,
+    @queueUuid, @title, @artist, @album, @albumArtist,
+    @coverUrl, @durationMs, @trackNumber, @trackTotal, @discNumber, @discTotal, @releaseDate, @explicit,
+    @isrc, @engine, @sourceService, @sourceUrl,
     @deezerTrackId, @spotifyTrackId, @appleTrackId, @qobuzTrackId, @tidalTrackId, @amazonTrackId,
     @destinationFolderId, @expectedFinalPath, @quality, @contentType, @reason, @payloadJson,
     @now, @nextRetryAtUtc, @now, @now)
@@ -22203,6 +22344,14 @@ ON CONFLICT(queue_uuid) DO UPDATE SET
     artist = excluded.artist,
     album = excluded.album,
     album_artist = excluded.album_artist,
+    cover_url = excluded.cover_url,
+    duration_ms = excluded.duration_ms,
+    track_number = excluded.track_number,
+    track_total = excluded.track_total,
+    disc_number = excluded.disc_number,
+    disc_total = excluded.disc_total,
+    release_date = excluded.release_date,
+    explicit = excluded.explicit,
     isrc = excluded.isrc,
     engine = excluded.engine,
     source_service = excluded.source_service,
@@ -22227,6 +22376,14 @@ RETURNING id,
           artist,
           album,
           album_artist,
+          cover_url,
+          duration_ms,
+          track_number,
+          track_total,
+          disc_number,
+          disc_total,
+          release_date,
+          explicit,
           isrc,
           engine,
           source_service,
@@ -22253,6 +22410,15 @@ RETURNING id,
         command.Parameters.AddWithValue("artist", NormalizeRequiredText(input.Artist, "Unknown Artist"));
         command.Parameters.AddWithValue("album", ToDbText(input.Album));
         command.Parameters.AddWithValue("albumArtist", ToDbText(input.AlbumArtist));
+        command.Parameters.AddWithValue("coverUrl", ToDbText(input.CoverUrl));
+        command.Parameters.AddWithValue("durationMs", ToDbInt32(input.DurationMs));
+        command.Parameters.AddWithValue("trackNumber", ToDbInt32(input.TrackNumber));
+        command.Parameters.AddWithValue("trackTotal", ToDbInt32(input.TrackTotal));
+        command.Parameters.AddWithValue("discNumber", ToDbInt32(input.DiscNumber));
+        command.Parameters.AddWithValue("discTotal", ToDbInt32(input.DiscTotal));
+        command.Parameters.AddWithValue("releaseDate", ToDbText(input.ReleaseDate));
+        // 1 true, 0 false, NULL unknown. Collapsing unknown to false would invent a clean rating.
+        command.Parameters.AddWithValue("explicit", ToDbBoolean(input.Explicit));
         command.Parameters.AddWithValue("isrc", ToDbText(input.Isrc));
         command.Parameters.AddWithValue("engine", ToDbText(input.Engine));
         command.Parameters.AddWithValue("sourceService", ToDbText(input.SourceService));
@@ -22318,36 +22484,85 @@ WHERE id = @id;", connection);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    /// <summary>
+    /// Every projection over <c>manual_unavailable_track</c> must list columns in exactly this
+    /// order. Named ordinals keep a future column from silently shifting a neighbouring value.
+    /// </summary>
     private static async Task<ManualUnavailableTrackDto> ReadManualUnavailableTrackAsync(
         SqliteDataReader reader,
         CancellationToken cancellationToken)
-        => new(
-            reader.GetInt64(0),
-            reader.GetString(1),
-            reader.GetString(2),
-            reader.GetString(3),
-            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
-            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
-            await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
-            await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
-            await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
-            await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
-            await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12),
-            await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13),
-            await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14),
-            await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15),
-            await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetInt64(16),
-            await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetString(17),
-            await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18),
-            await reader.IsDBNullAsync(19, cancellationToken) ? null : reader.GetString(19),
-            await reader.IsDBNullAsync(20, cancellationToken) ? null : reader.GetString(20),
-            await reader.IsDBNullAsync(21, cancellationToken) ? null : reader.GetString(21),
-            ParseUtcDateTimeOffsetInvariant(reader.GetString(22)),
-            ParseUtcDateTimeOffsetInvariant(reader.GetString(23)),
-            ParseUtcDateTimeOffsetInvariant(reader.GetString(24)),
-            ParseUtcDateTimeOffsetInvariant(reader.GetString(25)));
+    {
+        const int id = 0;
+        const int queueUuid = 1;
+        const int title = 2;
+        const int artist = 3;
+        const int album = 4;
+        const int albumArtist = 5;
+        const int coverUrl = 6;
+        const int durationMs = 7;
+        const int trackNumber = 8;
+        const int trackTotal = 9;
+        const int discNumber = 10;
+        const int discTotal = 11;
+        const int releaseDate = 12;
+        const int explicitFlag = 13;
+        const int isrc = 14;
+        const int engine = 15;
+        const int sourceService = 16;
+        const int sourceUrl = 17;
+        const int deezerId = 18;
+        const int spotifyId = 19;
+        const int appleId = 20;
+        const int qobuzId = 21;
+        const int tidalId = 22;
+        const int amazonId = 23;
+        const int destinationFolderId = 24;
+        const int expectedFinalPath = 25;
+        const int quality = 26;
+        const int contentType = 27;
+        const int reason = 28;
+        const int payloadJson = 29;
+        const int firstUnavailableAtUtc = 30;
+        const int nextRetryAtUtc = 31;
+        const int addedAtUtc = 32;
+        const int updatedAtUtc = 33;
+
+        return new(
+            reader.GetInt64(id),
+            reader.GetString(queueUuid),
+            reader.GetString(title),
+            reader.GetString(artist),
+            await reader.IsDBNullAsync(album, cancellationToken) ? null : reader.GetString(album),
+            await reader.IsDBNullAsync(albumArtist, cancellationToken) ? null : reader.GetString(albumArtist),
+            await reader.IsDBNullAsync(coverUrl, cancellationToken) ? null : reader.GetString(coverUrl),
+            await ReadInt32Async(reader, durationMs, cancellationToken),
+            await ReadInt32Async(reader, trackNumber, cancellationToken),
+            await ReadInt32Async(reader, trackTotal, cancellationToken),
+            await ReadInt32Async(reader, discNumber, cancellationToken),
+            await ReadInt32Async(reader, discTotal, cancellationToken),
+            await reader.IsDBNullAsync(releaseDate, cancellationToken) ? null : reader.GetString(releaseDate),
+            await ReadBooleanAsync(reader, explicitFlag, cancellationToken),
+            await reader.IsDBNullAsync(isrc, cancellationToken) ? null : reader.GetString(isrc),
+            await reader.IsDBNullAsync(engine, cancellationToken) ? null : reader.GetString(engine),
+            await reader.IsDBNullAsync(sourceService, cancellationToken) ? null : reader.GetString(sourceService),
+            await reader.IsDBNullAsync(sourceUrl, cancellationToken) ? null : reader.GetString(sourceUrl),
+            await reader.IsDBNullAsync(deezerId, cancellationToken) ? null : reader.GetString(deezerId),
+            await reader.IsDBNullAsync(spotifyId, cancellationToken) ? null : reader.GetString(spotifyId),
+            await reader.IsDBNullAsync(appleId, cancellationToken) ? null : reader.GetString(appleId),
+            await reader.IsDBNullAsync(qobuzId, cancellationToken) ? null : reader.GetString(qobuzId),
+            await reader.IsDBNullAsync(tidalId, cancellationToken) ? null : reader.GetString(tidalId),
+            await reader.IsDBNullAsync(amazonId, cancellationToken) ? null : reader.GetString(amazonId),
+            await reader.IsDBNullAsync(destinationFolderId, cancellationToken) ? null : reader.GetInt64(destinationFolderId),
+            await reader.IsDBNullAsync(expectedFinalPath, cancellationToken) ? null : reader.GetString(expectedFinalPath),
+            await reader.IsDBNullAsync(quality, cancellationToken) ? null : reader.GetString(quality),
+            await reader.IsDBNullAsync(contentType, cancellationToken) ? null : reader.GetString(contentType),
+            await reader.IsDBNullAsync(reason, cancellationToken) ? null : reader.GetString(reason),
+            await reader.IsDBNullAsync(payloadJson, cancellationToken) ? null : reader.GetString(payloadJson),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(firstUnavailableAtUtc)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(nextRetryAtUtc)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(addedAtUtc)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(updatedAtUtc)));
+    }
 
     private static object ToDbDate(DateTimeOffset? value)
         => value.HasValue ? value.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture) : DBNull.Value;

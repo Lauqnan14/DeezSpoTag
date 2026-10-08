@@ -2425,7 +2425,9 @@ function getNextSpotifyTopTrackQueueButton() {
 function buildLibraryPlaybackStateHandler(button, fallbackKey) {
     return (state, context) => {
         setLibraryPlaybackState(button, state);
-        if (state === 'requested' || state === 'playing') {
+        // 'paused' keeps the session: the row stays highlighted so the same control
+        // resumes the track instead of starting it over.
+        if (state === 'requested' || state === 'playing' || state === 'paused') {
             libraryState.previewButton = button;
             libraryState.previewTrackId = context?.session?.key || fallbackKey;
             return;
@@ -2504,6 +2506,46 @@ async function getNextLibraryPlayableSpotifyButton(currentButton) {
     return null;
 }
 
+function getPreviousSpotifyTopTrackButton(currentButton = null) {
+    const list = document.getElementById('spotifyTopTracksList');
+    const activeButton = currentButton || libraryState.previewButton;
+    if (!list || !activeButton) {
+        return null;
+    }
+    const buttons = Array.from(list.querySelectorAll('button.track-play'));
+    const index = buttons.indexOf(activeButton);
+    return index <= 0 ? null : buttons[index - 1] || null;
+}
+
+function getPreviousSpotifyTopTrackQueueButton() {
+    const queue = libraryTopSongsPreviewState.queueButtons;
+    if (!Array.isArray(queue) || queue.length === 0) {
+        return null;
+    }
+
+    for (let index = libraryTopSongsPreviewState.queueIndex - 1; index >= 0; index--) {
+        const candidate = queue[index];
+        if (candidate?.isConnected) {
+            libraryTopSongsPreviewState.queueIndex = index;
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+async function getPreviousLibraryPlayableSpotifyButton(currentButton) {
+    if (!currentButton) {
+        return null;
+    }
+
+    if (isLibraryTopSongPlayButton(currentButton)) {
+        return getPreviousSpotifyTopTrackQueueButton();
+    }
+
+    return getPreviousSpotifyTopTrackButton(currentButton);
+}
+
 function buildLibrarySpotifyPlaybackRequest(url, button) {
     if (!button) {
         return null;
@@ -2543,6 +2585,13 @@ function buildLibrarySpotifyPlaybackRequest(url, button) {
                 return null;
             }
             return buildLibrarySpotifyPlaybackRequest(nextButton.dataset.spotifyUrl || '', nextButton);
+        },
+        getPreviousRequest: async () => {
+            const previousButton = await getPreviousLibraryPlayableSpotifyButton(button);
+            if (!previousButton) {
+                return null;
+            }
+            return buildLibrarySpotifyPlaybackRequest(previousButton.dataset.spotifyUrl || '', previousButton);
         }
     };
 }
@@ -4671,6 +4720,7 @@ function initSpotifyCacheControls(artistId) {
     if (popularSongsSyncButton) {
         popularSongsSyncButton.dataset.bound = 'true';
     }
+    void initArtistSyncTargetDefaults(targetContainer);
     bindArtistMetadataPolicyControls(artistId, artistSyncBlockedCheckbox);
     if (biographySourceSelect && biographySourceSelect.dataset.bound !== 'true') {
         biographySourceSelect.dataset.bound = 'true';
@@ -4709,31 +4759,23 @@ function initSpotifyCacheControls(artistId) {
         cachePanel.classList.add('is-open');
         const statusEl = document.getElementById('spotify-cache-status');
         const labelEl = refreshButton.querySelector('span');
-        const previousLabel = labelEl?.textContent || 'Update Cache';
+        const previousLabel = labelEl?.textContent || 'Refresh cache';
         refreshButton.disabled = true;
         refreshButton.setAttribute('aria-busy', 'true');
         if (labelEl) {
-            labelEl.textContent = 'Updating...';
+            labelEl.textContent = 'Starting…';
         }
         if (statusEl) {
             statusEl.textContent = 'Source cache: updating';
         }
         try {
-            await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
-            showToast('Artist source cache refreshed.', false);
+            const result = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
+            showToast(result?.queued
+                ? 'Artist cache refresh started. Progress is available in Artist Metadata Updater.'
+                : 'A metadata run is already retained. Check Artist Metadata Updater.', !result?.queued);
             if (statusEl) {
-                statusEl.textContent = 'Source cache: completed';
+                statusEl.textContent = result?.queued ? 'Source cache: queued' : 'Source cache: not queued';
             }
-            await loadSpotifyArtist(artistId, false, false);
-            const appleIdData = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/apple-id`);
-            const appleId = appleIdData?.appleId || libraryState.appleExtras?.storedAppleId || libraryState.appleExtras?.appleArtistId || null;
-            libraryState.appleExtras.storedAppleId = appleId || null;
-            libraryState.appleExtras.appleArtistId = appleId || null;
-            libraryState.artistVisuals.externalTerm = null;
-            libraryState.artistVisuals.externalLoading = false;
-            loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId);
-            await loadAppleArtistBiography(appleId);
-            setTimeout(() => loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId), 1000);
         } catch (error) {
             showToast(`Artist source cache refresh failed: ${error?.message || error}`, true);
             if (statusEl) {
@@ -4843,6 +4885,31 @@ function initSpotifyCacheControls(artistId) {
     }
 
     loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId);
+}
+
+async function initArtistSyncTargetDefaults(container) {
+    if (!container || container.dataset.defaultsBound === 'true') return;
+    container.dataset.defaultsBound = 'true';
+    const inputs = Array.from(container.querySelectorAll('[data-artist-sync-target]'));
+    inputs.forEach(input => input.addEventListener('change', () => {
+        input.dataset.userSelected = 'true';
+    }));
+    try {
+        const auth = await fetchJson('/api/platform-auth');
+        const connected = {
+            plex: Boolean(auth?.plex?.url && auth.plex.tokenSaved === true),
+            jellyfin: Boolean(auth?.jellyfin?.url && auth.jellyfin.apiKeySaved === true),
+            navidrome: auth?.navidrome?.connected === true
+        };
+        inputs.forEach(input => {
+            if (input.dataset.userSelected !== 'true') {
+                input.checked = connected[input.getAttribute('data-artist-sync-target')] === true;
+            }
+        });
+        container.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (error) {
+        console.warn('Unable to load artist sync target connection status.', error);
+    }
 }
 
 function getArtistSyncTargets() {
@@ -8978,21 +9045,7 @@ function renderFavoritesList(items, container) {
     container.innerHTML = '';
     const hasItems = Array.isArray(items) && items.length > 0;
     if (!hasItems) {
-        if (subsection) {
-            subsection.hidden = true;
-        }
-        if (empty) {
-            empty.classList.remove('is-visible');
-            empty.hidden = true;
-        }
         return false;
-    }
-    if (subsection) {
-        subsection.hidden = false;
-    }
-    if (empty) {
-        empty.classList.remove('is-visible');
-        empty.hidden = true;
     }
     items.forEach(item => {
         const card = document.createElement('div');
@@ -9059,15 +9112,6 @@ function renderFavoritesList(items, container) {
     });
 
     return true;
-}
-
-function setFavoriteProviderVisibility(sectionId, hasAnyContent) {
-    const section = document.getElementById(sectionId);
-    if (!section) {
-        return;
-    }
-
-    section.hidden = !hasAnyContent;
 }
 
 function trimTrailingDots(value) {
@@ -10407,9 +10451,8 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                 </span>
                 <span>
                     <label class="switch folder-library-toggle-label" title="${escapeHtml(viewModel.combinedToggleTitle)}">
-                        <input id="${viewModel.combinedEnabledId}" type="checkbox" ${viewModel.currentCombinedEnabled ? 'checked' : ''} data-folder-enabled />
+                        <input id="${viewModel.combinedEnabledId}" type="checkbox" ${viewModel.currentCombinedEnabled ? 'checked' : ''} data-folder-enabled aria-label="${escapeHtml(viewModel.combinedToggleTitle)}" />
                         <span class="slider"></span>
-                        <span class="folder-library-toggle-text" data-folder-enabled-text>${viewModel.currentCombinedEnabled ? 'On' : 'Off'}</span>
                     </label>
                 </span>
                 <span class="actions">

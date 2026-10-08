@@ -12,7 +12,7 @@ public sealed partial class MetadataAgentApiController(
     LibraryRepository libraryRepository,
     SpotifyArtistService spotifyArtistService) : ControllerBase
 {
-    private const string NavidromeSource = "navidrome";
+    private const string NavidromeSource = MediaServerTargetServices.Navidrome;
     private const string SpotifySource = "spotify";
     private const int MaxTopSongs = 100;
     private const int MaxSimilarArtists = 100;

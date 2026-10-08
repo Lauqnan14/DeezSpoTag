@@ -2898,6 +2898,20 @@ span.badge.badge-artwork-animated {
     background: var(--primary-color);
 }
 
+.media-operations-tab .analysis-degraded-pill {
+    color: var(--warning-color, #f59e0b);
+    border-color: color-mix(in srgb, var(--warning-color, #f59e0b) 55%, var(--border-secondary));
+    background: color-mix(in srgb, var(--warning-color, #f59e0b) 12%, var(--bg-secondary));
+}
+
+.media-operations-tab .analysis-degraded-pill::before {
+    background: var(--warning-color, #f59e0b);
+}
+
+.media-operations-tab .analysis-degraded-pill.is-hidden {
+    display: none;
+}
+
 .media-operations-tab .toggle-row {
     display: flex;
     align-items: center;
@@ -3830,6 +3844,7 @@ span.badge.badge-artwork-animated {
                                 <div class="tool-card-heading">
                                     <h4 class="tool-card-title mb-0">Vibe Analysis</h4>
                                     <span class="status-pill" id="analysisStatusPill">Inactive</span>
+                                    <span class="status-pill analysis-degraded-pill is-hidden" id="analysisDegradedPill" title="Enhanced analysis is unavailable; results fall back to standard mode.">Reduced</span>
                                 </div>
                                 <button class="tool-help-button" type="button" data-tool="vibe-analysis">
                                     ?
@@ -4072,7 +4087,7 @@ span.badge.badge-artwork-animated {
                                                 <input id="analysis-use-library-order" type="checkbox">
                                                 <span>
                                                     <strong>Use custom library order</strong>
-                                                    <span class="analysis-setting-tooltip" title="Analyze only the selected enabled music and Atmos libraries, in this order." aria-label="Analyze only the selected enabled music and Atmos libraries, in this order.">?</span>
+                                                    <span class="analysis-setting-tooltip" title="Analyse the selected enabled music libraries in this order. Albums within a library are always analysed alphabetically. A library left out here is never skipped: it is analysed after the ones you ordered." aria-label="Analyse the selected enabled music libraries in this order. Albums within a library are always analysed alphabetically. A library left out here is never skipped: it is analysed after the ones you ordered.">?</span>
                                                 </span>
                                             </label>
                                             <button class="action-btn action-btn-sm analysis-folder-order-edit" type="button" id="analysis-folder-order-edit-toggle" aria-expanded="false" hidden>Edit order</button>
@@ -4081,7 +4096,7 @@ span.badge.badge-artwork-animated {
                                         <div id="analysis-folder-order-panel" hidden>
                                             <ul class="analysis-folder-order-list" id="analysis-folder-order-list"></ul>
                                             <div class="analysis-folder-order-footer">
-                                                <span class="analysis-folder-order-copy">Drag audio libraries into vibe analysis priority order.</span>
+                                                <span class="analysis-folder-order-copy">Drag audio libraries into vibe analysis priority order. Albums inside a library are always alphabetical.</span>
                                                 <button class="action-btn action-btn-sm" type="button" id="analysis-reset-folder-order">Reset order</button>
                                             </div>
                                         </div>
@@ -4278,6 +4293,7 @@ span.badge.badge-artwork-animated {
                                          <div class="progress-bar-fill" id="metadata-progress-bar" style="width: 0%;"></div>
                                     </div>
                                     <p class="progress-details-label" id="metadata-progress-label">0 / 0 artists (0.0%)</p>
+                                    <p class="progress-details-label" id="metadata-target-breakdown" hidden></p>
                                 </div>
                                 <div class="tool-card-footer">
                                     <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
@@ -4805,10 +4821,8 @@ function endTaskAction(taskOrId) {
 
 function refreshQueueViewState() {
     clearMissingQueueActivity(tasks);
-    updateStats();
     queueState = deriveQueueState(tasks);
     updateQueueButtons();
-    updateToggleQueueUi(queueState);
     scheduleRenderTasks({ immediate: true });
 }
 
@@ -4829,30 +4843,6 @@ function removeVisibleQueueTasks(taskIds) {
     tasks = nextTasks;
     refreshQueueViewState();
     return true;
-}
-
-function clearVisibleQueueTasks(predicate) {
-    const nextTasks = tasks.filter(task => !predicate(task));
-    if (nextTasks.length === tasks.length) {
-        return false;
-    }
-
-    tasks = nextTasks;
-    refreshQueueViewState();
-    return true;
-}
-
-function isCompletedQueueTask(task) {
-    return mapStatus(task?.status) === 'complete';
-}
-
-function isCanceledQueueTask(task) {
-    return mapStatus(task?.status) === 'canceled';
-}
-
-function isActiveQueueTask(task) {
-    const status = mapStatus(task?.status);
-    return status === 'queued' || status === 'running' || status === 'paused' || status === 'retrying' || status === 'waiting';
 }
 
 function activityActionIconSvg(name) {
@@ -5116,7 +5106,7 @@ function applyLibraryScanProgress(status, phaseLabel, progressLabel, progressBar
 function pickMetadataStatus(automationStatus) {
     const cache = automationStatus?.cacheRefresh;
     const target = automationStatus?.targetUpdate;
-    const active = String(automationStatus?.activeOperation || '');
+    const active = String(automationStatus?.runOperation || automationStatus?.activeOperation || '');
     if (active === 'cache-refresh') {
         return cache;
     }
@@ -5143,8 +5133,11 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
     const processed = Number(status.processedArtists || 0);
     const running = Boolean(status.running);
     const succeeded = Number(status.successfulArtists || 0);
+    const partial = Number(status.partialArtists || 0);
+    const noMetadata = Number(status.noMetadataArtists || 0);
     const failed = Number(status.failedArtists || 0);
     const skipped = Number(status.skippedArtists || 0);
+    const resumed = Number(status.resumedArtists || 0);
     const currentArtist = status.currentArtist || '';
     const phase = status.phase || (running ? 'Metadata update running' : 'Metadata updater idle');
     const message = status.message || '';
@@ -5169,7 +5162,14 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
             progressLabel.textContent = message;
         } else if (total > 0) {
             const skippedText = skipReasonText ? `${skipped} skipped: ${skipReasonText}` : `${skipped} skipped`;
-            progressLabel.textContent = `${processed} / ${total} artists (${succeeded} success, ${failed} failed, ${skippedText})`;
+            // "updated" is reserved for artists whose content actually changed on a server. Partial
+            // updates and artists with no upstream metadata are reported in their own buckets so the
+            // numbers always add up to the processed total.
+            const carriedOver = resumed > 0 ? `, ${resumed} carried over` : '';
+            progressLabel.textContent =
+                `${processed} / ${total} artists${carriedOver} `
+                + `(${succeeded} updated, ${partial} partial, ${noMetadata} without metadata, `
+                + `${failed} failed, ${skippedText})`;
         } else if (message) {
             progressLabel.textContent = message;
         } else {
@@ -5187,9 +5187,86 @@ function formatMetadataSkipReason(reason) {
     switch (String(reason || '').trim()) {
         case 'notDue':
             return 'not due';
+        case 'syncBlocked':
+            return 'sync blocked';
+        case 'scanOnly':
+            return 'rescan only';
+        case 'artistRowMissing':
+            return 'artist row missing';
+        case 'timeout':
+            return 'timed out';
         default:
             return String(reason || 'skipped');
     }
+}
+
+const METADATA_TARGET_LABELS = {
+    plex: 'Plex',
+    jellyfin: 'Jellyfin',
+    navidrome: 'Navidrome'
+};
+
+function formatMetadataTargetName(target) {
+    const key = String(target || '').trim().toLowerCase();
+    return METADATA_TARGET_LABELS[key] || (key ? key : 'unknown');
+}
+
+/**
+ * Renders the per-server outcome breakdown. Each media server is reported separately, and a target
+ * with a narrower write capability says so, so a low Navidrome count reads as "artwork only" rather
+ * than looking like a failure.
+ */
+function formatMetadataTargetBreakdown(targets) {
+    if (!Array.isArray(targets) || targets.length === 0) {
+        return '';
+    }
+
+    return targets
+        .map(target => {
+            const name = formatMetadataTargetName(target?.target);
+            const parts = [];
+            const updated = Number(target?.updated || 0);
+            const unchanged = Number(target?.unchanged || 0);
+            const notFound = Number(target?.notFound || 0);
+            const notConfigured = Number(target?.notConfigured || 0);
+            const failed = Number(target?.failed || 0);
+
+            if (updated > 0) {
+                parts.push(`${updated} updated`);
+            }
+            if (unchanged > 0) {
+                parts.push(`${unchanged} unchanged`);
+            }
+            if (notFound > 0) {
+                parts.push(`${notFound} not on server`);
+            }
+            if (notConfigured > 0) {
+                parts.push(`${notConfigured} not configured`);
+            }
+            if (failed > 0) {
+                parts.push(`${failed} failed`);
+            }
+            if (parts.length === 0) {
+                return '';
+            }
+
+            const capability = String(target?.capability || '').trim().toLowerCase() === 'artworkonly'
+                ? ' (artwork only)'
+                : '';
+            return `${name}${capability}: ${parts.join(', ')}`;
+        })
+        .filter(Boolean)
+        .join(' • ');
+}
+
+function applyMetadataTargetBreakdown(element, status) {
+    if (!element) {
+        return;
+    }
+
+    const text = formatMetadataTargetBreakdown(status?.targets);
+    element.textContent = text;
+    element.hidden = !text;
 }
 
 function getMetadataUpdaterTargets() {
@@ -5236,6 +5313,7 @@ function initMetadataUpdater() {
     const phaseLabel = document.getElementById('metadata-phase-label');
     const progressLabel = document.getElementById('metadata-progress-label');
     const progressBar = document.getElementById('metadata-progress-bar');
+    const targetBreakdown = document.getElementById('metadata-target-breakdown');
 
     if (!updateButton && !refreshCacheButton) {
         return;
@@ -5292,6 +5370,8 @@ function initMetadataUpdater() {
         }
     };
 
+    applyMetadataRunControls();
+
     const runMetadataUpdater = async (forceManualRun) => {
         const missingArtistArtworkOnly = missingArtistArtOnlyCheckbox?.checked === true;
         const source = sourceSelect?.value || 'auto';
@@ -5336,7 +5416,9 @@ function initMetadataUpdater() {
                 notifyActivity('Metadata updater is already running.', 'warning');
             }
             if (result?.status) {
+                applyMetadataAutomationStatus(result.status);
                 applyMetadataUpdaterStatus(result.status.targetUpdate || {}, phaseLabel, progressLabel, progressBar);
+                applyMetadataTargetBreakdown(targetBreakdown, result.status.targetUpdate || {});
             }
         } catch (error) {
             notifyActivity(`Metadata updater failed: ${error?.message || error}`, 'error');
@@ -5345,7 +5427,7 @@ function initMetadataUpdater() {
 
     if (refreshCacheButton) {
         refreshCacheButton.addEventListener('click', async () => {
-            await runActivityButtonAction(refreshCacheButton, async () => {
+            await runMetadataControlAction('cache-refresh', async () => {
                 try {
                     const folderId = Number(folderSelect?.value || 0);
                     const response = await activityFetch('/api/library/artist-metadata/cache/refresh', {
@@ -5364,8 +5446,9 @@ function initMetadataUpdater() {
                     if (!response.ok) {
                         throw new Error(await response.text());
                     }
-                    notifyActivity('Metadata cache refresh started.');
-                    await refreshLibraryScanAndMetadataStatus();
+                    const payload = await response.json();
+                    if (payload?.status) applyMetadataAutomationStatus(payload.status);
+                    notifyActivity(payload?.queued ? 'Metadata cache refresh started.' : 'A metadata run is already retained.', payload?.queued ? 'info' : 'warning');
                 } catch (error) {
                     notifyActivity(`Metadata cache refresh failed: ${error?.message || error}`, 'error');
                 }
@@ -5374,7 +5457,11 @@ function initMetadataUpdater() {
     }
     if (cancelButton) {
         cancelButton.addEventListener('click', async () => {
+            if (metadataActionPending) return;
+            metadataActionPending = true;
+            metadataStatusVersion++;
             await runActivityButtonAction(cancelButton, async () => {
+                applyMetadataRunControls();
                 try {
                     const response = await activityFetch('/api/library/artist-metadata/cancel', { method: 'POST' });
                     const payload = await response.json().catch(() => null);
@@ -5382,6 +5469,7 @@ function initMetadataUpdater() {
                         throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
                     }
                     const status = payload?.status;
+                    if (status) applyMetadataAutomationStatus(status);
                     const stillRunning = Boolean(
                         status?.activeOperation
                         || status?.cacheRefresh?.running
@@ -5395,7 +5483,10 @@ function initMetadataUpdater() {
                 } catch (error) {
                     notifyActivity(`Metadata cancellation failed: ${error?.message || error}`, 'error');
                 } finally {
+                    metadataActionPending = false;
+                    metadataStatusVersion++;
                     await refreshLibraryScanAndMetadataStatus();
+                    applyMetadataRunControls();
                 }
             }, { restoreDisabled: false });
         });
@@ -5415,6 +5506,18 @@ function initMetadataUpdater() {
                 if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterTargets', targets);
             });
         });
+
+        // Plex ships checked in the markup, which is wrong for anyone not running Plex. Let the
+        // connected servers settle it, and keep a target the user already saved.
+        void applyConnectedMediaServerTargets('data-metadata-target', savedTargets.length > 0)
+            .then((connected) => {
+                if (!connected || connected.length !== 1) {
+                    return;
+                }
+                const targets = getMetadataUpdaterTargets();
+                localStorage.setItem(targetKey, JSON.stringify(targets));
+                if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterTargets', targets);
+            });
     }
 
     if (sourceSelect) {
@@ -5516,18 +5619,14 @@ function initMetadataUpdater() {
     }
 
     updateButton?.addEventListener('click', async () => {
-        if (updateButton.disabled) {
-            return;
-        }
-
-        updateButton.disabled = true;
-        phaseLabel && (phaseLabel.textContent = 'Metadata update started');
-        progressLabel && (progressLabel.textContent = 'Preparing run...');
-        progressBar && (progressBar.style.width = '5%');
-        await persistMetadataUpdaterSettings();
-        await runMetadataUpdater(true);
-        const refreshed = await refreshLibraryScanAndMetadataStatus();
-        updateButton.disabled = refreshed?.metadataRunning === true;
+        if (updateButton.disabled) return;
+        await runMetadataControlAction('target-update', async () => {
+            phaseLabel && (phaseLabel.textContent = 'Metadata update started');
+            progressLabel && (progressLabel.textContent = 'Preparing run...');
+            progressBar && (progressBar.style.width = '5%');
+            await persistMetadataUpdaterSettings();
+            await runMetadataUpdater(true);
+        });
     });
 
     saveSettingsButton?.addEventListener('click', async () => {
@@ -5559,6 +5658,7 @@ async function loadMetadataUpdaterFolders(folderSelect, savedValue) {
         }
         const folders = await response.json();
         folderSelect.innerHTML = '<option value="">All music libraries</option>';
+        let onlyFolderId = '';
         if (Array.isArray(folders)) {
             folders.forEach(folder => {
                 const option = document.createElement('option');
@@ -5566,9 +5666,16 @@ async function loadMetadataUpdaterFolders(folderSelect, savedValue) {
                 option.textContent = folder.displayName || folder.libraryName || folder.rootPath || `Folder ${folder.id}`;
                 folderSelect.appendChild(option);
             });
+            if (folders.length === 1 && folders[0]?.id != null) {
+                onlyFolderId = String(folders[0].id);
+            }
         }
         if (savedValue) {
             folderSelect.value = savedValue;
+        } else if (onlyFolderId) {
+            // One music library means "all of them" and "that one" are the same run, so show the
+            // folder rather than leaving an ambiguous default. Several still start on "All".
+            folderSelect.value = onlyFolderId;
         }
     } catch (error) {
         console.error('Failed to load library folders for artist metadata updater:', error);
@@ -5740,18 +5847,96 @@ function isMediaOperationsTabActive() {
     return !!pane?.classList.contains('active');
 }
 
+let metadataAutomationStatus = null;
+let metadataActionPending = false;
+let metadataStatusVersion = 0;
+let metadataPollSequence = 0;
+let metadataAppliedSequence = 0;
+
+function applyMetadataRunControls() {
+    const status = metadataAutomationStatus;
+    const state = status?.runState || (status?.activeOperation ? 'running' : 'idle');
+    const operation = status?.runOperation || status?.activeOperation;
+    const retained = state !== 'idle';
+    for (const [id, ownOperation, startLabel] of [
+        ['metadata-refresh-cache-button', 'cache-refresh', 'Refresh Cache'],
+        ['metadata-update-button', 'target-update', 'Update Server']]) {
+        const button = document.getElementById(id);
+        if (!button) continue;
+        const ownRun = retained && operation === ownOperation;
+        button.textContent = ownRun
+            ? ({ running: 'Pause', pausing: 'Pausing…', paused: 'Resume', resuming: 'Resuming…' }[state] || startLabel)
+            : startLabel;
+        button.disabled = !status || metadataActionPending || (retained && !ownRun)
+            || state === 'pausing' || state === 'resuming';
+    }
+    const cancel = document.getElementById('metadata-cancel-button');
+    if (cancel) cancel.disabled = !retained || metadataActionPending || state === 'pausing' || state === 'resuming';
+}
+
+function applyMetadataAutomationStatus(status) {
+    metadataAutomationStatus = status;
+    const selected = pickMetadataStatus(status) || {};
+    const phase = document.getElementById('metadata-phase-label');
+    applyMetadataUpdaterStatus(selected, phase,
+        document.getElementById('metadata-progress-label'), document.getElementById('metadata-progress-bar'));
+    applyMetadataTargetBreakdown(document.getElementById('metadata-target-breakdown'), selected);
+    if (phase && status?.resumeNotice && status?.runState === 'paused') phase.textContent = status.resumeNotice;
+    applyMetadataRunControls();
+}
+
+function acceptMetadataPoll(status, version, sequence) {
+    if (metadataActionPending || version !== metadataStatusVersion || sequence <= metadataAppliedSequence) return false;
+    metadataAppliedSequence = sequence;
+    applyMetadataAutomationStatus(status);
+    return true;
+}
+
+async function runMetadataControlAction(operation, startRun) {
+    if (metadataActionPending) return;
+    if (!metadataAutomationStatus) await refreshLibraryScanAndMetadataStatus();
+    if (!metadataAutomationStatus) return;
+    const status = metadataAutomationStatus;
+    const state = status.runState || (status.activeOperation ? 'running' : 'idle');
+    if (state !== 'idle' && (status.runOperation !== operation || !['running', 'paused'].includes(state))) return;
+    metadataActionPending = true;
+    metadataStatusVersion++;
+    applyMetadataRunControls();
+    try {
+        if (state === 'idle') {
+            await startRun();
+            // The poll runs after releasing the click lock below.
+        } else {
+            const action = state === 'paused' ? 'resume' : 'pause';
+            const route = operation === 'cache-refresh' ? 'cache' : 'targets';
+            applyMetadataAutomationStatus({ ...status, runState: action === 'pause' ? 'pausing' : 'resuming' });
+            const response = await activityFetch(`/api/library/artist-metadata/${route}/${action}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ runId: status.runId })
+            });
+            const payload = await response.json();
+            if (payload?.status) applyMetadataAutomationStatus(payload.status);
+            if (!response.ok) throw new Error(response.status === 409
+                ? 'The run status changed. Please use the updated control.' : `Request failed (${response.status})`);
+        }
+    } catch (error) {
+        notifyActivity(`Metadata operation failed: ${error?.message || error}`, 'error');
+        // Failed requests need an authoritative poll before another transition is offered.
+        metadataAutomationStatus = null;
+    } finally {
+        metadataActionPending = false;
+        metadataStatusVersion++;
+        applyMetadataRunControls();
+        if (state === 'idle' || !metadataAutomationStatus) await refreshLibraryScanAndMetadataStatus();
+    }
+}
+
 async function refreshLibraryScanAndMetadataStatus() {
     const dbPhase = document.getElementById('db-phase-label');
     const dbProgressLabel = document.getElementById('db-progress-label');
     const dbProgressBar = document.getElementById('db-progress-bar');
     const dbCancel = document.getElementById('db-cancel-button');
     const dbUpdate = document.getElementById('db-update-button');
-    const metadataPhase = document.getElementById('metadata-phase-label');
-    const metadataProgressLabel = document.getElementById('metadata-progress-label');
-    const metadataProgressBar = document.getElementById('metadata-progress-bar');
-    const metadataUpdate = document.getElementById('metadata-update-button');
-    const metadataRefresh = document.getElementById('metadata-refresh-cache-button');
-    const metadataCancel = document.getElementById('metadata-cancel-button');
     let metadataRunning = null;
 
     try {
@@ -5772,23 +5957,13 @@ async function refreshLibraryScanAndMetadataStatus() {
     }
 
     try {
+        const version = metadataStatusVersion;
+        const sequence = ++metadataPollSequence;
         const metadataResponse = await activityFetch('/api/library/artist-metadata/status');
         if (metadataResponse.ok) {
             const automationStatus = await metadataResponse.json();
-            const metadataStatus = pickMetadataStatus(automationStatus);
-            metadataRunning = Boolean(automationStatus?.activeOperation || metadataStatus?.running);
-            applyMetadataUpdaterStatus(metadataStatus || {}, metadataPhase, metadataProgressLabel, metadataProgressBar);
-            if (automationStatus?.resumeNotice && !metadataRunning) {
-                metadataPhase.textContent = automationStatus.resumeNotice;
-            }
-            if (metadataUpdate) {
-                metadataUpdate.disabled = metadataRunning;
-            }
-            if (metadataRefresh) {
-                metadataRefresh.disabled = metadataRunning;
-            }
-            if (metadataCancel) {
-                metadataCancel.disabled = !metadataRunning;
+            if (acceptMetadataPoll(automationStatus, version, sequence)) {
+                metadataRunning = automationStatus?.runState !== 'idle';
             }
         }
     } catch {
@@ -6170,7 +6345,7 @@ async function clearCanceledTasks() {
 	    const tasksList = document.getElementById('tasksList');
 	    if (!tasksList) return;
 	    const tailVisible = isQueueTailVisible();
-	    const orderedTasks = orderTasksForAutoScroll(tasks, { pinActive: !tailVisible });
+	    const orderedTasks = Array.isArray(tasks) ? [...tasks] : [];
 		    const renderTask = (task, index) => {
 		        const taskId = String(task.taskId || '');
 		        const safeTaskIdArg = escapeJsString(taskId);
@@ -6416,63 +6591,6 @@ function resetQueueProgressCache(taskId) {
     delete queueProgressCache[taskId];
 }
 
-function orderTasksForAutoScroll(taskList, options) {
-    return Array.isArray(taskList) ? [...taskList] : [];
-}
-
-function updateStats() {
-    const counts = tasks.reduce((acc, task) => {
-        const bucket = (task.status === 'paused' || task.status === 'retrying') ? 'queued' : task.status;
-        acc[bucket] = (acc[bucket] || 0) + 1;
-        return acc;
-    }, {});
-
-    const queued = document.getElementById('stat-queued');
-    const running = document.getElementById('stat-running');
-    const complete = document.getElementById('stat-complete');
-    const failed = document.getElementById('stat-failed');
-    const canceled = document.getElementById('stat-canceled');
-
-    if (queued) queued.textContent = counts.queued || 0;
-    if (running) running.textContent = counts.running || 0;
-    if (complete) complete.textContent = counts.complete || 0;
-    if (failed) failed.textContent = counts.failed || 0;
-    if (canceled) canceled.textContent = counts.canceled || 0;
-}
-
-function toggleQueue() {
-    const nextState = queueState === 'running' ? 'paused' : 'running';
-    if (nextState === 'paused') {
-        pauseQueue();
-    } else {
-        resumeQueue();
-    }
-    updateToggleQueueUi(nextState);
-}
-
-function updateToggleQueueUi(state) {
-    const btn = document.getElementById('toggleBtn');
-    const icon = document.getElementById('btnIcon');
-    const text = document.getElementById('btnText');
-    const badge = document.getElementById('statusBadge');
-
-    if (!btn || !icon || !text || !badge) return;
-
-    if (state === 'running') {
-        btn.classList.add('btn-pause');
-        icon.textContent = '⏸';
-        text.textContent = 'Pause Queue';
-        badge.className = 'status-badge status-active';
-        badge.textContent = '● Active';
-    } else {
-        btn.classList.remove('btn-pause');
-        icon.textContent = '▶';
-        text.textContent = 'Start Queue';
-        badge.className = 'status-badge status-paused';
-        badge.textContent = '○ Paused';
-    }
-}
-
 async function retryTask(taskId) {
     const target = beginTaskAction(taskId);
     if (!target) {
@@ -6487,7 +6605,6 @@ async function retryTask(taskId) {
     target.error = null;
     resetQueueProgressCache(taskId);
     scheduleRenderTasks();
-    updateStats();
 
     try {
         const payload = await ensureJsonActionSuccess('/Activities/RetryFailed', { uuid: taskId });
@@ -6503,13 +6620,11 @@ async function retryTask(taskId) {
         resetQueueProgressCache(taskId);
         resetQueueProgressCache(updatedId);
         scheduleRenderTasks();
-        updateStats();
         await loadQueueFromServer({ force: true });
     } catch (error) {
         target.status = previousStatus || 'failed';
         target.error = previousError || target.error || null;
         scheduleRenderTasks();
-        updateStats();
         console.error(`Failed to retry task ${taskId}:`, error);
         showDownloadActionError(error?.message, 'Retry failed.');
     } finally {
@@ -6702,13 +6817,12 @@ async function loadQueueFromServer(options) {
             tasks = ordered;
             clearMissingQueueActivity(tasks);
             scheduleRenderTasks();
-            updateStats();
             queueState = deriveQueueState(tasks);
             updateQueueButtons();
-            updateToggleQueueUi(queueState);
         }
     } catch (error) {
         console.error('Failed to load queue:', error);
+        showDownloadActionError(error?.message, 'Failed to load the download queue.');
     } finally {
         queuePollInFlight = false;
         if (queuePollRefreshPending) {
@@ -6813,10 +6927,6 @@ function normalizeQueueCounter(value) {
     return Math.max(0, Math.round(numeric));
 }
 
-function isQueueTerminalStatus(status) {
-    return status === 'complete' || status === 'failed' || status === 'canceled';
-}
-
 function isQueueResetStatus(status) {
     return status === 'queued' || status === 'retrying' || status === 'waiting';
 }
@@ -6851,10 +6961,6 @@ function resolveMergedQueueProgress(currentProgress, incomingProgress, currentSt
 
     if (normalizedCurrentStatus === 'complete') {
         return 100;
-    }
-
-    if (isQueueTerminalStatus(normalizedIncomingStatus)) {
-        return Math.max(current, incoming);
     }
 
     return Math.max(current, incoming);
@@ -7623,8 +7729,10 @@ function applyQueueRealtimeUpdate(payload) {
         scheduleQueueHydrationRefresh();
     }
     if (taskChanged) {
-        updateStats();
-        scheduleRenderTasks();
+        // Realtime status changes are the main way the queue advances, so the derived queue state
+        // and the toolbar enabled flags have to be refreshed here. Without this the Pause/Resume
+        // buttons keep whatever state the last full load happened to compute.
+        refreshQueueViewState();
     }
 
     if (status && status !== 'running') {
@@ -8358,7 +8466,11 @@ async function initLibraryLogs() {
 const analysisState = {
     running: false,
     lastRunUtc: null,
-    pendingTracks: 0
+    pendingTracks: 0,
+    currentTrack: null,
+    latestLibraryId: null,
+    statusLibraryId: null,
+    statusRequestId: 0
 };
 
 const analysisSettingsState = {
@@ -8438,11 +8550,27 @@ async function loadAnalysisActivity() {
 
 function applyAnalysisRuntime(runtime) {
     analysisState.running = runtime?.running === true;
+    analysisState.currentTrack = runtime?.current?.track ? runtime.current : null;
+    applyAnalysisDegradedPill(runtime?.analyzer);
     if (runtime?.latest) {
         applyLatestAnalysis(runtime.latest, false);
     }
+    setAnalysisStatusLibrary(analysisState.currentTrack
+        ? analysisState.currentTrack.analysis?.libraryId
+        : analysisState.latestLibraryId);
     renderAnalysisRecent(runtime?.recent || [], runtime?.current || null);
     updateAnalysisStatusPill();
+}
+
+// Renders only a boolean degraded state. The analyzer failure reason is
+// deliberately never surfaced here; it stays in the runtime API and logs.
+function applyAnalysisDegradedPill(analyzer) {
+    const pill = document.getElementById('analysisDegradedPill');
+    if (!pill) {
+        return;
+    }
+    const degraded = analyzer?.degraded === true;
+    pill.classList.toggle('is-hidden', !degraded);
 }
 
 function applyLatestAnalysis(latest, addToRecent = true) {
@@ -8451,6 +8579,10 @@ function applyLatestAnalysis(latest, addToRecent = true) {
     }
     const track = latest.track;
     const analysis = latest.analysis;
+    analysisState.latestLibraryId = analysis?.libraryId ?? null;
+    setAnalysisStatusLibrary(analysisState.currentTrack
+        ? analysisState.currentTrack.analysis?.libraryId
+        : analysisState.latestLibraryId);
     const trackLabel = track
         ? `${track.title} · ${track.artistName}`
         : 'Unknown';
@@ -8566,24 +8698,55 @@ async function loadLatestAnalysis() {
     } catch (error) {
         const trackEl = document.getElementById('analysisLatestTrack');
         if (trackEl) trackEl.textContent = 'No analyzed tracks yet';
+        analysisState.latestLibraryId = null;
+        setAnalysisStatusLibrary(analysisState.currentTrack?.analysis?.libraryId);
     }
+}
+
+function clearAnalysisStatus() {
+    analysisState.pendingTracks = 0;
+    analysisState.lastRunUtc = null;
+    for (const id of ['analysisStatus', 'analysisPending', 'analysisLastRun']) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = '--';
+    }
+}
+
+function setAnalysisStatusLibrary(libraryId) {
+    const nextLibraryId = libraryId != null && Number(libraryId) > 0 ? Number(libraryId) : null;
+    if (analysisState.statusLibraryId === nextLibraryId) {
+        if (nextLibraryId === null) clearAnalysisStatus();
+        return;
+    }
+    analysisState.statusLibraryId = nextLibraryId;
+    ++analysisState.statusRequestId;
+    clearAnalysisStatus();
+    if (nextLibraryId !== null) void loadAnalysisStatus();
 }
 
 async function loadAnalysisStatus() {
     const statusEl = document.getElementById('analysisStatus');
     const pendingEl = document.getElementById('analysisPending');
     const lastRunEl = document.getElementById('analysisLastRun');
-    const statusPill = document.getElementById('analysisStatusPill');
     if (!statusEl) {
         return;
     }
+    const libraryId = analysisState.statusLibraryId;
+    const requestId = ++analysisState.statusRequestId;
+    if (libraryId === null) {
+        clearAnalysisStatus();
+        return;
+    }
+    const isCurrentRequest = () => libraryId === analysisState.statusLibraryId
+        && requestId === analysisState.statusRequestId;
     try {
-        const status = await fetchJson('/api/library/analysis/status');
+        const status = await fetchJson(`/api/library/analysis/status?libraryId=${encodeURIComponent(libraryId)}`);
+        if (!isCurrentRequest()) return;
         const pending = status?.pendingTracks ?? 0;
         const analyzed = status?.analyzedTracks ?? 0;
         const total = status?.totalTracks ?? 0;
         analysisState.pendingTracks = pending;
-        analysisState.lastRunUtc = status?.lastRunUtc || analysisState.lastRunUtc;
+        analysisState.lastRunUtc = status?.lastRunUtc ?? null;
         statusEl.textContent = `${analyzed.toLocaleString()}/${total.toLocaleString()} analyzed`;
         if (pendingEl) {
             pendingEl.textContent = pending.toLocaleString();
@@ -8592,11 +8755,11 @@ async function loadAnalysisStatus() {
             statusEl.textContent += ' • Running';
         }
         updateAnalysisStatusPill();
-        const lastRunValue = analysisState.lastRunUtc || status?.lastRunUtc;
         if (lastRunEl) {
-            lastRunEl.textContent = formatTimestamp(lastRunValue);
+            lastRunEl.textContent = formatTimestamp(analysisState.lastRunUtc);
         }
     } catch (error) {
+        if (!isCurrentRequest()) return;
         statusEl.textContent = `Status unavailable${error?.message ? `: ${error.message}` : ''}`;
         if (pendingEl) {
             pendingEl.textContent = 'Unknown';
@@ -8631,12 +8794,16 @@ async function runAnalysis() {
             throw new Error(await response.text());
         }
         const result = await response.json();
-        if (result?.queued !== true) {
+        if (result?.queued === true) {
+            notifyActivity('Vibe analysis started.');
+        } else if (result?.alreadyRunning === true) {
+            // Background analysis is on and a pass is already underway. Enabling
+            // the toggle starts a pass immediately, so this is the expected result
+            // of clicking Run straight after switching it on.
+            notifyActivity('Vibe analysis is already running.');
+        } else {
             notifyActivity('Vibe analysis is paused. Enable background analysis to resume.', 'warning');
-            await loadAnalysisActivity();
-            return;
         }
-        notifyActivity('Vibe analysis started.');
         await loadAnalysisActivity();
         await loadAnalysisStatus();
         await loadLatestAnalysis();
@@ -8734,9 +8901,14 @@ function initAnalysisCard() {
             if (!useLibraryOrder.checked) {
                 analysisFolderOrderExpanded = false;
             }
-            if (!analysisSettingsState.libraryOrder.length) {
+
+            // Turning the toggle on with no stored order must not analyse nothing, so
+            // it seeds the full list. The list is only a priority order: the analyser
+            // appends any library the list omits, so nothing can be silently excluded.
+            if (useLibraryOrder.checked && !analysisSettingsState.libraryOrder.length) {
                 analysisSettingsState.libraryOrder = analysisAvailableFolders.map(folder => folder.id);
             }
+
             renderAnalysisFolderOrder();
             saveAnalysisSettings(true);
         });
@@ -8792,16 +8964,16 @@ async function loadAnalysisSettings() {
         analysisSettingsState.enabled = enabledEl.checked;
         analysisSettingsState.batchSize = settings.batchSize ?? 50;
         analysisSettingsState.intervalMinutes = settings.intervalMinutes ?? 30;
-        analysisSettingsState.useLibraryOrder = settings.useLibraryOrder === true;
-        analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(settings.libraryOrder || []);
-        if (!analysisSettingsState.libraryOrder.length) {
-            analysisSettingsState.libraryOrder = analysisAvailableFolders.map(folder => folder.id);
-        }
         const batchSize = document.getElementById('analysis-batch-size');
         const intervalMinutes = document.getElementById('analysis-interval-minutes');
-        const useLibraryOrder = document.getElementById('analysis-use-library-order');
         if (batchSize) batchSize.value = settings.batchSize ?? 50;
         if (intervalMinutes) intervalMinutes.value = settings.intervalMinutes ?? 30;
+
+        // normalizeAnalysisFolderOrder drops ids for libraries that no longer resolve,
+        // so a stored order cannot accumulate dead references across reloads.
+        const useLibraryOrder = document.getElementById('analysis-use-library-order');
+        analysisSettingsState.useLibraryOrder = settings.useLibraryOrder ?? false;
+        analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(settings.libraryOrder ?? []);
         if (useLibraryOrder) useLibraryOrder.checked = analysisSettingsState.useLibraryOrder;
         renderAnalysisFolderOrder();
         updateAnalysisStatusPill();
@@ -8817,14 +8989,18 @@ async function loadAnalysisFolders() {
     }
     const folders = await response.json();
     analysisAvailableFolders = (Array.isArray(folders) ? folders : [])
-        .filter(folder => folder?.enabled !== false && folder?.id != null && isVibeAudioFolder(folder))
+        .filter(folder => folder?.enabled !== false
+            && folder?.id != null
+            // Must mirror the server filter (GetConfiguredEnabledMusicFoldersAsync),
+            // otherwise the UI lists a library the analyser would silently skip.
+            && (folder?.libraryId ?? folder?.LibraryId) != null
+            && isVibeAudioFolder(folder))
         .map(folder => ({
             id: Number(folder.id),
             displayName: folder.displayName || folder.libraryName || folder.rootPath || `Folder ${folder.id}`,
             rootPath: folder.rootPath || '',
             libraryName: folder.libraryName || ''
         }));
-    analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(analysisSettingsState.libraryOrder);
 }
 
 function isVibeAudioFolder(folder) {
@@ -8841,7 +9017,14 @@ function isVibeAudioFolder(folder) {
     return !fallback.includes('video') && !fallback.includes('podcast');
 }
 
+// Renders the order vibe analysis will actually use. Ordering is always
+// alphabetical by library name over every enabled music library; there is no
+// custom order to configure and nothing is ever excluded.
 function normalizeAnalysisFolderOrder(order) {
+    // Only ids that still resolve to an enabled music library are kept, so a stored
+    // order cannot grow a reference to a library that has since been removed. It
+    // deliberately does NOT require every library to be listed: an order that reorders
+    // is not a filter, and anything absent is appended server-side rather than dropped.
     const known = new Set(analysisAvailableFolders.map(folder => folder.id));
     const normalized = [];
     (Array.isArray(order) ? order : []).forEach(value => {
@@ -8874,8 +9057,8 @@ function renderAnalysisFolderOrder() {
     editToggle.setAttribute('aria-expanded', analysisFolderOrderExpanded ? 'true' : 'false');
     summary.hidden = !isEnabled;
     summary.textContent = selectedCount === 1
-        ? `1 audio library selected from ${totalCount}.`
-        : `${selectedCount} audio libraries selected from ${totalCount}.`;
+        ? `1 audio library ordered first, from ${totalCount}.`
+        : `${selectedCount} audio ${selectedCount === 1 ? 'library' : 'libraries'} ordered first, from ${totalCount}.`;
     panel.hidden = !isEnabled || !analysisFolderOrderExpanded;
 
     const byId = new Map(analysisAvailableFolders.map(folder => [folder.id, folder]));
@@ -8883,19 +9066,20 @@ function renderAnalysisFolderOrder() {
         ...orderedIds,
         ...analysisAvailableFolders.map(folder => folder.id).filter(id => !orderedIds.includes(id))
     ];
-    list.innerHTML = displayIds.map((id, index) => {
+    list.innerHTML = displayIds.map((id) => {
         const folder = byId.get(id);
         if (!folder) {
             return '';
         }
+
         const isSelected = orderedIds.includes(id);
         return `
             <li class="analysis-folder-order-item${isSelected ? '' : ' engine-disabled'}" data-folder-id="${id}" draggable="${isSelected ? 'true' : 'false'}">
                 <div class="analysis-folder-order-header">
                     <span class="analysis-folder-order-handle" aria-hidden="true">drag_indicator</span>
-                    <input type="checkbox" class="analysis-folder-enabled" ${isSelected ? 'checked' : ''} aria-label="Enable ${escapeHtml(folder.displayName)}">
+                    <input type="checkbox" class="analysis-folder-enabled" ${isSelected ? 'checked' : ''} aria-label="Prioritise ${escapeHtml(folder.displayName)}">
                     <span class="analysis-folder-order-title">${escapeHtml(folder.displayName)}</span>
-                    <span class="analysis-folder-order-status">${isSelected ? 'enabled' : 'disabled'}</span>
+                    <span class="analysis-folder-order-status">${isSelected ? 'first' : 'after'}</span>
                 </div>
             </li>`;
     }).join('');
@@ -8910,6 +9094,7 @@ function bindAnalysisFolderOrderControls() {
             if (item.classList.contains('engine-disabled')) {
                 return;
             }
+
             dragged = item;
             item.classList.add('dragging');
         });
@@ -8933,7 +9118,10 @@ function bindAnalysisFolderOrderControls() {
     document.querySelectorAll('.analysis-folder-enabled').forEach(input => {
         input.addEventListener('change', () => {
             const id = Number(input.closest('[data-folder-id]')?.dataset.folderId || 0);
-            if (!id) return;
+            if (!id) {
+                return;
+            }
+
             if (input.checked) {
                 if (!analysisSettingsState.libraryOrder.includes(id)) {
                     analysisSettingsState.libraryOrder.push(id);
@@ -8941,6 +9129,7 @@ function bindAnalysisFolderOrderControls() {
             } else {
                 analysisSettingsState.libraryOrder = analysisSettingsState.libraryOrder.filter(folderId => folderId !== id);
             }
+
             renderAnalysisFolderOrder();
             saveAnalysisSettings(true);
         });
@@ -8959,8 +9148,8 @@ function buildAnalysisPayload(useStateValues = false, enabledOverride) {
             enabled: enabledOverride ?? analysisSettingsState.enabled,
             batchSize: analysisSettingsState.batchSize ?? 50,
             intervalMinutes: analysisSettingsState.intervalMinutes ?? 30,
-            useLibraryOrder: analysisSettingsState.useLibraryOrder ?? false,
-            libraryOrder: analysisSettingsState.libraryOrder || []
+            useLibraryOrder: analysisSettingsState.useLibraryOrder,
+            libraryOrder: [...analysisSettingsState.libraryOrder]
         };
     }
 
@@ -8968,26 +9157,29 @@ function buildAnalysisPayload(useStateValues = false, enabledOverride) {
         enabled: enabledOverride ?? (document.getElementById('analysis-enabled')?.checked ?? analysisSettingsState.enabled),
         batchSize: Number(document.getElementById('analysis-batch-size')?.value || analysisSettingsState.batchSize || 50),
         intervalMinutes: Number(document.getElementById('analysis-interval-minutes')?.value || analysisSettingsState.intervalMinutes || 30),
-        useLibraryOrder: document.getElementById('analysis-use-library-order')?.checked ?? analysisSettingsState.useLibraryOrder,
-        libraryOrder: analysisSettingsState.libraryOrder || []
+        useLibraryOrder: analysisSettingsState.useLibraryOrder,
+        libraryOrder: [...analysisSettingsState.libraryOrder]
     };
 }
 
 async function saveAnalysisEnabled(enabled) {
     const enabledEl = document.getElementById('analysis-enabled');
-    const previous = enabledEl?.checked;
-    if (enabledEl) {
-        enabledEl.checked = enabled;
-    }
+    // The change event fires after the checkbox has already flipped, so the
+    // checkbox cannot be used to recover the previous value. Fall back to the last
+    // value that was persisted successfully.
+    const previous = analysisSettingsState.enabled;
     const payload = buildAnalysisPayload(true, enabled);
     try {
         await persistAnalysisSettings(payload);
+        if (enabledEl) {
+            enabledEl.checked = enabled;
+        }
         updateAnalysisStatusPill();
         notifyActivity(`Vibe analysis ${payload.enabled ? 'enabled' : 'disabled'}.`);
         return true;
     } catch (error) {
         if (enabledEl) {
-            enabledEl.checked = previous ?? analysisSettingsState.enabled;
+            enabledEl.checked = previous;
         }
         notifyActivity(`Failed to update analysis toggle: ${error?.message || error}`, 'error');
         return false;
@@ -9172,8 +9364,9 @@ async function persistAnalysisSettings(payload) {
     analysisSettingsState.enabled = payload.enabled;
     analysisSettingsState.batchSize = payload.batchSize;
     analysisSettingsState.intervalMinutes = payload.intervalMinutes;
-    analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
-    analysisSettingsState.libraryOrder = payload.libraryOrder;
+    analysisSettingsState.useLibraryOrder = payload.useLibraryOrder ?? analysisSettingsState.useLibraryOrder;
+    analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(
+        payload.libraryOrder ?? analysisSettingsState.libraryOrder);
 }
 
 	let libraryLogsRefreshTimer = null;
@@ -9339,6 +9532,7 @@ async function initMediaOperationsSection() {
         initLibraryMaintenance();
         startLibraryScanStatusPolling();
         mediaOperationsInitialized = true;
+
         await refreshMediaOperationsSection();
     })();
 

@@ -5,9 +5,9 @@ namespace DeezSpoTag.Web.Services;
 public sealed class ArtistPopularSongsSyncService
 {
     private const string SpotifySource = "spotify";
-    private const string PlexTarget = "plex";
-    private const string JellyfinTarget = "jellyfin";
-    private const string NavidromeTarget = "navidrome";
+    private const string PlexTarget = MediaServerTargetServices.Plex;
+    private const string JellyfinTarget = MediaServerTargetServices.Jellyfin;
+    private const string NavidromeTarget = MediaServerTargetServices.Navidrome;
     private const string BothTargets = "both";
     private const string SyncModeMirror = "mirror";
     private const string ArtistTopSourcePrefix = "artist-top:";

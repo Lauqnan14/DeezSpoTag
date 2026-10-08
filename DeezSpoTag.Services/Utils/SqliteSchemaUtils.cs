@@ -44,6 +44,48 @@ internal static partial class SqliteSchemaUtils
         return result is not null && result != DBNull.Value;
     }
 
+    /// <summary>
+    /// The column names of an existing table, read through the parameterized
+    /// table-valued <c>pragma_table_info</c> form so the table name is bound
+    /// rather than spliced into the statement text.
+    /// </summary>
+    internal static async Task<HashSet<string>> ReadColumnNamesAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        var safeTable = ValidateIdentifier(table, nameof(table));
+        const string Sql = "SELECT name FROM pragma_table_info(@tableName);";
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var command = new SqliteCommand(Sql, connection);
+        command.Parameters.AddWithValue("@tableName", safeTable);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!reader.IsDBNull(0))
+            {
+                names.Add(reader.GetString(0));
+            }
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// SQL for dropping an index. SQLite cannot bind an identifier, so the name
+    /// is validated against the identifier shape and quoted.
+    /// </summary>
+    internal static string BuildDropIndexSql(string indexName)
+        => $"DROP INDEX IF EXISTS {QuoteIdentifier(ValidateIdentifier(indexName, nameof(indexName)))};";
+
+    /// <summary>
+    /// SQL for dropping a column. As with indexes, the identifiers cannot be
+    /// bound and are validated and quoted instead.
+    /// </summary>
+    internal static string BuildDropColumnSql(string table, string column)
+        => $"ALTER TABLE {QuoteIdentifier(ValidateIdentifier(table, nameof(table)))} "
+            + $"DROP COLUMN {QuoteIdentifier(ValidateIdentifier(column, nameof(column)))};";
+
     private static string ValidateIdentifier(string value, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(value))

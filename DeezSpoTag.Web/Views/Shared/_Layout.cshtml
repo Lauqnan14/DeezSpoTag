@@ -37,6 +37,7 @@
                     'tabs-preference-enabled': 'tabsPreferenceEnabled',
                     'deezspotag-disabled-login-platforms': 'disabledLoginPlatforms',
                     'pwa-prompt-dismissed': 'pwaPromptDismissedAt',
+                    'pwa-installed': 'pwaInstalledAt',
                     'autotag-selected-platforms': 'autoTagSelectedPlatforms',
                     'autotag-preferences': 'autoTagPreferences',
                     'autotag-active-profile-id': 'autoTagActiveProfileId',
@@ -75,6 +76,7 @@
                     'tabs-preference-enabled',
                     'deezspotag-disabled-login-platforms',
                     'pwa-prompt-dismissed',
+                    'pwa-installed',
                     'autotag-selected-platforms',
                     'autotag-preferences',
                     'autotag-active-profile-id',
@@ -122,17 +124,10 @@
                 // notification's Download action.
                 if (globalThis.caches && typeof globalThis.caches.keys === 'function') {
                     globalThis.caches.keys().then(function (cacheKeys) {
-                        cacheKeys.forEach(function (cacheKey) {
-                            void globalThis.caches.delete(cacheKey);
-                        });
-                    }).catch(function () { });
-                }
-
-                if (globalThis.navigator && globalThis.navigator.serviceWorker && typeof globalThis.navigator.serviceWorker.getRegistrations === 'function') {
-                    globalThis.navigator.serviceWorker.getRegistrations().then(function (registrations) {
-                        registrations.forEach(function (registration) {
-                            void registration.unregister();
-                        });
+                        if (cacheKeys.indexOf('deezspotag-pwa-v7') === -1) {
+                            return;
+                        }
+                        void globalThis.caches.delete('deezspotag-pwa-v7');
                     }).catch(function () { });
                 }
 
@@ -354,6 +349,12 @@
                 height: 22px;
             }
 
+            /* Mirrors the runtime collapsed rule so the pre-paint frame does not flash
+               the burger sitting on the logo before the collapsed class is applied. */
+            html.sidebar-precollapsed .logo-section {
+                margin-top: 52px;
+            }
+
             html.sidebar-precollapsed .sidebar .menu-text {
                 opacity: 0;
                 width: 0;
@@ -458,6 +459,16 @@
         .sidebar.collapsed .logo-icon {
             width: 50px;
             height: 22px;
+        }
+
+        /* Collapsed sidebar: .hamburger is position:fixed at top:20px and measures
+           40-44px tall depending on font metrics, so it ends around y=60-64. The
+           shrunk logo starts at y=20, which put the burger straight on the artwork
+           (a measured 30x22px overlap). 52px clears the tallest burger with a small
+           gap. margin-top rather than header padding, because the mobile rules below
+           reset .sidebar-header padding with a shorthand. */
+        .sidebar.collapsed .logo-section {
+            margin-top: 52px;
         }
         
         /* Theme-aware logo styles */
@@ -1037,6 +1048,7 @@
     </div>
     
     <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/user-preferences.js")"></script>
+    <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/app-version.js")"></script>
     @{
         ViewData["IncludeSignalR"] = !_isLoginPage;
     }

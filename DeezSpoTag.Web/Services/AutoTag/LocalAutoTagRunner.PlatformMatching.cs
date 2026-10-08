@@ -292,6 +292,33 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    /// <summary>
+    ///     Captures a match's provider-native identity and decides whether it is authoritative.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The provider identity is captured before anything can mutate the matched track, and the
+    ///         authority flag is computed once from the shape of the returned release id.
+    ///     </para>
+    ///     <para>
+    ///         This lives beside the tagging path on purpose so that <c>ProviderIdentityField</c> stays
+    ///         confined to the files that own the identity contract. The pre-tag recognition pass needs the
+    ///         same two answers, and duplicating the decision would be a second place where they could
+    ///         disagree.
+    ///     </para>
+    /// </remarks>
+    private static (ProviderIdentityPayload Identity, bool HasAuthoritativeResult) ResolveCapturedIdentity(
+        AutoTagFileRunContext context,
+        AutoTagMatchResult match)
+    {
+        var capturedIdentity = match.ProviderIdentity ?? CaptureProviderIdentity(context.Platform, match);
+        var returnedReleaseId = capturedIdentity.ValueFor(ProviderIdentityField.ReleaseId);
+        var isValid = returnedReleaseId is null
+            || IsPlatformReleaseIdShapeValid(context.Platform, returnedReleaseId);
+
+        return (capturedIdentity, isValid);
+    }
+
     private async Task ApplyResolvedMatchAsync(
         AutoTagFileRunContext context,
         AutoTagAudioInfo info,
@@ -588,7 +615,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 writtenTags,
                 missingTags);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && ex is not AutoTagRunPausedException)
         {
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus, "provider_error", tagPlan, match);

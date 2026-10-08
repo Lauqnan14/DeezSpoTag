@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.Collections.Generic;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
@@ -223,10 +224,131 @@ public sealed class LibraryDbService
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new SqliteCommand(schemaSql, connection);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            // The schema script is one batch, so a single statement that cannot run against this
+            // install's CURRENT shape aborts every statement after it. That happens legitimately
+            // during an upgrade: a statement can reference a column a later migration is about to
+            // rename (playlist_sync_link_member.target_id is the case in point), and the rename has
+            // not run yet because migrations run after this script.
+            //
+            // Retrying statement by statement lets the rest of the schema apply now, and the
+            // migrations below still run in this same call, so the column is renamed and the index
+            // is created on the next startup. Retrying the whole script verbatim would loop, so the
+            // statements are split once and each is attempted independently.
+            _logger.LogWarning(
+                ex,
+                "Library schema script did not apply cleanly against the current schema; applying it statement by statement and letting migrations finish the upgrade.");
+            await ApplySchemaStatementByStatementAsync(connection, schemaSql, cancellationToken);
+        }
+
         await ApplyMigrationsAsync(connection, cancellationToken);
         _logger.LogInformation("Library DB schema ensured.");
     }
+
+    /// <summary>
+    /// Applies a schema script one statement at a time, so a statement that cannot run against
+    /// this install's current shape costs only itself instead of every statement after it.
+    /// <para>
+    /// The script contains trigger bodies, so splitting has to respect BEGIN...END blocks. A
+    /// trigger's inner statements must not be run on their own, and a semicolon inside one is not
+    /// a statement boundary.
+    /// </para>
+    /// </summary>
+    private async Task ApplySchemaStatementByStatementAsync(
+        SqliteConnection connection,
+        string schemaSql,
+        CancellationToken cancellationToken)
+    {
+        foreach (var statement in SplitSqlStatements(schemaSql))
+        {
+            try
+            {
+                await using var command = new SqliteCommand(statement, connection);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (SqliteException ex)
+            {
+                // Non-fatal by design: this is the fallback path, and the migrations that follow
+                // are the ones responsible for bringing an older install forward. A statement
+                // still missing after those is a genuine schema problem, so it is logged rather
+                // than swallowed, and it does not stop the remaining statements.
+                _logger.LogWarning(ex, "Library schema statement could not be applied and was skipped.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Splits a SQL script into executable statements, treating a trigger body as one statement.
+    /// </summary>
+    internal static IEnumerable<string> SplitSqlStatements(string sql)
+    {
+        var statements = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inTrigger = false;
+
+        foreach (var rawLine in sql.Split('\n'))
+        {
+            var line = rawLine;
+            var trimmed = line.Trim();
+
+            // Preserve newlines so views and triggers keep their original text.
+            if (current.Length > 0)
+            {
+                current.Append('\n');
+            }
+
+            if (!inTrigger)
+            {
+                current.Append(line);
+                if (trimmed.StartsWith("CREATE TRIGGER", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("CREATE TEMP TRIGGER", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("CREATE TEMPORARY TRIGGER", StringComparison.OrdinalIgnoreCase))
+                {
+                    inTrigger = true;
+                }
+            }
+            else
+            {
+                current.Append(line);
+            }
+
+            if (!inTrigger && trimmed.EndsWith(';'))
+            {
+                var statement = current.ToString().Trim();
+                if (statement.Length > 0)
+                {
+                    statements.Add(statement);
+                }
+
+                current.Clear();
+            }
+            else if (inTrigger && trimmed.EndsWith("END;", StringComparison.OrdinalIgnoreCase))
+            {
+                var statement = current.ToString().Trim();
+                if (statement.Length > 0)
+                {
+                    statements.Add(statement);
+                }
+
+                current.Clear();
+                inTrigger = false;
+            }
+        }
+
+        var trailing = current.ToString().Trim();
+        if (trailing.Length > 0)
+        {
+            statements.Add(trailing);
+        }
+
+        return statements;
+    }
+
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -999,6 +1121,14 @@ CREATE TABLE IF NOT EXISTS manual_unavailable_track (
     artist TEXT NOT NULL,
     album TEXT,
     album_artist TEXT,
+    cover_url TEXT,
+    duration_ms INTEGER,
+    track_number INTEGER,
+    track_total INTEGER,
+    disc_number INTEGER,
+    disc_total INTEGER,
+    release_date TEXT,
+    explicit INTEGER,
     isrc TEXT,
     engine TEXT,
     source_service TEXT,
@@ -1022,6 +1152,19 @@ CREATE TABLE IF NOT EXISTS manual_unavailable_track (
 );", cancellationToken);
         await EnsureColumnAsync(connection, ManualUnavailableTrackTable, "next_retry_at_utc", TextType, cancellationToken);
         await BackfillManualUnavailableRetryDeadlinesAsync(connection, cancellationToken);
+        await EnsureColumnsAsync(
+            connection,
+            ManualUnavailableTrackTable,
+            cancellationToken,
+            ("cover_url", TextType),
+            ("duration_ms", IntegerType),
+            ("track_number", IntegerType),
+            ("track_total", IntegerType),
+            ("disc_number", IntegerType),
+            ("disc_total", IntegerType),
+            ("release_date", TextType),
+            ("explicit", IntegerType));
+        await BackfillManualUnavailableMetadataAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_added", ManualUnavailableTrackTable, "added_at_utc DESC", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_destination", ManualUnavailableTrackTable, DestinationFolderIdColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_retry", ManualUnavailableTrackTable, "next_retry_at_utc", unique: false, cancellationToken);
@@ -1706,7 +1849,7 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
         string indexName,
         CancellationToken cancellationToken)
     {
-        await using var command = new SqliteCommand($"DROP INDEX IF EXISTS {indexName};", connection);
+        await using var command = new SqliteCommand(SqliteSchemaUtils.BuildDropIndexSql(indexName), connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -2295,7 +2438,7 @@ END;", connection))
             return;
         }
 
-        await using var command = new SqliteCommand($"ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";", connection);
+        await using var command = new SqliteCommand(SqliteSchemaUtils.BuildDropColumnSql(table, column), connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

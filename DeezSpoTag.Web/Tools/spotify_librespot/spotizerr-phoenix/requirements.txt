@@ -3,6 +3,11 @@ protobuf==7.35.0
 pycryptodomex==3.23.0
 pyogg==0.6.14a.1
 requests==2.33.0
-urllib3==2.7.0
+# 2.8.0 fixes three advisories in the streaming decoder, including GHSA-gh4c-6fx4-qh6g
+# (chunked deflate can spin forever) and GHSA-vxq7-64xx-v4gw (a chunk-size line of unbounded
+# length). This code never enters that path - every call here is a full-body request with a
+# timeout - so the exposure was theoretical, but the fix is free and the pin is now shared with
+# deezspot-spotizerr-phoenix/pyproject.toml. Keep the two in step or Dependabot only sees one.
+urllib3==2.8.0
 websocket-client==1.9.0
 zeroconf==0.149.16

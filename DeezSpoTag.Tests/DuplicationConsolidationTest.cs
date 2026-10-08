@@ -67,7 +67,25 @@ public sealed class DuplicationConsolidationTest
             engine => AssertEngine(engine, "tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW", "DOLBY_ATMOS"),
             engine => AssertEngine(engine, "apple", "ALAC", "AAC", "ATMOS"),
             engine => AssertEngine(engine, "amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS", "DOLBY_ATMOS"),
-            engine => AssertEngine(engine, "deezer", "9", "3", "1"));
+            engine => AssertEngine(engine, "deezer", "9", "3", "1"),
+            // Soulseek is the last engine. In Custom selection it appears after every catalogue engine, and in
+            // Auto mode DownloadSourceOrder appends it after the catalogue ladder.
+            engine => AssertEngine(
+                engine,
+                "soulseek",
+                "FLAC_HI_RES_LOSSLESS",
+                "FLAC_HI_RES",
+                "FLAC",
+                "LOSSLESS",
+                "MP3_320",
+                "MP3_256",
+                "MP3_192",
+                "MP3_128",
+                "UNKNOWN"),
+            // SoundCloud publishes only lossy MP3 tiers, so it has no lossless or Atmos entry. It is listed
+            // after Soulseek because the ladder position of each tier, not this order, is what decides where
+            // an Auto-mode walk reaches it.
+            engine => AssertEngine(engine, "soundcloud", "HQ", "SQ", "LQ"));
     }
 
     [Fact]

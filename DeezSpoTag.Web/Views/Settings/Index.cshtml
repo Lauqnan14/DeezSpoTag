@@ -503,6 +503,39 @@
     background: color-mix(in srgb, var(--primary-color) 35%, transparent);
 }
 
+/* The source list grows with every added engine, so cap the menu against the viewport and let it
+   scroll. Scoped to this dropdown so the other .dropdown-select menus keep their natural height. */
+.download-source-dropdown .dropdown-menu {
+    max-height: min(320px, 48vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary-color) transparent;
+}
+
+.download-source-dropdown .dropdown-menu::-webkit-scrollbar {
+    width: 8px;
+}
+
+.download-source-dropdown .dropdown-menu::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 4px;
+}
+
+.download-source-dropdown .dropdown-menu::-webkit-scrollbar-thumb {
+    background: var(--primary-color);
+    border-radius: 4px;
+    /* Keep the rounded thumb from bleeding into the menu's own rounded corners. */
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.download-source-dropdown .dropdown-menu::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-hover);
+    background-clip: padding-box;
+}
+
 #livePreviewIngest + label,
 #enableSignalAnalysis + label {
     color: var(--text-primary);
@@ -1187,7 +1220,7 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label for="downloadSource">Source</label>
-                        <div class="dropdown-select" data-dropdown="downloadSource">
+                        <div class="dropdown-select download-source-dropdown" data-dropdown="downloadSource">
                             <button type="button" class="dropdown-trigger" id="downloadSourceTrigger">Deezer</button>
                             <div class="dropdown-menu" id="downloadSourceMenu">
                                 <div class="download-source-section-label">Stereo</div>
@@ -2218,7 +2251,6 @@
 <script>
 let currentSettings = {};
 let defaultSettings = {};
-const defaultGenreTagBlockList = ['other', 'others', 'Worldwide'];
 let currentLibraryScanSettings = {
     livePreviewIngest: false,
     enableSignalAnalysis: false
@@ -2555,6 +2587,12 @@ async function initLibraryFolderDestinationDropdowns() {
             secondarySelect.value = currentSecondary;
             delete secondarySelect.dataset.pendingValue;
         }
+        if (secondarySelect && !currentSecondary && sortedAtmos.length === 1) {
+            // Exactly one Atmos folder means there is nothing to choose, so show it as the answer
+            // instead of prompting for a destination the user already has. A saved choice is left
+            // alone, and several Atmos folders still prompt as before.
+            secondarySelect.value = String(sortedAtmos[0].id);
+        }
         if (secondarySelect) {
             updateSecondaryFolderRequirement();
         }
@@ -2763,28 +2801,7 @@ function setupEventListeners() {
         });
     }
 
-    const normalizeGenreTags = document.getElementById('normalizeGenreTags');
-    if (normalizeGenreTags) {
-        normalizeGenreTags.addEventListener('change', updateGenreTagAliasRulesState);
-    }
-
-    const addGenreTagAliasRule = document.getElementById('addGenreTagAliasRule');
-    if (addGenreTagAliasRule) {
-        addGenreTagAliasRule.addEventListener('click', () => {
-            const rowsContainer = document.getElementById('genreTagAliasRows');
-            if (!rowsContainer) {
-                return;
-            }
-
-            const row = createGenreTagAliasRuleRow();
-            rowsContainer.appendChild(row);
-            toggleGenreTagAliasEmptyState();
-            const aliasInput = row.querySelector('.genre-alias-alias');
-            if (aliasInput) {
-                aliasInput.focus();
-            }
-        });
-    }
+    // Genre normalization moved to AutoTag -> Genre Intelligence.
 
     const embedMaxQuality = document.getElementById('embedMaxQualityCover');
     if (embedMaxQuality) {
@@ -3529,154 +3546,7 @@ function getCheckboxValue(id) {
     return el ? !!el.checked : false;
 }
 
-function createGenreTagAliasRuleRow(alias = '', canonical = '') {
-    const row = document.createElement('div');
-    row.className = 'genre-alias-row';
-
-    const aliasInput = document.createElement('input');
-    aliasInput.type = 'text';
-    aliasInput.className = 'genre-alias-alias';
-    aliasInput.placeholder = 'Afro-Pop';
-    aliasInput.value = alias;
-
-    const canonicalInput = document.createElement('input');
-    canonicalInput.type = 'text';
-    canonicalInput.className = 'genre-alias-canonical';
-    canonicalInput.placeholder = 'Afropop';
-    canonicalInput.value = canonical;
-
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'genre-alias-remove';
-    removeButton.textContent = 'x';
-    removeButton.title = 'Remove rule';
-    removeButton.addEventListener('click', () => {
-        row.remove();
-        toggleGenreTagAliasEmptyState();
-    });
-
-    row.appendChild(aliasInput);
-    row.appendChild(canonicalInput);
-    row.appendChild(removeButton);
-    return row;
-}
-
-function toggleGenreTagAliasEmptyState() {
-    const rowsContainer = document.getElementById('genreTagAliasRows');
-    const empty = document.getElementById('genreTagAliasEmpty');
-    if (!rowsContainer || !empty) {
-        return;
-    }
-
-    empty.style.display = rowsContainer.children.length === 0 ? 'block' : 'none';
-}
-
-function renderGenreTagAliasRules(rules) {
-    const rowsContainer = document.getElementById('genreTagAliasRows');
-    if (!rowsContainer) {
-        return;
-    }
-
-    rowsContainer.innerHTML = '';
-    const source = Array.isArray(rules) ? rules : [];
-    source.forEach(rule => {
-        const alias = String(rule?.alias || '').trim();
-        const canonical = String(rule?.canonical || '').trim();
-        if (!alias || !canonical) {
-            return;
-        }
-
-        rowsContainer.appendChild(createGenreTagAliasRuleRow(alias, canonical));
-    });
-
-    toggleGenreTagAliasEmptyState();
-}
-
-function collectGenreTagAliasRules() {
-    const rowsContainer = document.getElementById('genreTagAliasRows');
-    if (!rowsContainer) {
-        return [];
-    }
-
-    const rules = [];
-    const seen = new Set();
-    rowsContainer.querySelectorAll('.genre-alias-row').forEach(row => {
-        const alias = String(row.querySelector('.genre-alias-alias')?.value || '').trim();
-        const canonical = String(row.querySelector('.genre-alias-canonical')?.value || '').trim();
-        if (!alias || !canonical) {
-            return;
-        }
-
-        const key = buildGenreTagAliasLookupKey(alias);
-        if (!key) {
-            return;
-        }
-
-        if (seen.has(key)) {
-            return;
-        }
-
-        seen.add(key);
-        rules.push({ alias, canonical });
-    });
-
-    return rules;
-}
-
-function renderGenreTagBlockList(values) {
-    const input = document.getElementById('genreTagBlockList');
-    if (!input) {
-        return;
-    }
-
-    const list = Array.isArray(values) ? values : defaultGenreTagBlockList;
-    input.value = list
-        .map(value => String(value || '').trim())
-        .filter(Boolean)
-        .join('\n');
-}
-
-function collectGenreTagBlockList() {
-    const input = document.getElementById('genreTagBlockList');
-    if (!input) {
-        return [];
-    }
-
-    const seen = new Set();
-    const values = [];
-    String(input.value || '')
-        .split(/[\n,;]+/)
-        .map(value => value.trim())
-        .filter(Boolean)
-        .forEach(value => {
-            const key = buildGenreTagAliasLookupKey(value);
-            if (key && !seen.has(key)) {
-                seen.add(key);
-                values.push(value);
-            }
-        });
-    return values;
-}
-
-function buildGenreTagAliasLookupKey(value) {
-    return Array.from(String(value || '').trim())
-        .filter(character => /[\p{L}\p{N}]/u.test(character))
-        .map(character => character.toLowerCase())
-        .join('');
-}
-
-function updateGenreTagAliasRulesState() {
-    const enabled = document.getElementById('normalizeGenreTags')?.checked === true;
-    const group = document.getElementById('genreTagAliasRulesGroup');
-    if (!group) {
-        return;
-    }
-
-    group.style.opacity = enabled ? '1' : '0.65';
-    group.querySelectorAll('input, button').forEach(control => {
-        control.disabled = !enabled;
-    });
-}
+// Genre normalization moved to AutoTag -> Genre Intelligence.
 
 function normalizeAppleNotificationMode(mode) {
     const normalized = String(mode || '').trim().toLowerCase();
@@ -4473,7 +4343,8 @@ const NOTIFICATION_EVENT_LABELS = {
     provider_recovered: 'Public API provider recovered',
     run_paused: 'Run paused or interrupted',
     run_resumed: 'Run resumed',
-    run_completed: 'Run completed'
+    run_completed: 'Run completed',
+    app_update_available: 'A new DeezSpoTag version was released'
 };
 
 function renderNotificationEventRows(events) {
@@ -5081,10 +4952,6 @@ function loadSettings(settings) {
     
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
-    setCheckboxValue('normalizeGenreTags', settings.normalizeGenreTags === true);
-    renderGenreTagAliasRules(settings.genreTagAliasRules || []);
-    renderGenreTagBlockList(settings.genreTagBlockList);
-    updateGenreTagAliasRulesState();
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
     setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
     setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 16);
@@ -5252,7 +5119,6 @@ function triggerDependentFields() {
     document.getElementById('realTime')?.dispatchEvent(new Event('change'));
     document.getElementById('convertTo')?.dispatchEvent(new Event('change'));
     document.getElementById('multiQualityEnabled')?.dispatchEvent(new Event('change'));
-    document.getElementById('normalizeGenreTags')?.dispatchEvent(new Event('change'));
 }
 
 function collectFormData() {
@@ -5366,9 +5232,6 @@ function collectFormData() {
 
         deezerLanguage: getValue('deezerLanguage', baseSettings.deezerLanguage || 'en'),
         deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
-        normalizeGenreTags: getChecked('normalizeGenreTags', baseSettings.normalizeGenreTags ?? false),
-        genreTagAliasRules: collectGenreTagAliasRules(),
-        genreTagBlockList: collectGenreTagBlockList(),
         apiToken: baseSettings.apiToken || '',
         shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
         shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),

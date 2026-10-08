@@ -1,4 +1,5 @@
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,6 +12,16 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/amazon")]
 public sealed class AmazonMusicApiController : ControllerBase
 {
+    /// <summary>
+    ///     Amazon's source id, aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     Each use labels a request as coming from Amazon so the metadata service can pick the
+    ///     right resolver. A copy that drifted would fall through to the default resolver and return
+    ///     nothing, so the controller's lookups would come back empty with no error.
+    /// </remarks>
+    private const string AmazonSource = DownloadTagSourceHelper.AmazonSource;
+
     private readonly AmazonMusicMetadataService _amazonMusicMetadataService;
     private readonly DownloadIntentService _downloadIntentService;
 
@@ -43,7 +54,7 @@ public sealed class AmazonMusicApiController : ControllerBase
                     var deezerId = await _downloadIntentService.ResolveAmazonDeezerIdAsync(
                         new DownloadIntent
                         {
-                            SourceService = "amazon",
+                            SourceService = AmazonSource,
                             SourceUrl = track.SourceUrl ?? string.Empty,
                             AmazonId = track.AmazonId ?? string.Empty,
                             Title = track.Title ?? string.Empty,
@@ -133,7 +144,7 @@ public sealed class AmazonMusicApiController : ControllerBase
                 {
                     name = payload.Collection.Artist
                 },
-                source = "amazon",
+                source = AmazonSource,
                 link = payload.Collection.Url,
                 sourceUrl = payload.Collection.Url,
                 cover_big = payload.Collection.CoverUrl,
@@ -161,7 +172,7 @@ public sealed class AmazonMusicApiController : ControllerBase
                         cover_big = track.Cover,
                         cover_xl = track.Cover
                     },
-                    source = "amazon",
+                    source = AmazonSource,
                     link = track.SourceUrl,
                     sourceUrl = track.SourceUrl,
                     durationMs = track.DurationMs,
@@ -247,7 +258,7 @@ public sealed class AmazonMusicApiController : ControllerBase
         durationMs = item.DurationMs,
         isrc = item.Isrc,
         type = item.Type,
-        source = "amazon",
+        source = AmazonSource,
         hasAtmos = item.HasAtmos
     };
 }

@@ -482,7 +482,7 @@ public static class AppDataPathResolver
                 foreach (var table in tables)
                 {
                     using var count = connection.CreateCommand();
-                    count.CommandText = $"SELECT COUNT(*) FROM \"{table.Replace("\"", "\"\"")}\";";
+                    count.CommandText = BuildCountRowsSql(table);
                     rowCount = checked(rowCount + Convert.ToInt64(count.ExecuteScalar()));
                 }
             }
@@ -550,4 +550,7 @@ public static class AppDataPathResolver
 
         return normalized;
     }
+
+    private static string BuildCountRowsSql(string table)
+        => $"SELECT COUNT(*) FROM \"{table.Replace("\"", "\"\"")}\";";
 }

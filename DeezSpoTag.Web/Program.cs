@@ -11,6 +11,7 @@ using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.CoverPort;
 using DeezSpoTag.Web.Data;
 using DeezSpoTag.Web.Models;
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Qobuz;
 using System.IO;
 using System.Linq;
@@ -69,12 +70,6 @@ public partial class Program
         "text/javascript",
         "application/manifest+json"
     };
-    [GeneratedRegex(
-        @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
-        RegexOptions.CultureInvariant,
-        250)]
-    private static partial Regex BuildVersionPatternRegex();
-
     private static FixedWindowRateLimiterOptions CreateFixedWindowLimiterOptions(int permitLimit) => new()
     {
         PermitLimit = permitLimit,
@@ -911,48 +906,6 @@ public partial class Program
         }
     }
 
-    static string ResolveBuildDisplayVersion(Assembly entryAssembly, string fallbackVersion)
-    {
-        var injectedBuildVersion = Environment.GetEnvironmentVariable("DEEZSPOTAG_BUILD_VERSION");
-        if (!string.IsNullOrWhiteSpace(injectedBuildVersion))
-        {
-            return NormalizeBuildDisplayVersion(injectedBuildVersion);
-        }
-
-        var informationalVersion = entryAssembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion;
-        if (!string.IsNullOrWhiteSpace(informationalVersion))
-        {
-            return NormalizeBuildDisplayVersion(informationalVersion);
-        }
-
-        return NormalizeBuildDisplayVersion(fallbackVersion);
-    }
-
-    static string NormalizeBuildDisplayVersion(string? candidate)
-    {
-        var value = (candidate ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return UnknownValue;
-        }
-
-        if (string.Equals(value, UnknownValue, StringComparison.OrdinalIgnoreCase))
-        {
-            return UnknownValue;
-        }
-
-        var match = BuildVersionPatternRegex().Match(value);
-        if (!match.Success)
-        {
-            return value;
-        }
-
-        var core = match.Groups["core"].Value;
-        return $"v{core}";
-    }
-
     static void ConfigurePipeline(WebApplication app, IConfiguration configuration)
     {
         if (!app.Environment.IsDevelopment())
@@ -1609,6 +1562,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 DiscogsApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
+                YouTubeDataApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
                 NavidromeApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>(),
                 AppleWrapperService = sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(),
@@ -1632,6 +1586,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthTidalCredentialProvider>();
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry, DeezSpoTag.Web.Services.TidalPublicProviderRegistry>();
+
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.CrossDeviceSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.TracklistSongCacheStore>();
@@ -1753,6 +1708,17 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
             "Durable media-server library refresh processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SharedIdentityResolver>();
+        // Resolving a local track to a streaming platform's catalog id. Every collaborator is
+        // resolved optionally because each one gates one platform: a deployment with no Apple
+        // subscription must still start and still sync the platforms it does have.
+        services.AddSingleton<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>(sp =>
+            new DeezSpoTag.Web.Services.PlatformTrackIdentityResolver(
+                sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+                sp.GetService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
+                sp.GetService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
+                sp.GetService<DeezSpoTag.Services.Metadata.Qobuz.QobuzTrackResolver>(),
+                sp.GetService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
+                sp.GetService<ILogger<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>>()));
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {
@@ -1882,6 +1848,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunSignal>();
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistPlatformSnapshotCoordinator>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunCoordinator>();
@@ -1916,6 +1883,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
                 SpotifySearchService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifySearchService>(),
+                DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 MusicBrainzClient = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.MusicBrainzClient>(),
                 Store = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>(),
                 CacheRepository = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>(),
@@ -2046,6 +2014,10 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService.LibraryRecommendationCollaborators>(sp =>
             new DeezSpoTag.Web.Services.LibraryRecommendationService.LibraryRecommendationCollaborators
             {
+                Pathfinder = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
+                SpotifyMetadata = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
+                SpotifyArtists = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),
+                ArtistAliases = sp.GetRequiredService<DeezSpoTag.Services.Library.ArtistAliasService>(),
                 Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 ShazamRecognitionService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>(),
                 ShazamDiscoveryService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamDiscoveryService>(),
@@ -2209,6 +2181,21 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 return handler;
             });
     }
+
+        /// <summary>
+        /// Whether a schema failure is the kind that should leave the app running rather than
+        /// block startup. A migration that could not apply, a locked or unreadable database, a
+        /// column that still needs adding: all recoverable, and a user cannot fix a server that
+        /// will not boot. A fault the process cannot continue through is deliberately excluded so
+        /// this never becomes a blanket catch.
+        /// </summary>
+        static bool IsRecoverableSchemaFailure(Exception ex)
+            => ex is Microsoft.Data.Sqlite.SqliteException
+               or IOException
+               or InvalidOperationException
+               or UnauthorizedAccessException
+               or TimeoutException
+               or NotSupportedException;
 
     static async Task InitializeApplicationAsync(WebApplication app)
     {

@@ -60,6 +60,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
 
             var plan = runPlan!;
+            plan.IsResumedRun = resumeCursor != null;
             LogShazamAvailability(plan, logCallback);
             await ExecutePlatformPassesAsync(
                 plan,
@@ -324,6 +325,23 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var (batchStart, batchEnd) = ranges[rangeIndex];
             var firstPlatformIndex = rangeIndex == resumeRangeIndex ? startPlatformIndex : 0;
             var rangeFileStart = rangeIndex == resumeRangeIndex ? Math.Max(startFileIndex, batchStart) : batchStart;
+
+            // The whole batch is identified and organized as one album group BEFORE any platform writes a
+            // tag. Without this, each file was materialized immediately before its own tag write, so track
+            // one was moved and tagged while track two was still being identified - and track two could
+            // resolve to a different folder. The album then arrives split across two directories, each with
+            // a partial set of tags.
+            if (firstPlatformIndex == 0)
+            {
+                await OrganizeExternalFileBatchBeforeTaggingAsync(
+                    plan,
+                    jobMatchCache,
+                    statusCallback,
+                    batchStart,
+                    batchEnd,
+                    logCallback,
+                    token);
+            }
 
             for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
             {
@@ -895,7 +913,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool IsLastPlatform(AutoTagFileRunContext context)
-        => context.PlatformIndex == context.Plan.PlatformCount - 1;
+        => context.PlatformIndex == context.Plan.EffectivePlatforms.FindLastIndex(platform => platform != "genre-intelligence");
 
     private static bool WasTaggedByAnyPlatform(AutoTagFileRunContext context)
         => context.Plan.TaggedFileIndices.Contains(context.FileIndex);
@@ -1040,6 +1058,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var platforms = config.Platforms
             .Select(platform => platform?.Trim())
             .Where(platform => !string.IsNullOrWhiteSpace(platform))
+            .Where(platform => !string.Equals(platform, "genre-intelligence", StringComparison.OrdinalIgnoreCase))
             .Select(platform => platform!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1070,7 +1089,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static Track BuildCoreTrack(
+    internal static Track BuildCoreTrack(
         AutoTagTrack track,
         string? separator,
         bool singleAlbumArtist,

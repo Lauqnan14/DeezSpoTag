@@ -2706,6 +2706,17 @@
         const max = option.value?.max ?? 0;
         const step = option.value?.step ?? 1;
         const fallback = option.value?.value ?? 0;
+        // Convert legacy Last.fm fractions before the renderer writes its initial value.
+        // The unit travels with the custom profile so a new 1% cannot be read as legacy 100%.
+        if (platform.id === "lastfm" && option.id === "minRelativeWeight") {
+            const custom = state.config.custom[platform.id];
+            const legacy = Number(custom[option.id]);
+            if (String(custom.minRelativeWeightUnit || "").toLowerCase() !== "percent"
+                && Number.isFinite(legacy) && legacy <= 1) {
+                custom[option.id] = Math.max(0, legacy) * 100;
+            }
+            custom.minRelativeWeightUnit = "percent";
+        }
         const rawValue = Number(state.config.custom[platform.id][option.id]);
         const initial = Number.isFinite(rawValue) ? rawValue : fallback;
         setPlatformOptionValue(platform.id, option.id, initial);
@@ -3300,17 +3311,15 @@
         return String(activeTab?.dataset?.bsTarget || "").trim() || null;
     }
 
+    // Storage for the remembered tab is owned by tab-preferences.js. This module only
+    // reads it: the generic shown.bs.tab handler does the writing, and the restore below
+    // exists purely to activate the tab earlier than DOMContentLoaded.
     function isRememberTabsPreferenceEnabled() {
-        try {
-            const stored = localStorage.getItem("tabs-preference-enabled");
-            return stored === null || stored === "" || stored === "true";
-        } catch {
-            return true;
-        }
+        return globalThis.TabPreferences?.isEnabled?.() !== false;
     }
 
     function getAutoTagTabPreferenceKey() {
-        return `tabs:last:${globalThis.location.pathname}:autotagTabs`;
+        return globalThis.TabPreferences?.keyFor?.("autotagTabs") || "";
     }
 
     function normalizeRequestedTabSelector(value) {
@@ -3359,13 +3368,7 @@
             return false;
         }
 
-        let storedTarget = "";
-        try {
-            storedTarget = String(localStorage.getItem(key) || "").trim();
-        } catch {
-            return false;
-        }
-
+        const storedTarget = globalThis.TabPreferences?.read?.(key) || "";
         if (!storedTarget) {
             return false;
         }
@@ -3649,6 +3652,8 @@
     function applyProfileConfig(config) {
         const merged = structuredClone(DEFAULT_CONFIG);
         Object.assign(merged, config || {});
+        // Preserve configured custom values; shared option defaults fill unset preferences.
+        merged.custom = structuredClone(config?.custom || {});
         migrateLegacyOrganizerConfig(merged);
         normalizeMergedProfileConfig(merged);
         state.config = merged;
@@ -7952,14 +7957,13 @@
             });
         }
     });
-    el("autotag-move-success-library")?.addEventListener("change", () => {
-        const destinationId = Number.parseInt(String(el("autotag-move-success-library")?.value || ""), 10);
-        const destination = getSuccessLibraryById(destinationId);
-        if (destination?.autoTagProfileId) {
-            loadProfile({ profileId: destination.autoTagProfileId, silent: true });
-        }
-        updateConditionalSections();
-    });
+    // Picking the manual enrichment destination must not reload the destination folder's tagging
+    // profile. That reload re-rendered this whole form, including this select, straight from the
+    // loaded profile's moveSuccessLibraryFolderId, so the pick was overwritten before the profile
+    // auto-save could read it and the destination was never persisted. Every other folder picker
+    // behaves this way. The run itself still switches to the destination folder's profile in
+    // startAutoTag, which is where the choice actually matters.
+    el("autotag-move-success-library")?.addEventListener("change", updateConditionalSections);
     ["createPlaylistFolder", "createArtistFolder", "createAlbumFolder"].forEach((id) => {
         const field = el(id);
         if (field) {

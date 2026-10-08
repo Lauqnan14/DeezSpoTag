@@ -17,7 +17,11 @@ dependencies = [
     "mutagen==1.47.0",
     "pycryptodome==3.23.0",
     "requests==2.33.0",
-    "urllib3==2.7.0",
+    # Kept in step with spotizerr-phoenix/requirements.txt. 2.8.0 fixes three streaming-decoder
+    # advisories including GHSA-gh4c-6fx4-qh6g. This project runs an HTTP server, so unlike the
+    # client-side librespot code it could in principle be on the receiving end; nothing here streams
+    # a response today, and the pin is raised so that stays true if that changes.
+    "urllib3==2.8.0",
     "zeroconf==0.149.16",
     "tqdm==4.67.1",
     "fastapi==0.135.2",

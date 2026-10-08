@@ -187,7 +187,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string? AlbumArtist,
         AlbumIdentity Identity);
 
-    private sealed class TagWriteRequest
+    internal sealed class TagWriteRequest
     {
         public required string FilePath { get; init; }
         public required AutoTagTrack SourceTrack { get; init; }
@@ -200,7 +200,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public string? TempCoverPath { get; init; }
     }
 
-    private sealed class TagWriteExecutionContext
+    internal sealed class TagWriteExecutionContext
     {
         public required string FilePath { get; init; }
         public required AutoTagTrack SourceTrack { get; init; }
@@ -226,7 +226,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public HashSet<SupportedTag> AttemptedTags { get; } = new();
     }
 
-    private sealed record TagFileWriteResult(HashSet<SupportedTag> AttemptedTags);
+    internal sealed record TagFileWriteResult(HashSet<SupportedTag> AttemptedTags);
 
     public sealed class LocalAutoTagRunnerCollaborators
     {
@@ -266,7 +266,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public string? AlbumIdentityStorePath { get; init; }
     }
 
-    private readonly record struct TagWriteContext(
+    internal readonly record struct TagWriteContext(
         TagLib.File File,
         string Extension,
         AutoTagRunnerConfig Config,
@@ -470,6 +470,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public required TagSettings TagSettings { get; init; }
         public required List<string> Files { get; init; }
         public required Dictionary<string, ShazamRecognitionInfo?> ShazamCache { get; init; }
+        public bool IsResumedRun { get; set; }
         public required bool EnableShazamFallback { get; init; }
         public required bool ForceShazamMatch { get; init; }
         public required bool ShazamConflictResolution { get; init; }
@@ -487,6 +488,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public Dictionary<string, FolderAlbumIdentity> AlbumFolderIdentities { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<int, AlbumReleaseContext> AlbumReleaseContexts { get; } = new();
         public Dictionary<int, string> MaterializedManualPaths { get; } = new();
+
+        /// <summary>
+        ///     Files the pre-tag organization pass has already moved into their album folder.
+        /// </summary>
+        /// <remarks>
+        ///     The organization itself is persisted through <see cref="MaterializedManualPaths" /> and the
+        ///     rewritten runtime config target paths, so a restart already points at the organized location.
+        ///     This set is the in-run companion that stops the pass from organizing the same file twice
+        ///     within one run, and keeps it out of work it has already done.
+        /// </remarks>
+        public HashSet<int> OrganizedFileIndices { get; } = new();
         public HashSet<string> AttemptedArtistArtworkPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<int> AttemptedAppleExtras { get; } = new();
         public Dictionary<int, Dictionary<string, ProviderIdentityPayload>> ConfirmedProviderIdentities { get; } = new();
@@ -652,7 +664,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         bool WantsUnsynced,
         bool WantsTtml);
 
-    private sealed class AutoTagRunnerConfig
+    internal sealed class AutoTagRunnerConfig
     {
         public AutoTagGenreIntelligenceSettings GenreIntelligence { get; set; } = new();
         public List<string> Platforms { get; set; } = new();
@@ -726,7 +738,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         public List<AutoTagDestinationFolderScope>? DestinationFolderScopes { get; set; }
     }
 
-    private sealed class AutoTagDestinationFolderScope
+    internal sealed class AutoTagDestinationFolderScope
     {
         public long Id { get; set; }
         public string RootPath { get; set; } = string.Empty;
@@ -777,14 +789,14 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 candidate?.Duration?.TotalSeconds);
     }
 
-    private sealed class AutoTagSeparators
+    internal sealed class AutoTagSeparators
     {
         public string? Id3 { get; set; }
         public string? Vorbis { get; set; }
         public string? Mp4 { get; set; }
     }
 
-    private sealed class AutoTagStylesCustomTag
+    internal sealed class AutoTagStylesCustomTag
     {
         public string? Id3 { get; set; }
         public string? Vorbis { get; set; }
