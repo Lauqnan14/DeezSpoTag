@@ -94,7 +94,7 @@ public sealed class PublicApiProviderRenderingGuardrailTest
     }
 
     [Fact]
-    public void VerificationButton_RendersOnlyAsTheFinalControlInTheZarzRow()
+    public void VerificationButtons_RenderInTheZarzRowWithVerifyFirstThenTheSharedVerifyAllControl()
     {
         var login = ReadSource("DeezSpoTag.Web/Views/Login/Index.cshtml");
         var rowFactory = ExtractBetween(
@@ -112,6 +112,79 @@ public sealed class PublicApiProviderRenderingGuardrailTest
             < rowFactory.IndexOf("controls.append(verify);", StringComparison.Ordinal));
         Assert.Contains("data-public-api-provider-verify", login, StringComparison.Ordinal);
         Assert.DoesNotContain("Verify public downloads", login, StringComparison.Ordinal);
+
+        // The shared control is an addition beside the per-platform one, not a replacement for it: it is
+        // appended after Verify, shares Verify's exact class list so the two read as the same action at two
+        // scopes, and stays inside the same unverified Zarz-only gate.
+        Assert.Contains("verifyAll.textContent = '(Verify all)';", rowFactory, StringComparison.Ordinal);
+        Assert.Contains("verifyAll.dataset.publicApiProviderVerifyAll = config.platformId;", rowFactory, StringComparison.Ordinal);
+        Assert.Equal(
+            ExtractAssignedString(rowFactory, "verify.className"),
+            ExtractAssignedString(rowFactory, "verifyAll.className"));
+        Assert.True(
+            rowFactory.IndexOf("controls.append(verify);", StringComparison.Ordinal)
+            < rowFactory.IndexOf("controls.append(verifyAll);", StringComparison.Ordinal));
+        Assert.True(
+            rowFactory.LastIndexOf("controls.append(verifyAll);", StringComparison.Ordinal)
+            < rowFactory.IndexOf("row.append(identity, controls);", StringComparison.Ordinal));
+
+        // The shared control is gated identically to the per-platform one: the gate is evaluated at row-factory
+        // body level and every verifyAll statement lives inside that gate's block (one level deeper), so the
+        // control can never be hoisted above the gate or rendered unconditionally after it.
+        Assert.Equal(
+            1,
+            BraceDepthAt(rowFactory, rowFactory.IndexOf("if (!sessionValid && provider?.id === config.verificationProviderId)", StringComparison.Ordinal)));
+        Assert.Equal(
+            2,
+            BraceDepthAt(rowFactory, rowFactory.IndexOf("verifyAll = document.createElement('button');", StringComparison.Ordinal)));
+        Assert.Equal(
+            2,
+            BraceDepthAt(rowFactory, rowFactory.IndexOf("controls.append(verifyAll);", StringComparison.Ordinal)));
+        Assert.Equal(
+            1,
+            BraceDepthAt(rowFactory, rowFactory.IndexOf("row.append(identity, controls);", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void VerifyAllControl_ReusesTheSinglePlatformVerificationPerConfiguredPlatform()
+    {
+        var login = ReadSource("DeezSpoTag.Web/Views/Login/Index.cshtml");
+        var singlePlatform = ExtractBetween(
+            login,
+            "async function startPublicDownloadVerification(config)",
+            "async function startAllPublicDownloadVerifications()");
+        var allPlatforms = ExtractBetween(
+            login,
+            "async function startAllPublicDownloadVerifications()",
+            "function extractPublicDownloadGrant");
+
+        // One shared implementation. The per-platform entry point keeps only button handling around it, and
+        // the all-platforms entry point calls that same implementation rather than repeating the fetch,
+        // popup and grant handshake.
+        Assert.Contains("await runPublicDownloadVerification(config);", singlePlatform, StringComparison.Ordinal);
+        Assert.Contains("async function runPublicDownloadVerification(config)", login, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(login, "const response = await fetch(`${config.sessionEndpoint}/start`"));
+        Assert.Equal(1, CountOccurrences(login, "config.popupName,"));
+        Assert.Equal(1, CountOccurrences(login, "await waitForPublicDownloadGrant(verificationWindow, config);"));
+        Assert.Contains("await runPublicDownloadVerification(config);", allPlatforms, StringComparison.Ordinal);
+
+        // Every configured platform is covered, in configuration order, strictly sequentially.
+        Assert.Contains(
+            "for (const config of Object.values(PUBLIC_API_PROVIDER_CONFIG))",
+            allPlatforms,
+            StringComparison.Ordinal);
+
+        // One platform failing must not strand the ones after it, and the reader has to be told which failed.
+        Assert.Contains("failures.push(", allPlatforms, StringComparison.Ordinal);
+        Assert.Contains("showToast(failures.join(' '), 'error');", allPlatforms, StringComparison.Ordinal);
+
+        // The existing per-platform control keeps its own disabling behaviour and is never routed through
+        // the all-platforms path, and a second click cannot start a competing run.
+        Assert.Contains("if (button) button.disabled = true;", singlePlatform, StringComparison.Ordinal);
+        Assert.Contains("if (button) button.disabled = false;", singlePlatform, StringComparison.Ordinal);
+        Assert.DoesNotContain("startAllPublicDownloadVerifications", singlePlatform, StringComparison.Ordinal);
+        Assert.Contains("if (startAllPublicDownloadVerifications.running) {", allPlatforms, StringComparison.Ordinal);
+        Assert.Contains("document.querySelectorAll('[data-public-api-provider-verify-all]')", allPlatforms, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,6 +244,73 @@ public sealed class PublicApiProviderRenderingGuardrailTest
         var end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
         Assert.True(end > start, $"Missing end marker: {endMarker}");
         return source[start..end];
+    }
+
+    /// <summary>Net brace nesting of <paramref name="source"/> at <paramref name="index"/>, ignoring braces inside
+    /// quoted strings and template literals so that `${...}` substitutions do not shift the count.</summary>
+    private static int BraceDepthAt(string source, int index)
+    {
+        Assert.True(index >= 0, "BraceDepthAt requires a located marker.");
+        var depth = 0;
+        var quote = '\0';
+        for (var i = 0; i < index; i++)
+        {
+            var c = source[i];
+            if (quote != '\0')
+            {
+                if (c == '\\')
+                {
+                    i++;
+                }
+                else if (c == quote)
+                {
+                    quote = '\0';
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                case '"':
+                case '`':
+                    quote = c;
+                    break;
+                case '{':
+                    depth++;
+                    break;
+                case '}':
+                    depth--;
+                    break;
+            }
+        }
+
+        return depth;
+    }
+
+    private static string ExtractAssignedString(string source, string variable)
+    {
+        var marker = $"{variable} = '";
+        var start = source.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Missing assignment for {variable}");
+        start += marker.Length;
+        var end = source.IndexOf('\'', start);
+        Assert.True(end > start, $"Unterminated assignment for {variable}");
+        return source[start..end];
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var index = source.IndexOf(value, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            count++;
+            index = source.IndexOf(value, index + value.Length, StringComparison.Ordinal);
+        }
+
+        return count;
     }
 
     private static string ReadSource(string relativePath)

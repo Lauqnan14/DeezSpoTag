@@ -96,7 +96,9 @@ public sealed class QobuzDownloadApiController : ControllerBase
         }
 
         await _qobuzDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
-        return Ok(new { authenticated = true });
+        var released = await PublicApiVerificationRetry
+            .OnVerifiedAsync("qobuz", _serviceProvider, cancellationToken);
+        return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
     [HttpPost]

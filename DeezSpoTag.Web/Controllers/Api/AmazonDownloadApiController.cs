@@ -93,7 +93,9 @@ public sealed class AmazonDownloadApiController : ControllerBase
         }
 
         await _amazonDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
-        return Ok(new { authenticated = true });
+        var released = await PublicApiVerificationRetry
+            .OnVerifiedAsync("amazon", _serviceProvider, cancellationToken);
+        return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
     [HttpPost]

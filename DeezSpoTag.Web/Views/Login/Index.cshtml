@@ -19,11 +19,11 @@
     var initialAmazonMusicConnected = initialAmazonMusicAuth is not null
         && (!string.IsNullOrWhiteSpace(initialAmazonMusicAuth.Host) || !string.IsNullOrWhiteSpace(initialAmazonMusicAuth.Cookie));
     var initialSoulseekConnected = initialSoulseekAuth?.ConnectionValid == true;
-    // The logged-in card (and its Logout button) renders whenever a Boomplay session is
-    // saved. It reflects the ORIGINAL logged-in session only — the Cloudflare clearance
-    // session has its own state and never affects this card. Logout must always be
-    // available for a saved session.
-    var initialBoomplayConnected = !string.IsNullOrWhiteSpace(initialBoomplayAuth?.Cookie);
+    var initialBoomplayConnected = !string.IsNullOrWhiteSpace(initialBoomplayAuth?.Cookie)
+        && initialBoomplayAuth.SessionValid == true
+        && string.Equals(initialBoomplayAuth.LastStatus, "session_verified", StringComparison.Ordinal)
+        && BoomplaySessionCookie.TryNormalize(initialBoomplayAuth.Cookie, out var initialBoomplayCookie)
+        && BoomplaySessionCookie.TryExtractSessionId(initialBoomplayCookie, out _);
     var initialQobuzName = ResolveDisplayName(initialQobuzAuth?.DisplayName, "Official Qobuz API");
     var initialQobuzStatus = ResolveInitialQobuzStatus(initialQobuzAuth, initialQobuzConnected);
     var initialTidalName = ResolveTidalName(initialTidalAuth?.UserId);
@@ -635,33 +635,30 @@
         <div class="tab-pane" id="boomplay-login" role="tabpanel" hidden>
             <div class="settings-group">
                 <h3 class="settings-group__header">
-                    <i class="material-icons">music_video</i>Boomplay Session
+                    <i class="material-icons">music_video</i>Boomplay Login
                 </h3>
+                <div id="boomplayLoginFormSection" class="@(initialBoomplayConnected ? "hidden" : "")">
+                    <div class="mb-6">
+                        <span class="block mb-2">Boomplay Import bookmarklet</span>
+                        <p class="text-muted"><strong>Before logging in</strong>, drag Boomplay Import to your browser's bookmarks bar. This setup area will be hidden after login.</p>
+                        <a id="boomplayImportBookmarklet" class="btn btn-secondary action-btn" href="#" draggable="true">Boomplay Import</a>
+                        <p class="text-muted">After installing it, click the bookmark while viewing a Boomplay playlist or album to import its numeric ID into DeezSpoTag.</p>
+                    </div>
+                    <p class="text-muted">Log in to Boomplay, then save the account's browser session.</p>
+                    <form id="boomplayLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Boomplay sessionID cookie</span>
+                            <input type="password" id="boomplayCookie" class="w-full" autocomplete="off"
+                                   placeholder="sessionID=... (or just the value)" />
+                            <span class="block mt-2 text-muted">In Chrome, open boomplay.com while logged in, then open
+                                DevTools &gt; Application &gt; Cookies &gt; <code>sessionID</code> and copy it. The bare
+                                value is accepted.</span>
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="boomplayStatus">@(!initialBoomplayConnected ? initialBoomplayStatus : "")</p>
+                    </form>
+                </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "boomplayLoggedInInfo", ImageAlt = "Boomplay", ImageSrc = "/images/icons/boomplay.png", ImageCssClass = "h-20 w-20", ButtonId = "boomplayDisconnectBtn", NameId = "boomplayLoggedInName", NameFallback = initialBoomplayName, DetailId = "boomplayLoggedInStatus", DetailText = initialBoomplayStatus, WrapperCssClass = initialBoomplayConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="public-api-provider-panel" aria-labelledby="boomplayVerificationHeading">
-                    <div class="public-api-provider-panel__header">
-                        <div>
-                            <h4 id="boomplayVerificationHeading">Session Verification</h4>
-                        </div>
-                    </div>
-                    <div id="boomplayLoginFormSection">
-                        <p class="text-muted">Save a logged-in Boomplay browser session for playlist access.</p>
-                        <form id="boomplayLoginForm" class="space-y-5">
-                            <label class="block mb-4">
-                                <span class="block mb-2">Cookie</span>
-                                <input type="password" id="boomplayCookie" placeholder="Boomplay cookie" class="w-full" autocomplete="off" />
-                            </label>
-                            <button class="btn btn-primary action-btn" type="submit">Save</button>
-                            <p class="text-muted" id="boomplayStatus">@(!initialBoomplayConnected ? initialBoomplayStatus : "")</p>
-                        </form>
-                        <div class="mt-6">
-                            <span class="block mb-2">Boomplay Import bookmarklet</span>
-                            <p class="text-muted">Open the Boomplay playlist or album page in your browser (Cloudflare resolves there natively), then click the bookmarklet. The numeric ID is handed to the app, the playlist opens here, and it is saved by its numeric ID so every later fetch rides the mobile API without a session.</p>
-                            <a id="boomplayImportBookmarklet" class="btn btn-secondary action-btn" href="#" draggable="true">Boomplay Import</a>
-                            <p class="text-muted">Drag the button to your bookmarks bar, then click it while on boomplay.com.</p>
-                        </div>
-                    </div>
-                </section>
             </div>
         </div>
 
@@ -739,6 +736,36 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "navidromeLoggedInInfo", ImageAlt = "Navidrome", ImageSrc = "/images/icons/navidrome.png", ImageCssClass = "h-20 w-20", ButtonId = "navidromeDisconnectBtn", NameId = "navidromeLoggedInName", NameFallback = "Navidrome account" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="ytmusic-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">library_music</i>YouTube Music
+                </h3>
+                <p class="text-muted">
+                    Create a Google Cloud OAuth client of type <strong>TVs and Limited Input devices</strong>, enable the
+                    YouTube Data API, and add this redirect URI:
+                    <code id="ytmusicRedirectUri"></code>
+                </p>
+                <div id="ytmusicLoginFormSection">
+                    <form id="ytmusicLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">OAuth client ID</span>
+                            <input type="text" id="ytmusicClientId" placeholder="Client ID" class="w-full" required />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">OAuth client secret</span>
+                            <input type="password" id="ytmusicClientSecret" placeholder="Client secret" class="w-full" required />
+                        </label>
+                        <div class="flex gap-2">
+                            <button class="btn btn-primary action-btn" type="submit">Connect YouTube Music</button>
+                        </div>
+                        <p class="text-muted" id="ytmusicStatus"></p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "ytmusicLoggedInInfo", ImageAlt = "YouTube Music", ImageSrc = "/images/icons/youtube-music.png", ImageCssClass = "h-20 w-20", ButtonId = "ytmusicDisconnectBtn", NameId = "ytmusicLoggedInName", NameFallback = "YouTube Music account" })
             </div>
         </div>
 
@@ -1716,21 +1743,11 @@ const publicApiProviderStates = new Map(
 );
 
 function isTabPreferenceEnabled() {
-    try {
-        const stored = localStorage.getItem('tabs-preference-enabled');
-        if (stored === null || stored === '') {
-            return true;
-        }
-
-        return stored === 'true';
-    } catch (error) {
-        console.warn('Failed to read tab preference setting', error);
-        return true;
-    }
+    return window.TabPreferences?.isEnabled?.() !== false;
 }
 
 function getLoginTabPreferenceKey() {
-    return `tabs:last:${window.location.pathname}:platformLoginTabs`;
+    return window.TabPreferences?.keyFor?.('platformLoginTabs') || '';
 }
 
 // Toast notification system
@@ -1868,9 +1885,7 @@ document.addEventListener('DOMContentLoaded', function() {
         boomplay: {
             matches: '/boomplay',
             render: (data, payload, isConnected, statusElementId) => {
-                // A saved session always shows the logged-in card (with Logout), even when
-                // Cloudflare has challenged it — logout must never disappear.
-                const connected = data?.cookieSaved === true;
+                const connected = data?.connected === true;
                 renderBoomplayInfo(data || {});
                 setBoomplayFormStatus(data || {}, statusElementId);
                 return connected;
@@ -1928,6 +1943,11 @@ document.addEventListener('DOMContentLoaded', function() {
             void setPublicApiProviderEnabled(platformId, toggle.dataset.publicApiProviderId, toggle.checked, toggle);
         });
         rows?.addEventListener('click', event => {
+            const verifyAll = event.target.closest('[data-public-api-provider-verify-all]');
+            if (verifyAll) {
+                void startAllPublicDownloadVerifications();
+                return;
+            }
             const verify = event.target.closest('[data-public-api-provider-verify]');
             if (verify) {
                 void startPublicDownloadVerification(config);
@@ -2250,6 +2270,42 @@ document.addEventListener('DOMContentLoaded', function() {
 
     bindPlatformDisconnect('navidromeDisconnectBtn', '/api/platform-auth/navidrome/disconnect', 'navidromeStatus');
 
+    // YouTube Music uses the OAuth redirect flow: save the Google client, then the user is sent
+    // to Google and returns to the callback route with a code and state.
+    const ytmusicForm = document.getElementById('ytmusicLoginForm');
+    if (ytmusicForm) {
+        const redirectField = document.getElementById('ytmusicRedirectUri');
+        if (redirectField) {
+            redirectField.textContent = `${globalThis.location.origin}/api/platform-auth/ytmusic/callback`;
+        }
+        ytmusicForm.addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const clientId = document.getElementById('ytmusicClientId').value.trim();
+            const clientSecret = document.getElementById('ytmusicClientSecret').value;
+            if (!clientId || !clientSecret) {
+                setStatus('ytmusicStatus', false);
+                return;
+            }
+            try {
+                const response = await fetch('/api/platform-auth/ytmusic/authorize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clientId, clientSecret })
+                });
+                const result = await response.json();
+                if (response.ok && result?.authorizeUrl) {
+                    globalThis.location.href = result.authorizeUrl;
+                    return;
+                }
+                setStatus('ytmusicStatus', false);
+            } catch {
+                setStatus('ytmusicStatus', false);
+            }
+        });
+    }
+
+    bindPlatformDisconnect('ytmusicDisconnectBtn', '/api/platform-auth/ytmusic/disconnect', 'ytmusicStatus');
+
     const beatportForm = document.getElementById('beatportAuthForm');
     if (beatportForm) {
         beatportForm.addEventListener('submit', async function(event) {
@@ -2463,7 +2519,7 @@ function getPreferredLoginTabId() {
     }
 
     try {
-        const localStored = localStorage.getItem(getLoginTabPreferenceKey()) || '';
+        const localStored = window.TabPreferences?.read?.(getLoginTabPreferenceKey()) || '';
         if (isValidLoginTabId(localStored)) {
             return localStored;
         }
@@ -2485,21 +2541,11 @@ function persistLoginTabId(tabId) {
         return;
     }
 
+    // The remembered value itself is owned by tab-preferences.js; sessionStorage stays
+    // local because it tracks the in-flight OAuth tab rather than a user preference.
     try {
-        if (!isTabPreferenceEnabled()) {
-            localStorage.removeItem(getLoginTabPreferenceKey());
-            sessionStorage.removeItem(LOGIN_TAB_STORAGE_KEY);
-            if (window.UserPrefs?.setTabSelection) {
-                window.UserPrefs.setTabSelection(getLoginTabPreferenceKey(), '');
-            }
-            return;
-        }
-
-        localStorage.setItem(getLoginTabPreferenceKey(), tabId);
+        window.TabPreferences?.write?.(getLoginTabPreferenceKey(), tabId);
         sessionStorage.setItem(LOGIN_TAB_STORAGE_KEY, tabId);
-        if (window.UserPrefs?.setTabSelection) {
-            window.UserPrefs.setTabSelection(getLoginTabPreferenceKey(), tabId);
-        }
     } catch (error) {
         console.warn('Failed to persist login tab preference', error);
     }
@@ -2725,6 +2771,14 @@ async function loadPlatformAuthState() {
             renderNavidromeInfo(data.navidrome);
             togglePlatformLoginState('navidrome', data.navidrome.connected === true);
         }
+        if (data.ytmusic) {
+            document.getElementById('ytmusicClientId').value = data.ytmusic.clientId || '';
+            document.getElementById('ytmusicClientSecret').value = '';
+            const ytmusicConnected = Boolean(data.ytmusic.connected === true);
+            setStatus('ytmusicStatus', ytmusicConnected);
+            renderYTMusicInfo(data.ytmusic);
+            togglePlatformLoginState('ytmusic', ytmusicConnected);
+        }
         if (data.appleMusic) {
             document.getElementById('appleMusicEmail').value = data.appleMusic.email || '';
             renderAppleMusicInfo(data.appleMusic);
@@ -2764,12 +2818,10 @@ async function loadPlatformAuthState() {
         if (data.boomplay) {
             document.getElementById('boomplayCookie').placeholder = data.boomplay.cookieSaved
                 ? 'Saved - leave blank to keep current cookie'
-                : 'Boomplay cookie';
+                : 'sessionID=... (or just the value)';
             setBoomplayFormStatus(data.boomplay, 'boomplayStatus');
             renderBoomplayInfo(data.boomplay);
-            // A saved session always shows the logged-in card (with Logout), even when
-            // Cloudflare has challenged it — logout must never disappear.
-            togglePlatformLoginState('boomplay', Boolean(data.boomplay.cookieSaved));
+            togglePlatformLoginState('boomplay', Boolean(data.boomplay.connected));
         }
         if (data.amazonMusic) {
             document.getElementById('amazonMusicHost').value = data.amazonMusic.host || 'music.amazon.com';
@@ -3359,12 +3411,6 @@ function togglePlatformLoginState(platform, isConnected) {
         }
     }
 
-    if (platform === 'boomplay') {
-        // Two-function tab (Qobuz pattern): the logged-in card above shows the active
-        // session with Logout, while the new-session form stays visible at the bottom
-        // so saving/replacing a session is always available.
-        formSection.classList.remove('hidden');
-    }
 }
 
 function renderDiscogsInfo(auth) {
@@ -3418,6 +3464,18 @@ function renderNavidromeInfo(auth) {
     const nameLabel = document.getElementById('navidromeLoggedInName');
     if (nameLabel) {
         nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Navidrome account';
+    }
+}
+
+function renderYTMusicInfo(auth) {
+    const nameLabel = document.getElementById('ytmusicLoggedInName');
+    const picture = document.getElementById('ytmusicLoggedInPicture');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.displayName || auth?.channelId || 'YouTube Music account';
+    }
+    if (picture) {
+        const avatar = String(auth?.avatarUrl || '').trim();
+        picture.src = avatar || getPlatformIcon('youtube-music');
     }
 }
 
@@ -3717,6 +3775,18 @@ function createPublicApiProviderRow(config, provider, sessionValid, checking, mu
         verify.dataset.publicApiProviderVerify = provider.id;
         verify.textContent = 'Verify';
         controls.append(verify);
+
+        // Runs the same verification for all three public APIs from one click, so the reader does not have
+        // to visit three tabs to discover which ones are outstanding. Deliberately an addition beside the
+        // single-platform button rather than a replacement for it, and styled identically so the two read
+        // as the same action at two different scopes.
+        const verifyAll = document.createElement('button');
+        verifyAll.type = 'button';
+        verifyAll.className = 'btn btn-secondary action-btn action-btn-sm public-api-provider-verify';
+        verifyAll.dataset.publicApiProviderVerifyAll = config.platformId;
+        verifyAll.textContent = '(Verify all)';
+        verifyAll.title = `Runs the public download verification for ${Object.values(PUBLIC_API_PROVIDER_CONFIG).map(entry => entry.label).join(', ')}.`;
+        controls.append(verifyAll);
     }
     row.append(identity, controls);
     return row;
@@ -3989,37 +4059,78 @@ async function reloadPublicDownloadSession(platformId) {
     }
 }
 
+// The verification itself, split out from the button handling so the all-platforms path can run it once per
+// platform and still learn which ones failed. It rejects instead of reporting, leaving it to the caller to
+// decide how a failure surfaces.
+async function runPublicDownloadVerification(config) {
+    const response = await fetch(`${config.sessionEndpoint}/start`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: buildLoginApiHeaders()
+    });
+    if (!response.ok) throw new Error(await getApiErrorMessage(response, `${config.label} public download verification failed`));
+    const result = await response.json();
+    // An already-authenticated platform short-circuits here before any popup. That is what lets a single
+    // click cover every platform without the page having to know any of their states beforehand.
+    if (result?.authenticated === true) {
+        await reloadPublicDownloadSession(config.platformId);
+        return;
+    }
+    if (!result?.verificationUrl) {
+        throw new Error(`${config.label} public download verification URL was not returned.`);
+    }
+    const verificationWindow = window.open(
+        result.verificationUrl,
+        config.popupName,
+        'popup=yes,width=560,height=720');
+    if (!verificationWindow) {
+        throw new Error(`The ${config.label} public download verification window was blocked.`);
+    }
+
+    await waitForPublicDownloadGrant(verificationWindow, config);
+}
+
 async function startPublicDownloadVerification(config) {
     const button = document.getElementById(config.verifyButtonId);
     if (button) button.disabled = true;
     try {
-        const response = await fetch(`${config.sessionEndpoint}/start`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders()
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, `${config.label} public download verification failed`));
-        const result = await response.json();
-        if (result?.authenticated === true) {
-            await reloadPublicDownloadSession(config.platformId);
-            return;
-        }
-        if (!result?.verificationUrl) {
-            throw new Error(`${config.label} public download verification URL was not returned.`);
-        }
-        const verificationWindow = window.open(
-            result.verificationUrl,
-            config.popupName,
-            'popup=yes,width=560,height=720');
-        if (!verificationWindow) {
-            throw new Error(`The ${config.label} public download verification window was blocked.`);
-        }
-
-        await waitForPublicDownloadGrant(verificationWindow, config);
+        await runPublicDownloadVerification(config);
     } catch (error) {
         showToast(error.message || `${config.label} public download verification failed`, 'error');
     } finally {
         if (button) button.disabled = false;
+    }
+}
+
+// One click covering every platform in PUBLIC_API_PROVIDER_CONFIG, for the reader who does not want to visit
+// three tabs to work out which ones are outstanding. Strictly sequential: each platform waits on a challenge
+// the reader finishes in a popup, and the browser will not grant a second popup per gesture. A failure on one
+// platform is collected and the remaining platforms still run, so a blocked popup mid-sequence cannot strand
+// the ones after it.
+async function startAllPublicDownloadVerifications() {
+    if (startAllPublicDownloadVerifications.running) {
+        return;
+    }
+
+    const triggers = Array.from(document.querySelectorAll('[data-public-api-provider-verify-all]'));
+    const failures = [];
+    startAllPublicDownloadVerifications.running = true;
+    triggers.forEach(button => { button.disabled = true; });
+    try {
+        for (const config of Object.values(PUBLIC_API_PROVIDER_CONFIG)) {
+            try {
+                await runPublicDownloadVerification(config);
+            } catch (error) {
+                failures.push(error.message || `${config.label} public download verification failed`);
+            }
+        }
+    } finally {
+        startAllPublicDownloadVerifications.running = false;
+        triggers.forEach(button => { button.disabled = false; });
+    }
+
+    if (failures.length > 0) {
+        showToast(failures.join(' '), 'error');
     }
 }
 
@@ -4184,9 +4295,9 @@ function renderBoomplayInfo(auth) {
         nameLabel.textContent = 'Boomplay account';
     }
     if (statusLabel) {
-        statusLabel.textContent = auth?.cookieSaved
-            ? 'Boomplay session saved'
-            : 'Boomplay is not configured.';
+        statusLabel.textContent = auth?.connected
+            ? 'Connected to Boomplay'
+            : 'Boomplay login is required.';
     }
 }
 
@@ -4238,7 +4349,12 @@ function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
         return;
     }
 
-    statusLabel.textContent = auth?.message || (auth?.connected ? 'Connected' : 'Not connected');
+    // `reason` is the verified probe's own wording; `message` is the persisted display value. The probe wins
+    // because this is the page the reader acts on, and telling them "Connected" from a stored flag after the
+    // peer has dropped is how the source looks ready while every request behind it fails.
+    statusLabel.textContent = auth?.reason
+        || auth?.message
+        || (auth?.active ? 'Connected' : 'Not connected');
 }
 
 function setAmazonMusicFormStatus(auth, statusElementId = 'amazonMusicStatus') {
@@ -4257,9 +4373,7 @@ function setBoomplayFormStatus(auth, statusElementId = 'boomplayStatus') {
         return;
     }
 
-    // Session-state text lives on the logged-in card above; this line is reserved for
-    // save/verification action feedback, so the state never renders twice.
-    statusLabel.textContent = auth?.cookieSaved ? '' : 'Boomplay is not configured';
+    statusLabel.textContent = auth?.connected ? '' : 'Boomplay login is required';
 }
 
 function showAppleMusic2fa(show = true) {
@@ -4983,8 +5097,9 @@ async function savePlatformAuth(url, payload, statusElementId, isConnected) {
         }
         if (!response.ok) {
             let failureMessage = 'Failed to save credentials';
+            let failure = null;
             try {
-                const failure = await response.json();
+                failure = await response.json();
                 failureMessage = failure?.message || failure?.error || failureMessage;
             } catch {
                 // Keep the generic message for non-JSON responses.
@@ -5424,6 +5539,8 @@ function getPlatformIcon(platform) {
             return '/images/icons/bpmsupreme.png';
         case 'plex':
             return '/images/icons/plex.png';
+        case 'ytmusic':
+            return '/images/icons/youtube-music.png';
         case 'jellyfin':
             return '/images/icons/jellyfin.png';
         case 'deezer':
@@ -5518,8 +5635,7 @@ function resolvePlatformAuthBinding(url, bindings) {
     return Object.entries(bindings || {}).find(([, binding]) => url.includes(binding.matches)) || null;
 }
 
-function applyPlatformAuthState(url, data, payload, statusElementId, isConnected) {
-    const bindings = {
+const PLATFORM_AUTH_BINDINGS = {
         discogs: {
             matches: '/discogs',
             render: info => renderDiscogsInfo(info || {})
@@ -5604,15 +5720,42 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         boomplay: {
             matches: '/boomplay',
             render: (info, rawPayload, connected, elementId) => {
-                // A saved session always shows the logged-in card (with Logout), even when
-                // Cloudflare has challenged it — logout must never disappear.
-                const isConnected = info?.cookieSaved === true;
+                const isConnected = info?.connected === true;
                 renderBoomplayInfo(info || {});
                 setBoomplayFormStatus(info || {}, elementId);
                 return isConnected;
             }
         }
-    };
+};
+
+/**
+ * Paints the state a rejected save returned, when the body actually carries this platform's own view.
+ *
+ * The guard matters: an error body that merely echoes the submitted payload must not be allowed to repaint
+ * the form, or a platform could appear connected off a value the reader typed. Only a body carrying this
+ * platform's own key is trusted.
+ */
+function applyRejectedPlatformState(url, failure, payload, statusElementId) {
+    if (!failure || typeof failure !== 'object') {
+        return;
+    }
+
+    const entry = resolvePlatformAuthBinding(url, PLATFORM_AUTH_BINDINGS);
+    if (!entry) {
+        return;
+    }
+
+    const [platform] = entry;
+    const state = failure[platform];
+    if (!state || typeof state !== 'object') {
+        return;
+    }
+
+    applyPlatformAuthState(url, failure, payload, statusElementId, false);
+}
+
+function applyPlatformAuthState(url, data, payload, statusElementId, isConnected) {
+    const bindings = PLATFORM_AUTH_BINDINGS;
 
     setStatus(statusElementId, isConnected);
     const entry = resolvePlatformAuthBinding(url, bindings);

@@ -161,6 +161,25 @@ public partial class AutoTagService
         }
     }
 
+    /// <summary>
+    ///     The short label a completion, pause or resume notification carries.
+    /// </summary>
+    /// <remarks>
+    ///     A pause or resume notification is the one a reader is most likely to act on without opening the
+    ///     run, so it has to say which operation paused. The two external-file intents share every
+    ///     mechanism but are separately triggered and separately owned, and both used to be reported as a
+    ///     plain "AutoTag" run - indistinguishable from an ordinary one in the notification list.
+    /// </remarks>
+    private static string DescribeRunForNotification(string? runIntent)
+    {
+        if (IsExternalFileEnrichmentRunIntent(runIntent))
+        {
+            return DescribeExternalFileEnrichment(runIntent);
+        }
+
+        return IsEnhancementRunIntent(runIntent) ? "Enhancement" : "AutoTag";
+    }
+
     private void NotifyRunStopped(AutoTagJob job, string stopStatus, string stopReason)
     {
         if (!string.Equals(stopStatus, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
@@ -171,7 +190,7 @@ public partial class AutoTagService
 
         _notifications.Raise(
             "run_paused",
-            $"{(IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag")} run {stopStatus}",
+            $"{DescribeRunForNotification(job.RunIntent)} run {stopStatus}",
             job.Error ?? BuildStopError(job, stopReason),
             "Warning",
             $"run_paused:{job.Id}",
@@ -188,7 +207,7 @@ public partial class AutoTagService
             return;
         }
 
-        var label = IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag";
+        var label = DescribeRunForNotification(job.RunIntent);
         var succeeded = string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase);
         _notifications.Raise(
             "run_completed",
@@ -203,7 +222,7 @@ public partial class AutoTagService
 
     private void NotifyRunResumed(AutoTagJob job, string successorJobId)
     {
-        var label = IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag";
+        var label = DescribeRunForNotification(job.RunIntent);
         _notifications.Raise(
             "run_resumed",
             $"{label} run resumed",

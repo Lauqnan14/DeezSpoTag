@@ -22,6 +22,7 @@ public static class NotificationKinds
     public const string RunCompleted = "run_completed";
     public const string ProviderRecovered = "provider_recovered";
     public const string DownloadBlocked = "download_blocked";
+    public const string AppUpdateAvailable = "app_update_available";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -34,7 +35,8 @@ public static class NotificationKinds
         RunResumed,
         RunCompleted,
         ProviderRecovered,
-        DownloadBlocked
+        DownloadBlocked,
+        AppUpdateAvailable
     ];
 
     public static bool IsKnown(string? kind)
@@ -57,6 +59,7 @@ public sealed record NotificationEntry
     public DateTimeOffset CreatedUtc { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastSeenUtc { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ReadUtc { get; init; }
+    public DateTimeOffset? DismissedUtc { get; init; }
     public DateTimeOffset? ResolvedUtc { get; init; }
     public bool ManuallyResolved { get; init; }
 

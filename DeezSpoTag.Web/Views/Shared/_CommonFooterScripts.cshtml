@@ -23,3 +23,33 @@
 <script>
     window.DeezSpoTagAppInstanceId = '@AppInstanceIdProvider.InstanceId';
 </script>
+<script>
+    (function () {
+        // Registers the notifications-only worker in wwwroot/sw.js and starts mirroring
+        // playback into the OS media session (lock screen, media notification, media
+        // keys). Notification permission is requested on the first real play rather than
+        // on page load, which is the only point it is both allowed and non-intrusive.
+        if (!('serviceWorker' in navigator) || !('mediaSession' in navigator)) {
+            return;
+        }
+
+        if ('Notification' in window && Notification.permission === 'default') {
+            globalThis.__deezspotRequestNotificationPermissionOnPlay = true;
+        }
+
+        globalThis.addEventListener('load', function () {
+            navigator.serviceWorker.register('/sw.js', {
+                scope: '/',
+                // The app serves every response with no-store; this additionally bypasses
+                // the browser's service-worker script cache so updates land immediately.
+                updateViaCache: 'none'
+            }).catch(function () {
+                // Without a worker there is still a media session, just no Download action.
+            });
+
+            if (globalThis.DeezSpoTagMediaSession) {
+                globalThis.DeezSpoTagMediaSession.attach();
+            }
+        });
+    })();
+</script>

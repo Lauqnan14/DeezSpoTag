@@ -38,6 +38,9 @@ public sealed class PlatformAuthApiDependencies
     public required BoomplayMetadataService BoomplayMetadataService { get; init; }
     public required DiscogsApiClient DiscogsApiClient { get; init; }
     public required PlexApiClient PlexApiClient { get; init; }
+
+    /// <summary>Optional so a deployment without YouTube Music configured still starts.</summary>
+    public YouTubeDataApiClient? YouTubeDataApiClient { get; init; }
     public required JellyfinApiClient JellyfinApiClient { get; init; }
     public required NavidromeApiClient NavidromeApiClient { get; init; }
     public required AppleMusicWrapperService AppleWrapperService { get; init; }
@@ -96,6 +99,9 @@ public class PlatformAuthApiController : ControllerBase
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly DiscogsApiClient _discogsApiClient;
     private readonly PlexApiClient _plexApiClient;
+
+    /// <summary>Optional so a deployment without YouTube Music configured still starts.</summary>
+    private readonly YouTubeDataApiClient? _youtubeDataApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly NavidromeApiClient _navidromeApiClient;
     private readonly AppleMusicWrapperService _appleWrapperService;
@@ -119,6 +125,7 @@ public class PlatformAuthApiController : ControllerBase
         _boomplayMetadataService = dependencies.BoomplayMetadataService;
         _discogsApiClient = dependencies.DiscogsApiClient;
         _plexApiClient = dependencies.PlexApiClient;
+        _youtubeDataApiClient = dependencies.YouTubeDataApiClient;
         _jellyfinApiClient = dependencies.JellyfinApiClient;
         _navidromeApiClient = dependencies.NavidromeApiClient;
         _appleWrapperService = dependencies.AppleWrapperService;
@@ -163,6 +170,7 @@ public class PlatformAuthApiController : ControllerBase
             plex = state.Plex is null ? null : new { state.Plex.Url, state.Plex.ServerName, state.Plex.MachineIdentifier, state.Plex.Version, state.Plex.Username, state.Plex.AvatarUrl, tokenSaved = !string.IsNullOrWhiteSpace(state.Plex.Token) },
             jellyfin = state.Jellyfin is null ? null : new { state.Jellyfin.Url, state.Jellyfin.Username, state.Jellyfin.UserId, state.Jellyfin.ServerName, state.Jellyfin.Version, state.Jellyfin.AvatarUrl, apiKeySaved = !string.IsNullOrWhiteSpace(state.Jellyfin.ApiKey) },
             navidrome = ToPublicNavidrome(state.Navidrome),
+            ytmusic = ToPublicYTMusic(state.YTMusic),
             appleMusic = state.AppleMusic is null ? null : new { state.AppleMusic.Email, mediaUserTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.MediaUserToken), authorizationTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.AuthorizationToken), state.AppleMusic.WrapperReady, state.AppleMusic.WrapperLoggedInAt },
             qobuz = ToPublicQobuz(state.Qobuz),
             tidal = ToPublicTidal(state.Tidal),
@@ -227,7 +235,7 @@ public class PlatformAuthApiController : ControllerBase
         var gate = EnsureAccess();
         if (gate != null) return gate;
         await RunProviderStageAsync(
-            "amazon",
+            AmazonSource,
             token => _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(token),
             cancellationToken);
         return Ok(await GetPublicAmazonProvidersAsync(cancellationToken, liveSession: true));
@@ -291,7 +299,7 @@ public class PlatformAuthApiController : ControllerBase
         var gate = EnsureAccess();
         if (gate != null) return gate;
         await RunProviderStageAsync(
-            "tidal",
+            TidalSource,
             token => _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(token),
             cancellationToken);
         return Ok(await GetPublicTidalProvidersAsync(cancellationToken, liveSession: true));
@@ -329,7 +337,7 @@ public class PlatformAuthApiController : ControllerBase
         var gate = EnsureAccess();
         if (gate != null) return gate;
         await RunProviderStageAsync(
-            "qobuz",
+            QobuzSource,
             token => _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(token),
             cancellationToken);
         return Ok(await GetPublicQobuzProvidersAsync(cancellationToken, liveSession: true));
@@ -352,6 +360,7 @@ public class PlatformAuthApiController : ControllerBase
     ///     submission is a check, never a clear: only the disconnect endpoint removes the token.
     /// </remarks>
     [HttpPost("soundcloud/check")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> CheckSoundCloud(CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
@@ -453,6 +462,7 @@ public class PlatformAuthApiController : ControllerBase
     ///     A read-only check, so a blank token in the body preserves what is saved rather than clearing it.
     /// </remarks>
     [HttpPost("soundcloud")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> SaveSoundCloud(
         [FromBody] SoundCloudAuth request,
         CancellationToken cancellationToken)
@@ -530,6 +540,7 @@ public class PlatformAuthApiController : ControllerBase
     ///     </para>
     /// </remarks>
     [HttpPost("soundcloud/disconnect")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> DisconnectSoundCloud(CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
@@ -600,31 +611,31 @@ public class PlatformAuthApiController : ControllerBase
         {
             await Task.WhenAll(
                 RunProviderStageAsync(
-                    "qobuz",
+                    QobuzSource,
                     token => _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(token),
                     cancellationToken),
                 RunProviderStageAsync(
-                    "amazon",
+                    AmazonSource,
                     token => _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(token),
                     cancellationToken),
                 RunProviderStageAsync(
-                    "tidal",
+                    TidalSource,
                     token => _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(token),
                     cancellationToken));
         }
 
         var qobuzTask = ResolveProviderStatusAsync(
-            "qobuz",
+            QobuzSource,
             token => GetPublicQobuzProvidersAsync(token, liveSession: check),
             summary => (summary.Status, summary.OnlineCount),
             cancellationToken);
         var amazonTask = ResolveProviderStatusAsync(
-            "amazon",
+            AmazonSource,
             token => GetPublicAmazonProvidersAsync(token, liveSession: check),
             summary => (summary.Status, summary.OnlineCount),
             cancellationToken);
         var tidalTask = ResolveProviderStatusAsync(
-            "tidal",
+            TidalSource,
             token => GetPublicTidalProvidersAsync(token, liveSession: check),
             summary => (summary.Status, summary.OnlineCount),
             cancellationToken);
@@ -882,7 +893,25 @@ public class PlatformAuthApiController : ControllerBase
                            && BoomplaySessionCookie.TryNormalize(previous?.Cookie, out existingCookie);
         if (!keepExisting && !BoomplaySessionCookie.TryNormalize(request.Cookie, out existingCookie))
         {
-            return BadRequest("Boomplay cookie is required.");
+            return BadRequest(new
+            {
+                error = BoomplayFailureCodes.SessionMissing,
+                message = "Paste the Boomplay sessionID cookie. In Chrome: open boomplay.com while "
+                          + "logged in, then DevTools > Application > Cookies > sessionID, and copy "
+                          + "either the value on its own or the full cookie header."
+            });
+        }
+
+        // A cookie that parses but carries no sessionID can never authenticate, so say which
+        // cookie is missing instead of letting the request fail later as an opaque API error.
+        if (!BoomplaySessionCookie.TryExtractSessionId(existingCookie, out _))
+        {
+            return BadRequest(new
+            {
+                error = BoomplayFailureCodes.SessionMissing,
+                message = "That cookie has no sessionID. Boomplay only authenticates the sessionID "
+                          + "cookie; copy it from DevTools > Application > Cookies on boomplay.com."
+            });
         }
 
         var requestedUserAgent = string.IsNullOrWhiteSpace(request.UserAgent)
@@ -893,35 +922,32 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Boomplay browser user agent is required.");
         }
 
-        // Live HTML validation is optional: the session is a fallback (playlist fetching is
-        // sessionless via the mobile API), and the Cloudflare-gated page fetch is an
-        // unreliable test even for a good cookie. Without a verification URL the pair is
-        // stored as-is; a provided URL still validates live.
-        string lastStatus;
-        if (!string.IsNullOrWhiteSpace(request.VerificationUrl))
+        // The account check runs against Boomplay's Cloudflare-free mobile API and needs no
+        // verification URL: a saved cookie is only useful if Boomplay still honours the
+        // sessionID in it, so an unverified cookie is rejected rather than stored.
+        var validation = await _boomplayMetadataService.ValidateSessionAsync(
+            existingCookie,
+            userAgent,
+            request.VerificationUrl,
+            cancellationToken);
+        if (!validation.Success)
         {
-            var validation = await _boomplayMetadataService.ValidateSessionAsync(
-                existingCookie,
-                userAgent,
-                request.VerificationUrl,
-                cancellationToken);
-            if (!validation.Success)
+            return BadRequest(new
             {
-                return BadRequest(new
+                error = validation.FailureCode,
+                message = validation.FailureCode switch
                 {
-                    error = validation.FailureCode,
-                    message = validation.FailureCode == BoomplayFailureCodes.SessionChallenged
-                        ? "Boomplay challenged this browser session. Copy a fresh cookie and try again."
-                        : "Boomplay session could not resolve the verification URL."
-                });
-            }
+                    BoomplayFailureCodes.SessionChallenged =>
+                        "Boomplay challenged this browser session. Copy a fresh cookie and try again.",
+                    BoomplayFailureCodes.SessionMissing =>
+                        "Boomplay did not accept this session. Copy the sessionID cookie from a logged-in boomplay.com tab and try again.",
+                    _ =>
+                        "Boomplay could not verify this session. Try again in a moment."
+                }
+            });
+        }
 
-            lastStatus = "session_verified";
-        }
-        else
-        {
-            lastStatus = "session_saved";
-        }
+        const string lastStatus = "session_verified";
 
         var boomplay = await _authService.UpdateAsync(state =>
         {
@@ -1158,6 +1184,206 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Stores the Google OAuth client and returns the consent URL. The callback completes the
+    /// exchange, so no secret is ever placed in a browser URL.
+    /// </summary>
+    [ValidateAntiForgeryToken]
+    [HttpPost("ytmusic/authorize")]
+    public async Task<IActionResult> AuthorizeYTMusic([FromBody] YTMusicAuthorizeRequest request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null)
+        {
+            return gate;
+        }
+
+        if (string.IsNullOrWhiteSpace(request?.ClientId) || string.IsNullOrWhiteSpace(request.ClientSecret))
+        {
+            return BadRequest("An OAuth client ID and secret are required.");
+        }
+
+        if (_youtubeDataApiClient is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "YouTube Music is unavailable.");
+        }
+
+        var redirectUri = BuildYTMusicRedirectUri();
+        var state = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+
+        var auth = await _authService.UpdateAsync(state =>
+        {
+            state.YTMusic = new YTMusicAuth
+            {
+                ClientId = request.ClientId.Trim(),
+                ClientSecret = request.ClientSecret
+            };
+            return state.YTMusic;
+        });
+
+        var authorizeUrl = _youtubeDataApiClient.BuildAuthorizeUrl(
+            auth.ClientId!,
+            redirectUri,
+            state,
+            request.LoginHint ?? string.Empty);
+
+        return Ok(new
+        {
+            saved = true,
+            authorizeUrl,
+            redirectUri,
+            state
+        });
+    }
+
+    /// <summary>
+    /// OAuth redirect target. Google sends the user back here with a code and the state we
+    /// issued, which is exchanged for tokens and persisted.
+    /// </summary>
+    [HttpGet("ytmusic/callback")]
+    public async Task<IActionResult> YTMusicCallback(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null)
+        {
+            return gate;
+        }
+
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            return RedirectYTMusicResult($"YouTube Music authorization was declined: {error}");
+        }
+
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return RedirectYTMusicResult("YouTube Music did not return an authorization code.");
+        }
+
+        if (_youtubeDataApiClient is null)
+        {
+            return RedirectYTMusicResult("YouTube Music is unavailable.");
+        }
+
+        var current = await _authService.LoadAsync();
+        var ytmusic = current.YTMusic;
+        if (ytmusic is null
+            || string.IsNullOrWhiteSpace(ytmusic.ClientId)
+            || string.IsNullOrWhiteSpace(ytmusic.ClientSecret))
+        {
+            return RedirectYTMusicResult("Save the YouTube Music OAuth client before connecting.");
+        }
+
+        var token = await _youtubeDataApiClient.ExchangeCodeAsync(
+            ytmusic.TokenUrl ?? DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient.DefaultTokenUrl,
+            ytmusic.ClientId,
+            ytmusic.ClientSecret,
+            code,
+            BuildYTMusicRedirectUri(),
+            cancellationToken);
+        if (!token.Success || string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            return RedirectYTMusicResult(token.Error ?? "YouTube Music token exchange failed.");
+        }
+
+        // A refresh token is only issued on the first consent, so an absent one must not wipe
+        // the one already stored.
+        var saved = await _authService.UpdateAsync(next =>
+        {
+            next.YTMusic ??= new YTMusicAuth();
+            next.YTMusic.ClientId = ytmusic.ClientId;
+            next.YTMusic.ClientSecret = ytmusic.ClientSecret;
+            next.YTMusic.AccessToken = token.AccessToken;
+            next.YTMusic.AccessTokenExpiresAtUtc = token.ExpiresAtUtc;
+            next.YTMusic.RefreshToken = string.IsNullOrWhiteSpace(token.RefreshToken)
+                ? ytmusic.RefreshToken
+                : token.RefreshToken;
+            next.YTMusic.CredentialsValid = true;
+            return next.YTMusic;
+        });
+
+        return saved is not null && !string.IsNullOrWhiteSpace(saved.RefreshToken)
+            ? RedirectYTMusicResult(null)
+            : RedirectYTMusicResult("Connected, but Google did not issue a refresh token. Disconnect and reconnect to grant one.");
+    }
+
+    [ValidateAntiForgeryToken]
+    [HttpPost("ytmusic/disconnect")]
+    public async Task<IActionResult> DisconnectYTMusic(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null)
+        {
+            return gate;
+        }
+
+        var state = await _authService.LoadAsync();
+        if (state.YTMusic is not null && _youtubeDataApiClient is not null)
+        {
+            var token = string.IsNullOrWhiteSpace(state.YTMusic.RefreshToken)
+                ? state.YTMusic.AccessToken
+                : state.YTMusic.RefreshToken;
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                await _youtubeDataApiClient.RevokeAsync(YouTubeMusicDefaultRevokeUrl, token, cancellationToken);
+            }
+        }
+
+        await _authService.UpdateAsync(next =>
+        {
+            next.YTMusic = null;
+            return next.YTMusic;
+        });
+
+        return Ok(new { disconnected = true });
+    }
+
+    private const string YouTubeMusicDefaultRevokeUrl = "https://oauth2.googleapis.com/revoke";
+
+    private string BuildYTMusicRedirectUri()
+    {
+        var request = Request;
+        var origin = string.Equals(request.Headers["X-Forwarded-Proto"], "https", StringComparison.OrdinalIgnoreCase)
+            ? "https"
+            : request.Scheme;
+        return $"{origin}://{request.Host}{request.PathBase}/api/platform-auth/ytmusic/callback";
+    }
+
+    private IActionResult RedirectYTMusicResult(string? message)
+    {
+        var target = message is null
+            ? "/Login?loginTab=ytmusic&ytmusicConnected=1"
+            : $"/Login?loginTab=ytmusic&ytmusicError={Uri.EscapeDataString(message)}";
+        return Redirect(target);
+    }
+
+    private static object? ToPublicYTMusic(YTMusicAuth? auth)
+    {
+        if (auth is null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            clientId = auth.ClientId,
+            clientSecretSaved = !string.IsNullOrWhiteSpace(auth.ClientSecret),
+            refreshTokenSaved = !string.IsNullOrWhiteSpace(auth.RefreshToken),
+            displayName = auth.DisplayName,
+            channelId = auth.ChannelId,
+            avatarUrl = auth.AvatarUrl,
+            connected = !string.IsNullOrWhiteSpace(auth.RefreshToken)
+        };
+    }
+
+    public sealed record YTMusicAuthorizeRequest(string? ClientId, string? ClientSecret, string? LoginHint = null);
+
     [ValidateAntiForgeryToken]
     [HttpPost("navidrome/login")]
     public async Task<IActionResult> LoginNavidrome([FromBody] NavidromeAuth request, CancellationToken cancellationToken)
@@ -1288,7 +1514,7 @@ public class PlatformAuthApiController : ControllerBase
         var hasAppSecret = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret);
         var hasAuthToken = !string.IsNullOrWhiteSpace(auth?.AuthToken);
         var configured = hasAppSecret && hasAuthToken;
-        var connected = configured && auth?.AuthTokenValid != false;
+        var connected = configured && auth!.AuthTokenValid != false;
         return new
         {
             appId = auth?.AppId,
@@ -1349,12 +1575,21 @@ public class PlatformAuthApiController : ControllerBase
             message = configured ? "slskd is not connected." : "Soulseek is not configured.";
         }
 
+        // Two authorities cannot stand in one response. When the service-layer probe ran, it decides every
+        // availability field: `active`, `reason`, `connected`, and the status string. The persisted record is
+        // still carried for display, but it does not get to disagree with a fresh probe the reader can act on.
+        var active = eligibility?.IsUsable ?? (auth?.ConnectionValid == true);
+        var reason = eligibility?.Message ?? message;
+        var statusOut = eligibility is null ? status : eligibility.State.ToString().ToLowerInvariant();
+
         return new
         {
             baseUrl = auth?.BaseUrl,
             apiKeySaved = !string.IsNullOrWhiteSpace(auth?.ApiKey),
             configured,
-            connected = auth?.ConnectionValid == true,
+            connected = active,
+            active,
+            reason,
             username = auth?.Username,
             status = statusOut,
             message = reason,
@@ -1404,6 +1639,11 @@ public class PlatformAuthApiController : ControllerBase
     private static object ToPublicBoomplay(BoomplayAuth? auth)
     {
         var configured = !string.IsNullOrWhiteSpace(auth?.Cookie);
+        var connected = configured
+            && auth!.SessionValid == true
+            && string.Equals(auth.LastStatus, "session_verified", StringComparison.Ordinal)
+            && BoomplaySessionCookie.TryNormalize(auth.Cookie, out var cookie)
+            && BoomplaySessionCookie.TryExtractSessionId(cookie, out _);
         var status = auth?.LastStatus;
         if (string.IsNullOrWhiteSpace(status))
         {
@@ -1414,7 +1654,7 @@ public class PlatformAuthApiController : ControllerBase
         {
             cookieSaved = configured,
             configured,
-            connected = configured && auth?.SessionValid == true,
+            connected,
             status,
             savedAt = auth?.SavedAt
         };
@@ -1449,6 +1689,23 @@ public class PlatformAuthApiController : ControllerBase
             return (PublicApiDegradedStatus, 0);
         }
     }
+
+    /// <summary>
+    ///     The engine ids used to label a public-provider check, aliased to the one canonical
+    ///     definition.
+    /// </summary>
+    /// <remarks>
+    ///     These are download-source ids and are used here only to name which provider's registry is
+    ///     being checked, so a drifted copy would mislabel a log line rather than misbehave. The
+    ///     account-platform ids in the disconnect switch further down are deliberately NOT aliased:
+    ///     that switch speaks a different vocabulary, where Apple is "applemusic" and Amazon is
+    ///     "amazonmusic", and pointing those at the source ids would change which case they match.
+    /// </remarks>
+    private const string QobuzSource = DownloadTagSourceHelper.QobuzSource;
+
+    private const string AmazonSource = DownloadTagSourceHelper.AmazonSource;
+
+    private const string TidalSource = DownloadTagSourceHelper.TidalSource;
 
     private async Task RunProviderStageAsync(
         string provider,

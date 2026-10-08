@@ -105,9 +105,9 @@ public sealed class BoomplayApiController : ControllerBase
         => failureCode switch
         {
             BoomplayFailureCodes.SessionMissing
-                => "Boomplay links resolve by numeric ID through the mobile API. Open the playlist in your browser and use the Boomplay Import bookmarklet (Login → Boomplay → Session Verification) once — the app remembers the numeric ID and fetches it without a session from then on.",
+                => "Boomplay account login is required. Drag Boomplay Import to your bookmarks bar first, then log in through Login → Boomplay.",
             BoomplayFailureCodes.SessionChallenged
-                => "Boomplay links resolve by numeric ID through the mobile API. Use the Boomplay Import bookmarklet (Login → Boomplay → Session Verification) once — the app remembers the numeric ID and fetches it without a session from then on.",
+                => "Boomplay could not use the saved account session. Log in again through Login → Boomplay.",
             _ => "Boomplay item could not be resolved."
         };
 

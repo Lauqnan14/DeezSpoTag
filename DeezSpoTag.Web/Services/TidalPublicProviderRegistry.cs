@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Diagnostics;
 using System.Net;
+using DeezSpoTag.Core.Constants;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
@@ -89,7 +90,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
 
     private void NotifyProviderRecovered(ProviderState provider, string status, bool activeCooldown)
     {
-        if (activeCooldown || !string.Equals(status, "online", StringComparison.OrdinalIgnoreCase))
+        if (activeCooldown || !string.Equals(status, ProviderHealthStatus.Online, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -138,7 +139,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             return false;
         }
 
-        return !string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)
+        return !string.Equals(provider.Status, ProviderHealthStatus.Online, StringComparison.OrdinalIgnoreCase)
                && !string.Equals(provider.Status, DisabledStatus, StringComparison.OrdinalIgnoreCase)
                && !string.Equals(provider.Status, UnknownStatus, StringComparison.OrdinalIgnoreCase);
     }
@@ -178,7 +179,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             await SaveNoLockAsync(state, cancellationToken);
             if (string.IsNullOrWhiteSpace(category))
             {
-                NotifyProviderRecovered(provider, "online", activeCooldown: false);
+                NotifyProviderRecovered(provider, ProviderHealthStatus.Online, activeCooldown: false);
             }
             else
             {
@@ -218,7 +219,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
                 && provider.CooldownUntil.Value > now;
             provider.Status = provider.Enabled ? status : DisabledStatus;
             provider.LastCheckedAt = now;
-            provider.LastSuccessAt = status == "online" ? now : provider.LastSuccessAt;
+            provider.LastSuccessAt = status == ProviderHealthStatus.Online ? now : provider.LastSuccessAt;
             provider.FailureCategory = activeCooldown ? provider.FailureCategory : category;
             provider.FailureMessage = activeCooldown ? provider.FailureMessage : ResolveFailureMessage(category);
             provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
@@ -350,7 +351,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             stopwatch.Stop();
             if (category is null)
             {
-                await UpdateHealthAsync(provider.Id, "online", null, stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+                await UpdateHealthAsync(provider.Id, ProviderHealthStatus.Online, null, stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
                 return;
             }
 
@@ -370,13 +371,13 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         catch (OperationCanceledException)
         {
             stopwatch.Stop();
-            await UpdateHealthAsync(provider.Id, "degraded", "timeout", stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+            await UpdateHealthAsync(provider.Id, ProviderHealthStatus.Degraded, ProviderHealthStatus.Timeout, stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
             stopwatch.Stop();
             _logger.LogDebug(ex, "Tidal public provider health check failed for {ProviderId}.", provider.Id);
-            await UpdateHealthAsync(provider.Id, "degraded", "transient", stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+            await UpdateHealthAsync(provider.Id, ProviderHealthStatus.Degraded, ProviderHealthStatus.Transient, stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
         }
     }
 
@@ -389,74 +390,36 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         using var response = await _httpClientFactory.CreateClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
-            return "rate_limited";
+            return ProviderHealthStatus.RateLimited;
         }
 
         if (!response.IsSuccessStatusCode)
         {
-            return (int)response.StatusCode >= 500 ? "transient" : "offline";
+            return (int)response.StatusCode >= 500 ? ProviderHealthStatus.Transient : ProviderHealthStatus.Offline;
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
-        return ClassifyHealthPayload(document.RootElement, serviceKey);
-    }
-
-    private static string? ClassifyHealthPayload(JsonElement root, string? serviceKey)
-    {
-        if (!string.IsNullOrWhiteSpace(serviceKey)
-            && root.TryGetProperty("services", out var services)
-            && services.ValueKind == JsonValueKind.Object
-            && services.TryGetProperty(serviceKey, out var service))
-        {
-            if (service.TryGetProperty("ok", out var ok) && ok.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                return ok.GetBoolean() ? null : "offline";
-            }
-
-            if (service.TryGetProperty("status", out var serviceStatus))
-            {
-                return ClassifyStatusValue(serviceStatus);
-            }
-        }
-
-        return root.TryGetProperty("status", out var status) ? ClassifyStatusValue(status) : null;
-    }
-
-    private static string? ClassifyStatusValue(JsonElement status)
-    {
-        if (status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var code))
-        {
-            return code is >= 200 and < 300 ? null : code == 429 ? "rate_limited" : code >= 500 ? "transient" : "offline";
-        }
-
-        var value = status.GetString()?.Trim().ToLowerInvariant();
-        return value switch
-        {
-            null or "" or "ok" or "up" or "online" or "healthy" or "operational" or "pass" or "passing" => null,
-            "degraded" or "partial" or "warning" or "warn" => "transient",
-            "down" or "offline" or "error" or "failed" or "fail" or "unhealthy" => "offline",
-            _ => null
-        };
+        return ProviderHealthPayloadClassifier.Classify(document.RootElement, serviceKey);
     }
 
     private static string ResolveFailureStatus(string category) => category switch
     {
-        "rate_limited" => "rate_limited",
-        "timeout" or "transient" => "degraded",
-        _ => "offline"
+        ProviderHealthStatus.RateLimited => ProviderHealthStatus.RateLimited,
+        ProviderHealthStatus.Timeout or ProviderHealthStatus.Transient => ProviderHealthStatus.Degraded,
+        _ => ProviderHealthStatus.Offline
     };
     private static DateTimeOffset? ResolveCooldown(string category)
-        => category is "rate_limited" or "offline" or "empty_response"
+        => category is ProviderHealthStatus.RateLimited or ProviderHealthStatus.Offline or "empty_response"
             ? DateTimeOffset.UtcNow.AddMinutes(15)
             : null;
     private static string? ResolveFailureMessage(string? category) => category switch
     {
         null => null,
-        "timeout" => "Provider check timed out.",
+        ProviderHealthStatus.Timeout => "Provider check timed out.",
         "empty_response" => "Provider returned no usable stream manifest.",
-        "rate_limited" => "Provider is rate limited.",
-        "transient" => "Provider is temporarily unavailable.",
+        ProviderHealthStatus.RateLimited => "Provider is rate limited.",
+        ProviderHealthStatus.Transient => "Provider is temporarily unavailable.",
         _ => "Provider is unavailable."
     };
 

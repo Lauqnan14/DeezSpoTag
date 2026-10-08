@@ -12,6 +12,61 @@ namespace DeezSpoTag.Tests;
 
 public sealed class NotificationStoreTest : IDisposable
 {
+    [Theory]
+    [InlineData("qobuz")]
+    [InlineData("tidal")]
+    [InlineData("amazon")]
+    public async Task Verification_RemainsOneIncidentAfterReadClearAndRestart(string platform)
+    {
+        var request = new NotificationRequest(NotificationKinds.VerificationRequired,
+            "Verification needed", "Verify in Settings", NotificationSeverity.ActionRequired,
+            $"verification_required:{platform}");
+        var first = await _store.AddOrCoalesceAsync(request, 1);
+        await _store.MarkReadAsync([first.Entry.Id]);
+        var repeated = await _store.AddOrCoalesceAsync(request, 1);
+        Assert.False(repeated.IsNewIncident);
+        Assert.Equal(1, repeated.Entry.OccurrenceCount);
+        Assert.True(repeated.Entry.IsOpen);
+        await _store.RemoveAsync([first.Entry.Id]);
+        Assert.Empty(await _store.GetAsync());
+        var restarted = new NotificationStore(new StubEnvironment(_root), NullLogger<NotificationStore>.Instance);
+        Assert.False((await restarted.AddOrCoalesceAsync(request, 1)).IsNewIncident);
+        Assert.Empty(await restarted.GetAsync());
+        Assert.Equal(0, await restarted.GetUnreadCountAsync());
+        await restarted.ResolveIncidentAsync(request.DedupeKey!, false);
+        Assert.True((await restarted.AddOrCoalesceAsync(request, 1)).IsNewIncident);
+        Assert.Single(await restarted.GetAsync());
+    }
+
+    [Fact]
+    public async Task Verification_ClearAllKeepsDeduplicationUntilVerified()
+    {
+        var request = new NotificationRequest(NotificationKinds.VerificationRequired,
+            "Verify", "Verify", DedupeKey: "verification_required:qobuz");
+        await _store.AddOrCoalesceAsync(request, 30);
+        await _store.MarkAllReadAsync();
+        Assert.False((await _store.AddOrCoalesceAsync(request, 30)).IsNewIncident);
+        await _store.ClearAsync();
+        Assert.False((await _store.AddOrCoalesceAsync(request, 30)).IsNewIncident);
+        Assert.Empty(await _store.GetAsync());
+    }
+
+    [Fact]
+    public void Verification_DismissedIncidentSurvivesRetentionAndEntryLimit()
+    {
+        var stale = DateTimeOffset.UtcNow.AddDays(-60);
+        var pending = new NotificationEntry { Id = "pending", Kind = NotificationKinds.VerificationRequired,
+            DedupeKey = "verification_required:qobuz", Title = "Verify", ReadUtc = stale,
+            DismissedUtc = stale, CreatedUtc = stale, LastSeenUtc = stale };
+        var entries = Enumerable.Range(0, 500).Select(index => new NotificationEntry {
+            Id = index.ToString(), Kind = NotificationKinds.RunCompleted, DedupeKey = index.ToString(), Title = "Run"
+        }).ToList();
+        entries.Add(pending);
+        var retained = NotificationStore.Prune(entries, 1);
+        Assert.Contains(pending, retained);
+        Assert.Equal(500, retained.Count);
+    }
+
     private readonly string _root;
     private readonly NotificationStore _store;
 

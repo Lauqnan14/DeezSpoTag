@@ -1911,6 +1911,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 sp.GetRequiredService<ILogger<DeezSpoTag.Services.Download.Queue.DownloadRetryScheduler>>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadCancellationRegistry>(),
                 () => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>().MarkRetryQueued()));
+        services.AddSingleton<DeezSpoTag.Services.Download.PublicApiSessionVerificationStore>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Queue.VerificationRetryService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SystemStatsService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.ZarzSignedSessionCoordinator>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();

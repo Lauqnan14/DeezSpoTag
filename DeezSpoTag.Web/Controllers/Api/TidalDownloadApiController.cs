@@ -92,7 +92,9 @@ public sealed class TidalDownloadApiController : ControllerBase
         }
 
         await _tidalDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
-        return Ok(new { authenticated = true });
+        var released = await PublicApiVerificationRetry
+            .OnVerifiedAsync("tidal", _serviceProvider, cancellationToken);
+        return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
     [HttpPost]

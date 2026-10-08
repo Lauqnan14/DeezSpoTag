@@ -114,6 +114,11 @@
                 ];
                 legacySessionStorageKeys.forEach(function (key) { sessionStorage.removeItem(key); });
 
+                // The decommissioned caching worker (commit 54224db63) only ever created
+                // this one cache. Delete it by name instead of wiping every cache and
+                // unregistering every service worker on each page load: the notification
+                // service worker in wwwroot/sw.js must survive to back the media
+                // notification's Download action.
                 if (globalThis.caches && typeof globalThis.caches.keys === 'function') {
                     globalThis.caches.keys().then(function (cacheKeys) {
                         cacheKeys.forEach(function (cacheKey) {

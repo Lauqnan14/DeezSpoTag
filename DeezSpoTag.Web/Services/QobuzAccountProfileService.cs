@@ -117,13 +117,11 @@ public sealed class QobuzAccountProfileService
 
     private static string? ReadFirstString(JsonElement element, params string[] propertyNames)
     {
-        foreach (var propertyName in propertyNames)
+        foreach (var value in propertyNames
+            .Select(propertyName => ReadString(element, propertyName))
+            .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = ReadString(element, propertyName);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;
@@ -157,10 +155,9 @@ public sealed class QobuzAccountProfileService
     private static string? ReadNestedString(JsonElement element, params string[] propertyPath)
     {
         var current = element;
-        foreach (var propertyName in propertyPath)
+        for (var index = 0; index < propertyPath.Length; index++)
         {
-            if (current.ValueKind != JsonValueKind.Object
-                || !current.TryGetProperty(propertyName, out current))
+            if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(propertyPath[index], out current))
             {
                 return null;
             }

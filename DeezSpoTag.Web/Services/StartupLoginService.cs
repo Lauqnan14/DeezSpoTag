@@ -92,7 +92,7 @@ namespace DeezSpoTag.Web.Services
             var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var cancellationRegistration = cancellationToken.Register(static state =>
             {
-                ((TaskCompletionSource)state!).TrySetCanceled();
+                ((TaskCompletionSource)state!).TrySetCanceled(CancellationToken.None);
             }, completion);
             using var startedRegistration = _applicationLifetime.ApplicationStarted.Register(static state =>
             {

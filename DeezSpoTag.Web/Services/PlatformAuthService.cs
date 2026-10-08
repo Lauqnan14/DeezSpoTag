@@ -5,8 +5,24 @@ using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
+public class YTMusicAuth
+{
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
+    public string? RefreshToken { get; set; }
+    public string? AccessToken { get; set; }
+    public DateTimeOffset? AccessTokenExpiresAtUtc { get; set; }
+    public string? TokenUrl { get; set; }
+    public string? ChannelId { get; set; }
+    public string? DisplayName { get; set; }
+    public string? AvatarUrl { get; set; }
+    public bool? CredentialsValid { get; set; }
+}
+
 public class PlatformAuthState
 {
+    public YTMusicAuth? YTMusic { get; set; }
+
     public SpotifyConfig? Spotify { get; set; }
     public DiscogsAuth? Discogs { get; set; }
     public LastFmAuth? LastFm { get; set; }
@@ -240,6 +256,7 @@ public class PlatformAuthService
     private const string PlexFileName = "plex.json";
     private const string JellyfinFileName = "jellyfin.json";
     private const string NavidromeFileName = "navidrome.json";
+    private const string YTMusicFileName = "ytmusic.json";
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
@@ -305,6 +322,7 @@ public class PlatformAuthService
         PlexFileName,
         JellyfinFileName,
         NavidromeFileName,
+        YTMusicFileName,
         AppleMusicFileName,
         QobuzFileName,
         TidalFileName,
@@ -423,6 +441,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(PlexFileName, state.Plex);
         await SavePlatformSectionNoLockAsync(JellyfinFileName, state.Jellyfin);
         await SaveNavidromeNoLockAsync(state.Navidrome);
+        await SaveYTMusicNoLockAsync(state.YTMusic);
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
@@ -448,6 +467,7 @@ public class PlatformAuthService
             Plex = await LoadPlatformSectionNoLockAsync<PlexAuth>(PlexFileName),
             Jellyfin = await LoadPlatformSectionNoLockAsync<JellyfinAuth>(JellyfinFileName),
             Navidrome = await LoadNavidromeNoLockAsync(),
+            YTMusic = await LoadYTMusicNoLockAsync(),
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
             Tidal = await LoadTidalNoLockAsync(),
@@ -792,6 +812,48 @@ public class PlatformAuthService
 
         await _navidromeCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Navidrome");
+    }
+
+    /// <summary>
+    /// YouTube Music holds an OAuth client secret and a refresh token, so it is stored through
+    /// the protected credential file store rather than the plain section writer.
+    /// </summary>
+    private async Task<YTMusicAuth?> LoadYTMusicNoLockAsync()
+    {
+        var path = GetPlatformFilePath(YTMusicFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _navidromeCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "YouTube Music");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<YTMusicAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected YouTube Music auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveYTMusicNoLockAsync(YTMusicAuth? auth)
+    {
+        var path = GetPlatformFilePath(YTMusicFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _navidromeCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "YouTube Music");
     }
 
     private void HardenQobuzCredentialFilePermissions(string path)

@@ -203,6 +203,23 @@ internal static class DownloadQueueEnqueueHelper
             return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
         }
 
+        // Records whether this item was queued while a public API was unverified, so a later session
+        // verification can release it. Best effort: the item is already queued, and a failure to
+        // stamp must not fail the enqueue.
+        try
+        {
+            using var scope = serviceProvider.CreateScope();
+            var verificationRetry = scope.ServiceProvider.GetService<VerificationRetryService>();
+            if (verificationRetry is not null)
+            {
+                await verificationRetry.StampQueuedItemAsync(item.QueueUuid, cancellationToken);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Intentionally ignored; see above.
+        }
+
         return EnqueueOutcome.Queued();
     }
 }

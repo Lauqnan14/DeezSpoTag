@@ -40,6 +40,27 @@ internal static class EngineQueueProcessorHelper
         Func<TPayload, string, CancellationToken, Task>? CompleteAudioOnlyAsync = null)
         where TPayload : EngineQueueItemBase;
 
+    /// <summary>
+    ///     Whether this engine hands a verified file to a later enrichment stage instead of tagging it here.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A peer-to-peer source publishes a filename, not an identity. Tagging the delivered bytes
+    ///         immediately means writing whatever the peer happened to embed, and reporting a tag-writing
+    ///         failure for a transfer that actually succeeded. Verification - the transfer, the delivered
+    ///         size, the plan's quality step, the exact peer - has already happened by this point and is not
+    ///         in question.
+    ///     </para>
+    ///     <para>
+    ///         Opt-in rather than default, because every other engine's current behaviour is correct: its
+    ///         downloads already carry catalogue identity, and routing them through an enrichment handoff
+    ///         would change working engines to fix one that does not.
+    ///     </para>
+    /// </remarks>
+    private static bool DefersToEnrichmentStage<TPayload>(QueueWorkContext<TPayload> workContext)
+        where TPayload : EngineQueueItemBase
+        => workContext.Callbacks.CompleteAudioOnlyAsync is not null;
+
     private readonly record struct PrefetchContext(
         string QueueUuid,
         EngineAudioPostDownloadHelper.EngineTrackContext Context,

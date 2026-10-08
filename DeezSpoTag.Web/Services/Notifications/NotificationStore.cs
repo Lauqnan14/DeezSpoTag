@@ -99,7 +99,7 @@ public sealed class NotificationStore
     {
         var preferences = ReadPreferences();
         preferences.EnsureDefaults();
-        return ReadEntries().Where(entry => preferences.Resolve(entry.Kind).InApp);
+        return ReadEntries().Where(entry => !entry.DismissedUtc.HasValue && preferences.Resolve(entry.Kind).InApp);
     }
 
     public sealed record AddResult(NotificationEntry Entry, bool IsNewIncident);
@@ -169,7 +169,7 @@ public sealed class NotificationStore
                     Title = request.Title,
                     Body = request.Body,
                     Severity = request.Severity,
-                    OccurrenceCount = existing.OccurrenceCount + 1,
+                    OccurrenceCount = request.Kind == NotificationKinds.VerificationRequired ? 1 : existing.OccurrenceCount + 1,
                     LastSeenUtc = now
                 };
                 entries[entries.IndexOf(existing)] = result;
@@ -221,7 +221,7 @@ public sealed class NotificationStore
                 entries[index] = entry with
                 {
                     ReadUtc = now,
-                    ResolvedUtc = entry.ResolvedUtc ?? now,
+                    ResolvedUtc = entry.Kind == NotificationKinds.VerificationRequired ? entry.ResolvedUtc : entry.ResolvedUtc ?? now,
                     ManuallyResolved = entry.ManuallyResolved
                 };
                 changed++;
@@ -246,7 +246,7 @@ public sealed class NotificationStore
         try
         {
             var entries = ReadEntries();
-            var removed = entries.RemoveAll(entry => ids.Contains(entry.Id, StringComparer.OrdinalIgnoreCase));
+            var removed = DismissEntries(entries, entry => ids.Contains(entry.Id, StringComparer.OrdinalIgnoreCase));
             if (removed > 0)
             {
                 await WriteEntriesAsync(entries);
@@ -265,10 +265,11 @@ public sealed class NotificationStore
         await _gate.WaitAsync();
         try
         {
-            var removed = ReadEntries().Count;
+            var entries = ReadEntries();
+            var removed = DismissEntries(entries, _ => true);
             if (removed > 0)
             {
-                await WriteEntriesAsync([]);
+                await WriteEntriesAsync(entries);
             }
 
             return removed;
@@ -297,7 +298,8 @@ public sealed class NotificationStore
                 entries[index] = entries[index] with
                 {
                     ReadUtc = now,
-                    ResolvedUtc = entries[index].ResolvedUtc ?? now
+                    ResolvedUtc = entries[index].Kind == NotificationKinds.VerificationRequired
+                        ? entries[index].ResolvedUtc : entries[index].ResolvedUtc ?? now
                 };
                 changed++;
             }
@@ -318,11 +320,31 @@ public sealed class NotificationStore
     internal static List<NotificationEntry> Prune(List<NotificationEntry> entries, int retentionDays)
     {
         var cutoff = DateTimeOffset.UtcNow.AddDays(-Math.Max(1, retentionDays));
-        return entries
+        // An unresolved verification remains deduplicated even after dismissal or retention expiry.
+        var pendingVerification = entries.Where(IsPendingVerification).ToList();
+        return pendingVerification.Concat(entries
+            .Where(entry => !IsPendingVerification(entry))
             .Where(entry => !entry.IsRead || entry.LastSeenUtc >= cutoff)
             .OrderByDescending(entry => entry.LastSeenUtc)
-            .Take(MaxEntries)
+            .Take(Math.Max(0, MaxEntries - pendingVerification.Count)))
             .ToList();
+    }
+
+    private static bool IsPendingVerification(NotificationEntry entry)
+        => entry.Kind == NotificationKinds.VerificationRequired && entry.IsOpen;
+
+    private static int DismissEntries(List<NotificationEntry> entries, Func<NotificationEntry, bool> matches)
+    {
+        var count = entries.Count(entry => !entry.DismissedUtc.HasValue && matches(entry));
+        var now = DateTimeOffset.UtcNow;
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var entry = entries[index];
+            if (matches(entry) && IsPendingVerification(entry))
+                entries[index] = entry with { DismissedUtc = entry.DismissedUtc ?? now, ReadUtc = entry.ReadUtc ?? now };
+        }
+        entries.RemoveAll(entry => matches(entry) && !IsPendingVerification(entry));
+        return count;
     }
 
     private NotificationPreferences ReadPreferences()

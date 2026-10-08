@@ -400,14 +400,15 @@ public sealed class BoomplayMetadataService
         string? verificationUrl,
         CancellationToken cancellationToken)
     {
+        _ = verificationUrl;
+
         if (!BoomplaySessionCookie.TryNormalize(cookie, out var normalizedCookie)
             || !BoomplaySessionCookie.TryNormalizeUserAgent(userAgent, out var normalizedUserAgent))
         {
             return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.SessionMissing, null);
         }
 
-        if (!TryParseBoomplayUrl(verificationUrl, out var type, out var publicId)
-            || type is "trending")
+        if (!BoomplaySessionCookie.TryExtractSessionId(normalizedCookie, out _))
         {
             return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.SessionMissing, null);
         }
@@ -420,8 +421,8 @@ public sealed class BoomplayMetadataService
             $"validation:{ComputeSessionCacheKey(normalizedCookie)}");
         try
         {
-            var html = await GetHtmlAsync(verificationUrl!.Trim(), session, cancellationToken);
-            if (string.IsNullOrWhiteSpace(html))
+            var body = await GetBoomplayAccountColsAsync(session, cancellationToken);
+            if (string.IsNullOrWhiteSpace(body))
             {
                 return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
             }
@@ -4273,12 +4274,10 @@ public sealed class BoomplayMetadataService
             return;
         }
 
-        foreach (var item in value.Split(GenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var item in value.Split(GenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Where(candidate => !target.Contains(candidate, StringComparer.OrdinalIgnoreCase)))
         {
-            if (!target.Contains(item, StringComparer.OrdinalIgnoreCase))
-            {
-                target.Add(item);
-            }
+            target.Add(item);
         }
     }
 
@@ -4409,8 +4408,8 @@ public sealed class BoomplayMetadataService
     {
         var auth = (await _platformAuthService.LoadAsync()).Boomplay;
         if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie)
-            || !BoomplaySessionCookie.TryNormalizeUserAgent(auth?.UserAgent, out var userAgent)
-            || auth?.SessionValid != true
+            || !BoomplaySessionCookie.TryNormalizeUserAgent(auth!.UserAgent, out var userAgent)
+            || auth!.SessionValid != true
             || !BoomplaySessionCookie.TryExtractSessionId(cookie, out _)
             || !string.Equals(auth.LastStatus, "session_verified", StringComparison.Ordinal))
         {

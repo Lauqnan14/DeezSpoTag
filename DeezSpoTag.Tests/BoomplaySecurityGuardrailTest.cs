@@ -30,6 +30,19 @@ public sealed class BoomplaySecurityGuardrailTest
     }
 
     [Fact]
+    public void Boomplay_cookie_accepts_bare_session_id_without_dots()
+    {
+        const string sessionId = "a94f18d7c2134f5a98e3b27d0c61ee42";
+
+        var accepted = BoomplaySessionCookie.TryNormalize(sessionId, out var normalized);
+
+        Assert.True(accepted);
+        Assert.Equal("sessionID=" + sessionId, normalized);
+        Assert.True(BoomplaySessionCookie.TryExtractSessionId(normalized, out var extracted));
+        Assert.Equal(sessionId, extracted);
+    }
+
+    [Fact]
     public void Boomplay_user_agent_rejects_header_injection()
     {
         Assert.False(BoomplaySessionCookie.TryNormalizeUserAgent(
