@@ -463,7 +463,7 @@ public sealed class AutoTagStatusRefreshGuardrailTest
     }
 
     [Fact]
-    public void AutoTagService_MovesEnhancementAndManualEnrichmentRunsAcrossHistoryDays()
+    public void AutoTagService_MovesEnhancementAndExternalFileEnrichmentRunsAcrossHistoryDays()
     {
         var repoRoot = ResolveRepoRoot();
         var servicePath = PartialSourceReader.ResolvePrimaryPath("DeezSpoTag.Web", "Services", "AutoTagService.cs");
@@ -473,7 +473,11 @@ public sealed class AutoTagStatusRefreshGuardrailTest
         Assert.Contains("public DateTimeOffset? HistoryDate { get; set; }", source, StringComparison.Ordinal);
         Assert.Contains("HistoryDate = ResolveRunHistoryDate(job)", source, StringComparison.Ordinal);
         Assert.Contains("if (!IsEnhancementRunIntent(job.RunIntent)", source, StringComparison.Ordinal);
-        Assert.Contains("&& !IsManualEnrichmentRunIntent(job.RunIntent))", source, StringComparison.Ordinal);
+        // Both external-file intents share the history date, so a Soulseek enrichment run is filed
+        // under its own day the same way a manual one is. Soulseek was added to the shared predicate
+        // deliberately: this guardrail used to pin the manual-only name, which would have silently
+        // dropped every Soulseek run out of the dated history.
+        Assert.Contains("&& !IsExternalFileEnrichmentRunIntent(job.RunIntent))", source, StringComparison.Ordinal);
         Assert.Contains("return null;", source, StringComparison.Ordinal);
         Assert.Contains("public DateTimeOffset LastActivityAt { get; set; }", source, StringComparison.Ordinal);
         Assert.Contains("job.LastActivityAt = DateTimeOffset.UtcNow;", source, StringComparison.Ordinal);

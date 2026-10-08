@@ -420,6 +420,18 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, FolderTable, "convert_enabled", $"{IntegerType} DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_format", TextType, cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_bitrate", TextType, cancellationToken);
+
+        // Soulseek sharing state lives on the folder row on purpose: the folder tab is the single source of
+        // truth for whether a folder is shared, and the design forbids a second competing toggle elsewhere.
+        // Default 0 because sharing must be an explicit opt-in per folder.
+        // No index is added: the enabled-folder read goes through GetFoldersAsync and filters in memory, the
+        // same way every other folder mutation re-reads, so there is no query to index for yet.
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_enabled", $"{IntegerType} DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_alias", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_include", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_exclude", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_scan_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "soulseek_share_scan_at", TextType, cancellationToken);
         await BackfillFolderLibraryLinksAsync(connection, cancellationToken);
         await DropColumnIfExistsAsync(connection, FolderTable, "plex_section_id", cancellationToken);
         await DropColumnIfExistsAsync(connection, FolderTable, "jellyfin_library_id", cancellationToken);

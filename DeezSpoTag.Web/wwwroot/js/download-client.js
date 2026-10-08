@@ -848,7 +848,7 @@ DeezSpoTag.DownloadClient = {
             }
         };
     },
-    async enqueueIntentWithPreference({ sourceService, sourceUrl, isrc, url, bitrate, destinationId, options, intentContext, notify, notifyQueue, resolveImmediately = true }) {
+    async enqueueIntentWithPreference({ sourceService, sourceUrl, isrc, url, bitrate, destinationId, options, intentContext, notify, notifyQueue, resolveImmediately = true, soulseek = null }) {
         const metadata = options?.metadata && typeof options.metadata === 'object'
             ? options.metadata
             : null;
@@ -884,7 +884,14 @@ DeezSpoTag.DownloadClient = {
                     cover: metadata?.cover || undefined,
                     durationMs: Number(metadata?.durationMs || 0) || undefined,
                     position: Number(metadata?.position || 0) || undefined,
-                    allowQualityUpgrade: intentContext.allowQualityUpgrade
+                    allowQualityUpgrade: intentContext.allowQualityUpgrade,
+
+                    // The peer file the reader chose in the Soulseek tab. Sent only when there is one: with
+                    // these the item fetches that exact file instead of searching again for the track, and
+                    // without them the engine searches for itself, which is what every other source does.
+                    soulseekUsername: soulseek?.username || undefined,
+                    soulseekRemotePath: soulseek?.remotePath || undefined,
+                    soulseekRemoteSizeBytes: Number(soulseek?.remoteSizeBytes || 0) || undefined
                 }],
                 destinationFolderId: destinationId
             })

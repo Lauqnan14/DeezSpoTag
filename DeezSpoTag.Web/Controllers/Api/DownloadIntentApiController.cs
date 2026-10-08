@@ -60,12 +60,67 @@ public sealed class DownloadIntentApiController : ControllerBase
 
     private BadRequestObjectResult? ValidateRequest(DownloadIntentBatchRequest? request)
     {
-        if (request?.Intents is { Count: > 0 })
+        if (request?.Intents is not { Count: > 0 })
+        {
+            return BadRequest(new { error = "No intents supplied." });
+        }
+
+        // Checked per intent rather than once for the batch, because a batch may legitimately mix a chosen
+        // Soulseek file with a library track, and only the first kind has to carry a peer. A null element is a
+        // malformed body rather than a validation failure, and it is answered as such: reading it here would
+        // turn a bad request into a server error.
+        foreach (var intent in request.Intents)
+        {
+            if (intent is null)
+            {
+                return BadRequest(new { error = "An intent in the request was empty." });
+            }
+
+            if (ValidateSoulseekCandidateIntent(intent) is { } pinError)
+            {
+                return BadRequest(new { error = pinError });
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Checks that a request made from the Soulseek results tab still names the file the reader chose.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         That tab queues a file, not a track: the reader picked a peer and a path out of a result list. If
+    ///         either half is missing by the time the request arrives, the item can only be a fresh search, which
+    ///         downloads something like the file rather than the file - and the reader is told nothing until the
+    ///         queue reports a failure that looks like the network's fault.
+    ///     </para>
+    ///     <para>
+    ///         The rule keys off <c>SourceService</c>, not <c>PreferredEngine</c>. A library or automation request
+    ///         that prefers Soulseek has no peer file to give and never will, so keying off the engine would
+    ///         refuse every track queued from anywhere else in the app.
+    ///     </para>
+    ///     <para>
+    ///         The destination is not inspected here. That check belongs to the existing destination validation,
+    ///         and the reader never sees a local path.
+    ///     </para>
+    /// </remarks>
+    /// <returns>The message to refuse the request with, or <see langword="null" /> when it is acceptable.</returns>
+    private static string? ValidateSoulseekCandidateIntent(DownloadIntent intent)
+    {
+        if (!string.Equals(intent.SourceService, "soulseek", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
-        return BadRequest(new { error = "No intents supplied." });
+        var hasPeer = !string.IsNullOrWhiteSpace(intent.SoulseekUsername);
+        var hasPath = !string.IsNullOrWhiteSpace(intent.SoulseekRemotePath);
+        if (hasPeer && hasPath)
+        {
+            return null;
+        }
+
+        return "The selected Soulseek file is missing its peer or remote path. Refresh the Soulseek results and select it again.";
     }
 
     private async Task<object> EnqueueImmediatelyAsync(DownloadIntentBatchRequest request, CancellationToken cancellationToken)

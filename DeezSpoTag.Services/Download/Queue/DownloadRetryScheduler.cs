@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
@@ -55,6 +56,13 @@ public sealed class DownloadRetryScheduler
             return false;
         }
 
+        if (await IsManualSoulseekSelectionAsync(queueUuid, engine, cancellationToken))
+        {
+            await _queueRepository.ClearRetryScheduleAsync(queueUuid, resetAttempts: false, cancellationToken);
+            _lastKnownPending = await _queueRepository.HasScheduledRetriesAsync(cancellationToken);
+            return false;
+        }
+
         var maxRetries = Math.Max(0, _settingsService.LoadSettings().MaxRetries);
         var scheduled = await _queueRepository.ScheduleRetryAsync(
             queueUuid,
@@ -87,6 +95,17 @@ public sealed class DownloadRetryScheduler
         foreach (var queueUuid in due)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (await IsManualSoulseekSelectionAsync(queueUuid, "soulseek", cancellationToken))
+            {
+                var item = await _queueRepository.GetByUuidAsync(queueUuid, cancellationToken);
+                await _queueRepository.ClearRetryScheduleAsync(queueUuid, resetAttempts: false, cancellationToken);
+                await _queueRepository.UpdateStatusAsync(
+                    queueUuid,
+                    "failed",
+                    item?.Error ?? "The selected Soulseek file failed.",
+                    cancellationToken: cancellationToken);
+                continue;
+            }
             if (_cancellationRegistry.WasUserCanceled(queueUuid))
             {
                 await _queueRepository.ClearRetryScheduleAsync(queueUuid, resetAttempts: true, cancellationToken);
@@ -120,6 +139,22 @@ public sealed class DownloadRetryScheduler
 
         _lastKnownPending = await _queueRepository.HasScheduledRetriesAsync(cancellationToken);
         return requeuedAny;
+    }
+
+    private async Task<bool> IsManualSoulseekSelectionAsync(
+        string queueUuid,
+        string engine,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(engine, SoulseekQueueItem.EngineId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var item = await _queueRepository.GetByUuidAsync(queueUuid, cancellationToken);
+        return item is not null
+            && SoulseekPinnedCandidatePolicy.IsManualSelection(
+                QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson));
     }
 
     private async Task NormalizePersistedPlanAsync(

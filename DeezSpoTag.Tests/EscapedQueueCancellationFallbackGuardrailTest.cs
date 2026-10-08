@@ -50,6 +50,29 @@ public sealed class EscapedQueueCancellationFallbackGuardrailTest
         Assert.Contains("TryAdvanceFallbackAsync<AmazonQueueItem>", source, StringComparison.Ordinal);
         Assert.Contains("TryAdvanceFallbackAsync<AppleQueueItem>", source, StringComparison.Ordinal);
         Assert.Contains("TryAdvanceFallbackAsync<DeezerQueueItem>", source, StringComparison.Ordinal);
+        Assert.Contains("TryAdvanceFallbackAsync<SoulseekQueueItem>", source, StringComparison.Ordinal);
         Assert.Contains("CancellationToken.None", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EscapedProcessorCancellation_FallbackListenerPayloadSupportsEveryQueueEngine()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../",
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "DeezSpoTagApp.cs"));
+
+        // BuildFallbackQueuePayload is the other half of the same switch. An engine that can be advanced but
+        // has no payload arm turns a silent no-op into a thrown exception at runtime, so the two have to be
+        // pinned together rather than one at a time.
+        Assert.Contains("QobuzQueueItem qobuz => qobuz.ToQueuePayload()", source, StringComparison.Ordinal);
+        Assert.Contains("TidalQueueItem tidal => tidal.ToQueuePayload()", source, StringComparison.Ordinal);
+        Assert.Contains("AmazonQueueItem amazon => amazon.ToQueuePayload()", source, StringComparison.Ordinal);
+        Assert.Contains("AppleQueueItem apple => apple.ToQueuePayload()", source, StringComparison.Ordinal);
+        Assert.Contains("DeezerQueueItem deezer => deezer.ToQueuePayload()", source, StringComparison.Ordinal);
+        Assert.Contains("SoulseekQueueItem soulseek => soulseek.ToQueuePayload()", source, StringComparison.Ordinal);
     }
 }

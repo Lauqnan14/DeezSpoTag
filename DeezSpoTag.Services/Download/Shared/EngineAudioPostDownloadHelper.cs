@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata;
@@ -2554,6 +2555,63 @@ public static partial class EngineAudioPostDownloadHelper
         var source = TrackTitleMatcher.RemoveAtmosVersionMarker(sourceAlbum).Trim();
         var candidate = TrackTitleMatcher.RemoveAtmosVersionMarker(candidateAlbum).Trim();
         return string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    ///     The lyrics or cue sheet a Soulseek peer shipped, when the reader opted in and one arrived.
+    /// </summary>
+    /// <remarks>
+    ///     Null for everything else, so the peer lyrics provider is never reached unless this download really
+    ///     carries a peer file. The file is only handed over if it is still there: a staging area the
+    ///     cleanup has already swept must not make the provider report a phantom answer.
+    /// </remarks>
+    private static string? ResolvePeerLyricsPath(PrefetchExecutionContext execution)
+    {
+        if (execution.Request.Payload is not SoulseekQueueItem soulseek
+            || string.IsNullOrWhiteSpace(soulseek.SoulseekPeerLyricsPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return File.Exists(soulseek.SoulseekPeerLyricsPath)
+                ? soulseek.SoulseekPeerLyricsPath
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     The local cover image a Soulseek peer shipped, when the reader opted in and it actually arrived.
+    /// </summary>
+    /// <remarks>
+    ///     Read off the engine payload by type rather than by a new field on the shared request, so no other
+    ///     engine carries the concept at all and none of them can be affected by it. Returns null for anything
+    ///     that is not a Soulseek download, which is the answer for every other source in the app.
+    /// </remarks>
+    private static string? ResolvePeerArtworkPath(PrefetchExecutionContext execution)
+    {
+        if (execution.Request.Payload is not SoulseekQueueItem soulseek
+            || string.IsNullOrWhiteSpace(soulseek.SoulseekPeerArtworkPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return File.Exists(soulseek.SoulseekPeerArtworkPath)
+                ? soulseek.SoulseekPeerArtworkPath
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // A path the staging area has since removed is not a reason to fail the download.
+            return null;
+        }
     }
 
     private static async Task<PrefetchArtworkResult> TrySavePrimaryArtworkAsync(

@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
@@ -11,11 +12,24 @@ public sealed class EngineFallbackCoordinator
 {
     private static readonly TimeSpan FallbackStepResolveTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan AmazonFallbackStepResolveTimeout = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan SoulseekFallbackStepResolveTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    ///     SoundCloud's resolution budget.
+    /// </summary>
+    /// <remarks>
+    ///     A SoundCloud step may have to search and then hydrate the chosen track before it has a streamable
+    ///     permalink, which is more round trips than a direct id lookup and warrants its own budget rather than
+    ///     being folded into the default.
+    /// </remarks>
+    private static readonly TimeSpan SoundCloudFallbackStepResolveTimeout = TimeSpan.FromSeconds(20);
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
     private const string TidalEngine = "tidal";
     private const string AmazonEngine = "amazon";
+    private const string SoulseekEngine = "soulseek";
+    private const string SoundCloudEngine = "soundcloud";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
@@ -87,6 +101,55 @@ public sealed class EngineFallbackCoordinator
         _fallbackSearchService = fallbackSearchService;
         _activityLog = activityLog;
         _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
+
+        // Optional so a host that registers the coordinator without the Soulseek engine still resolves it.
+        _serviceProvider = serviceProvider;
+    }
+
+    /// <summary>
+    ///     Whether a Soulseek step may run, asked fresh.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The cached status can be up to twenty seconds old and this path decides whether a transfer is
+    ///         started at all, so it probes rather than reading the cache.
+    ///     </para>
+    ///     <para>
+    ///         An absent authority and a probe that failed both answer <see langword="false"/>. Reporting
+    ///         either as permission re-admits exactly what the check exists to keep out: a host without the
+    ///         Soulseek engine has no verified login either, and a probe that could not answer has not
+    ///         verified one. The consequence is a skip recorded against the step, not a failed item - the
+    ///         ladder simply carries on to the next source.
+    ///     </para>
+    /// </remarks>
+    private async Task<bool> ResolveSoulseekEligibilityAsync(CancellationToken cancellationToken)
+    {
+        if (_serviceProvider is null)
+        {
+            return false;
+        }
+
+        var connection = _serviceProvider.GetService<DeezSpoTag.Services.Download.Soulseek.ISoulseekConnectionService>();
+        if (connection is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var eligibility = await connection.GetEligibilityAsync(cancellationToken).ConfigureAwait(false);
+            return eligibility.IsUsable;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ProbeFailureMeansUnverified(ex))
+        {
+            // A probe that could not answer has not verified a login. Letting the exception escape instead
+            // would abandon the whole ladder walk on one unreachable engine.
+            return false;
+        }
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
@@ -96,6 +159,11 @@ public sealed class EngineFallbackCoordinator
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
     {
+        if (SoulseekPinnedCandidatePolicy.IsManualSelection(payload))
+        {
+            return Task.FromResult(false);
+        }
+
         var request = new FallbackAdvanceRequest(
             QueueUuid: queueUuid,
             CurrentEngine: currentEngine,
@@ -318,6 +386,32 @@ public sealed class EngineFallbackCoordinator
         FallbackStepExecutionContext context,
         CancellationToken cancellationToken)
     {
+        // A plan persisted while Soulseek had a valid login may outlive that login. Rechecking the authority
+        // here keeps a stale plan from starting work the admission gate would refuse; the probe is what
+        // distinguishes a disabled engine from a missing one. A pinned manual selection is exempted above
+        // because its intent belongs to the reader, not to the current connection state.
+        if (string.Equals(step.Source, DeezSpoTag.Services.Download.Soulseek.SoulseekQueueItem.EngineId, StringComparison.OrdinalIgnoreCase))
+        {
+            var eligible = await ResolveSoulseekEligibilityAsync(cancellationToken).ConfigureAwait(false);
+            if (!eligible)
+            {
+                // Skipped, not advanced. `true` here means "the ladder moved into this step", and returning it
+                // would end the walk while claiming success for a transfer that never started - the item would
+                // sit on a Soulseek step no engine is going to run. `false` lets the loop carry on to the next
+                // source, which is what an inactive engine is supposed to mean.
+                AddFallbackAttempt(
+                    context.PayloadForSerialization,
+                    step,
+                    stepIndex,
+                    "skipped",
+                    "soulseek_login_required",
+                    "Soulseek has no verified login; trying the next source.");
+                _activityLog.Warn(
+                    $"Skipped a persisted Soulseek step for queue {request.QueueUuid}: the login is no longer verified.");
+                return false;
+            }
+        }
+
         string? resolvedUrl;
         try
         {
@@ -402,6 +496,96 @@ public sealed class EngineFallbackCoordinator
         _activityLog.Warn(
             $"Fallback exhausted: {request.QueueUuid} after {request.CurrentEngine}; recorded attempts={attemptCount}");
         NotifyDownloadFailed(request, payloadForSerialization, attemptCount);
+    }
+
+    /// <summary>
+    ///     The exhaustion message: one short line, naming what happened.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This string is the item's error, rendered under its title in the queue list. It is read once, at a
+    ///         glance, in a column that has to fit - so it gets one line and nothing else. "Download failed after
+    ///         all enabled sources were tried" was half of that line and told the reader nothing they could not
+    ///         see from the status beside it; the raw step detail was the other problem, and produced lines like
+    ///         "Last attempt (download_failed): slskd did not create a transfer for ...\Hi Scores..." that named
+    ///         an internal service and a remote path and still said nothing about what to do.
+    ///     </para>
+    ///     <para>
+    ///         So the class vocabulary decides the line - it is what the walk itself concluded - and the detail
+    ///         goes to the log, where the diagnosis belongs.
+    ///     </para>
+    /// </remarks>
+    private static string BuildExhaustionMessage(object payloadForSerialization, string? engine)
+    {
+        var source = SourceLabel(engine);
+
+        if (payloadForSerialization is not EngineQueueItemBase payload || payload.FallbackHistory.Count == 0)
+        {
+            return $"{source} did not deliver the file.";
+        }
+
+        return $"{source} {DescribeLastAttempt(payload.FallbackHistory[^1])}";
+    }
+
+    /// <summary>
+    ///     The engine's name as a reader knows it.
+    /// </summary>
+    /// <remarks>
+    ///     The walk carries the engine id - "soulseek" - and putting that on the item's error line gave the
+    ///     sentence a lowercase first word. The catalog already holds the label for every engine, so the line
+    ///     takes its name from there rather than capitalising a string that may not be an engine at all.
+    /// </remarks>
+    private static string SourceLabel(string? engine)
+    {
+        var normalized = DownloadSourceCatalog.NormalizeEngineName(engine);
+        if (normalized is null)
+        {
+            return string.IsNullOrWhiteSpace(engine) ? "Source" : engine.Trim();
+        }
+
+        return DownloadSourceCatalog.GetEngineOptions()
+            .FirstOrDefault(option => string.Equals(option.Value, normalized, StringComparison.Ordinal))?.Label
+            ?? normalized;
+    }
+
+    /// <summary>
+    ///     The last attempt in the fewest words that are still true, ready to follow the source's name.
+    /// </summary>
+    /// <remarks>
+    ///     "download_failed" is the classifier's catch-all, so it gets words that are true of every route into
+    ///     it: no peer with a copy, and a peer that stopped part way through, are both "could not deliver the
+    ///     file", and neither is worth a longer sentence that picks a winner.
+    /// </remarks>
+    private static string DescribeLastAttempt(FallbackAttempt attempt)
+    {
+        var reason = (attempt.ErrorClass ?? attempt.Status ?? string.Empty).Trim().ToLowerInvariant();
+        return reason switch
+        {
+            FallbackFailureClassifier.ProviderTransient
+                or FallbackFailureClassifier.ProviderManifestUnavailable =>
+                "was temporarily unavailable.",
+            FallbackFailureClassifier.ProviderTimeout =>
+                "timed out.",
+            FallbackFailureClassifier.ProviderRateLimited =>
+                "rate-limited the request.",
+            FallbackFailureClassifier.ProviderVerificationRequired =>
+                "needs signing in again.",
+            FallbackFailureClassifier.Unresolved or FallbackFailureClassifier.Unavailable =>
+                "had no copy of this track.",
+            FallbackFailureClassifier.NotConfigured =>
+                "is not set up.",
+            FallbackFailureClassifier.AuthenticationRequired =>
+                "needs signing in.",
+            FallbackFailureClassifier.CatalogQualityBelowRequested
+                or FallbackFailureClassifier.QualityBelowRequested =>
+                "cannot offer that quality.",
+            FallbackFailureClassifier.SameEngineBlocked or FallbackFailureClassifier.Unsupported =>
+                "cannot be used for this track.",
+            "" =>
+                "did not deliver the file.",
+            _ =>
+                "could not deliver the file."
+        };
     }
 
     private void NotifyDownloadFailed(
@@ -645,9 +829,15 @@ public sealed class EngineFallbackCoordinator
     }
 
     private static TimeSpan ResolveFallbackStepTimeout(string engine)
-        => string.Equals(engine, AmazonEngine, StringComparison.OrdinalIgnoreCase)
-            ? AmazonFallbackStepResolveTimeout
-            : FallbackStepResolveTimeout;
+        => engine.ToLowerInvariant() switch
+        {
+            // Amazon's catalogue lookups and Soulseek's peer searches both take materially longer than a
+            // direct id or URL resolution, so they get their own budget.
+            AmazonEngine => AmazonFallbackStepResolveTimeout,
+            SoulseekEngine => SoulseekFallbackStepResolveTimeout,
+            SoundCloudEngine => SoundCloudFallbackStepResolveTimeout,
+            _ => FallbackStepResolveTimeout
+        };
 
     private static void TrySetIsrc(object payload, string isrc)
     {

@@ -6,6 +6,17 @@
     const TAB_SELECTOR = "[data-bs-toggle=\"tab\"]";
     const TAB_LIST_SELECTOR = ".nav-tabs, [role=\"tablist\"]";
     const OPT_OUT_ATTRIBUTE = "data-no-global-tab-fallback";
+    // Per-trigger opt-out. A tab list is remembered as a unit, but a single tab inside it
+    // can be excluded when it is not a restorable destination: the Search page's Soulseek
+    // pane is a peer-to-peer transfer panel rather than a catalogue source, so it must not
+    // be written as the remembered source nor restored from one. Without this, selecting
+    // Soulseek stores its pane as the remembered tab, and on the next load that value no
+    // longer maps to a real search source, so the last genuine source is lost.
+    const TRIGGER_OPT_OUT_ATTRIBUTE = "data-no-tab-persist";
+
+    function isTriggerOptedOut(trigger) {
+        return trigger?.hasAttribute?.(TRIGGER_OPT_OUT_ATTRIBUTE) === true;
+    }
 
     function isRememberEnabled() {
         try {

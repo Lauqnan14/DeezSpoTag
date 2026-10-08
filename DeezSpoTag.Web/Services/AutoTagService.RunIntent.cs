@@ -30,6 +30,30 @@ public partial class AutoTagService
         string runIntent,
         CancellationToken cancellationToken)
     {
+        // Soulseek enrichment is admitted under the download root for the same reason download enrichment is:
+        // its files are queue-owned staging files, and refusing them here would stop every automatic Soulseek
+        // enrichment at the gate. It is NOT an enhancement intent, so it deliberately does not fall through
+        // to the library-root branch below - that branch refuses anything inside the download root.
+        if (NormalizeRunIntent(runIntent) == AutoTagLiterals.RunIntentSoulseekEnrichment)
+        {
+            if (!ConfiguredDownloadRootResolver.TryResolve(
+                    _settingsService,
+                    "download location",
+                    "download location is not configured.",
+                    out var soulseekDownloadRoot,
+                    out var soulseekError))
+            {
+                return $"Soulseek enrichment run blocked: {soulseekError}";
+            }
+
+            if (!IsPathUnderRoot(normalizedPath, soulseekDownloadRoot))
+            {
+                return $"Soulseek enrichment run blocked: path '{normalizedPath}' is outside configured download location '{soulseekDownloadRoot}'.";
+            }
+
+            return null;
+        }
+
         if (string.Equals(runIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
         {
             if (!ConfiguredDownloadRootResolver.TryResolve(

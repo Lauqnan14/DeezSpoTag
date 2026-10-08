@@ -204,6 +204,29 @@ public class DeezSpoTagSettings
     public string DownloadSourceContentType { get; set; } = "stereo";
     public bool Fallback { get; set; } = false;
 
+    // Soulseek download behaviour. Connection details (slskd URL and API key) are NOT here on purpose:
+    // they live in the encrypted platform auth state configured from the login page.
+    public SoulseekDownloadSettings Soulseek { get; set; } = new SoulseekDownloadSettings();
+
+    // Public download API (qobuz/tidal/amazon) session verification record.
+    //
+    // This exists so verification-driven retry survives a process restart. Without it, a queue item
+    // stamped "was queued while a public API was unverified" would have no way to tell, after a
+    // reboot, whether the session it was waiting on has since been verified.
+    //
+    // Semantics: a slug absent from the map (or mapped to null) means NEVER verified, which is
+    // deliberately treated the same as unverified. Downloading through a public API that has not
+    // been verified cannot succeed, so an absent entry must not be read as "probably fine".
+    // A value is written only when a session verification actually completes.
+    public Dictionary<string, string?> PublicApiSessionVerifiedAt { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Set once verification-driven retry has run its initial unfiltered sweep, which releases every
+    /// failed queue item. After that, only items stamped while a public API was unverified are
+    /// released. Persisted so a reboot does not repeat the initial sweep.
+    /// </summary>
+    public bool VerificationRetryInitialSweepCompleted { get; set; } = false;
+
     // Spotizerr-phoenix compatibility (currently used by Settings UI)
     public int LibrespotConcurrency { get; set; } = 2;
 
@@ -303,7 +326,13 @@ public class DownloadEngineOrderSettings
                 CreateEngine("tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW", "DOLBY_ATMOS"),
                 CreateEngine("apple", "ALAC", "AAC", "ATMOS"),
                 CreateEngine("amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS", "DOLBY_ATMOS"),
-                CreateEngine("deezer", "9", "3", "1")
+                CreateEngine("deezer", "9", "3", "1"),
+                // Soulseek is opt-in and is deliberately absent from the canonical auto quality order in
+                // DownloadSourceOrder, so it is added last here and only takes part in Custom selection.
+                CreateEngine("soulseek", "FLAC_HI_RES_LOSSLESS", "FLAC_HI_RES", "FLAC", "LOSSLESS", "MP3_320", "MP3_256", "MP3_192", "MP3_128", "UNKNOWN"),
+                // SoundCloud publishes only lossy MP3 tiers, so it has no lossless or Atmos entry. Its three
+                // tiers sit at the ladder positions matching their bitrates.
+                CreateEngine("soundcloud", "HQ", "SQ", "LQ")
             }
         };
     }

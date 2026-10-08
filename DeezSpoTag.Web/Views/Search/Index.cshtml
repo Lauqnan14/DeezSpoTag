@@ -8,6 +8,676 @@
 @section Styles {
 <link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/loading-state-shared.css")" />
 <style>
+/* Soulseek results.
+   A peer search is a candidate list, not a catalogue, so this panel is a ranked list of peers grouped by the
+   quality tiers the user enabled for Soulseek in Download. Every colour here resolves to an existing theme
+   token, and the quality bands are told apart by border weight and dash pattern rather than by hue, so the
+   grouping survives a colour-blind reader and a low-contrast theme. The row action reuses the shared
+   .action-btn. */
+
+.soulseek-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 330px;
+    gap: 16px;
+    align-items: start;
+}
+
+/* The Soulseek tab is a two-column workspace, not a page: the candidate panel is a card that stays in view
+   and the results are the part that scrolls. Bounding the pane to the viewport and letting its two columns
+   scroll inside is what keeps the panel - and the destination picker and the Queue button with it - visible
+   while a search with thousands of rows is scrolled. The height is bound per pane, so every other source
+   keeps scrolling the page as it always has. */
+.soulseek-workspace {
+    height: calc(100vh - var(--search-sticky-top, 68px) - var(--search-shell-height, 120px) - 24px);
+    min-height: 0;
+}
+
+.soulseek-workspace .soulseek-main,
+.soulseek-workspace .soulseek-side {
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Inside a bounded column the panel is simply a column: sticking it would measure against its own scroller
+   and only add a second offset to reason about. */
+.soulseek-workspace .soulseek-side { position: static; }
+
+@@media (max-width: 900px) {
+    /* A phone has no room for two scroll regions side by side, so the page scrolls again there. */
+    .soulseek-workspace { height: auto; }
+    .soulseek-workspace .soulseek-main,
+    .soulseek-workspace .soulseek-side { max-height: none; overflow-y: visible; }
+}
+
+.soulseek-main { min-width: 0; }
+.soulseek-spacer { flex: 1 1 auto; }
+
+.soulseek-panel {
+    background: var(--bg-accent);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    margin-bottom: 14px;
+    overflow: hidden;
+}
+
+.soulseek-panel .empty-results { padding: 22px 18px; }
+
+/* ---- progressive search header ---- */
+.soulseek-search-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+}
+
+.soulseek-search-what h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.soulseek-status { padding: 0 18px 8px; color: var(--text-muted); font-size: 12.5px; }
+.soulseek-status:empty { padding: 0; }
+.soulseek-sub { color: var(--text-muted); font-size: 12.5px; margin-top: 2px; }
+
+.soulseek-spinner {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    border: 3px solid var(--border-accent);
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: soulseek-spin 1s linear infinite;
+}
+
+@@keyframes soulseek-spin {
+    to { transform: rotate(360deg); }
+}
+
+@@media (prefers-reduced-motion: reduce) {
+    .soulseek-spinner { animation: none; }
+}
+
+.soulseek-search-what { flex: 1 1 auto; min-width: 0; }
+.soulseek-search-what .soulseek-sub { overflow-wrap: anywhere; }
+.soulseek-search-head { flex-wrap: wrap; padding: 20px 18px 16px; }
+.soulseek-search-head .btn-danger { flex: 0 0 auto; }
+.soulseek-search-head .btn-danger svg { width: 16px; height: 16px; fill: currentColor; }
+.soulseek-search-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 0 18px 18px;
+    padding: 16px 0;
+    border-top: 1px solid var(--border-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+}
+.soulseek-stat span { display: block; color: var(--text-muted); font-size: 12px; }
+.soulseek-stat b { display: block; color: var(--text-primary); font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.soulseek-search-release-summary { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; }
+
+/* Fixed one-second columns extend horizontally without shrinking or shifting completed history. */
+.soulseek-hist { padding: 0 18px 18px; }
+.soulseek-hist-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 12px; }
+.soulseek-hist-chart { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; margin-top: 12px; }
+.soulseek-hist-scale { display: flex; flex-direction: column; justify-content: space-between; height: 100px; margin-top: 20px; color: var(--text-muted); font-size: 10px; }
+.soulseek-hist-scroll { overflow-x: auto; padding-top: 20px; }
+.soulseek-hist-scroll:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+.soulseek-hist-plot { position: relative; height: 100px; border-bottom: 1px solid var(--border-accent); }
+.soulseek-hist-bars { display: grid; grid-auto-flow: column; grid-auto-columns: calc(100% / 30); align-items: end; height: 100%; }
+.soulseek-hist-bars i { display: block; position: relative; margin-right: 3px; background: var(--primary-color); border-radius: 2px 2px 0 0; }
+.soulseek-hist-overflow { color: var(--text-primary); font-size: 10px; font-style: normal; line-height: 16px; text-indent: 1px; padding: 0; }
+.soulseek-hist-bars .soulseek-hist-overflow { text-shadow: 0 0 2px var(--bg-primary); color: var(--bg-primary); font-weight: 700; }
+.soulseek-hist-cursor { position: absolute; top: 0; bottom: 0; left: 0; border-left: 1px solid var(--text-primary); transition: left .25s linear; pointer-events: none; }
+.soulseek-hist-axis { position: relative; height: 22px; margin-top: 6px; color: var(--text-muted); font-size: 10.5px; }
+.soulseek-hist-axis span { position: absolute; white-space: nowrap; }
+.soulseek-hist-axis-end { transform: translateX(-100%); }
+.soulseek-hist-note { margin: 10px 0 0; color: var(--text-muted); font-size: 11.5px; }
+.soulseek-results-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border-secondary); }
+.soulseek-results-head h3 { margin: 0; color: var(--text-primary); font-size: 15px; }
+.soulseek-results-badge { color: var(--text-muted); background: var(--bg-quaternary); padding: 4px 10px; border-radius: 20px; font-size: 11px; }
+
+    /* Soulseek without a verified login. The tab stays openable so the reason is readable; only the actions
+       that would start remote work are taken away. */
+    .soulseek-login-required {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+        padding: 12px 14px; margin-bottom: 14px;
+        border: 1px solid var(--border-primary);
+        border-radius: 10px;
+        background: var(--bg-tertiary);
+    }
+    .soulseek-login-required-text { font-weight: 600; color: var(--text-primary); }
+    .soulseek-login-required-reason { color: var(--text-muted); font-size: 13px; }
+    .soulseek-login-required-link { margin-left: auto; font-size: 13px; }
+
+    /* An inactive source is visibly inert, and the state is also carried in text and aria rather than by
+       dimming alone - the tab has to stay readable so the login link inside it can be found. Written in the
+       leading-dot form the rest of this block uses. */
+    .soulseek-source-btn.is-inactive { color: var(--text-muted); }
+    .soulseek-source-btn.is-inactive::after { content: ' ·'; }
+    .is-inactive[data-soulseek-queue],
+    .is-inactive[data-soulseek-file-download],
+    .soulseek-best-actions .action-btn.is-inactive { opacity: .5; cursor: not-allowed; }
+.soulseek-panel .soulseek-waiting { text-align: left; padding: 24px 18px; }
+.soulseek-waiting h3 { font-size: 16px; margin: 0 0 8px; color: var(--text-primary); }
+.soulseek-waiting p { font-size: 13px; margin: 0; color: var(--text-muted); }
+@@media (prefers-reduced-motion: reduce) {
+    .soulseek-hist-cursor { transition: none; }
+}
+@@media (max-width: 600px) {
+    .soulseek-search-head .soulseek-search-what { flex-basis: calc(100% - 44px); }
+    .soulseek-search-head .btn-danger { margin-left: 44px; }
+    .soulseek-stat b { font-size: 20px; }
+    .soulseek-search-stats { gap: 8px; }
+    .soulseek-hist-bars i { margin-right: 2px; }
+}
+
+/* ---- quality group tabs ---- */
+.soulseek-qtabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border-primary); }
+
+.soulseek-results-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(150px, 1fr) minmax(130px, auto);
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+}
+.soulseek-filter-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; color: var(--text-muted); font-size: 12.5px; }
+.soulseek-result-control { min-height: 36px; padding: 6px 9px; border: 1px solid var(--border-primary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font: inherit; font-size: 12.5px; }
+
+/* A display rule beats the browser's [hidden] default, so the tab strip stayed on screen as an empty bar
+   before the first result arrived. The attribute is restored explicitly rather than per element, so any
+   future flex or grid element hidden from script behaves the same way. */
+.soulseek-layout [hidden],
+.soulseek-qtabs[hidden],
+.soulseek-hist[hidden] { display: none !important; }
+.soulseek-qtab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.soulseek-qtab:hover { border-color: var(--primary-color); }
+.soulseek-qtab.is-active { background: var(--bg-quaternary); border-color: var(--primary-color); color: var(--text-primary); }
+.soulseek-qtab .soulseek-qtab-n {
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 11px;
+    text-align: center;
+}
+.soulseek-qtab.is-active .soulseek-qtab-n { background: var(--primary-color); color: var(--bg-primary); }
+
+/* ---- quality group ---- */
+.soulseek-group { border-bottom: 1px solid var(--border-primary); }
+.soulseek-group:last-child { border-bottom: 0; }
+
+.soulseek-group-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    background: var(--bg-tertiary);
+    /* The band accent: weight and dash pattern carry the tier, not colour. */
+    border-left: 4px solid var(--primary-color);
+}
+.soulseek-group[data-band="hi-res-lossless"] .soulseek-group-head { border-left-style: solid; border-left-width: 4px; }
+.soulseek-group[data-band="hi-res"] .soulseek-group-head { border-left-style: dashed; border-left-width: 4px; }
+.soulseek-group[data-band="cd"] .soulseek-group-head { border-left-style: solid; border-left-width: 2px; }
+.soulseek-group[data-band="lossy"] .soulseek-group-head { border-left-style: dotted; border-left-width: 4px; }
+.soulseek-group[data-band="unknown"] .soulseek-group-head { border-left-style: dashed; border-left-width: 2px; }
+
+.soulseek-group-tier { font-size: 13px; font-weight: 650; }
+.soulseek-group-src { padding: 2px 8px; border-radius: 999px; background: var(--bg-accent); border: 1px solid var(--border-secondary); color: var(--text-muted); font-size: 11.5px; }
+.soulseek-group-best { color: var(--text-muted); font-size: 12.5px; }
+.soulseek-group-best b { color: var(--success-color); font-weight: 650; }
+
+/* ---- peer rows ---- */
+/* A peer row is nine columns beside a 330px side panel, so the table is given a fixed layout and the file
+   name is the only column that may shrink. Without this the last two columns - the match score and the
+   Queue action - are laid out past the end of the column and clipped, which is how a row ended up with no
+   reachable way to queue it. The group scrolls sideways as a safety net at any width narrower still. */
+.soulseek-group { overflow-x: auto; }
+.soulseek-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.soulseek-table th {
+    padding: 7px 7px;
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    white-space: nowrap;
+}
+.soulseek-table td { padding: 8px 7px; border-bottom: 1px solid var(--border-primary); font-size: 12.5px; vertical-align: middle; }
+.soulseek-table tr:hover td { background: var(--bg-tertiary); }
+.soulseek-table tr.soulseek-row-selected td { background: var(--bg-quaternary); }
+.soulseek-table tr.soulseek-row-rejected td { color: var(--text-dim); }
+
+.soulseek-album-drawer-row:hover td { background: var(--bg-secondary); }
+.soulseek-album-drawer-cell { padding: 0 !important; background: var(--bg-secondary); }
+.soulseek-album-drawer { margin: 8px; border: 1px solid var(--border-secondary); border-radius: 8px; background: var(--bg-accent); color: var(--text-primary); overflow: hidden; }
+/* The drawer head is what a reader judges a release by before choosing files: the release on the left, and
+   the facts that decide whether this peer is worth taking it from on the right. Two columns rather than one
+   row of pills, because these are five separate questions rather than five decorations. */
+.soulseek-album-drawer-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 20px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border-primary);
+}
+.soulseek-album-drawer-identity { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.soulseek-album-drawer-heading { min-width: 0; }
+.soulseek-album-drawer-artist { color: var(--text-primary); font-size: 20px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.soulseek-album-drawer-title { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.soulseek-album-drawer-summary { margin-top: 6px; color: var(--text-muted); font-size: 14px; }
+
+.soulseek-album-facts { margin: 0; display: grid; gap: 7px; min-width: 0; }
+.soulseek-album-fact-row { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-items: center; gap: 10px; }
+.soulseek-album-fact-row dt { color: var(--text-muted); font-size: 13px; }
+.soulseek-album-fact-row dd { margin: 0; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
+.soulseek-album-fact-icon { font-size: 18px; color: var(--text-muted); flex: 0 0 auto; }
+.soulseek-album-fact-tail { color: var(--text-secondary); }
+.soulseek-album-fact-sep { width: 1px; height: 14px; background: var(--border-secondary); }
+
+/* The quality is the one thing here stated rather than described, so it is the one thing given a badge. */
+.soulseek-album-quality {
+    padding: 1px 8px; border-radius: 5px; border: 1px solid var(--warning-color);
+    color: var(--warning-color); font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.soulseek-album-quality--none { border-color: var(--border-secondary); color: var(--text-muted); font-weight: 400; }
+
+.soulseek-album-status { display: inline-flex; align-items: center; gap: 6px; }
+.soulseek-album-status--on { color: var(--success-color); }
+.soulseek-album-status--off { color: var(--text-muted); }
+.soulseek-album-status-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.soulseek-album-speed { display: inline-flex; align-items: center; gap: 8px; }
+.soulseek-album-speed--unknown { color: var(--text-muted); }
+
+/* The selection tally sits under the two columns rather than inside either, so neither column has to give up
+   width to it and it still sits next to the Select all it reports. */
+.soulseek-album-drawer-statusline {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border-primary);
+}
+.soulseek-album-drawer-size { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+/* The peer's exact remote path, so the listing below can be judged against what the peer actually holds. */
+.soulseek-album-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .8; overflow-wrap: anywhere; }
+.soulseek-album-drawer-selected { color: var(--text-secondary); font-size: 12.5px; }
+.soulseek-album-drawer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.soulseek-album-select-all { display: inline-flex; align-items: center; justify-content: center; }
+.soulseek-album-select-all input[type="checkbox"] { margin: 0; cursor: pointer; }
+/* The app's own tracklist row, so a peer's folder reads as a tracklist rather than a data grid: number,
+   artwork and title, size, eligibility, reason, then the choice and the action on the right.
+   Format and duration are gone. The format is the quality group's own label, and slskd returns no
+   duration for these results - measured across 48 files in six folders, both columns were blank on every
+   row while still reserving 112px between them. An auto column with no content has no width to take, which
+   is how the duration column once measured 0px. */
+.soulseek-album-file,
+.soulseek-album-file-head {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) 68px 84px 96px 34px 46px;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+}
+.soulseek-album-file { min-height: 58px; border-bottom: 1px solid var(--border-primary); }
+.soulseek-album-file-head {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-secondary);
+}
+.soulseek-album-file:last-child { border-bottom: 0; }
+.soulseek-album-file.is-selected { background: var(--bg-quaternary); }
+.soulseek-album-file.is-ineligible { color: var(--text-dim); }
+/* The whole label is the hit target, not just the 16px box, so the control clears the 44px touch minimum
+   the rest of the page uses. A disabled row keeps the same target: the reader still has to be able to
+   point at it and read why it cannot be chosen. */
+.soulseek-album-check { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+.soulseek-album-check input[type="checkbox"] { width: 18px; height: 18px; }
+.soulseek-album-check input[type="checkbox"]:disabled { cursor: not-allowed; }
+.soulseek-album-reason { color: var(--warning-color); }
+/* A sidecar is a real, selectable file rather than a rejected one, so it is set apart from the tracks without
+   being dimmed like something that was refused. */
+.soulseek-album-file.is-sidecar { background: var(--bg-secondary); }
+.soulseek-album-file.is-sidecar.is-selected { background: var(--bg-quaternary); }
+.soulseek-album-sidecar-role { color: var(--text-secondary); }
+.soulseek-album-sidecar-note {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-primary);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+}
+.soulseek-album-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soulseek-album-file-name small { display: block; margin-top: 1px; color: var(--text-muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soulseek-album-file-raw { opacity: .55; }
+/* The number is centred like the app's .track-number, not right-aligned into the title. */
+.soulseek-album-file-n { color: var(--text-dim); font-size: 12px; text-align: center; font-weight: 600; }
+.soulseek-album-file-head.soulseek-album-file-n { text-align: center; }
+.soulseek-album-file-size { text-align: right; font-variant-numeric: tabular-nums; }
+.soulseek-album-file-head.soulseek-album-file-size { text-align: right; }
+/* The catalogue artwork sits at the left of the title, at the app's own .track-album-art size. */
+.soulseek-album-file-title { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+.soulseek-album-file-art {
+    width: 44px; height: 44px; border-radius: 6px; flex: 0 0 auto;
+    background: var(--bg-tertiary); object-fit: contain; display: block;
+}
+.soulseek-album-file-art--placeholder { display: grid; place-items: center; font-size: 18px; color: var(--text-secondary); }
+.soulseek-album-check-cell { text-align: center; }
+.soulseek-album-download { text-align: right; }
+
+/* The app's quick-download control, copied from Tracklist/Index.cshtml rather than imported: that rule
+   lives in that view's own style block rather than a shared stylesheet, so it does not exist on this page
+   and the button rendered unstyled at 22x27 with square corners. */
+.track-quick-download-btn {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 42%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.track-quick-download-btn .material-icons { font-size: 19px; line-height: 1; }
+
+.track-quick-download-btn:hover {
+    background: color-mix(in srgb, var(--primary-color) 22%, transparent);
+    border-color: var(--primary-color);
+}
+
+.track-quick-download-btn:disabled { cursor: not-allowed; opacity: .45; }
+.soulseek-album-file-fact { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.soulseek-album-file-eligibility, .soulseek-album-file-reason { min-width: 0; overflow: hidden; }
+.soulseek-album-eligibility { font-size: 11.5px; white-space: nowrap; }
+.soulseek-album-eligibility--yes { color: var(--success-color); }
+.soulseek-album-eligibility--no { color: var(--warning-color); }
+/* "Not preferred" is a different verdict from "Unavailable": the ladder would not pick this file, and the
+   reader still can. It is muted rather than alarming so the two are not read as the same refusal. */
+.soulseek-album-eligibility--other { color: var(--text-muted); opacity: .85; }
+.soulseek-album-eligibility--sidecar { color: var(--text-muted); }
+.soulseek-album-file-reason .soulseek-album-reason { display: block; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soulseek-album-drawer-message { padding: 18px; color: var(--text-muted); text-align: center; }
+.soulseek-album-drawer-message--error { color: var(--error-color); }
+.soulseek-album-outcome { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; }
+.soulseek-selection-summary { padding: 0 0 10px; color: var(--text-muted); font-size: 12px; }
+.soulseek-selection-summary:empty { display: none; }
+
+/* The expansion control. The label says what the button does and the chevron says whether the folder below
+   is open, so the row itself reports the state instead of the reader having to scroll to find out. */
+.soulseek-album-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.soulseek-album-toggle.is-open { border-color: var(--primary-color); color: var(--primary-color); }
+.soulseek-album-chevron { display: inline-block; font-size: 10px; line-height: 1; }
+
+/* Catalogue artwork. It is decoration beside a title that is already spelled out in text, so it is sized
+   and clamped here and never allowed to grow into the destination picker or the queue button below it. The
+   placeholder is a deliberate box rather than a broken image, so a catalogue miss still looks deliberate. */
+.soulseek-cover {
+    display: block;
+    flex: 0 0 auto;
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+}
+.soulseek-cover--placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 22px;
+    line-height: 1;
+}
+.soulseek-cover--panel { width: 72px; height: 72px; }
+.soulseek-cover--drawer { width: 104px; height: 104px; border-radius: 8px; }
+.soulseek-best-head-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.soulseek-best-heading { min-width: 0; }
+.soulseek-album-drawer-art { flex: 0 0 auto; }
+
+/* Keyboard focus has to be visible on every control this tab adds by itself. The shared .action-btn only
+   styles a mouse hover, so a keyboard user's expansion, checkbox, Retry, Collapse and queue controls would
+   otherwise be indistinguishable from the background. */
+.soulseek-album-toggle:focus-visible,
+.soulseek-album-check input[type="checkbox"]:focus-visible,
+.soulseek-album-select-all input[type="checkbox"]:focus-visible,
+.soulseek-album-drawer-tools .action-btn:focus-visible,
+.action-btn--primary:focus-visible,
+.soulseek-destination:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+.soulseek-album-file:has(input:focus-visible) { background: var(--bg-tertiary); }
+
+/* A row is one peer's copy of one release, so the columns are the ones that compare releases: which peer
+   has it, what it is called, how complete that peer's copy is, how large, and how well it matched. Every
+   column carries a width. The widths live on both the header and the body cells because a fixed table layout
+   takes them from the first row, and the release name is the one column with no width - so if the fixed
+   columns ever sum past the panel again, it is the name that collapses to nothing, which is exactly the
+   defect that made the old filename unreadable at 0px. Duration and Queue are gone because slskd returns
+   neither durationSeconds nor peerQueueLength for most candidates, and they held 128px of blank anyway. */
+.soulseek-cell-rank { color: var(--text-dim); width: 28px; }
+.soulseek-cell-user { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 112px; }
+.soulseek-cell-release { min-width: 0; }
+.soulseek-cell-coverage { width: 88px; }
+.soulseek-cell-num { text-align: right; white-space: nowrap; color: var(--text-muted); width: 60px; }
+/* The Match column has to hold a 44px bar, a 6px gap and a three-character percentage inside its own
+   padding, or the "%" is pushed out of the cell and hidden behind the action beside it. The extra room is
+   taken as padding rather than as column width, which is what puts visible space between the percentage and
+   the Browse button - they previously touched, and the two read as one control. */
+.soulseek-cell-match { width: 104px; padding-right: 14px; }
+.soulseek-cell-browse { width: 84px; text-align: right; padding-left: 10px; }
+.soulseek-browse { gap: .35rem; padding: 5px 10px; font-size: 12px; }
+
+.soulseek-release-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soulseek-release-facts { display: block; margin-top: 1px; font-size: 11px; color: var(--text-muted); opacity: .72; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soulseek-release-facts.is-selected { color: var(--success-color); opacity: .95; }
+
+.soulseek-coverage { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.soulseek-coverage-n { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.soulseek-coverage-bar { width: 26px; height: 4px; border-radius: 2px; background: var(--border-accent); overflow: hidden; }
+.soulseek-coverage-bar i { display: block; height: 100%; background: var(--success-color); }
+.soulseek-coverage-bar.is-partial i { background: var(--warning-color); }
+
+.soulseek-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.soulseek-row.is-open { background: var(--bg-quaternary); }
+
+.soulseek-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.soulseek-dot--on { background: var(--success-color); }
+.soulseek-dot--unknown { background: var(--text-dim); }
+.soulseek-available { color: var(--success-color); font-size: 12px; white-space: nowrap; }
+.soulseek-available--unknown { color: var(--text-dim); }
+
+.soulseek-meter { display: flex; align-items: center; gap: 6px; }
+.soulseek-meter-bar { flex: 0 0 44px; width: 44px; height: 5px; border-radius: 3px; background: var(--bg-quaternary); overflow: hidden; }
+.soulseek-meter-bar i { display: block; height: 100%; background: var(--primary-color); }
+.soulseek-meter-val { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.soulseek-more { padding: 8px 18px 12px; }
+.soulseek-more button {
+    border: 0;
+    background: transparent;
+    color: var(--info-color);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+}
+
+.soulseek-rejected { color: var(--warning-color); font-size: 11.5px; }
+.soulseek-count { padding: 10px 18px; color: var(--text-dim); font-size: 12px; border-top: 1px solid var(--border-primary); }
+
+/* ---- best candidate ---- */
+.soulseek-side { position: sticky; top: calc(var(--search-sticky-top, 68px) + var(--search-shell-height, 120px) + 8px); }
+.soulseek-best-head { display: flex; align-items: center; flex-wrap: wrap; padding: 14px 18px 12px; }
+.soulseek-best-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.soulseek-rank-chip {
+    padding: 2px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border-accent);
+    background: var(--bg-quaternary);
+    color: var(--primary-color);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .04em;
+}
+
+.soulseek-best { padding: 0 18px 16px; }
+.soulseek-best-title { margin: 0; font-size: 15px; font-weight: 650; }
+.soulseek-best-artist { color: var(--text-muted); font-size: 12.5px; }
+
+.soulseek-best-rows { margin-top: 14px; border-top: 1px solid var(--border-primary); }
+.soulseek-best-row { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-primary); font-size: 12.5px; }
+.soulseek-best-row-label { color: var(--text-muted); flex: 0 0 92px; }
+.soulseek-best-row-value { color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
+.soulseek-best-row-value.soulseek-dim { color: var(--text-muted); }
+
+/* The panel's views. One row of small buttons rather than a second panel: the three views describe the same
+   result set, so switching must not cost the reader their place. */
+.soulseek-views { display: flex; gap: 4px; margin-left: 12px; }
+.soulseek-view-btn {
+    padding: 3px 9px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.soulseek-view-btn:hover { color: var(--text-primary); }
+.soulseek-view-btn.is-active { border-color: var(--primary-color); color: var(--text-primary); font-weight: 600; }
+
+.soulseek-album-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; color: var(--text-muted); font-size: 12px; }
+.soulseek-album-source { color: var(--text-muted); font-size: 11.5px; }
+.soulseek-album-tracks { margin-top: 12px; border-top: 1px solid var(--border-primary); }
+.soulseek-album-peer { border-top: none; }
+/* Two lines per track: the name, then its facts. A single row of columns does not fit a panel this narrow —
+   the name column collapses and the file name wraps one character per line. */
+.soulseek-track-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 3px 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.soulseek-track-row:hover { background: var(--bg-tertiary); }
+.soulseek-track-row.is-focused { background: var(--bg-secondary); }
+.soulseek-track-row--peer { cursor: default; }
+.soulseek-track-no { flex: 0 0 auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.soulseek-track-name { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.soulseek-track-meta { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: var(--text-muted); font-size: 11.5px; }
+.soulseek-track-action { flex: 0 0 auto; }
+.soulseek-album-browse { margin-top: 12px; width: 100%; justify-content: center; }
+
+.soulseek-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--primary-color);
+    color: var(--bg-primary);
+    font-size: 10.5px;
+    font-weight: 700;
+}
+
+.soulseek-health { display: flex; align-items: center; gap: 8px; }
+.soulseek-health-bar { flex: 1 1 auto; height: 5px; border-radius: 3px; background: var(--bg-quaternary); overflow: hidden; }
+.soulseek-health-bar i { display: block; height: 100%; background: var(--success-color); }
+.soulseek-health-pct { color: var(--success-color); font-size: 12px; font-weight: 650; }
+
+.soulseek-best-actions { padding: 14px 18px 18px; border-top: 1px solid var(--border-primary); }
+.soulseek-best-actions .action-btn { width: 100%; justify-content: center; }
+.soulseek-best-actions .action-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Where a queued file lands. The destinations are the app's own stereo folders, so this is a choice of
+   folder rather than a path typed into a box, and it is required before anything can be queued. */
+.soulseek-destination-label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+.soulseek-destination { width: 100%; margin-bottom: 6px; padding: 7px 9px; border: 1px solid var(--border-primary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 12.5px; }
+.soulseek-destination:disabled { opacity: .6; cursor: not-allowed; }
+.soulseek-destination-hint { margin: 0 0 10px; }
+.soulseek-hint { color: var(--text-dim); font-size: 11.5px; text-align: center; margin: 10px 0 0; }
+.soulseek-hint a { color: var(--info-color); text-decoration: none; font-weight: 600; }
+
+.soulseek-empty-side { padding: 18px; color: var(--text-dim); font-size: 12.5px; text-align: center; }
+
+/* The app already defines a primary-filled button as primary on bg-primary, so this follows that
+   convention rather than introducing a contrast token. */
+.action-btn--primary {
+    background: var(--primary-color) !important;
+    border-color: var(--primary-color) !important;
+    color: var(--bg-primary) !important;
+}
+
+.action-btn--primary:hover {
+    background: var(--primary-hover) !important;
+    border-color: var(--primary-hover) !important;
+}
+
+.action-btn--primary:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+@@media (max-width: 1100px) {
+    .soulseek-layout { grid-template-columns: minmax(0, 1fr); }
+    .soulseek-side { position: static; }
+}
+
+@@media (max-width: 700px) {
+    .soulseek-results-toolbar { grid-template-columns: 1fr; }
+    .soulseek-result-control { width: 100%; min-height: 44px; }
+    /* Narrow: the facts reflow under the title rather than squeezing it, the choice and the action stay on
+       the row's own line because they are the point of it. */
+    .soulseek-album-file { grid-template-columns: 30px minmax(0, 1fr) 34px 46px; gap: 4px 8px; }
+    /* The column header is hidden at this width because its labels duplicate the cells beneath them. Select
+       all is not a label though, it is the only control in the drawer that is not on a row, so the header
+       stays as a grid with just that cell showing and the rest collapsed. */
+    .soulseek-album-file-head { grid-template-columns: 30px minmax(0, 1fr) 34px 46px; gap: 4px 8px; }
+    .soulseek-album-file-head > *:not(.soulseek-album-check-cell) { display: none; }
+    .soulseek-album-file-size,
+    .soulseek-album-file-eligibility,
+    .soulseek-album-file-reason { grid-column: 2; white-space: normal; text-align: left; }
+    .soulseek-album-file-check-cell, .soulseek-album-check-cell { grid-column: 3; }
+    .soulseek-album-download { grid-column: 4; grid-row: 1; }
+    .soulseek-album-file-art { width: 36px; height: 36px; }
+    /* Stacked: two columns at this width leaves the release name about ten characters wide, and the facts are
+       the reason the drawer was opened. */
+    .soulseek-album-drawer-head { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .soulseek-album-fact-row { grid-template-columns: 96px minmax(0, 1fr); }
+    .soulseek-album-drawer-artist, .soulseek-album-drawer-title { font-size: 17px; }
+    .soulseek-cover--drawer { width: 76px; height: 76px; }
+    /* The album's facts reflow under the artwork and the title, but the checkbox column and the reason a
+       file cannot be chosen both stay visible - they are the reason the listing is worth reading. */
+    .soulseek-album-drawer-selected { margin-top: 5px; }
+}
+
 .search-header {
     margin-bottom: 30px;
     padding-bottom: 20px;
@@ -504,6 +1174,42 @@
     font-size: 12px;
 }
 
+/* ---- the page's own sticky shell, following the AutoTag page's ----
+   A search is a long page: one source can return thousands of rows, and scrolling back up to change tab is
+   the most annoying thing about it. The header and the source tabs are therefore pinned below the app
+   topbar, exactly as the AutoTag page pins its own tabs, so every tab stays one click away and the results
+   scroll underneath. The top offset is measured from the topbar at runtime, because CSS cannot know the
+   topbar's height.
+
+   The shell only works once the app's own scroll container stops being one. .main-content is
+   overflow-y: auto, and a sticky element inside a scroll container sticks to that container rather than to
+   the window - which is why pinning the tabs changed nothing until the page opted out of the inner scroller,
+   the same way the AutoTag page does. */
+.main-content.search-sticky-enabled {
+    overflow-y: visible;
+}
+
+.main-content.search-sticky-enabled > .topbar {
+    background: var(--bg-primary);
+    border-bottom: none;
+}
+
+.search-sticky-shell {
+    position: sticky;
+    top: var(--search-sticky-top, 68px);
+    z-index: 880;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-secondary);
+    padding-top: 4px;
+    margin-bottom: 12px;
+}
+.search-sticky-shell #searchSourceTabs { margin-bottom: 10px !important; background: var(--bg-primary); }
+.search-sticky-shell .search-header { margin-bottom: 10px; }
+
+@@media (max-width: 768px) {
+    .search-sticky-shell { top: var(--search-sticky-top, 60px); }
+}
+
 @@media (max-width: 640px) {
     .soundtrack-url-row {
         flex-direction: column;
@@ -514,13 +1220,16 @@
 </style>
 }
 
-<div class="search-header">
-    <h1 class="search-title">@(soundtrackMode ? "Soundtrack Match Search" : "Search Results")</h1>
-<div class="search-meta">
-    <span id="search-query">Searching for "@ViewData["SearchTerm"]"</span>
-    <span id="search-count"></span>
-</div>
-</div>
+<!-- The header and the source tabs are one sticky shell, as on the AutoTag page: a search is a long page and
+     the reader must be able to change source without scrolling back up to find the tabs. -->
+<div class="search-sticky-shell" id="searchStickyShell">
+    <div class="search-header">
+        <h1 class="search-title">@(soundtrackMode ? "Soundtrack Match Search" : "Search Results")</h1>
+    <div class="search-meta">
+        <span id="search-query">Searching for "@ViewData["SearchTerm"]"</span>
+        <span id="search-count"></span>
+    </div>
+    </div>
 
 <ul class="nav nav-tabs nav-fill mb-3 ds-mobile-tabs" id="searchSourceTabs" aria-label="Search Platforms">
     <li class="nav-item">
@@ -547,7 +1256,11 @@
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="tidal" id="tab-tidal" data-bs-toggle="tab" data-bs-target="#search-source-tidal">Tidal</button>
     </li>
     }
+    <li class="nav-item">
+        <button class="nav-link source-btn soulseek-source-btn" type="button" role="tab" aria-selected="false" data-source="soulseek" id="tab-soulseek" data-bs-toggle="tab" data-bs-target="#search-source-soulseek" data-no-tab-persist="true">Soulseek</button>
+    </li>
 </ul>
+</div><!-- /search-sticky-shell -->
 
 <div class="tab-content" id="searchSourceTabContent">
     <div class="tab-pane fade" id="search-source-deezer" role="tabpanel" aria-labelledby="tab-deezer">
@@ -704,11 +1417,120 @@
     </div>
     }
 
+    <div class="tab-pane fade" id="search-source-soulseek" role="tabpanel" aria-labelledby="tab-soulseek">
+        <div class="results-section soulseek-layout soulseek-workspace">
+            <div class="soulseek-main">
+
+                <!-- Progressive search header. A Soulseek search runs against the whole peer network, so the
+                     header reports what the server is actually doing rather than a spinner over an empty list. -->
+                <section class="soulseek-panel" id="soulseek-search-panel">
+                    <!-- Shown only while Soulseek has no verified login. It carries the reason and the way out,
+                         because an inactive source the reader cannot act on is worse than one that is visibly
+                         switched off. Rendered by soulseek.js from the same availability value the API admits on. -->
+                    <div class="soulseek-login-required" id="soulseek-login-required" role="status" hidden>
+                        <span class="soulseek-login-required-text">Log in to enable Soulseek.</span>
+                        <span class="soulseek-login-required-reason" id="soulseek-login-required-reason"></span>
+                        <a class="soulseek-login-required-link" href="/Login">Open Soulseek login</a>
+                    </div>
+                    <div class="soulseek-search-head">
+                        <div class="soulseek-spinner" id="soulseek-spinner" hidden aria-hidden="true"></div>
+                        <div class="soulseek-search-what">
+                            <h3 id="soulseek-search-title">Search Soulseek</h3>
+                            <div class="soulseek-sub" id="soulseek-search-query"></div>
+                        </div>
+                        <button type="button" class="btn-danger action-btn action-btn-sm" id="soulseek-stop" hidden>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                            <span>Stop Search</span>
+                        </button>
+                    </div>
+                    <div class="soulseek-search-stats" id="soulseek-search-stats"></div>
+                    <!-- Arrivals over time. The counts come from responseCount on each search_update, so this
+                         is presentation of data the panel already receives. -->
+                    <div class="soulseek-hist" id="soulseek-hist" hidden>
+                        <div class="soulseek-hist-head"><span>Peers answering over time</span><span id="soulseek-hist-phase"></span></div>
+                        <div class="soulseek-hist-chart">
+                            <div class="soulseek-hist-scale" aria-hidden="true"><span>20</span><span>10</span><span>0</span></div>
+                            <div class="soulseek-hist-scroll" tabindex="0" role="region" aria-label="Peer response timeline">
+                                <div class="soulseek-hist-plot">
+                                    <div class="soulseek-hist-bars" id="soulseek-hist-bars"></div>
+                                    <div class="soulseek-hist-cursor" id="soulseek-hist-cursor" aria-hidden="true"></div>
+                                </div>
+                                <div class="soulseek-hist-axis" id="soulseek-hist-axis" aria-hidden="true"></div>
+                            </div>
+                        </div>
+                        <p class="soulseek-hist-note">New responses each second · Fixed scale: 0–20. Higher counts are labelled. Completed bars keep their position and height.</p>
+                    </div>
+                </section>
+
+                <section class="soulseek-panel">
+                    <!-- Quality groups. These are the Soulseek qualities enabled in Download, in the order the
+                         download ladder walks them, sent by the server from DownloadSourceOrder. -->
+                    <div class="soulseek-results-head"><h3>Search results</h3><span class="soulseek-results-badge" id="soulseek-results-badge" role="status">Ready</span></div>
+                    <div class="soulseek-status" id="soulseek-search-status" role="status"></div>
+                    <div class="soulseek-results-toolbar" id="soulseek-results-toolbar" aria-label="Soulseek result controls" hidden>
+                        <label class="soulseek-filter-toggle" for="soulseek-accepted-only">
+                            <input type="checkbox" id="soulseek-accepted-only" />
+                            Accepted only
+                        </label>
+                        <input class="soulseek-result-control" type="search" id="soulseek-result-filter" placeholder="Filter peer, filename, title or album" aria-label="Filter Soulseek results" />
+                        <select class="soulseek-result-control" id="soulseek-result-sort" aria-label="Sort Soulseek results">
+                            <option value="match">Best match</option>
+                            <option value="health">Peer health</option>
+                            <option value="queue">Shortest queue</option>
+                            <option value="size">File size</option>
+                            <option value="duration">Duration</option>
+                        </select>
+                    </div>
+                    <div class="soulseek-qtabs" id="soulseek-qtabs" hidden></div>
+                    <div id="soulseek-groups"></div>
+                    <div class="empty-results soulseek-waiting" id="soulseek-candidates-empty" role="status">
+                        <h3>No Soulseek Results Yet</h3>
+                        <p>Peers are scored, so the best copy is listed first.</p>
+                    </div>
+                    <div class="soulseek-count" id="soulseek-result-count"></div>
+                </section>
+            </div>
+
+            <!-- A Soulseek result is a candidate, not a file: the app picks the quality and the peer when the
+                 download runs. This panel describes the selected candidate and nothing more, because transfer
+                 progress belongs to the Downloads tab. -->
+            <aside class="soulseek-side">
+                <section class="soulseek-panel">
+                    <div class="soulseek-best-head">
+                        <h3>Candidate</h3>
+                        <div class="soulseek-views" id="soulseek-views" role="group" aria-label="Candidate views"></div>
+                        <div class="soulseek-spacer"></div>
+                        <span class="soulseek-rank-chip" id="soulseek-best-rank" hidden></span>
+                    </div>
+                    <div class="soulseek-best" id="soulseek-best"></div>
+                    <div class="soulseek-best-actions">
+                        <div class="soulseek-selection-summary" id="soulseek-selection-summary" role="status" aria-live="polite"></div>
+                        <p class="soulseek-album-outcome" id="soulseek-batch-outcome" role="status" aria-live="polite"></p>
+                        <label class="soulseek-destination-label" for="soulseek-destination">Download to</label>
+                        <select class="soulseek-destination" id="soulseek-destination"></select>
+                        <p class="soulseek-hint soulseek-destination-hint" id="soulseek-destination-hint"></p>
+                        <button type="button" class="action-btn action-btn--primary" id="soulseek-best-queue" disabled>Queue Download</button>
+                        <p class="soulseek-hint">
+                            A candidate, not a file &mdash; the ladder picks the quality and the peer.
+                            Progress appears in the <a href="/Activities">Downloads</a> tab.
+                        </p>
+                    </div>
+                </section>
+            </aside>
+        </div>
+    </div>
+
+</div>
+
 </div>
 
 @section Scripts {
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/soulseek.js")"></script>
 <script>
 let currentSearchTerm = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchTerm"]?.ToString() ?? string.Empty));
+let soulseekSearchTerm = currentSearchTerm;
+// The Soulseek panel prefills its artist/title fields from the term this page was rendered for.
+window.__dsSearchTerm = soulseekSearchTerm;
 let currentSearchType = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchType"]?.ToString() ?? "track"));
 let currentSearchSource = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchSource"]?.ToString() ?? "spotify"));
 let activeSearchRequestId = 0;
@@ -723,6 +1545,10 @@ const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
 const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
 const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
 const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple', 'amazon', 'tidal'];
+// Tracks whether the Soulseek pane is the one on screen. Soulseek is deliberately absent from
+// searchSources: it is a peer-to-peer transfer panel, not a catalogue search source, so it must not be
+// restored from the URL, persisted as a source preference, or fed into the streaming search cache.
+let soulseekPanelOpen = false;
 let sourceTypeSelections = {};
 const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
 const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
@@ -879,17 +1705,14 @@ function restoreSearchPageState() {
     }
 }
 
+// Storage for the remembered source tab is owned by tab-preferences.js. Only the
+// source <-> tab-target mapping below is local, because that is search-specific.
 function isRememberLastTabEnabled() {
-    const stored = localStorage.getItem('tabs-preference-enabled');
-    if (stored === null || stored === '') {
-        return true;
-    }
-
-    return stored === 'true';
+    return window.TabPreferences?.isEnabled?.() !== false;
 }
 
 function getSearchSourcePreferenceKey() {
-    return `tabs:last:${window.location.pathname}:searchSourceTabs`;
+    return window.TabPreferences?.keyFor?.('searchSourceTabs') || '';
 }
 
 function mapSearchSourceToTarget(source) {
@@ -913,47 +1736,17 @@ function mapSearchTargetToSource(target) {
 }
 
 function readRememberedSearchSource() {
-    if (!isRememberLastTabEnabled()) {
-        return '';
-    }
-
-    try {
-        const raw = localStorage.getItem(getSearchSourcePreferenceKey()) || '';
-        return mapSearchTargetToSource(raw);
-    } catch {
-        return '';
-    }
+    const raw = window.TabPreferences?.read?.(getSearchSourcePreferenceKey()) || '';
+    return mapSearchTargetToSource(raw);
 }
 
 function persistRememberedSearchSource(source) {
-    const key = getSearchSourcePreferenceKey();
-    if (!key) {
-        return;
-    }
-
-    if (!isRememberLastTabEnabled()) {
-        try {
-            localStorage.removeItem(key);
-        } catch {
-        }
-        if (window.UserPrefs?.setTabSelection) {
-            window.UserPrefs.setTabSelection(key, '');
-        }
-        return;
-    }
-
     const target = mapSearchSourceToTarget(source);
     if (!target) {
         return;
     }
 
-    try {
-        localStorage.setItem(key, target);
-    } catch {
-    }
-    if (window.UserPrefs?.setTabSelection) {
-        window.UserPrefs.setTabSelection(key, target);
-    }
+    window.TabPreferences?.write?.(getSearchSourcePreferenceKey(), target);
 }
 
 function getActiveSearchSourceFromTabUi() {
@@ -1418,13 +2211,69 @@ function initializeSoundtrackManualTab() {
     }
 }
 
+/**
+ * Pins the page header and the source tabs below the app topbar.
+ *
+ * <p>
+ *     The topbar's height is not knowable from CSS - it changes with the theme, the viewport and whether the
+ *     sidebar is collapsed - so it is measured and written into a custom property, exactly as the AutoTag page
+ *     does it. Sticking to a guessed number is what puts a tab strip underneath the topbar on one screen size
+ *     and leaves a gap on the next.
+ * </p>
+ */
+function initializeSearchStickyShell() {
+    const page = document.querySelector('.search-sticky-shell');
+    if (!page) {
+        return;
+    }
+
+    // The app's main region is its own scroller, and a sticky element inside a scroller sticks to that
+    // scroller rather than to the window - the tabs simply scroll away with it. Handing the scroll back to
+    // the window is what makes the shell stick, and the topbar is restyled to match, as on the AutoTag page.
+    const mainContent = document.getElementById('mainContent');
+    if (mainContent instanceof HTMLElement) {
+        mainContent.classList.add('search-sticky-enabled');
+    }
+
+    const update = () => {
+        const topbar = document.querySelector('.main-content > .topbar');
+        const offset = topbar instanceof HTMLElement ? Math.max(0, Math.ceil(topbar.offsetHeight)) : 0;
+        page.style.setProperty('--search-sticky-top', `${offset}px`);
+        // The Soulseek side panel is sticky too, and it has to start below this shell or it slides under the
+        // tabs while the reader scrolls the results.
+        const shellHeight = page instanceof HTMLElement ? Math.ceil(page.offsetHeight) : 0;
+        page.style.setProperty('--search-shell-height', `${shellHeight}px`);
+    };
+
+    update();
+    window.requestAnimationFrame(update);
+    window.setTimeout(update, 0);
+    window.addEventListener('load', update);
+    window.addEventListener('resize', update, { passive: true });
+    window.addEventListener('orientationchange', update, { passive: true });
+
+    const topbar = document.querySelector('.main-content > .topbar');
+    if (topbar instanceof HTMLElement && typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => window.requestAnimationFrame(update));
+        observer.observe(topbar);
+        observer.observe(page);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     setupInfiniteScroll();
+    initializeSearchStickyShell();
     const urlParams = new URLSearchParams(window.location.search);
     const sourceParam = (urlParams.get('source') || '').toLowerCase();
-    if (searchSources.includes(sourceParam)) {
+    // Soulseek is not a catalogue source, so it never becomes currentSearchSource: that value drives the
+    // streaming search path and displayResults(), which would wipe the Soulseek panel's markup. It can still
+    // be the tab a link asks for, though, and it has to be - a shared link to a Soulseek search used to land
+    // on Spotify with the Soulseek tab sitting there unopened. So the URL may name it here, where the tab is
+    // opened directly, and nowhere else: it is restored as a view, never as a streaming source.
+    const wantsSoulseek = sourceParam === 'soulseek';
+    if (!wantsSoulseek && searchSources.includes(sourceParam)) {
         currentSearchSource = sourceParam;
-    } else if (isRememberLastTabEnabled()) {
+    } else if (!wantsSoulseek && isRememberLastTabEnabled()) {
         const rememberedSource = readRememberedSearchSource();
         if (rememberedSource) {
             currentSearchSource = rememberedSource;
@@ -1442,12 +2291,18 @@ document.addEventListener('DOMContentLoaded', function() {
     currentSearchType = normalizeTypeForSource(currentSearchSource, currentSearchType);
     sourceTypeSelections[currentSearchSource] = currentSearchType;
     const restoredState = restoreSearchPageState();
-    if (!restoredState.restored) {
+    if (!restoredState.restored && !wantsSoulseek) {
         updateActiveSource(currentSearchSource);
     }
     
     // Perform initial search
-    if (currentSearchTerm && currentSearchSource !== 'manual' && !restoredState.restored) {
+    if (wantsSoulseek) {
+        // The tab brings its own search: it queries the peer network and renders its own results, so no
+        // catalogue source is warmed and performSearch is not involved at all.
+        soulseekPanelOpen = true;
+        setActiveSourceTab('soulseek');
+        window.Soulseek?.searchCurrentTerm?.();
+    } else if (currentSearchTerm && currentSearchSource !== 'manual' && !restoredState.restored) {
         if (isValidURL(currentSearchTerm)) {
             routeSearchUrlDirectly(currentSearchTerm)
                 .catch(error => {
@@ -1498,7 +2353,9 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.source-btn').forEach(btn => {
         const warmSource = () => {
             const source = String(btn.dataset.source || '').trim().toLowerCase();
-            if (source && source !== 'manual') {
+            // Soulseek is not a catalogue search API. It has its own endpoint, its own results model and its
+            // own scoring, so warming it through the streaming search path would only produce a dead request.
+            if (source && source !== 'manual' && source !== 'soulseek') {
                 void prefetchSearchResults(source, currentSearchTerm, getSelectedSearchTypeForSource(source));
             }
         };
@@ -1509,7 +2366,27 @@ document.addEventListener('DOMContentLoaded', function() {
             if (this.classList.contains('disabled')) {
                 return;
             }
-            currentSearchSource = this.dataset.source;
+            const source = this.dataset.source;
+            if (source === 'soulseek') {
+                // Soulseek is not a catalogue source: it has no result cache, no type filters and its own
+                // results model. It therefore never becomes currentSearchSource, because that value drives the
+                // streaming search path and displayResults(), which would wipe the Soulseek panel's markup.
+                // The tab is shown directly and the panel is handed control of rendering.
+                soulseekPanelOpen = true;
+                setActiveSourceTab('soulseek');
+                // The URL is the view, not the search machinery, so it is updated to name the tab the reader
+                // is actually looking at. Without this, reloading the page dropped the reader back on
+                // Spotify and left the Soulseek results they were reading behind. The remembered-tab setting
+                // is deliberately not touched: remembering Soulseek would start a streaming search on it.
+                const soulseekUrl = new URL(window.location);
+                soulseekUrl.searchParams.set('source', 'soulseek');
+                soulseekUrl.searchParams.set('type', currentSearchType);
+                window.history.pushState({}, '', soulseekUrl);
+                window.Soulseek?.searchCurrentTerm?.();
+                return;
+            }
+            soulseekPanelOpen = false;
+            currentSearchSource = source;
             updateActiveSource(currentSearchSource);
             persistRememberedSearchSource(currentSearchSource);
             if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm, currentSearchType)) {
@@ -1776,6 +2653,11 @@ function scheduleSearchWarmup(source, term) {
 }
 
 async function warmSearchTabs(activeSource, term) {
+    // Soulseek is not a catalogue source, so it cannot ride the prefetch loop below: it runs its own peer
+    // query against its own endpoint. It is kicked off first and never awaited, so the tab already holds an
+    // answer whenever the user opens it, instead of only starting once they have navigated to it.
+    void window.Soulseek?.searchInBackground?.(term);
+
     const normalizedActiveSource = String(activeSource || '').trim().toLowerCase();
     const sourceOrder = [
         normalizedActiveSource,
@@ -2084,6 +2966,11 @@ async function performSearch(term, type, options = {}) {
         document.getElementById('search-count').textContent = '';
         return;
     }
+    // Defence in depth: while the Soulseek pane is on screen, a queued or replayed catalogue search must not
+    // fire, because the streaming search API has no soulseek source and would only produce a failed request.
+    if (soulseekPanelOpen) {
+        return;
+    }
     const requestId = ++activeSearchRequestId;
     const normalizedType = normalizeTypeForSource(source, type);
     const typedOnly = options.preferTyped === true && shouldUseTypedSearch(source, normalizedType);
@@ -2285,6 +3172,7 @@ function setupInfiniteScroll() {
         _scrollRafPending = true;
         requestAnimationFrame(() => {
             _scrollRafPending = false;
+            if (soulseekPanelOpen) return;
             if (currentSearchType !== 'video') return;
             if (appleLoadingMore || !appleHasMoreVideos) return;
             if (currentSearchSource !== 'apple') return;

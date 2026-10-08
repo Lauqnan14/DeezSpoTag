@@ -19,8 +19,11 @@ public sealed class EnhancementMultiSectionRunTest
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Services/AutoTagService.EnhancementWorkflows.cs"));
 
-        Assert.Contains("(!includesEnhancementWorkflows && !isManualEnrichment)", source, StringComparison.Ordinal);
-        Assert.Contains("if (isManualEnrichment && movedFiles != null)", source, StringComparison.Ordinal);
+        // Both external-file intents reach the history sidecar path on the same terms, so these two
+        // conditions are pinned on the shared predicate rather than the manual-only name. Left on the
+        // manual name, they would have stopped Soulseek enrichment running sidecars at all.
+        Assert.Contains("(!includesEnhancementWorkflows && !isExternalFileEnrichment)", source, StringComparison.Ordinal);
+        Assert.Contains("if (isExternalFileEnrichment && movedFiles != null)", source, StringComparison.Ordinal);
         Assert.Contains("forceProfileLyrics: true", source, StringComparison.Ordinal);
         Assert.Contains("new SidecarLyricsOptions(QueueLyricsRefresh: true", source, StringComparison.Ordinal);
     }

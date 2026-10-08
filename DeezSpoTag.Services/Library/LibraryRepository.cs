@@ -1728,7 +1728,13 @@ INSERT INTO quality_scan_action_log (
                                     folder.auto_tag_enabled,
                                     folder.convert_enabled,
                                     folder.convert_format,
-                                    folder.convert_bitrate
+                                    folder.convert_bitrate,
+                                    folder.soulseek_share_enabled,
+                                    folder.soulseek_share_alias,
+                                    folder.soulseek_share_include,
+                                    folder.soulseek_share_exclude,
+                                    folder.soulseek_share_scan_status,
+                                    folder.soulseek_share_scan_at
                                FROM folder
                           LEFT JOIN library ON library.id = folder.library_id
                            ORDER BY folder.display_name;";
@@ -2036,6 +2042,14 @@ LIMIT 20;";
         var convertEnabled = !await reader.IsDBNullAsync(10, cancellationToken) && reader.GetBoolean(10);
         var (convertFormat, convertBitrate) = await ReadFolderConvertSettingsAsync(reader, convertEnabled, cancellationToken);
 
+        // Soulseek sharing is opt-in, so a NULL or missing column reads as disabled rather than enabled.
+        var soulseekShareEnabled = !await reader.IsDBNullAsync(13, cancellationToken) && reader.GetBoolean(13);
+        var soulseekShareAlias = await ReadNullableStringAsync(reader, 14, cancellationToken);
+        var soulseekShareInclude = await ReadFilterListAsync(reader, 15, cancellationToken);
+        var soulseekShareExclude = await ReadFilterListAsync(reader, 16, cancellationToken);
+        var soulseekShareScanStatus = await ReadNullableStringAsync(reader, 17, cancellationToken);
+        var soulseekShareScanAt = await ReadFolderSoulseekScanAtAsync(reader, 18, cancellationToken);
+
         return new FolderDto(
             reader.GetInt64(0),
             reader.GetString(1),
@@ -2048,7 +2062,48 @@ LIMIT 20;";
             autoTagEnabled,
             convertEnabled,
             convertFormat,
-            convertBitrate);
+            convertBitrate,
+            soulseekShareEnabled,
+            soulseekShareAlias,
+            soulseekShareInclude,
+            soulseekShareExclude,
+            soulseekShareScanStatus,
+            soulseekShareScanAt);
+    }
+
+    /// <summary>
+    ///     Reads a newline-separated filter list column. Blank entries are dropped so a trailing newline in
+    ///     hand-edited data cannot become an empty pattern.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> ReadFilterListAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    {
+        var raw = await ReadNullableStringAsync(reader, ordinal, cancellationToken);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+
+        return raw
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(entry => entry.Length > 0)
+            .ToList();
+    }
+
+    private static async Task<DateTimeOffset?> ReadFolderSoulseekScanAtAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    {
+        var raw = await ReadNullableStringAsync(reader, ordinal, cancellationToken);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParse(
+            raw,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsed)
+            ? parsed
+            : null;
     }
 
     private static async Task<string> ReadFolderDesiredQualityAsync(SqliteDataReader reader, CancellationToken cancellationToken)
@@ -7370,6 +7425,137 @@ WHERE id = @id;";
         }
 
         return (await GetFoldersAsync(cancellationToken)).FirstOrDefault(folder => folder.Id == id);
+    }
+
+    /// <summary>
+    ///     Reads the folders the user has explicitly enabled for Soulseek sharing.
+    /// </summary>
+    /// <remarks>
+    ///     Only folders with <c>soulseek_share_enabled = 1</c> are returned, which is what makes the folder
+    ///     tab the single source of truth: nothing is shared unless that switch is on.
+    /// </remarks>
+    public async Task<IReadOnlyList<FolderDto>> GetSoulseekSharedFoldersAsync(CancellationToken cancellationToken = default)
+    {
+        var folders = await GetFoldersAsync(cancellationToken);
+        return folders.Where(folder => folder.SoulseekShareEnabled).ToList();
+    }
+
+    public async Task<FolderDto?> UpdateFolderSoulseekShareEnabledAsync(long id, bool enabled, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE folder
+SET soulseek_share_enabled = @enabled,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("enabled", enabled);
+        command.Parameters.AddWithValue("id", id);
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (rows == 0)
+        {
+            return null;
+        }
+
+        return (await GetFoldersAsync(cancellationToken)).FirstOrDefault(folder => folder.Id == id);
+    }
+
+    /// <summary>
+    ///     Updates the non-toggle parts of a folder's Soulseek share configuration.
+    /// </summary>
+    public async Task<FolderDto?> UpdateFolderSoulseekShareAsync(
+        long id,
+        string? alias,
+        IReadOnlyList<string>? includeFilters,
+        IReadOnlyList<string>? excludeFilters,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE folder
+SET soulseek_share_alias = @alias,
+    soulseek_share_include = @includeFilters,
+    soulseek_share_exclude = @excludeFilters,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("alias", (object?)NormalizeShareAlias(alias) ?? DBNull.Value);
+        command.Parameters.AddWithValue("includeFilters", (object?)SerializeFilterList(includeFilters) ?? DBNull.Value);
+        command.Parameters.AddWithValue("excludeFilters", (object?)SerializeFilterList(excludeFilters) ?? DBNull.Value);
+        command.Parameters.AddWithValue("id", id);
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (rows == 0)
+        {
+            return null;
+        }
+
+        return (await GetFoldersAsync(cancellationToken)).FirstOrDefault(folder => folder.Id == id);
+    }
+
+    /// <summary>
+    ///     Records the outcome of a share scan for a folder.
+    /// </summary>
+    public async Task<FolderDto?> UpdateFolderSoulseekShareScanAsync(
+        long id,
+        string? status,
+        DateTimeOffset? scannedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE folder
+SET soulseek_share_scan_status = @status,
+    soulseek_share_scan_at = @scannedAt,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("enabled", enabled);
+        command.Parameters.AddWithValue("id", id);
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (rows == 0)
+        {
+            return null;
+        }
+
+        return (await GetFoldersAsync(cancellationToken)).FirstOrDefault(folder => folder.Id == id);
+    }
+
+    /// <summary>
+    ///     Validates a share alias against slskd's rules.
+    /// </summary>
+    /// <remarks>
+    ///     slskd requires aliases to be unique, non-empty and free of path separators, and it uses the alias
+    ///     to hide the local folder name from remote peers. Rejecting separators here stops a folder from
+    ///     silently exposing its own path structure.
+    /// </remarks>
+    public static string? NormalizeShareAlias(string? alias)
+    {
+        var normalized = (alias ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return null;
+        }
+
+        return normalized.Contains('/', StringComparison.Ordinal)
+            || normalized.Contains('\\', StringComparison.Ordinal)
+            ? null
+            : normalized;
+    }
+
+    private static string? SerializeFilterList(IReadOnlyList<string>? filters)
+    {
+        if (filters == null || filters.Count == 0)
+        {
+            return null;
+        }
+
+        var entries = filters
+            .Select(filter => filter?.Trim())
+            .Where(filter => !string.IsNullOrEmpty(filter))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return entries.Length == 0 ? null : string.Join('\n', entries);
     }
 
     public async Task<bool> DeleteFolderAsync(long id, CancellationToken cancellationToken = default)

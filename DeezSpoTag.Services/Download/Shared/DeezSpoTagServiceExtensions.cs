@@ -2,6 +2,8 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Shared.Advanced;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
@@ -88,6 +90,18 @@ public static class DeezSpoTagServiceExtensions
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
+
+        // The Soulseek services are registered here, next to the processor that needs them, so that every host
+        // calling AddDeezSpoTagQueue can satisfy it. A host that owns the slskd credential store overrides the
+        // credential provider and the realtime publisher afterwards.
+        services.AddSoulseekDownloadEngine();
+        services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Soulseek.SoulseekEngineProcessor>();
+
+        // SoundCloud is registered the same way, for the same reason: every host that runs the queue has to be
+        // able to resolve it. A host that owns the protected credential store overrides the credential
+        // provider afterwards; without one it keeps public-only operation.
+        services.AddSoundCloudDownloadEngine();
+        services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.SoundCloud.SoundCloudEngineProcessor>();
 
         return services;
     }

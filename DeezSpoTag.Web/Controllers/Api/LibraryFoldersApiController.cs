@@ -441,6 +441,34 @@ public class LibraryFoldersApiController : ControllerBase
         return Ok(updated);
     }
 
+    /// <summary>Enables or disables Soulseek sharing for one folder.</summary>
+    /// <remarks>
+    ///     This lives beside the other per-folder toggles on purpose. The folder tab is the only place a user
+    ///     decides whether a folder is shared to Soulseek, so the switch it renders calls this endpoint. The
+    ///     <c>/api/v1/soulseek/shares</c> endpoints read and report the same rows; they are not a second
+    ///     toggle.
+    /// </remarks>
+    public sealed record UpdateFolderSoulseekShareEnabledRequest(bool? Enabled);
+
+    [HttpPut("{id:long}/soulseek-share-enabled")]
+    public async Task<IActionResult> UpdateSoulseekShareEnabled(
+        long id,
+        [FromBody] UpdateFolderSoulseekShareEnabledRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var updated = await _repository.UpdateFolderSoulseekShareEnabledAsync(
+            id,
+            request.Enabled == true,
+            cancellationToken);
+
+        return updated is null ? NotFound() : Ok(updated);
+    }
+
     private async Task<FolderDto?> ResolveExistingFolderAsync(long id, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)

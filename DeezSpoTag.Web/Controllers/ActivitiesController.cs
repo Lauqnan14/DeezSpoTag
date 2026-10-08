@@ -9,6 +9,7 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using System.Linq;
+using System.Globalization;
 using System.Text.Json;
 using DeezSpoTag.Core.Security;
 
@@ -40,6 +41,7 @@ public class ActivitiesController : Controller
     private const string UiQueuedStatus = "queued";
     private const string UiCompleteStatus = "complete";
     private const string ManualUnavailableImageUrl = "/images/unavailable/unavailable.jpg";
+    private const string DefaultCoverImageUrl = "/images/default-cover.png";
     private const string DownloadNotFoundMessage = "Download not found in queue";
     private const string DeezerSource = "deezer";
     private const string ArtistKey = "artist";
@@ -138,9 +140,14 @@ public class ActivitiesController : Controller
             : NotFound("Unavailable track record not found.");
     }
 
-    private static object MapManualUnavailableTrack(ManualUnavailableTrackDto track, int index)
+    internal static object MapManualUnavailableTrack(ManualUnavailableTrackDto track, int index)
     {
-        const string coverUrl = ManualUnavailableImageUrl;
+        // A row here is a track, not a playlist tile. ManualUnavailableImageUrl belongs to the
+        // "Unavailable Tracks" card and header; painting it over every row destroyed the one piece
+        // of metadata the record actually had. Unknown stays an empty string rather than becoming
+        // the playlist image, which would claim artwork the record never had.
+        var coverUrl = FirstNonEmpty(track.CoverUrl) ?? string.Empty;
+        var durationMs = track.DurationMs is > 0 ? track.DurationMs.Value : 0;
         return new
         {
             id = track.DeezerId ?? track.QueueUuid,
@@ -162,7 +169,7 @@ public class ActivitiesController : Controller
             link = track.SourceUrl ?? string.Empty,
             sourceUrl = track.SourceUrl ?? string.Empty,
             sourceTrackId = track.QueueUuid,
-            track_position = index + 1,
+            track_position = track.TrackNumber is > 0 ? track.TrackNumber.Value : index + 1,
             deezerId = track.DeezerId,
             spotifyId = track.SpotifyId,
             appleId = track.AppleId,
@@ -227,21 +234,17 @@ public class ActivitiesController : Controller
             }
 
             var activityStatus = GetActivityStatus(item.Status);
-            if (activityStatus == ActivityStatus.Running)
-            {
-                await GetDeezSpoTagApp().PauseDownloadAsync(request.Uuid);
-            }
-            else if (activityStatus is ActivityStatus.Queued or ActivityStatus.Retrying)
-            {
-                await _queueRepository.UpdateStatusAsync(request.Uuid, PausedStatus, cancellationToken: HttpContext.RequestAborted);
-            }
-            else if (IsTerminalActivityStatus(activityStatus))
+            if (IsTerminalActivityStatus(activityStatus))
             {
                 return BadRequest("Completed, failed, or canceled downloads cannot be paused.");
             }
-            else if (activityStatus != ActivityStatus.Paused)
+
+            if (activityStatus != ActivityStatus.Paused)
             {
-                return BadRequest("Only active downloads can be paused.");
+                // Route every pausable state through the app so the retry schedule is cleared and
+                // the user-pause intent is recorded. A raw status write would strand a scheduled
+                // retry and let the processor overwrite the pause with a terminal state.
+                await GetDeezSpoTagApp().PauseDownloadAsync(request.Uuid);
             }
 
             if (_logger.IsEnabled(LogLevel.Information))
@@ -381,7 +384,11 @@ public class ActivitiesController : Controller
             return Json(new
             {
                 success = true,
-                message = hidden > 0 || deleted > 0 ? successMessage : emptyMessage,
+                message = deleted > 0
+                    ? successMessage
+                    : hidden > 0
+                        ? $"{hidden} download(s) are hidden until their destination move completes; use Clear to remove them."
+                        : emptyMessage,
                 deleted,
                 hidden
             });
@@ -485,22 +492,24 @@ public class ActivitiesController : Controller
                 return BadRequest("Only failed, unavailable, or canceled downloads can be deleted");
             }
 
-            var hidden = await _queueRepository.MarkActivitiesClearedByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            // Delete first and only hide the row once it is really gone. Hiding up front would make a
+            // refused delete look successful while leaving an invisible row that still blocks dedupe
+            // and can be resurrected by the retry, fallback or post-download recovery paths.
             var deleted = await _queueRepository.DeleteClearableByUuidAsync(request.Uuid);
             if (deleted == 0)
             {
-                var itemHidden = hidden > 0;
-                if (!itemHidden)
-                {
-                    return BadRequest("Download cannot be removed until its destination move has completed.");
-                }
+                return Conflict(
+                    "Download cannot be removed until its destination move has completed. "
+                    + "Use Clear to hide it from this list for now.");
             }
+
+            await _queueRepository.MarkActivitiesClearedByUuidAsync(request.Uuid, HttpContext.RequestAborted);
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
             }
             _deezspotagListener.SendRemovedFromQueue(request.Uuid);
-            return Json(new { success = true, message = "Download removed from queue" });
+            return Json(new { success = true, message = "Download removed from queue", deleted });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -651,6 +660,11 @@ public class ActivitiesController : Controller
             if (cancelFailed > 0)
             {
                 message = $"Cleared queue entries and canceled {canceled} active download(s). {cancelFailed} active item(s) could not be canceled.";
+            }
+            else if (hidden > 0)
+            {
+                message = $"Cleared {deleted} download(s) and canceled {canceled} active download(s). "
+                    + $"{hidden} completed download(s) are hidden until their destination move completes.";
             }
 
             return Json(new
@@ -868,7 +882,7 @@ public class ActivitiesController : Controller
             || !string.IsNullOrWhiteSpace(GetPayloadString(payload, "watchlistPlaylistId", "WatchlistPlaylistId"))
             || !string.IsNullOrWhiteSpace(GetPayloadString(payload, "watchlistOrigin", "WatchlistOrigin"));
 
-    private static ManualUnavailableTrackUpsertInput BuildManualUnavailableTrackInput(
+    internal static ManualUnavailableTrackUpsertInput BuildManualUnavailableTrackInput(
         DownloadQueueItem item,
         IReadOnlyDictionary<string, object> payload)
         => new(
@@ -893,6 +907,52 @@ public class ActivitiesController : Controller
             FirstNonEmpty(GetPayloadString(payload, "contentType", "ContentType"), item.ContentType),
             FirstNonEmpty(item.Error, GetPayloadString(payload, "error", "Error", "errorMessage", "ErrorMessage")),
             item.PayloadJson);
+
+    /// <summary>
+    /// The track's own album artwork, resolved by key precedence.
+    /// </summary>
+    /// <remarks>
+    /// The queue payload writes a PLACEHOLDER into "cover" whenever no artwork was found
+    /// (<c>QueuePayloadBuilder.DefaultCoverPath</c>), so a plain key lookup hands back a path that is
+    /// not a cover at all. Storing it would put the "Unavailable Tracks" playlist image on an
+    /// individual track row. The placeholder is skipped so a real cover further down the key list
+    /// still wins, and an absent cover stays absent.
+    /// </remarks>
+    private static string? ResolveUnavailableCoverUrl(IReadOnlyDictionary<string, object> payload)
+        => QueuePayloadJsonParser.ReadCoverUrl(
+            payload,
+            "cover", "Cover", "coverUrl", "CoverUrl", "albumCover", "AlbumCover");
+
+    /// <summary>
+    /// The queue row's own duration wins, then a millisecond payload value, then legacy seconds.
+    /// </summary>
+    /// <remarks>
+    /// The seconds path is bounded before multiplying so an absurd payload cannot overflow into a
+    /// negative duration. Shared with the legacy backfill so a repaired record and a newly written one
+    /// resolve identically.
+    /// </remarks>
+    private static int? ResolveUnavailableDurationMs(
+        DownloadQueueItem item,
+        IReadOnlyDictionary<string, object> payload)
+        => QueuePayloadJsonParser.ResolveDurationMs(
+            payload,
+            item.DurationMs,
+            ["DurationMs", "durationMs"],
+            ["DurationSeconds", "durationSeconds"]);
+
+    private static int? GetPositivePayloadInt32(
+        IReadOnlyDictionary<string, object> payload,
+        params string[] keys)
+        => QueuePayloadJsonParser.ReadPositiveInt32(payload, keys);
+
+    /// <summary>
+    /// Accepts a JSON boolean, 0/1, or a boolean string in any casing. Returns null when the payload
+    /// says nothing, so an unknown explicit status is stored as unknown rather than as "false".
+    /// </summary>
+    private static bool? GetNullablePayloadBoolean(
+        IReadOnlyDictionary<string, object> payload,
+        params string[] keys)
+        => QueuePayloadJsonParser.ReadBoolean(payload, keys);
 
     private static string? ResolveExpectedFinalPathForUnavailableRecord(
         DownloadQueueItem item,
@@ -969,6 +1029,8 @@ public class ActivitiesController : Controller
             "qobuz" => MapQobuzQuality(settings.QobuzQuality),
             "tidal" => MapTidalQuality(settings.TidalQuality),
             "amazon" => "FLAC",
+            // A Soulseek quality belongs to the queued file; the payload supplies it when known.
+            "soulseek" => "",
             _ => ""
         };
     }
@@ -1019,7 +1081,16 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, ArtistKey, "Artist", "artistName", "ArtistName");
         EnsurePayloadField(payload, "album", "Album", "albumName", "AlbumName");
         EnsurePayloadField(payload, "albumArtist", "AlbumArtist", "album_artist", "Album_Artist");
-        EnsurePayloadField(payload, "cover", "Cover", "coverUrl", "CoverUrl", "albumCover", "AlbumCover");
+        EnsurePayloadField(
+            payload,
+            "cover",
+            "Cover",
+            "coverUrl",
+            "CoverUrl",
+            "albumCover",
+            "AlbumCover",
+            "soulseekDisplayCoverUrl",
+            "SoulseekDisplayCoverUrl");
         EnsurePayloadField(payload, "sourceService", "SourceService", "source_service");
         EnsurePayloadField(payload, "sourceUrl", "SourceUrl", "source_url");
         EnsurePayloadField(payload, "contentType", "ContentType", "content_type");

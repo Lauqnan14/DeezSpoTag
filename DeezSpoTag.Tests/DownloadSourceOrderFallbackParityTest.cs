@@ -10,7 +10,23 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadSourceOrderFallbackParityTest
 {
-    private static readonly string[] ExpectedTargetQualityFallback = { "deezer|3", "deezer|1", "tidal|LOW" };
+    // A seek to a catalogue step keeps the Soulseek step of the same tier with it, because a peer is the last
+    // resort for that quality rather than a separate block walked at the very end.
+    private static readonly string[] ExpectedTargetQualityFallback =
+    [
+        "deezer|3",
+        "soundcloud|HQ",
+        "soulseek|MP3_320",
+        "soulseek|MP3_256",
+        "amazon|OPUS",
+        "soulseek|MP3_192",
+        "deezer|1",
+        "soundcloud|SQ",
+        "soulseek|MP3_128",
+        "tidal|LOW",
+        "soulseek|UNKNOWN",
+        "soundcloud|LQ",
+    ];
     private static readonly string[] ExpectedDeezerQualityFallback = { "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
     private static readonly string[] ExpectedCustomQualityOrder = { "apple|ALAC", "qobuz|6", "tidal|LOSSLESS" };
@@ -25,7 +41,12 @@ public sealed class DownloadSourceOrderFallbackParityTest
     private static readonly string[] ExpectedAppleOnlyOrder = { "apple|ALAC", "apple|AAC" };
     private static readonly string[] ExpectedQobuzLosslessOrder = { "qobuz|6" };
     private static readonly string[] ExpectedDirectAppleOrder = { "apple|ALAC", "qobuz|6" };
-    private static readonly string[] ExpectedDefaultOrder =
+
+    /// <summary>
+    ///     The catalogue steps in ladder order, ignoring Soulseek. This is the order that shipped before
+    ///     Soulseek existed, so it is what proves the interleave changed nothing for the catalogue engines.
+    /// </summary>
+    private static readonly string[] ExpectedCatalogueOrder =
     {
         "qobuz|27",
         "tidal|HI_RES_LOSSLESS",
@@ -45,6 +66,178 @@ public sealed class DownloadSourceOrderFallbackParityTest
         "deezer|1",
         "tidal|LOW"
     };
+
+    /// <summary>
+    ///     Soulseek is the last resort <em>for each tier</em>: every Soulseek step sits directly after the
+    ///     catalogue steps of the same quality, so a peer search is only attempted once the services that
+    ///     could deliver that tier have been tried. Removing the Soulseek steps leaves
+    ///     <see cref="ExpectedCatalogueOrder"/> unchanged, which is what makes the interleave additive.
+    /// </summary>
+    private static readonly string[] ExpectedDefaultOrder =
+    [
+        "qobuz|27",
+        "tidal|HI_RES_LOSSLESS",
+        "soulseek|FLAC_HI_RES_LOSSLESS",
+        "qobuz|7",
+        "tidal|HI_RES",
+        "amazon|ULTRA_HD_FLAC",
+        "soulseek|FLAC_HI_RES",
+        "apple|ALAC",
+        "qobuz|6",
+        "tidal|LOSSLESS",
+        "amazon|HD_FLAC",
+        "deezer|9",
+        "soulseek|FLAC",
+        "soulseek|LOSSLESS",
+        "apple|AAC",
+        "qobuz|5",
+        "tidal|HIGH",
+        "deezer|3",
+        "soundcloud|HQ",
+        "soulseek|MP3_320",
+        "soulseek|MP3_256",
+        "amazon|OPUS",
+        "soulseek|MP3_192",
+        "deezer|1",
+        "soundcloud|SQ",
+        "soulseek|MP3_128",
+        "tidal|LOW",
+        "soulseek|UNKNOWN",
+        "soundcloud|LQ",
+    ];
+
+    /// <summary>
+    ///     An inactive Soulseek contributes no step to a plan, and takes nothing else with it.
+    /// </summary>
+    /// <remarks>
+    ///     The point is not only that Soulseek is absent. A plan that loses one engine must otherwise come out
+    ///     identical, because an inactive source that quietly reordered the ladder or shifted another engine's
+    ///     rung would change which file every other track downloads from.
+    /// </remarks>
+    [Fact]
+    public void AnIneligibleSoulseekIsOmittedWithoutDisturbingTheRestOfThePlan()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            QobuzQuality = "6",
+            TidalQuality = "LOSSLESS",
+            MaxBitrate = 3
+        };
+
+        var eligible = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings, includeDeezer: true, targetQuality: null, soulseekEligible: true);
+        var ineligible = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings, includeDeezer: true, targetQuality: null, soulseekEligible: false);
+
+        Assert.Contains(eligible, step => step == "soulseek|MP3_320");
+        Assert.DoesNotContain(ineligible, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+
+        // Everything else is exactly where it was.
+        Assert.Equal(
+            eligible.Where(step => !step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase)),
+            ineligible);
+    }
+
+    /// <summary>
+    ///     Soulseek being inactive must not remove another engine or invent one.
+    /// </summary>
+    [Fact]
+    public void AnIneligibleSoulseekNeverReplacesTheStepWithADifferentEngine()
+    {
+        var settings = new DeezSpoTagSettings { Service = "auto", MaxBitrate = 3 };
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings, includeDeezer: true, targetQuality: null, soulseekEligible: false);
+
+        // The reader selected Soulseek and got nothing. Silently fetching from Deezer instead would hand back a
+        // file they did not choose, which is the substitution the pin exists to prevent.
+        Assert.DoesNotContain(sources, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+        Assert.NotEmpty(sources);
+    }
+
+    [Fact]
+    public void AskingForAnIneligibleSoulseekProducesNoStepsAtAll()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines =
+                {
+                    new DownloadEngineOrderItem
+                    {
+                        Engine = "soulseek",
+                        Qualities =
+                        {
+                            new DownloadEngineQualityItem { Quality = "FLAC" },
+                            new DownloadEngineQualityItem { Quality = "MP3_320" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var blocked = DownloadSourceOrder.ResolveEngineQualitySources(
+            settings, "soulseek", requestedQuality: "FLAC", strict: true, soulseekEligible: false);
+        var allowed = DownloadSourceOrder.ResolveEngineQualitySources(
+            settings, "soulseek", requestedQuality: "FLAC", strict: true, soulseekEligible: true);
+
+        Assert.Empty(blocked);
+        Assert.NotEmpty(allowed);
+
+        // Another engine asked for by name is untouched, so the gate is specific to Soulseek.
+        Assert.NotEmpty(DownloadSourceOrder.ResolveEngineQualitySources(
+            settings, "deezer", requestedQuality: null, strict: false, soulseekEligible: false));
+    }
+
+    /// <summary>
+    ///     A plan persisted while Soulseek was logged in must not resurrect it after logout.
+    /// </summary>
+    [Fact]
+    public void APersistedPlanIsReCheckedRatherThanTrusted()
+    {
+        var settings = new DeezSpoTagSettings { Service = "custom", MaxBitrate = 3 };
+        var persisted = new List<string> { "soulseek|FLAC", "deezer|9", "tidal|LOSSLESS" };
+
+        var afterLogout = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            persisted,
+            engine: string.Empty,
+            requestedQuality: null,
+            strict: false,
+            includeDeezer: true,
+            soulseekEligible: false);
+
+        Assert.DoesNotContain(afterLogout, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+
+        // The other engines are still there, in their saved order.
+        Assert.Contains(afterLogout, step => step == "deezer|9");
+        Assert.Contains(afterLogout, step => step == "tidal|LOSSLESS");
+    }
+
+    /// <summary>
+    ///     Filtering Soulseek out must not be undone by the wholesale-restore fallback.
+    /// </summary>
+    [Fact]
+    public void AnEmptyFilteredPlanIsNotRefilledWithTheCallersStoredList()
+    {
+        var settings = new DeezSpoTagSettings { Service = "deezer", MaxBitrate = 3 };
+        var onlySoulseek = new List<string> { "soulseek|FLAC" };
+
+        var sources = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            onlySoulseek,
+            engine: "soulseek",
+            requestedQuality: "FLAC",
+            strict: true,
+            includeDeezer: true,
+            soulseekEligible: false);
+
+        Assert.Empty(sources);
+    }
 
     [Fact]
     public void ResolveQualityAutoSources_UsesCanonicalQualityOrder_WhenServiceIsAuto()
@@ -293,6 +486,181 @@ public sealed class DownloadSourceOrderFallbackParityTest
         Assert.DoesNotContain("qobuz|6", sources);
         Assert.DoesNotContain("tidal|LOSSLESS", sources);
         Assert.Equal(ExpectedTargetQualityFallback, sources);
+    }
+
+    [Theory]
+    [InlineData("flac")]
+    [InlineData("FLAC")]
+    [InlineData("mp3_320")]
+    [InlineData("mp3_128")]
+    [InlineData("unknown")]
+    [InlineData("flac_hires")]
+    [InlineData("flac_hi_res")]
+    [InlineData("flac_hi_res_lossless")]
+    public void ResolveQualityAutoSources_TargetQualityNeverStartsOnASoulseekStep(string targetQuality)
+    {
+        // Soulseek's codes are deliberately not linked into the shared tier table, so none of them may act as a
+        // seek target. Without this guard a request for "flac" would land on soulseek|FLAC at the tail of the
+        // ladder and silently skip every catalogue engine above it.
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
+
+        Assert.Equal(ExpectedDefaultOrder, sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_SoulseekIsLastForEachTierAndNeverAheadOfACatalogueStep()
+    {
+        // The invariant behind the interleave: for every Soulseek step, no catalogue step of the same tier may
+        // come after it, and no catalogue step of a worse tier may come before it.
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+
+        var tiers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["27"] = 60, ["HI_RES_LOSSLESS"] = 60, ["FLAC_HI_RES_LOSSLESS"] = 60,
+            ["7"] = 50, ["HI_RES"] = 50, ["ULTRA_HD_FLAC"] = 50, ["FLAC_HI_RES"] = 50,
+            ["6"] = 40, ["LOSSLESS"] = 40, ["ALAC"] = 40, ["HD_FLAC"] = 40, ["9"] = 40, ["FLAC"] = 40,
+            ["AAC"] = 30, ["5"] = 30, ["HIGH"] = 30, ["3"] = 30, ["MP3_320"] = 30, ["HQ"] = 30, ["MP3_256"] = 25,
+            ["OPUS"] = 20, ["MP3_192"] = 20,
+            ["1"] = 10, ["MP3_128"] = 10, ["SQ"] = 10,
+            ["LOW"] = 0, ["UNKNOWN"] = 0, ["LQ"] = -1
+        };
+
+        for (var i = 0; i < sources.Count; i++)
+        {
+            var step = DownloadSourceOrder.DecodeAutoSource(sources[i]);
+            if (!string.Equals(step.Source, "soulseek", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var tier = tiers[step.Quality!];
+
+            for (var j = i + 1; j < sources.Count; j++)
+            {
+                var later = DownloadSourceOrder.DecodeAutoSource(sources[j]);
+                if (string.Equals(later.Source, "soulseek", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                Assert.True(
+                    tiers[later.Quality!] < tier,
+                    $"Soulseek step '{sources[i]}' (tier {tier}) is followed by catalogue step '{sources[j]}' "
+                    + $"(tier {tiers[later.Quality!]}). A catalogue step of the same or better tier must be "
+                    + "tried before falling back to a peer.");
+            }
+        }
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_TargetQualityStillSeeksToACatalogueStep()
+    {
+        // The Soulseek skip must not disable the existing seek. "lossless" belongs to Tidal, so the ladder
+        // still has to start at Tidal's step rather than at the top.
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: "LOSSLESS");
+
+        Assert.Equal("tidal|LOSSLESS", sources[0]);
+        Assert.DoesNotContain("qobuz|27", sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_SoulseekFollowsTheCatalogueStepsOfItsOwnTier()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+
+        Assert.Equal(ExpectedDefaultOrder, sources);
+
+        // The catalogue order is untouched, which is what makes the interleave purely additive.
+        Assert.Equal(
+            ExpectedCatalogueOrder,
+            sources.Where(source => !source.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase)).ToArray());
+
+        // Each Soulseek step comes after every catalogue step of its own tier, and before the next tier down.
+        foreach (var (soulseekStep, precedingCatalogueSteps) in new[]
+                 {
+                    (Step: "soulseek|FLAC_HI_RES_LOSSLESS", Preceding: new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS" }),
+                    (Step: "soulseek|FLAC_HI_RES", Preceding: new[] { "qobuz|7", "tidal|HI_RES", "amazon|ULTRA_HD_FLAC" }),
+                    (Step: "soulseek|FLAC", Preceding: new[] { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "amazon|HD_FLAC", "deezer|9" }),
+                    (Step: "soulseek|MP3_320", Preceding: new[] { "apple|AAC", "qobuz|5", "tidal|HIGH", "deezer|3" })
+                })
+        {
+            var soulseekIndex = sources.IndexOf(soulseekStep);
+            Assert.True(soulseekIndex > 0, $"'{soulseekStep}' should be on the ladder.");
+
+            foreach (var catalogueStep in precedingCatalogueSteps)
+            {
+                Assert.True(
+                    sources.IndexOf(catalogueStep) < soulseekIndex,
+                    $"'{catalogueStep}' must be tried before '{soulseekStep}'.");
+            }
+        }
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_ANoLossCatalogueRequestNeverReachesAPeer()
+    {
+        // The failure this interleave prevents: a 320kbps request used to fall through to Soulseek's peer
+        // search only after 16 worse catalogue steps had already been tried and failed.
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: "5");
+
+        Assert.Equal(
+            new[] { "qobuz|5", "tidal|HIGH", "deezer|3", "soundcloud|HQ", "soulseek|MP3_320", "soulseek|MP3_256", "amazon|OPUS", "soulseek|MP3_192", "deezer|1", "soundcloud|SQ", "soulseek|MP3_128", "tidal|LOW", "soulseek|UNKNOWN", "soundcloud|LQ" },
+            sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_AtmosRequestIsUnaffectedBySoulseek()
+    {
+        // Atmos is a separate ladder. Soulseek is stereo and lossy-capable only, so it must not appear there.
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault()
+        };
+        settings.DownloadEngineOrder.Enabled = false;
+
+        var atmosSources = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings,
+            includeDeezer: true,
+            targetQuality: "DOLBY_ATMOS");
+
+        Assert.NotEmpty(atmosSources);
+        Assert.DoesNotContain(atmosSources, source => source.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

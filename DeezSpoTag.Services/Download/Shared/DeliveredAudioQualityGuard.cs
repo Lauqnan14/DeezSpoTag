@@ -1,6 +1,8 @@
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Download.Soulseek;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -107,7 +109,30 @@ internal static class DeliveredAudioQualityGuard
                 "HD_FLAC" => actual.IsLossless
                     && actual.BitsPerSample > 0
                     && actual.SampleRate > 0,
-                "OPUS" => true,
+                "OPUS" => actual.IsLossless || actual.BitrateKbps >= MinOpusBitrateKbps,
+                _ => true
+            };
+        }
+
+        if (IsSoulseekEngine(engine))
+        {
+            // Soulseek requested quality codes are the engine's own. UNKNOWN is accepted because the user
+            // opted into unknown-quality candidates; the scoring service is what rejects them by default.
+            // The two FLAC bands carry the same depth and sample-rate floors Qobuz's "27" and "7" use.
+            return normalized switch
+            {
+                "UNKNOWN" => true,
+                "FLAC_HI_RES_LOSSLESS" => actual.IsLossless
+                    && actual.BitsPerSample >= 24
+                    && actual.SampleRate >= 192000,
+                "FLAC_HI_RES" => actual.IsLossless
+                    && actual.BitsPerSample >= 24
+                    && actual.SampleRate > 0,
+                "LOSSLESS" or "FLAC" => actual.IsLossless && actual.BitsPerSample > 0,
+                "MP3_320" => !actual.IsLossless && actual.BitrateKbps >= 256,
+                "MP3_256" => !actual.IsLossless && actual.BitrateKbps >= 192,
+                "MP3_192" => !actual.IsLossless && actual.BitrateKbps >= 128,
+                "MP3_128" => !actual.IsLossless && actual.BitrateKbps > 0,
                 _ => true
             };
         }
@@ -128,6 +153,31 @@ internal static class DeliveredAudioQualityGuard
         };
     }
 
+    /// <summary>
+    ///     Renders an engine quality code using the label the shared catalog already publishes for it.
+    /// </summary>
+    /// <remarks>
+    ///     Soulseek's codes are engine-specific and numerous, so they are read from the one place that
+    ///     already lists them rather than repeated here and in the activity view.
+    /// </remarks>
+    private static string ResolveCatalogLabel(string? quality, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(quality))
+        {
+            return fallback;
+        }
+
+        var normalized = quality.Trim();
+        return QualityCatalog.GetEngineQualityOptions()
+            .TryGetValue(SoulseekQueueItem.EngineId, out var options)
+            ? options.FirstOrDefault(option => string.Equals(option.Value, normalized, StringComparison.OrdinalIgnoreCase))?.Label
+                ?? normalized
+            : normalized;
+    }
+
+    private static bool IsSoulseekEngine(string? engine)
+        => string.Equals(engine?.Trim(), "soulseek", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsAmazonEngine(string? engine)
         => string.Equals(engine?.Trim(), "amazon", StringComparison.OrdinalIgnoreCase);
 
@@ -139,6 +189,16 @@ internal static class DeliveredAudioQualityGuard
         if (IsTidalEngine(engine))
         {
             return TidalStereoQuality.FormatRequested(quality);
+        }
+
+        if (IsSoundCloudEngine(engine))
+        {
+            return SoundCloudStereoQuality.FormatRequested(quality);
+        }
+
+        if (IsSoulseekEngine(engine))
+        {
+            return ResolveCatalogLabel(quality, SoulseekQualityInfo.UnknownCode);
         }
 
         var normalized = (quality ?? string.Empty).Trim().ToUpperInvariant();

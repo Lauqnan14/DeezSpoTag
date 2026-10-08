@@ -2,6 +2,7 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Configuration;
@@ -647,6 +648,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         NormalizeGenreTagAliasRules(settings, defaultSettings, fixes);
         NormalizeGenreTagBlockList(settings, fixes);
         NormalizeShazamSettings(settings, defaultSettings, fixes);
+        NormalizeSoulseekSettings(settings, defaultSettings, fixes);
 
         return fixes.Changes;
     }
@@ -877,11 +879,132 @@ public class DeezSpoTagSettingsService : ISettingsService
             nameof(settings.AutoTagHistoryRetentionDays));
     }
 
-    private static void NormalizeDownloadEngineOrderSettings(
+    /// <summary>
+    ///     Normalizes the Soulseek download behaviour settings.
+    /// </summary>
+    /// <remarks>
+    ///     The rules are deliberately conservative: an out-of-range numeric value falls back to the
+    ///     documented default rather than being clamped, so a hand-edited <c>config.json</c> cannot quietly
+    ///     produce a search timeout of zero or a peer cooldown of a million minutes.
+    /// </remarks>
+    private static void NormalizeSoulseekSettings(
         DeezSpoTagSettings settings,
         SettingsFixTracker fixes)
     {
-        if (settings.DownloadEngineOrder?.Enabled == true
+        ApplyFixIf(
+            settings.Soulseek == null,
+            () => settings.Soulseek = defaultSettings.Soulseek,
+            fixes,
+            nameof(settings.Soulseek));
+
+        // Re-read after the fix so the compiler can see the section is non-null from here on.
+        var soulseek = settings.Soulseek ?? new SoulseekDownloadSettings();
+        var defaults = defaultSettings.Soulseek ?? new SoulseekDownloadSettings();
+
+        ApplySoulseekListFix(
+            soulseek.BlockedUsers,
+            NormalizeSoulseekFreeText,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.BlockedUsers)}",
+            fixes);
+
+        ApplySoulseekListFix(
+            soulseek.BlockedFilenamePatterns,
+            NormalizeSoulseekFreeText,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.BlockedFilenamePatterns)}",
+            fixes);
+
+        ApplyFixIf(
+            soulseek.SearchTimeoutSeconds is < 5 or > 600,
+            () => soulseek.SearchTimeoutSeconds = defaults.SearchTimeoutSeconds,
+            fixes,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.SearchTimeoutSeconds)}");
+
+        ApplyFixIf(
+            soulseek.MaximumPeerQueueLength is < 0 or > 100_000,
+            () => soulseek.MaximumPeerQueueLength = defaults.MaximumPeerQueueLength,
+            fixes,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.MaximumPeerQueueLength)}");
+
+        ApplyFixIf(
+            soulseek.PeerCooldownMinutes is < 0 or > 20_160,
+            () => soulseek.PeerCooldownMinutes = defaults.PeerCooldownMinutes,
+            fixes,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.PeerCooldownMinutes)}");
+
+        ApplyFixIf(
+            soulseek.SearchRetentionMinutes is < 1 or > 1_440,
+            () => soulseek.SearchRetentionMinutes = defaults.SearchRetentionMinutes,
+            fixes,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.SearchRetentionMinutes)}");
+
+        ApplyFixIf(
+            soulseek.MinimumPeerUploadSpeedBytesPerSecond < 0,
+            () => soulseek.MinimumPeerUploadSpeedBytesPerSecond = defaults.MinimumPeerUploadSpeedBytesPerSecond,
+            fixes,
+            $"{nameof(settings.Soulseek)}.{nameof(SoulseekDownloadSettings.MinimumPeerUploadSpeedBytesPerSecond)}");
+    }
+
+    /// <summary>
+    ///     Canonicalizes a list of settings entries, dropping blanks, duplicates and anything the
+    ///     normalizer rejects.
+    /// </summary>
+    /// <param name="normalizer">
+    ///     Returns the canonical form of an entry, or <see langword="null"/> to drop it. A plain trim-and-keep
+    ///     normalizer is supplied for the free-form lists (blocked users and filename patterns).
+    /// </param>
+    private static void ApplySoulseekListFix(
+        List<string>? values,
+        Func<string, string?> normalizer,
+        string fieldName,
+        SettingsFixTracker fixes)
+    {
+        if (values == null)
+        {
+            fixes.Mark(fieldName);
+            return;
+        }
+
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var changed = false;
+
+        foreach (var value in values)
+        {
+            var canonical = string.IsNullOrWhiteSpace(value) ? null : normalizer(value);
+            if (canonical is null || !seen.Add(canonical))
+            {
+                changed = true;
+                continue;
+            }
+
+            if (!string.Equals(canonical, value, StringComparison.Ordinal))
+            {
+                changed = true;
+            }
+
+            normalized.Add(canonical);
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        values.Clear();
+        values.AddRange(normalized);
+        fixes.Mark(fieldName);
+    }
+
+    private static string? NormalizeSoulseekFreeText(string value)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length == 0 ? null : trimmed;
+    }
+
+    private static void NormalizeDownloadEngineOrderSettings(
+        DeezSpoTagSettings settings,
+        SettingsFixTracker fixes)
+    {        if (settings.DownloadEngineOrder?.Enabled == true
             && string.Equals(settings.Service, DownloadSourceCatalog.Auto, StringComparison.OrdinalIgnoreCase))
         {
             settings.Service = DownloadSourceCatalog.Custom;

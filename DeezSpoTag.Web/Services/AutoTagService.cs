@@ -50,6 +50,25 @@ internal static class AutoTagLiterals
     internal const string RunIntentEnhancementOnly = "enhancement_only";
     internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
     internal const string RunIntentManualEnrichment = "manual_enrichment";
+
+    /// <summary>
+    ///     Enrichment of a verified Soulseek download, started automatically by download orchestration.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Structurally identical to <see cref="RunIntentManualEnrichment" />: both operate on external
+    ///         audio files through the same stages, templates, sidecars, move and resume. They are separate
+    ///         intents because they are separately triggered and separately owned - manual enrichment belongs
+    ///         to the reader who started it, this one to the queue item whose transfer completed - and because
+    ///         their admission rules are opposites. Manual enrichment is refused inside the download root
+    ///         because those files belong to the queue; this intent only ever runs there.
+    ///     </para>
+    ///     <para>
+    ///         Distinct from <see cref="RunIntentDownloadEnrichment" />, which is the ordinary destination
+    ///         folder operation whose move is owned by download orchestration.
+    ///     </para>
+    /// </remarks>
+    internal const string RunIntentSoulseekEnrichment = "soulseek_enrichment";
     internal const string RunIntentAliasMerge = "artist_alias_merge";
     internal const string CanceledStatus = "canceled";
     internal const string InterruptedStatus = "interrupted";

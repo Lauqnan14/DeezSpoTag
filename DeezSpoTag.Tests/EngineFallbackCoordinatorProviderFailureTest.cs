@@ -11,6 +11,8 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Caching.Memory;
@@ -93,6 +95,144 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
 
         await Assert.ThrowsAsync<IOException>(() =>
             coordinator.TryAdvanceAsync(payload.Id, "amazon", payload, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PersistedTidalId_DoesNotResolveWithoutTheTidalVariantCheck()
+    {
+        // A Tidal id sitting in the database is not proof of anything on its own. On Tidal an
+        // Atmos master is a different track with a different id from its stereo version, and it
+        // carries the same quality tags, so an id that was correct yesterday can hand back Atmos
+        // audio for a stereo request today. Building the link straight from the saved id would
+        // skip the only check that can catch that, and the mistake would surface at download time
+        // with the file already written.
+        //
+        // So a persisted id may only ever be used as a hint to ask Tidal, never as the answer.
+        // This service is built with no Tidal service wired in, which is exactly the situation in
+        // which there is nobody to ask: the correct outcome is unresolved, and the run moves on to
+        // the next fallback source instead of downloading the wrong variant.
+        var service = BuildFallbackSearchService();
+
+        var result = await service.ResolveAsync(
+            BuildFallbackSearchRequest("tidal", tidalId: "125064025"),
+            CancellationToken.None);
+
+        Assert.Null(result.ResolvedUrl);
+        Assert.Equal("unresolved", result.ResolutionSource);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("0")]
+    [InlineData("999999999999999999999999999999")]
+    public async Task MissingOrInvalidTidalIdRetainsMetadataResolutionPath(string tidalId)
+    {
+        var service = BuildFallbackSearchService();
+
+        var result = await service.ResolveAsync(
+            BuildFallbackSearchRequest("tidal", tidalId),
+            CancellationToken.None);
+
+        Assert.Null(result.ResolvedUrl);
+        Assert.Equal("unresolved", result.ResolutionSource);
+    }
+
+    [Fact]
+    public async Task ManualSoulseekPeerSelectionCannotAdvanceEvenWithAnOldCrossEnginePlan()
+    {
+        var payload = new SoulseekQueueItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            SourceService = "soulseek",
+            SourceUrl = "https://www.deezer.com/track/123",
+            Artist = "Selected Artist",
+            Title = "Selected Track",
+            Quality = "FLAC",
+            SoulseekUsername = "selected-peer",
+            SoulseekRemotePath = "Album/Selected Track.flac",
+            SoulseekQualityCode = "FLAC",
+            AutoIndex = 0,
+            FallbackPlan =
+            [
+                new("step-0", "soulseek", "FLAC", [], "mapped_url"),
+                new("step-1", "deezer", "9", [], "direct_url")
+            ]
+        };
+
+        var advanced = await BuildCoordinator(new ThrowingAmazonResolver(false))
+            .TryAdvanceAsync(payload.Id, "soulseek", payload, CancellationToken.None);
+
+        Assert.False(advanced);
+        Assert.Equal("soulseek", payload.Engine);
+        Assert.Equal("FLAC", payload.Quality);
+        Assert.Empty(payload.FallbackHistory);
+    }
+
+    [Fact]
+    public async Task FailedManualSoulseekPeerSelectionIsNotAutomaticallyRetried()
+    {
+        var payload = new SoulseekQueueItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            SourceService = "soulseek",
+            Artist = "Selected Artist",
+            Title = "Selected Track",
+            Quality = "FLAC",
+            SoulseekUsername = "selected-peer",
+            SoulseekRemotePath = "Album/Selected Track.flac",
+            SoulseekQualityCode = "FLAC"
+        };
+        await _repository.EnqueueAsync(new DownloadQueueItem(
+            Id: 0, QueueUuid: payload.Id, Engine: payload.Engine, ArtistName: payload.Artist,
+            TrackTitle: payload.Title, Isrc: null, DeezerTrackId: null,
+            DeezerAlbumId: null, DeezerArtistId: null, SpotifyTrackId: null,
+            SpotifyAlbumId: null, SpotifyArtistId: null, AppleTrackId: null,
+            AppleAlbumId: null, AppleArtistId: null, DurationMs: null,
+            DestinationFolderId: null, QualityRank: null, QueueOrder: null,
+            Status: "failed", PayloadJson: JsonSerializer.Serialize(payload), Progress: 0,
+            Downloaded: 0, Failed: 1, Error: "selected file failed", CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow));
+        // Recreate the repository as a restarted process would: the selected peer, path and quality must
+        // come back from durable queue JSON, not from an object retained in memory.
+        var reopened = new DownloadQueueRepository(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Queue"] = $"Data Source={Path.Join(_root, "queue.db")}",
+                ["DataDirectory"] = _root
+            })
+            .Build(), NullLogger<DownloadQueueRepository>.Instance);
+        var saved = await reopened.GetByUuidAsync(payload.Id);
+        Assert.NotNull(saved);
+        var restored = JsonSerializer.Deserialize<SoulseekQueueItem>(saved.PayloadJson!);
+        Assert.NotNull(restored);
+        Assert.Equal("selected-peer", restored.SoulseekUsername);
+        Assert.Equal("Album/Selected Track.flac", restored.SoulseekRemotePath);
+        Assert.Equal("FLAC", restored.SoulseekQualityCode);
+        Assert.True(SoulseekPinnedCandidatePolicy.IsManualSelection(restored));
+
+        var retry = new DownloadRetryScheduler(
+            reopened, _settings, new NullActivityLogWriter(), new DeezSpoTagListener(),
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+
+        var scheduled = await retry.ScheduleRetryAsync(payload.Id, "soulseek", "selected file failed");
+
+        Assert.False(scheduled);
+        Assert.False(await _repository.HasScheduledRetriesAsync());
+
+        // Older queued selections may already have a retry waiting when this rule is installed.
+        Assert.True(await _repository.ScheduleRetryAsync(payload.Id, "soulseek", "selected file failed", 3));
+        await using (var connection = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await connection.OpenAsync();
+            await using var due = connection.CreateCommand();
+            due.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+            due.Parameters.AddWithValue("$uuid", payload.Id);
+            await due.ExecuteNonQueryAsync();
+        }
+
+        Assert.False(await retry.RunRetrySweepAsync());
+        Assert.Equal("failed", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        Assert.False(await _repository.HasScheduledRetriesAsync());
     }
 
     private EngineFallbackCoordinator BuildCoordinator(

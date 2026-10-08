@@ -65,7 +65,10 @@ public sealed class DownloadQueueRequestAbortGuardrailTest
         Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, settings)", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("NormalizeSourcePolicy(settings.Service)", resolverSource, StringComparison.Ordinal);
-        Assert.Contains("\"auto\" or \"custom\" or \"amazon\" or \"apple\" or \"deezer\" or \"qobuz\" or \"tidal\"", resolverSource, StringComparison.Ordinal);
+        // "soulseek" was added to the accepted preference list when Soulseek became a selectable source.
+        // The assertion pins that the resolver keeps routing every engine through the shared catalog and
+        // never hard-codes a default engine, so the expected literal is updated rather than loosened.
+        Assert.Contains("\"auto\" or \"custom\" or \"amazon\" or \"apple\" or \"deezer\" or \"qobuz\" or \"soulseek\" or \"tidal\"", resolverSource, StringComparison.Ordinal);
     }
 
     [Fact]

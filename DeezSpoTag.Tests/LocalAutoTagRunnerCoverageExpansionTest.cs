@@ -415,6 +415,39 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTest
     }
 
     [Fact]
+    public void ResolveTargetFiles_ExcludesOnlyTheTopLevelIncompleteSubtree()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"autotag-runner-incomplete-{Guid.NewGuid():N}");
+        var partial = Path.Combine(root, "incomplete", "partial.flac");
+        var legitimate = Path.Combine(root, "Artist", "incomplete", "complete.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(legitimate)!);
+        try
+        {
+            File.WriteAllText(partial, "partial");
+            File.WriteAllText(legitimate, "audio");
+
+            var enumerated = InvokeStatic<IEnumerable<string>>(
+                "ResolveTargetFiles",
+                root,
+                CreateRunnerConfig(targetFiles: null, includeSubfolders: true)).ToList();
+            Assert.DoesNotContain(Path.GetFullPath(partial), enumerated);
+            Assert.Contains(Path.GetFullPath(legitimate), enumerated);
+
+            var explicitTargets = InvokeStatic<IEnumerable<string>>(
+                "ResolveTargetFiles",
+                root,
+                CreateRunnerConfig(targetFiles: new List<string> { partial, legitimate })).ToList();
+            Assert.DoesNotContain(Path.GetFullPath(partial), explicitTargets);
+            Assert.Contains(Path.GetFullPath(legitimate), explicitTargets);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void IsPathWithinScope_ReturnsFalseForEqualPath_AndTrueForDescendant()
     {
         var root = Path.Combine(Path.GetTempPath(), $"autotag-scope-{Guid.NewGuid():N}");

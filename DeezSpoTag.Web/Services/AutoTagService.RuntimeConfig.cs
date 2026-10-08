@@ -734,6 +734,7 @@ public partial class AutoTagService
             AutoTagLiterals.RunIntentEnhancementOnly => AutoTagLiterals.RunIntentEnhancementOnly,
             AutoTagLiterals.RunIntentEnhancementRecentDownloads => AutoTagLiterals.RunIntentEnhancementRecentDownloads,
             AutoTagLiterals.RunIntentManualEnrichment => AutoTagLiterals.RunIntentManualEnrichment,
+            AutoTagLiterals.RunIntentSoulseekEnrichment => AutoTagLiterals.RunIntentSoulseekEnrichment,
             AutoTagLiterals.RunIntentAliasMerge => AutoTagLiterals.RunIntentAliasMerge,
             _ => AutoTagLiterals.RunIntentDefault
         };

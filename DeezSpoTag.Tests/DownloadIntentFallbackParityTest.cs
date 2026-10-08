@@ -212,6 +212,72 @@ public sealed class DownloadIntentFallbackParityTest
         Assert.Contains("deezer|3", resolved);
     }
 
+    /// <summary>
+    ///     An inactive Soulseek drops out of a resolved plan without reordering what remains.
+    /// </summary>
+    [Fact]
+    public void AnIneligibleSoulseekIsOmittedWithoutReorderingTheRestOfThePlan()
+    {
+        var settings = CreateAutoSettings();
+        var persisted = new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "soulseek|FLAC", "deezer|3" };
+
+        var withSoulseek = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings, persisted, "qobuz", requestedQuality: null, strict: false, includeDeezer: true,
+            soulseekEligible: true);
+
+        var withoutSoulseek = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings, persisted, "qobuz", requestedQuality: null, strict: false, includeDeezer: true,
+            soulseekEligible: false);
+
+        Assert.DoesNotContain(withoutSoulseek, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            withSoulseek.Where(step => !step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase)),
+            withoutSoulseek);
+    }
+
+    /// <summary>
+    ///     An inactive Soulseek contributes no step to an auto-mode plan, and takes nothing else with it.
+    /// </summary>
+    [Fact]
+    public void AnIneligibleSoulseekIsAbsentFromAnAutoModePlan()
+    {
+        var settings = CreateAutoSettings();
+
+        var eligible = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings, includeDeezer: true, targetQuality: null, soulseekEligible: true);
+        var ineligible = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings, includeDeezer: true, targetQuality: null, soulseekEligible: false);
+
+        Assert.Contains(eligible, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(ineligible, step => step.StartsWith("soulseek|", StringComparison.OrdinalIgnoreCase));
+        Assert.NotEmpty(ineligible);
+    }
+
+    /// <summary>
+    ///     An explicitly-selected Soulseek step produces no Soulseek sources when there is no verified login.
+    /// </summary>
+    [Fact]
+    public void APinnedSoulseekStepYieldsNothingWhileInactive()
+    {
+        // `engine` is honoured only when the service is explicitly set, so force it here: this is the
+        // reader who picked Soulseek from the picker, which is the path a pinned step can travel.
+        var settings = CreateAutoSettings();
+        settings.Service = "soulseek";
+
+        var sources = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            new List<string> { "soulseek|FLAC" },
+            "soulseek",
+            requestedQuality: "FLAC",
+            strict: true,
+            includeDeezer: true,
+            soulseekEligible: false);
+
+        // The one engine the reader picked contributes nothing, and no substitute appears in its place: a
+        // pinned request must never become work on a different engine.
+        Assert.Empty(sources);
+    }
+
     [Fact]
     public void NormalizeEnqueueSettings_DoesNotForceFallbackBitrate_ForAutoService()
     {

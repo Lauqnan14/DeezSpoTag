@@ -18,7 +18,15 @@ public sealed record FolderDto(
     bool AutoTagEnabled,
     bool ConvertEnabled,
     string? ConvertFormat,
-    string? ConvertBitrate);
+    string? ConvertBitrate,
+    // Soulseek sharing state. Appended with defaults so existing construction sites keep compiling; the
+    // folder tab is the only place these are edited.
+    bool SoulseekShareEnabled = false,
+    string? SoulseekShareAlias = null,
+    IReadOnlyList<string>? SoulseekShareInclude = null,
+    IReadOnlyList<string>? SoulseekShareExclude = null,
+    string? SoulseekShareScanStatus = null,
+    DateTimeOffset? SoulseekShareScanAt = null);
 
 public sealed record FolderLibraryScopeDto(
     long FolderId,

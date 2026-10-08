@@ -32,7 +32,11 @@ public partial class AutoTagService
         Dictionary<string, FileTagOutcome> fileOutcomes,
         CancellationToken cancellationToken)
     {
-        if (!IsManualEnrichmentRunIntent(job.RunIntent)
+        // Both external-file intents own their own move, and both run under the download root, so they must
+        // reach the branches below rather than being skipped here. This guard exists for
+        // download_enrichment, whose finalization belongs to download orchestration; Soulseek enrichment is
+        // a different operation that performs its own scoped move and then hands the result back to the queue.
+        if (!IsExternalFileEnrichmentRunIntent(job.RunIntent)
             && ConfiguredDownloadRootResolver.TryResolve(
                 _settingsService,
                 "download location",

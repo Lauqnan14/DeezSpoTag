@@ -1,5 +1,7 @@
 using System.Text.Json;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Matching;
@@ -70,6 +72,20 @@ public sealed class EngineFallbackSearchService
     private const string AppleEngine = "apple";
     private const string TidalEngine = "tidal";
     private const string AmazonEngine = "amazon";
+    private const string SoulseekEngine = "soulseek";
+    private const string SoundCloudEngine = "soundcloud";
+
+    /// <summary>
+    ///     Sentinel returned for a Soulseek fallback step.
+    /// </summary>
+    /// <remarks>
+    ///     Soulseek has no catalogue id and no per-track URL to resolve: a Soulseek "resolution" is a live
+    ///     peer search performed by the engine when it runs. The fallback machinery still needs a
+    ///     non-empty result so the step is not discarded as unresolved, and the engine ignores
+    ///     <c>ResolvedSourceUrl</c> for Soulseek. The value is deliberately an obviously-fake scheme so it
+    ///     can never be mistaken for, or parsed as, a real store URL.
+    /// </remarks>
+    private const string SoulseekResolutionSentinel = SoulseekQueueItem.PeerSearchResolutionSentinel;
     private const string DefaultAppleStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly string[] AppleFallbackStorefronts = ["us", "gb", "ca", "au"];
@@ -139,6 +155,20 @@ public sealed class EngineFallbackSearchService
             if (!string.IsNullOrWhiteSpace(amazonUrl))
             {
                 return new EngineFallbackSearchResult(amazonUrl, "amazon-metadata-search");
+            }
+        }
+
+        if (string.Equals(request.Engine, SoulseekEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            return new EngineFallbackSearchResult(SoulseekResolutionSentinel, "soulseek-peer-search");
+        }
+
+        if (string.Equals(request.Engine, SoundCloudEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var soundCloudUrl = await ResolveSoundCloudUrlAsync(request, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(soundCloudUrl))
+            {
+                return new EngineFallbackSearchResult(soundCloudUrl, "soundcloud-metadata-search");
             }
         }
 

@@ -40,7 +40,7 @@ public sealed class SoulseekConnectionService
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(RequestTimeout);
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, "api/v0/server/state"));
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, "api/v0/server"));
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             if (!string.IsNullOrWhiteSpace(auth.ApiKey))
             {
@@ -94,7 +94,7 @@ public sealed class SoulseekConnectionService
         }
         catch (JsonException ex)
         {
-            _logger.LogDebug(ex, "slskd server/state response was not valid JSON.");
+            _logger.LogDebug(ex, "slskd server response was not valid JSON.");
             return SoulseekConnectionCheckResult.Failed("invalid_response", "slskd returned an invalid response.");
         }
     }
@@ -109,7 +109,7 @@ public sealed class SoulseekConnectionService
 
         if (!trimmed.Contains("://", StringComparison.Ordinal))
         {
-            trimmed = $"http://{trimmed}";
+            trimmed = $"{Uri.UriSchemeHttp}://{trimmed}";
         }
 
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)

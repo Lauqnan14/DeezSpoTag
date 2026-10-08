@@ -121,6 +121,36 @@ public static class QualityCatalog
                 new QualityOption("LOSSLESS", "CD Lossless (16-bit/44.1kHz)"),
                 new QualityOption("HIGH", "MP3 (320kbps)"),
                 new QualityOption("LOW", "Low (96kbps)")
+            },
+
+            // Soulseek reports raw codec and bitrate facts per file rather than tier-specific codes, so
+            // these are the engine's own selectable quality codes. They are deliberately NOT added to
+            // LibraryFolderQualityTiers.EngineValues: a Soulseek candidate is matched by its own band, and
+            // SoulseekQuality performs the mapping using the per-file facts before reusing
+            // GetLibraryFolderCanonicalRank for the rank.
+            ["soulseek"] = new[]
+            {
+                new QualityOption("FLAC_HI_RES_LOSSLESS", "Max Hi-Res (24-bit/192kHz)"),
+                new QualityOption("FLAC_HI_RES", "Hi-Res (24-bit/96kHz)"),
+                new QualityOption("FLAC", "FLAC (16-bit/44.1kHz)"),
+                new QualityOption("LOSSLESS", "Lossless (FLAC, ALAC, WAV, APE)"),
+                new QualityOption("MP3_320", "MP3 320 kbps"),
+                new QualityOption("MP3_256", "MP3 256 kbps"),
+                new QualityOption("MP3_192", "MP3 192 kbps"),
+                new QualityOption("MP3_128", "MP3 128 kbps"),
+                new QualityOption("UNKNOWN", "Unknown quality")
+            },
+
+            // SoundCloud publishes three lossy MP3 tiers and never advertises lossless, Hi-Res, or Atmos, so
+            // these are the engine's own codes rather than borrowed library tiers. Like Soulseek's, they are
+            // deliberately NOT added to LibraryFolderQualityTiers.EngineValues: a SoundCloud candidate is
+            // matched by its advertised label, and SoundCloudStereoQuality performs the mapping against the
+            // delivered bitrate before reusing GetLibraryFolderCanonicalRank for the rank.
+            ["soundcloud"] = new[]
+            {
+                new QualityOption("HQ", "SoundCloud HQ (256kbps)"),
+                new QualityOption("SQ", "SoundCloud Standard (128kbps)"),
+                new QualityOption("LQ", "SoundCloud Low (64kbps)")
             }
         };
     }

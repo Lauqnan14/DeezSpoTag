@@ -57,6 +57,22 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var startRequest = request!;
+
+        // The two external-file enrichment intents are NOT reachable from this route. Each owns its own
+        // entry point with checks this generic endpoint does not have: manual enrichment additionally
+        // requires an idle queue, because its files are staged and unowned; Soulseek enrichment is started
+        // only by download orchestration, for queue items whose transfer actually completed, and must never
+        // be selectable by hand over an arbitrary path inside the download root.
+        //
+        // Accepting the caller's RunIntent verbatim let both be reached here, which bypassed that ownership
+        // entirely - and TryValidateEnrichmentScope cannot be relied on to catch it, because it deliberately
+        // permits paths inside the download root.
+        if (IsExternalFileEnrichmentIntent(startRequest.RunIntent))
+        {
+            return BadRequest(
+                $"{DescribeEnrichmentIntentForCaller(startRequest.RunIntent)} must be started through its own endpoint.");
+        }
+
         var scopeError = await ValidateStartScopeAsync(normalizedPath, cancellationToken);
         if (scopeError != null)
         {
@@ -844,6 +860,32 @@ public class AutoTagJobsController : ControllerBase
             _ => true
         };
     }
+
+    /// <summary>
+    ///     Whether a run intent is one of the two external-file enrichment operations, neither of which the
+    ///     generic start route may run.
+    /// </summary>
+    /// <remarks>
+    ///     Duplicated from the service's private predicate on purpose. This is the untrusted edge: the check
+    ///     has to happen before a caller-supplied intent reaches the service, and it cannot rely on a private
+    ///     member of the type it is protecting.
+    /// </remarks>
+    private static bool IsExternalFileEnrichmentIntent(string? runIntent)
+    {
+        if (string.IsNullOrWhiteSpace(runIntent))
+        {
+            return false;
+        }
+
+        var normalized = runIntent.Trim().ToLowerInvariant();
+        return normalized is AutoTagLiterals.RunIntentManualEnrichment
+            or AutoTagLiterals.RunIntentSoulseekEnrichment;
+    }
+
+    private static string DescribeEnrichmentIntentForCaller(string? runIntent)
+        => string.Equals(runIntent?.Trim(), AutoTagLiterals.RunIntentSoulseekEnrichment, StringComparison.OrdinalIgnoreCase)
+            ? "Soulseek enrichment"
+            : "Manual enrichment";
 
     private async Task<(IActionResult? Error, DeezSpoTag.Core.Models.Settings.TaggingProfile? Profile)> ResolveSelectedProfileAsync(
         string? profileId)

@@ -149,7 +149,17 @@ Use the `Login` page to configure platform credentials.
 - `Soulseek Connection`:
   - `slskd URL` is required.
   - `slskd API key` can be set if your slskd instance requires one.
-- Soulseek is being carefully integrated into the app and will take a while before it is fully functional.
+- Soulseek is not deployed for you. It talks to a separate [`slskd`](https://github.com/slskd/slskd) instance
+  that you run yourself, reachable over HTTP. The app stores the URL and key encrypted in `soulseek.json` in
+  the data directory; nothing about slskd is baked into the image or the compose file.
+- Soulseek is the last resort for each quality tier. In the fallback ladder each Soulseek step sits directly
+  after the catalogue steps of the same quality, so a peer search is only attempted once every service that
+  could deliver that tier has been tried. A 24/192 request tries Qobuz, then Tidal, then a peer with 24/192 —
+  it never walks past a 96 kbps step looking for one.
+- It has no on/off switch, exactly like every other download engine. To stop using it, pick a different source
+  in settings, or clear it in the custom engine order.
+- Its FLAC quality is split into the same three bands Qobuz and Tidal use (24/192, 24/96, 16/44.1). ALAC,
+  WAV, APE and WavPack are all reported as generic `Lossless`.
 
 ### Discogs
 

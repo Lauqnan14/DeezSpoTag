@@ -23,6 +23,58 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string Album { get; set; } = "";
     public string AlbumArtist { get; set; } = "";
     public string Cover { get; set; } = "";
+
+    /// <summary>
+    ///     Catalogue artwork to show in the queue, and nothing else.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately separate from <see cref="Cover" />. The base cover is read by the post-download
+    ///     artwork pipeline and becomes the tagger's prefetched artwork source, so writing a display-only
+    ///     value there would override the per-profile artwork preference. This value is carried for
+    ///     presentation and must never be promoted to the base cover.
+    /// </remarks>
+    public string DisplayCoverUrl { get; set; } = "";
+
+    /// <summary>
+    ///     Gets or sets the Soulseek peer whose file the reader chose, when they chose one.
+    /// </summary>
+    /// <remarks>
+    ///     Empty for a track request that the library made, which searches for itself when it downloads. Set
+    ///     for a request made from the search tab, where the reader picked a specific candidate: the engine
+    ///     then fetches that peer file instead of running a second search and risking a different answer.
+    /// </remarks>
+    public string SoulseekUsername { get; set; } = "";
+
+    /// <summary>
+    ///     Gets or sets the chosen candidate's full remote path, on the same terms as
+    ///     <see cref="SoulseekUsername" />.
+    /// </summary>
+    public string SoulseekRemotePath { get; set; } = "";
+
+    /// <summary>Gets or sets the chosen candidate's size in bytes, used to verify the delivered file.</summary>
+    public long SoulseekRemoteSizeBytes { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the full remote paths of non-audio files the reader chose to take from the same peer
+    ///     folder: a cover image, lyrics or a cue sheet.
+    /// </summary>
+    /// <remarks>
+    ///     Empty unless peer artwork or peer lyrics was explicitly turned on. A release that is on no streaming
+    ///     service often has its only artwork in the folder the peer is sharing, so this is occasionally the
+    ///     only artwork a track will ever have. These are decoration, so a sidecar that fails to arrive is
+    ///     skipped and never fails the audio.
+    /// </remarks>
+    public List<string> SoulseekSidecarRemotePaths { get; set; } = new();
+
+    /// <summary>
+    ///     Gets or sets what the peer's folder is known to be: an album, a single, or nothing known.
+    /// </summary>
+    /// <remarks>
+    ///     Null means genuinely unknown, and is distinct from a single. It selects which destination profile
+    ///     the reader's album-against-single preference is applied to, so an honest unknown is carried all
+    ///     the way through rather than guessed at and frozen into the queue.
+    /// </remarks>
+    public string? SoulseekReleaseCategory { get; set; }
     public int DurationMs { get; set; }
     public int Position { get; set; }
     public List<string> Genres { get; set; } = new();

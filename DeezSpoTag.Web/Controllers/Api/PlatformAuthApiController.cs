@@ -8,6 +8,11 @@ using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Integrations.YouTube;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Download.Soulseek;
+using System.Security.Cryptography;
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Amazon;
@@ -44,7 +49,24 @@ public sealed class PlatformAuthApiDependencies
     public required IQobuzDownloadService QobuzDownloadService { get; init; }
     public required TidalDownloadService TidalDownloadService { get; init; }
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
-    public required SoulseekConnectionService SoulseekConnectionService { get; init; }
+    public required DeezSpoTag.Web.Services.SoulseekConnectionService SoulseekConnectionService { get; init; }
+
+    /// <summary>
+    ///     The verified-login authority the download path also uses.
+    /// </summary>
+    /// <remarks>
+    ///     Optional so a host that registers only the web-tier probe still resolves this controller. When it
+    ///     is absent nothing is invalidated on save or logout, which only costs a stale cache in a deployment
+    ///     that has no download engine registered anyway.
+    /// </remarks>
+    public ISoulseekConnectionService? SoulseekEligibility { get; init; }
+
+    /// <summary>
+    ///     Optional so a deployment that has not registered the SoundCloud engine still starts; the
+    ///     SoundCloud endpoints then report that the token could not be checked rather than the whole
+    ///     controller failing to activate.
+    /// </summary>
+    public ISoundCloudClient? SoundCloudClient { get; init; }
     public required DeezerSessionManager DeezerSessionManager { get; init; }
     public required ILoginStorageService LoginStorage { get; init; }
     public required ILogger<PlatformAuthApiController> Logger { get; init; }
@@ -85,7 +107,9 @@ public class PlatformAuthApiController : ControllerBase
     private readonly IQobuzDownloadService _qobuzDownloadService;
     private readonly TidalDownloadService _tidalDownloadService;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
-    private readonly SoulseekConnectionService _soulseekConnectionService;
+    private readonly DeezSpoTag.Web.Services.SoulseekConnectionService _soulseekConnectionService;
+    private readonly ISoulseekConnectionService? _soulseekEligibility;
+    private readonly ISoundCloudClient? _soundCloudClient;
     private readonly DeezerSessionManager _deezerSessionManager;
     private readonly ILoginStorageService _loginStorage;
     private readonly ILogger<PlatformAuthApiController> _logger;
@@ -107,6 +131,8 @@ public class PlatformAuthApiController : ControllerBase
         _tidalDownloadService = dependencies.TidalDownloadService;
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
+        _soulseekEligibility = dependencies.SoulseekEligibility;
+        _soundCloudClient = dependencies.SoundCloudClient;
         _deezerSessionManager = dependencies.DeezerSessionManager;
         _loginStorage = dependencies.LoginStorage;
         _logger = dependencies.Logger;
@@ -322,8 +348,204 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        var state = await RefreshSoulseekConnectionAsync(await _authService.LoadAsync(), cancellationToken);
-        return Ok(ToPublicSoulseek(state.Soulseek));
+        var state = await _authService.LoadAsync();
+
+        // One probe, one answer. This used to run the web-tier check, persist it, and then run the
+        // service-layer probe as well - two round trips to slskd for the same question, free to disagree, and
+        // the page could render "Connected" while the API was already refusing work. The service-layer probe is
+        // the authority the download path admits on, so it is the one that runs here, and its result is what
+        // gets recorded and what gets returned.
+        var eligibility = _soulseekEligibility is null
+            ? null
+            : await _soulseekEligibility.GetEligibilityAsync(cancellationToken).ConfigureAwait(false);
+
+        if (eligibility is not null)
+        {
+            state = await PersistSoulseekStatusAsync(eligibility, cancellationToken);
+        }
+
+        return Ok(ToPublicSoulseek(state.Soulseek, eligibility));
+    }
+
+    /// <summary>
+    ///     Writes an already-probed Soulseek result into the stored record.
+    /// </summary>
+    /// <remarks>
+    ///     It takes the status as an argument rather than probing for itself. Probing here as well as at the
+    ///     caller meant two independent round trips to slskd for one question, and the two answers could differ:
+    ///     the page rendered "Connected" from one while the API admitted new work on the other. The single
+    ///     service-layer probe now answers once and this only records it.
+    /// </remarks>
+    private async Task<PlatformAuthState> PersistSoulseekStatusAsync(
+        SoulseekConnectionStatus status,
+        CancellationToken cancellationToken)
+    {
+        var state = await _authService.LoadAsync().ConfigureAwait(false);
+        if (state.Soulseek is null || string.IsNullOrWhiteSpace(state.Soulseek.BaseUrl))
+        {
+            return state;
+        }
+
+        return await _authService.UpdateAsync(current =>
+        {
+            if (current.Soulseek is null)
+            {
+                return current;
+            }
+
+            current.Soulseek.ConnectionValid = status.IsUsable;
+            current.Soulseek.Username = status.Username ?? current.Soulseek.Username;
+            current.Soulseek.LastStatus = status.State.ToString().ToLowerInvariant();
+            current.Soulseek.LastError = status.IsUsable ? null : status.Message;
+            if (status.CheckedAtUtc is not null)
+            {
+                current.Soulseek.CheckedAt = status.CheckedAtUtc;
+            }
+
+            return current;
+        });
+    }
+
+    /// <summary>
+    ///     Re-checks the saved SoundCloud token against SoundCloud and returns the redacted state.
+    /// </summary>
+    /// <remarks>
+    ///     A read-only check, so a blank token in the body preserves what is saved rather than clearing it.
+    /// </remarks>
+    [HttpPost("soundcloud")]
+    public async Task<IActionResult> SaveSoundCloud(
+        [FromBody] SoundCloudAuth request,
+        CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request is null) return BadRequest("A SoundCloud token is required.");
+
+        var currentState = await _authService.LoadAsync();
+        var previous = currentState.SoundCloud;
+
+        // A blank submission is a status check, not a disconnect. Clearing the token is the explicit
+        // disconnect endpoint's job, so this cannot silently undo a working saved token.
+        var token = ResolveSubmittedSecret(request.OAuthToken, previous?.OAuthToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return BadRequest("A SoundCloud token is required.");
+        }
+
+        if (_soundCloudClient is null)
+        {
+            return StatusCode(503, new
+            {
+                saved = false,
+                error = "The SoundCloud engine is not available in this deployment."
+            });
+        }
+
+        var valid = await _soundCloudClient.ValidateCredentialsAsync(token, cancellationToken);
+
+        var candidate = new SoundCloudAuth
+        {
+            OAuthToken = token,
+            CredentialsValid = valid,
+            LastStatus = valid ? "connected" : "invalid_token",
+            LastError = valid ? null : "SoundCloud did not accept this token.",
+            CheckedAt = DateTimeOffset.UtcNow
+        };
+
+        var soundCloud = await _authService.UpdateAsync(state =>
+        {
+            state.SoundCloud = candidate;
+            return state.SoundCloud;
+        });
+
+        if (!valid)
+        {
+            // Reported as a rejection rather than a save, so the UI can keep the user on the form instead of
+            // showing a stored token that does not work.
+            return BadRequest(new
+            {
+                saved = false,
+                soundcloud = ToPublicSoundCloud(soundCloud),
+                error = "SoundCloud did not accept this token."
+            });
+        }
+
+        return Ok(new { saved = true, soundcloud = ToPublicSoundCloud(soundCloud) });
+    }
+
+    /// <summary>
+    ///     Clears the saved SoundCloud token.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         SoundCloud has no token revocation endpoint that a third-party app can call the way YouTube's
+    ///         does, so this removes the stored copy and nothing else. The token stays valid on SoundCloud's
+    ///         side until it expires or the user revokes it in their own account settings, which is why the
+    ///         login tab says so.
+    ///     </para>
+    ///     <para>
+    ///         Clearing is required rather than optional because the credential provider sends any non-empty
+    ///         token as a cookie on every page request. A stale token that is merely marked disconnected would
+    ///         still be sent, degrading every public download to whatever SoundCloud returns for it.
+    ///     </para>
+    /// </remarks>
+    [HttpPost("soundcloud/disconnect")]
+    public async Task<IActionResult> DisconnectSoundCloud(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+
+        var hadToken = !string.IsNullOrWhiteSpace((await _authService.LoadAsync()).SoundCloud?.OAuthToken);
+
+        await _authService.UpdateAsync(next =>
+        {
+            next.SoundCloud = null;
+            return next.SoundCloud;
+        });
+
+        return Ok(new
+        {
+            // A token that was never saved still reports true: the caller's intent was "there must be no
+            // token now", and that intent is satisfied. Reporting false would imply something was cleared
+            // when nothing was, which reads as a failure in the sidebar.
+            disconnected = true,
+            hadToken,
+            soundcloud = ToPublicSoundCloud(null)
+        });
+    }
+
+    [HttpGet("soundcloud/connection")]
+    public async Task<IActionResult> GetSoundCloudConnection(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+
+        var state = await _authService.LoadAsync();
+        var soundCloud = state.SoundCloud;
+
+        if (_soundCloudClient is null || soundCloud is null || string.IsNullOrWhiteSpace(soundCloud.OAuthToken))
+        {
+            return Ok(ToPublicSoundCloud(soundCloud));
+        }
+
+        var valid = await _soundCloudClient.ValidateCredentialsAsync(
+            soundCloud.OAuthToken,
+            cancellationToken);
+
+        var refreshed = await _authService.UpdateAsync(current =>
+        {
+            current.SoundCloud = new SoundCloudAuth
+            {
+                OAuthToken = soundCloud.OAuthToken,
+                CredentialsValid = valid,
+                LastStatus = valid ? "connected" : "invalid_token",
+                LastError = valid ? null : "SoundCloud did not accept the saved token.",
+                CheckedAt = DateTimeOffset.UtcNow
+            };
+            return current.SoundCloud;
+        });
+
+        return Ok(ToPublicSoundCloud(refreshed));
     }
 
     [HttpGet("public-providers/status")]
@@ -568,7 +790,7 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("slskd URL is required.");
         }
 
-        if (SoulseekConnectionService.NormalizeBaseUri(baseUrl) is null)
+        if (DeezSpoTag.Web.Services.SoulseekConnectionService.NormalizeBaseUri(baseUrl) is null)
         {
             return BadRequest("slskd URL is invalid.");
         }
@@ -594,6 +816,11 @@ public class PlatformAuthApiController : ControllerBase
             state.Soulseek = candidate;
             return state.Soulseek;
         });
+
+        // The cached answer was taken against the previous details, so it no longer describes this
+        // installation. Dropping it is what stops a source that was active a moment ago staying active for
+        // the length of the cache window after the reader pointed it somewhere else - or nowhere.
+        InvalidateSoulseekEligibility();
 
         return Ok(new { saved = true, soulseek = ToPublicSoulseek(soulseek) });
     }
@@ -1053,7 +1280,17 @@ public class PlatformAuthApiController : ControllerBase
         connected = auth?.CredentialsValid == true
     };
 
-    private static object ToPublicSoulseek(SoulseekAuth? auth)
+    /// <summary>
+    ///     Drops the cached Soulseek eligibility so the next admission check asks slskd again.
+    /// </summary>
+    /// <remarks>
+    ///     Called when the details change and when the reader logs out. Both make the previous answer wrong,
+    ///     and both happen outside the probe, so nothing else would notice.
+    /// </remarks>
+    private void InvalidateSoulseekEligibility()
+        => _soulseekEligibility?.Invalidate();
+
+    private static object ToPublicSoulseek(SoulseekAuth? auth, SoulseekConnectionStatus? eligibility = null)
     {
         var configured = !string.IsNullOrWhiteSpace(auth?.BaseUrl);
         var status = auth?.LastStatus;
@@ -1293,33 +1530,6 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
-    private async Task<PlatformAuthState> RefreshSoulseekConnectionAsync(
-        PlatformAuthState state,
-        CancellationToken cancellationToken)
-    {
-        var soulseek = state.Soulseek;
-        if (soulseek is null || string.IsNullOrWhiteSpace(soulseek.BaseUrl))
-        {
-            return state;
-        }
-
-        var check = await _soulseekConnectionService.CheckAsync(soulseek, cancellationToken);
-        return await _authService.UpdateAsync(current =>
-        {
-            if (current.Soulseek is null)
-            {
-                return current;
-            }
-
-            current.Soulseek.ConnectionValid = check.Connected;
-            current.Soulseek.Username = check.Username ?? current.Soulseek.Username;
-            current.Soulseek.LastStatus = check.Status;
-            current.Soulseek.LastError = check.Connected ? null : check.Message;
-            current.Soulseek.CheckedAt = check.CheckedAt;
-            return current;
-        });
-    }
-
     [ValidateAntiForgeryToken]
     [HttpPost("{platform}/disconnect")]
     public async Task<IActionResult> Disconnect(string platform, CancellationToken cancellationToken)
@@ -1399,6 +1609,13 @@ public class PlatformAuthApiController : ControllerBase
         if (normalizedPlatform == "tidal")
         {
             _tidalAccessTokenProvider.Invalidate();
+        }
+
+        // Logging out has to take effect at once. Leaving the cached answer in place would keep Soulseek
+        // active as a download source for the rest of the cache window, with nothing on screen saying so.
+        if (normalizedPlatform == "soulseek")
+        {
+            InvalidateSoulseekEligibility();
         }
 
         return Ok(new { disconnected = true });

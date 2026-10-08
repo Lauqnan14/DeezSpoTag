@@ -338,6 +338,36 @@
     box-sizing: border-box;
 }
 
+#soulseek-settingsGroup .switch-row {
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+}
+
+#soulseek-settingsGroup .switch-row .switch-label {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+#soulseek-settingsGroup .switch-row .switch {
+    display: inline-flex;
+    flex: 0 0 58px;
+    width: 58px;
+    height: 30px;
+    margin: 0;
+}
+
+#soulseek-settingsGroup .switch-row .switch input[type="checkbox"] {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    transform: none;
+}
+
 .shazam-options-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1338,6 +1368,126 @@
             </div>
         </div>
 
+        <div class="settings-section" id="soulseek-settings">
+            <div class="settings-header">
+                <span class="material-icons">headphones</span>
+                Soulseek
+            </div>
+            <div class="settings-content">
+                <div id="soulseek-settingsGroup">
+                    <p class="warning-text">
+                        Soulseek downloads are fetched through your own <code>slskd</code> instance.
+                        Configure the address and API key on the login page; only download behaviour
+                        belongs here. These settings are kept whatever the connection state: a reader who logs
+                        out must not silently lose the queue limits and timeouts they chose.
+                    </p>
+                    <!-- Verified availability, read from the same response the Login page and Search tab use, so the
+                         three surfaces cannot report different answers for the same moment. Populated by the
+                         existing platform-auth dialog client; no second probe. -->
+                    <p class="muted-text" id="soulseek-download-availability">Checking Soulseek connection…</p>
+                    <p class="warning-text">
+                        Map <code>slskd</code> completed downloads to the global DeezSpoTag download location.
+                        The top-level <code>incomplete</code> directory is ignored during enrichment.
+                    </p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="soulseekSearchTimeout">Search timeout (seconds)</label>
+                            <input type="number" id="soulseekSearchTimeout" min="5" max="600" value="30" />
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="soulseekMaxPeerQueue">Maximum peer queue length</label>
+                            <input type="number" id="soulseekMaxPeerQueue" min="0" max="100000" value="5" />
+                            <div class="warning-text">Peers with a longer queue are skipped.</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="soulseekMinPeerUploadSpeed">Minimum peer upload speed (bytes/second)</label>
+                            <input type="number" id="soulseekMinPeerUploadSpeed" min="0" value="0" />
+                            <div class="warning-text">Leave at 0 to accept any advertised speed.</div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="soulseekPeerCooldown">Peer cooldown (minutes)</label>
+                            <input type="number" id="soulseekPeerCooldown" min="0" max="20160" value="60" />
+                            <div class="warning-text">How long a peer is avoided after a failed transfer.</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div class="switch-row">
+                            <label class="switch-label" for="soulseekRequireFreeSlot">Require a free upload slot on the peer</label>
+                            <label class="switch" for="soulseekRequireFreeSlot">
+                                <input type="checkbox" id="soulseekRequireFreeSlot" checked />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="warning-text">A peer without a free slot cannot accept a download.</div>
+                    </div>
+                    <div class="form-group">
+                        <div class="switch-row">
+                            <label class="switch-label" for="soulseekAllowUnknownQuality">Allow files whose quality could not be determined</label>
+                            <label class="switch" for="soulseekAllowUnknownQuality">
+                                <input type="checkbox" id="soulseekAllowUnknownQuality" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="warning-text">Off by default, because an unknown quality can never be ranked.</div>
+                    </div>
+                    <div class="form-group">
+                        <div class="switch-row">
+                            <label class="switch-label" for="soulseekAutomationEnabled">Let Soulseek be used by automatic downloads</label>
+                            <label class="switch" for="soulseekAutomationEnabled">
+                                <input type="checkbox" id="soulseekAutomationEnabled" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="warning-text">When off, Soulseek is only used for downloads you queue yourself.</div>
+                    </div>
+                    <!-- Peer sidecars. Off by default because a peer is a stranger: turning these on
+                         means accepting a file from one. Nothing is fetched until the folder listing
+                         shows one and you tick it in the album drawer. -->
+                    <div class="form-group">
+                        <div class="switch-row">
+                            <label class="switch-label" for="soulseekUsePeerArtwork">Use cover art the peer shared with the album</label>
+                            <label class="switch" for="soulseekUsePeerArtwork">
+                                <input type="checkbox" id="soulseekUsePeerArtwork" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="warning-text">
+                            Takes the cover image sitting in the peer's folder and prefers it over catalogue
+                            artwork, because it belongs to the exact release. For a release no streaming
+                            service carries it is often the only art there is.
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div class="switch-row">
+                            <label class="switch-label" for="soulseekUsePeerLyrics">Use lyrics the peer shared with the album</label>
+                            <label class="switch" for="soulseekUsePeerLyrics">
+                                <input type="checkbox" id="soulseekUsePeerLyrics" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="warning-text">
+                            Takes an <code>.lrc</code> or the lyric block of a <code>.cue</code> sheet from the
+                            peer's folder. Most peers share no lyrics file at all, so this rarely changes
+                            anything.
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="soulseekBlockedUsers">Blocked users</label>
+                            <input type="text" id="soulseekBlockedUsers" placeholder="Comma separated usernames" />
+                        </div>
+                        <div class="form-group">
+                            <label for="soulseekBlockedPatterns">Blocked filename patterns</label>
+                            <input type="text" id="soulseekBlockedPatterns" placeholder="Comma separated, for example: unreleased, live" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="settings-section" id="spotify-settings">
             <div class="settings-header">
                 <span class="material-icons">music_note</span>
@@ -3213,6 +3363,98 @@ function initTabPreferenceToggle() {
     rememberTabs.checked = stored === null || stored === '' ? true : stored === 'true';
 }
 
+function splitSoulseekList(value) {
+    return String(value ?? '')
+        .split(',')
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0);
+}
+
+function applySoulseekSettings(soulseek) {
+    if (!soulseek) {
+        return;
+    }
+    setFieldValue('soulseekBlockedUsers', (soulseek.blockedUsers || []).join(', '));
+    setFieldValue('soulseekBlockedPatterns', (soulseek.blockedFilenamePatterns || []).join(', '));
+    setFieldValue('soulseekSearchTimeout', soulseek.searchTimeoutSeconds ?? 30);
+    setFieldValue('soulseekMaxPeerQueue', soulseek.maximumPeerQueueLength ?? 5);
+    setFieldValue('soulseekMinPeerUploadSpeed', soulseek.minimumPeerUploadSpeedBytesPerSecond ?? 0);
+    setFieldValue('soulseekPeerCooldown', soulseek.peerCooldownMinutes ?? 60);
+    setCheckboxValue('soulseekRequireFreeSlot', soulseek.requireFreeUploadSlot !== false);
+    setCheckboxValue('soulseekAllowUnknownQuality', soulseek.allowUnknownQuality === true);
+    setCheckboxValue('soulseekAutomationEnabled', soulseek.automationEnabled === true);
+    setCheckboxValue('soulseekUsePeerArtwork', soulseek.usePeerArtwork === true);
+    setCheckboxValue('soulseekUsePeerLyrics', soulseek.usePeerLyrics === true);
+    applySoulseekAvailability(soulseek);
+}
+
+/// <summary>
+///     Renders the verified Soulseek connection state next to the download settings.
+/// </summary>
+/// <remarks>
+///     Reads `active` and `reason`, the same fields the Login page and the Search tab render, and only calls
+///     its own fetch when a settings payload carried no connection state at all - so the three surfaces show one
+///     answer rather than three independently probed ones. It never infers availability from a configured URL or
+///     a saved API key.
+/// </remarks>
+function applySoulseekAvailability(soulseek) {
+    const target = document.getElementById('soulseek-download-availability');
+    if (!target) {
+        return;
+    }
+
+    if (soulseek && typeof soulseek.active === 'boolean') {
+        renderSoulseekAvailability(soulseek);
+        return;
+    }
+
+    if (!fetchSoulseekAvailability()) {
+        target.textContent = 'Soulseek availability could not be checked.';
+    }
+}
+
+function renderSoulseekAvailability(state) {
+    const target = document.getElementById('soulseek-download-availability');
+    if (!target) {
+        return;
+    }
+
+    const reason = state.reason || (state.configured === false ? 'Soulseek is not configured.' : 'Not connected.');
+    if (state.active === true) {
+        target.textContent = 'Soulseek is active: ' + reason;
+        target.classList.remove('warning-text');
+    } else {
+        target.textContent = 'Soulseek is inactive: ' + reason + ' Log in on the Login page to enable it.';
+        target.classList.add('warning-text');
+    }
+}
+
+function fetchSoulseekAvailability() {
+    if (typeof fetch !== 'function') {
+        return false;
+    }
+
+    fetch('/api/platform-auth/soulseek/connection', {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' }
+    }).then(function (response) {
+        if (!response.ok) {
+            throw new Error('failed');
+        }
+        return response.json();
+    }).then(function (state) {
+        renderSoulseekAvailability(state);
+    }).catch(function () {
+        const target = document.getElementById('soulseek-download-availability');
+        if (target) {
+            target.textContent = 'Soulseek availability could not be checked.';
+        }
+    });
+
+    return true;
+}
+
 function setupAccordionToggle() {
     document.querySelectorAll('.settings-header').forEach(header => {
         header.addEventListener('click', function() {
@@ -4766,6 +5008,7 @@ function loadSettings(settings) {
     setCheckboxValue('autoMaxBitrate', settings.autoMaxBitrate);
     setCheckboxValue('logErrors', settings.logErrors);
     renderDownloadEngineOrder(loadedDownloadEngineOrder);
+    applySoulseekSettings(settings.soulseek);
     updateCustomEngineOrderVisibility(loadedDownloadSource);
     setFieldValue('maxConcurrentDownloads', settings.maxConcurrentDownloads);
     setCheckboxValue('realTime', settings.realTime);
@@ -5180,6 +5423,24 @@ function collectFormData() {
         tidalQuality: getValue('multisource-tidalQuality', baseSettings.tidalQuality || 'HI_RES_LOSSLESS'),
         qobuzQuality: getValue('multisource-qobuzQuality', baseSettings.qobuzQuality || '27'),
         downloadEngineOrder: collectDownloadEngineOrder(),
+
+        // Download behaviour only. The slskd address and API key live in the encrypted platform auth state
+        // configured from the login page, so they are never part of config.json.
+        soulseek: {
+            allowUnknownQuality: document.getElementById('soulseekAllowUnknownQuality')?.checked === true,
+            searchTimeoutSeconds: getNumber('soulseekSearchTimeout', 30),
+            minimumPeerUploadSpeedBytesPerSecond: getNumber('soulseekMinPeerUploadSpeed', 0),
+            maximumPeerQueueLength: getNumber('soulseekMaxPeerQueue', 5),
+            requireFreeUploadSlot: document.getElementById('soulseekRequireFreeSlot')?.checked === true,
+            blockedUsers: splitSoulseekList(getValue('soulseekBlockedUsers', '')),
+            blockedFilenamePatterns: splitSoulseekList(getValue('soulseekBlockedPatterns', '')),
+            peerCooldownMinutes: getNumber('soulseekPeerCooldown', 60),
+            searchRetentionMinutes: 15,
+            autoRetryIncompleteTransfers: false,
+            automationEnabled: document.getElementById('soulseekAutomationEnabled')?.checked === true,
+            usePeerArtwork: document.getElementById('soulseekUsePeerArtwork')?.checked === true,
+            usePeerLyrics: document.getElementById('soulseekUsePeerLyrics')?.checked === true
+        },
 
         appleMusic: {
             storefront: getValue('appleStorefront', baseApple.storefront || 'us'),

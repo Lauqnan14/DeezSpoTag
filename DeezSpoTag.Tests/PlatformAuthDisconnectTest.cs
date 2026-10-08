@@ -66,6 +66,59 @@ public sealed class PlatformAuthDisconnectTest : IDisposable
         Assert.Null((await auth.LoadAsync()).Jellyfin);
     }
 
+    /// <summary>
+    ///     Logging out of Soulseek must take the source inactive immediately, not on the next cache expiry.
+    /// </summary>
+    /// <remarks>
+    ///     Checked against the controller source because the property is about a call being made on the
+    ///     disconnect path. A behavioural test would have to observe the twenty-second cache window, which is
+    ///     exactly the delay this rule exists to remove. The service half - that a stale in-flight probe is
+    ///     discarded - is covered by SoulseekConnectionServiceTest.
+    /// </remarks>
+    [Fact]
+    public void LoggingOutOfSoulseekInvalidatesTheCachedEligibilityImmediately()
+    {
+        // Resolved from the test assembly's own location, not from the temp root this fixture uses for data.
+        var controller = File.ReadAllText(Path.Join(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Controllers/Api/PlatformAuthApiController.cs"));
+
+        // Scoped to the shared platform disconnect action. Two actions end in the same return, so the search
+        // starts at the action rather than at the return.
+        var actionStart = controller.IndexOf(
+            "public async Task<IActionResult> Disconnect(string platform,",
+            StringComparison.Ordinal);
+        Assert.True(actionStart > 0, "The platform disconnect action was not found.");
+
+        var disconnectEnd = controller.IndexOf(
+            "return Ok(new { disconnected = true });",
+            actionStart,
+            StringComparison.Ordinal);
+        Assert.True(disconnectEnd > actionStart, "The platform disconnect action has no return.");
+
+        // The invalidation has to sit inside that action, before it returns.
+        var invalidate = controller.IndexOf(
+            "InvalidateSoulseekEligibility();",
+            actionStart,
+            StringComparison.Ordinal);
+        Assert.True(
+            invalidate > actionStart && invalidate < disconnectEnd,
+            "Disconnecting Soulseek does not drop the cached eligibility before returning.");
+
+        // Saving credentials has to do the same, because the cached answer described the old details. Bounded by
+        // the save action's own return so a call in some later action cannot satisfy the search.
+        var save = controller.IndexOf("public async Task<IActionResult> SaveSoulseek", StringComparison.Ordinal);
+        Assert.True(save > 0, "The Soulseek save action was not found.");
+
+        var saveEnd = controller.IndexOf("return Ok(new { saved = true", save, StringComparison.Ordinal);
+        Assert.True(saveEnd > save, "The Soulseek save action has no return.");
+
+        var saveInvalidate = controller.IndexOf("InvalidateSoulseekEligibility();", save, StringComparison.Ordinal);
+        Assert.True(
+            saveInvalidate > save && saveInvalidate < saveEnd,
+            "Saving Soulseek credentials does not drop the cached eligibility before returning.");
+    }
+
     public void Dispose()
     {
         try

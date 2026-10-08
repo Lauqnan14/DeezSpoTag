@@ -1466,6 +1466,16 @@ body.autotag-col-resizing * {
     margin-top: 12px;
 }
 
+/* Eight columns for eight cells, declared once.
+   This list used to be written out twice - once for the heading and once for the rows - and the two
+   copies drifted apart while a ninth cell was added to the rows. Seven declared columns against eight
+   children put the surplus in an implicit auto-sized column, which is what pushed "Actions" onto a
+   second line and left the Soulseek switch off the right edge of the table. Both grids now read this
+   one declaration, so they cannot disagree about where a column ends. */
+.folder-table-scroll {
+    --folder-columns: minmax(128px, 0.9fr) minmax(206px, 1.5fr) minmax(214px, 1.3fr) minmax(176px, 1fr) minmax(152px, 0.9fr) minmax(84px, 0.55fr) minmax(138px, 0.85fr) minmax(98px, 0.6fr);
+}
+
 .folder-table-header {
     display: grid;
     grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.6fr) minmax(300px, 1.5fr) minmax(190px, 1fr) minmax(160px, 0.95fr) minmax(150px, 0.85fr) minmax(200px, 0.95fr);
@@ -1501,6 +1511,32 @@ body.autotag-col-resizing * {
     display: flex;
     align-items: center;
     min-height: 36px;
+}
+
+/* A heading is one label on one line, centred over the column it names. Without the nowrap the shortest
+   column wrapped its word rather than letting the row stay whole, which is how the table ended up two
+   lines tall. */
+.folder-table-header > span {
+    justify-content: center;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The Soulseek column is headed by the mark and the word, so it still needs a name for a screen reader
+   and for anyone who cannot make the bird out at 18px. */
+.folder-table-header > .folder-soulseek-heading {
+    gap: 6px;
+    color: var(--text-muted);
+}
+
+.folder-soulseek-logo {
+    display: block;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    color: var(--accent-primary, var(--primary-color));
 }
 
 .folder-row .table-row span {
@@ -2246,6 +2282,9 @@ body.autotag-col-resizing * {
         line-height: 1.1;
     }
 
+    /* Below 900px the heading row is hidden, so these pseudo-labels are the only column names the
+       layout has. They are positional, so they have to track the cell order above: the Soulseek switch
+       is last, after Actions. */
     .folder-row .table-row > span:nth-child(1)::before { content: "Folder"; }
     .folder-row .table-row > span:nth-child(2)::before { content: "Path"; }
     .folder-row .table-row > span:nth-child(3)::before { content: "Quality"; }

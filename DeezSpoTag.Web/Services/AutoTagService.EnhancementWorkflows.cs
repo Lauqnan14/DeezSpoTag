@@ -607,8 +607,10 @@ public partial class AutoTagService
         CancellationToken cancellationToken,
         AutoTagMoveSummary? autoMoveSummary = null)
     {
-        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
-        if ((!includesEnhancementWorkflows && !isManualEnrichment)
+        // Soulseek enrichment reaches this workflow on the same terms as manual enrichment: it has no
+        // enhancement stage of its own, so this is where its shared behaviour lives.
+        var isExternalFileEnrichment = IsExternalFileEnrichmentRunIntent(job.RunIntent);
+        if ((!includesEnhancementWorkflows && !isExternalFileEnrichment)
             || !ShouldRunIntegratedWorkflowsForIntent(job.RunIntent)
             || !IsEnhancementWorkflowTrigger(job.Trigger))
         {
@@ -2027,6 +2029,34 @@ public partial class AutoTagService
         return string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
             || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase)
             || string.Equals(trigger, AutoTagLiterals.RecoveryTrigger, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    ///     Whether this run may enter the integrated sidecar/folder/quality workflows.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         An ordinary enhancement run keeps its existing trigger set. <c>automation</c> is excluded there
+    ///         on purpose: download orchestration drives its own enrichment and must not double-run the
+    ///         enhancement workflows behind it.
+    ///     </para>
+    ///     <para>
+    ///         External-file enrichment is the opposite case. A Soulseek enrichment run is started by
+    ///         download orchestration, so it always carries <c>automation</c>, and its sidecar phase is the
+    ///         only place that work happens at all - it has no enhancement stage of its own. Excluding
+    ///         <c>automation</c> here made every automatic Soulseek run tag, move and finalize without ever
+    ///         resolving lyrics or artwork.
+    ///     </para>
+    /// </remarks>
+    private static bool IsWorkflowTriggerAllowedForIntent(string? runIntent, string? trigger)
+    {
+        if (IsEnhancementWorkflowTrigger(trigger))
+        {
+            return true;
+        }
+
+        return IsExternalFileEnrichmentRunIntent(runIntent)
+            && string.Equals(trigger, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<EnhancementWorkflowOutcome> RunConfiguredFolderUniformityAsync(

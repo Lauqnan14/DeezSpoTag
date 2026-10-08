@@ -1142,6 +1142,7 @@ public partial class Program
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
         app.MapHub<DeezSpoTag.Web.Hubs.ActivitiesHub>("/activitiesHub");
         app.MapHub<DeezSpoTag.Web.Hubs.CrossDeviceSyncHub>("/crossDeviceSyncHub");
+app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         app.MapControllerRoute(
             name: "default",
             pattern: "{controller=Home}/{action=Index}/{id?}");
@@ -1231,6 +1232,31 @@ public partial class Program
 
         services.AddDeezSpoTagServices();
         services.AddDownloadEngine();
+        // Soulseek: the engine's own services are registered by AddDeezSpoTagQueue, alongside the processor
+        // that needs them, so every host can resolve the graph. What belongs to the web tier is only the two
+        // pieces that depend on web types: the encrypted credential store and the hub-backed progress
+        // publisher.
+        //
+        // These MUST stay below AddDownloadEngine(). That call reaches AddDeezSpoTagQueue a second time,
+        // which re-registers AddSoulseekDownloadEngine's null defaults for both service types, and the last
+        // registration wins. Registering the overrides in a helper that runs before this line therefore
+        // leaves the services layer holding the null objects: the connection probe then reports
+        // "notconfigured" for a valid saved instance, no reconnect is attempted, and no search update is
+        // ever published. Keeping the overrides here, in the same method as the shared call and after it,
+        // is what makes them win. SoulseekEngineRegistrationTest pins that ordering.
+        //
+        // There is no Soulseek feature flag. No other download engine has one, so Soulseek is switched off the
+        // same way as the rest: not selected as a source, or cleared in the custom engine order.
+        services.AddSingleton<DeezSpoTag.Services.Download.Soulseek.ISoulseekCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthSoulseekCredentialProvider>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SoulseekRealtimeService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Soulseek.ISoulseekRealtimePublisher>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekRealtimeService>());
+
+        // SoundCloud: same arrangement and same reason for the ordering. The engine's own services, including
+        // the null credential provider, are registered by AddDeezSpoTagQueue above; only the web tier can
+        // supply the protected-store-backed provider, so it is registered here where it wins.
+        services.AddSingleton<DeezSpoTag.Services.Download.SoundCloud.ISoundCloudCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthSoundCloudCredentialProvider>();
+
         services.AddSingleton<DeezSpoTag.Services.Download.IActivityLogWriter, DeezSpoTag.Web.Services.ActivityLogWriter>();
         services.AddSingleton<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DeezerLoginCoordinator>();
@@ -1439,6 +1465,8 @@ public partial class Program
                 TidalDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
+                SoulseekEligibility = sp.GetService<DeezSpoTag.Services.Download.Soulseek.ISoulseekConnectionService>(),
+                SoundCloudClient = sp.GetService<DeezSpoTag.Services.Download.SoundCloud.ISoundCloudClient>(),
                 DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>(),
                 LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>(),
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Controllers.Api.PlatformAuthApiController>>()

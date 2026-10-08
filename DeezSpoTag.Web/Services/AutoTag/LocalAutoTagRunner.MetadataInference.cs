@@ -41,8 +41,62 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool IsManualEnrichment(AutoTagRunnerConfig config)
-        => !string.IsNullOrWhiteSpace(config.ManualReleasePreference)
-           && config.ManualDestinationFolderId is > 0;
+        => IsExternalFileOrganizationRun(config.ManualReleasePreference, config.ManualDestinationFolderId);
+
+    /// <summary>
+    ///     Whether this run is an external-file operation: files that are not yet library tracks, that the
+    ///     run itself moves into a chosen destination, and that want a particular kind of release.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is the shape both external-file operations share. Manual enrichment and Soulseek
+    ///         enrichment differ in who starts them and whose files they may touch, but once a run is under
+    ///         way they are the same operation over different files, and they are told apart by the run
+    ///         intent rather than by their configuration.
+    ///     </para>
+    ///     <para>
+    ///         Both halves are required. A destination without a release preference is an ordinary run that
+    ///         merely knows where it is going, and a release preference without a destination has nothing to
+    ///         organize into - neither is an external-file operation, and neither may reorganize the library
+    ///         root as a side effect of being tagged.
+    ///     </para>
+    /// </remarks>
+    private static bool IsExternalFileOrganizationRun(string? manualReleasePreference, long? manualDestinationFolderId)
+        => !string.IsNullOrWhiteSpace(manualReleasePreference)
+           && manualDestinationFolderId is > 0;
+
+    /// <summary>
+    ///     The one staging root a recognized album group organizes into.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Album-wide uniformity is decided here, once, before anything is moved or tagged. Picking per
+    ///         member would let each track resolve its own folder as it was discovered, which is how an album
+    ///         ends up split across two directories.
+    ///     </para>
+    ///     <para>
+    ///         First-wins on disagreement, deliberately: the first track established is the one whose
+    ///         release identity the rest of the group is reconciled against, and taking whichever member
+    ///         happened to be processed last would reintroduce the split.
+    ///     </para>
+    /// </remarks>
+    private static string? ResolveSharedAlbumRoot(IReadOnlyList<string?> albumRoots, string? fallback = null)
+    {
+        if (albumRoots is null || albumRoots.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var albumRoot in albumRoots)
+        {
+            if (!string.IsNullOrWhiteSpace(albumRoot))
+            {
+                return albumRoot;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(fallback) ? null : fallback;
+    }
 
     private static HashSet<string> BuildNormalizedPathSet(IEnumerable<string>? paths)
         => paths?

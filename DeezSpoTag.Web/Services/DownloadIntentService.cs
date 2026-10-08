@@ -9,6 +9,8 @@ using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Identity;
+using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Utils;
@@ -17,6 +19,7 @@ using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Library;
@@ -139,7 +142,8 @@ public sealed class DownloadIntentService
         bool AllowCrossEngineFallback,
         bool UseAtmosStereoDual,
         List<string> AutoSources,
-        PlatformLinkResult? Availability);
+        PlatformLinkResult? Availability,
+        bool SoulseekEligible);
     private sealed record DestinationRoutingResult(
         long? PrimaryDestinationFolderId,
         long? SecondaryDestinationFolderId,
@@ -160,6 +164,8 @@ public sealed class DownloadIntentService
     private const string TidalPlatform = "tidal";
     private const string AmazonPlatform = "amazon";
     private const string QobuzPlatform = "qobuz";
+    private const string SoulseekPlatform = "soulseek";
+    private const string SoundCloudPlatform = "soundcloud";
     private const string TrackType = "track";
     private const string EpisodeType = "episode";
     private const string AlbumType = "album";
@@ -173,6 +179,10 @@ public sealed class DownloadIntentService
     private const string AttributesField = "attributes";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SearchValues<char> QueryFragmentSeparators = SearchValues.Create("?#");
+    // Engines that carry a catalogue track identity. Soulseek is intentionally absent: a Soulseek result is
+    // a peer filename, not a catalogue id, so there is no identity to resolve and nothing to persist here.
+    // HasRequiredEngineIdentity falls through to true for it, and ResolvePayloadSourceIdForEngine returns
+    // null, because the Soulseek engine resolves its own candidate at download time.
     private static readonly string[] AllIdentityEngines =
     {
         DeezerPlatform,
@@ -493,7 +503,8 @@ public sealed class DownloadIntentService
             allowCrossEngineFallback,
             useAtmosStereoDual,
             autoSources,
-            routing.Availability));
+            routing.Availability,
+            await ResolveSoulseekEligibilityAsync(cancellationToken).ConfigureAwait(false)));
         var fallbackPlan = primaryFallback.FallbackPlan;
         var selectedAutoIndex = primaryFallback.AutoIndex;
 
@@ -641,7 +652,8 @@ public sealed class DownloadIntentService
             target.AllowCrossEngineFallback,
             state.Routing.UseAtmosStereoDual,
             target.AutoSources,
-            state.Routing.Availability));
+            state.Routing.Availability,
+            await ResolveSoulseekEligibilityAsync(cancellationToken).ConfigureAwait(false)));
 
         await ResolveTrackIdentityMatrixAsync(
             intent,
@@ -1144,7 +1156,23 @@ public sealed class DownloadIntentService
             EnhancementDuplicatesFolderName = ReadPayloadString(
                 payload,
                 "EnhancementDuplicatesFolderName",
-                "enhancementDuplicatesFolderName") ?? string.Empty
+                "enhancementDuplicatesFolderName") ?? string.Empty,
+
+            // The Soulseek peer file, for the same reason as the SoundCloud permalink below: the payload is the
+            // only place the pin lives, because no column stores it. Without these three a queued item that is
+            // retried, resumed or re-resolved comes back as a plain track request, the engine runs a fresh search
+            // in front of it, and it downloads some other peer's copy of the track in some other quality. That
+            // is why a manual peer pick has to arrive here as the exact file the reader chose.
+            SoulseekUsername = ReadPayloadString(payload, "SoulseekUsername", "soulseekUsername") ?? string.Empty,
+            SoulseekRemotePath = ReadPayloadString(payload, "SoulseekRemotePath", "soulseekRemotePath") ?? string.Empty,
+            SoulseekRemoteSizeBytes = ReadPayloadInt64(payload, "SoulseekRemoteSizeBytes", "soulseekRemoteSizeBytes") ?? 0,
+
+            // The SoundCloud identity, for the same reason: without the permalink a retried, resumed, or
+            // re-resolved item would fall back to a metadata search and could download a different upload of the
+            // same track under the same name.
+            SoundCloudId = ReadPayloadString(payload, "SoundCloudId", "soundCloudId") ?? string.Empty,
+            SoundCloudUrl = ReadPayloadString(payload, "SoundCloudResolvedUrl", "soundCloudResolvedUrl")
+                            ?? string.Empty
         };
     }
 
@@ -1430,7 +1458,12 @@ public sealed class DownloadIntentService
     {
         var isAuto = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
             && (routing.IntentRequestsAuto || IsMultiEngineService(settings.Service));
-        var allowCrossEngineFallback = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty) && isAuto;
+        // A pinned Soulseek file is one file on one peer. Allowing a cross-engine fallback would let a failed
+        // transfer leave that peer for a catalogue source, which is a different download of a different file -
+        // so "queue this file" would quietly stop meaning this file. Only an unpinned request may roam.
+        var allowCrossEngineFallback = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
+            && isAuto
+            && !SoulseekPinnedCandidatePolicy.IsManualSelection(intent);
         var autoIndex = ResolveAutoStartIndex(intent.PreferredEngine, routing.PreferredEngine, routing.AutoSources);
         var selectedEngine = routing.AppleOnlyRequired
             ? ApplePlatform
@@ -1451,6 +1484,46 @@ public sealed class DownloadIntentService
             routing.AutoSources);
     }
 
+    /// <summary>
+    ///     Whether Soulseek has a verified login, for plan construction.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Asked once per enqueue rather than cached here, because the answer is about the network and the
+    ///         connection service already owns how long its own answer stays fresh.
+    ///     </para>
+    ///     <para>
+    ///         A host with no Soulseek engine registered resolves as eligible. That keeps the plan identical to
+    ///         today's for those deployments instead of failing every enqueue over a service they do not use,
+    ///         and no Soulseek step can exist there to be affected either way.
+    ///     </para>
+    /// </remarks>
+    private async Task<bool> ResolveSoulseekEligibilityAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var connection = _serviceProvider.GetService<ISoulseekConnectionService>();
+            if (connection is null)
+            {
+                // A host registering only the non-Soulseek engines has no connection authority, and no
+                // verified login. Reporting eligible here would leave those builds with a plan that names
+                // Soulseek the same as an installed engine that cannot answer. The honest report is
+                // inactive: an absent authority is indistinguishable from an absent login.
+                return false;
+            }
+
+            return (await connection.GetEligibilityAsync(cancellationToken).ConfigureAwait(false)).IsUsable;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A probe that cannot answer must not silently remove a source the reader chose and had working.
+            // Treating it as eligible leaves the admission gate to refuse the download with a precise reason,
+            // which is recoverable; dropping the step is not.
+            _logger.LogDebug(ex, "Could not determine Soulseek eligibility while building a fallback plan.");
+            return false;
+        }
+    }
+
     private (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) BuildEnqueueFallbackInfo(
         EnqueueFallbackRequest request)
     {
@@ -1458,7 +1531,12 @@ public sealed class DownloadIntentService
         var settings = request.Settings;
         var engine = request.TargetEngine;
         var quality = request.Quality;
-        var allowCrossEngineFallback = request.AllowCrossEngineFallback;
+        // A pinned Soulseek file is one file on one peer, so the plan is that single step whatever the caller
+        // asked for. Trusting the flag alone is not enough: this is the point where a plan becomes executable,
+        // and a plan that walks to another engine or another quality would replace the file the reader chose
+        // with one they did not.
+        var allowCrossEngineFallback = request.AllowCrossEngineFallback
+            && !SoulseekPinnedCandidatePolicy.IsManualSelection(intent);
         var useAtmosStereoDual = request.UseAtmosStereoDual;
         var autoSources = request.AutoSources;
         if (!request.MusicIntent)
@@ -1480,15 +1558,29 @@ public sealed class DownloadIntentService
             return (nonMusicPlan, nonMusicSources, 0);
         }
 
-        var payloadSources = IsAtmosSourceRequest(intent.ContentType, quality)
+        // A pinned Soulseek file gets exactly one step: its own engine and its own quality. Even on this
+        // engine the ladder would otherwise offer LOSSLESS, MP3_320 and the rest, and a failed transfer would
+        // go looking for a different file the reader never picked.
+        var pinnedSoulseek = SoulseekPinnedCandidatePolicy.IsManualSelection(intent);
+
+        // A plan is built once and can then sit in the queue for a while, so it is built against what is known
+        // now and the engine is re-checked again when a Soulseek step is actually reached. Omitting Soulseek
+        // here is what stops a plan from being born with a step that cannot run; the re-check is what stops a
+        // login that has since been revoked from being served out of a plan built before it.
+        var soulseekEligible = request.SoulseekEligible;
+
+        var payloadSources = pinnedSoulseek
+            ? [DownloadSourceOrder.EncodeAutoSource(engine, quality ?? string.Empty)]
+            : IsAtmosSourceRequest(intent.ContentType, quality)
             ? autoSources.Where(IsAtmosEncodedSource).ToList()
             : allowCrossEngineFallback
-                ? ResolveCrossEngineFallbackSources(intent, autoSources, settings, engine, quality)
+                ? ResolveCrossEngineFallbackSources(intent, autoSources, settings, engine, quality, soulseekEligible)
                 : DownloadSourceOrder.ResolveEngineQualitySources(
                     settings,
                     engine,
                     quality,
-                    strict: UseStrictQualityFallback(settings, engine, quality));
+                    strict: UseStrictQualityFallback(settings, engine, quality),
+                    soulseekEligible: soulseekEligible);
         payloadSources = PrioritizeFallbackSourcesByHealth(
             payloadSources,
             settings,
@@ -1520,7 +1612,8 @@ public sealed class DownloadIntentService
         List<string> autoSources,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         string engine,
-        string? quality)
+        string? quality,
+        bool soulseekEligible)
     {
         if (IsAtmosSourceRequest(intent.ContentType, quality))
         {
@@ -1536,7 +1629,8 @@ public sealed class DownloadIntentService
             engine,
             quality,
             strict,
-            includeDeezer: true);
+            includeDeezer: true,
+            soulseekEligible);
     }
 
     private static bool IsAtmosSourceRequest(string? contentType, string? quality)
@@ -4876,6 +4970,18 @@ public sealed class DownloadIntentService
             AmazonPlatform => url.Contains("amazon.", StringComparison.OrdinalIgnoreCase)
                         || url.Contains("music.amazon", StringComparison.OrdinalIgnoreCase),
             QobuzPlatform => url.Contains(QobuzDomain, StringComparison.OrdinalIgnoreCase),
+
+            // Soulseek has no store URL at all: its resolution is the peer-search sentinel the fallback
+            // service hands back. Recognising that sentinel as this engine's own answer is what stops a
+            // Soulseek item from being reported as a mapping failure and filed as unavailable, which is
+            // what a download that never ran looks like.
+            SoulseekPlatform => url.StartsWith(
+                SoulseekQueueItem.PeerSearchResolutionSentinel,
+                StringComparison.OrdinalIgnoreCase),
+
+            // SoundCloud resolves to a real permalink rather than a sentinel, so its own URL is recognised.
+            // A set URL is excluded: it is a collection, not something the engine can download.
+            SoundCloudPlatform => SoundCloudHydrationParser.IsSoundCloudTrackUrl(url),
             _ => false
         };
     }
@@ -5338,7 +5444,12 @@ public sealed class DownloadIntentService
             ["HIGH"] = 45,
             ["3"] = 40,
             ["LOW"] = 35,
-            ["1"] = 30
+            ["1"] = 30,
+
+            // Soulseek names the same three lossless bands, so it reuses Tidal's ranks rather than
+            // inventing a scale of its own. Without these the codes would carry no rank at all.
+            ["FLAC_HI_RES_LOSSLESS"] = 115,
+            ["FLAC_HI_RES"] = 95
         };
 
     private static readonly Dictionary<string, int> LocalQualityRanks =
@@ -5831,10 +5942,26 @@ public sealed class DownloadIntentService
             ApplePlatform => !string.IsNullOrWhiteSpace(payload.AppleId)
                 || IsServiceUrlMatch(sourceUrl, ApplePlatform),
             DeezerPlatform => !string.IsNullOrWhiteSpace(payload.DeezerId),
+
+            // A SoundCloud item counts as identified on its permalink alone. The id is not always recoverable
+            // from a URL, and the engine resolves the numeric id itself from the hydrated page.
+            SoundCloudPlatform => payload is SoundCloudQueueItem { SoundCloudResolvedUrl: { Length: > 0 } },
+
+            // A pinned Soulseek file is already identified: the reader chose the peer and the exact path in the
+            // search tab, so there is nothing left to look up. Marking it pending would send the item back out
+            // to be resolved, and resolution is what replaces a chosen file with a searched-for one.
+            SoulseekPlatform => SoulseekPinnedCandidatePolicy.IsManualSelection(payload),
             _ => false
         };
 
-        if (!hasDirectIdentity || !HasCompleteVisibleQueueMetadata(payload))
+        // A pinned Soulseek item is complete on its own: the peer, the path and the size are the whole
+        // identity, and a peer file legitimately has no ISRC, no catalogue cover and no known duration.
+        // Gating it on catalogue metadata would leave every real pinned file pending, and pending is what
+        // sends an item back out to be resolved - which is the one thing a manual pick must not do.
+        var identityIsSelfContained = payload.Engine == SoulseekPlatform
+            && SoulseekPinnedCandidatePolicy.IsManualSelection(payload);
+
+        if (!hasDirectIdentity || (!identityIsSelfContained && !HasCompleteVisibleQueueMetadata(payload)))
         {
             payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
             return;
@@ -5843,7 +5970,13 @@ public sealed class DownloadIntentService
         payload.ResolutionStatus = QueuePreResolutionPayload.Resolved;
         payload.ResolvedAtUtc = DateTimeOffset.UtcNow;
         payload.ResolvedEngine = payload.Engine;
-        payload.ResolvedSourceUrl = sourceUrl;
+
+        // A pinned Soulseek file has no catalogue URL, and a resolved item is defined as one that names what it
+        // resolved to. The peer's own path is that identity, and without it the payload reads as unresolved the
+        // moment it is serialized - which sends a manually chosen file back out to be searched for.
+        payload.ResolvedSourceUrl = identityIsSelfContained && payload is SoulseekQueueItem pinned
+            ? pinned.SoulseekRemotePath
+            : sourceUrl;
         payload.ResolvedQuality = payload.Quality;
         payload.ResolvedAutoIndex = payload.AutoIndex;
     }
@@ -5897,6 +6030,46 @@ public sealed class DownloadIntentService
         var useCrossEngineOrder = IsMusicIntent(intent)
             && !IsVideoIntent(intent)
             && IsMultiEngineService(settings.Service);
+
+        // A download queued from the Soulseek tab asked for Soulseek. Its plan therefore stays on Soulseek and
+        // on the qualities the reader has enabled - the same subset the search tab shows as its ladder, in
+        // ladder order. A miss is a failed attempt on that engine and is retried there, never a silent jump to
+        // a source the reader did not choose, and never a walk down eight rungs they never enabled. Every other
+        // enqueue - the library, a playlist, another platform - keeps the cross-engine ladder below, where
+        // Soulseek is one of the steps.
+        if (IsSoulseekQueueRequest(intent))
+        {
+            // A pinned file is one file, not one rung of a ladder. The reader picked a peer and a path in the
+            // search tab, so the plan is that file's own quality and nothing else: asking for FLAC_HI_RES as
+            // well would make a failed transfer try to find a better file the reader never chose, from a peer
+            // they never chose, and a "manual selection" would quietly become a search.
+            if (SoulseekPinnedCandidatePolicy.IsManualSelection(intent))
+            {
+                var pinnedQuality = intent.Quality?.Trim();
+                if (!string.IsNullOrWhiteSpace(pinnedQuality))
+                {
+                    return [$"{SoulseekPlatform}|{pinnedQuality}"];
+                }
+            }
+
+            var enabledSoulseekQualities = DownloadSourceOrder.ResolveEnabledSoulseekQualities(settings);
+            if (enabledSoulseekQualities.Count > 0)
+            {
+                return enabledSoulseekQualities
+                    .Select(quality => $"{SoulseekPlatform}|{quality}")
+                    .ToList();
+            }
+
+            // Soulseek is not in the ladder at all - it is off as a source - but the reader asked for it from
+            // its own tab, so the engine's own configured qualities are used rather than an empty plan, which
+            // would leave the item with nothing to walk.
+            return DownloadSourceOrder.ResolveEngineQualitySources(
+                settings,
+                SoulseekPlatform,
+                selectedQuality,
+                strict: false);
+        }
+
         if (useCrossEngineOrder)
         {
             var sources = DownloadSourceOrder.ResolveQualityAutoSources(
@@ -5916,6 +6089,19 @@ public sealed class DownloadIntentService
             strict: UseStrictQualityFallback(settings, engine, selectedQuality));
     }
 
+    /// <summary>
+    ///     Whether this intent was queued from the Soulseek tab, rather than arriving from the library or
+    ///     another platform.
+    /// </summary>
+    /// <remarks>
+    ///     The Soulseek tab is the only thing that sets the Soulseek service on an intent, so this is the
+    ///     signal that the reader chose the engine. It is deliberately not "the ladder reached Soulseek": a
+    ///     library download that walks onto Soulseek is still the library's download and still walks on.
+    /// </remarks>
+    private static bool IsSoulseekQueueRequest(DownloadIntent intent)
+        => string.Equals(intent?.SourceService, SoulseekPlatform, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(intent?.PreferredEngine, SoulseekPlatform, StringComparison.OrdinalIgnoreCase);
+
     private static EngineQueueItemBase CreateQueuePayloadForEngine(string engine)
         => engine switch
         {
@@ -5923,6 +6109,15 @@ public sealed class DownloadIntentService
             TidalPlatform => new TidalQueueItem(),
             AmazonPlatform => new AmazonQueueItem(),
             QobuzPlatform => new QobuzQueueItem(),
+            // Soulseek must be named here. Falling through to the Deezer payload would enqueue the item with
+            // Engine="deezer" and no Soulseek fields, so the engine would be dispatched but would have nothing
+            // to search with.
+            SoulseekPlatform => new SoulseekQueueItem(),
+
+            // SoundCloud must be named here for the same reason: falling through to the Deezer payload would
+            // enqueue an item with Engine="deezer" and no SoundCloud fields, so the processor would be
+            // dispatched with nothing to resolve a track from.
+            SoundCloudPlatform => new SoundCloudQueueItem(),
             _ => new DeezerQueueItem()
         };
 
@@ -5944,6 +6139,12 @@ public sealed class DownloadIntentService
                 break;
             case QobuzQueueItem qobuz:
                 ApplyIntentMetadata(qobuz, intent);
+                break;
+            case SoulseekQueueItem soulseek:
+                ApplyIntentMetadata(soulseek, intent);
+                break;
+            case SoundCloudQueueItem soundCloud:
+                ApplyIntentMetadata(soundCloud, intent);
                 break;
         }
     }
@@ -6342,7 +6543,8 @@ public sealed class DownloadIntentService
             AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
-            Availability: request.Availability));
+            Availability: request.Availability,
+            SoulseekEligible: true));
         payload.FallbackPlan = fallbackInfo.FallbackPlan;
         payload.AutoIndex = fallbackInfo.AutoIndex;
 
@@ -6401,7 +6603,8 @@ public sealed class DownloadIntentService
             AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
-            Availability: request.Availability));
+            Availability: request.Availability,
+            SoulseekEligible: true));
         var payload = new TidalQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
             tidalAtmosUrl,
@@ -6475,7 +6678,8 @@ public sealed class DownloadIntentService
             AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosFallbackEnabled == true,
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
-            Availability: request.Availability));
+            Availability: request.Availability,
+            SoulseekEligible: true));
         var payload = new AmazonQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
             amazonTrack.Url,
@@ -6816,6 +7020,60 @@ public sealed class DownloadIntentService
         ApplyIntentMetadataToStereoPayload(payload, intent);
     }
 
+    private static void ApplyIntentMetadata(SoundCloudQueueItem payload, DownloadIntent intent)
+    {
+        // SoundCloud carries no podcast or video path, so the shared stereo metadata copy is the whole of it.
+        ApplyIntentMetadataToStereoPayload(payload, intent);
+
+        // The exact permalink is what makes the engine download the track the reader picked rather than
+        // searching for something else. The id is recorded beside it for the queue display; the engine
+        // resolves the real numeric id from the hydrated page, because a permalink path does not carry it.
+        payload.SoundCloudId = intent.SoundCloudId?.Trim() ?? string.Empty;
+        payload.SoundCloudResolvedUrl = SoundCloudHydrationParser.IsSoundCloudTrackUrl(intent.SoundCloudUrl)
+            ? intent.SoundCloudUrl.Trim()
+            : SoundCloudHydrationParser.IsSoundCloudTrackUrl(payload.SourceUrl)
+                ? payload.SourceUrl
+                : string.Empty;
+    }
+
+    private static void ApplyIntentMetadata(SoulseekQueueItem payload, DownloadIntent intent)
+    {
+        // Soulseek carries no podcast or video path, so the shared stereo metadata copy is the whole of it.
+        ApplyIntentMetadataToStereoPayload(payload, intent);
+
+        // Display artwork only. This is deliberately not written to the base Cover: that field is the
+        // post-download pipeline's prefetched-artwork source, so a URL chosen for the queue thumbnail would
+        // otherwise become the artwork embedded in the file and override the profile's artwork preference.
+        // The shared call above does not touch Cover either, so the base field stays empty for Soulseek and
+        // the file's artwork is decided solely by the profile-driven fallback.
+        payload.SoulseekDisplayCoverUrl = intent.DisplayCoverUrl?.Trim() ?? string.Empty;
+
+        // The candidate the reader picked in the search tab, carried onto the item so the engine downloads
+        // that exact peer file instead of running a second search for the same track. Both values are empty
+        // for a track request from the library, which is what tells the engine to search for itself.
+        //
+        // Only a Soulseek request may carry a pin. A DownloadIntent is reused across engines, so an intent
+        // that already holds a peer and path from an earlier step would otherwise hand them to an item queued
+        // for another source - and a Deezer item carrying a Soulseek pin makes its engine fetch a Soulseek
+        // file under a Deezer request. SoulseekPinnedCandidatePolicy.IsManualSelection is the rule for what a
+        // pin is, so the same rule decides whether it may be written here.
+        if (SoulseekPinnedCandidatePolicy.IsManualSelection(intent))
+        {
+            payload.SoulseekUsername = intent.SoulseekUsername?.Trim() ?? string.Empty;
+            payload.SoulseekRemotePath = intent.SoulseekRemotePath?.Trim() ?? string.Empty;
+            if (intent.SoulseekRemoteSizeBytes > 0)
+            {
+                payload.SoulseekRemoteSizeBytes = intent.SoulseekRemoteSizeBytes;
+            }
+
+            // The quality the chosen file actually is, which is what tells the request builder not to walk the
+            // ladder for a "better" file the reader never picked. Without it the pin names a peer and a path but
+            // not a format, and the engine falls back to every enabled Soulseek quality - downloading a
+            // different file, from a different peer, at a different bit depth, for a manual pick.
+            payload.SoulseekQualityCode = intent.Quality?.Trim() ?? string.Empty;
+        }
+    }
+
     private static void ApplyIntentMetadataToStereoPayload<TPayload>(TPayload payload, DownloadIntent intent)
         where TPayload : class
     {
@@ -7113,6 +7371,7 @@ public sealed class DownloadIntentService
 
     private static bool HasRequiredEngineIdentity(PayloadIdentity identity, string? sourceUrl)
     {
+        // Soulseek reaches the default branch on purpose: it has no catalogue identity to require.
         return identity.Engine switch
         {
             DeezerPlatform => !string.IsNullOrWhiteSpace(identity.DeezerTrackId)
@@ -7454,6 +7713,9 @@ public sealed class DownloadIntentService
             case QobuzQueueItem qobuz:
                 _deezspotagListener.SendAddedToQueue(qobuz.ToQueuePayload());
                 break;
+            case SoulseekQueueItem soulseek:
+                _deezspotagListener.SendAddedToQueue(soulseek.ToQueuePayload());
+                break;
         }
     }
 
@@ -7463,6 +7725,7 @@ public sealed class DownloadIntentService
             AppleQueueItem apple => apple.Quality,
             QobuzQueueItem qobuz => qobuz.Quality,
             TidalQueueItem tidal => tidal.Quality,
+            SoulseekQueueItem soulseek => soulseek.Quality,
             _ => null
         };
 
@@ -7473,6 +7736,7 @@ public sealed class DownloadIntentService
             QobuzQueueItem qobuz => qobuz.ContentType,
             TidalQueueItem tidal => tidal.ContentType,
             AmazonQueueItem amazon => amazon.ContentType,
+            SoulseekQueueItem soulseek => soulseek.ContentType,
             _ => null
         };
 

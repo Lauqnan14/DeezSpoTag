@@ -189,6 +189,12 @@ CREATE TABLE IF NOT EXISTS folder (
     convert_enabled INTEGER NOT NULL DEFAULT 0,
     convert_format TEXT,
     convert_bitrate TEXT,
+    soulseek_share_enabled INTEGER NOT NULL DEFAULT 0,
+    soulseek_share_alias TEXT,
+    soulseek_share_include TEXT,
+    soulseek_share_exclude TEXT,
+    soulseek_share_scan_status TEXT,
+    soulseek_share_scan_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

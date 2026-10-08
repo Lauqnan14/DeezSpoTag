@@ -16,12 +16,15 @@ using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Deezer;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Services.Download.Soulseek;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
 public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueContext
 {
     private const string DeezerEngine = "deezer";
+    private const string SoulseekEngine = "soulseek";
+    private const string SoundCloudEngine = "soundcloud";
     private const string DeezSpoTagEngineAlias = "deezspotag";
     private static readonly HashSet<string> PublicApiDownloadEngines = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -356,6 +359,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             "amazon" => await TryAdvanceFallbackAsync<AmazonQueueItem>(item, coordinator),
             "apple" => await TryAdvanceFallbackAsync<AppleQueueItem>(item, coordinator),
             DeezerEngine => await TryAdvanceFallbackAsync<DeezerQueueItem>(item, coordinator),
+            SoulseekEngine => await TryAdvanceFallbackAsync<SoulseekQueueItem>(item, coordinator),
+            SoundCloudEngine => await TryAdvanceFallbackAsync<SoundCloudQueueItem>(item, coordinator),
             _ => false
         };
     }
@@ -392,6 +397,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             AmazonQueueItem amazon => amazon.ToQueuePayload(),
             AppleQueueItem apple => apple.ToQueuePayload(),
             DeezerQueueItem deezer => deezer.ToQueuePayload(),
+            SoulseekQueueItem soulseek => soulseek.ToQueuePayload(),
+            SoundCloudQueueItem soundCloud => soundCloud.ToQueuePayload(),
             _ => throw new InvalidOperationException($"Unsupported fallback payload type '{payload.GetType().Name}'.")
         };
 

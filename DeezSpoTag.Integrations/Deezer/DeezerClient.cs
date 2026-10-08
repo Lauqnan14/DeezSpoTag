@@ -513,14 +513,49 @@ public sealed class DeezerClient : IDisposable
 
         if (json[JsonAlbumKey] is JToken album)
         {
+            var md5 = album["md5_image"]?.ToString() ?? string.Empty;
             track.Album = new Album
             {
                 Id = album["id"]?.ToString() ?? string.Empty,
-                Title = album["title"]?.ToString() ?? string.Empty
+                Title = album["title"]?.ToString() ?? string.Empty,
+
+                // Deezer sends the whole cover ladder on every search row and this projection used to drop all
+                // of it, so Album.CoverMedium read as empty for every searched track. Anything that resolves
+                // artwork from a search result - the Soulseek candidate card, for one - then silently got
+                // nothing, while the very same field on a track fetched by id worked. The largest size Deezer
+                // offered is preferred over the medium one because this is a display size, and the album's
+                // md5 is kept so Picture.GetURL can still derive any size that was not sent.
+                CoverMedium = FirstNonEmpty(
+                    album["cover_xl"]?.ToString(),
+                    album["cover_big"]?.ToString(),
+                    album["cover_medium"]?.ToString(),
+                    album["cover_small"]?.ToString()),
+                Pic = string.IsNullOrEmpty(md5) ? new Picture() : new Picture(md5, "cover")
             };
         }
 
         return track;
+    }
+
+    /// <summary>
+    /// The first value that is actually present.
+    /// </summary>
+    /// <remarks>
+    ///     Deezer omits a cover size rather than sending it empty, so a search row may carry only one of the
+    ///     sizes. Reading them in preference order is what makes the artwork independent of which sizes the
+    ///     row happened to include.
+    /// </remarks>
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
     }
 
     private readonly record struct MetadataSearchInput(string Artist, string Track, string Album, int? DurationSeconds);

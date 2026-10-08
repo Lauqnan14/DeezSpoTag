@@ -1,3 +1,4 @@
+using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
@@ -43,7 +44,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IReadOnlyList<DownloadQueueItem> PendingItems,
         IReadOnlyList<string> PendingQueueUuids,
         IReadOnlyList<string> SourceFilePaths,
-        IReadOnlyDictionary<string, DateTimeOffset> PendingCompletionMarkers);
+        IReadOnlyDictionary<string, DateTimeOffset> PendingCompletionMarkers,
+        /// <summary>
+        ///     Which enrichment operation owns this group. Soulseek audio waits for its own operation, which
+        ///     resolves identity from the file rather than from the tags a catalogue download arrived with.
+        /// </summary>
+        string RunIntent = AutoTagLiterals.RunIntentDownloadEnrichment);
     private sealed record PipelineEnrichmentResult(string Status, bool SafeToContinue, bool SafeToPersist);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForEnrichment);
@@ -3026,6 +3032,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         string downloadRootPath)
     {
         var groups = new List<PipelineWorkGroup>();
+        var soulseekRecoveryItems = new List<DownloadQueueItem>();
+        var soulseekPendingItems = new List<DownloadQueueItem>();
         foreach (var destinationGroup in pendingItems
                      .Where(item => item.DestinationFolderId.HasValue)
                      .GroupBy(item => item.DestinationFolderId!.Value)
@@ -3062,7 +3070,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 .OrderByDescending(item => item.UpdatedAt)
                 .ThenByDescending(item => item.Id)
                 .ToList();
-            var recoveryItems = items
+            // Partition by the engine that actually delivered the file. SourceService records how the
+            // download was requested, which is not the same thing: a Soulseek download reached through
+            // another engine's fallback still arrives from a peer and needs the peer operation.
+            var soulseekItems = items.Where(IsSoulseekCompletedItem).ToList();
+            var ordinaryItems = items.Where(item => !IsSoulseekCompletedItem(item)).ToList();
+
+            var recoveryItems = ordinaryItems
                 .Where(IsFinalizationRecoveryItem)
                 .ToList();
             AddPipelineWorkGroup(
@@ -3088,14 +3102,23 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 itemsWithSourceFiles,
                 ResolveExistingSourceAudioFilesUnderRoot(itemsWithSourceFiles, downloadRootPath));
 
-            if (recoveryItems.Count == 0 && itemsWithSourceFiles.Count == 0)
+            if (recoveryItems.Count == 0 && itemsWithSourceFiles.Count == 0 && soulseekItems.Count == 0)
             {
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
                     WarningLogLevel,
                     $"Automation: completed downloads skipped for destination folder {destinationFolderId} (no candidate source audio files remain under download staging)."));
             }
+
+            // Collected here and appended only after every ordinary group, so destination-folder processing
+            // always finishes before any peer operation starts. A Soulseek album and a catalogue download
+            // landing in the same folder must not be enriched as one operation: one needs its identity
+            // resolved from the file, the other already carries it.
+            soulseekRecoveryItems.AddRange(soulseekItems.Where(IsFinalizationRecoveryItem));
+            soulseekPendingItems.AddRange(soulseekItems.Where(item => !IsFinalizationRecoveryItem(item)));
         }
+
+        AddSoulseekEnrichmentGroups(groups, profileContext, soulseekRecoveryItems, soulseekPendingItems, downloadRootPath);
 
         if (groups.Count > 1)
         {
@@ -3106,6 +3129,414 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         return groups;
+    }
+
+    /// <summary>
+    ///     Whether a completed download's audio actually came from Soulseek.
+    /// </summary>
+    /// <remarks>
+    ///     Read from the engine that delivered the file, never from <c>SourceService</c> and never from how
+    ///     the reader initiated it. A request routed through another engine's fallback is still a peer file,
+    ///     and giving it the catalogue operation would tag it with whatever the peer embedded instead of
+    ///     resolving its identity.
+    /// </remarks>
+    private static bool IsSoulseekCompletedItem(DownloadQueueItem item)
+        => string.Equals(item.Engine, SoulseekQueueItem.EngineId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     Appends the Soulseek enrichment groups, after every ordinary group.
+    /// </summary>
+    /// <remarks>
+    ///     Scoped by destination profile and release preference, and targeting only queue-owned paths under
+    ///     the download root. Never fed to <c>download_enrichment</c> and never offered to the manual
+    ///     endpoint's unowned-audio scan: those files belong to the queue until this operation finishes with
+    ///     them.
+    /// </remarks>
+    private void AddSoulseekEnrichmentGroups(
+        List<PipelineWorkGroup> groups,
+        AutomationProfileContext profileContext,
+        List<DownloadQueueItem> soulseekRecoveryItems,
+        List<DownloadQueueItem> soulseekPendingItems,
+        string downloadRootPath)
+    {
+        AddSoulseekGroup(groups, profileContext, soulseekRecoveryItems, downloadRootPath, recovery: true);
+        AddSoulseekGroup(groups, profileContext, soulseekPendingItems, downloadRootPath, recovery: false);
+
+        var added = groups.Count(group =>
+            string.Equals(group.RunIntent, AutoTagLiterals.RunIntentSoulseekEnrichment, StringComparison.OrdinalIgnoreCase));
+        if (added > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: Soulseek enrichment queued for {added} group(s) after ordinary destination-folder processing."));
+        }
+    }
+
+    /// <summary>
+    ///     Marks a run config as the shared external-file enrichment operation.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Both halves of this are what make the runner recognise the job as an external-file operation,
+    ///         and without them the operation does not function at all rather than merely degrading:
+    ///         the album-organization boundary is skipped, and the staged sidecar pass has no destination to
+    ///         write beside.
+    ///     </para>
+    ///     <para>
+    ///         The destination folder and the release mode are both already decided by the partition that
+    ///         produced this group: the folder is a fact from the queue, and the mode was resolved from the
+    ///         item's recorded category or the reader's saved preference, never guessed here.
+    ///     </para>
+    /// </remarks>
+    private static string ApplySoulseekOperationShape(string configJson, long destinationFolderId, string mode)
+    {
+        try
+        {
+            if (JsonNode.Parse(configJson) is not JsonObject root)
+            {
+                return configJson;
+            }
+
+            if (destinationFolderId is > 0)
+            {
+                root["manualDestinationFolderId"] = destinationFolderId;
+            }
+
+            root[AutoTagLiterals.ManualReleasePreferenceKey] = mode;
+
+            // Stated explicitly rather than left to the enrichment stage plan. Both are already set by the
+            // manual stage builder, and spelling them out here means this operation cannot silently lose
+            // album organization if that builder's behaviour changes.
+            root["materializeToTemplatePath"] = true;
+            root["organizeSidecarsIntoTemplateFolders"] = true;
+
+            return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return configJson;
+        }
+    }
+
+    /// <summary>The release mode that means "organise this as an album".</summary>
+    internal const string SoulseekAlbumMode = "album";
+
+    /// <summary>The release mode that means "organise this as a single".</summary>
+    internal const string SoulseekSingleMode = "single";
+
+    /// <summary>
+    ///     The release mode one queued download must be organised for.
+    /// </summary>
+    /// <remarks>
+    ///     Exactly two sources, in order:
+    ///     <list type="number">
+    ///         <item>
+    ///             a valid <c>album</c> or <c>single</c> category recorded for that download, derived from
+    ///             what the peer's folder actually contained;
+    ///         </item>
+    ///         <item>
+    ///             failing that, the manual-enrichment release preference the reader saved for this
+    ///             destination's profile.
+    ///         </item>
+    ///     </list>
+    ///     <para>
+    ///         Null means neither exists, and no mode is invented for it. There is deliberately no fallback:
+    ///         guessing would put a release into a destination the reader never asked for, and the result is
+    ///         a library quietly laid out against their wishes.
+    ///     </para>
+    /// </remarks>
+    internal static string? ResolveEffectiveSoulseekMode(string? recordedCategory, string? savedProfilePreference)
+    {
+        if (IsValidSoulseekMode(recordedCategory))
+        {
+            return recordedCategory!.Trim().ToLowerInvariant();
+        }
+
+        return IsValidSoulseekMode(savedProfilePreference)
+            ? savedProfilePreference!.Trim().ToLowerInvariant()
+            : null;
+    }
+
+    private static bool IsValidSoulseekMode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim();
+        return string.Equals(normalized, SoulseekAlbumMode, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, SoulseekSingleMode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    ///     The manual-enrichment release preference the reader saved, read off a built profile config.
+    /// </summary>
+    /// <remarks>
+    ///     Read from the built config rather than from a profile property, because there is no such property:
+    ///     the AutoTag page keeps this choice in its runtime config, the profile snapshot carries it in
+    ///     <c>AutoTagSettings.Data</c> as extension data, and <c>AutoTagConfigBuilder</c> copies that data onto
+    ///     the built config. Reading the built config is therefore reading exactly what the reader saved.
+    /// </remarks>
+    internal static string? ReadSavedProfileReleasePreference(string builtProfileConfigJson)
+    {
+        if (string.IsNullOrWhiteSpace(builtProfileConfigJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(builtProfileConfigJson) is not JsonObject root)
+            {
+                return null;
+            }
+
+            return root.TryGetPropertyValue(AutoTagLiterals.ManualReleasePreferenceKey, out var node)
+                && node is JsonValue value
+                && value.TryGetValue<string>(out var preference)
+                    ? preference
+                    : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     One Soulseek run's worth of work: a single destination and a single effective release mode.
+    /// </summary>
+    internal sealed record SoulseekRunPartition(long DestinationFolderId, string Mode, IReadOnlyList<DownloadQueueItem> Items);
+
+    /// <summary>
+    ///     Splits queued Soulseek downloads into the runs they actually need.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Grouped by destination and by each item's own effective mode. Neither key is optional: two
+    ///         destination folders cannot share a run, and a known album alongside a known single cannot
+    ///         either.
+    ///     </para>
+    ///     <para>
+    ///         Each item's mode is resolved from its own category first, so one item's category can never
+    ///         decide another's. Items whose mode cannot be resolved are left out rather than folded into a
+    ///         run: they stay untouched in the queue, which keeps them recoverable and still eligible for a
+    ///         later pass once the missing choice exists. No new queue state is introduced for that - an item
+    ///         simply is not part of any run this pass.
+    ///     </para>
+    /// </remarks>
+    internal static IReadOnlyList<SoulseekRunPartition> PartitionSoulseekRuns(
+        IReadOnlyList<DownloadQueueItem> soulseekItems,
+        Func<long, string?> savedPreferenceForFolder)
+    {
+        var resolved = new List<(long FolderId, string Mode, DownloadQueueItem Item)>();
+        foreach (var item in soulseekItems)
+        {
+            var folderId = item.DestinationFolderId;
+            if (folderId is not > 0)
+            {
+                continue;
+            }
+
+            var mode = ResolveEffectiveSoulseekMode(
+                ReadSoulseekReleaseCategory(item),
+                savedPreferenceForFolder(folderId.Value));
+            if (mode is not null)
+            {
+                resolved.Add((folderId.Value, mode, item));
+            }
+        }
+
+        return resolved
+            .GroupBy(entry => (entry.FolderId, entry.Mode))
+            .Select(group => new SoulseekRunPartition(
+                group.Key.FolderId,
+                group.Key.Mode,
+                [.. group.Select(entry => entry.Item)]))
+            .OrderBy(partition => partition.DestinationFolderId)
+            .ThenBy(partition => partition.Mode, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    ///     Queued Soulseek downloads whose release mode neither source can supply.
+    /// </summary>
+    internal static IReadOnlyList<DownloadQueueItem> SoulseekItemsWithoutMode(
+        IReadOnlyList<DownloadQueueItem> soulseekItems,
+        Func<long, string?> savedPreferenceForFolder)
+        => [.. soulseekItems.Where(item =>
+            item.DestinationFolderId is > 0
+            && ResolveEffectiveSoulseekMode(
+                ReadSoulseekReleaseCategory(item),
+                savedPreferenceForFolder(item.DestinationFolderId!.Value)) is null)];
+
+    private void AddSoulseekGroup(
+        List<PipelineWorkGroup> groups,
+        AutomationProfileContext profileContext,
+        List<DownloadQueueItem> soulseekItems,
+        string downloadRootPath,
+        bool recovery)
+    {
+        if (soulseekItems.Count == 0)
+        {
+            return;
+        }
+
+        // The reader's saved choice, read off the built config for each destination's profile. Resolving the
+        // profile once per folder rather than per item, because building a profile config is not free and the
+        // same folder's answer is the same for every item in it.
+        var savedPreferenceCache = new Dictionary<long, string?>();
+
+        string? SavedPreferenceFor(long folderId)
+        {
+            if (savedPreferenceCache.TryGetValue(folderId, out var cached))
+            {
+                return cached;
+            }
+
+            var resolved = ReadSavedProfileReleasePreference(BuildProfileConfigForFolder(profileContext, folderId) ?? string.Empty);
+            savedPreferenceCache[folderId] = resolved;
+            return resolved;
+        }
+
+        // Every item that cannot be told which mode it is stays out of every run. No invented mode, and no
+        // new queue state: an item in no run is untouched, still recoverable, and still picked up next pass.
+        var unresolved = SoulseekItemsWithoutMode(soulseekItems, SavedPreferenceFor);
+        if (unresolved.Count > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: {unresolved.Count} Soulseek download(s) left pending because neither the peer's folder "
+                + "contents nor a saved manual-enrichment release preference could say whether they are an album "
+                + "or a single. Set the manual enrichment release type on the destination folder's AutoTag profile; "
+                + "the verified audio is on disk and will be enriched once a choice exists."));
+        }
+
+        foreach (var partition in PartitionSoulseekRuns(soulseekItems, SavedPreferenceFor))
+        {
+            AddSoulseekPartitionGroup(groups, profileContext, partition, downloadRootPath, recovery);
+        }
+    }
+
+    private void AddSoulseekPartitionGroup(
+        List<PipelineWorkGroup> groups,
+        AutomationProfileContext profileContext,
+        SoulseekRunPartition partition,
+        string downloadRootPath,
+        bool recovery)
+    {
+        var destinationFolderId = partition.DestinationFolderId;
+        var profile = ResolveAutomationProfileForFolder(
+            profileContext,
+            destinationFolderId.ToString(CultureInfo.InvariantCulture),
+            profileContext.FoldersById.TryGetValue(destinationFolderId, out var folder)
+                ? folder.AutoTagProfileId
+                : null);
+        if (profile is null)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: Soulseek enrichment skipped for destination folder {destinationFolderId} (folder has no valid current AutoTag profile)."));
+            return;
+        }
+
+        var configJson = GetAutoTagConfigJson(profile);
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: Soulseek enrichment skipped for destination folder {destinationFolderId} (profile config could not be built)."));
+            return;
+        }
+
+        configJson = ApplySoulseekOperationShape(configJson, destinationFolderId, partition.Mode);
+
+        var categories = partition.Items
+            .Select(ReadSoulseekReleaseCategory)
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: Soulseek enrichment for destination folder {destinationFolderId} organised as "
+            + $"'{partition.Mode}' ({BasisText(categories.Count)}), covering {partition.Items.Count} download(s)."));
+
+        var sourceFiles = recovery
+            ? ResolveRecordedSourceAudioFilesUnderRoot(partition.Items, downloadRootPath)
+            : ResolveExistingSourceAudioFilesUnderRoot(
+                partition.Items.Where(item => HasExistingSourceUnderRoot(item, downloadRootPath)).ToList(),
+                downloadRootPath);
+
+        AddPipelineWorkGroup(
+            groups,
+            destinationFolderId,
+            profile,
+            configJson,
+            partition.Items,
+            sourceFiles,
+            AutoTagLiterals.RunIntentSoulseekEnrichment);
+    }
+
+    /// <summary>
+    ///     Why a partition's mode was chosen, in words worth putting in a log.
+    /// </summary>
+    private static string BasisText(int knownCategoryCount)
+        => knownCategoryCount == 1
+            ? "from the peer's folder contents"
+            : "from the saved manual enrichment release preference";
+
+    private string? BuildProfileConfigForFolder(AutomationProfileContext profileContext, long folderId)
+    {
+        var profile = ResolveAutomationProfileForFolder(
+            profileContext,
+            folderId.ToString(CultureInfo.InvariantCulture),
+            profileContext.FoldersById.TryGetValue(folderId, out var folder)
+                ? folder.AutoTagProfileId
+                : null);
+
+        return profile is null ? null : GetAutoTagConfigJson(profile);
+    }
+
+    /// <summary>
+    ///     The release category recorded on a queued item's payload, or null when the folder gave no evidence.
+    /// </summary>
+    private static string? ReadSoulseekReleaseCategory(DownloadQueueItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(item.PayloadJson) is not JsonObject payload)
+            {
+                return null;
+            }
+
+            foreach (var key in new[] { "SoulseekReleaseCategory", "soulseekReleaseCategory" })
+            {
+                if (payload.TryGetPropertyValue(key, out var node)
+                    && node is JsonValue value
+                    && value.TryGetValue<string>(out var category)
+                    && !string.IsNullOrWhiteSpace(category))
+                {
+                    return category.Trim();
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private static void AddPipelineWorkGroup(

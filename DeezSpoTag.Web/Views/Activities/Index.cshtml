@@ -7686,7 +7686,20 @@ function mapBitrate(bitrate) {
         const qualityMap = {
             ULTRA_HD_FLAC: 'Ultra HD FLAC',
             HD_FLAC: 'HD FLAC',
-            OPUS: 'Opus'
+            OPUS: 'Opus',
+
+            // Soulseek's own codes. These strings must stay identical to the labels the server publishes in
+            // QualityCatalog.GetEngineQualityOptions()['soulseek'], because the same code is shown both by
+            // this table and by the quality badge, and the two must not disagree.
+            FLAC_HI_RES_LOSSLESS: 'Max Hi-Res (24-bit/192kHz)',
+            FLAC_HI_RES: 'Hi-Res (24-bit/96kHz)',
+            FLAC: 'FLAC (16-bit/44.1kHz)',
+            LOSSLESS: 'Lossless (FLAC, ALAC, WAV, APE)',
+            MP3_320: 'MP3 320 kbps',
+            MP3_256: 'MP3 256 kbps',
+            MP3_192: 'MP3 192 kbps',
+            MP3_128: 'MP3 128 kbps',
+            UNKNOWN: 'Unknown quality'
         };
         return qualityMap[upper] || bitrate.replace(/_/g, ' ');
     }
@@ -7700,6 +7713,7 @@ function normalizeEngine(engine) {
     if (raw.includes('tidal')) return 'tidal';
     if (raw.includes('amazon')) return 'amazon';
     if (raw.includes('qobuz')) return 'qobuz';
+    if (raw.includes('soulseek') || raw.includes('slskd')) return 'soulseek';
     if (raw.includes('multisource')) return 'deezer';
     return raw || 'deezer';
 }

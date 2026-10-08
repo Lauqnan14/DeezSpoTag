@@ -144,6 +144,8 @@ internal static class DownloadQueueEnqueueHelper
 
     private static string? ResolvePayloadSourceId<TPayload>(TPayload payload)
         where TPayload : EngineQueueItemBase
+        // Soulseek has no per-engine identity column, so it deliberately resolves to null here and the
+        // Soulseek engine resolves its own candidate from the queued search target instead.
         => payload.Engine?.Trim().ToLowerInvariant() switch
         {
             "deezer" => payload.DeezerId,

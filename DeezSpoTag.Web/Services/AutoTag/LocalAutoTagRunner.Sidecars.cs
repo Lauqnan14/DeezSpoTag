@@ -137,6 +137,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return missing;
+
+        bool VerifyArtistField(string key)
+        {
+            var values = key == LanguageTag ? GetTrackLanguageValues(track) : GetArtistFieldValues(track, key);
+            if (values.Count == 0) return false;
+            var rawName = DeezSpoTag.Core.Models.ArtistEnrichmentFields.RawNames[key];
+            var actual = ReadRawTagValues(file, extension, rawName);
+            var encoded = ApplySeparator(values, ResolveSeparatorForFormat(config, extension),
+                extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase) && config.Technical?.UseNullSeparator == true);
+            return actual.SequenceEqual(encoded, StringComparer.Ordinal);
+        }
     }
 
     /// <summary>
@@ -431,6 +442,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             var normalizedPath = NormalizeScopePath(ioPath);
             if (string.IsNullOrWhiteSpace(normalizedPath)
                 || !IsPathWithinScope(normalizedPath, normalizedRoot)
+                || DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(normalizedRoot, normalizedPath)
                 || !IOFile.Exists(normalizedPath)
                 || !SupportedExtensions.Contains(Path.GetExtension(normalizedPath))
                 || AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(normalizedPath))

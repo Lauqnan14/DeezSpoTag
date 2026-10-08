@@ -32,6 +32,81 @@ public sealed class AutoTagEnrichmentTagSelectionTest
     private static readonly string[] ExpectedReleaseDateOnly = ["releaseDate"];
     private static readonly string[] ExpectedManualLyricsTags = ["lyrics", "syncedLyrics", "ttmlLyrics"];
 
+    [Theory]
+    [InlineData("default", true, true)]
+    [InlineData("default", false, true)]
+    [InlineData("default", true, false)]
+    [InlineData("default", false, false)]
+    [InlineData("download_enrichment", true, true)]
+    [InlineData("download_enrichment", false, true)]
+    [InlineData("download_enrichment", true, false)]
+    [InlineData("download_enrichment", false, false)]
+    [InlineData("manual_enrichment", true, true)]
+    [InlineData("manual_enrichment", false, true)]
+    [InlineData("manual_enrichment", true, false)]
+    [InlineData("manual_enrichment", false, false)]
+    [InlineData("soulseek_enrichment", true, true)]
+    [InlineData("soulseek_enrichment", false, true)]
+    [InlineData("soulseek_enrichment", true, false)]
+    [InlineData("soulseek_enrichment", false, false)]
+    [InlineData("enhancement_only", true, true)]
+    [InlineData("enhancement_only", false, true)]
+    [InlineData("enhancement_only", true, false)]
+    [InlineData("enhancement_only", false, false)]
+    [InlineData("enhancement_recent_downloads", true, true)]
+    [InlineData("enhancement_recent_downloads", false, true)]
+    [InlineData("enhancement_recent_downloads", true, false)]
+    [InlineData("enhancement_recent_downloads", false, false)]
+    public void StageBuildersPreserveGenreIntelligenceForEveryRunIntent(string intent, bool providers, bool enabled)
+    {
+        var directory = Path.Join(Path.GetTempPath(), "genre-stage-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var service = (AutoTagService)RuntimeHelpers.GetUninitializedObject(typeof(AutoTagService));
+            typeof(AutoTagService).GetField("_runtimeConfigDir", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(service, directory);
+            var options = new JsonObject { ["enabled"] = enabled, ["maxGenres"] = 3, ["writeScene"] = true };
+            var root = new JsonObject
+            {
+                ["tags"] = providers ? new JsonArray("artist") : new JsonArray(),
+                ["gapFillTags"] = providers ? new JsonArray("artist") : new JsonArray(),
+                ["genreIntelligence"] = options,
+                ["targetFiles"] = new JsonArray(Path.Join(directory, "track.flac"))
+            };
+            var capabilityType = typeof(AutoTagService).GetNestedType("PlatformTagCapabilities", BindingFlags.NonPublic)!;
+            var caps = Activator.CreateInstance(typeof(Dictionary<,>).MakeGenericType(typeof(string), capabilityType))!;
+            var capability = Activator.CreateInstance(capabilityType,
+                new object[] { new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "artist" }, false })!;
+            caps.GetType().GetMethod("Add")!.Invoke(caps, new[] { "itunes", capability });
+            var enhancement = intent.StartsWith("enhancement", StringComparison.Ordinal);
+            var contextType = typeof(AutoTagService).GetNestedType(
+                enhancement ? "EnhancementBuildContext" : "EnrichmentBuildContext", BindingFlags.NonPublic)!;
+            var context = Activator.CreateInstance(contextType, new object[] { intent, "test-job" })!;
+            var method = typeof(AutoTagService).GetMethod(
+                enhancement ? "TryBuildEnhancementStage" : "TryBuildEnrichmentStages", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            object?[] arguments = { root, caps, providers ? new[] { "itunes" } : Array.Empty<string>(), context, null, null, null };
+            var built = (bool)method.Invoke(service, arguments)!;
+            Assert.Equal(providers || enabled, built);
+            if (!built) return;
+            var stages = enhancement ? new[] { arguments[4]! } : ((IEnumerable)arguments[4]!).Cast<object>();
+            foreach (var stage in stages)
+            {
+                var path = (string)stage.GetType().GetProperty("ConfigPath")!.GetValue(stage)!;
+                var config = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+                Assert.True(JsonNode.DeepEquals(options, config["genreIntelligence"]));
+                Assert.DoesNotContain("genreIntelligence", (List<string>)arguments[6]!);
+                var runnerType = typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunnerConfig", BindingFlags.NonPublic)!;
+                var runnerConfig = System.Text.Json.JsonSerializer.Deserialize(config.ToJsonString(), runnerType,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+                var platforms = (List<string>)typeof(LocalAutoTagRunner).GetMethod("BuildEffectivePlatforms", BindingFlags.NonPublic | BindingFlags.Static)!
+                    .Invoke(null, new object?[] { runnerConfig, null })!;
+                Assert.Equal(enabled ? 1 : 0, platforms.Count(platform => platform == "genre-intelligence"));
+            }
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     [Fact]
     public void ResolveEnrichmentRequestedTags_DownloadEnrichment_UsesOnlyEnrichmentTags()
     {

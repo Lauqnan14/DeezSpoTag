@@ -604,6 +604,45 @@ public partial class AutoTagService
             AutoTagLiterals.RunIntentManualEnrichment,
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    ///     Whether this run enriches external audio files that some other owner is responsible for.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Manual enrichment and Soulseek enrichment are one operation run against two different sets of
+    ///         files. Both work on files that are not yet library tracks, both apply templates while the audio
+    ///         is still staged, both resolve sidecars from the staged copy, both move the finished files into a
+    ///         destination and ingest them. Every one of those behaviours belongs to the pair, not to either
+    ///         alone, and duplicating the condition at each call site is how the two silently diverged before.
+    ///     </para>
+    ///     <para>
+    ///         Deliberately narrower than "everything that is not download enrichment". Admission and
+    ///         ownership are not shared and keep using <see cref="IsManualEnrichmentRunIntent" />:
+    ///         <see cref="AutoTagLiterals.RunIntentManualEnrichment" /> is refused inside the download root,
+    ///         because those files belong to the queue, while <see cref="AutoTagLiterals.RunIntentSoulseekEnrichment" />
+    ///         is admitted only there. Folding that opposite rule into one predicate would admit manual runs
+    ///         over live downloads and stop every Soulseek run at the gate.
+    ///     </para>
+    /// </remarks>
+    private static bool IsExternalFileEnrichmentRunIntent(string? runIntent)
+        => NormalizeRunIntent(runIntent) is
+            AutoTagLiterals.RunIntentManualEnrichment or
+            AutoTagLiterals.RunIntentSoulseekEnrichment;
+
+    /// <summary>
+    ///     How an external-file enrichment run names itself to the reader.
+    /// </summary>
+    /// <remarks>
+    ///     The two intents share every mechanism but are separately triggered and separately owned, so the
+    ///     reader is told which one produced a log line or a history entry. "Soulseek" is named on purpose
+    ///     even though the files are no longer from that peer: the identity comes from the platform match, and
+    ///     saying so here keeps the log honest about why this run happened at all.
+    /// </remarks>
+    internal static string DescribeExternalFileEnrichment(string? runIntent)
+        => NormalizeRunIntent(runIntent) == AutoTagLiterals.RunIntentSoulseekEnrichment
+            ? "Soulseek enrichment"
+            : "Manual enrichment";
+
     private static bool ShouldRunEnrichmentForIntent(string? runIntent)
     {
         return !IsEnhancementRunIntent(runIntent);

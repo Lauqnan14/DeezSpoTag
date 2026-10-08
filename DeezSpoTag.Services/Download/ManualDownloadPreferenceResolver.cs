@@ -9,7 +9,7 @@ public static class ManualDownloadPreferenceResolver
         var normalized = DownloadSourceCatalog.NormalizeSourcePolicy(settings.Service) ?? DownloadSourceCatalog.Auto;
         return normalized switch
         {
-            "auto" or "custom" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
+            "auto" or "custom" or "amazon" or "apple" or "deezer" or "qobuz" or "soulseek" or "tidal" => normalized,
             _ => DownloadSourceCatalog.Auto
         };
     }

@@ -9940,6 +9940,42 @@ async function applyFolderModeSelection(folder, newValue, disableConversionIfEna
     await applyFolderModeQuality(folder, newValue, disableConversionIfEnabled, hasAutoTagProfileSelection, qualityLabel);
 }
 
+// Sharing defaults to off, so anything other than an explicit true means "not shared".
+function isFolderSoulseekShareEnabled(value) {
+    return value === true || value === 'true';
+}
+
+function bindFolderSoulseekShareToggle(wrapper, folder) {
+    const toggle = wrapper.querySelector('[data-folder-soulseek-share]');
+    if (!toggle) {
+        return;
+    }
+
+    const statusText = wrapper.querySelector('[data-folder-soulseek-share-text]');
+    const setStatusText = (enabled) => {
+        if (statusText) {
+            statusText.textContent = enabled ? 'Shared' : 'Not shared';
+        }
+    };
+
+    toggle.addEventListener('change', async () => {
+        const requested = toggle.checked;
+        const previous = isFolderSoulseekShareEnabled(folder.soulseekShareEnabled);
+
+        // Optimistic, then reverted on failure so the switch never lies about what is stored.
+        setStatusText(requested);
+        try {
+            const updated = await setFolderSoulseekShareEnabled(folder.id, requested);
+            Object.assign(folder, updated);
+            setStatusText(isFolderSoulseekShareEnabled(updated?.soulseekShareEnabled));
+        } catch (error) {
+            toggle.checked = previous;
+            setStatusText(previous);
+            showToast('Could not update Soulseek sharing for this folder.', 'error');
+        }
+    });
+}
+
 function bindFolderCombinedToggle(wrapper, folder, canEnableAutoTag) {
     const enabledToggle = wrapper.querySelector('[data-folder-enabled]');
     if (!enabledToggle) {
@@ -10200,6 +10236,11 @@ function computeFolderRowViewModel(folder, context) {
         currentAutoTagEnabled,
         currentCombinedEnabled,
         combinedToggleTitle,
+        soulseekShareId: `${folderIdKey}-soulseek-share`,
+        currentSoulseekShareEnabled: isFolderSoulseekShareEnabled(folder.soulseekShareEnabled),
+        soulseekShareTitle: isFolderSoulseekShareEnabled(folder.soulseekShareEnabled)
+            ? 'This folder is shared to Soulseek.'
+            : 'Share this folder to Soulseek.',
         supportsAutoTagEnhancement: requiresProfileForAutoTag,
         selectedQualityValue,
         formatSummary,
@@ -10289,6 +10330,12 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                         <i class="fas fa-trash" aria-hidden="true"></i>
                         <span class="visually-hidden">Delete</span>
                     </button>
+                </span>
+                <span>
+                    <label class="switch folder-library-toggle-label folder-soulseek-share-toggle" title="${escapeHtml(viewModel.soulseekShareTitle)}">
+                        <input id="${viewModel.soulseekShareId}" type="checkbox" ${viewModel.currentSoulseekShareEnabled ? 'checked' : ''} data-folder-soulseek-share aria-label="${escapeHtml(viewModel.soulseekShareTitle)}" />
+                        <span class="slider"></span>
+                    </label>
                 </span>
             </div>
             <div class="alias-container" data-open="false"></div>
@@ -10475,6 +10522,7 @@ function renderFolders() {
         wrapper.innerHTML = buildFolderRowMarkup(folder, viewModel, conversionModeValue);
 
         bindFolderCombinedToggle(wrapper, folder, viewModel.canEnableAutoTag);
+        bindFolderSoulseekShareToggle(wrapper, folder);
         const aliasContainer = wrapper.querySelector('.alias-container');
         wrapper.querySelector('[data-edit]').addEventListener('click', () => updateFolder(folder.id));
         wrapper.querySelector('[data-delete]').addEventListener('click', () => deleteFolder(folder.id));
@@ -10885,6 +10933,17 @@ async function setFolderAutoTagEnabled(id, enabled) {
     }
     emitAutoTagProfileLibrarySettingsChanged('folder-autotag-enabled');
     return updated;
+}
+
+// Soulseek sharing is opt-in per folder and this is the only place a user turns it on. The endpoint lives with
+// the other per-folder toggles so the folder tab owns the decision; the /api/v1/soulseek/shares endpoints read
+// and report the same rows rather than offering a competing switch.
+async function setFolderSoulseekShareEnabled(id, enabled) {
+    return await fetchJson(`/api/library/folders/${id}/soulseek-share-enabled`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled === true })
+    });
 }
 
 async function setFolderAutoTagProfile(id, profileId) {

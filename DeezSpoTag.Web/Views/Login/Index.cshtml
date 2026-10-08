@@ -3354,7 +3354,10 @@ function applySoulseekConnectionState(auth) {
         : 'slskd API key';
     setSoulseekFormStatus(auth, 'soulseekStatus');
     renderSoulseekInfo(auth);
-    togglePlatformLoginState('soulseek', auth?.connected === true);
+
+    // `active` is the verified value and is what the API admits new work on. `connected` is kept as the
+    // fallback for a response that predates it, so an older payload cannot leave the card stuck either way.
+    togglePlatformLoginState('soulseek', (auth?.active ?? auth?.connected) === true);
 }
 
 async function refreshPlatformAuthSection(endpoint, label, applyState) {
