@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Identity;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Matching;
@@ -1291,4 +1292,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         private static string? EmptyToNull(string? value)
             => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
+
+    private static string? NullIfBlank(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

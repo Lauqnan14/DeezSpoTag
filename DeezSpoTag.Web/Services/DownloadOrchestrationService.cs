@@ -207,6 +207,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadQueueRecoveryService _queueRecoveryService;
+    private readonly DownloadCancellationRegistry _cancellationRegistry;
     private readonly LibraryRepository _libraryRepository;
     private readonly AutoTagService _autoTagService;
     private readonly AutoTagDownloadMoveService _downloadMoveService;
@@ -270,6 +271,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _notifications = serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>();
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         _queueRecoveryService = serviceProvider.GetRequiredService<DownloadQueueRecoveryService>();
+        _cancellationRegistry = serviceProvider.GetRequiredService<DownloadCancellationRegistry>();
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
         _autoTagService = serviceProvider.GetRequiredService<AutoTagService>();
         _downloadMoveService = serviceProvider.GetRequiredService<AutoTagDownloadMoveService>();
@@ -427,24 +429,21 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             if (folderIds != null)
             {
-                foreach (var folderId in folderIds)
+                foreach (var normalizedFolderId in folderIds
+                    .Where(folderId => !string.IsNullOrWhiteSpace(folderId))
+                    .Select(folderId => folderId.Trim()))
                 {
-                    if (!string.IsNullOrWhiteSpace(folderId))
-                    {
-                        _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
-                    }
+                    _pendingEnhancementResumeFolderIds.Add(normalizedFolderId);
                 }
             }
 
             if (rootPaths != null)
             {
-                foreach (var rootPath in rootPaths)
+                foreach (var normalizedRoot in rootPaths
+                    .Select(rootPath => NormalizePathScope(rootPath))
+                    .Where(normalizedRoot => !string.IsNullOrWhiteSpace(normalizedRoot)))
                 {
-                    var normalizedRoot = NormalizePathScope(rootPath);
-                    if (!string.IsNullOrWhiteSpace(normalizedRoot))
-                    {
-                        _pendingEnhancementResumeRootPaths.Add(normalizedRoot);
-                    }
+                    _pendingEnhancementResumeRootPaths.Add(normalizedRoot);
                 }
             }
         }
@@ -700,8 +699,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         if (job == null
             // Symmetry rule: both enhancement intents are pauseable, so both must auto-resume.
             // manual_enrichment is resumed explicitly by the user (POST /jobs/{id}/resume).
-            || (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase) == false
-                && string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase) == false)
+            || (!string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
             || string.IsNullOrWhiteSpace(job.RootPath))
         {
             return;
@@ -854,7 +853,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _lastKnownActiveDownloadCount = runnableDownloadCount;
         var hasRunnableDownloads = runnableDownloadCount > 0;
         var hasActiveDownloads = hasRunnableDownloads
-            || await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
+            || await HasActiveDownloadWorkAsync(cancellationToken);
         UpdateQueueActivityState(now, hasActiveDownloads);
 
         var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
@@ -905,6 +904,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             _pipelineLock.Release();
         }
+    }
+
+    private async Task<bool> HasActiveDownloadWorkAsync(CancellationToken cancellationToken)
+    {
+        // A completed queue row can precede the processor's final cleanup. Ownership, including
+        // cancellation in flight, must be released before enrichment's idle countdown can begin.
+        var databaseActive = await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
+        return databaseActive || _cancellationRegistry.HasActiveProcessors;
     }
 
     private void UpdateQueueActivityState(DateTimeOffset now, bool hasActiveDownloads)
@@ -1059,7 +1066,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> RearmPendingPipelineIfNeededAsync(CancellationToken cancellationToken)
     {
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        if (await HasActiveDownloadWorkAsync(cancellationToken))
         {
             _queueIdleSince = null;
             SetPhase(OrchestrationPhase.Downloading);
@@ -1194,7 +1201,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _pipelineRequested = false;
         _enhancementPauseRequested = false;
 
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        if (await HasActiveDownloadWorkAsync(cancellationToken))
         {
             _logger.LogInformation("Orchestration skipped: downloads became active again.");
             return null;
@@ -1386,6 +1393,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 context.DownloadRootPath,
                 group.DestinationFolderId,
                 group.SourceFilePaths,
+                group.RunIntent,
                 cancellationToken);
         }
 
@@ -1402,6 +1410,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         string downloadRootPath,
         long destinationFolderId,
         IReadOnlyCollection<string> sourceFilePaths,
+        string runIntent,
         CancellationToken cancellationToken)
     {
         if (sourceFilePaths.Count == 0)
@@ -1429,7 +1438,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     Trigger: AutoTagLiterals.AutomationTrigger,
                     ProfileId: automationProfile?.Id,
                     ProfileName: automationProfile?.Name,
-                    RunIntent: AutoTagLiterals.RunIntentDownloadEnrichment));
+                    RunIntent: runIntent));
             if (enrichmentJob == null)
             {
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1984,6 +1993,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             foreach (var filePath in Directory.EnumerateFiles(downloadRootPath, "*", options))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(downloadRootPath, filePath))
+                {
+                    continue;
+                }
 
                 var extension = Path.GetExtension(filePath);
                 if (string.IsNullOrWhiteSpace(extension) || !StagingAudioExtensions.Contains(extension))
@@ -2157,7 +2170,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        if (await HasActiveDownloadWorkAsync(cancellationToken))
         {
             return;
         }
@@ -3090,7 +3103,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             var recoveryQueueUuids = recoveryItems
                 .Select(item => item.QueueUuid)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var itemsWithSourceFiles = items
+            var itemsWithSourceFiles = ordinaryItems
                 .Where(item => !recoveryQueueUuids.Contains(item.QueueUuid))
                 .Where(item => HasExistingSourceUnderRoot(item, downloadRootPath))
                 .ToList();
@@ -3520,15 +3533,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 return null;
             }
 
-            foreach (var key in new[] { "SoulseekReleaseCategory", "soulseekReleaseCategory" })
-            {
-                if (payload.TryGetPropertyValue(key, out var node)
+            foreach (var category in new[] { "SoulseekReleaseCategory", "soulseekReleaseCategory" }
+                .Select(key => payload.TryGetPropertyValue(key, out var node)
                     && node is JsonValue value
                     && value.TryGetValue<string>(out var category)
-                    && !string.IsNullOrWhiteSpace(category))
-                {
-                    return category.Trim();
-                }
+                    ? category
+                    : null)
+                .Where(category => !string.IsNullOrWhiteSpace(category)))
+            {
+                return category!.Trim();
             }
 
             return null;
@@ -3545,7 +3558,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         TaggingProfile profile,
         string configJson,
         IReadOnlyList<DownloadQueueItem> items,
-        List<string> sourceFiles)
+        List<string> sourceFiles,
+        string runIntent = AutoTagLiterals.RunIntentDownloadEnrichment)
     {
         if (items.Count == 0 || sourceFiles.Count == 0)
         {
@@ -3565,7 +3579,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList(),
             sourceFiles,
-            BuildCompletionMarkers(items)));
+            BuildCompletionMarkers(items),
+            runIntent));
     }
 
     private static AutoTagStages GetAutoTagStages(string configJson)

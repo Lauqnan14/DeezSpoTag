@@ -1,6 +1,8 @@
 
+using DeezSpoTag.Core.Diagnostics;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Genre;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
@@ -705,8 +707,9 @@ public class DeezSpoTagSettingsService : ISettingsService
         NormalizeWatchSettings(settings, defaultSettings, fixes);
         NormalizeRegionalAndLyricsSettings(settings, defaultSettings, fixes);
         EnsureApiToken(settings, fixes);
-        NormalizeGenreTagAliasRules(settings, defaultSettings, fixes);
-        NormalizeGenreTagBlockList(settings, fixes);
+        // Genre normalization is no longer normalized here. Those values belong to
+        // Genre Intelligence, and rewriting the deprecated properties on every save
+        // would resurrect them as an authoritative source.
         NormalizeShazamSettings(settings, defaultSettings, fixes);
         NormalizeSoulseekSettings(settings, defaultSettings, fixes);
 
@@ -932,6 +935,13 @@ public class DeezSpoTagSettingsService : ISettingsService
             fixes,
             nameof(settings.RetryDelayIncrease));
 
+        // 0 is a valid "no cooldown" value, so only the UI's documented upper bound is enforced.
+        ApplyFixIf(
+            settings.RedownloadCooldownMinutes is < 0 or > 10_080,
+            () => settings.RedownloadCooldownMinutes = defaultSettings.RedownloadCooldownMinutes,
+            fixes,
+            nameof(settings.RedownloadCooldownMinutes));
+
         ApplyFixIf(
             settings.AutoTagHistoryRetentionDays < 1 || settings.AutoTagHistoryRetentionDays > 365,
             () => settings.AutoTagHistoryRetentionDays = defaultSettings.AutoTagHistoryRetentionDays,
@@ -949,6 +959,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     /// </remarks>
     private static void NormalizeSoulseekSettings(
         DeezSpoTagSettings settings,
+        DeezSpoTagSettings defaultSettings,
         SettingsFixTracker fixes)
     {
         ApplyFixIf(
@@ -1337,14 +1348,6 @@ public class DeezSpoTagSettingsService : ISettingsService
                     Canonical = defaultRule.Canonical
                 });
             }
-        }
-
-        if (!AreGenreTagAliasRulesEqual(settings.GenreTagAliasRules, normalizedAliasRules))
-        {
-            settings.GenreTagAliasRules = normalizedAliasRules;
-            fixes.Mark(nameof(settings.GenreTagAliasRules));
-        }
-    }
 
     private static void NormalizeGenreTagBlockList(
         DeezSpoTagSettings settings,
@@ -1356,7 +1359,6 @@ public class DeezSpoTagSettingsService : ISettingsService
             settings.GenreTagBlockList = normalized;
             fixes.Mark(nameof(settings.GenreTagBlockList));
         }
-    }
 
     private static void NormalizeShazamSettings(
         DeezSpoTagSettings settings,
@@ -1385,16 +1387,6 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
     }
 
-    private static List<GenreTagAliasRule> CloneGenreTagAliasRules(IEnumerable<GenreTagAliasRule> source)
-    {
-        return source
-            .Select(rule => new GenreTagAliasRule
-            {
-                Alias = rule.Alias,
-                Canonical = rule.Canonical
-            })
-            .ToList();
-    }
 
     private static void ApplyFixIf(bool condition, Action applyFix, SettingsFixTracker fixes, string fieldName)
     {
@@ -1425,61 +1417,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
     }
 
-    private static bool AreGenreTagAliasRulesEqual(
-        List<GenreTagAliasRule> current,
-        List<GenreTagAliasRule> normalized)
-    {
-        if (ReferenceEquals(current, normalized))
-        {
-            return true;
-        }
 
-        if (current.Count != normalized.Count)
-        {
-            return false;
-        }
-
-        for (var i = 0; i < current.Count; i++)
-        {
-            var currentRule = current[i];
-            var normalizedRule = normalized[i];
-            if (currentRule == null && normalizedRule == null)
-            {
-                continue;
-            }
-
-            if (currentRule == null || normalizedRule == null)
-            {
-                return false;
-            }
-
-            if (!string.Equals(currentRule.Alias?.Trim(), normalizedRule.Alias, StringComparison.Ordinal)
-                || !string.Equals(currentRule.Canonical?.Trim(), normalizedRule.Canonical, StringComparison.Ordinal))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool AreStringListsEqual(List<string>? current, List<string> normalized)
-    {
-        if (current == null || current.Count != normalized.Count)
-        {
-            return false;
-        }
-
-        for (var i = 0; i < current.Count; i++)
-        {
-            if (!string.Equals(current[i]?.Trim(), normalized[i], StringComparison.Ordinal))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 
     private static string NormalizeDownloadLocation(string downloadLocation, string defaultDownloadLocation)
     {

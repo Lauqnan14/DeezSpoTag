@@ -29,6 +29,8 @@ public sealed class DownloadCancellationRegistry
         return false;
     }
 
+    public bool HasActiveProcessors => !_active.IsEmpty;
+
     public bool IsActive(string queueUuid)
     {
         return !string.IsNullOrWhiteSpace(queueUuid) && _active.ContainsKey(queueUuid);

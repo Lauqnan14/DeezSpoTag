@@ -263,7 +263,7 @@ public class AsyncQueueProcessor<T> : IDisposable
         _cancellationTokenSource.Cancel();
         lock (_lock)
         {
-            _drainCompletionSource?.SetCanceled();
+            _drainCompletionSource?.SetCanceled(_cancellationTokenSource.Token);
             _drainCompletionSource = null;
         }
 

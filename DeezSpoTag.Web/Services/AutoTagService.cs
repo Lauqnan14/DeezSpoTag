@@ -92,8 +92,8 @@ internal static class AutoTagLiterals
     internal const string PlatformKey = "platform";
     internal const string AppleMusicPlatform = "applemusic";
     internal const string ITunesPlatform = "itunes";
-    internal const string PlexPlatform = "plex";
-    internal const string JellyfinPlatform = "jellyfin";
+    internal const string PlexPlatform = MediaServerTargetServices.Plex;
+    internal const string JellyfinPlatform = MediaServerTargetServices.Jellyfin;
     internal const string DiscogsPlatform = "discogs";
     internal const string LastFmPlatform = "lastfm";
     internal const string BpmSupremePlatform = "bpmsupreme";

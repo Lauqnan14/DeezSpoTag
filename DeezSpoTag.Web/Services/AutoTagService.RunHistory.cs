@@ -39,7 +39,7 @@ public partial class AutoTagService
             _jobs.TryGetValue(activeJobId, out var activeJob)
             && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
             && (IsEnhancementRunIntent(activeJob.RunIntent)
-                || IsManualEnrichmentRunIntent(activeJob.RunIntent)));
+                || IsExternalFileEnrichmentRunIntent(activeJob.RunIntent)));
         if (!string.IsNullOrWhiteSpace(activeJobId))
         {
             jobId = activeJobId;
@@ -358,7 +358,7 @@ public partial class AutoTagService
     private static DateTimeOffset? ResolveRunHistoryDate(AutoTagJob job)
     {
         if (!IsEnhancementRunIntent(job.RunIntent)
-            && !IsManualEnrichmentRunIntent(job.RunIntent))
+            && !IsExternalFileEnrichmentRunIntent(job.RunIntent))
         {
             return null;
         }

@@ -40,6 +40,17 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         PropertyNameCaseInsensitive = true
     };
 
+    /// <summary>
+    ///     Amazon's own source id, taken from the canonical definition rather than spelled out.
+    /// </summary>
+    /// <remarks>
+    ///     Every call below hands this to the shared Zarz session coordinator, which keys its
+    ///     session record and its verification grant by source id. A copy of this literal that
+    ///     drifted would store the session under a key nothing reads back, and every request would
+    ///     look like it had no session.
+    /// </remarks>
+    private const string AmazonSource = DownloadTagSourceHelper.AmazonSource;
+
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly IAmazonPublicProviderRegistry _publicProviderRegistry;
     private readonly HttpClient _client;
@@ -280,7 +291,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         bool allowSessionRefresh = true)
     {
         var session = await _zarzSessions.EnsureSessionAsync(
-            "amazon",
+            AmazonSource,
             BootstrapZarzSessionAsync,
             allowSessionRefresh ? RefreshZarzSessionAsync : null,
             cancellationToken);
@@ -310,7 +321,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             Encoding.UTF8.GetBytes(rollingKey),
             Encoding.UTF8.GetBytes(canonical)));
 
-        var request = new HttpRequestMessage(method, uri);
+        using var request = new HttpRequestMessage(method, uri);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
         request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
         request.Headers.TryAddWithoutValidation("X-Zarz-Session", session.SessionId);
@@ -338,7 +349,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         {
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             var disposition = await _zarzSessions.ProcessResponseAsync(
-                "amazon",
+                AmazonSource,
                 session,
                 response.StatusCode,
                 responseBody,
@@ -370,16 +381,16 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     }
 
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.HasUsableSessionAsync("amazon", cancellationToken);
+        => _zarzSessions.HasUsableSessionAsync(AmazonSource, cancellationToken);
 
     public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.PeekUsableSessionAsync("amazon", cancellationToken);
+        => _zarzSessions.PeekUsableSessionAsync(AmazonSource, cancellationToken);
 
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null)
         => _zarzSessions.BeginVerificationAsync(
-            "amazon",
+            AmazonSource,
             (current, token) => BootstrapZarzSessionAsync(current, publicAppBaseUrl, token),
             cancellationToken);
 
@@ -391,7 +402,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         await _zarzSessions.CompleteVerificationAsync(
-            "amazon",
+            AmazonSource,
             grant.Trim(),
             async (record, verificationGrant, token) =>
             {

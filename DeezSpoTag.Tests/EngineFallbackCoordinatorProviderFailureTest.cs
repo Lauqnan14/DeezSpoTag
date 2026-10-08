@@ -15,6 +15,7 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -247,6 +248,35 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
             new DeezerIsrcResolver(null!, NullLogger<DeezerIsrcResolver>.Instance),
             search, new NullActivityLogWriter());
     }
+
+    private EngineFallbackSearchService BuildFallbackSearchService()
+    {
+        var catalog = new AppleMusicCatalogService(new NotFoundHttpClientFactory(), _settings,
+            NullLogger<AppleMusicCatalogService>.Instance, new MemoryCache(new MemoryCacheOptions()));
+        return new EngineFallbackSearchService(catalog, NullLogger<EngineFallbackSearchService>.Instance);
+    }
+
+    private static EngineFallbackSearchRequest BuildFallbackSearchRequest(string engine, string tidalId) => new(
+        Engine: engine,
+        SourceUrl: "https://www.deezer.com/track/4249878541",
+        SpotifyId: string.Empty,
+        AppleId: string.Empty,
+        QobuzId: string.Empty,
+        TidalId: tidalId,
+        AmazonId: string.Empty,
+        Isrc: "KEUM71900021",
+        Title: "Pandana",
+        Artist: "Ethic Entertainment",
+        Album: "Pandana",
+        DurationMs: 223000,
+        DeezerId: "4249878541",
+        Quality: "HI_RES",
+        ContentType: "stereo",
+        Storefront: "us",
+        Language: "en-US",
+        MediaUserToken: null,
+        UserCountry: "US",
+        FallbackSearchEnabled: false);
 
     private static QobuzQueueItem BuildPayload() => new()
     {

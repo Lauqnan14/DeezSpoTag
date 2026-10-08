@@ -1,3 +1,5 @@
+using DeezSpoTag.Services.Download.Shared;
+
 namespace DeezSpoTag.Services.Download;
 
 public static class DownloadSourceCatalog

@@ -252,11 +252,31 @@ public partial class AutoTagService
         var supported = AutoTagPlatformTagContract.ToSupportedTagMap(
             platformCaps,
             static caps => caps.SupportedTags);
-        return AutoTagPlatformTagContract.FilterOfferedTags(
+        var filtered = AutoTagPlatformTagContract.FilterOfferedTags(
             requested,
             platforms,
             supported,
             NormalizeSupportedTagKey);
+
+        // Common artist-enrichment fields are collected by the shared metadata pipeline
+        // rather than by individual track providers, so retain them when explicitly
+        // requested. This does not advertise them as capabilities of every provider
+        // and does not change run eligibility.
+        var retained = new HashSet<string>(filtered, StringComparer.OrdinalIgnoreCase);
+        foreach (var tag in requested)
+        {
+            var normalized = NormalizeSupportedTagKey(tag);
+            if (normalized is not null && CommonArtistEnrichmentKeys.Contains(normalized))
+            {
+                retained.Add(normalized);
+            }
+        }
+
+        return requested
+            .Select(NormalizeSupportedTagKey)
+            .Where(tag => tag is not null && retained.Contains(tag))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()!;
     }
 
     private static readonly HashSet<string> CommonArtistEnrichmentKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -290,7 +310,7 @@ public partial class AutoTagService
     {
         if (!includesEnhancementStage
             || (!ShouldRunEnhancementForIntent(job.RunIntent)
-                && !IsManualEnrichmentRunIntent(job.RunIntent)))
+                && !IsExternalFileEnrichmentRunIntent(job.RunIntent)))
         {
             return;
         }
@@ -862,9 +882,9 @@ public partial class AutoTagService
         SaveJob(job);
         // Archived summaries and job records are immutable history beyond this point:
         // restart-interrupted enhancement runs are queued for resume, never rewritten.
-        if (IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent))
+        if (IsEnhancementRunIntent(job.RunIntent) || IsExternalFileEnrichmentRunIntent(job.RunIntent))
         {
-            AppendLog(job, "stale recovery: job interrupted by application restart; resume queued for enhancement.");
+            AppendLog(job, "stale recovery: job interrupted by application restart; resume queued for enrichment.");
             JobRecovered?.Invoke(job);
         }
     }

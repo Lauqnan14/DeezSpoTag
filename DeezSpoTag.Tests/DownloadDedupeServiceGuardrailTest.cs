@@ -37,6 +37,29 @@ public sealed class DownloadDedupeServiceGuardrailTest
     }
 
     [Fact]
+    public void RedownloadCooldown_ReachesTheDuplicateLookup()
+    {
+        // The cooldown was inert because the value was dropped at every layer: the setting never
+        // reached the dedupe request, and the bound SQL parameter appeared nowhere in the query.
+        var settings = ReadSource("DeezSpoTag.Core", "Models", "Settings", "DeezSpoTagSettings.cs");
+        var settingsService = ReadSource("DeezSpoTag.Services", "Settings", "DeezSpoTagSettingsService.cs");
+        var dedupeService = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
+        var repository = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
+        var intentService = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
+        var enqueueHelper = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DownloadQueueEnqueueHelper.cs");
+
+        Assert.Contains("public int RedownloadCooldownMinutes { get; set; }", settings, StringComparison.Ordinal);
+        Assert.Contains("nameof(settings.RedownloadCooldownMinutes)", settingsService, StringComparison.Ordinal);
+        Assert.Contains("public int? RedownloadCooldownMinutes { get; init; }", dedupeService, StringComparison.Ordinal);
+        Assert.Contains("RedownloadCooldownMinutes = redownloadCooldownMinutes", dedupeService, StringComparison.Ordinal);
+        Assert.Contains("RedownloadCooldownMinutes = request.RedownloadCooldownMinutes", dedupeService, StringComparison.Ordinal);
+        Assert.Contains("redownloadCooldownMinutes: redownloadCooldownMinutes", enqueueHelper, StringComparison.Ordinal);
+        Assert.Contains("RedownloadCooldownMinutes = context.Settings.RedownloadCooldownMinutes", intentService, StringComparison.Ordinal);
+        Assert.Contains("'failed', 'unavailable', 'canceled', 'cancelled'", repository, StringComparison.Ordinal);
+        Assert.Contains("'-' || @cooldownMinutes || ' minutes'", repository, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void QueueDedupe_DoesNotIgnoreCompletedRowsAfterMaterializedFilesAreGone()
     {
         var source = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");

@@ -82,12 +82,54 @@ public sealed class FallbackFailureClassificationGuardrailTest
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The two things the shortcut above cannot be allowed to cost us: that an Atmos request and a
+    /// stereo request stay on separate paths, and that the variant is checked again at the moment
+    /// the audio is actually fetched. Both are asserted here because both are load-bearing for
+    /// "download the variant that was asked for", and neither is covered by the rule above.
+    /// </summary>
+    [Fact]
+    public void TidalVariantChoice_IsMadeOnceAndCheckedAgainAtDownloadTime()
+    {
+        var fallbackSearch = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackSearchService.cs");
+        var tidal = ReadSource("DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs");
+
+        // One decision, two paths, and the decision is made on the request itself rather than on
+        // whatever id happens to be available. An Atmos request is resolved as Atmos; everything
+        // else goes through the quality gate. There is no third path.
+        Assert.Contains("if (IsAtmosRequest(request))", fallbackSearch, StringComparison.Ordinal);
+        Assert.Contains("ResolveAtmosTrackAsync(", fallbackSearch, StringComparison.Ordinal);
+        Assert.Contains("ResolveTrackUrlForQualityAsync(", fallbackSearch, StringComparison.Ordinal);
+
+        // The stereo path refuses an Atmos-only id and asks for the stereo sibling on the same
+        // album rather than quietly returning the Atmos one.
+        Assert.Contains("private static bool IsTidalAtmosOnlyTrack", tidal, StringComparison.Ordinal);
+        Assert.Contains("TryResolveStereoCounterpartAsync(", tidal, StringComparison.Ordinal);
+
+        // Resolution is not the last word. The manifest is re-checked when the audio is fetched, so
+        // a variant that changed between resolving and downloading is still caught. This is what
+        // lets the same-engine-url shortcut above stay cheap without becoming a hole.
+        const string manifestGate = "EnsureTidalManifestMatchesRequestedQuality(";
+        Assert.Contains($"private static void {manifestGate}", tidal, StringComparison.Ordinal);
+
+        // Declared and actually called. A guard that exists but is only ever defined would leave
+        // the download path unchecked while still satisfying a "Contains the method" assertion.
+        var gateUses = tidal.Split(manifestGate).Length - 1;
+        Assert.True(
+            gateUses >= 3,
+            $"The manifest must be re-checked wherever audio is fetched, not only where it is declared. Found {gateUses} mentions.");
+    }
+
     [Fact]
     public void FallbackExhaustionMessage_IsConciseWhileHistoryRemainsStructured()
     {
+        // The pinned summary line changed: the item's error is now one short line naming what happened, because
+        // "Download failed after all enabled sources were tried" was half the line and repeated the status beside
+        // it. Everything this test actually guards - no dump of outcomes on the item, structured history
+        // preserved - is unchanged and still asserted below.
         var coordinator = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");
 
-        Assert.Contains("Download failed after all enabled sources were tried.", coordinator, StringComparison.Ordinal);
+        Assert.Contains("BuildExhaustionMessage", coordinator, StringComparison.Ordinal);
         Assert.Contains("payload.FallbackHistory", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildFallbackExhaustionDetail", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("Fallback outcomes:", coordinator, StringComparison.Ordinal);

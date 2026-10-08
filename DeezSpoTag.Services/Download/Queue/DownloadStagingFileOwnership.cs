@@ -57,15 +57,8 @@ public static class DownloadStagingFileOwnership
             return false;
         }
 
-        foreach (var path in ResolveOwnedStagingAudioFiles(item, downloadRoot, requireExisting: false))
-        {
-            if (allowedPaths.Contains(NormalizePath(path)))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return ResolveOwnedStagingAudioFiles(item, downloadRoot, requireExisting: false)
+            .Any(candidate => allowedPaths.Contains(NormalizePath(candidate)));
     }
 
     public static bool HasAcquiredAudio(DownloadQueueItem item)
@@ -365,13 +358,11 @@ public static class DownloadStagingFileOwnership
 
         if (source.ValueKind == JsonValueKind.Object)
         {
-            foreach (var property in source.EnumerateObject())
+            foreach (var property in source.EnumerateObject()
+                         .Where(candidate => string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase)))
             {
-                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    value = property.Value;
-                    return true;
-                }
+                value = property.Value;
+                return true;
             }
         }
 
@@ -399,13 +390,12 @@ public static class DownloadStagingFileOwnership
 
     private static bool TryReadBoolean(JsonElement source, params string[] names)
     {
-        foreach (var name in names)
+        foreach (var name in names
+                     .Where(candidate => TryGetPropertyIgnoreCase(source, candidate, out var value)
+                         && value.ValueKind is JsonValueKind.True or JsonValueKind.False))
         {
-            if (TryGetPropertyIgnoreCase(source, name, out var value)
-                && value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                return value.GetBoolean();
-            }
+            TryGetPropertyIgnoreCase(source, name, out var value);
+            return value.GetBoolean();
         }
 
         return false;

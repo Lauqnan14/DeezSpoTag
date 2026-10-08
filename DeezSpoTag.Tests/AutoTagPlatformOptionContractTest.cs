@@ -29,6 +29,17 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class AutoTagPlatformOptionContractTest
 {
+    [Fact]
+    public void LastFmPercentageUnit_RoundTripsWithCustomOptions()
+    {
+        var config = JsonSerializer.Deserialize<LastFmConfig>("""{"minRelativeWeight":1,"minRelativeWeightUnit":"percent"}""")!;
+        Assert.Equal(1, config.MinRelativeWeight);
+        Assert.Equal("percent", config.MinRelativeWeightUnit);
+        var copy = JsonSerializer.Deserialize<LastFmConfig>(JsonSerializer.Serialize(config))!;
+        Assert.Equal("percent", copy.MinRelativeWeightUnit);
+        Assert.Null(JsonSerializer.Deserialize<LastFmConfig>("""{"minRelativeWeight":0.15}""")!.MinRelativeWeightUnit);
+    }
+
     private static readonly JsonSerializerOptions RunnerJsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
@@ -69,6 +80,8 @@ public sealed class AutoTagPlatformOptionContractTest
     [
         // Artwork is out of scope; animated artwork keeps its existing Apple-integration channel.
         "ItunesMatchConfig.AnimatedArtwork",
+        // Written by the card renderer alongside the number, not a separate user control.
+        "LastFmConfig.MinRelativeWeightUnit",
     ];
 
     /// <summary>

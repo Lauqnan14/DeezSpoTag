@@ -3572,7 +3572,7 @@ public static class AppleQueueHelpers
             return new AnimatedArtworkFfmpegRunResult(false, false, 0, string.Empty);
         }
 
-        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         try
         {
             await process.WaitForExitAsync(timeout.Token);

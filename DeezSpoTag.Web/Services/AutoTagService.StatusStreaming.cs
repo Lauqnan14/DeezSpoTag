@@ -177,7 +177,7 @@ public partial class AutoTagService
     private static string BuildStopError(AutoTagJob job, string stopReason)
     {
         if (!IsEnhancementRunIntent(job.RunIntent)
-            && !IsManualEnrichmentRunIntent(job.RunIntent))
+            && !IsExternalFileEnrichmentRunIntent(job.RunIntent))
         {
             return stopReason switch
             {

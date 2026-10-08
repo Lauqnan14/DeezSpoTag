@@ -1725,11 +1725,17 @@ function hasSoundtrackMatchContext() {
 
 function mapSoundtrackMatchCategory() {
     const contextType = String(soundtrackMatchContextType || '').trim().toLowerCase();
-    return contextType === 'tv_show'
-        || contextType === 'episode'
-        || contextType === 'season'
-        ? 'tv_show'
-        : 'movie';
+    // Season and episode contexts stay distinct so the backend keeps their own
+    // identity instead of folding them into the show or the movie category.
+    if (contextType === 'tv_season' || contextType === 'season') {
+        return 'tv_season';
+    }
+
+    if (contextType === 'tv_episode' || contextType === 'episode') {
+        return 'tv_episode';
+    }
+
+    return contextType === 'tv_show' ? 'tv_show' : 'movie';
 }
 
 function getTracklistManualMatchTargetUrl() {
@@ -1958,7 +1964,7 @@ function resolveDownloadSourceForQueue(source, trackElements = []) {
 function normalizeTrackRowPlaybackSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
     if (normalized === 'recommendations') {
-        return 'deezer';
+        return String(tracklistId || '').startsWith('library:') ? 'spotify' : 'deezer';
     }
     if (normalized === 'applemusic'
         || normalized === 'apple-music'
@@ -1972,6 +1978,8 @@ function normalizeTrackRowPlaybackSource(source) {
 function isLocalTracklistSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
     return normalized === 'plex'
+        || normalized === 'jellyfin'
+        || normalized === 'navidrome'
         || normalized === 'mix'
         || normalized === 'radio'
         || normalized === 'meloday';
@@ -2243,12 +2251,35 @@ function chooseStereoDefaultFolderId(atmosFolderId) {
     return fallbackOption ? parseFolderId(fallbackOption.value) : null;
 }
 
+function resolveSingleCandidateFolderId(select) {
+    if (!select) {
+        return null;
+    }
+
+    const candidates = Array.from(select.options || [])
+        .filter((option) => String(option.value || '').trim());
+    if (candidates.length !== 1) {
+        return null;
+    }
+
+    return parseFolderId(candidates[0].value);
+}
+
 function getSelectedDestinationFolderId(select, requireSelection, emptyMessage) {
     if (!select) {
         return null;
     }
 
-    const value = parseFolderId(select.value);
+    let value = parseFolderId(select.value);
+    if (value === null) {
+        // One folder for this kind of download means one answer, so take it instead of asking the
+        // user to pick. Several folders still prompt, because that choice is genuinely theirs.
+        value = resolveSingleCandidateFolderId(select);
+        if (value !== null) {
+            select.value = String(value);
+        }
+    }
+
     if (requireSelection && value === null) {
         showTracklistToast(emptyMessage, 'warning');
         return null;
@@ -2431,8 +2462,8 @@ async function loadTracklist() {
             return;
         }
 
-        if (tracklistSource === 'plex') {
-            await loadPlexTracklist();
+        if (tracklistSource === 'plex' || tracklistSource === 'jellyfin' || tracklistSource === 'navidrome') {
+            await loadLibraryPlaylistTracklist(tracklistSource);
             return;
         }
 
@@ -2991,7 +3022,7 @@ async function loadRecommendationsTracklist() {
     const status = String(payload.status || payload.station?.status || '').trim().toLowerCase();
     const isGenerating = status === 'generating';
     renderTracklist(mapped, { allowEmptyTracks: isGenerating });
-    if (isGenerating) {
+    if (isGenerating || (payload.station?.cadence === 'weekly' && status === 'failed')) {
         const message = payload.message || payload.station?.message || 'Recommendation generation is running in the background.';
         setTracksEmptyMessage(message);
         scheduleRecommendationsReload();
@@ -3002,7 +3033,7 @@ async function loadRecommendationsTracklist() {
 
 function scheduleRecommendationsReload() {
     const currentAttempt = Number.parseInt(String(globalThis.recommendationReloadAttempt || '0'), 10) || 0;
-    if (currentAttempt >= 24) {
+    if (!String(tracklistId || '').startsWith('library:') && currentAttempt >= 24) {
         return;
     }
 
@@ -3017,8 +3048,12 @@ function scheduleRecommendationsReload() {
 function mapRecommendationsTracklist(payload) {
     const tracks = (payload.tracks || []).map((track, index) => ({
         id: track.id || '',
-        deezerId: track.id || '',
-        deezer_id: track.id || '',
+        deezerId: track.source === 'spotify' ? (track.deezerId || '') : (track.id || ''),
+        deezer_id: track.source === 'spotify' ? (track.deezerId || '') : (track.id || ''),
+        spotifyId: track.source === 'spotify' ? track.id : '',
+        spotify_id: track.source === 'spotify' ? track.id : '',
+        link: track.sourceUrl || '',
+        source: track.source || 'deezer',
         recommendationStationId: payload.station?.id || tracklistId || '',
         recommendationLibraryId: tracklistLibraryId || '',
         recommendationStatus: payload.status || payload.station?.status || '',
@@ -3060,22 +3095,22 @@ async function loadLibraryPlaylistTracklist(server) {
     const response = await fetch(
         `/api/autoplaylists/${encodeURIComponent(tracklistId)}?server=${encodeURIComponent(server)}`);
     if (!response.ok) {
-        throw new Error(`Failed to load Plex tracklist (HTTP ${response.status})`);
+        throw new Error(`Failed to load ${label} tracklist (HTTP ${response.status})`);
     }
     const payload = await response.json();
     if (!payload.playlist) {
-        throw new Error('Plex tracklist unavailable.');
+        throw new Error(`${label} tracklist unavailable.`);
     }
     if (payload.playlist.itemLoad && payload.playlist.itemLoad.success === false) {
         const status = payload.playlist.itemLoad.statusCode ? `HTTP ${payload.playlist.itemLoad.statusCode}` : 'request failed';
-        throw new Error(`Plex playlist tracks could not be loaded (${status}).`);
+        throw new Error(`${label} playlist tracks could not be loaded (${status}).`);
     }
-    const mapped = mapPlexTracklist(payload.playlist);
+    const mapped = mapLibraryServerTracklist(payload.playlist, label);
     await loadIgnoredTracks();
     renderTracklist(mapped);
 }
 
-function mapPlexTracklist(playlist) {
+function mapLibraryServerTracklist(playlist, label) {
     const tracks = (playlist.tracks || []).map((track, index) => ({
         id: track.id || '',
         title: track.title || 'Unknown',
@@ -3085,14 +3120,19 @@ function mapPlexTracklist(playlist) {
         durationMs: track.durationMs || 0,
         preview: track.streamUrl || '',
         track_position: index + 1,
-        link: track.streamUrl || ''
+        link: track.streamUrl || '',
+        // Resolved against the app's own library index, so playback reuses the indexed file.
+        // 0 means the track is not in the library and the row is listed but not playable.
+        localTrackId: Number(track.localTrackId) || 0,
+        audioFileId: track.audioFileId || 0,
+        variantKey: track.variantKey || ''
     }));
 
     return {
-        title: playlist.name || 'Plex Playlist',
+        title: playlist.name || `${label} Playlist`,
         description: playlist.description || '',
         cover_big: playlist.coverUrl || '',
-        creator: { name: 'Plex' },
+        creator: { name: label },
         nb_tracks: playlist.trackCount || tracks.length,
         tracks
     };
@@ -7039,7 +7079,9 @@ function setTracklistPreviewControlState(control, state) {
     }
 
     control.classList.remove('is-starting');
-    if (normalized !== 'playing' && row) {
+    // A paused row keeps its highlight so the control still reads as "resume this
+    // track" rather than "play a track that is not loaded".
+    if (normalized !== 'playing' && normalized !== 'paused' && row) {
         row.classList.remove('track-row-playing');
     }
 }
@@ -7061,6 +7103,31 @@ function isPlayableTracklistPreviewControl(control) {
     }
 
     return /^\d+$/.test(deezerId) || !!String(control.getAttribute('data-preview') || '').trim();
+}
+
+function buildTracklistMediaMetadata(row) {
+    const checkbox = row?.querySelector?.('.track-checkbox');
+    if (!checkbox?.dataset) {
+        return null;
+    }
+
+    const title = String(checkbox.dataset.trackTitle || '').trim();
+    const artist = String(checkbox.dataset.trackArtist || '').trim();
+    const album = String(checkbox.dataset.trackAlbum || '').trim();
+    const cover = String(checkbox.dataset.trackCover || '').trim();
+    const durationMs = Number.parseInt(String(checkbox.dataset.trackDurationMs || '0'), 10) || 0;
+
+    if (!title && !artist && !album && !cover) {
+        return null;
+    }
+
+    return {
+        title,
+        artist,
+        album,
+        cover,
+        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0
+    };
 }
 
 function buildTracklistPlaybackRequest(control) {
@@ -7087,6 +7154,7 @@ function buildTracklistPlaybackRequest(control) {
         key: initialKey,
         volume: getPreviewVolume(),
         sourceKey: initialKey,
+        mediaMetadata: buildTracklistMediaMetadata(row),
         startFailedMessage: 'Playback failed for this track.',
         interruptedMessage: 'Playback failed for this track.',
         unavailableMessage: 'Preview unavailable.',
@@ -7157,6 +7225,26 @@ function buildTracklistPlaybackRequest(control) {
                     continue;
                 }
                 return buildTracklistPlaybackRequest(nextControl);
+            }
+            return null;
+        },
+        getPreviousRequest: () => {
+            const currentRow = control.closest('tr');
+            const body = currentRow?.parentElement;
+            if (!currentRow || !body) {
+                return null;
+            }
+            const rows = Array.from(body.querySelectorAll('tr'));
+            const startIndex = rows.indexOf(currentRow);
+            if (startIndex === -1) {
+                return null;
+            }
+            for (let i = startIndex - 1; i >= 0; i -= 1) {
+                const previousControl = rows[i].querySelector('.preview-controls');
+                if (!isPlayableTracklistPreviewControl(previousControl)) {
+                    continue;
+                }
+                return buildTracklistPlaybackRequest(previousControl);
             }
             return null;
         }

@@ -2,10 +2,12 @@ namespace DeezSpoTag.Web.Services;
 
 public static class MediaServerSoundtrackConstants
 {
-    public const string PlexServer = "plex";
-    public const string JellyfinServer = "jellyfin";
+    public const string PlexServer = MediaServerTargetServices.Plex;
+    public const string JellyfinServer = MediaServerTargetServices.Jellyfin;
     public const string MovieCategory = "movie";
     public const string TvShowCategory = "tv_show";
+    public const string TvSeasonCategory = "tv_season";
+    public const string TvEpisodeCategory = "tv_episode";
 }
 
 public sealed class MediaServerSoundtrackSettings
@@ -193,6 +195,12 @@ public sealed class MediaServerSoundtrackResolveRequest
     public string? ImageUrl { get; set; }
 
     public string? ManualQuery { get; set; }
+
+    public string? ShowTitle { get; set; }
+
+    public string? SeasonTitle { get; set; }
+
+    public int? SeasonNumber { get; set; }
 }
 
 public sealed class MediaServerSoundtrackMatchDto
@@ -280,6 +288,8 @@ public sealed class MediaServerTvShowSeasonDto
     public string? ImageUrl { get; set; }
 
     public int EpisodeCount { get; set; }
+
+    public MediaServerSoundtrackMatchDto? Soundtrack { get; set; }
 }
 
 public abstract class MediaServerTvShowEpisodeBase

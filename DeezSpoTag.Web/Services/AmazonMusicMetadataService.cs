@@ -387,12 +387,11 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
         var session = await CreateSessionAsync(cancellationToken);
         var candidates = await ResolveTrackCatalogCandidatesAsync(session, query, cancellationToken);
-        foreach (var candidate in candidates.Where(IsDownloadableMusicTrackResult))
+        foreach (var candidate in candidates
+            .Where(IsDownloadableMusicTrackResult)
+            .Where(candidate => (!requireAtmos || candidate.HasAtmos) && IsAcceptedResolvedTrack(candidate, title, artist, album, durationMs, isrc)))
         {
-            if ((!requireAtmos || candidate.HasAtmos) && IsAcceptedResolvedTrack(candidate, title, artist, album, durationMs, isrc))
-            {
-                return candidate;
-            }
+            return candidate;
         }
 
         return null;
@@ -745,13 +744,11 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
     private static IEnumerable<AmazonCatalogItem> ExtractCatalogItems(JsonElement root)
     {
-        foreach (var node in WalkObjects(root))
+        foreach (var item in WalkObjects(root)
+            .Select(ReadCatalogItem)
+            .OfType<AmazonCatalogItem>())
         {
-            var item = ReadCatalogItem(node);
-            if (item is not null)
-            {
-                yield return item;
-            }
+            yield return item;
         }
     }
 
@@ -827,12 +824,10 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
     private static IEnumerable<AmazonCatalogItem> ExtractTracklistTrackItems(JsonElement root)
     {
-        foreach (var item in WalkSearchCatalogItems(root, currentSection: "track"))
+        foreach (var item in WalkSearchCatalogItems(root, currentSection: "track")
+            .Where(item => item.Type == "track"))
         {
-            if (item.Type == "track")
-            {
-                yield return item;
-            }
+            yield return item;
         }
     }
 
@@ -1049,15 +1044,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
     private static bool HasArrayChild(JsonElement node)
     {
-        foreach (var property in node.EnumerateObject())
-        {
-            if (property.Value.ValueKind == JsonValueKind.Array)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return node.EnumerateObject().Any(property => property.Value.ValueKind == JsonValueKind.Array);
     }
 
     private static bool LooksLikeSectionLabelProperty(string propertyName)
@@ -1802,14 +1789,10 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         var trimmed = query.TrimStart('?');
-        foreach (var part in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var pieces in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => part.Split('=', 2))
+            .Where(pieces => pieces.Length == 2 && string.Equals(pieces[0], key, StringComparison.OrdinalIgnoreCase)))
         {
-            var pieces = part.Split('=', 2);
-            if (pieces.Length != 2 || !string.Equals(pieces[0], key, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             return ExtractAsin(Uri.UnescapeDataString(pieces[1]));
         }
 
@@ -1886,16 +1869,11 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
         if (value.ValueKind == JsonValueKind.Object)
         {
-            foreach (var key in new[] { "text", "displayText", "title", "label", "value" })
+            foreach (var text in new[] { "text", "displayText", "title", "label", "value" }
+                .Select(key => value.TryGetProperty(key, out var nested) ? ReadText(nested) : null)
+                .Where(text => !string.IsNullOrWhiteSpace(text)))
             {
-                if (value.TryGetProperty(key, out var nested))
-                {
-                    var text = ReadText(nested);
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        return text;
-                    }
-                }
+                return text!;
             }
         }
 
@@ -1938,28 +1916,21 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
         if (value.ValueKind == JsonValueKind.Object)
         {
-            foreach (var key in new[] { "url", "image", "src" })
+            foreach (var text in new[] { "url", "image", "src" }
+                .Select(key => value.TryGetProperty(key, out var nested) ? ReadText(nested) : null)
+                .Where(text => !string.IsNullOrWhiteSpace(text)))
             {
-                if (value.TryGetProperty(key, out var nested))
-                {
-                    var text = ReadText(nested);
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        return text;
-                    }
-                }
+                return text!;
             }
         }
 
         if (value.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in value.EnumerateArray())
+            foreach (var image in value.EnumerateArray()
+                .Select(ReadImage)
+                .Where(image => !string.IsNullOrWhiteSpace(image)))
             {
-                var image = ReadImage(item);
-                if (!string.IsNullOrWhiteSpace(image))
-                {
-                    return image;
-                }
+                return image;
             }
         }
 

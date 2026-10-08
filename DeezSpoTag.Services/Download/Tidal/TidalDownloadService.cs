@@ -36,6 +36,18 @@ public sealed class TidalDownloadService
     // Sonar exception policy: this is the only allowed hardcoded token exception (public partner token).
     [SuppressMessage("Security", "S6418", Justification = "Only allowed exception: public Tidal partner token, not a private credential.")]
     private const string TidalPublicToken = "txNoH4kkV41MfH25";
+
+    /// <summary>
+    ///     Tidal's own source id, taken from the canonical definition rather than spelled out.
+    /// </summary>
+    /// <remarks>
+    ///     Every call below hands this to the shared Zarz session coordinator, which keys its
+    ///     session record and its verification grant by source id. A copy of this literal that
+    ///     drifted would store the session under a key nothing reads back, and every request would
+    ///     look like it had no session.
+    /// </remarks>
+    private const string TidalSource = DownloadTagSourceHelper.TidalSource;
+
     private const string TidalPublicCountryCode = "US";
     private const string TidalPublicLocale = "en_US";
     private const string TidalPublicDeviceType = "BROWSER";
@@ -556,7 +568,7 @@ public sealed class TidalDownloadService
     private static string BuildAcquiredStagingPath(string canonicalPath)
     {
         var extension = Path.GetExtension(canonicalPath);
-        return Path.Combine(
+        return Path.Join(
             Path.GetDirectoryName(canonicalPath) ?? string.Empty,
             Path.GetFileNameWithoutExtension(canonicalPath) + AcquiredStagingMarker + extension);
     }
@@ -568,7 +580,7 @@ public sealed class TidalDownloadService
     {
         var extension = Path.GetExtension(stagingPath);
         var stem = Path.GetFileNameWithoutExtension(stagingPath);
-        return Path.Combine(
+        return Path.Join(
             Path.GetDirectoryName(stagingPath) ?? string.Empty,
             stem[..^AcquiredStagingMarker.Length] + extension);
     }
@@ -696,12 +708,9 @@ public sealed class TidalDownloadService
 
         var queries = BuildSearchQueries(trackName, artistName);
         var seenQueries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var query in queries)
+        foreach (var query in queries.Where(query => seenQueries.Add(query)))
         {
-            if (seenQueries.Add(query))
-            {
-                candidates.AddRange(await SearchTracksAsync(query, 50, cancellationToken));
-            }
+            candidates.AddRange(await SearchTracksAsync(query, 50, cancellationToken));
         }
 
         var qualityCandidates = candidates
@@ -1565,7 +1574,7 @@ public sealed class TidalDownloadService
         bool allowSessionRefresh = true)
     {
         var session = await _zarzSessions.EnsureSessionAsync(
-            "tidal",
+            TidalSource,
             BootstrapZarzSignedSessionAsync,
             allowSessionRefresh ? RefreshZarzSignedSessionAsync : null,
             cancellationToken);
@@ -1622,7 +1631,7 @@ public sealed class TidalDownloadService
         {
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             var disposition = await _zarzSessions.ProcessResponseAsync(
-                "tidal", session, response.StatusCode, responseBody, cancellationToken);
+                TidalSource, session, response.StatusCode, responseBody, cancellationToken);
             if (allowSessionRetry && disposition is (ZarzResponseDisposition.SessionInvalid or ZarzResponseDisposition.RetryWithCurrentSession))
             {
                 response.Dispose();
@@ -1651,16 +1660,16 @@ public sealed class TidalDownloadService
     }
 
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.HasUsableSessionAsync("tidal", cancellationToken);
+        => _zarzSessions.HasUsableSessionAsync(TidalSource, cancellationToken);
 
     public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.PeekUsableSessionAsync("tidal", cancellationToken);
+        => _zarzSessions.PeekUsableSessionAsync(TidalSource, cancellationToken);
 
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null)
         => _zarzSessions.BeginVerificationAsync(
-            "tidal",
+            TidalSource,
             (current, token) => BootstrapZarzSignedSessionAsync(current, publicAppBaseUrl, token),
             cancellationToken);
 
@@ -1674,7 +1683,7 @@ public sealed class TidalDownloadService
         }
 
         await _zarzSessions.CompleteVerificationAsync(
-            "tidal",
+            TidalSource,
             grant.Trim(),
             async (record, verificationGrant, token) =>
             {
@@ -3764,15 +3773,20 @@ public sealed class TidalDownloadService
     private static int ExtractMaximumTidalManifestSampleRate(string value)
     {
         var maximum = 0;
-        foreach (Match match in MatchesWithTimeout(
+        foreach (var rate in MatchesWithTimeout(
                      value,
                      "(?:audioSamplingRate|sampleRate|samplingRate|sample_rate)\\s*[\"':=]+\\s*\"?(?<rate>\\d{4,6})",
-                     RegexOptions.IgnoreCase))
+                     RegexOptions.IgnoreCase)
+                     .Select(match => int.TryParse(
+                         match.Groups["rate"].Value,
+                         NumberStyles.Integer,
+                         CultureInfo.InvariantCulture,
+                         out var parsed)
+                         ? parsed
+                         : (int?)null)
+                     .Where(rate => rate is not null))
         {
-            if (int.TryParse(match.Groups["rate"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var rate))
-            {
-                maximum = Math.Max(maximum, rate);
-            }
+            maximum = Math.Max(maximum, rate!.Value);
         }
 
         return maximum;
@@ -3781,15 +3795,20 @@ public sealed class TidalDownloadService
     private static int ExtractMaximumTidalManifestBitDepth(string value)
     {
         var maximum = 0;
-        foreach (Match match in MatchesWithTimeout(
+        foreach (var bits in MatchesWithTimeout(
                      value,
                      "(?:bitDepth|bitsPerSample|bit_depth)\\s*[\"':=]+\\s*\"?(?<bits>\\d{1,2})",
-                     RegexOptions.IgnoreCase))
+                     RegexOptions.IgnoreCase)
+                     .Select(match => int.TryParse(
+                         match.Groups["bits"].Value,
+                         NumberStyles.Integer,
+                         CultureInfo.InvariantCulture,
+                         out var parsed)
+                         ? parsed
+                         : (int?)null)
+                     .Where(bits => bits is not null))
         {
-            if (int.TryParse(match.Groups["bits"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bits))
-            {
-                maximum = Math.Max(maximum, bits);
-            }
+            maximum = Math.Max(maximum, bits!.Value);
         }
 
         return maximum;

@@ -65,7 +65,7 @@ public partial class AutoTagService
         var manualJobId = _activeJobIds.Keys.FirstOrDefault(activeJobId =>
             _jobs.TryGetValue(activeJobId, out var activeJob)
             && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
-            && IsManualEnrichmentRunIntent(activeJob.RunIntent));
+            && IsExternalFileEnrichmentRunIntent(activeJob.RunIntent));
         if (!string.IsNullOrWhiteSpace(manualJobId))
         {
             jobId = manualJobId;
@@ -278,10 +278,10 @@ public partial class AutoTagService
 
         // The runner stopped without StopJobAsync having stamped a status (external kill).
         // Enhancement runs stay resumable: interrupted, never canceled.
-        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsExternalFileEnrichmentRunIntent(job.RunIntent)
             ? AutoTagLiterals.InterruptedStatus
             : AutoTagLiterals.CanceledStatus;
-        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsExternalFileEnrichmentRunIntent(job.RunIntent)
             ? "Interrupted. Resume is available."
             : "Stopped by user.";
         return new StageExecutionResult(false);

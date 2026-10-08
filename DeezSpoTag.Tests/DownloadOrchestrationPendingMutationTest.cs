@@ -60,6 +60,29 @@ public sealed class DownloadOrchestrationPendingMutationTest : IDisposable
     }
 
     [Fact]
+    public async Task ActiveProcessorBlocksIdleEvenWhenTheDatabaseHasNoActiveDownloads()
+    {
+        var registry = new DownloadCancellationRegistry();
+        using var processor = new CancellationTokenSource();
+        registry.Register("still-finishing-artwork", processor);
+        var field = typeof(DownloadOrchestrationService).GetField(
+            "_cancellationRegistry", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(_orchestration, registry);
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "HasActiveDownloadWorkAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        Assert.False(await _queueRepository.HasActiveDownloadsAsync());
+        var active = await (Task<bool>)method!.Invoke(_orchestration, new object[] { CancellationToken.None })!;
+        Assert.True(active);
+        // Cancellation requests do not release ownership before the processor's finally block exits.
+        processor.Cancel();
+        Assert.True(await (Task<bool>)method.Invoke(_orchestration, new object[] { CancellationToken.None })!);
+        registry.Remove("still-finishing-artwork");
+        Assert.False(await (Task<bool>)method.Invoke(_orchestration, new object[] { CancellationToken.None })!);
+    }
+
+    [Fact]
     public async Task HasPendingPostDownloadEnrichmentAsync_DoesNotMutateCompletedPendingRows()
     {
         var queueUuid = "pending-no-mutate";
@@ -176,6 +199,7 @@ public sealed class DownloadOrchestrationPendingMutationTest : IDisposable
             NullLogger<LibraryConfigStore>.Instance,
             environment);
         var services = new ServiceCollection()
+            .AddSingleton(cancellationRegistry)
             .AddSingleton<INotificationSink>(new NullNotificationSink())
             .AddSingleton(queueRepository)
             .AddSingleton(recoveryService)

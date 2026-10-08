@@ -107,9 +107,9 @@ public sealed class DownloadQueueRepository
             var queueOrder = item.QueueOrder ?? await GetNextQueueOrderAsync(connection, cancellationToken);
             const string sql = @"
 	INSERT OR IGNORE INTO " + DownloadTaskTable + @"
-	    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
+	    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, public_api_unverified_when_queued, last_queued_at_utc, created_at, updated_at)
 	VALUES
-	    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @qobuzTrackId, @qobuzAlbumId, @qobuzArtistId, @tidalTrackId, @tidalAlbumId, @tidalArtistId, @amazonTrackId, @amazonAlbumId, @amazonArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+	    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @qobuzTrackId, @qobuzAlbumId, @qobuzArtistId, @tidalTrackId, @tidalAlbumId, @tidalArtistId, @amazonTrackId, @amazonAlbumId, @amazonArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, @publicApiUnverifiedWhenQueued, @lastQueuedAtUtc, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 SELECT CASE
     WHEN changes() = 0 THEN NULL
 	    ELSE last_insert_rowid()
@@ -500,16 +500,7 @@ WHERE lower(status) IN ('resolving', 'queued', 'inqueue', 'running', 'downloadin
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var direction = newestFirst ? "DESC" : "ASC";
-        var sql = $@"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
-       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
-FROM download_task
-WHERE lower(status) IN ('queued', 'resolving')
-ORDER BY (queue_order IS NULL), queue_order {direction}, created_at {direction}, id {direction}
-LIMIT @limit;";
+        var sql = BuildPreResolutionWindowSql(direction);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 25));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -1077,7 +1068,7 @@ WHERE queue_uuid = @queueUuid;";
         string status,
         CancellationToken cancellationToken)
     {
-        if (_stagingCleanupService == null || !IsFailedOrCanceledStatus(status))
+        if (_stagingCleanupService == null || !IsStagingCleanupTerminalStatus(status))
         {
             return;
         }
@@ -1133,29 +1124,22 @@ WHERE queue_uuid = @queueUuid;";
 
     private static bool TryGetBooleanProperty(JsonElement root, params string[] names)
     {
-        foreach (var name in names)
-        {
-            if (root.TryGetProperty(name, out var value)
-                && value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                return value.GetBoolean();
-            }
-        }
-
-        return false;
+        var value = names
+            .Select(name => root.TryGetProperty(name, out var property)
+                && property.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? (bool?)property.GetBoolean()
+                : null)
+            .FirstOrDefault(candidate => candidate.HasValue);
+        return value ?? false;
     }
 
     private static string? TryGetStringProperty(JsonElement root, params string[] names)
     {
-        foreach (var name in names)
-        {
-            if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
-            {
-                return value.GetString();
-            }
-        }
-
-        return null;
+        return names
+            .Select(name => root.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null)
+            .FirstOrDefault(value => value is not null);
     }
 
     private static async Task<List<string>> GetActivePayloadPathsExceptAsync(
@@ -1180,10 +1164,10 @@ WHERE queue_uuid <> @queueUuid
         return paths.ToList();
     }
 
-    private static bool IsFailedOrCanceledStatus(string status)
+    private static bool IsStagingCleanupTerminalStatus(string status)
     {
         var normalized = status.Trim().ToLowerInvariant();
-        return normalized is "failed" or "error" or "canceled" or "cancelled";
+        return normalized is "failed" or "error" or "canceled" or "cancelled" or "unavailable";
     }
 
     private static async Task UpdateStagingCleanupStatusAsync(
@@ -1352,16 +1336,47 @@ WHERE queue_uuid = @queueUuid
         string placeholders,
         CancellationToken cancellationToken)
     {
-        var sql = $@"
+        var sql = BuildHasRunningPublicEngineSql(placeholders);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        BindPublicEngineParameters(command, publicEngines);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null and not DBNull;
+    }
+
+    private static string BuildPreResolutionWindowSql(string direction)
+        => $@"
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
+FROM download_task
+WHERE lower(status) IN ('queued', 'resolving')
+ORDER BY (queue_order IS NULL), queue_order {direction}, created_at {direction}, id {direction}
+LIMIT @limit;";
+
+    private static string BuildHasRunningPublicEngineSql(string placeholders)
+        => $@"
 SELECT 1
 FROM download_task
 WHERE status = 'running'
   AND lower(engine) IN ({placeholders})
 LIMIT 1;";
-        await using var command = new SqliteCommand(sql, connection, transaction);
-        BindPublicEngineParameters(command, publicEngines);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null and not DBNull;
+
+    private static string BuildFailedForVerificationRetrySql(bool requireUnverifiedFlag)
+    {
+        const string baseSql = @"
+SELECT queue_uuid
+FROM download_task
+WHERE lower(status) = 'failed'
+  AND lower(COALESCE(status, '')) NOT IN ('canceled', 'cancelled')";
+        const string unverifiedPredicate = @"
+  AND public_api_unverified_when_queued = 1";
+        const string orderBy = @"
+ORDER BY COALESCE(last_queued_at_utc, created_at), id;";
+        return requireUnverifiedFlag
+            ? baseSql + unverifiedPredicate + orderBy
+            : baseSql + orderBy;
     }
 
     private static void BindPublicEngineParameters(
@@ -2354,7 +2369,7 @@ WHERE lower(status) = lower(@status)
     destination_folder_id IS NULL
     OR move_status = '" + MoveStatusMoved + @"'
     OR move_status = '" + MoveStatusNotRequired + @"'
-    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled', 'unavailable') AND staging_cleanup_status IN ('completed', 'skipped'))
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
@@ -2403,7 +2418,7 @@ WHERE queue_uuid = @queueUuid
     destination_folder_id IS NULL
     OR move_status = '" + MoveStatusMoved + @"'
     OR move_status = '" + MoveStatusNotRequired + @"'
-    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled', 'unavailable') AND staging_cleanup_status IN ('completed', 'skipped'))
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
@@ -2436,7 +2451,7 @@ WHERE lower(status) NOT IN (" + activeStatuses + @")
     destination_folder_id IS NULL
     OR move_status = '" + MoveStatusMoved + @"'
     OR move_status = '" + MoveStatusNotRequired + @"'
-    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled', 'unavailable') AND staging_cleanup_status IN ('completed', 'skipped'))
   );";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
@@ -2447,7 +2462,7 @@ WHERE lower(status) NOT IN (" + activeStatuses + @")
         string status,
         CancellationToken cancellationToken)
     {
-        if (_stagingCleanupService == null || !IsFailedOrCanceledStatus(status))
+        if (_stagingCleanupService == null || !IsStagingCleanupTerminalStatus(status))
         {
             return;
         }
@@ -2475,7 +2490,7 @@ WHERE lower(status) = lower(@status);";
 SELECT queue_uuid
 FROM download_task
 WHERE queue_uuid = @queueUuid
-  AND lower(status) IN ('failed', 'error', 'canceled', 'cancelled');";
+  AND lower(status) IN ('failed', 'error', 'canceled', 'cancelled', 'unavailable');";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
@@ -2493,7 +2508,7 @@ WHERE queue_uuid = @queueUuid
         const string sql = @"
 SELECT queue_uuid
 FROM download_task
-WHERE lower(status) IN ('failed', 'error', 'canceled', 'cancelled');";
+WHERE lower(status) IN ('failed', 'error', 'canceled', 'cancelled', 'unavailable');";
         await using var command = new SqliteCommand(sql, connection);
         await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
     }
@@ -2735,6 +2750,16 @@ WHERE (
             lower(@contentType) = '" + StereoContentType + @"'
             AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
         )
+    )
+    AND (
+        -- Only a terminally failed row is allowed to stop blocking a re-enqueue, and only
+        -- once the redownload cooldown has elapsed. Every other status (active work, and
+        -- rows that finished successfully) always blocks, so this fails safe on any status
+        -- the pipeline has not written yet.
+        lower(COALESCE(status, '')) NOT IN ('failed', 'unavailable', 'canceled', 'cancelled')
+        OR @cooldownMinutes IS NULL
+        OR datetime(COALESCE(updated_at, created_at, CURRENT_TIMESTAMP))
+            > datetime('now', '-' || @cooldownMinutes || ' minutes')
     )
 ORDER BY
     CASE
@@ -3107,6 +3132,8 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "retry_next_at", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "retry_reason", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "retry_engine", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "public_api_unverified_when_queued", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "last_queued_at_utc", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);
@@ -3201,9 +3228,8 @@ WHERE json_valid(payload)
         {
             return;
         }
-        foreach (var token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var normalized in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(token => token.Trim().ToLowerInvariant()))
         {
-            var normalized = token.Trim().ToLowerInvariant();
             if (normalized is "time-synced" or "timesynced" or "ttml" or "syllable-lyrics") formats.Add("ttml");
             else if (normalized is "synced" or "lrc" or "lyrics") formats.Add("lrc");
             else if (normalized is "unsynced" or "txt" or "unsynced-lyrics") formats.Add("txt");
@@ -3225,22 +3251,21 @@ WHERE json_valid(payload)
         {
             return;
         }
-        foreach (var file in files)
+        foreach (var (path, format) in files.Select(file =>
+                 {
+                     var path = file is JsonObject obj
+                         ? (obj["path"] ?? obj["Path"])?.ToString()
+                         : file?.ToString();
+                     var format = Path.GetExtension(path ?? string.Empty).ToLowerInvariant() switch
+                     {
+                         ".ttml" => "ttml",
+                         ".lrc" => "lrc",
+                         ".txt" => "txt",
+                         _ => string.Empty
+                     };
+                     return (path, format);
+                 }).Where(entry => !string.IsNullOrEmpty(entry.format)))
         {
-            var path = file is JsonObject obj
-                ? (obj["path"] ?? obj["Path"])?.ToString()
-                : file?.ToString();
-            var format = Path.GetExtension(path ?? string.Empty).ToLowerInvariant() switch
-            {
-                ".ttml" => "ttml",
-                ".lrc" => "lrc",
-                ".txt" => "txt",
-                _ => string.Empty
-            };
-            if (string.IsNullOrEmpty(format))
-            {
-                continue;
-            }
             downloaded.Add(format);
             filesByFormat[format] = path!;
         }
@@ -3431,6 +3456,7 @@ CREATE INDEX IF NOT EXISTS idx_download_task_tidal_track ON " + DownloadTaskTabl
 CREATE INDEX IF NOT EXISTS idx_download_task_amazon_track ON " + DownloadTaskTable + @" (amazon_track_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_destination_folder ON " + DownloadTaskTable + @" (destination_folder_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_artist_title_duration ON " + DownloadTaskTable + @" (artist_name, track_title, duration_ms);
+CREATE INDEX IF NOT EXISTS idx_download_task_public_api_retry ON " + DownloadTaskTable + @" (status, public_api_unverified_when_queued);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_download_task_queue_uuid ON " + DownloadTaskTable + @" (queue_uuid);";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -3726,6 +3752,10 @@ LIMIT 1;";
         command.Parameters.AddWithValue("downloaded", (object?)item.Downloaded ?? DBNull.Value);
         command.Parameters.AddWithValue("failed", (object?)item.Failed ?? DBNull.Value);
         command.Parameters.AddWithValue("error", (object?)item.Error ?? DBNull.Value);
+        command.Parameters.AddWithValue("publicApiUnverifiedWhenQueued", item.PublicApiUnverifiedWhenQueued ? 1 : 0);
+        command.Parameters.AddWithValue(
+            "lastQueuedAtUtc",
+            (object?)FormatTimestampForStorage(item.LastQueuedAtUtc ?? DateTimeOffset.UtcNow) ?? DBNull.Value);
     }
 
     private static void BindQueueIdentityParameters(SqliteCommand command, DownloadQueueItem item, string prefix)
@@ -3771,13 +3801,11 @@ LIMIT 1;";
     private static string? ResolvePayloadIdentity(string? payloadJson, params string[] keys)
     {
         var payload = QueuePreResolutionPayload.ParseOrEmpty(payloadJson);
-        foreach (var key in keys)
+        foreach (var value in keys
+                     .Select(key => NormalizeId(payload[key]?.ToString()))
+                     .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = NormalizeId(payload[key]?.ToString());
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;
@@ -3915,6 +3943,130 @@ WHERE queue_order IS NOT NULL;";
             : DateTimeOffset.UtcNow;
     }
 
+    /// <summary>
+    /// Writes the verification record onto an existing row. Used when the queueing decision can only
+    /// be made after the row exists, and when re-stamping an item that is being released.
+    /// </summary>
+    public async Task MarkPublicApiUnverifiedWhenQueuedAsync(
+        string queueUuid,
+        bool unverified,
+        DateTimeOffset? queuedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET public_api_unverified_when_queued = @unverified,
+    last_queued_at_utc = @queuedAtUtc,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("unverified", unverified ? 1 : 0);
+        command.Parameters.AddWithValue("queuedAtUtc", (object?)FormatTimestampForStorage(queuedAtUtc) ?? DBNull.Value);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the queue uuids of failed items eligible for verification-driven retry.
+    /// When <paramref name="requireUnverifiedFlag"/> is false (the initial run) every failed item is
+    /// returned. Cancelled items are excluded in both modes: a user cancellation is final.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetFailedForVerificationRetryAsync(
+        bool requireUnverifiedFlag,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var sql = BuildFailedForVerificationRetrySql(requireUnverifiedFlag);
+        await using var command = new SqliteCommand(sql, connection);
+        var results = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var uuid = GetNullableString(reader, 0);
+            if (!string.IsNullOrWhiteSpace(uuid))
+            {
+                results.Add(uuid);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Clears the verification record once an item is released or succeeds, so it is not re-released
+    /// by a later verification.
+    /// </summary>
+    public async Task ClearPublicApiRetryFlagAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET public_api_unverified_when_queued = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Same storage format the retry scheduler writes with in SQL, so timestamp comparisons in
+    /// SQLite (<c>datetime(...)</c> against <c>datetime('now')</c>) stay consistent between columns.
+    /// </summary>
+    private static string? FormatTimestampForStorage(DateTimeOffset? value)
+        => value?.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Reads just the verification-retry record for one item. Deliberately a separate read instead
+    /// of an addition to the shared SELECT projection, which is duplicated across many queries.
+    /// </summary>
+    public async Task<(bool UnverifiedWhenQueued, DateTimeOffset? QueuedAtUtc)?> GetPublicApiRetryStampAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return null;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT public_api_unverified_when_queued, last_queued_at_utc
+FROM download_task
+WHERE queue_uuid = @queueUuid
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var unverified = !reader.IsDBNull(0) && reader.GetInt32(0) != 0;
+        DateTimeOffset? queuedAt = reader.IsDBNull(1)
+            ? null
+            : ParseTimestampOrUtcNow(reader.GetString(1));
+        return (unverified, queuedAt);
+    }
+
     private static string? NormalizeIsrc(string? isrc)
     {
         var trimmed = isrc?.Trim();
@@ -4045,19 +4197,11 @@ public sealed class DuplicateLookupRequest : DownloadIdentityLookupRequest
             return null;
         }
 
-        foreach (var name in names)
-        {
-            if (root.Value.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
-            {
-                var text = value.GetString();
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
-        }
-
-        return null;
+        return names
+            .Select(name => root.Value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null)
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
     }
 
     private static int? ReadPayloadInt(JsonElement? root, params string[] names)
@@ -4150,6 +4294,21 @@ public sealed record DownloadQueueItem(
     public string? AmazonTrackId { get; init; }
     public string? AmazonAlbumId { get; init; }
     public string? AmazonArtistId { get; init; }
+
+    /// <summary>
+    /// True when the item was queued while at least one public download API had no verified
+    /// session. Read by verification-driven retry, which releases these items once a session
+    /// verification completes. Defaults to false so callers that never set it behave exactly as
+    /// before this column existed.
+    /// </summary>
+    public bool PublicApiUnverifiedWhenQueued { get; init; }
+
+    /// <summary>
+    /// When the item was most recently queued. Recorded alongside
+    /// <see cref="PublicApiUnverifiedWhenQueued"/> so the queueing time of a released item is
+    /// recoverable after a process restart.
+    /// </summary>
+    public DateTimeOffset? LastQueuedAtUtc { get; init; }
 
     public DownloadQueueItem(
         long Id,

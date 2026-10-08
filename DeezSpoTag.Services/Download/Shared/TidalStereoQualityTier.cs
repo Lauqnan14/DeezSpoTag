@@ -13,6 +13,9 @@ internal enum TidalStereoQualityTier
 
 internal static class TidalStereoQuality
 {
+    /// <summary>Lowest delivered bitrate the bottom (Low) plan step will accept.</summary>
+    private const int MinLowBitrateKbps = 64;
+
     public const string Low = "LOW";
     public const string High = "HIGH";
     public const string CdLossless = "LOSSLESS";
@@ -66,7 +69,9 @@ internal static class TidalStereoQuality
     public static bool Accepts(TidalStereoQualityTier requested, ActualAudioQuality actual)
         => requested switch
         {
-            TidalStereoQualityTier.Low => actual.IsLossless || actual.BitrateKbps > 0,
+            // Low is the bottom rung of the fallback ladder, but it still has to be real audio. It used to
+            // accept any positive bitrate, so a 32kbps file could satisfy the step and end the walk early.
+            TidalStereoQualityTier.Low => actual.IsLossless || actual.BitrateKbps >= MinLowBitrateKbps,
             TidalStereoQualityTier.High => actual.IsLossless || actual.BitrateKbps >= 256,
             TidalStereoQualityTier.CdLossless => actual.IsLossless
                 && actual.BitsPerSample > 0

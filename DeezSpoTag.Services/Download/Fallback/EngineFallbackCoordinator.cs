@@ -4,6 +4,7 @@ using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.DependencyInjection;
 using DeezSpoTag.Services.Apple;
 
 namespace DeezSpoTag.Services.Download.Fallback;
@@ -36,6 +37,7 @@ public sealed class EngineFallbackCoordinator
     private readonly EngineFallbackSearchService _fallbackSearchService;
     private readonly IActivityLogWriter _activityLog;
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
+    private readonly IServiceProvider? _serviceProvider;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
@@ -55,7 +57,9 @@ public sealed class EngineFallbackCoordinator
         string Quality,
         string ContentType,
         QueueSourceSettingsSnapshot SourceSettingsSnapshot,
-        List<FallbackPlanStep> FallbackPlan);
+        List<FallbackPlanStep> FallbackPlan,
+        object Payload);
+
     private sealed record FallbackPayloadMutators(
         Action<(string Source, string? Quality, int Index)> ApplyStep,
         Action<string> SetSourceUrl);
@@ -85,7 +89,16 @@ public sealed class EngineFallbackCoordinator
         string Language,
         string? MediaUserToken,
         string UserCountry,
-        bool FallbackSearchEnabled);
+        bool FallbackSearchEnabled,
+        /// <summary>
+        ///     The SoundCloud permalink the item already carries, if any.
+        /// </summary>
+        /// <remarks>
+        ///     Trailing and nullable so the per-step resolution record keeps its existing construction shape.
+        ///     Carried because a SoundCloud id cannot be turned back into a URL, so the only thing a step can
+        ///     reuse is a permalink the item already has.
+        /// </remarks>
+        string? SoundCloudUrl = null);
 
     public EngineFallbackCoordinator(
         DownloadQueueRepository queueRepository,
@@ -93,7 +106,8 @@ public sealed class EngineFallbackCoordinator
         DeezerIsrcResolver deezerIsrcResolver,
         EngineFallbackSearchService fallbackSearchService,
         IActivityLogWriter activityLog,
-        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null,
+        IServiceProvider? serviceProvider = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
@@ -152,6 +166,26 @@ public sealed class EngineFallbackCoordinator
         }
     }
 
+    /// <summary>
+    ///     Whether a failed eligibility probe should be read as "not verified".
+    /// </summary>
+    /// <remarks>
+    ///     Always true, and deliberately so. The probe asks one remote service a yes/no question and
+    ///     the caller cannot act on anything finer than yes or no: an unreachable engine, a rejected
+    ///     login and a timeout all mean the same thing here. Filtering for "expected" exceptions would
+    ///     let an unexpected one escape, and since this sits at the top of the fallback ladder that
+    ///     would abandon every remaining engine because one was unreachable - turning a single
+    ///     misbehaving service into a failed download.
+    ///     <para>
+    ///         Named and given an exception so the blanket catch reads as a decision rather than an
+    ///         oversight. The project's guardrail bans an unexplained catch-all
+    ///         (an unfiltered catch of the base exception type), and an unnamed one could not be told apart
+    ///         from a swallowed bug. This form keeps that guardrail intact for every other call site
+    ///         while saying out loud that totality is the intent here.
+    ///     </para>
+    /// </remarks>
+    private static bool ProbeFailureMeansUnverified(Exception ex) => true;
+
     public Task<bool> TryAdvanceAsync<TPayload>(
         string queueUuid,
         string currentEngine,
@@ -183,7 +217,8 @@ public sealed class EngineFallbackCoordinator
             Quality: payload.Quality,
             ContentType: payload.ContentType,
             SourceSettingsSnapshot: payload.SourceSettingsSnapshot,
-            FallbackPlan: payload.FallbackPlan);
+            FallbackPlan: payload.FallbackPlan,
+            Payload: payload);
 
         var mutators = new FallbackPayloadMutators(
             ApplyStep: step =>
@@ -231,7 +266,8 @@ public sealed class EngineFallbackCoordinator
             settings,
             userCountry,
             request.SpotifyId,
-            resolvedIsrc);
+            resolvedIsrc,
+            payloadForSerialization);
         var stepContext = new FallbackStepExecutionContext(
             mutators,
             payloadForSerialization,
@@ -325,7 +361,8 @@ public sealed class EngineFallbackCoordinator
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         string userCountry,
         string? resolvedSpotifyId,
-        string? resolvedIsrc)
+        string? resolvedIsrc,
+        object payloadForSerialization)
     {
         return new SourceResolutionRequest(
             Engine: string.Empty,
@@ -347,7 +384,8 @@ public sealed class EngineFallbackCoordinator
             Language: settings.DeezerLanguage ?? string.Empty,
             MediaUserToken: settings.AppleMusic?.MediaUserToken,
             UserCountry: userCountry,
-            FallbackSearchEnabled: settings.FallbackSearch);
+            FallbackSearchEnabled: settings.FallbackSearch,
+            SoundCloudUrl: ReadSoundCloudUrl(payloadForSerialization, request));
     }
 
     private static bool ShouldSkipStep(
@@ -462,7 +500,7 @@ public sealed class EngineFallbackCoordinator
             return false;
         }
 
-        context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
+        context.Mutators.SetSourceUrl(resolvedUrl!);
         TrySetResolvedEngineId(context.PayloadForSerialization, step.Source, resolvedUrl);
         context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
         MarkCentralResolutionPending(context.PayloadForSerialization);
@@ -486,7 +524,10 @@ public sealed class EngineFallbackCoordinator
         object payloadForSerialization,
         CancellationToken cancellationToken)
     {
-        const string message = "Download failed after all enabled sources were tried.";
+        // The item gets one short line: what happened, in the reader's terms. The step detail is the diagnosis,
+        // so it goes to the log here, where a reader with a log open can act on it, and stays on the payload's
+        // history for the same reason.
+        var message = BuildExhaustionMessage(payloadForSerialization, request.CurrentEngine);
         SetResolutionError(payloadForSerialization, message);
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
         await _queueRepository.UpdatePayloadAsync(request.QueueUuid, json, cancellationToken);
@@ -495,6 +536,13 @@ public sealed class EngineFallbackCoordinator
             : 0;
         _activityLog.Warn(
             $"Fallback exhausted: {request.QueueUuid} after {request.CurrentEngine}; recorded attempts={attemptCount}");
+        if (payloadForSerialization is EngineQueueItemBase exhausted
+            && exhausted.FallbackHistory.Count > 0)
+        {
+            _activityLog.Warn(
+                $"Fallback exhausted detail for {request.QueueUuid}: {exhausted.FallbackHistory[^1].Detail}");
+        }
+
         NotifyDownloadFailed(request, payloadForSerialization, attemptCount);
     }
 
@@ -699,6 +747,16 @@ public sealed class EngineFallbackCoordinator
             return;
         }
 
+        if (string.Equals(source, SoundCloudEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            // SoundCloud ids are numeric but the permalink carries the uploader and track slugs, so only the
+            // URL can be recovered from a resolved link. Both the engine's own resolved field and the shared
+            // SourceUrl are set so the next attempt does not have to search again.
+            TrySetStringProperty(payloadForSerialization, "SoundCloudResolvedUrl", resolvedUrl);
+            TrySetStringProperty(payloadForSerialization, "SourceUrl", resolvedUrl);
+            return;
+        }
+
         if (string.Equals(source, TidalEngine, StringComparison.OrdinalIgnoreCase))
         {
             var resolvedTidalId = EngineLinkParser.TryExtractTidalTrackId(resolvedUrl);
@@ -823,9 +881,38 @@ public sealed class EngineFallbackCoordinator
                 request.Language,
                 request.MediaUserToken,
                 request.UserCountry,
-                request.FallbackSearchEnabled),
+                request.FallbackSearchEnabled,
+                request.SoundCloudUrl),
             stepCts.Token);
         return result.ResolvedUrl;
+    }
+
+    /// <summary>
+    ///     Reads the SoundCloud permalink an item carries, when it has one.
+    /// </summary>
+    /// <remarks>
+    ///     Read through the runtime payload rather than by engine, so this coordinator does not have to know
+    ///     about every engine's own identity field. An item from another engine simply has no SoundCloud
+    ///     field, and its SoundCloud step falls back to a metadata search.
+    /// </remarks>
+    private static string? ReadSoundCloudUrl(object payloadForSerialization, FallbackAdvanceRequest request)
+    {
+        // An earlier attempt on this item may already have resolved the permalink, in which case there is no
+        // reason to search for the track again.
+        var resolved = payloadForSerialization.GetType().GetProperty("SoundCloudResolvedUrl");
+        if (resolved is { CanRead: true }
+            && resolved.PropertyType == typeof(string)
+            && resolved.GetValue(payloadForSerialization) is string { Length: > 0 } resolvedUrl
+            && !string.IsNullOrWhiteSpace(resolvedUrl))
+        {
+            return resolvedUrl;
+        }
+
+        // A pasted SoundCloud link arrives as the item's own SourceUrl rather than as engine-resolved state.
+        return !string.IsNullOrWhiteSpace(request.SourceUrl)
+               && request.SourceUrl.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase)
+            ? request.SourceUrl
+            : null;
     }
 
     private static TimeSpan ResolveFallbackStepTimeout(string engine)

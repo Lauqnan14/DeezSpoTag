@@ -9,6 +9,34 @@ public static class DownloadPathResolver
     private const string SmbScheme = "smb://";
     private const string GvfsSegment = "/gvfs/smb-share:server=";
 
+    public static bool IsUnderTopLevelIncompleteDirectory(string rootPath, string candidatePath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(candidatePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ResolveIoPath(rootPath)));
+            var candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ResolveIoPath(candidatePath)));
+            var incomplete = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Join(root, "incomplete")));
+
+            if (string.Equals(candidate, incomplete, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return candidate.StartsWith(incomplete + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || (Path.AltDirectorySeparatorChar != Path.DirectorySeparatorChar
+                    && candidate.StartsWith(incomplete + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     public static string ResolveIoPath(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !IsSmbPath(path))

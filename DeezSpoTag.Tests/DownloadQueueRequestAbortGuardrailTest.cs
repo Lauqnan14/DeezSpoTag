@@ -61,7 +61,10 @@ public sealed class DownloadQueueRequestAbortGuardrailTest
 
         Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, request.Settings)", deezerApiSource, StringComparison.Ordinal);
         Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings)", deezerApiSource, StringComparison.Ordinal);
-        Assert.Contains("PreferredEngine = preferredEngine", deezerApiSource, StringComparison.Ordinal);
+        // The live assignment the removed dead parse endpoint used to carry. The intent under test is
+        // that a manual Deezer download takes its engine from the shared resolver rather than a
+        // hard-coded source, so the assertion is pinned to the surviving production path.
+        Assert.Contains("intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);", deezerApiSource, StringComparison.Ordinal);
         Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, settings)", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("NormalizeSourcePolicy(settings.Service)", resolverSource, StringComparison.Ordinal);

@@ -5,7 +5,6 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayloadResolver
 {
-    private const string FailedMessage = "Track unavailable in enabled download sources.";
     private const string UnavailableStatus = "unavailable";
     private readonly DownloadIntentService _downloadIntentService;
 
@@ -23,14 +22,19 @@ public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayload
         var result = await _downloadIntentService.ResolveQueuedPayloadAsync(item, cancellationToken);
         if (!string.IsNullOrWhiteSpace(result.Error))
         {
-            QueuePreResolutionPayload.ApplyFailed(payload, FailedMessage, DateTimeOffset.UtcNow);
+            // Propagate the real failure text. A constant here collapses every resolution failure
+            // into "track unavailable", which IsTrackUnavailableFailure classifies as a terminal
+            // catalogue miss, so a timeout or rate limit would be misfiled as a missing track and
+            // never retried.
+            var error = result.Error.Trim();
+            QueuePreResolutionPayload.ApplyFailed(payload, error, DateTimeOffset.UtcNow);
             return new QueuedDownloadPayloadResolution(
                 BuildIdentityUpdateItem(item, payload.ToJsonString(), result.Engine) with
                 {
                     Status = UnavailableStatus,
-                    Error = FailedMessage
+                    Error = error
                 },
-                FailedMessage);
+                error);
         }
 
         QueuePreResolutionPayload.ApplyResolved(payload, result, DateTimeOffset.UtcNow);

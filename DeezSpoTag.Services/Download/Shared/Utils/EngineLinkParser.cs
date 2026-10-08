@@ -128,22 +128,14 @@ public static class EngineLinkParser
             return null;
         }
 
-        foreach (var part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var value in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => part.Split('=', 2, StringSplitOptions.TrimEntries))
+            .Where(pieces => pieces.Length == 2)
+            .Select(pieces => (Key: Uri.UnescapeDataString(pieces[0]), Raw: pieces[1]))
+            .Where(pair => pair.Key.Equals("trackAsin", StringComparison.OrdinalIgnoreCase)
+                || pair.Key.Equals("asin", StringComparison.OrdinalIgnoreCase))
+            .Select(pair => Uri.UnescapeDataString(pair.Raw).Trim()))
         {
-            var pieces = part.Split('=', 2, StringSplitOptions.TrimEntries);
-            if (pieces.Length != 2)
-            {
-                continue;
-            }
-
-            var key = Uri.UnescapeDataString(pieces[0]);
-            if (!key.Equals("trackAsin", StringComparison.OrdinalIgnoreCase)
-                && !key.Equals("asin", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var value = Uri.UnescapeDataString(pieces[1]).Trim();
             return string.IsNullOrWhiteSpace(value) ? null : value;
         }
 

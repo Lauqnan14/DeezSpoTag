@@ -59,6 +59,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const int ZarzTimeWindowSeconds = ZarzSignedSessionContract.TimeWindowSeconds;
     private const string ApplicationJsonContentType = "application/json";
     private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
+
+    /// <summary>
+    ///     Qobuz's own source id, taken from the canonical definition rather than spelled out.
+    /// </summary>
+    /// <remarks>
+    ///     Every call below hands this to the shared Zarz session coordinator, which keys its
+    ///     session record and its verification grant by source id. A copy of this literal that
+    ///     drifted would store the session under a key nothing reads back, and every request would
+    ///     look like it had no session.
+    /// </remarks>
+    private const string QobuzSource = DownloadTagSourceHelper.QobuzSource;
     private const string FlacExtension = ".flac";
     private const string DefaultAppId = "712109809";
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
@@ -877,7 +888,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         bool allowSessionRefresh = true)
     {
         var session = await _zarzSessions.EnsureSessionAsync(
-            "qobuz",
+            QobuzSource,
             BootstrapZarzSessionAsync,
             allowSessionRefresh ? RefreshZarzSessionAsync : null,
             cancellationToken);
@@ -907,7 +918,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Encoding.UTF8.GetBytes(rollingKey),
             Encoding.UTF8.GetBytes(canonical)));
 
-        var request = new HttpRequestMessage(method, uri);
+        using var request = new HttpRequestMessage(method, uri);
         request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
         request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
         request.Headers.TryAddWithoutValidation("X-Zarz-Session", session.SessionId);
@@ -935,7 +946,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             var disposition = await _zarzSessions.ProcessResponseAsync(
-                "qobuz", session, response.StatusCode, responseBody, cancellationToken);
+                QobuzSource, session, response.StatusCode, responseBody, cancellationToken);
             if (allowSessionRetry && disposition is (ZarzResponseDisposition.SessionInvalid or ZarzResponseDisposition.RetryWithCurrentSession))
             {
                 response.Dispose();
@@ -963,16 +974,16 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.HasUsableSessionAsync("qobuz", cancellationToken);
+        => _zarzSessions.HasUsableSessionAsync(QobuzSource, cancellationToken);
 
     public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
-        => _zarzSessions.PeekUsableSessionAsync("qobuz", cancellationToken);
+        => _zarzSessions.PeekUsableSessionAsync(QobuzSource, cancellationToken);
 
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null)
         => _zarzSessions.BeginVerificationAsync(
-            "qobuz",
+            QobuzSource,
             (current, token) => BootstrapZarzSessionAsync(current, publicAppBaseUrl, token),
             cancellationToken);
 
@@ -984,7 +995,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         await _zarzSessions.CompleteVerificationAsync(
-            "qobuz",
+            QobuzSource,
             grant.Trim(),
             async (record, verificationGrant, token) =>
             {

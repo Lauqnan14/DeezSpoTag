@@ -262,7 +262,7 @@ CREATE INDEX IF NOT EXISTS ix_apple_animated_artwork_artifact_cache
 """;
             await using var command = new SqliteCommand(sql, connection);
             await command.ExecuteNonQueryAsync(cancellationToken);
-            await EnsureColumnAsync(
+            await SqliteSchemaUtils.EnsureColumnAsync(
                 connection,
                 "apple_animated_artwork_cache",
                 "static_artwork_url",
@@ -285,21 +285,5 @@ CREATE INDEX IF NOT EXISTS ix_apple_animated_artwork_artifact_cache
         string column,
         string definition,
         CancellationToken cancellationToken)
-    {
-        await using var pragma = new SqliteCommand($"PRAGMA table_info({table});", connection);
-        await using var reader = await pragma.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-        }
-
-        await reader.DisposeAsync();
-        await using var alter = new SqliteCommand(
-            $"ALTER TABLE {table} ADD COLUMN {column} {definition};",
-            connection);
-        await alter.ExecuteNonQueryAsync(cancellationToken);
-    }
+        => await SqliteSchemaUtils.EnsureColumnAsync(connection, table, column, definition, cancellationToken);
 }

@@ -1,3 +1,4 @@
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Identity;
 
@@ -5,6 +6,27 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class TrackAvailabilityService
 {
+    /// <summary>
+    ///     The engine ids below are aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     Each one labels an availability verdict and selects the URL shape that proves it. A copy
+    ///     that drifted from the label the caller stored would select the wrong URL check, so an
+    ///     engine the user does have would be reported as unavailable. The names are kept local
+    ///     because they read better beside the checks; the value is defined once.
+    /// </remarks>
+    private const string SpotifySource = DownloadTagSourceHelper.SpotifySource;
+
+    private const string DeezerSource = DownloadTagSourceHelper.DeezerSource;
+
+    private const string AppleSource = DownloadTagSourceHelper.AppleSource;
+
+    private const string TidalSource = DownloadTagSourceHelper.TidalSource;
+
+    private const string QobuzSource = DownloadTagSourceHelper.QobuzSource;
+
+    private const string AmazonSource = DownloadTagSourceHelper.AmazonSource;
+
     private static readonly TimeSpan CentralResolverTimeout = TimeSpan.FromSeconds(6);
     private readonly ITrackIdentityResolver _trackIdentityResolver;
 
@@ -79,12 +101,12 @@ public sealed class TrackAvailabilityService
             appleUnknown = false;
         }
 
-        var spotify = IsAvailable(spotifyId, spotifyUrl, input.Url, "spotify");
-        var deezer = IsAvailable(deezerId, deezerUrl, input.Url, "deezer");
-        var tidal = IsAvailable(tidalId, tidalUrl, input.Url, "tidal");
-        var amazon = IsAvailable(amazonId, amazonUrl, input.Url, "amazon");
-        var qobuz = IsAvailable(qobuzId, qobuzUrl, input.Url, "qobuz");
-        bool? apple = appleUnknown ? null : IsAvailable(appleId, appleUrl, input.Url, "apple");
+        var spotify = IsAvailable(spotifyId, spotifyUrl, input.Url, SpotifySource);
+        var deezer = IsAvailable(deezerId, deezerUrl, input.Url, DeezerSource);
+        var tidal = IsAvailable(tidalId, tidalUrl, input.Url, TidalSource);
+        var amazon = IsAvailable(amazonId, amazonUrl, input.Url, AmazonSource);
+        var qobuz = IsAvailable(qobuzId, qobuzUrl, input.Url, QobuzSource);
+        bool? apple = appleUnknown ? null : IsAvailable(appleId, appleUrl, input.Url, AppleSource);
 
         return new TrackAvailabilityResult
         {
@@ -135,15 +157,15 @@ public sealed class TrackAvailabilityService
         var targets = new List<string>(capacity: 3);
         if (string.IsNullOrWhiteSpace(input.SpotifyId))
         {
-            targets.Add("spotify");
+            targets.Add(SpotifySource);
         }
         if (string.IsNullOrWhiteSpace(input.NormalizedDeezerId))
         {
-            targets.Add("deezer");
+            targets.Add(DeezerSource);
         }
         if (string.IsNullOrWhiteSpace(input.TidalId))
         {
-            targets.Add("tidal");
+            targets.Add(TidalSource);
         }
 
         return targets;
@@ -208,33 +230,33 @@ public sealed class TrackAvailabilityService
         var host = uri.Host.ToLowerInvariant();
         if (host.Contains("spotify.com", StringComparison.Ordinal))
         {
-            return "spotify";
+            return SpotifySource;
         }
 
         if (host.Contains("deezer.com", StringComparison.Ordinal))
         {
-            return "deezer";
+            return DeezerSource;
         }
 
         if (host.Contains("music.apple.", StringComparison.Ordinal)
             || host.Contains("itunes.apple.", StringComparison.Ordinal))
         {
-            return "apple";
+            return AppleSource;
         }
 
         if (host.Contains("tidal.com", StringComparison.Ordinal))
         {
-            return "tidal";
+            return TidalSource;
         }
 
         if (host.Contains("qobuz.com", StringComparison.Ordinal))
         {
-            return "qobuz";
+            return QobuzSource;
         }
 
         if (host.Contains("amazon.", StringComparison.Ordinal))
         {
-            return "amazon";
+            return AmazonSource;
         }
 
         return null;
@@ -275,17 +297,17 @@ public sealed class TrackAvailabilityService
         var normalized = sourceUrl.ToLowerInvariant();
         return platform switch
         {
-            "spotify" => normalized.Contains("open.spotify.com/track/", StringComparison.Ordinal)
+            SpotifySource => normalized.Contains("open.spotify.com/track/", StringComparison.Ordinal)
                          || normalized.StartsWith("spotify:track:", StringComparison.Ordinal),
-            "deezer" => normalized.Contains("deezer.com/track/", StringComparison.Ordinal),
-            "tidal" => normalized.Contains("tidal.com/track/", StringComparison.Ordinal)
+            DeezerSource => normalized.Contains("deezer.com/track/", StringComparison.Ordinal),
+            TidalSource => normalized.Contains("tidal.com/track/", StringComparison.Ordinal)
                        || normalized.Contains("tidal.com/browse/track/", StringComparison.Ordinal),
-            "qobuz" => normalized.Contains("qobuz.com/", StringComparison.Ordinal)
+            QobuzSource => normalized.Contains("qobuz.com/", StringComparison.Ordinal)
                        && normalized.Contains("/track/", StringComparison.Ordinal),
-            "apple" => normalized.Contains("music.apple.com/", StringComparison.Ordinal)
+            AppleSource => normalized.Contains("music.apple.com/", StringComparison.Ordinal)
                        && (normalized.Contains("/song/", StringComparison.Ordinal)
                            || normalized.Contains("?i=", StringComparison.Ordinal)),
-            "amazon" => normalized.Contains("music.amazon.", StringComparison.Ordinal),
+            AmazonSource => normalized.Contains("music.amazon.", StringComparison.Ordinal),
             _ => false
         };
     }

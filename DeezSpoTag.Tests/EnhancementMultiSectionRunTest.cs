@@ -535,9 +535,24 @@ public sealed class EnhancementMultiSectionRunTest
         var end = orchestration.IndexOf("private async Task<bool> RunRecentDownloadEnhancementJobAsync", start, StringComparison.Ordinal);
         var method = orchestration[start..end];
         Assert.Contains("HasPendingPostDownloadEnrichmentAsync", method, StringComparison.Ordinal);
-        Assert.Contains("HasActiveDownloadsAsync", method, StringComparison.Ordinal);
+        // Was HasActiveDownloadsAsync, and renamed rather than replaced: the call now resolves
+        // download work rather than download rows, because a completed row can precede the
+        // processor's final cleanup. Asserting the old name would have kept passing while the
+        // stronger check went in, so the two halves of it are pinned below instead.
+        Assert.Contains("HasActiveDownloadWorkAsync", method, StringComparison.Ordinal);
+        // Staged audio is written before the row is complete, so it needs its own gate.
+        Assert.Contains("ShouldDeferEnhancementForDownloadStagingAudio", method, StringComparison.Ordinal);
         Assert.DoesNotContain("quality-checks", method, StringComparison.Ordinal);
         Assert.DoesNotContain("folder-uniformity", method, StringComparison.Ordinal);
+
+        // Both halves of the download-work check, because either alone lets the enhancement pass
+        // read a file that is still being written.
+        var guardStart = orchestration.IndexOf("private async Task<bool> HasActiveDownloadWorkAsync", StringComparison.Ordinal);
+        Assert.True(guardStart > 0, "The download-work guard is missing, so enhancement can start during a download.");
+        var guardEnd = orchestration.IndexOf("private void UpdateQueueActivityState", guardStart, StringComparison.Ordinal);
+        var guard = orchestration[guardStart..guardEnd];
+        Assert.Contains("HasActiveDownloadsAsync", guard, StringComparison.Ordinal);
+        Assert.Contains("HasActiveProcessors", guard, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -807,7 +822,7 @@ public sealed class EnhancementMultiSectionRunTest
             "private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync",
             StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = workflows[start..(start + 14000)];
+        var body = workflows[start..(start + 20000)];
 
         // One ordered pass over the files, the way downloads are processed: the
         // parallel lyrics/cover passes are gone.

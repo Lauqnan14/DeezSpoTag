@@ -626,6 +626,166 @@ public sealed class DownloadQueueRepositoryDuplicateTest
         Assert.True(exists);
     }
 
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("unavailable")]
+    [InlineData("canceled")]
+    public async Task ExistsDuplicateAsync_FailedRowStillBlocksWithinCooldown(string status)
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("failed-in-cooldown", "Cooldown Artist", "Cooldown Track", 9, deezerTrackId: "dz-cooldown") with
+            {
+                Status = status
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Cooldown Artist",
+                TrackTitle = "Cooldown Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-cooldown",
+                RedownloadCooldownMinutes = 720
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("unavailable")]
+    [InlineData("canceled")]
+    public async Task ExistsDuplicateAsync_FailedRowStopsBlockingOnceCooldownElapses(string status)
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = $"expired-{status}";
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(queueUuid, "Expired Artist", "Expired Track", 9, deezerTrackId: "dz-expired") with
+            {
+                Status = status
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+        // Age the row past the cooldown window. updated_at is what the cooldown compares against.
+        await BackdateRowAsync(context, queueUuid, minutesAgo: 60);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Expired Artist",
+                TrackTitle = "Expired Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-expired",
+                RedownloadCooldownMinutes = 30
+            },
+            CancellationToken.None);
+
+        Assert.False(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_ZeroCooldownNeverBlocksOnFailedRow()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("failed-zero-cooldown", "Zero Artist", "Zero Track", 9, deezerTrackId: "dz-zero") with
+            {
+                Status = "failed"
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Zero Artist",
+                TrackTitle = "Zero Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-zero",
+                RedownloadCooldownMinutes = 0
+            },
+            CancellationToken.None);
+
+        Assert.False(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_ActiveRowBlocksRegardlessOfCooldown()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-zero-cooldown", "Active Artist", "Active Track", 9, deezerTrackId: "dz-active") with
+            {
+                Status = "queued"
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+        await BackdateRowAsync(context, "active-zero-cooldown", minutesAgo: 60);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Active Artist",
+                TrackTitle = "Active Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-active",
+                RedownloadCooldownMinutes = 0
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_CompletedRowBlocksRegardlessOfCooldown()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-zero-cooldown", "Done Artist", "Done Track", 9, deezerTrackId: "dz-done") with
+            {
+                Status = "completed"
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+        await BackdateRowAsync(context, "completed-zero-cooldown", minutesAgo: 60);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Done Artist",
+                TrackTitle = "Done Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-done",
+                RedownloadCooldownMinutes = 0
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    private static async Task BackdateRowAsync(TestContext context, string queueUuid, int minutesAgo)
+    {
+        await using var connection = new SqliteConnection($"Data Source={context.QueueDbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE download_task
+SET updated_at = datetime('now', '-' || @minutesAgo || ' minutes')
+WHERE queue_uuid = @queueUuid;";
+        command.Parameters.AddWithValue("minutesAgo", minutesAgo);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync();
+    }
+
     [Fact]
     public async Task UpdateStatusAsync_CompletedWithDestination_SetsPendingEnrichmentAndFinalization()
     {
@@ -1008,6 +1168,85 @@ public sealed class DownloadQueueRepositoryDuplicateTest
     }
 
     [Fact]
+    public async Task UpdateStatusAsync_StagingCleanupRunsForUnavailableRow()
+    {
+        await using var context = await CreateContextAsync(enableStagingCleanup: true);
+        var downloadRoot = Path.Join(context.TempRoot, "downloads");
+        var albumFolder = Path.Join(downloadRoot, "Artist", "Album");
+        Directory.CreateDirectory(albumFolder);
+        var audioPath = Path.Join(albumFolder, "Track.flac");
+        await File.WriteAllTextAsync(audioPath, "audio", CancellationToken.None);
+        var payloadJson = $$"""
+        {
+          "filePath": "{{audioPath}}",
+          "files": [
+            { "path": "{{audioPath}}" }
+          ]
+        }
+        """;
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("unavailable-staging-cleanup", "Artist", "Track", 120) with { PayloadJson = payloadJson },
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "unavailable-staging-cleanup",
+            "unavailable",
+            "Track not available from any source.",
+            cancellationToken: CancellationToken.None);
+
+        var item = await context.QueueRepository.GetByUuidAsync("unavailable-staging-cleanup", CancellationToken.None);
+
+        Assert.NotNull(item);
+        Assert.Equal("completed", await ReadStagingCleanupStatusAsync(context.QueueDbPath, "unavailable-staging-cleanup"));
+        Assert.False(File.Exists(audioPath));
+        Assert.False(Directory.Exists(albumFolder));
+    }
+
+    [Fact]
+    public async Task DeleteClearableByUuidAsync_DeletesUnavailableRowWithDestinationFolder()
+    {
+        await using var context = await CreateContextAsync(enableStagingCleanup: true);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("unavailable-deletable", "Artist", "Track", 121),
+            CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            "unavailable-deletable",
+            "unavailable",
+            "Track not available from any source.",
+            cancellationToken: CancellationToken.None);
+
+        var deleted = await context.QueueRepository.DeleteClearableByUuidAsync(
+            "unavailable-deletable",
+            CancellationToken.None);
+
+        Assert.Equal(1, deleted);
+        Assert.Null(await context.QueueRepository.GetByUuidAsync("unavailable-deletable", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task DeleteClearableByUuidAsync_PreservesUnavailableRowUntilStagingCleanupSettles()
+    {
+        // Without the staging cleanup service no cleanup status is recorded, so the gate must still
+        // refuse the delete rather than orphan the row's staging files.
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("unavailable-uncleaned", "Artist", "Track", 122),
+            CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            "unavailable-uncleaned",
+            "unavailable",
+            "Track not available from any source.",
+            cancellationToken: CancellationToken.None);
+
+        var deleted = await context.QueueRepository.DeleteClearableByUuidAsync(
+            "unavailable-uncleaned",
+            CancellationToken.None);
+
+        Assert.Equal(0, deleted);
+        Assert.NotNull(await context.QueueRepository.GetByUuidAsync("unavailable-uncleaned", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task UpdateQueueMetadataAsync_ProtectsCompletedRowWhenDestinationIsRecovered()
     {
         await using var context = await CreateContextAsync();
@@ -1296,7 +1535,17 @@ public sealed class DownloadQueueRepositoryDuplicateTest
             config,
             NullLogger<DownloadQueueRepository>.Instance,
             cleanupService);
-        return Task.FromResult(new TestContext(tempRoot, config, queueRepository));
+        return Task.FromResult(new TestContext(tempRoot, config, queueRepository, queueDbPath));
+    }
+
+    private static async Task<string?> ReadStagingCleanupStatusAsync(string queueDbPath, string queueUuid)
+    {
+        await using var connection = new SqliteConnection($"Data Source={queueDbPath}");
+        await connection.OpenAsync();
+        const string sql = "SELECT staging_cleanup_status FROM download_task WHERE queue_uuid = @queueUuid LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        return await command.ExecuteScalarAsync() as string;
     }
 
     private static DownloadQueueItem CreateQueueItem(
@@ -1347,16 +1596,18 @@ public sealed class DownloadQueueRepositoryDuplicateTest
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(string tempRoot, IConfiguration configuration, DownloadQueueRepository queueRepository)
+        public TestContext(string tempRoot, IConfiguration configuration, DownloadQueueRepository queueRepository, string queueDbPath)
         {
             TempRoot = tempRoot;
             Configuration = configuration;
             QueueRepository = queueRepository;
+            QueueDbPath = queueDbPath;
         }
 
         public string TempRoot { get; }
         public IConfiguration Configuration { get; }
         public DownloadQueueRepository QueueRepository { get; }
+        public string QueueDbPath { get; }
 
         public ValueTask DisposeAsync()
         {

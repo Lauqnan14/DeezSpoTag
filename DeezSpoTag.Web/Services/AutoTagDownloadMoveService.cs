@@ -86,6 +86,8 @@ public sealed class AutoTagMoveSummary
 
 public sealed class AutoTagDownloadMoveService
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
     private static readonly string[] WatchlistSourcePropertyNames = ["watchlistSource", "watchlist_source", "WatchlistSource"];
     private static readonly string[] WatchlistPlaylistIdPropertyNames = ["watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId"];
     private static readonly string[] SourceIdsWatchlistSourcePropertyNames = ["watchlist_source", "watchlistSource", "WatchlistSource"];
@@ -1373,7 +1375,8 @@ public sealed class AutoTagDownloadMoveService
                 return 0;
             }
 
-            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories).Count();
+            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
+                .Count(path => !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(rootPath, path));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1400,6 +1403,7 @@ public sealed class AutoTagDownloadMoveService
                 paths.RootIo,
                 "*",
                 context.Options.IncludeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+            .Where(file => !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(paths.RootIo, file))
             .ToList();
         if (files.Count == 0)
         {
@@ -2953,6 +2957,7 @@ public sealed class AutoTagDownloadMoveService
         destinationPath = existingResolution.DestinationPath;
 
         MoveFileWithFallback(sourceIo, destinationPath);
+        MoveAdjacentSidecarsWithAudio(sourceIo, destinationPath);
 
         return DownloadPathResolver.NormalizeDisplayPath(destinationPath);
     }
@@ -3251,6 +3256,11 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var file in Directory.EnumerateFiles(moveRootIo, "*", SearchOption.AllDirectories))
         {
+            if (DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(stagingIo, file))
+            {
+                continue;
+            }
+
             if (IsDownloadTemporaryArtifact(file))
             {
                 IOFile.Delete(file);
@@ -3293,7 +3303,8 @@ public sealed class AutoTagDownloadMoveService
             || Regex.IsMatch(
                 fileName,
                 @"\.(?:candidate-\d+\.)?part(?:\.|$)",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                RegexTimeout);
     }
 
     private static string GetUniqueDestinationPath(string destinationDir, string destinationPath)

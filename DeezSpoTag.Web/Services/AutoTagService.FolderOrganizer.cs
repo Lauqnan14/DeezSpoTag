@@ -77,13 +77,13 @@ public partial class AutoTagService
         }
 
         var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-        if (IsManualEnrichmentRunIntent(job.RunIntent))
+        if (IsExternalFileEnrichmentRunIntent(job.RunIntent))
         {
             failedFiles = Array.Empty<string>();
         }
         AppendLog(job, "tagging completed, auto-move starting");
         var result = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
-        if (!IsManualEnrichmentRunIntent(job.RunIntent) || !result.Completed)
+        if (!IsExternalFileEnrichmentRunIntent(job.RunIntent) || !result.Completed)
         {
             return result;
         }
@@ -96,7 +96,7 @@ public partial class AutoTagService
             return result;
         }
 
-        result.Summary.Error = $"Manual enrichment finalization left {remainingTaggedFiles.Count} enriched file(s) in staging.";
+        result.Summary.Error = $"{DescribeExternalFileEnrichment(job.RunIntent)} finalization left {remainingTaggedFiles.Count} enriched file(s) in staging.";
         ApplyAutoMoveSummary(job, result.Summary);
         AppendLog(job, result.Summary.Error);
         return new AutoMoveExecutionResult(false, result.Summary);

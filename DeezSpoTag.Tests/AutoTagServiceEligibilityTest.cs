@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -10,6 +12,29 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagServiceEligibilityTest
 {
+    [Fact]
+    public void TopLevelIncompletePredicateMatchesOnlyTheDirectWorkspaceSubtree()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"autotag-incomplete-rule-{Guid.NewGuid():N}");
+
+        Assert.True(DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(
+            root + Path.DirectorySeparatorChar,
+            Path.Combine(root, ".", "incomplete")));
+        Assert.True(DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(
+            root,
+            Path.Combine(root, "INCOMPLETE", "peer", "track.flac")));
+
+        Assert.False(DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(
+            root,
+            Path.Combine(root, "incomplete-album", "track.flac")));
+        Assert.False(DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(
+            root,
+            Path.Combine(root, "Artist", "incomplete", "track.flac")));
+        Assert.False(DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(
+            root,
+            Path.Combine(Path.GetTempPath(), $"outside-{Guid.NewGuid():N}", "incomplete", "track.flac")));
+    }
+
     private static MethodInfo ServiceMethod(string name)
     {
         return typeof(AutoTagService).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
@@ -127,6 +152,45 @@ public sealed class AutoTagServiceEligibilityTest
             var result = InvokeStatic<bool>("HasEligibleInputFiles", root, configJson);
 
             Assert.False(result);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void HasEligibleInputFiles_IgnoresOnlyTopLevelIncompleteAudio()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"autotag-incomplete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "incomplete", "peer"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "incomplete", "peer", "partial.flac"), "partial");
+            Assert.False(InvokeStatic<bool>("HasEligibleInputFiles", root, """{"includeSubfolders":true}"""));
+
+            Directory.CreateDirectory(Path.Combine(root, "Artist", "incomplete"));
+            File.WriteAllText(Path.Combine(root, "Artist", "incomplete", "complete.flac"), "audio");
+            Assert.True(InvokeStatic<bool>("HasEligibleInputFiles", root, """{"includeSubfolders":true}"""));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void HasEligibleInputFiles_IgnoresExplicitTargetInsideTopLevelIncomplete()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"autotag-incomplete-target-{Guid.NewGuid():N}");
+        var candidate = Path.Combine(root, "incomplete", "partial.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(candidate)!);
+        try
+        {
+            File.WriteAllText(candidate, "partial");
+            var configJson = JsonSerializer.Serialize(new { targetFiles = new[] { candidate } });
+
+            Assert.False(InvokeStatic<bool>("HasEligibleInputFiles", root, configJson));
         }
         finally
         {

@@ -206,8 +206,8 @@ public sealed class AutoTagProviderCapabilityContractTest
         var map = GetSupportedTagMap();
         var writable = map.Values.Cast<SupportedTag>().ToHashSet();
 
-        Assert.Equal(17, descriptors.Count);
-        Assert.Equal(17, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(18, descriptors.Count);
+        Assert.Equal(18, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(descriptors, descriptor =>
         {
             Assert.NotEmpty(descriptor.SupportedTags);

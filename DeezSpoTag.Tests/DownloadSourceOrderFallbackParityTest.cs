@@ -61,7 +61,6 @@ public sealed class DownloadSourceOrderFallbackParityTest
         "apple|AAC",
         "qobuz|5",
         "tidal|HIGH",
-        "amazon|OPUS",
         "deezer|3",
         "deezer|1",
         "tidal|LOW"

@@ -2108,12 +2108,9 @@ public class AudioTagger
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value.Trim();
-            }
+            return value!.Trim();
         }
 
         return null;

@@ -172,6 +172,39 @@ public sealed class DownloadQueueRecoveryServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task RecoveryDoesNotReleaseAudioWhileDownloadFinalizationIsActive()
+    {
+        var queueUuid = "active-artwork-finalization";
+        var audioPath = Path.Join(_tempRoot, "Artist", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        await File.WriteAllTextAsync(audioPath, "audio");
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid, Engine = "qobuz", Title = "Track", Artist = "Artist",
+            Quality = "27", FilePath = audioPath, AudioAcquired = true,
+            AcquiredAudioPath = audioPath, DestinationFolderId = 9,
+            FinalizationStage = "pending"
+        };
+        await EnqueueRunningItemAsync(queueUuid, payload, destinationFolderId: 9);
+        var original = await _queueRepository.GetByUuidAsync(queueUuid);
+        // The audio is older than the 15-second idle delay, but its processor still owns finalization.
+        await AgeQueueItemAsync(queueUuid, TimeSpan.FromSeconds(30));
+        using var activeProcessor = new CancellationTokenSource();
+        _cancellationRegistry.Register(queueUuid, activeProcessor);
+
+        await _recoveryService.RecoverPendingPostDownloadWorkAsync(CancellationToken.None);
+        await _recoveryService.RecoverStaleRunningTasksAsync(CancellationToken.None);
+
+        var saved = await _queueRepository.GetByUuidAsync(queueUuid);
+        Assert.Equal("running", saved!.Status);
+        Assert.Equal(original!.EnrichmentStatus, saved.EnrichmentStatus);
+        Assert.Equal(original.FinalizationStatus, saved.FinalizationStatus);
+        Assert.Equal(original.PayloadJson, saved.PayloadJson);
+        Assert.False(activeProcessor.IsCancellationRequested);
+        Assert.True(File.Exists(audioPath));
+    }
+
+    [Fact]
     public async Task RecoverStaleRunningTasksAsync_PromotesAcquiredAudioWithDestinationInsteadOfRetrying()
     {
         var queueUuid = "recovery-acquired-audio";

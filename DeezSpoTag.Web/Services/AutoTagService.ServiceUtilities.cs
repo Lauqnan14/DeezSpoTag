@@ -202,7 +202,7 @@ public partial class AutoTagService
     private static string ResolveStopStatus(AutoTagJob job, string stopReason)
     {
         if (!IsEnhancementRunIntent(job.RunIntent)
-            && !IsManualEnrichmentRunIntent(job.RunIntent))
+            && !IsExternalFileEnrichmentRunIntent(job.RunIntent))
         {
             return AutoTagLiterals.CanceledStatus;
         }
@@ -478,7 +478,7 @@ public partial class AutoTagService
         job.Progress = ScaleProgress(status.Progress, stageIndex, stageCount);
         job.CurrentPlatform = status.Platform;
         if ((IsEnhancementRunIntent(job.RunIntent)
-             || IsManualEnrichmentRunIntent(job.RunIntent))
+             || IsExternalFileEnrichmentRunIntent(job.RunIntent))
             && (string.Equals(stageName, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(stageName, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase))
             && status.FileCount is > 0)

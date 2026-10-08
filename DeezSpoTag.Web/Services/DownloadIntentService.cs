@@ -865,15 +865,20 @@ public sealed class DownloadIntentService
                 Metadata: BuildResolvedQueueMetadata(intent));
         }
 
+        // One line on the item, same as everywhere else in the queue: the reason, and nothing the status beside
+        // it already says. "Track unavailable in enabled download sources. Last skip: <reason>" was two
+        // sentences for one fact.
+        var preResolutionError = string.IsNullOrWhiteSpace(lastSkipReason)
+            ? "No enabled source has this track."
+            : lastSkipReason.Trim();
+
         return new QueuePreResolutionPayload.ResolutionResult(
             item.Engine,
             null,
             null,
             null,
             fallbackPlan,
-            string.IsNullOrWhiteSpace(lastSkipReason)
-                ? "Track unavailable in enabled download sources."
-                : $"Track unavailable in enabled download sources. Last skip: {lastSkipReason}",
+            preResolutionError,
             Isrc: intent.Isrc,
             DeezerId: intent.DeezerId,
             DeezerAlbumId: intent.DeezerAlbumId,
@@ -964,13 +969,11 @@ public sealed class DownloadIntentService
 
     private static string? ReadPayloadString(JsonObject payload, params string[] keys)
     {
-        foreach (var key in keys)
+        foreach (var value in keys
+                     .Select(key => payload[key]?.ToString()?.Trim())
+                     .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = payload[key]?.ToString()?.Trim();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;
@@ -1050,15 +1053,15 @@ public sealed class DownloadIntentService
             0,
             Array.Empty<FallbackPlanStep>(),
             null,
-            Isrc: FirstNonEmpty(resolvedAtmosTrack?.Isrc, intent.Isrc),
+            Isrc: FirstNonEmpty(resolvedAtmosTrack!.Isrc, intent.Isrc),
             SpotifyId: intent.SpotifyId,
             SpotifyArtistId: intent.SpotifyArtistId,
             TidalId: FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl)),
             DurationMs: durationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: DownloadContentTypes.Atmos,
-            Album: ResolveResolvedAlbumForAtmos(intent.Album, resolvedAtmosTrack?.Album),
-            AlbumArtist: FirstNonEmpty(intent.AlbumArtist, resolvedAtmosTrack?.Artist, intent.Artist));
+            Album: ResolveResolvedAlbumForAtmos(intent.Album, resolvedAtmosTrack!.Album),
+            AlbumArtist: FirstNonEmpty(intent.AlbumArtist, resolvedAtmosTrack!.Artist, intent.Artist));
     }
 
     [ExcludeFromCodeCoverage]
@@ -1176,6 +1179,12 @@ public sealed class DownloadIntentService
         };
     }
 
+    /// <summary>
+    ///     Reads a length from the payload, accepting only a value a peer could plausibly have advertised.
+    /// </summary>
+    private static long ReadPayloadPositiveInt64(JsonObject payload, string pascalKey, string camelKey)
+        => Math.Max(0, ReadPayloadInt64(payload, pascalKey, camelKey) ?? 0);
+
     private static QueuePreResolutionPayload.ResolvedMetadata BuildResolvedQueueMetadata(DownloadIntent intent)
         => new(
             Title: intent.Title,
@@ -1224,13 +1233,12 @@ public sealed class DownloadIntentService
     [ExcludeFromCodeCoverage]
     private static string? ReadPayloadStringAny(JsonObject payload, params string[] keys)
     {
-        foreach (var key in keys)
+        foreach (var value in keys
+                     .Select(key => payload[key]?.ToString())
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Select(value => value!))
         {
-            var value = payload[key]?.ToString();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value.Trim();
-            }
+            return value.Trim();
         }
 
         return null;
@@ -1351,6 +1359,17 @@ public sealed class DownloadIntentService
         {
             return new DestinationRoutingResult(primaryDestinationFolderId, secondaryDestinationFolderId, null);
         }
+
+        // Dual quality needs one folder per kind. When the caller and the settings both left a slot
+        // empty, the folders themselves answer it: exactly one folder of that kind is the only
+        // answer there is, so the download proceeds instead of demanding a destination the user
+        // already has. Several folders still leave the slot empty and the message below stands.
+        primaryDestinationFolderId ??= await ResolveDefaultDestinationFolderIdAsync(
+            FolderContentRole.Stereo,
+            cancellationToken);
+        secondaryDestinationFolderId ??= await ResolveDefaultDestinationFolderIdAsync(
+            FolderContentRole.Atmos,
+            cancellationToken);
 
         if (!secondaryDestinationFolderId.HasValue)
         {
@@ -2089,7 +2108,6 @@ public sealed class DownloadIntentService
     {
         var settings = preparation.Settings;
         var initialRouting = ApplyInitialContentRouting(intent, preparation);
-        var explicitAtmosRequest = initialRouting.ExplicitAtmosRequest;
         var explicitStereoRequest = initialRouting.ExplicitStereoRequest;
         var targetQuality = initialRouting.TargetQuality;
 
@@ -2957,20 +2975,16 @@ public sealed class DownloadIntentService
 
     private static void AddIdentityTargets(List<string> engines, IEnumerable<string> sources)
     {
-        foreach (var source in sources)
+        foreach (var normalized in sources
+                     .Select(source => source.Trim().ToLowerInvariant() switch
+                     {
+                         "applemusic" or "apple-music" or "apple_music" or "itunes" => ApplePlatform,
+                         _ => source.Trim().ToLowerInvariant()
+                     })
+                     .Where(normalized => normalized is (ApplePlatform or DeezerPlatform or SpotifyPlatform
+                             or QobuzPlatform or TidalPlatform or AmazonPlatform)
+                         && !engines.Contains(normalized, StringComparer.OrdinalIgnoreCase)))
         {
-            var normalized = source.Trim().ToLowerInvariant() switch
-            {
-                "applemusic" or "apple-music" or "apple_music" or "itunes" => ApplePlatform,
-                _ => source.Trim().ToLowerInvariant()
-            };
-            if (normalized is not (ApplePlatform or DeezerPlatform or SpotifyPlatform
-                    or QobuzPlatform or TidalPlatform or AmazonPlatform)
-                || engines.Contains(normalized, StringComparer.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             engines.Add(normalized);
         }
     }
@@ -3089,13 +3103,11 @@ public sealed class DownloadIntentService
             return engines;
         }
 
-        foreach (var engine in targetEngines)
+        foreach (var normalized in targetEngines
+                     .Select(NormalizeEngineName)
+                     .Where(normalized => !string.IsNullOrWhiteSpace(normalized)))
         {
-            var normalized = NormalizeEngineName(engine);
-            if (!string.IsNullOrWhiteSpace(normalized))
-            {
-                engines.Add(normalized);
-            }
+            engines.Add(normalized);
         }
 
         return engines;
@@ -3173,6 +3185,14 @@ public sealed class DownloadIntentService
             ApplePlatform => !string.IsNullOrWhiteSpace(intent.SourceUrl) && IsServiceUrlMatch(intent.SourceUrl, ApplePlatform)
                 ? intent.SourceUrl
                 : null,
+
+            // SoundCloud's permalink is used verbatim rather than rebuilt from the id, because the path
+            // carries the uploader and track slugs and cannot be reconstructed from the numeric id.
+            SoundCloudPlatform => SoundCloudHydrationParser.IsSoundCloudTrackUrl(intent.SoundCloudUrl)
+                ? intent.SoundCloudUrl
+                : SoundCloudHydrationParser.IsSoundCloudTrackUrl(intent.SourceUrl)
+                    ? intent.SourceUrl
+                    : null,
             _ => null
         };
     }
@@ -3219,6 +3239,14 @@ public sealed class DownloadIntentService
         intent.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout)
             ?? string.Empty;
+
+        // A pasted SoundCloud link arrives as the source URL. Both the id and the permalink are kept: the
+        // permalink is what the engine downloads, the id is what the queue records.
+        if (SoundCloudHydrationParser.IsSoundCloudTrackUrl(sourceUrl))
+        {
+            intent.SoundCloudUrl = sourceUrl;
+            intent.SoundCloudId = SoundCloudHydrationParser.TryExtractTrackId(sourceUrl) ?? intent.SoundCloudId;
+        }
     }
 
     private async Task ResolveMissingAppleIdentityAsync(
@@ -5159,7 +5187,7 @@ public sealed class DownloadIntentService
 
         return apiHealthTracker.PrioritizeSources(
                 sourceList,
-                allowCrossEngineFallback ? null : engine)
+                engine)
             .ToList();
     }
 
@@ -5472,7 +5500,10 @@ public sealed class DownloadIntentService
             ["HIGH"] = 2,
             ["3"] = 2,
             ["LOW"] = 1,
-            ["1"] = 1
+            ["1"] = 1,
+
+            ["FLAC_HI_RES_LOSSLESS"] = 4,
+            ["FLAC_HI_RES"] = 4
         };
 
     private static int? ParseRequestedQualityRank(string? quality)
@@ -5615,95 +5646,64 @@ public sealed class DownloadIntentService
             return null;
         }
 
-        var requestedMode = ResolveRequestedFolderMode(intent);
-        if (string.IsNullOrWhiteSpace(requestedMode))
+        var requestedRole = ResolveRequestedFolderRole(intent);
+        if (requestedRole is null)
         {
             return null;
         }
 
         var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
-        var enabledFolders = folders.Where(folder => folder.Enabled).ToList();
-        if (enabledFolders.Count == 0)
-        {
-            return null;
-        }
 
-        if (string.Equals(requestedMode, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
+        // Video and Podcast are configured by path, so honour the saved path first and let the
+        // single-folder rule stand in for it when it is blank or no longer on disk.
+        if (requestedRole is FolderContentRole.Video or FolderContentRole.Podcast)
         {
-            var configuredAtmosFolderId = settings.MultiQuality?.SecondaryDestinationFolderId;
-            if (configuredAtmosFolderId.HasValue
-                && enabledFolders.Any(folder => folder.Id == configuredAtmosFolderId.Value))
-            {
-                return configuredAtmosFolderId.Value;
-            }
-
-            return enabledFolders
-                .FirstOrDefault(folder => IsFolderMode(folder, DownloadContentTypes.Atmos))
-                ?.Id;
-        }
-
-        if (string.Equals(requestedMode, DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase))
-        {
-            var byPath = FindFolderByRootPath(enabledFolders, settings.Video?.VideoDownloadLocation);
-            if (byPath != null)
+            var configuredPath = requestedRole == FolderContentRole.Video
+                ? settings.Video?.VideoDownloadLocation
+                : settings.Podcast?.DownloadLocation;
+            var byPath = FindFolderByRootPath(
+                folders.Where(folder => folder.Enabled),
+                configuredPath);
+            if (byPath is not null)
             {
                 return byPath.Id;
             }
 
-            return enabledFolders
-                .FirstOrDefault(folder => IsFolderMode(folder, DownloadContentTypes.Video))
-                ?.Id;
+            return FolderContentTypeResolver.ResolveDefaultFolderId(folders, requestedRole.Value);
         }
 
-        if (string.Equals(requestedMode, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase))
-        {
-            var byPath = FindFolderByRootPath(enabledFolders, settings.Podcast?.DownloadLocation);
-            if (byPath != null)
-            {
-                return byPath.Id;
-            }
-
-            return enabledFolders
-                .FirstOrDefault(folder => IsFolderMode(folder, DownloadContentTypes.Podcast))
-                ?.Id;
-        }
-
-        return null;
+        // Multi-quality keeps the stereo folder as the primary destination and the Atmos folder as
+        // the secondary one, so each role reads its own saved id.
+        var configuredFolderId = requestedRole == FolderContentRole.Atmos
+            ? settings.MultiQuality?.SecondaryDestinationFolderId
+            : settings.MultiQuality?.PrimaryDestinationFolderId;
+        return FolderContentTypeResolver.ResolveDefaultFolderId(folders, requestedRole.Value, configuredFolderId);
     }
 
-    private static string? ResolveRequestedFolderMode(DownloadIntent intent)
+    private static FolderContentRole? ResolveRequestedFolderRole(DownloadIntent intent)
     {
         var normalizedContentType = NormalizeContentType(intent?.ContentType);
         if (string.Equals(normalizedContentType, DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase)
             || IsVideoSource(intent?.SourceUrl, null))
         {
-            return DownloadContentTypes.Video;
+            return FolderContentRole.Video;
         }
 
         if (string.Equals(normalizedContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
             || IsPodcastSource(intent?.SourceUrl, null))
         {
-            return DownloadContentTypes.Podcast;
+            return FolderContentRole.Podcast;
         }
 
         if (string.Equals(normalizedContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
             || IsAtmosQuality(intent?.Quality))
         {
-            return DownloadContentTypes.Atmos;
+            return FolderContentRole.Atmos;
         }
 
-        return null;
-    }
-
-    private static bool IsFolderMode(FolderDto folder, string mode)
-    {
-        var normalized = NormalizeContentType(folder?.DesiredQuality);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            normalized = DownloadContentTypes.Stereo;
-        }
-
-        return string.Equals(normalized, mode, StringComparison.OrdinalIgnoreCase);
+        // Everything left is a plain music download, which belongs in a stereo folder. Naming it
+        // here is what lets the single-folder rule answer for stereo instead of giving up.
+        return FolderContentRole.Stereo;
     }
 
     private static FolderDto? FindFolderByRootPath(IEnumerable<FolderDto> folders, string? rootPath)
@@ -6009,6 +6009,14 @@ public sealed class DownloadIntentService
                 break;
             case AmazonPlatform when string.IsNullOrWhiteSpace(payload.AmazonId):
                 payload.AmazonId = EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, EngineLinkParser.RegexTimeout) ?? string.Empty;
+                break;
+
+            // The permalink is the identity here; the id is best-effort because it is not in the path.
+            case SoundCloudPlatform when payload is SoundCloudQueueItem soundCloud
+                                          && string.IsNullOrWhiteSpace(soundCloud.SoundCloudResolvedUrl)
+                                          && SoundCloudHydrationParser.IsSoundCloudTrackUrl(sourceUrl):
+                soundCloud.SoundCloudResolvedUrl = sourceUrl;
+                soundCloud.SoundCloudId = SoundCloudHydrationParser.TryExtractTrackId(sourceUrl) ?? string.Empty;
                 break;
         }
     }
@@ -6414,12 +6422,32 @@ public sealed class DownloadIntentService
         };
     }
 
+    private async Task<long?> ResolveDefaultDestinationFolderIdAsync(
+        FolderContentRole role,
+        CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured)
+        {
+            return null;
+        }
+
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        return FolderContentTypeResolver.ResolveDefaultFolderId(folders, role);
+    }
+
     private async Task<string?> TryEnqueueAtmosAsync(AtmosEnqueueRequest request)
     {
         var secondaryDestinationFolderId =
             request.SecondaryDestinationFolderId
             ?? request.Settings.MultiQuality?.SecondaryDestinationFolderId
             ?? request.Intent.SecondaryDestinationFolderId;
+
+        // Nothing configured an Atmos folder, so let the folders answer. One Atmos folder is the
+        // only answer there is; several still leave this empty and the skip below stands.
+        secondaryDestinationFolderId ??= await ResolveDefaultDestinationFolderIdAsync(
+            FolderContentRole.Atmos,
+            request.CancellationToken);
+
         if (secondaryDestinationFolderId is null)
         {
             _logger.LogWarning(
@@ -6628,7 +6656,7 @@ public sealed class DownloadIntentService
         payload.Album = ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album) ?? string.Empty;
         payload.AlbumArtist = FirstNonEmpty(
             request.Intent.AlbumArtist,
-            resolvedAtmosTrack?.Artist,
+            resolvedAtmosTrack!.Artist,
             request.Intent.Artist) ?? string.Empty;
 
         var enqueueDecision = await EnqueueItemAsync(
@@ -7227,16 +7255,10 @@ public sealed class DownloadIntentService
 
     private static string? ResolveResolvedAlbumForAtmos(string? intentAlbum, string? resolvedAlbum)
     {
-        string? selectedAlbum;
-        if (!string.IsNullOrWhiteSpace(resolvedAlbum)
-            && IsPlaceholderAlbum(intentAlbum))
-        {
-            selectedAlbum = resolvedAlbum.Trim();
-        }
-        else
-        {
-            selectedAlbum = FirstNonEmpty(intentAlbum, resolvedAlbum);
-        }
+        string? selectedAlbum = !string.IsNullOrWhiteSpace(resolvedAlbum)
+            && IsPlaceholderAlbum(intentAlbum)
+            ? resolvedAlbum.Trim()
+            : FirstNonEmpty(intentAlbum, resolvedAlbum);
 
         var normalized = TrackTitleMatcher.RemoveAtmosVersionMarker(selectedAlbum);
         return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
@@ -7544,7 +7566,8 @@ public sealed class DownloadIntentService
             RequestedAudioVariant = context.Identity.RequestedAudioVariant,
             RequestedLocalQualityRank = context.LocalQualityUpgradeRequested ? context.RequestedLocalQualityRank : null,
             FinalOutputPath = finalOutputPath,
-            BlockRules = context.BlockRules
+            BlockRules = context.BlockRules,
+            RedownloadCooldownMinutes = context.Settings.RedownloadCooldownMinutes
         };
 
     private static void PopulateStandardQueuePayload(

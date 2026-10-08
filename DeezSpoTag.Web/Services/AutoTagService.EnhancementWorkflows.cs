@@ -235,13 +235,17 @@ public partial class AutoTagService
         int requestedCount,
         CancellationToken cancellationToken)
     {
+        var manifestRoot = job.RootPath ?? root["path"]?.GetValue<string>();
         var paths = configuredTargets.Count > 0
             ? configuredTargets
                 .Select(NormalizePathForJob)
-                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Where(path => !string.IsNullOrWhiteSpace(path)
+                    && File.Exists(path)
+                    && (string.IsNullOrWhiteSpace(manifestRoot)
+                        || !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(manifestRoot, path)))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList()
-            : EnumerateEnhancementRootAudioFiles(job.RootPath ?? root["path"]?.GetValue<string>(), root);
+            : EnumerateEnhancementRootAudioFiles(manifestRoot, root);
         if (requestedCount <= 0)
         {
             requestedCount = paths.Count;
@@ -277,6 +281,7 @@ public partial class AutoTagService
         var includeSubfolders = ReadBool(root, AutoTagLiterals.IncludeSubfoldersKey) ?? true;
         var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         return Directory.EnumerateFiles(rootPath, "*.*", option)
+            .Where(path => !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(rootPath, path))
             .Where(path => EligibleAudioExtensions.Contains(Path.GetExtension(path)))
             .Select(NormalizePathForJob)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -605,14 +610,15 @@ public partial class AutoTagService
         string configPath,
         bool includesEnhancementWorkflows,
         CancellationToken cancellationToken,
-        AutoTagMoveSummary? autoMoveSummary = null)
+        AutoTagMoveSummary? autoMoveSummary = null,
+        bool sidecarsAlreadyRunStaged = false)
     {
         // Soulseek enrichment reaches this workflow on the same terms as manual enrichment: it has no
         // enhancement stage of its own, so this is where its shared behaviour lives.
         var isExternalFileEnrichment = IsExternalFileEnrichmentRunIntent(job.RunIntent);
         if ((!includesEnhancementWorkflows && !isExternalFileEnrichment)
             || !ShouldRunIntegratedWorkflowsForIntent(job.RunIntent)
-            || !IsEnhancementWorkflowTrigger(job.Trigger))
+            || !IsWorkflowTriggerAllowedForIntent(job.RunIntent, job.Trigger))
         {
             return;
         }
@@ -624,10 +630,18 @@ public partial class AutoTagService
         }
         var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
 
+        // The staged sidecar phase already ran before the move, writing beside the audio so the files
+        // travelled into the library together. Running it again here would resolve every file a second
+        // time, against library ids that now exist only because the move ingested them.
+        if (isExternalFileEnrichment && sidecarsAlreadyRunStaged)
+        {
+            return;
+        }
+
         // Manual enrichment just moved its fully enriched files to the destination
         // library folder. Sidecar lookups run on those moved files with their library
         // track identity, after the library has ingested the moved paths.
-        var movedFiles = IsManualEnrichmentRunIntent(job.RunIntent) && autoMoveSummary is { MovedCount: > 0 }
+        var movedFiles = IsExternalFileEnrichmentRunIntent(job.RunIntent) && autoMoveSummary is { MovedCount: > 0 }
             ? autoMoveSummary.ChangedFilePaths
             : null;
         if (movedFiles != null)
@@ -635,7 +649,7 @@ public partial class AutoTagService
             await IngestKnownFilesAfterAutoMoveAsync(job, autoMoveSummary!, cancellationToken);
         }
 
-        if (isManualEnrichment && movedFiles != null)
+        if (isExternalFileEnrichment && movedFiles != null)
         {
             var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
             await RunManualEnrichmentBatchSidecarsAsync(
@@ -1106,12 +1120,14 @@ public partial class AutoTagService
         var lyricsOptions = forceProfileLyrics
             ? new SidecarLyricsOptions(QueueLyricsRefresh: true, RemoveLineSyncedTtml: false, RewriteLineSyncedTtml: false)
             : BuildSidecarLyricsOptions(enhancementRoot);
-        var orderedFiles = await ResolveSidecarRunFilesAsync(
-            job,
-            configRoot,
-            enabledFolders,
-            batchFiles,
-            cancellationToken);
+        var orderedFiles = resolveFileIdentityFromTags
+            ? ResolveStagedSidecarFiles(batchFiles)
+            : await ResolveSidecarRunFilesAsync(
+                job,
+                configRoot,
+                enabledFolders,
+                batchFiles,
+                cancellationToken);
         if (orderedFiles.Count == 0)
         {
             return EnhancementWorkflowOutcome.Skipped("no existing audio files were found for sidecars.");
@@ -1143,6 +1159,9 @@ public partial class AutoTagService
 
         var orderedRun = OrderSidecarRunFilesByAlbum(orderedFiles);
         var sidecarRunPlan = new SidecarFetchPlan(runCovers, runLyrics);
+
+        // Held across the loop so the profile's technical block is applied once.
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings? stagedSettings = null;
         var outcomes = new List<EnhancementWorkflowOutcome>();
         var counters = new SidecarFetchCounters();
         foreach (var filePath in orderedRun)
@@ -1151,7 +1170,7 @@ public partial class AutoTagService
             counters.Processed++;
 
             var trackId = trackIdsByPath.TryGetValue(filePath, out var resolvedTrackId) ? resolvedTrackId : 0;
-            var fetchScope = sidecarRunPlan.Resolve(filePath, trackId);
+            var fetchScope = sidecarRunPlan.Resolve(filePath, trackId, resolveFileIdentityFromTags);
             var ownsAlbumArtwork = fetchScope.OwnsAlbumArtwork;
             var handlesLyrics = fetchScope.HandlesLyrics;
 
@@ -1168,6 +1187,15 @@ public partial class AutoTagService
                     cancellationToken)
                 : null;
             var lyricsRefreshOptions = handlesLyrics ? BuildLyricsRefreshOptions(lyricsOptions) : null;
+
+            // A staged file has no library row to plan against, so it is planned from the file itself. The
+            // computation is the same one - what is on disk against what the profile asks for - which is why
+            // the existing public planner takes a path. Resolved once per pass, not per file: the settings
+            // loader takes a lock and reads from disk, and doing that for every track in an album would
+            // serialise the whole batch behind it.
+            var stagedProfileSettings = resolveFileIdentityFromTags
+                ? stagedSettings ??= BuildStagedSidecarSettings(configRoot)
+                : null;
             var lyricsPlan = handlesLyrics && lyricsRefreshOptions is not null
                 ? resolveFileIdentityFromTags && stagedProfileSettings is not null
                     ? _lyricsRefreshQueueService.PlanStagedFileRefresh(filePath, stagedProfileSettings, lyricsRefreshOptions)
@@ -2131,7 +2159,8 @@ public partial class AutoTagService
 
     private bool ShouldRunIntegratedEnhancementWorkflows(AutoTagJob job, string configPath)
     {
-        if (!ShouldRunIntegratedWorkflowsForIntent(job.RunIntent) || !IsEnhancementWorkflowTrigger(job.Trigger))
+        if (!ShouldRunIntegratedWorkflowsForIntent(job.RunIntent)
+            || !IsWorkflowTriggerAllowedForIntent(job.RunIntent, job.Trigger))
         {
             return false;
         }

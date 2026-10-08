@@ -92,17 +92,11 @@ function normalizeSoundtrackCategory(category) {
     return String(category || '').trim().toLowerCase() === 'tv_show' ? 'tv_show' : 'movie';
 }
 
-function isTabPreferenceEnabled() {
-    const stored = localStorage.getItem('tabs-preference-enabled');
-    if (stored === null || stored === '') {
-        return true;
-    }
-
-    return stored === 'true';
-}
-
+// The remembered-tab storage key, the "remember" setting and the server-side mirror
+// all come from tab-preferences.js. Only the category <-> tab mapping below is local,
+// because that is soundtrack-specific domain logic.
 function getSoundtrackTabPreferenceKey() {
-    return `tabs:last:${globalThis.location.pathname}:soundtrackSubTabs`;
+    return globalThis.TabPreferences?.keyFor?.('soundtrackSubTabs') || '';
 }
 
 function mapSoundtrackCategoryToTabTarget(category) {
@@ -120,11 +114,7 @@ function mapSoundtrackTabTargetToCategory(tabTarget) {
 }
 
 function restoreSoundtrackCategoryPreference() {
-    if (!isTabPreferenceEnabled()) {
-        return null;
-    }
-
-    const storedTarget = localStorage.getItem(getSoundtrackTabPreferenceKey());
+    const storedTarget = globalThis.TabPreferences?.read?.(getSoundtrackTabPreferenceKey());
     if (!storedTarget) {
         return null;
     }
@@ -133,16 +123,10 @@ function restoreSoundtrackCategoryPreference() {
 }
 
 function persistSoundtrackCategoryPreference(category) {
-    if (!isTabPreferenceEnabled()) {
-        return;
-    }
-
-    const storageKey = getSoundtrackTabPreferenceKey();
-    const tabTarget = mapSoundtrackCategoryToTabTarget(category);
-    localStorage.setItem(storageKey, tabTarget);
-    if (globalThis.UserPrefs?.setTabSelection) {
-        globalThis.UserPrefs.setTabSelection(storageKey, tabTarget);
-    }
+    globalThis.TabPreferences?.write?.(
+        getSoundtrackTabPreferenceKey(),
+        mapSoundtrackCategoryToTabTarget(category)
+    );
 }
 
 function getSoundtrackCategoryLabel(category) {
@@ -729,6 +713,10 @@ function buildSoundtrackResolveRequestPayload(button) {
     const imageUrl = String(button?.dataset?.soundtrackImage || '').trim();
     const yearRaw = String(button?.dataset?.soundtrackYear || '').trim();
     const year = Number.isFinite(Number(yearRaw)) ? Number(yearRaw) : null;
+    const showTitle = String(button?.dataset?.soundtrackShowTitle || '').trim();
+    const seasonTitle = String(button?.dataset?.soundtrackSeasonTitle || '').trim();
+    const seasonNumberRaw = String(button?.dataset?.soundtrackSeasonNumber || '').trim();
+    const seasonNumber = Number.isFinite(Number(seasonNumberRaw)) ? Number(seasonNumberRaw) : null;
     if (!itemId || !title || !serverType || !libraryId) {
         return null;
     }
@@ -741,7 +729,10 @@ function buildSoundtrackResolveRequestPayload(button) {
         itemId,
         title,
         year,
-        imageUrl
+        imageUrl,
+        showTitle: showTitle || null,
+        seasonTitle: seasonTitle || null,
+        seasonNumber: seasonNumber
     };
 }
 
@@ -833,9 +824,13 @@ function buildSoundtrackActionMenu(actionDataAttributes, options = {}) {
     }
 
     const cornerClass = options.corner === true ? ' soundtrack-card-actions--corner' : '';
+    const tracklistItem = options.tracklistTarget
+        ? `<button type="button" class="soundtrack-card-actions-item" data-soundtrack-open-tracklist="true" data-soundtrack-tracklist-source="${escapeHtml(String(options.tracklistTarget.source || 'deezer'))}" data-soundtrack-tracklist-type="${escapeHtml(options.tracklistTarget.type)}" data-soundtrack-tracklist-id="${escapeHtml(options.tracklistTarget.id)}" data-soundtrack-tracklist-external-url="${escapeHtml(String(options.tracklistTarget.externalUrl || ''))}">Open Tracklist</button>`
+        : '';
     return `<div class="soundtrack-card-actions${cornerClass}">
         <button type="button" class="soundtrack-card-actions-toggle" aria-label="Soundtrack actions" title="Soundtrack actions">⋯</button>
         <div class="soundtrack-card-actions-menu" role="menu">
+            ${tracklistItem}
             <button type="button" class="soundtrack-card-actions-item" data-soundtrack-manual-search="true"${actionDataAttributes}>Manual Search</button>
         </div>
     </div>`;
@@ -871,7 +866,7 @@ function buildSoundtrackMovieCardMarkup(item) {
     </article>`;
 }
 
-function buildSoundtrackTvSeasonCardMarkup(season) {
+function buildSoundtrackTvSeasonCardMarkup(season, show) {
     const title = String(season?.title || '').trim() || 'Season';
     const seasonId = String(season?.seasonId || '').trim();
     const seasonNumber = Number.isFinite(season?.seasonNumber) ? `Season ${season.seasonNumber}` : '';
@@ -886,6 +881,20 @@ function buildSoundtrackTvSeasonCardMarkup(season) {
         ? `Open episodes for ${title}`
         : `Season ${title}`;
 
+    const selectedShow = show || soundtrackState.selectedTvShow || {};
+    const showId = String(selectedShow.showId || '').trim();
+    const showTitle = String(selectedShow.showTitle || '').trim();
+    const resolveServerType = String(selectedShow.serverType || soundtrackState.selectedServerType || '').trim().toLowerCase();
+    const resolveLibraryId = String(selectedShow.libraryId || soundtrackState.selectedLibraryId || '').trim();
+    const resolveLibraryName = String(selectedShow.libraryName || '').trim();
+    const resolveImage = String(selectedShow.showImageUrl || image).trim();
+    const seasonTracklistTarget = resolveSoundtrackTracklistTarget(season?.soundtrack);
+    const seasonResolveAttributes = seasonId && showId && resolveServerType && resolveLibraryId
+        ? ` data-soundtrack-item-id="${escapeHtml(seasonId)}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(selectedShow.year) ? String(selectedShow.year) : '')}" data-soundtrack-image="${escapeHtml(resolveImage)}" data-soundtrack-server="${escapeHtml(resolveServerType)}" data-soundtrack-library="${escapeHtml(resolveLibraryId)}" data-soundtrack-library-name="${escapeHtml(resolveLibraryName)}" data-soundtrack-category="tv_season" data-soundtrack-show-title="${escapeHtml(showTitle)}" data-soundtrack-season-title="${escapeHtml(title)}" data-soundtrack-season-number="${escapeHtml(Number.isFinite(season?.seasonNumber) ? String(season.seasonNumber) : '')}"`
+        : '';
+
+    // The art stays a "browse episodes" action. The soundtrack is reached from the
+    // card action menu so navigation into the season is never hijacked.
     return `<article class="soundtrack-card soundtrack-card--tv-season">
         ${seasonId
         ? `<button type="button" class="soundtrack-card-media-btn" data-soundtrack-open-season="${escapeHtml(seasonId)}" aria-label="${escapeHtml(openSeasonLabel)}">`
@@ -894,6 +903,7 @@ function buildSoundtrackTvSeasonCardMarkup(season) {
         ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async">`
         : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-photo-film"></i></div>`}
         ${seasonId ? '</button>' : '</div>'}
+        ${buildSoundtrackActionMenu(seasonResolveAttributes, { corner: true, tracklistTarget: seasonTracklistTarget })}
         <div class="soundtrack-card-body">
             <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
             ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
@@ -910,15 +920,19 @@ function buildSoundtrackTvEpisodeCardMarkup(item) {
     const context = [seasonTitle, seasonLabel].filter(Boolean).join(' • ');
     const image = String(item?.imageUrl || '').trim();
     const selectedShow = soundtrackState.selectedTvShow || {};
+    const episodeId = String(item?.episodeId || '').trim();
+    const episodeTitle = title;
     const resolveServerType = String(selectedShow.serverType || soundtrackState.selectedServerType || '').trim().toLowerCase();
     const resolveLibraryId = String(selectedShow.libraryId || soundtrackState.selectedLibraryId || '').trim();
     const resolveLibraryName = String(selectedShow.libraryName || '').trim();
-    const resolveItemId = String(selectedShow.showId || '').trim();
-    const resolveTitle = String(selectedShow.showTitle || title).trim();
+    const showId = String(selectedShow.showId || '').trim();
+    const showTitle = String(selectedShow.showTitle || '').trim();
     const resolveImage = String(selectedShow.showImageUrl || image).trim();
     const resolveYear = Number.isFinite(selectedShow.year) ? String(selectedShow.year) : '';
-    const episodeManualAttributes = resolveServerType && resolveLibraryId && resolveItemId
-        ? ` data-soundtrack-item-id="${escapeHtml(resolveItemId)}" data-soundtrack-title="${escapeHtml(resolveTitle)}" data-soundtrack-year="${escapeHtml(resolveYear)}" data-soundtrack-image="${escapeHtml(resolveImage)}" data-soundtrack-server="${escapeHtml(resolveServerType)}" data-soundtrack-library="${escapeHtml(resolveLibraryId)}" data-soundtrack-library-name="${escapeHtml(resolveLibraryName)}" data-soundtrack-category="tv_show"`
+    // Episodes resolve against their own identity. Previously this sent the show's
+    // id and title, so an episode action silently overwrote the show soundtrack.
+    const episodeManualAttributes = episodeId && showId && resolveServerType && resolveLibraryId
+        ? ` data-soundtrack-item-id="${escapeHtml(episodeId)}" data-soundtrack-title="${escapeHtml(episodeTitle)}" data-soundtrack-year="${escapeHtml(resolveYear)}" data-soundtrack-image="${escapeHtml(resolveImage)}" data-soundtrack-server="${escapeHtml(resolveServerType)}" data-soundtrack-library="${escapeHtml(resolveLibraryId)}" data-soundtrack-library-name="${escapeHtml(resolveLibraryName)}" data-soundtrack-category="tv_episode" data-soundtrack-show-title="${escapeHtml(showTitle)}" data-soundtrack-season-title="${escapeHtml(seasonTitle)}" data-soundtrack-season-number="${escapeHtml(Number.isFinite(item?.seasonNumber) ? String(item.seasonNumber) : '')}"`
         : '';
     const tracklistTarget = resolveSoundtrackTracklistTarget(item?.soundtrack);
     const openTracklistAttributes = tracklistTarget
@@ -1075,7 +1089,9 @@ function renderSelectedTvShowSeasons(elements) {
         return false;
     }
 
-    elements.grid.innerHTML = seasons.map(season => buildSoundtrackTvSeasonCardMarkup(season)).join('');
+    elements.grid.innerHTML = seasons
+        .map(season => buildSoundtrackTvSeasonCardMarkup(season, soundtrackState.selectedTvShow))
+        .join('');
     renderSoundtrackAlphaJumpNavigation(elements, seasons);
     setTvSoundtrackStatus(elements, 'season', seasons.length);
     return true;
@@ -1499,7 +1515,7 @@ function bindSoundtrackTabHandlers() {
                 return;
             }
 
-            const openTracklistButton = event.target.closest('.soundtrack-card-open-tracklist-btn');
+            const openTracklistButton = event.target.closest('.soundtrack-card-open-tracklist-btn, [data-soundtrack-open-tracklist="true"]');
             if (openTracklistButton) {
                 let source = String(openTracklistButton.dataset.soundtrackTracklistSource || 'deezer').trim().toLowerCase();
                 let type = String(openTracklistButton.dataset.soundtrackTracklistType || '').trim().toLowerCase();

@@ -27,6 +27,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private const string CompletedStatus = "completed";
     private const string CancelledStatus = "cancelled";
     private const string CanceledStatus = "canceled";
+    private const string PausedStatus = "paused";
     private const string InvalidPayloadMessage = "Invalid payload";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private const string UpdateQueueEvent = "updateQueue";
@@ -687,21 +688,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         request.ResolvedQuality = resolution;
         payload.Quality = selectedQuality;
         payload.QobuzResolvedQuality = selectedQuality;
-        payload.QobuzQualityDecisionReason = !lowersRequestedQuality
-            ? "provider_quality_allows_requested"
-            : "provider_quality_lower_than_requested";
+        payload.QobuzQualityDecisionReason = "provider_quality_allows_requested";
 
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-        if (lowersRequestedQuality && _logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Qobuz provider quality selected {SelectedQuality} instead of requested {RequestedQuality} for {QueueUuid}: max={BitDepth}-bit/{SampleRate}kHz",
-                selectedQuality,
-                requestedQuality,
-                queueUuid,
-                payload.QobuzMaximumBitDepth,
-                payload.QobuzMaximumSamplingRate);
-        }
 
         return QobuzQualityDecisionResult.Continue();
     }
@@ -917,6 +906,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var status = current?.Status ?? CancelledStatus;
         if (status is CompletedStatus or FailedStatus)
         {
+            return;
+        }
+
+        if (_cancellationRegistry.WasUserPaused(queueUuid))
+        {
+            await _queueRepository.UpdateStatusAsync(queueUuid, PausedStatus, cancellationToken: CancellationToken.None);
+            _deezspotagListener.Send(UpdateQueueEvent, new { uuid = queueUuid, status = PausedStatus });
             return;
         }
 

@@ -294,12 +294,10 @@ public sealed class CoverLibraryMaintenanceService
         }
 
         var maintenancePlan = ToPublicPlan(albumDir, workPlan, request);
-        if (maintenancePlan.FetchStillArtwork || maintenancePlan.FetchAnimatedArtwork)
+        if ((maintenancePlan.FetchStillArtwork || maintenancePlan.FetchAnimatedArtwork)
+            && onFetchStarted != null)
         {
-            if (onFetchStarted != null)
-            {
-                await onFetchStarted(maintenancePlan, cancellationToken);
-            }
+            await onFetchStarted(maintenancePlan, cancellationToken);
         }
 
         var updatedAnything = false;
@@ -804,8 +802,9 @@ public sealed class CoverLibraryMaintenanceService
             && artworkState.HasEmbedded
             && IsLowResolution(artworkState.EmbeddedSize!.Value, minResolution);
         var needsUpgrade = request.UpgradeLowResolutionCovers && (externalLowRes || embeddedLowRes);
-        var stillCoverActionEnabled = (request.ReplaceMissingEmbeddedCovers && canEmbed)
-            || (request.SyncExternalCovers && canWriteSidecar)
+        var replaceOrSyncEnabled = (request.ReplaceMissingEmbeddedCovers && canEmbed)
+            || (request.SyncExternalCovers && canWriteSidecar);
+        var stillCoverActionEnabled = replaceOrSyncEnabled
             || (request.UpgradeLowResolutionCovers && (canEmbed || canWriteSidecar));
         var noArtworkAtAll = stillCoverActionEnabled
             && !artworkState.HasExternal

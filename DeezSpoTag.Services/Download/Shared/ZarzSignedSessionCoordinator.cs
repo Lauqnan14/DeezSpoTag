@@ -462,12 +462,11 @@ public sealed class ZarzSignedSessionCoordinator
 
     private static string ReadString(JsonElement root, params string[] names)
     {
-        foreach (var name in names)
+        foreach (var name in names
+                     .Where(candidate => root.TryGetProperty(candidate, out var value)
+                         && value.ValueKind == JsonValueKind.String))
         {
-            if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
-            {
-                return value.GetString()?.Trim() ?? string.Empty;
-            }
+            return root.GetProperty(name).GetString()?.Trim() ?? string.Empty;
         }
         return string.Empty;
     }

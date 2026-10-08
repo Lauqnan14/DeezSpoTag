@@ -36,7 +36,8 @@ internal static class EngineQueueProcessorHelper
         Func<TPayload, string?> ResolveFinishTitle,
         Func<TPayload, Dictionary<string, object>> ToQueuePayload,
         Func<TPayload, string, CancellationToken, Task<string>>? AcceptAcquiredAudioAsync = null,
-        Func<TPayload, string, CancellationToken, Task>? RejectAcquiredAudioAsync = null)
+        Func<TPayload, string, CancellationToken, Task>? RejectAcquiredAudioAsync = null,
+        Func<TPayload, string, CancellationToken, Task>? CompleteAudioOnlyAsync = null)
         where TPayload : EngineQueueItemBase;
 
     private readonly record struct PrefetchContext(
@@ -277,6 +278,41 @@ internal static class EngineQueueProcessorHelper
             }
         }
 
+        // An engine that defers to enrichment stops here, with a verified file and nothing more done to it.
+        // No artwork prefetch, no tag writing: the enrichment stage owns both, and it needs the file at its
+        // materialized staging path rather than at a destination the reader has not chosen yet.
+        if (DefersToEnrichmentStage(workContext))
+        {
+            try
+            {
+                await workContext.Callbacks.CompleteAudioOnlyAsync!(
+                    workContext.Payload,
+                    outputPath,
+                    itemToken);
+
+                // The download itself is still completed, and every part of that has to happen: the status
+                // write is what marks the queue row complete, the UI events are what stops the card spinning,
+                // and the retry clear is what stops it being picked up as stalled. Skipping this would leave
+                // a verified download stuck in "running" forever, and the enrichment stage - which only ever
+                // looks at completed rows - would never see it at all.
+                await CompleteProcessingAsync(workContext, outputPath, deferredToEnrichment: true);
+            }
+            catch (DownloadFinalizationException ex)
+            {
+                await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                    workContext.Deps.QueueRepository,
+                    workContext.Deps.RetryScheduler,
+                    workContext.Deps.Listener,
+                    workContext.Item.QueueUuid,
+                    workContext.EngineName,
+                    workContext.Payload,
+                    ex,
+                    CancellationToken.None);
+            }
+
+            return;
+        }
+
         try
         {
             outputPath = await ApplyPostDownloadSettingsAsync(
@@ -422,9 +458,15 @@ internal static class EngineQueueProcessorHelper
         return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken);
     }
 
+    /// <param name="deferredToEnrichment">
+    ///     True when the engine stopped after verified audio and handed the file to an enrichment stage.
+    ///     Nothing else changes: the download is complete either way, and the only difference is that no
+    ///     artwork prefetch was ever started for this item, so there is nothing left to wait for.
+    /// </param>
     private static async Task CompleteProcessingAsync<TPayload>(
         QueueWorkContext<TPayload> workContext,
-        string outputPath)
+        string outputPath,
+        bool deferredToEnrichment = false)
         where TPayload : EngineQueueItemBase
     {
         var finalSize = QueueHelperUtils.TryGetFileSizeMb(outputPath);
@@ -436,9 +478,15 @@ internal static class EngineQueueProcessorHelper
                 new InvalidOperationException($"Downloaded file missing or empty: {outputPath}"));
         }
 
-        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(
-            workContext.Item.QueueUuid,
-            workContext.ItemToken);
+        if (!deferredToEnrichment)
+        {
+            // Only meaningful when a prefetch was started. Awaiting it unconditionally is harmless - the
+            // gate returns immediately when none exists - but stating the case keeps it obvious that a
+            // deferred item never had one to wait for.
+            await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(
+                workContext.Item.QueueUuid,
+                workContext.ItemToken);
+        }
 
         ActualDownloadQualityLabel.ApplyTo(workContext.Payload, outputPath);
         DownloadLifecycleCheckpoint.MarkCompleted(workContext.Payload);

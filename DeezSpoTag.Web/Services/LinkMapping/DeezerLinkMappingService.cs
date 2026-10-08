@@ -78,7 +78,11 @@ public sealed class DeezerLinkMappingService
         var searchedDeezer = await TryMapByMetadataSearchAsync(normalizedUrl, source, mapped, cancellationToken);
         if (searchedDeezer != null)
         {
-            return DeezerLinkMappingResult.Success(source, searchedDeezer);
+            var searchedDeezer = await TryMapByMetadataSearchAsync(normalizedUrl, source, mapped, cancellationToken);
+            if (searchedDeezer != null)
+            {
+                return DeezerLinkMappingResult.Success(source, searchedDeezer);
+            }
         }
 
         return DeezerLinkMappingResult.Unavailable(source, "No Deezer mapping found.");

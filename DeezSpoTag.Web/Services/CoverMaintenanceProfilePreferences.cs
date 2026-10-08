@@ -20,14 +20,10 @@ internal static class CoverMaintenanceProfilePreferences
         if (configRoot?["tags"] is JsonArray tagList)
         {
             var hasAnyTags = false;
-            foreach (var entry in tagList)
+            foreach (var value in tagList
+                .Select(entry => entry?.GetValue<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value)))
             {
-                var value = entry?.GetValue<string>();
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
                 hasAnyTags = true;
                 if (string.Equals(value, "cover", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(value, "albumArt", StringComparison.OrdinalIgnoreCase))
@@ -132,14 +128,10 @@ internal static class CoverMaintenanceProfilePreferences
         if (tagsNode is JsonArray tagList)
         {
             var hasAnyTags = false;
-            foreach (var entry in tagList)
+            foreach (var value in tagList
+                .Select(entry => entry?.GetValue<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value)))
             {
-                var value = entry?.GetValue<string>();
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
                 hasAnyTags = true;
                 if (string.Equals(value, tagName, StringComparison.OrdinalIgnoreCase))
                 {

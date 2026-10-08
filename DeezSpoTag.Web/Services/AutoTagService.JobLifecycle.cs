@@ -313,10 +313,10 @@ public partial class AutoTagService
         }
 
         var autoMove = await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
-        if (isManualEnrichment && !autoMove.Completed)
+        if (isExternalFileEnrichment && !autoMove.Completed)
         {
             throw new InvalidOperationException(
-                autoMove.Summary.Error ?? "Manual enrichment finalization did not move every fully enriched file.");
+                autoMove.Summary.Error ?? $"{DescribeExternalFileEnrichment(job.RunIntent)} finalization did not move every fully enriched file.");
         }
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
@@ -324,17 +324,18 @@ public partial class AutoTagService
             context.ConfigPath,
             context.IncludesEnhancementWorkflows,
             cancellationToken,
-            autoMove.Summary);
+            autoMove.Summary,
+            sidecarsAlreadyRunStaged: isExternalFileEnrichment);
         var hasEnhancementWork = context.IncludesEnhancementStage
             || context.IncludesEnhancementWorkflows
-            || isManualEnrichment;
-        if (autoMove.Completed && !isManualEnrichment)
+            || isExternalFileEnrichment;
+        if (autoMove.Completed && !isExternalFileEnrichment)
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
         }
-        if (!isManualEnrichment)
+        if (!isExternalFileEnrichment)
         {
-            // Manual enrichment already ingested the moved paths before its sidecar
+            // External-file enrichment already ingested the moved paths before its sidecar
             // lookup; the lookup resolves track identities at the moved paths.
             await IngestKnownFilesAfterAutoMoveAsync(
                 job,

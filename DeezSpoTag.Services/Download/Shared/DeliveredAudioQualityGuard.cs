@@ -8,6 +8,18 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 internal static class DeliveredAudioQualityGuard
 {
+    /// <summary>
+    ///     Minimum delivered bitrate each lossy plan step will accept. Every step still accepts a lossless
+    ///     delivery, because lossless always satisfies a lossy step. Without these floors a step could be
+    ///     satisfied by a file from a lower tier and the fallback ladder would stop early on worse audio.
+    /// </summary>
+    private const int MinHighLossyBitrateKbps = 256;
+
+    private const int MinAacBitrateKbps = 128;
+    private const int MinOpusBitrateKbps = 96;
+    private const int MinLowLossyBitrateKbps = 96;
+    private const int MinLowestLossyBitrateKbps = 64;
+
     public static async Task EnsurePlanStepSatisfiedAsync(
         EngineQueueItemBase payload,
         string filePath,
@@ -147,8 +159,16 @@ internal static class DeliveredAudioQualityGuard
                 && actual.SampleRate > 0,
             "6" or "LOSSLESS" or "HD_FLAC" or "9" or "ALAC" => actual.IsLossless
                 && actual.BitsPerSample > 0,
-            "5" or "HIGH" or "3" => !actual.IsLossless || actual.BitrateKbps >= 256,
-            "LOW" or "1" or "AAC" or "OPUS" => true,
+
+            // Lossy tiers carry a real floor. These used to be "!IsLossless || <floor>" and
+            // "=> true", which short-circuited to true for every lossy file, so a 96kbps delivery
+            // satisfied a 320kbps step and the fallback ladder could settle on a worse file than
+            // the step it was standing on.
+            "5" or "HIGH" or "3" => actual.IsLossless || actual.BitrateKbps >= MinHighLossyBitrateKbps,
+            "AAC" => actual.IsLossless || actual.BitrateKbps >= MinAacBitrateKbps,
+            "OPUS" => actual.IsLossless || actual.BitrateKbps >= MinOpusBitrateKbps,
+            "1" => actual.IsLossless || actual.BitrateKbps >= MinLowLossyBitrateKbps,
+            "LOW" => actual.IsLossless || actual.BitrateKbps >= MinLowestLossyBitrateKbps,
             _ => true
         };
     }

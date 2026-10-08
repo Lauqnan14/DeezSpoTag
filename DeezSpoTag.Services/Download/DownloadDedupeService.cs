@@ -149,7 +149,8 @@ public sealed class DownloadDedupeService
         int? requestedLocalQualityRank = null,
         string? requestedAudioVariant = null,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null,
-        string? finalOutputPath = null)
+        string? finalOutputPath = null,
+        int? redownloadCooldownMinutes = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
@@ -175,7 +176,8 @@ public sealed class DownloadDedupeService
             RequestedAudioVariant = requestedAudioVariant,
             RequestedLocalQualityRank = requestedLocalQualityRank,
             FinalOutputPath = finalOutputPath,
-            BlockRules = blockRules
+            BlockRules = blockRules,
+            RedownloadCooldownMinutes = redownloadCooldownMinutes
         };
     }
 
@@ -373,7 +375,8 @@ public sealed class DownloadDedupeService
             DurationMs = request.DurationMs,
             DestinationFolderId = request.DestinationFolderId,
             ContentType = request.ContentType,
-            ArtistPrimaryName = request.TrackPrimaryArtist
+            ArtistPrimaryName = request.TrackPrimaryArtist,
+            RedownloadCooldownMinutes = request.RedownloadCooldownMinutes
         };
 
     private static string? ResolvePrimarySource(DownloadDedupeRequest request)
@@ -597,6 +600,7 @@ public sealed class DownloadDedupeRequest : DownloadIdentityLookupRequest
     public int? RequestedLocalQualityRank { get; init; }
     public string? FinalOutputPath { get; init; }
     public IReadOnlyList<PlaylistTrackBlockRule>? BlockRules { get; init; }
+    public int? RedownloadCooldownMinutes { get; init; }
 }
 
 public sealed record DownloadDedupeDecision(

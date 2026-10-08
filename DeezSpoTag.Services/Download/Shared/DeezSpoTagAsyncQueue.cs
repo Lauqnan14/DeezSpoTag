@@ -191,7 +191,7 @@ public class DeezSpoTagAsyncQueue<T> : IDisposable
         _cancellationTokenSource.Cancel();
         lock (_drainLock)
         {
-            _drainCompletionSource?.SetCanceled();
+            _drainCompletionSource?.SetCanceled(_cancellationTokenSource.Token);
             _drainCompletionSource = null;
         }
 

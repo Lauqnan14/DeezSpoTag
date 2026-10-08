@@ -15,6 +15,7 @@ using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Deezer;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.SoundCloud;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Soulseek;
 
@@ -93,63 +94,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             _logger.LogError(ex, "Failed to load settings, using defaults");
             return new DeezSpoTagSettings();
         }
-    }
-
-    public async Task<Dictionary<string, object>> GetQueueAsync()
-    {
-        if (!DownloadQueueRepository.IsConfigured)
-        {
-            return new Dictionary<string, object>
-            {
-                ["queue"] = new Dictionary<string, Dictionary<string, object>>(),
-                ["queueOrder"] = new List<string>()
-            };
-        }
-
-        var tasks = await _queueRepository.GetTasksAsync();
-        var queue = new Dictionary<string, Dictionary<string, object>>();
-        var queueOrder = new List<string>();
-
-        foreach (var task in tasks)
-        {
-            if (string.IsNullOrWhiteSpace(task.QueueUuid))
-            {
-                continue;
-            }
-
-            var payload = QueuePayloadJsonParser.Parse(task.PayloadJson);
-
-            payload["status"] = MapStatusForUi(task.Status);
-            payload["progress"] = task.Progress ?? 0;
-            payload["downloaded"] = task.Downloaded ?? 0;
-            payload[FailedStatus] = task.Failed ?? 0;
-            payload["engine"] = NormalizeEngineName(task.Engine);
-            payload["uuid"] = task.QueueUuid;
-            if (!payload.ContainsKey("contentType") && !string.IsNullOrWhiteSpace(task.ContentType))
-            {
-                payload["contentType"] = task.ContentType!;
-            }
-
-            queue[task.QueueUuid] = payload;
-
-            if (task.Status == "resolving" || task.Status == "queued" || task.Status == "running")
-            {
-                queueOrder.Add(task.QueueUuid);
-            }
-        }
-
-        var result = new Dictionary<string, object>
-        {
-            ["queue"] = queue,
-            ["queueOrder"] = queueOrder
-        };
-
-        if (CurrentJob != null)
-        {
-            result["current"] = CurrentJob;
-        }
-
-        return result;
     }
 
     private readonly object _queueLock = new object();
@@ -550,11 +494,19 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 terminalStatus,
                 resolution.Error,
                 cancellationToken: cancellationToken);
-            return resolution.Item;
+            // Return the classified status, not the one the resolver stamped on the item. The
+            // caller decides whether to schedule a retry by reading Status, so returning the
+            // resolver's value here would pin transient failures terminal.
+            return resolution.Item with { Status = terminalStatus, Error = resolution.Error };
         }
 
         return resolution.Item with { Status = "running" };
     }
+
+    public Task<DownloadQueueItem?> GetQueueItemAsync(string uuid, CancellationToken cancellationToken = default)
+        => string.IsNullOrWhiteSpace(uuid)
+            ? Task.FromResult<DownloadQueueItem?>(null)
+            : _queueRepository.GetByUuidAsync(uuid, cancellationToken);
 
     public async Task CancelDownloadAsync(string uuid)
     {
@@ -574,7 +526,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
         await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
-        Listener?.Send("removedFromQueue", new { uuid });
+        // The row still exists with status "canceled", so report a status change. Emitting
+        // "removedFromQueue" here only hid the card in the UI while the entry stayed in the queue
+        // and reappeared on the next hydration.
+        Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
@@ -610,7 +565,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
-        var firstStepEngine = queueItem.Engine ?? string.Empty;
+        string firstStepEngine;
         var firstStepQuality = string.Empty;
         var updatedPayloadForWatchlist = string.Empty;
         var safeUuid = DeezSpoTag.Core.Security.LogSanitizer.OneLine(uuid);
@@ -1132,18 +1087,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             _pausedByUserUuids.Remove(uuid);
             return true;
         }
-    }
-
-    private static string MapStatusForUi(string status)
-    {
-        return status switch
-        {
-            "queued" => "inQueue",
-            "running" => "downloading",
-            "complete" => "completed",
-            "canceled" => "cancelled",
-            _ => status
-        };
     }
 
     private static string NormalizeEngineName(string? engine)

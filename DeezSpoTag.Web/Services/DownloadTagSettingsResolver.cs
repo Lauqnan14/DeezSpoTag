@@ -233,13 +233,11 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string key, out JsonElement value)
     {
-        foreach (var property in element.EnumerateObject())
+        foreach (var property in element.EnumerateObject()
+            .Where(property => string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase)))
         {
-            if (string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase))
-            {
-                value = property.Value;
-                return true;
-            }
+            value = property.Value;
+            return true;
         }
 
         value = default;

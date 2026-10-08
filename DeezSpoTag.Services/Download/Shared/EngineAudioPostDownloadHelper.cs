@@ -836,8 +836,7 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        resolved.Album ??= new Album("0", requestedAlbum);
-        resolved.Album.Title = requestedAlbum.Trim();
+        resolved.Album!.Title = requestedAlbum.Trim();
         if (logger.IsEnabled(LogLevel.Information))
         {
             logger.LogInformation(
@@ -871,15 +870,7 @@ public static partial class EngineAudioPostDownloadHelper
 
     private static bool HasNonLatinLetters(string value)
     {
-        foreach (var rune in value.EnumerateRunes())
-        {
-            if (RuneIsLetter(rune) && !IsLatinLetter(rune.Value))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return value.EnumerateRunes().Any(rune => RuneIsLetter(rune) && !IsLatinLetter(rune.Value));
     }
 
     private static bool RuneIsLetter(Rune rune)
@@ -2622,6 +2613,26 @@ public static partial class EngineAudioPostDownloadHelper
         bool preferMaxQualityCover,
         CancellationToken token)
     {
+        // A cover the peer shipped beside the audio is tried before the resolved catalogue URLs. It is the art
+        // that belongs to the exact release this file came from, and for a release no streaming service
+        // carries it is frequently the only art there is. It is already a local file, so it goes through the
+        // same processing - resize, format, quality, sidecars - as every other cover rather than a second
+        // path. Absent for every other engine, and absent whenever the reader did not opt in.
+        var peerArtwork = ResolvePeerArtworkPath(execution);
+        if (peerArtwork is not null)
+        {
+            var peerResult = await PrepareDownloadedArtworkAsync(
+                execution, peerArtwork, new HashSet<string>(StringComparer.OrdinalIgnoreCase), token)
+                .ConfigureAwait(false);
+
+            return new PrefetchArtworkResult(
+                true,
+                GeneratedSidecarPaths: execution.Request.Settings.SaveArtwork
+                    ? peerResult.SidecarPaths
+                    : Array.Empty<string>(),
+                PrimaryArtworkPath: peerResult.EmbeddedPath);
+        }
+
         if (coverUrls.Count == 0)
         {
             return new PrefetchArtworkResult(false, "Album artwork URL could not be resolved.");
@@ -2744,8 +2755,7 @@ public static partial class EngineAudioPostDownloadHelper
         var formats = ArtworkFormatPolicy.Parse(settings.LocalArtworkFormat);
         foreach (var format in formats)
         {
-            var ext = format;
-            var targetPath = Path.Join(outputDirectory, $"{coverName}.{ext}");
+            var targetPath = Path.Join(outputDirectory, $"{coverName}.{format}");
             if (File.Exists(targetPath) && settings.OverwriteFile is not ("y" or "t"))
             {
                 protectedPaths.Add(targetPath);

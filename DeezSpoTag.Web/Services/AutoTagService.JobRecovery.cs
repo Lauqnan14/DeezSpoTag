@@ -111,10 +111,10 @@ public partial class AutoTagService
             return;
         }
 
-        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsExternalFileEnrichmentRunIntent(job.RunIntent)
             ? AutoTagLiterals.InterruptedStatus
             : AutoTagLiterals.CanceledStatus;
-        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsExternalFileEnrichmentRunIntent(job.RunIntent)
             ? "Interrupted. Resume is available."
             : "Stopped.";
         job.ExitCode = 1;
@@ -139,7 +139,7 @@ public partial class AutoTagService
         AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
         NotifyRunFinished(job);
 
-        if (IsManualEnrichmentRunIntent(job.RunIntent) && job.AutoMoveSummary != null)
+        if (IsExternalFileEnrichmentRunIntent(job.RunIntent) && job.AutoMoveSummary != null)
         {
             NotifyCompleted(job);
             return;

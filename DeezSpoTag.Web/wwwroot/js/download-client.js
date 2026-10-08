@@ -491,19 +491,40 @@ DeezSpoTag.DownloadClient = {
         pending.failed = 0;
     },
 
+    resolveSingleCandidateDestinationId(select) {
+        if (!select) {
+            return null;
+        }
+
+        // One folder for this kind of download means one answer, so use it rather than asking the
+        // user to pick. Several folders still prompt, because that choice is genuinely theirs.
+        const candidates = Array.from(select.options || [])
+            .filter((option) => String(option.value || '').trim());
+        if (candidates.length !== 1) {
+            return null;
+        }
+
+        const only = String(candidates[0].value).trim();
+        select.value = only;
+        return /^\d+$/.test(only) ? Number(only) : only;
+    },
     getDestinationFolderId(requireSelection = false) {
         const select = this.getPreferredDestinationSelect();
         if (!select) {
             return null;
         }
 
-        const value = (select.value || '').trim();
-        if (!value && requireSelection) {
+        let value = (select.value || '').trim();
+        if (!value) {
+            value = this.resolveSingleCandidateDestinationId(select);
+        }
+
+        if (value === null && requireSelection) {
             this.showNotification('Select a destination folder before downloading.', 'warning');
             return null;
         }
 
-        if (!value) {
+        if (value === null || value === '') {
             return null;
         }
 
@@ -882,6 +903,10 @@ DeezSpoTag.DownloadClient = {
                     album: metadata?.album || undefined,
                     albumArtist: metadata?.albumArtist || undefined,
                     cover: metadata?.cover || undefined,
+
+                    // The artwork already on screen. Deliberately separate from cover, which is the tagging
+                    // pipeline's prefetch source: this one is for the queue entry only.
+                    displayCoverUrl: metadata?.displayCoverUrl || undefined,
                     durationMs: Number(metadata?.durationMs || 0) || undefined,
                     position: Number(metadata?.position || 0) || undefined,
                     allowQualityUpgrade: intentContext.allowQualityUpgrade,

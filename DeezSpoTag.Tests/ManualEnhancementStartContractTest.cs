@@ -327,6 +327,30 @@ public sealed class ManualEnhancementStartContractTest
     }
 
     [Fact]
+    public void ManualEnrichmentDestinationPicker_DoesNotReloadTheProfileOnChange()
+    {
+        var repoRoot = FindRepoRoot();
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+
+        var changeHandler = ExtractSourceSpan(
+            script,
+            "el(\"autotag-move-success-library\")?.addEventListener(\"change\"",
+            "\n    [\"createPlaylistFolder\"");
+
+        // Loading a profile re-renders the whole form, including this select, from the loaded
+        // profile's moveSuccessLibraryFolderId. That overwrote the user's pick before the profile
+        // auto-save could read it, so the destination was never persisted.
+        Assert.DoesNotContain("loadProfile(", changeHandler, StringComparison.Ordinal);
+
+        // The run is where the destination folder's profile still gets switched to.
+        var startFunction = ExtractFunction(script, "async function startAutoTag");
+        Assert.Contains(
+            "loadProfile({ profileId: destination.autoTagProfileId, silent: true })",
+            startFunction,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ManualEnrichmentBackend_ClaimsUnownedStagingFilesAndUsesOneProfilePath()
     {
         var repoRoot = FindRepoRoot();

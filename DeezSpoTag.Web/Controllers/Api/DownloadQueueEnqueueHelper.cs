@@ -67,7 +67,8 @@ internal static class DownloadQueueEnqueueHelper
                 payload,
                 durationMs,
                 requestedLocalQualityRank,
-                finalOutputPath: finalOutputPath),
+                finalOutputPath: finalOutputPath,
+                redownloadCooldownMinutes: redownloadCooldownMinutes),
             cancellationToken);
         if (!dedupeDecision.Allowed)
         {
@@ -77,7 +78,7 @@ internal static class DownloadQueueEnqueueHelper
                 dedupeDecision.QueueUuid);
         }
 
-        return await EnqueueNewItemAsync(payload, durationMs, queueRepository, cancellationToken);
+        return await EnqueueNewItemAsync(payload, durationMs, queueRepository, serviceProvider, cancellationToken);
     }
 
     private static int? ResolveDurationMs<TPayload>(TPayload payload)
@@ -161,6 +162,7 @@ internal static class DownloadQueueEnqueueHelper
         TPayload payload,
         int? durationMs,
         DownloadQueueRepository queueRepository,
+        IServiceProvider serviceProvider,
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
     {

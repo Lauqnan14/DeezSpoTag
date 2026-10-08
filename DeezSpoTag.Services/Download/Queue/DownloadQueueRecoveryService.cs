@@ -85,7 +85,9 @@ public sealed class DownloadQueueRecoveryService
         string downloadRoot,
         CancellationToken cancellationToken)
     {
-        if (!ShouldPromoteToPendingPostDownload(item, downloadRoot, out var destinationFolderId)
+        // Acquired audio is not ready for enrichment while its processor owns tags and sidecars.
+        if (_cancellationRegistry.IsActive(item.QueueUuid)
+            || !ShouldPromoteToPendingPostDownload(item, downloadRoot, out var destinationFolderId)
             || string.IsNullOrWhiteSpace(item.QueueUuid))
         {
             return false;

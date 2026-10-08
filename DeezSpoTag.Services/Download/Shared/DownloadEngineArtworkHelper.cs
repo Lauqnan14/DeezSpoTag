@@ -15,9 +15,22 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public static class DownloadEngineArtworkHelper
 {
-    private const string AppleProvider = "apple";
-    private const string DeezerProvider = "deezer";
-    private const string SpotifyProvider = "spotify";
+    /// <summary>
+    ///     The engine ids this helper dispatches on, aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These were private byte-identical copies of <see cref="DownloadTagSourceHelper" />, which
+    ///     is the vocabulary stored source ids and artwork requests are keyed by. Every use below is
+    ///     a comparison against a value that came from a stored row, so a copy that drifted would
+    ///     match nothing and no artwork would be fetched - silently, with no error. The local names
+    ///     are kept because these read better where they dispatch on an engine; the value is
+    ///     defined once.
+    /// </remarks>
+    private const string AppleProvider = DownloadTagSourceHelper.AppleSource;
+
+    private const string DeezerProvider = DownloadTagSourceHelper.DeezerSource;
+
+    private const string SpotifyProvider = DownloadTagSourceHelper.SpotifySource;
     private const int ArtistArtworkCacheLimit = 2048;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex DeezerCoverSizeRegex = new(
@@ -116,7 +129,7 @@ public static class DownloadEngineArtworkHelper
             string? coverUrl = null;
             switch (fallback)
             {
-                case "apple":
+                case AppleProvider:
                     coverUrl = await ArtworkFallbackHelper.TryResolveAppleCoverAsync(
                         request.AppleCatalog,
                         request.HttpClientFactory,
@@ -130,7 +143,7 @@ public static class DownloadEngineArtworkHelper
                         cancellationToken);
                     break;
 
-                case "deezer":
+                case DeezerProvider:
                     coverUrl = await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
                         request.DeezerClient,
                         request.DeezerId,
@@ -141,7 +154,7 @@ public static class DownloadEngineArtworkHelper
                         rejectCompilationAlbumCandidate);
                     break;
 
-                case "spotify":
+                case SpotifyProvider:
                     coverUrl = await TryResolveSpotifyCoverAsync(
                         request,
                         rejectCompilationAlbumCandidate,
@@ -464,18 +477,18 @@ public static class DownloadEngineArtworkHelper
         // skipped so the caller can move on to the next one in the configured order.
         var url = normalized switch
         {
-            "apple" => string.IsNullOrWhiteSpace(request.AppleId)
+            AppleProvider => string.IsNullOrWhiteSpace(request.AppleId)
                 ? null
                 : await ResolveAppleAlbumArtworkForArtistAsync(request, cancellationToken),
-            "deezer" => string.IsNullOrWhiteSpace(request.DeezerId)
+            DeezerProvider => string.IsNullOrWhiteSpace(request.DeezerId)
                 ? null
                 : await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
                     request.DeezerClient,
                     request.DeezerId,
-                    ArtworkSizePolicy.ResolveRequestSize(request.Settings.LocalArtworkSize, "deezer"),
+                    ArtworkSizePolicy.ResolveRequestSize(request.Settings.LocalArtworkSize, DeezerProvider),
                     request.Logger,
                     cancellationToken),
-            "spotify" => string.IsNullOrWhiteSpace(request.SpotifyId) || request.SpotifyArtworkResolver == null
+            SpotifyProvider => string.IsNullOrWhiteSpace(request.SpotifyId) || request.SpotifyArtworkResolver == null
                 ? null
                 : await request.SpotifyArtworkResolver.ResolveAlbumCoverUrlAsync(request.SpotifyId, cancellationToken),
             _ => null
@@ -488,14 +501,14 @@ public static class DownloadEngineArtworkHelper
 
         var provider = normalized switch
         {
-            "apple" => AppleProvider,
-            "deezer" => DeezerProvider,
+            AppleProvider => AppleProvider,
+            DeezerProvider => DeezerProvider,
             _ => SpotifyProvider
         };
         var providerArtistId = normalized switch
         {
-            "apple" => request.AppleArtistId,
-            "deezer" => request.DeezerArtistId,
+            AppleProvider => request.AppleArtistId,
+            DeezerProvider => request.DeezerArtistId,
             _ => request.SpotifyArtistId
         };
 
@@ -533,17 +546,17 @@ public static class DownloadEngineArtworkHelper
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(source, "apple", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(source, AppleProvider, StringComparison.OrdinalIgnoreCase))
         {
             return TryResolveAppleArtistImageAsync(request, cancellationToken);
         }
 
-        if (string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(source, DeezerProvider, StringComparison.OrdinalIgnoreCase))
         {
             return TryResolveDeezerArtistImageAsync(request, cancellationToken);
         }
 
-        if (string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(source, SpotifyProvider, StringComparison.OrdinalIgnoreCase))
         {
             return TryResolveSpotifyArtistImageAsync(request, cancellationToken);
         }

@@ -61,6 +61,7 @@ public partial class AutoTagService
             var candidate = NormalizePathForJob(rawPath)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             if (!IsPathWithinScope(candidate, normalizedRoot)
+                || DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(normalizedRoot, candidate)
                 || !File.Exists(candidate))
             {
                 continue;
@@ -87,6 +88,7 @@ public partial class AutoTagService
         };
 
         return Directory.EnumerateFiles(normalizedRoot, "*", options)
+            .Where(path => !DownloadPathResolver.IsUnderTopLevelIncompleteDirectory(normalizedRoot, path))
             .Select(Path.GetExtension)
             .Any(extension => !string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension));
     }
@@ -292,7 +294,7 @@ public partial class AutoTagService
             _logger.LogInformation("AutoTag job JobId: auto-move started for RootPath");
             AppendLog(job, "auto-move started");
             var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
-            if (IsManualEnrichmentRunIntent(job.RunIntent))
+            if (IsExternalFileEnrichmentRunIntent(job.RunIntent))
             {
                 organizerOptions.BatchScopedFilesOnly = true;
                 organizerOptions.MoveUntaggedPath = null;

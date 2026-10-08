@@ -126,6 +126,7 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly IDownloadQueueExecutionGate _executionGate;
     private readonly DownloadQueueWakeSignal _queueWakeSignal;
+    private readonly IReadOnlyList<IQueueMaintenanceTask> _maintenanceTasks;
     private string? _lastGateReasonCode;
 
     public DeezSpoTagQueueBackgroundService(
@@ -134,6 +135,7 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
         BackgroundWorkCoordinator workCoordinator,
         IDownloadQueueExecutionGate executionGate,
         DownloadQueueWakeSignal queueWakeSignal,
+        IEnumerable<IQueueMaintenanceTask> maintenanceTasks,
         ILogger<DeezSpoTagQueueBackgroundService> logger)
     {
         _deezSpoTagApp = deezSpoTagApp;
@@ -141,6 +143,7 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
         _workCoordinator = workCoordinator;
         _executionGate = executionGate;
         _queueWakeSignal = queueWakeSignal;
+        _maintenanceTasks = maintenanceTasks.ToList();
         _logger = logger;
     }
 
@@ -152,6 +155,14 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             {
                 await _workCoordinator.WaitForStartupGraceAsync(token);
 
+                // Reclaiming abandoned rows is housekeeping, not new work, so it runs whether or not the app
+                // has decided to start another download. It used to sit behind the gate, and that coupling is
+                // what let a stall outlive the code that could clear it: the only thing that can mark a
+                // stalled item is this sweep, and the sweep was skipped for exactly as long as the reason the
+                // app was not downloading held. An enrichment job that never finished therefore froze every
+                // stalled transfer in the queue at its last reported progress, with no row and no history.
+                await _recoveryService.RecoverStaleRunningTasksAsync(token);
+
                 var gateDecision = await _executionGate.EvaluateDownloadExecutionAsync(token);
                 if (!gateDecision.Allowed)
                 {
@@ -159,7 +170,9 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
                     return;
                 }
 
-                await _recoveryService.RecoverStaleRunningTasksAsync(token);
+                // Engine housekeeping rides the existing loop rather than a per-engine worker, so an engine can
+                // prune its own stale state without adding a hosted service.
+                await RunMaintenanceTasksAsync(token);
 
                 var queuedCount = await _deezSpoTagApp.GetQueuedCountAsync();
                 LogGateTransition(gateDecision, queuedCount);
@@ -182,6 +195,22 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             RecoveryPollInterval,
             _queueWakeSignal,
             stoppingToken);
+    }
+
+    private async Task RunMaintenanceTasksAsync(CancellationToken cancellationToken)
+    {
+        foreach (var task in _maintenanceTasks)
+        {
+            try
+            {
+                await task.RunAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Housekeeping must never be able to stop downloads from being processed.
+                _logger.LogWarning(ex, "Queue maintenance task for {Engine} failed.", task.Engine);
+            }
+        }
     }
 
     private void LogGateTransition(DownloadQueueExecutionDecision decision, int? queuedCount)
