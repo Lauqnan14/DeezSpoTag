@@ -45,6 +45,10 @@ public sealed class LibraryDbService
     private const string LibrarySettingsTable = "library_settings";
     private const string PlayHistoryTable = "play_history";
     private const string BackgroundJobStateTable = "background_job_state";
+    private const string PlaylistSyncLinkTable = "playlist_sync_link";
+    private const string PlaylistSyncLinkMemberTable = "playlist_sync_link_member";
+    private const string PlaylistSyncLinkMigrationId = "playlist-sync-link-v1";
+    private const string PlaylistSyncTargetKindMigrationId = "playlist-sync-target-kind-v2";
     private const string PlayHistoryIdentityMigrationId = "play-history-event-identity-v1";
     private const string MelodayAutomaticScopeMigrationId = "meloday-automatic-library-scope-v1";
     private const string WatchlistReliabilityRepairMigrationId = "watchlist-reliability-repair-v1";
@@ -133,6 +137,10 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_missing_track_due"] = (PlaylistWatchMissingTrackTable, "status, retry_after_utc, source, source_id, source_position", false)
             ,
             ["idx_playlist_watch_missing_track_queue"] = (PlaylistWatchMissingTrackTable, "queue_uuid, status", false)
+            ,
+            ["idx_playlist_sync_link_source"] = (PlaylistSyncLinkTable, "source, source_id", false)
+            ,
+            ["idx_playlist_sync_link_member_target"] = (PlaylistSyncLinkMemberTable, "target_id, target_playlist_id", false)
             ,
             ["idx_playlist_watch_target_membership_target"] = (PlaylistWatchTargetMembershipTable, "target_service, target_playlist_id", false)
             ,
@@ -244,6 +252,68 @@ CREATE TABLE IF NOT EXISTS background_job_state (
     updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_background_job_state_due", BackgroundJobStateTable, "status, next_due_at_utc", unique: false, cancellationToken);
+
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_sync_link (
+    link_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'oneway',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_sync_link_member (
+    link_id TEXT NOT NULL REFERENCES playlist_sync_link(link_id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'library',
+    target_playlist_id TEXT,
+    target_name TEXT,
+    sync_mode TEXT NOT NULL DEFAULT 'mirror',
+    role TEXT NOT NULL DEFAULT 'mirror',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id, target_id)
+);", cancellationToken);
+        // The rename has to happen before the index below, which is declared on target_id: an
+        // install still carrying the v1 target_service column would fail the index otherwise.
+        await MigratePlaylistSyncTargetKindAsync(connection, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_sync_link_source", PlaylistSyncLinkTable, "source, source_id", unique: false, cancellationToken);
+        // Each step below is individually non-fatal. This chain runs on every startup, so a
+        // statement that fails must not stop the app from booting; a playlist-sync table is
+        // not worth a server that will not start.
+        try
+        {
+            await EnsureIndexAsync(connection, "idx_playlist_sync_link_member_target", PlaylistSyncLinkMemberTable, "target_id, target_playlist_id", unique: false, cancellationToken);
+            try
+        {
+            await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_sync_snapshot (
+    link_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    track_source_ids_json TEXT NOT NULL,
+    recorded_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id, target_id)
+);", cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            // Non-fatal: N-way reconcile degrades to "no baseline recorded" rather than blocking
+            // startup. The first pass then establishes one and refuses destructive writes.
+            System.Diagnostics.Debug.WriteLine("Playlist sync snapshot table could not be created. " + ex.Message);
+        }
+
+        await BackfillPlaylistSyncLinksAsync(connection, cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "Playlist sync link schema step failed; playlist sync may need recreating. " + ex.Message);
+        }
 
         await EnsureColumnAsync(connection, ArtistTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "metadata_json", TextType, cancellationToken);
@@ -1599,6 +1669,232 @@ CREATE TABLE IF NOT EXISTS {tableName} (
 );";
         return EnsureTableAsync(connection, createSql, cancellationToken);
     }
+
+    /// <summary>
+    /// Moves the existing per-server playlist id columns into the generic link member table.
+    /// Runs once, inside a transaction, and derives the link id from the source playlist so a
+    /// repeated run is a no-op rather than a second link. The legacy columns are left in place:
+    /// they are still read as a fallback until every writer reads the member table, so removing
+    /// them now would strand a binding written between this migration and that change.
+    /// </summary>
+    private static async Task BackfillPlaylistSyncLinksAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var check = new SqliteCommand(
+                         "SELECT 1 FROM app_schema_migration WHERE migration_id=@migrationId LIMIT 1;",
+                         connection))
+        {
+            check.Parameters.AddWithValue("migrationId", PlaylistSyncLinkMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        // A link per source playlist, whether or not it has any targets yet, so a member written
+        // later always has a link to belong to.
+        await using (var link = new SqliteCommand(@"
+INSERT OR IGNORE INTO playlist_sync_link (link_id, source, source_id, direction, enabled)
+SELECT source || ':' || source_id, source, source_id, 'oneway', 1
+FROM playlist_watch_preferences;", connection))
+        {
+            link.Transaction = transaction;
+            await link.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // One member per configured target. The three legacy columns supply the bound playlist id
+        // so an already-synced playlist keeps pointing at the playlist it created, instead of
+        // creating a second one on the next pass.
+        await using (var members = new SqliteCommand(@"
+INSERT OR IGNORE INTO playlist_sync_link_member
+    (link_id, target_id, target_kind, target_playlist_id, target_name, sync_mode, role, enabled, position)
+SELECT p.source || ':' || p.source_id,
+       j.value,
+       CASE WHEN j.value IN ('plex', 'jellyfin', 'navidrome') THEN 'library' ELSE 'platform' END,
+       CASE j.value
+           WHEN 'plex' THEN p.plex_playlist_id
+           WHEN 'jellyfin' THEN p.jellyfin_playlist_id
+           WHEN 'navidrome' THEN p.navidrome_playlist_id
+       END,
+       p.source_id,
+       CASE WHEN p.sync_mode = 'append' THEN 'append' ELSE 'mirror' END,
+       'mirror',
+       1,
+       CAST(j.key AS INTEGER)
+FROM playlist_watch_preferences AS p,
+     json_each(COALESCE(p.sync_targets_json, '[]')) AS j
+WHERE j.value IS NOT NULL
+  AND TRIM(CAST(j.value AS TEXT)) <> '';", connection))
+        {
+            members.Transaction = transaction;
+            await members.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // A preference that names a target in a legacy column but not in sync_targets_json would
+        // otherwise lose that binding. Recover it from the columns themselves.
+        await using (var orphaned = new SqliteCommand(@"
+INSERT OR IGNORE INTO playlist_sync_link_member
+    (link_id, target_id, target_kind, target_playlist_id, target_name, sync_mode, role, enabled, position)
+SELECT p.source || ':' || p.source_id, 'plex', 'library', p.plex_playlist_id, p.source_id,
+       CASE WHEN p.sync_mode = 'append' THEN 'append' ELSE 'mirror' END, 'mirror', 1, 90
+FROM playlist_watch_preferences AS p
+WHERE NULLIF(TRIM(p.plex_playlist_id), '') IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM playlist_sync_link_member m
+                  WHERE m.link_id = p.source || ':' || p.source_id AND m.target_id = 'plex');
+
+INSERT OR IGNORE INTO playlist_sync_link_member
+    (link_id, target_id, target_kind, target_playlist_id, target_name, sync_mode, role, enabled, position)
+SELECT p.source || ':' || p.source_id, 'jellyfin', 'library', p.jellyfin_playlist_id, p.source_id,
+       CASE WHEN p.sync_mode = 'append' THEN 'append' ELSE 'mirror' END, 'mirror', 1, 91
+FROM playlist_watch_preferences AS p
+WHERE NULLIF(TRIM(p.jellyfin_playlist_id), '') IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM playlist_sync_link_member m
+                  WHERE m.link_id = p.source || ':' || p.source_id AND m.target_id = 'jellyfin');
+
+INSERT OR IGNORE INTO playlist_sync_link_member
+    (link_id, target_id, target_kind, target_playlist_id, target_name, sync_mode, role, enabled, position)
+SELECT p.source || ':' || p.source_id, 'navidrome', 'library', p.navidrome_playlist_id, p.source_id,
+       CASE WHEN p.sync_mode = 'append' THEN 'append' ELSE 'mirror' END, 'mirror', 1, 92
+FROM playlist_watch_preferences AS p
+WHERE NULLIF(TRIM(p.navidrome_playlist_id), '') IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM playlist_sync_link_member m
+                  WHERE m.link_id = p.source || ':' || p.source_id AND m.target_id = 'navidrome');", connection))
+        {
+            orphaned.Transaction = transaction;
+            await orphaned.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var marker = new SqliteCommand(
+                         "INSERT OR IGNORE INTO app_schema_migration (migration_id) VALUES (@migrationId);",
+                         connection))
+        {
+            marker.Transaction = transaction;
+            marker.Parameters.AddWithValue("migrationId", PlaylistSyncLinkMigrationId);
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task MigratePlaylistSyncTargetKindAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await MigratePlaylistSyncTargetKindCoreAsync(connection, cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            // This runs on every startup. A migration that throws here would stop the app from
+            // starting at all, and a playlist-sync table is not worth that: the failure is
+            // reported and the rest of the schema still applies. Syncs that need the table will
+            // report no binding and recreate the destination playlist, which is recoverable, while
+            // a dead app is not.
+            System.Diagnostics.Debug.WriteLine(
+                "Playlist sync link destination-kind upgrade failed; bindings may need recreating. " + ex.Message);
+        }
+    }
+
+    private static async Task MigratePlaylistSyncTargetKindCoreAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var check = new SqliteCommand(
+                         "SELECT 1 FROM app_schema_migration WHERE migration_id=@migrationId LIMIT 1;",
+                         connection))
+        {
+            check.Parameters.AddWithValue("migrationId", PlaylistSyncTargetKindMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        if (!await TableExistsAsync(connection, PlaylistSyncLinkMemberTable, cancellationToken))
+        {
+            return;
+        }
+
+        // Read the real column list once and decide from it, rather than probing column by
+        // column. A mis-detected shape must not turn into a failed statement.
+        var columns = await ReadColumnNamesAsync(connection, PlaylistSyncLinkMemberTable, cancellationToken);
+        var hasKind = columns.Contains("target_kind");
+        var hasLegacyName = columns.Contains("target_service");
+        var hasTargetId = columns.Contains("target_id");
+
+        if (hasKind && hasTargetId && !hasLegacyName)
+        {
+            // Already the current shape. Record it so the work is never repeated.
+            await using var mark = new SqliteCommand(
+                "INSERT OR IGNORE INTO app_schema_migration (migration_id) VALUES (@migrationId);",
+                connection);
+            mark.Parameters.AddWithValue("migrationId", PlaylistSyncTargetKindMigrationId);
+            await mark.ExecuteNonQueryAsync(cancellationToken);
+            return;
+        }
+
+        if (!hasTargetId && !hasLegacyName)
+        {
+            // Neither name is present. Nothing to rename; leave the table alone rather than guess.
+            return;
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        if (!hasKind)
+        {
+            await using var addKind = new SqliteCommand(
+                "ALTER TABLE playlist_sync_link_member ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'library';",
+                connection);
+            addKind.Transaction = transaction;
+            await addKind.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (!hasTargetId && hasLegacyName)
+        {
+            await using var rename = new SqliteCommand(
+                "ALTER TABLE playlist_sync_link_member RENAME COLUMN target_service TO target_id;",
+                connection);
+            rename.Transaction = transaction;
+            await rename.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var backfill = new SqliteCommand(@"
+UPDATE playlist_sync_link_member
+SET target_kind = CASE
+    WHEN target_id IN ('plex', 'jellyfin', 'navidrome') THEN 'library'
+    ELSE 'platform'
+END;", connection))
+        {
+            backfill.Transaction = transaction;
+            await backfill.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var marker = new SqliteCommand(
+                         "INSERT OR IGNORE INTO app_schema_migration (migration_id) VALUES (@migrationId);",
+                         connection))
+        {
+            marker.Transaction = transaction;
+            marker.Parameters.AddWithValue("migrationId", PlaylistSyncTargetKindMigrationId);
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The column names of an existing table. Used so a migration can decide what to do from the
+    /// real shape instead of trying statements and reacting to failure.
+    /// </summary>
+    private static async Task<HashSet<string>> ReadColumnNamesAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+        => await SqliteSchemaUtils.ReadColumnNamesAsync(connection, table, cancellationToken);
 
     private static async Task EnsureIndexAsync(
         SqliteConnection connection,

@@ -168,6 +168,27 @@ public sealed class JellyfinPlaylistBatchingTest
     }
 
     [Fact]
+    public async Task GetPlaylistsAsync_RequestsAndPreservesPrimaryImageTags()
+    {
+        using var handler = new JsonHandler(
+            HttpStatusCode.OK,
+            """{"Items":[{"Id":"playlist-1","Name":"Gold School","ImageTags":{"Primary":"image-tag-1"}}]}""");
+        using var client = new HttpClient(handler);
+        var api = new JellyfinApiClient(client);
+
+        var playlists = await api.GetPlaylistsAsync(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            CancellationToken.None);
+
+        var playlist = Assert.Single(playlists);
+        Assert.Equal("image-tag-1", playlist.ImageTags?["Primary"]);
+        var request = Assert.Single(handler.Requests);
+        Assert.Contains("Fields=Overview,ImageTags,RunTimeTicks", request.Query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void JellyfinMoveFailures_DoNotIncrementTargetCircuit()
     {
         var service = System.IO.File.ReadAllText(System.IO.Path.Combine(

@@ -16,11 +16,24 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistSyncService
 {
-    private const int MaxUploadedMergeArtworkBytes = 8 * 1024 * 1024;
+    /// <summary>
+    /// Ceiling on uploaded playlist artwork. Animated WebP and GIF run well above what a still
+    /// JPEG needs, so the cap is set for the animated formats rather than for a photograph.
+    /// </summary>
+    private const int MaxUploadedMergeArtworkBytes = 15 * 1024 * 1024;
     private const string PlaylistNotAvailableMessage = "Playlist not available.";
     private sealed record PlexConnection(string Url, string Token, string MachineIdentifier);
     private sealed record JellyfinConnection(string Url, string ApiKey, string UserId);
     private sealed record NavidromeConnection(string Url, string Username, string Password);
+    private sealed record YouTubeMusicConnection(string ClientId, string ClientSecret, string RefreshToken, string TokenUrl);
+
+    /// <summary>
+    /// The registered destinations, used only to ask the platform adapters whether they are
+    /// configured. Optional because the engine already resolves targets by id and does not need
+    /// this; a deployment that does not register the registry still syncs to its libraries.
+    /// </summary>
+    private readonly PlaylistSyncTargetRegistry? _targetRegistry;
+    private readonly PlatformTrackIdentityResolver? _platformIdentityResolver;
 
     private sealed record SyncTrackSummary(
         string SourceTrackId,
@@ -56,7 +69,8 @@ public sealed class PlaylistSyncService
         string? ArtworkUrl = null,
         string? AnimatedArtworkFilePath = null,
         string? AnimatedArtworkContentType = null,
-        IReadOnlyDictionary<string, string>? ExistingPlaylistIds = null);
+        IReadOnlyDictionary<string, string>? ExistingPlaylistIds = null,
+        bool AppendMissingOnly = false);
 
     public sealed record GeneratedLocalPlaylistTargetResult(
         string Service,
@@ -96,9 +110,23 @@ public sealed class PlaylistSyncService
         bool Monitored);
 
     private const string SpotifySource = "spotify";
-    private const string PlexService = "plex";
-    private const string JellyfinService = "jellyfin";
-    private const string NavidromeService = "navidrome";
+
+    /// <summary>
+    ///     The three self-hosted servers, aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These were private byte-identical copies of <see cref="MediaServerTargetServices" />.
+    ///     The names are kept because this file uses them 48 times and the shorter form reads
+    ///     better here, but the value is defined once, so the ids this writer matches on cannot
+    ///     drift from the ids the Folder tab and the target checkboxes offer.
+    /// </remarks>
+    private const string PlexService = MediaServerTargetServices.Plex;
+
+    private const string JellyfinService = MediaServerTargetServices.Jellyfin;
+
+    private const string NavidromeService = MediaServerTargetServices.Navidrome;
+
+    private const string YouTubeMusicService = "ytmusic";
     private const string JellyfinPlaylistMoveCapability = "playlist_move";
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
@@ -108,12 +136,15 @@ public sealed class PlaylistSyncService
     private const string PlexNotConfiguredMessage = "Plex is not configured.";
     private const string JellyfinNotConfiguredMessage = "Jellyfin is not configured.";
     private const string NavidromeNotConfiguredMessage = "Navidrome is not configured.";
+    private const string YouTubeMusicNotConfiguredMessage = "YouTube Music is not configured.";
     private readonly LibraryRepository _libraryRepository;
     private readonly ILocalTrackAmbiguityResolver _localIdentityResolver;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly NavidromeApiClient _navidromeApiClient;
+    private readonly PlaylistSyncEngine? _playlistSyncEngine;
+    private readonly DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient? _youtubeDataApiClient;
     private readonly PlatformAuthService _authService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
@@ -131,6 +162,8 @@ public sealed class PlaylistSyncService
         _plexApiClient = dependencies.PlexApiClient;
         _jellyfinApiClient = dependencies.JellyfinApiClient;
         _navidromeApiClient = dependencies.NavidromeApiClient;
+        _playlistSyncEngine = dependencies.PlaylistSyncEngine;
+        _youtubeDataApiClient = dependencies.YouTubeDataApiClient;
         _authService = dependencies.AuthService;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _mediaServerRefreshService = dependencies.MediaServerRefreshService;
@@ -138,6 +171,8 @@ public sealed class PlaylistSyncService
         _sharedIdentityResolver = dependencies.SharedIdentityResolver;
         _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
         _runSignal = dependencies.WatchlistRunSignal;
+        _targetRegistry = dependencies.PlaylistSyncTargetRegistry;
+        _platformIdentityResolver = dependencies.PlatformTrackIdentityResolver;
         _logger = dependencies.Logger;
     }
 
@@ -149,6 +184,22 @@ public sealed class PlaylistSyncService
         public required PlexApiClient PlexApiClient { get; init; }
         public required JellyfinApiClient JellyfinApiClient { get; init; }
         public required NavidromeApiClient NavidromeApiClient { get; init; }
+
+        /// <summary>
+        /// The destination-agnostic half of a push. Optional so a deployment that has not been
+        /// wired with it still starts; writers that need it report the sync as unavailable.
+        /// </summary>
+        public PlaylistSyncEngine? PlaylistSyncEngine { get; init; }
+
+        /// <summary>
+        /// Searches each streaming platform for the track's catalog id, so a platform destination has
+        /// something to write. Optional so a deployment without any platform wired still starts;
+        /// platform targets then report that no track could be identified there.
+        /// </summary>
+        public PlatformTrackIdentityResolver? PlatformTrackIdentityResolver { get; init; }
+
+        /// <summary>Optional so a deployment without YouTube Music configured still starts.</summary>
+        public DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient? YouTubeDataApiClient { get; init; }
         public required PlatformAuthService AuthService { get; init; }
         public required PlaylistVisualService PlaylistVisualService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
@@ -156,6 +207,13 @@ public sealed class PlaylistSyncService
         public required SharedIdentityResolver SharedIdentityResolver { get; init; }
         public CrossDeviceSyncService? CrossDeviceSyncService { get; init; }
         public WatchlistRunSignal? WatchlistRunSignal { get; init; }
+
+        /// <summary>
+        /// Used to report which streaming platforms are connected, so the destination list matches
+        /// what the adapters can actually write to.
+        /// </summary>
+        public PlaylistSyncTargetRegistry? PlaylistSyncTargetRegistry { get; init; }
+
         public required ILogger<PlaylistSyncService> Logger { get; init; }
     }
 
@@ -385,23 +443,19 @@ public sealed class PlaylistSyncService
         }
 
         var successful = results.Where(static result => result.Success).ToList();
-        var message = successful.Count == 0
-            ? string.Join(" ", results.Select(static result => result.Message).Where(static message => !string.IsNullOrWhiteSpace(message)))
-            : string.Join(" ", results.Select(static result => result.Message).Where(static message => !string.IsNullOrWhiteSpace(message)));
+        var message = string.Join(" ", results.Select(static result => result.Message).Where(static message => !string.IsNullOrWhiteSpace(message)));
         return new GeneratedLocalPlaylistSyncResult(successful.Count > 0, message, results);
     }
 
     private static List<string> NormalizeGeneratedTargetServices(IReadOnlyList<string>? targetServices)
     {
         var normalized = new List<string>();
-        foreach (var service in targetServices ?? Array.Empty<string>())
+        foreach (var value in (targetServices ?? Array.Empty<string>())
+                     .Select(service => (service ?? string.Empty).Trim().ToLowerInvariant())
+                     .Where(value => value is PlexService or JellyfinService or NavidromeService
+                         && !normalized.Contains(value, StringComparer.OrdinalIgnoreCase)))
         {
-            var value = (service ?? string.Empty).Trim().ToLowerInvariant();
-            if (value is PlexService or JellyfinService or NavidromeService
-                && !normalized.Contains(value, StringComparer.OrdinalIgnoreCase))
-            {
-                normalized.Add(value);
-            }
+            normalized.Add(value);
         }
 
         return normalized;
@@ -466,6 +520,7 @@ public sealed class PlaylistSyncService
             request.PlaylistName,
             matchSummary.TargetIds,
             options: new PlexApiClient.PlaylistUpsertOptions(
+                AppendMissingOnly: request.AppendMissingOnly,
                 ExistingTitlePrefix: request.StableTitlePrefix,
                 ExistingPlaylistId: ResolveExistingGeneratedPlaylistId(request, PlexService)),
             cancellationToken: cancellationToken);
@@ -525,7 +580,7 @@ public sealed class PlaylistSyncService
                 jellyfin.UserId,
                 playlistId,
                 itemIds,
-                appendMissingOnly: false,
+                appendMissingOnly: request.AppendMissingOnly,
                 cancellationToken);
             if (!syncItemsResult.Success)
             {
@@ -582,7 +637,7 @@ public sealed class PlaylistSyncService
             request.PlaylistName,
             itemIds,
             existingPlaylistId,
-            appendMissingOnly: false,
+            appendMissingOnly: request.AppendMissingOnly,
             cancellationToken,
             request.Description);
         var artworkSynced = await SyncGeneratedNavidromeArtworkAsync(navidrome, playlistId, request, cancellationToken);
@@ -605,13 +660,11 @@ public sealed class PlaylistSyncService
             return null;
         }
 
-        foreach (var pair in request.ExistingPlaylistIds)
+        foreach (var pair in request.ExistingPlaylistIds
+                     .Where(candidate => string.Equals(candidate.Key, service, StringComparison.OrdinalIgnoreCase)
+                         && !string.IsNullOrWhiteSpace(candidate.Value)))
         {
-            if (string.Equals(pair.Key, service, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(pair.Value))
-            {
-                return pair.Value.Trim();
-            }
+            return pair.Value.Trim();
         }
 
         return null;
@@ -848,7 +901,32 @@ public sealed class PlaylistSyncService
         bool SyncToNavidrome,
         string? ExistingPlexPlaylistId = null,
         string? ExistingJellyfinPlaylistId = null,
+        string? ExistingNavidromePlaylistId = null,
+        // Appended last so existing positional callers keep binding correctly.
+        bool SyncToYouTubeMusic = false,
+        string? ExistingYouTubeMusicPlaylistId = null);
+
+    /// <summary>
+    /// A one-way copy of an existing server playlist to one or more other servers. Unlike
+    /// <see cref="MergeAndSyncPlaylistsAsync"/> this does not require a monitored source and
+    /// does not need several sources, because the Library Playlists tab lists playlists the
+    /// app is deliberately not monitoring.
+    /// </summary>
+    public sealed record PlaylistSingleSyncRequest(
+        PlaylistWatchlistDto Source,
+        PlaylistWatchPreferenceDto? SourcePreference,
+        IReadOnlyList<PlaylistTrackCandidate> TrackCandidates,
+        IReadOnlyCollection<string> Targets,
+        string? SyncMode = null,
+        string? ExistingPlexPlaylistId = null,
+        string? ExistingJellyfinPlaylistId = null,
         string? ExistingNavidromePlaylistId = null);
+
+    public sealed record PlaylistSingleSyncResult(
+        bool Success,
+        string Message,
+        int SourceTracks,
+        IReadOnlyList<PlaylistMergeTargetResult> Targets);
 
     public sealed record PlaylistMergeTargetResult(
         string Target,
@@ -894,6 +972,381 @@ public sealed class PlaylistSyncService
         string Id,
         string Name,
         int? TrackCount = null);
+
+    /// <summary>
+    /// The media servers that are connected and can currently receive a sync, in the canonical
+    /// Plex, Jellyfin, Navidrome order. Exposed so a UI can offer only real targets instead of
+    /// letting a user pick a server the writers would reject.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetConfiguredTargetServicesAsync(CancellationToken cancellationToken)
+    {
+        var configured = new List<string>(5);
+
+        var (plex, plexError) = await TryLoadConfiguredPlexAsync();
+        if (plexError is null && plex is not null)
+        {
+            configured.Add(PlexService);
+        }
+
+        var (jellyfin, jellyfinError) = await TryLoadConfiguredJellyfinAsync();
+        if (jellyfinError is null && jellyfin is not null)
+        {
+            configured.Add(JellyfinService);
+        }
+
+        var (navidrome, navidromeError) = await TryLoadConfiguredNavidromeAsync();
+        if (navidromeError is null && navidrome is not null)
+        {
+            configured.Add(NavidromeService);
+        }
+
+        var (ytmusic, ytmusicError) = await TryLoadConfiguredYouTubeMusicAsync();
+        if (ytmusicError is null && ytmusic is not null)
+        {
+            configured.Add(YouTubeMusicService);
+        }
+
+        // The streaming platforms report readiness from the same store the targets read, so a
+        // platform is never offered as a destination its own adapter would then refuse.
+        foreach (var platform in (await GetConfiguredPlatformSyncServicesAsync(cancellationToken))
+                     .Where(candidate => !configured.Contains(candidate, StringComparer.OrdinalIgnoreCase)))
+        {
+            configured.Add(platform);
+        }
+
+        return configured;
+    }
+
+    /// <summary>
+    /// The streaming platforms that hold the credential their playlist target needs.
+    /// <para>
+    /// Reported by asking the registered targets whether they are usable rather than by repeating
+    /// each platform's credential rules here. A platform added later is then included automatically,
+    /// and there is no second list that can disagree with the adapters about what "configured"
+    /// means.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<string>> GetConfiguredPlatformSyncServicesAsync(
+        CancellationToken cancellationToken)
+    {
+        var platforms = new List<string>();
+        foreach (var target in _targetRegistry?.Targets ?? Array.Empty<IPlaylistSyncTarget>())
+        {
+            if (target.TargetKind != PlaylistTargetKind.Platform)
+            {
+                continue;
+            }
+
+            var probe = await target.FindPlaylistAsync(null, PlaylistSyncTargetReadinessProbe, cancellationToken);
+            // A probe that could not reach the provider is transient, not unconfigured, so it is not
+            // treated as "not connected" - otherwise a momentary outage would remove the platform
+            // from the user's list and any preference they had set for it.
+            if (probe.Status == TargetLookupStatus.Transient)
+            {
+                platforms.Add(target.TargetId);
+                continue;
+            }
+
+            // A Missing result means the provider answered and the account is connected, it simply
+            // has no playlist with the probe's name.
+            if (probe.Status == TargetLookupStatus.NotFound)
+            {
+                platforms.Add(target.TargetId);
+            }
+        }
+
+        return platforms;
+    }
+
+    /// <summary>
+    /// A playlist name no account will have, used to ask a platform whether its credentials work
+    /// without creating or reading anything real.
+    /// </summary>
+    private const string PlaylistSyncTargetReadinessProbe = "\u0001playlist-sync-readiness-probe\u0001";
+
+    /// <summary>
+    /// Copies one existing server playlist to the requested servers. This is deliberately not
+    /// <see cref="MergeAndSyncPlaylistsAsync"/>: that path requires at least two monitored source
+    /// playlists and exists to merge them into a new playlist, whereas this copies a single
+    /// playlist that the app is not monitoring at all. Track filtering, dedupe and the per
+    /// target writers are the same ones the merge path uses.
+    /// </summary>
+    public async Task<PlaylistSingleSyncResult> SyncSinglePlaylistAsync(
+        PlaylistSingleSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request?.Source is null || string.IsNullOrWhiteSpace(request.Source.SourceId))
+        {
+            return new PlaylistSingleSyncResult(
+                false,
+                "The source playlist could not be resolved.",
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        // Library destinations and platform destinations are kept apart. The library writers below
+        // only understand the three self-hosted servers; a streaming platform is written by the
+        // destination-agnostic engine instead.
+        //
+        // An unknown id is NOT silently dropped. A target the user could see and tick, which then
+        // vanishes from the request, produces a sync that reports success while never touching it -
+        // so an unrecognised id fails the pass with a reason instead.
+        var requested = request.Targets?
+            .Where(static target => !string.IsNullOrWhiteSpace(target))
+            .Select(static target => target.Trim().ToLowerInvariant())
+            // One way: the source server is never a target of its own playlist.
+            .Where(target => !string.Equals(target, NormalizeSource(request.Source.Source), StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .ToList() ?? new List<string>();
+
+        var knownIds = _targetRegistry is null
+            ? null
+            : new HashSet<string>(_targetRegistry.TargetIds, StringComparer.OrdinalIgnoreCase);
+        var unknown = knownIds is null
+            ? new List<string>()
+            : requested.Where(target => !knownIds.Contains(target)).ToList();
+        if (unknown.Count > 0)
+        {
+            return new PlaylistSingleSyncResult(
+                false,
+                $"Not a destination this app can write to: {string.Join(", ", unknown)}.",
+                0,
+                unknown.Select(target => new PlaylistMergeTargetResult(target, false, "Unknown destination.", null, 0)).ToList());
+        }
+
+        var targets = requested.Where(target => target is PlexService or JellyfinService or NavidromeService).ToList();
+        var platformTargets = requested.Where(target => target is not (PlexService or JellyfinService or NavidromeService)).ToList();
+
+        if (targets.Count == 0 && platformTargets.Count == 0)
+        {
+            return new PlaylistSingleSyncResult(
+                false,
+                "Select at least one destination other than the source.",
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        var candidates = (request.TrackCandidates ?? Array.Empty<PlaylistTrackCandidate>())
+            .Select(ToSyncTrackSummary)
+            .ToList();
+        var filtered = await FilterTracksForSyncAsync(
+            request.Source,
+            request.SourcePreference,
+            candidates,
+            cancellationToken);
+        if (filtered.Count == 0)
+        {
+            return new PlaylistSingleSyncResult(
+                false,
+                candidates.Count == 0
+                    ? "The source playlist has no tracks to sync."
+                    : "No eligible tracks remained after blocked/ignored filtering.",
+                candidates.Count,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var syncMode = NormalizeSyncMode(request.SyncMode);
+        var targetResults = new List<PlaylistMergeTargetResult>();
+
+        if (targets.Count > 0)
+        {
+            targetResults.AddRange(await SyncMergedPlaylistTargetsAsync(
+                new PlaylistMergeSyncRequest(
+                    request.Source.Name,
+                    request.Source.Description,
+                    ArtworkDataUrl: null,
+                    ArtworkSource: request.Source.Source,
+                    ArtworkSourceId: request.Source.SourceId,
+                    SourceUsername: null,
+                    request.SyncMode,
+                    SyncToPlex: targets.Contains(PlexService),
+                    SyncToJellyfin: targets.Contains(JellyfinService),
+                    SyncToNavidrome: targets.Contains(NavidromeService),
+                    request.ExistingPlexPlaylistId,
+                    request.ExistingJellyfinPlaylistId,
+                    request.ExistingNavidromePlaylistId),
+                request.Source,
+                filtered,
+                syncMode,
+                now,
+                cancellationToken));
+        }
+
+        if (platformTargets.Count > 0)
+        {
+            targetResults.AddRange(await SyncPlatformTargetsAsync(
+                platformTargets,
+                request.Source,
+                filtered,
+                syncMode,
+                cancellationToken));
+        }
+
+        var anySucceeded = targetResults.Any(static target => target.Success);
+        var allSucceeded = targetResults.Count > 0 && targetResults.All(static target => target.Success);
+        var allTargets = targetResults.Select(static target => target.Target).ToList();
+        var message = allSucceeded
+            ? $"Synced to {DescribeTargets(allTargets)}."
+            : anySucceeded
+                ? $"Synced to some targets. {DescribeTargets(allTargets)}."
+                : BuildAllTargetsFailedMessage(targetResults);
+        return new PlaylistSingleSyncResult(anySucceeded, message, candidates.Count, targetResults);
+    }
+
+    /// <summary>
+    /// Why a pass failed on every target, in the caller's terms.
+    /// <para>
+    /// "Sync failed on all selected targets" with no reason sends the user looking for a problem that
+    /// is not there: the commonest cause by far is simply that a destination has no stored
+    /// credentials yet. Each target's own message names the one thing that would fix it.
+    /// </para>
+    /// </summary>
+    private static string BuildAllTargetsFailedMessage(IReadOnlyList<PlaylistMergeTargetResult> results)
+    {
+        if (results.Count == 0)
+        {
+            return "No destination was written.";
+        }
+
+        // One distinct reason, shown once with the targets it applies to. Repeated identical
+        // messages ("not configured") say nothing extra but make the message unreadable.
+        var reasons = results
+            .Where(static result => !result.Success)
+            .GroupBy(static result => string.IsNullOrWhiteSpace(result.Message)
+                ? "The write failed without a reason."
+                : result.Message!.Trim(), StringComparer.Ordinal)
+            .Select(group => (group.Key, Targets: group.Select(static result => result.Target).ToList()))
+            .ToList();
+
+        return string.Join(
+            " ",
+            reasons.Select(reason =>
+                $"{DescribeTargets(reason.Targets)}: {reason.Key}"));
+    }
+
+    /// <summary>
+    /// Writes one library playlist to each selected streaming platform.
+    /// <para>
+    /// The platform path cannot reuse the library writers: a self-hosted server tracks the library's
+    /// own file ids, while a platform needs a CATALOG id for the same recording. The bridge is
+    /// <c>media_server_track_metadata</c>, which records what a track is called on each service. A
+    /// track with no identity there is refused rather than written as a guess - a wrong catalog id
+    /// puts the wrong song on a user's playlist, and a skipped one leaves the destination one track
+    /// short and visibly fixable.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<PlaylistMergeTargetResult>> SyncPlatformTargetsAsync(
+        IReadOnlyList<string> platformTargets,
+        PlaylistWatchlistDto source,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        string syncMode,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<PlaylistMergeTargetResult>(platformTargets.Count);
+        var engine = _playlistSyncEngine;
+
+        if (engine is null)
+        {
+            return platformTargets
+                .Select(target => new PlaylistMergeTargetResult(
+                    target, false, "Streaming destinations are not available in this deployment.", null, 0))
+                .ToList();
+        }
+
+        // A platform can only be written to per track, so every track needs the id THAT platform
+        // knows it by. The local id is the join key the identity store is keyed on, and it is
+        // resolved once here rather than per target.
+        var orderedLocalTrackIds = await ResolveOrderedTrackIdsAsync(source.Source, tracks, cancellationToken);
+        var identityTracks = tracks
+            .Select((track, index) => new PlatformIdentityTrack(
+                index < orderedLocalTrackIds.Count ? orderedLocalTrackIds[index] : 0L,
+                track.Isrc,
+                track.Name,
+                track.Artists,
+                track.Album,
+                track.DurationMs))
+            .ToList();
+
+        // Resolve every track against every target in one pass, so a track missing on one platform
+        // does not fail the others.
+        var resolvedByTarget = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var target in platformTargets)
+        {
+            var trackIds = tracks.Select(static track => track.SourceTrackId).ToList();
+            var recorded = await _libraryRepository.ResolveTargetItemIdsAsync(
+                trackIds, target, cancellationToken);
+
+            if (_platformIdentityResolver is null)
+            {
+                resolvedByTarget[target] = recorded;
+                continue;
+            }
+
+            // Recorded first so a search only runs for what is genuinely new, and so a membership
+            // recorded by an earlier pass outranks anything a search turns up today.
+            var byLocalId = await _platformIdentityResolver.ResolveAsync(target, identityTracks, cancellationToken);
+            var merged = new Dictionary<string, string>(recorded, StringComparer.OrdinalIgnoreCase);
+            for (var index = 0; index < identityTracks.Count && index < tracks.Count; index++)
+            {
+                var localTrackId = identityTracks[index].LocalTrackId;
+                if (localTrackId > 0
+                    && byLocalId.TryGetValue(localTrackId, out var itemId)
+                    && !string.IsNullOrWhiteSpace(itemId))
+                {
+                    merged[tracks[index].SourceTrackId] = itemId;
+                }
+            }
+
+            resolvedByTarget[target] = merged;
+        }
+
+        foreach (var target in platformTargets)
+        {
+            var resolved = resolvedByTarget[target];
+            var missing = tracks.Count(track => !resolved.ContainsKey(track.SourceTrackId));
+
+            if (missing > 0)
+            {
+                results.Add(new PlaylistMergeTargetResult(
+                    target,
+                    false,
+                    $"{missing} of {tracks.Count} track(s) were not found on {target} and were not written.",
+                    null,
+                    0));
+                continue;
+            }
+
+            // The source order is preserved; the platform's append stamping makes order the one
+            // thing that cannot be repaired afterwards.
+            var ordered = tracks.Select(track => resolved[track.SourceTrackId]).ToList();
+            var outcome = await engine.SyncAsync(
+                target,
+                source.Name,
+                source.Description,
+                ordered,
+                appendMissingOnly: syncMode != "mirror",
+                new PlaylistSyncBinding(source.Source, source.SourceId),
+                cancellationToken: cancellationToken);
+
+            results.Add(new PlaylistMergeTargetResult(
+                target,
+                outcome.Success,
+                outcome.Message ?? "Done.",
+                outcome.PlaylistId,
+                outcome.AddedCount));
+        }
+
+        return results;
+    }
+
+    private static string DescribeTargets(IReadOnlyCollection<string> targets)
+        => targets.Count switch
+        {
+            0 => "no destination",
+            1 => targets.First(),
+            _ => $"{string.Join(", ", targets.Take(targets.Count - 1))} and {targets.Last()}"
+        };
 
     public async Task<PlaylistMergeSyncResult> MergeAndSyncPlaylistsAsync(
         IReadOnlyList<PlaylistMergeSourceInput> mergeSources,
@@ -1065,7 +1518,12 @@ public sealed class PlaylistSyncService
         }
     }
 
-    private static bool IsAllowedMergeArtworkContentType(string? contentType)
+    /// <summary>
+    /// The image types accepted for playlist artwork. Animated WebP and GIF are deliberately
+    /// allowed: a playlist cover that moves is a real thing people want, and both are still images
+    /// as far as every destination's upload endpoint is concerned.
+    /// </summary>
+    public static bool IsAllowedMergeArtworkContentType(string? contentType)
     {
         return contentType is not null
             && (contentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
@@ -1073,6 +1531,9 @@ public sealed class PlaylistSyncService
                 || contentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase)
                 || contentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>The upload cap, exposed so the client and the tests agree with the server.</summary>
+    public static int MaxArtworkBytes => MaxUploadedMergeArtworkBytes;
 
     private readonly record struct UploadedMergeArtwork(byte[] Bytes, string ContentType);
 
@@ -1286,6 +1747,22 @@ public sealed class PlaylistSyncService
                 cancellationToken);
             targets.Add(new PlaylistMergeTargetResult(
                 NavidromeService,
+                result.Success,
+                result.Message,
+                result.PlaylistId,
+                result.SyncedTracks));
+        }
+
+        if (request.SyncToYouTubeMusic)
+        {
+            var result = await SyncToYouTubeMusicAsync(
+                mergedPlaylist,
+                CreateMergedPlaylistPreference(mergedPlaylist, YouTubeMusicService, syncMode, now),
+                mergedTracks,
+                request.ExistingYouTubeMusicPlaylistId,
+                cancellationToken);
+            targets.Add(new PlaylistMergeTargetResult(
+                YouTubeMusicService,
                 result.Success,
                 result.Message,
                 result.PlaylistId,
@@ -1871,14 +2348,12 @@ public sealed class PlaylistSyncService
                     .Distinct()
                     .ToList(),
                 cancellationToken);
-            foreach (var row in availableTrackRows)
+            foreach (var row in availableTrackRows
+                         .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Track.SourceTrackId)
+                             && targetIds.TryGetValue(candidate.LocalTrackId, out var targetId)
+                             && !string.IsNullOrWhiteSpace(targetId)))
             {
-                if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
-                    && targetIds.TryGetValue(row.LocalTrackId, out var targetId)
-                    && !string.IsNullOrWhiteSpace(targetId))
-                {
-                    targetIdBySourceId[row.Track.SourceTrackId] = targetId;
-                }
+                targetIdBySourceId[row.Track.SourceTrackId] = targetIds[row.LocalTrackId];
             }
         }
 
@@ -2198,27 +2673,6 @@ public sealed class PlaylistSyncService
         }
 
         var playlistName = ResolvePlaylistName(playlist);
-        var playlistLookup = await ResolveAuthoritativePlexPlaylistIdAsync(
-            plex,
-            playlist,
-            existingPlaylistId,
-            cancellationToken);
-        if (playlistLookup.Status == TargetLookupStatus.Transient)
-        {
-            return PlaylistSyncResult.Failed("Plex playlist lookup timed out.", PlaylistSyncResultKind.Retry);
-        }
-
-        existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
-        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
-        {
-            await _plexApiClient.UpdatePlaylistMetadataAsync(
-                plex.Url,
-                plex.Token,
-                existingPlaylistId,
-                playlistName,
-                playlist.Description,
-                cancellationToken);
-        }
 
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var matchSummary = await ResolvePlexRatingKeysAsync(
@@ -2236,22 +2690,6 @@ public sealed class PlaylistSyncService
                 matchSummary.SourceTracks,
                 matchSummary.LocalMatches,
                 matchSummary.MissingTracks);
-            if (!string.IsNullOrWhiteSpace(existingPlaylistId))
-            {
-                await PersistTargetPlaylistBindingAsync(
-                    playlist,
-                    preference,
-                    PlexService,
-                    existingPlaylistId,
-                    cancellationToken);
-                await _plexApiClient.UpdatePlaylistMetadataAsync(
-                    plex.Url,
-                    plex.Token,
-                    existingPlaylistId,
-                    playlistName,
-                    playlist.Description,
-                    cancellationToken);
-            }
 
             return await CompleteTargetMembershipAsync(
                 playlist,
@@ -2269,21 +2707,36 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
-        var appendMissingOnly = partialIdentityGap
-            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        var upsert = await _plexApiClient.CreateOrUpdatePlaylistAsync(
-            plex.Url,
-            plex.Token,
-            plex.MachineIdentifier,
+
+        if (_playlistSyncEngine is null)
+        {
+            return PlaylistSyncResult.Failed("Plex client is unavailable.", PlaylistSyncResultKind.Retry);
+        }
+
+        // The engine owns resolving the destination playlist, the removal-safety rails, the write,
+        // and recording the binding. A partial identity gap also forces add-only: an unresolved
+        // target identity would otherwise read as a track the destination should lose.
+        var outcome = await _playlistSyncEngine.SyncAsync(
+            PlexService,
             playlistName,
+            playlist.Description,
             matchSummary.TargetIds,
-            options: new PlexApiClient.PlaylistUpsertOptions(
-                AppendMissingOnly: appendMissingOnly,
-                ExistingPlaylistId: string.IsNullOrWhiteSpace(existingPlaylistId)
-                    ? null
-                    : existingPlaylistId.Trim()),
-            cancellationToken: cancellationToken);
-        var playlistId = upsert.PlaylistId;
+            appendMissingOnly: string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase),
+            new PlaylistSyncBinding(playlist.Source, playlist.SourceId),
+            existingPlaylistId,
+            forceAppendReason: partialIdentityGap
+                ? "some target identities are still unresolved"
+                : null,
+            cancellationToken);
+
+        if (!outcome.Success)
+        {
+            return PlaylistSyncResult.Failed(
+                outcome.Message ?? "Failed to create or update Plex playlist.",
+                outcome.Retryable ? PlaylistSyncResultKind.Retry : PlaylistSyncResultKind.Blocked);
+        }
+
+        var playlistId = outcome.PlaylistId;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return BuildWriteFailureResult(
@@ -2291,13 +2744,7 @@ public sealed class PlaylistSyncService
                 matchSummary);
         }
 
-        await PersistTargetPlaylistBindingAsync(
-            playlist,
-            preference,
-            PlexService,
-            playlistId,
-            cancellationToken);
-
+        // Plex keeps its title and summary on the playlist itself, which the upsert does not set.
         if (string.IsNullOrWhiteSpace(existingPlaylistId)
             || !string.Equals(existingPlaylistId, playlistId, StringComparison.OrdinalIgnoreCase))
         {
@@ -2310,12 +2757,16 @@ public sealed class PlaylistSyncService
                 cancellationToken);
         }
 
+        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase)
+            || partialIdentityGap
+            || outcome.Message?.Contains("looked incomplete", StringComparison.Ordinal) == true;
+
         var verifiedMemberships = await ReadVerifiedPlexMembershipsAsync(
             plex,
             playlistId,
             matchSummary.Memberships,
             cancellationToken);
-        if (!IsResolvedMembershipVerified(matchSummary.TargetMatches, verifiedMemberships.Count, upsert.Complete))
+        if (!IsResolvedMembershipVerified(matchSummary.TargetMatches, verifiedMemberships.Count, outcome.WriteComplete))
         {
             await InvalidateConfirmedMissingPlexIdentitiesAsync(
                 plex,
@@ -2333,11 +2784,32 @@ public sealed class PlaylistSyncService
             verifiedMemberships,
             tracks,
             orderedTrackIds,
-            writeComplete: upsert.Complete,
+            writeComplete: outcome.WriteComplete,
             successBaseMessage: $"Playlist synced ({modeLabel}).",
-            extraSuccessSuffix: null,
+            extraSuccessSuffix: BuildEngineHoldSuffix(outcome),
             cancellationToken);
     }
+
+    /// <summary>
+    /// Explains a mirror that was downgraded to append by the removal guard, so the user is
+    /// not left wondering why tracks accumulated instead of being replaced. Silent degradation
+    /// would look identical to a bug.
+    /// </summary>
+    /// <summary>
+    /// The engine owns the removal-safety rails now, so the suffix that explains a held removal is
+    /// taken from the outcome it returned rather than recomputed from a local guard result.
+    /// </summary>
+    private static string? BuildEngineHoldSuffix(PlaylistSyncTargetOutcome outcome)
+        => outcome.Message is not null
+           && (outcome.Message.Contains("looked incomplete", StringComparison.Ordinal)
+               || outcome.Message.Contains("Removals held", StringComparison.Ordinal))
+            ? outcome.Message
+            : null;
+
+    private static string? BuildRemovalHoldSuffix(string syncMode, RemovalSafety removalSafety)
+        => string.Equals(syncMode, SyncModeMirror, StringComparison.OrdinalIgnoreCase) && !removalSafety.MayRemove
+            ? $" Removals were held to protect existing tracks: {removalSafety.Reason}"
+            : null;
 
     private async Task<PlaylistSyncResult> SyncToJellyfinAsync(
         PlaylistWatchlistDto playlist,
@@ -2420,73 +2892,68 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
-        var appendMissingOnly = partialIdentityGap
-            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        var playlistId = existingPlaylistId;
-        var metadataSynced = true;
-        if (!string.IsNullOrWhiteSpace(playlistId))
+        if (_playlistSyncEngine is null)
         {
-            metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
-                jellyfin,
-                playlist,
-                playlistId,
-                cancellationToken);
-            var syncItemsResult = await SyncExistingJellyfinPlaylistItemsAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                jellyfin.UserId,
-                playlistId,
-                itemIds,
-                appendMissingOnly,
-                cancellationToken);
-            if (!syncItemsResult.Success)
-            {
-                return BuildWriteFailureResult(
-                    BuildSyncMessage(syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.", matchSummary),
-                    matchSummary);
-            }
-
-            if (!appendMissingOnly)
-            {
-                var reorder = await TryReorderJellyfinPlaylistAsync(
-                    jellyfin,
-                    playlistId,
-                    itemIds,
-                    cancellationToken);
-                if (reorder.Status == JellyfinPlaylistMoveStatus.Transient)
-                {
-                    return BuildWriteFailureResult(
-                        BuildSyncMessage("Jellyfin playlist reorder timed out.", matchSummary),
-                        matchSummary,
-                        playlistId);
-                }
-            }
-        }
-        else
-        {
-            var createdPlaylistId = await _jellyfinApiClient.CreatePlaylistAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                jellyfin.UserId,
-                playlistName,
-                itemIds,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(createdPlaylistId))
-            {
-                return BuildWriteFailureResult(
-                    BuildSyncMessage("Failed to create Jellyfin playlist.", matchSummary),
-                    matchSummary);
-            }
-
-            playlistId = createdPlaylistId;
-            metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
-                jellyfin,
-                playlist,
-                playlistId,
-                cancellationToken);
+            return PlaylistSyncResult.Failed("Jellyfin client is unavailable.", PlaylistSyncResultKind.Retry);
         }
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
+        // The engine owns the lookup, the removal-safety rails, the entry-level add/remove, and
+        // the binding. A partial identity gap still forces add-only, because an unresolved target
+        // identity would otherwise read as a track the destination should lose.
+        var outcome = await _playlistSyncEngine.SyncAsync(
+            JellyfinService,
+            playlistName,
+            playlist.Description,
+            itemIds,
+            appendMissingOnly: string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase),
+            new PlaylistSyncBinding(playlist.Source, playlist.SourceId),
+            existingPlaylistId,
+            forceAppendReason: partialIdentityGap
+                ? "some target identities are still unresolved"
+                : null,
+            cancellationToken);
+
+        if (!outcome.Success)
+        {
+            return PlaylistSyncResult.Failed(
+                outcome.Message ?? "Failed to sync Jellyfin playlist.",
+                outcome.Retryable ? PlaylistSyncResultKind.Retry : PlaylistSyncResultKind.Blocked);
+        }
+
+        var playlistId = outcome.PlaylistId;
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return BuildWriteFailureResult(
+                BuildSyncMessage("Failed to create Jellyfin playlist.", matchSummary),
+                matchSummary);
+        }
+
+        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase)
+            || partialIdentityGap
+            || outcome.Message?.Contains("looked incomplete", StringComparison.Ordinal) == true;
+
+        var metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
+            jellyfin,
+            playlist,
+            playlistId,
+            cancellationToken);
+
+        // Reordering stays here: it is gated on a capability record this service owns.
+        if (!appendMissingOnly)
+        {
+            var reorder = await TryReorderJellyfinPlaylistAsync(
+                jellyfin,
+                playlistId,
+                itemIds,
+                cancellationToken);
+            if (reorder.Status == JellyfinPlaylistMoveStatus.Transient)
+            {
+                return BuildWriteFailureResult(
+                    BuildSyncMessage("Jellyfin playlist reorder timed out.", matchSummary),
+                    matchSummary,
+                    playlistId);
+            }
+        }
         var verifiedMemberships = await ReadVerifiedJellyfinMembershipsAsync(
             jellyfin,
             playlistId,
@@ -2495,6 +2962,7 @@ public sealed class PlaylistSyncService
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         var fullSyncIssues = BuildJellyfinFullSyncIssues(metadataSynced);
+        var removalHold = BuildEngineHoldSuffix(outcome);
         return await CompleteTargetMembershipAsync(
             playlist,
             JellyfinService,
@@ -2505,8 +2973,20 @@ public sealed class PlaylistSyncService
             orderedTrackIds,
             writeComplete: true,
             successBaseMessage: $"Playlist synced ({modeLabel}).",
-            extraSuccessSuffix: fullSyncIssues.Count == 0 ? null : string.Join(" ", fullSyncIssues),
+            extraSuccessSuffix: JoinSyncSuffixes(removalHold, fullSyncIssues),
             cancellationToken);
+    }
+
+    private static string? JoinSyncSuffixes(string? removalHold, IReadOnlyList<string> issues)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(removalHold))
+        {
+            parts.Add(removalHold);
+        }
+
+        parts.AddRange(issues);
+        return parts.Count == 0 ? null : string.Join(" ", parts);
     }
 
     private async Task<PlaylistSyncResult> SyncToNavidromeAsync(
@@ -2585,18 +3065,37 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
-        var appendMissingOnly = partialIdentityGap
-            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
+
+        if (_playlistSyncEngine is null)
+        {
+            return PlaylistSyncResult.Failed("Navidrome client is unavailable.", PlaylistSyncResultKind.Retry);
+        }
+
+        // Mirror replaces the whole track list, so it is only safe when we have read what the
+        // target currently holds. The engine owns that check now: it reads the destination, and
+        // a read that comes back collapsed against the recorded baseline downgrades the pass to
+        // add-only rather than deleting real tracks.
+        var outcome = await _playlistSyncEngine.SyncAsync(
+            NavidromeService,
             playlistName,
+            playlist.Description,
             itemIds,
+            appendMissingOnly: string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase),
+            new PlaylistSyncBinding(playlist.Source, playlist.SourceId),
             existingPlaylistId,
-            appendMissingOnly,
-            cancellationToken,
-            playlist.Description);
+            forceAppendReason: partialIdentityGap
+                ? "some target identities are still unresolved"
+                : null,
+            cancellationToken);
+
+        if (!outcome.Success)
+        {
+            return PlaylistSyncResult.Failed(
+                outcome.Message ?? "Failed to create or update the Navidrome playlist.",
+                outcome.Retryable ? PlaylistSyncResultKind.Retry : PlaylistSyncResultKind.Blocked);
+        }
+
+        var playlistId = outcome.PlaylistId;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return BuildWriteFailureResult(
@@ -2604,7 +3103,10 @@ public sealed class PlaylistSyncService
                 matchSummary);
         }
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
+        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase)
+            || partialIdentityGap
+            || outcome.Message?.Contains("looked incomplete", StringComparison.Ordinal) == true;
+
         if (!appendMissingOnly)
         {
             var ordered = await TryReorderNavidromePlaylistAsync(
@@ -2622,10 +3124,9 @@ public sealed class PlaylistSyncService
             }
         }
 
-        var metadataSynced = string.IsNullOrWhiteSpace(existingPlaylistId)
-            || !string.Equals(existingPlaylistId, playlistId, StringComparison.OrdinalIgnoreCase)
-            ? await SyncNavidromePlaylistMetadataAsync(navidrome, playlist, playlistId, cancellationToken)
-            : true;
+        var metadataSynced = !(string.IsNullOrWhiteSpace(existingPlaylistId)
+            || !string.Equals(existingPlaylistId, playlistId, StringComparison.OrdinalIgnoreCase))
+            || await SyncNavidromePlaylistMetadataAsync(navidrome, playlist, playlistId, cancellationToken);
         var verifiedMemberships = await ReadVerifiedNavidromeMembershipsAsync(
             navidrome,
             playlistId,
@@ -2643,7 +3144,7 @@ public sealed class PlaylistSyncService
             orderedTrackIds,
             writeComplete: true,
             successBaseMessage: $"Playlist synced to Navidrome ({modeLabel}).",
-            extraSuccessSuffix: fullSyncIssues.Count == 0 ? null : string.Join(" ", fullSyncIssues),
+            extraSuccessSuffix: JoinSyncSuffixes(BuildEngineHoldSuffix(outcome), fullSyncIssues),
             cancellationToken);
     }
 
@@ -3174,12 +3675,9 @@ public sealed class PlaylistSyncService
         {
             var retained = new List<string>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var id in current)
+            foreach (var id in current.Where(candidate => intendedSet.Contains(candidate) && seen.Add(candidate)))
             {
-                if (intendedSet.Contains(id) && seen.Add(id))
-                {
-                    retained.Add(id);
-                }
+                retained.Add(id);
             }
 
             after = retained.Concat(toAdd).ToList();
@@ -3687,6 +4185,144 @@ public sealed class PlaylistSyncService
     internal static bool HasUnresolvedTargetIdentities(int sourceTracks, int intendedMembershipCount)
         => intendedMembershipCount < sourceTracks;
 
+    /// <summary>The outcome of judging whether a target playlist can safely lose tracks.</summary>
+    private sealed record RemovalSafety(bool MayRemove, string Reason);
+
+    /// <summary>
+    /// Judges whether a mirror may remove tracks from a target playlist. It reads the target's
+    /// current membership and compares it with the last baseline this app recorded, so a read
+    /// that came back truncated cannot be mistaken for a deliberate deletion.
+    /// </summary>
+    private async Task<RemovalSafety> EvaluateRemovalSafetyAsync(
+        string service,
+        string? existingPlaylistId,
+        IReadOnlyCollection<string> resolvedTargetIds,
+        int sourceTrackCount,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            // Nothing to remove from: the playlist is being created by this sync.
+            return new RemovalSafety(true, "New target playlist.");
+        }
+
+        var baseline = await _libraryRepository.GetPlaylistWatchTargetCountAsync(
+            service,
+            existingPlaylistId,
+            cancellationToken);
+        if (baseline <= 0)
+        {
+            // No recorded baseline, so there is no evidence a partial read is a real deletion.
+            return new RemovalSafety(true, "No recorded baseline for this target playlist.");
+        }
+
+        var currentCount = await CountTargetPlaylistEntriesAsync(
+            service,
+            existingPlaylistId,
+            cancellationToken);
+        if (IsReadIncompleteForRemoval(baseline, currentCount, null, null))
+        {
+            return new RemovalSafety(
+                false,
+                $"Read {currentCount} of {baseline} known tracks; removals held to avoid deleting real tracks.");
+        }
+
+        if (currentCount < resolvedTargetIds.Count && sourceTrackCount > 0)
+        {
+            return new RemovalSafety(
+                false,
+                $"Target reports {currentCount} tracks but {resolvedTargetIds.Count} resolved; removals held.");
+        }
+
+        return new RemovalSafety(true, "Target read is complete.");
+    }
+
+    private async Task<int> CountTargetPlaylistEntriesAsync(
+        string service,
+        string playlistId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(service, PlexService, StringComparison.Ordinal))
+        {
+            var (plex, plexError) = await TryLoadConfiguredPlexAsync();
+            if (plexError is null && plex is not null)
+            {
+                return (await _plexApiClient.GetPlaylistItemsAsync(plex.Url, plex.Token, playlistId, cancellationToken))
+                    .Count(static item => !string.IsNullOrWhiteSpace(item.Id));
+            }
+        }
+
+        if (string.Equals(service, JellyfinService, StringComparison.Ordinal))
+        {
+            var (jellyfin, jellyfinError) = await TryLoadConfiguredJellyfinAsync();
+            if (jellyfinError is null && jellyfin is not null)
+            {
+                return (await _jellyfinApiClient.GetPlaylistEntriesAsync(
+                        jellyfin.Url,
+                        jellyfin.ApiKey,
+                        jellyfin.UserId ?? string.Empty,
+                        playlistId,
+                        cancellationToken))
+                    .Count;
+            }
+        }
+
+        if (string.Equals(service, NavidromeService, StringComparison.Ordinal))
+        {
+            var (navidrome, navidromeError) = await TryLoadConfiguredNavidromeAsync();
+            if (navidromeError is null && navidrome is not null)
+            {
+                return (await _navidromeApiClient.GetPlaylistEntriesAsync(
+                        navidrome.Url,
+                        navidrome.Username,
+                        navidrome.Password,
+                        playlistId,
+                        cancellationToken))
+                    .Count;
+            }
+        }
+
+        // The target could not be read. Treat that as unknown rather than as empty, so a
+        // transient failure never looks like a playlist the user emptied.
+        return -1;
+    }
+
+    /// <summary>
+    /// A read that returns far fewer tracks than the last known baseline is treated as broken
+    /// rather than as a user deletion. Mirroring such a read would remove real tracks from the
+    /// target server, so the removals are held and the additions still apply.
+    /// </summary>
+    internal const double RemovalReadCollapseFraction = 0.4;
+
+    /// <summary>
+    /// A target playlist can only be safely mirrored when we know what it currently holds. A
+    /// read that collapsed, or a physical playlist id that changed under us, means we do not.
+    /// </summary>
+    internal static bool IsReadIncompleteForRemoval(
+        int baselineCount,
+        int currentCount,
+        string? storedPhysicalPlaylistId,
+        string? currentPhysicalPlaylistId)
+    {
+        // The collapse half now lives on the engine, which every destination goes through.
+        if (PlaylistSyncEngine.IsReadIncompleteForRemoval(baselineCount, currentCount))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(storedPhysicalPlaylistId)
+            && !string.IsNullOrWhiteSpace(currentPhysicalPlaylistId)
+            && !string.Equals(storedPhysicalPlaylistId, currentPhysicalPlaylistId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Removals are applied a batch at a time. Anything over the cap is held for a later pass
+    /// rather than dropped, so a legitimate large deletion is completed incrementally instead
+    /// of either being applied at once or being lost.
+    /// </summary>
+    internal static IReadOnlyList<T> CapRemovals<T>(IReadOnlyList<T> removals, int maxRemovals)
+        => PlaylistSyncEngine.CapRemovals(removals, maxRemovals);
+
     private static SyncMatchSummary WithVerifiedMembershipCounts(
         SyncMatchSummary matchSummary,
         int verifiedMembershipCount)
@@ -4116,22 +4752,16 @@ public sealed class PlaylistSyncService
         }
 
         var normalized = new List<string>();
-        foreach (var serviceValue in services)
+        foreach (var service in services
+                     .Select(NormalizeService)
+                     .Where(service => !string.IsNullOrWhiteSpace(service)
+                         && !string.Equals(service, "none", StringComparison.OrdinalIgnoreCase)
+                         && !normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
+                     .Where(service => string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(service, JellyfinService, StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(service, NavidromeService, StringComparison.OrdinalIgnoreCase)))
         {
-            var service = NormalizeService(serviceValue);
-            if (string.IsNullOrWhiteSpace(service)
-                || string.Equals(service, "none", StringComparison.OrdinalIgnoreCase)
-                || normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(service, JellyfinService, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(service, NavidromeService, StringComparison.OrdinalIgnoreCase))
-            {
-                normalized.Add(service);
-            }
+            normalized.Add(service);
         }
 
         return normalized;
@@ -4195,6 +4825,150 @@ public sealed class PlaylistSyncService
         }
 
         return (new NavidromeConnection(navidrome.Url, navidrome.Username, navidrome.Password), null);
+    }
+
+    private async Task<(YouTubeMusicConnection? YouTubeMusic, PlaylistSyncResult? Error)> TryLoadConfiguredYouTubeMusicAsync()
+    {
+        var state = await _authService.LoadAsync();
+        var ytmusic = state.YTMusic;
+        if (ytmusic is null
+            || string.IsNullOrWhiteSpace(ytmusic.ClientId)
+            || string.IsNullOrWhiteSpace(ytmusic.ClientSecret)
+            || string.IsNullOrWhiteSpace(ytmusic.RefreshToken))
+        {
+            return (null, PlaylistSyncResult.Failed(YouTubeMusicNotConfiguredMessage, PlaylistSyncResultKind.Retry));
+        }
+
+        return (
+            new YouTubeMusicConnection(
+                ytmusic.ClientId,
+                ytmusic.ClientSecret,
+                ytmusic.RefreshToken,
+                ytmusic.TokenUrl ?? DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient.DefaultTokenUrl),
+            null);
+    }
+
+    /// <summary>
+    /// Exchanges the stored refresh token for a short-lived access token. Only the refresh
+    /// token is persisted, so this runs once per sync rather than once per call.
+    /// </summary>
+    private async Task<string?> ResolveYouTubeMusicAccessTokenAsync(
+        YouTubeMusicConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (_youtubeDataApiClient is null)
+        {
+            return null;
+        }
+
+        var token = await _youtubeDataApiClient.RefreshAsync(
+            connection.TokenUrl,
+            connection.ClientId,
+            connection.ClientSecret,
+            connection.RefreshToken,
+            cancellationToken);
+        return token.Success ? token.AccessToken : null;
+    }
+
+    /// <summary>
+    /// Writes a playlist to YouTube Music.
+    ///
+    /// Track resolution goes through the shared index first, so a track resolved once costs
+    /// no search quota again. Only genuinely unresolved tracks are searched, and the official
+    /// search endpoint allows just 100 calls per day for the whole project, so the sync reports
+    /// shortfalls rather than silently writing a shortened playlist.
+    /// </summary>
+    private async Task<PlaylistSyncResult> SyncToYouTubeMusicAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        string? existingPlaylistId,
+        CancellationToken cancellationToken)
+    {
+        var (ytmusic, configurationError) = await TryLoadConfiguredYouTubeMusicAsync();
+        if (configurationError is not null || ytmusic is null)
+        {
+            return PlaylistSyncResult.Failed(configurationError?.Message ?? YouTubeMusicNotConfiguredMessage, PlaylistSyncResultKind.Retry);
+        }
+
+        if (_youtubeDataApiClient is null)
+        {
+            return PlaylistSyncResult.Failed("YouTube Music client is unavailable.", PlaylistSyncResultKind.Retry);
+        }
+
+        var accessToken = await ResolveYouTubeMusicAccessTokenAsync(ytmusic, cancellationToken);
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            return PlaylistSyncResult.Failed("YouTube Music authorization expired. Reconnect it in Login.", PlaylistSyncResultKind.Retry);
+        }
+
+        var playlistName = ResolvePlaylistName(playlist);
+        var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
+        var resolved = await ResolveSharedTargetIdentitiesAsync(
+            YouTubeMusicService,
+            tracks,
+            orderedTrackIds,
+            cancellationToken);
+        var matches = BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
+        var matchSummary = new SyncMatchSummary(
+            matches.Select(static item => item.TargetItemId).Where(static id => !string.IsNullOrWhiteSpace(id)).ToList(),
+            matches,
+            SourceTracks: tracks.Count,
+            LocalMatches: orderedTrackIds.Count(static id => id > 0),
+            TargetMatches: matches.Count(static item => !string.IsNullOrWhiteSpace(item.TargetItemId)),
+            MissingTracks: 0,
+            MetadataMatches: 0,
+            SearchMatches: 0);
+
+        if (matchSummary.TargetIds.Count == 0)
+        {
+            return PlaylistSyncResult.Failed(
+                "No YouTube Music tracks resolved. Tracks are resolved through the library index; a track that has never been resolved needs to be matched first.",
+                PlaylistSyncResultKind.Retry);
+        }
+
+        // Partial resolution must not be written as a complete playlist. Writing only the
+        // resolved subset would drop the unresolved tracks from the target for good.
+        if (matchSummary.TargetIds.Count < tracks.Count)
+        {
+            return PlaylistSyncResult.Failed(
+                $"Resolved {matchSummary.TargetIds.Count} of {tracks.Count} YouTube Music tracks; nothing was written so the playlist is left intact.",
+                PlaylistSyncResultKind.Retry);
+        }
+
+        if (_playlistSyncEngine is null)
+        {
+            return PlaylistSyncResult.Failed("YouTube Music client is unavailable.", PlaylistSyncResultKind.Retry);
+        }
+
+        var appendOnly = string.Equals(NormalizeSyncMode(preference?.SyncMode), SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+
+        // The shared engine owns resolve / create / read-guard / write / bind, so this writer
+        // only has to resolve tracks. The engine reuses the playlist an earlier pass created
+        // rather than making a new one, which is what stops a repeat sync duplicating itself.
+        var outcome = await _playlistSyncEngine.SyncAsync(
+            YouTubeMusicService,
+            playlistName,
+            playlist.Description,
+            matchSummary.TargetIds,
+            appendOnly,
+            new PlaylistSyncBinding(playlist.Source, playlist.SourceId),
+            existingPlaylistId,
+            forceAppendReason: null,
+            cancellationToken);
+
+        if (!outcome.Success)
+        {
+            return PlaylistSyncResult.Failed(
+                outcome.Message ?? "YouTube Music failed to write the playlist.",
+                outcome.Retryable ? PlaylistSyncResultKind.Retry : PlaylistSyncResultKind.Blocked);
+        }
+
+        return PlaylistSyncResult.Completed(
+            $"Playlist synced to YouTube Music ({(appendOnly ? "append" : "match")}).",
+            outcome.PlaylistId,
+            matchSummary.TargetIds.Count,
+            tracks.Count);
     }
 
     private async Task<List<long>> ResolveOrderedTrackIdsAsync(
@@ -4579,12 +5353,10 @@ public sealed class PlaylistSyncService
                 jellyfin.UserId,
                 query,
                 cancellationToken);
-            foreach (var result in results)
+            foreach (var result in results
+                         .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Id) && seen.Add(candidate.Id)))
             {
-                if (!string.IsNullOrWhiteSpace(result.Id) && seen.Add(result.Id))
-                {
-                    candidates.Add(result);
-                }
+                candidates.Add(result);
             }
 
             if (results.Count == 0)
@@ -4881,12 +5653,10 @@ public sealed class PlaylistSyncService
                 navidrome.Password,
                 query,
                 cancellationToken);
-            foreach (var result in results)
+            foreach (var result in results
+                         .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Id) && seen.Add(candidate.Id)))
             {
-                if (!string.IsNullOrWhiteSpace(result.Id) && seen.Add(result.Id))
-                {
-                    candidates.Add(result);
-                }
+                candidates.Add(result);
             }
 
             if (results.Count == 0)
@@ -4901,18 +5671,16 @@ public sealed class PlaylistSyncService
     private static IEnumerable<string> BuildServerSearchQueries(SyncTrackSummary track, string primaryQuery)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var query in new[]
+        foreach (var normalized in new[]
                  {
                      primaryQuery,
                      track.Name,
                      $"{track.Artists} {track.Name}".Trim()
-                 })
+                 }
+                 .Select(query => (query ?? string.Empty).Trim())
+                 .Where(normalized => !string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized)))
         {
-            var normalized = (query ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
-            {
-                yield return normalized;
-            }
+            yield return normalized;
         }
     }
 

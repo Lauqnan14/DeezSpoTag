@@ -695,6 +695,7 @@ public class JellyfinApiClient
         query.Append("&SortBy=SortName");
         query.Append("&SortOrder=Ascending");
         query.Append("&Limit=500");
+        query.Append("&Fields=Overview,ImageTags,RunTimeTicks");
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
         ApplyAuthorization(request, apiKey);
@@ -803,32 +804,76 @@ public class JellyfinApiClient
         string userId,
         string playlistId,
         CancellationToken cancellationToken = default)
+        => (await GetPlaylistItemsAsync(serverUrl, apiKey, userId, playlistId, cancellationToken))
+            .Select(static item => new JellyfinPlaylistEntry(
+                item.Id!,
+                string.IsNullOrWhiteSpace(item.PlaylistItemId) ? item.Id! : item.PlaylistItemId!))
+            .ToList();
+
+    /// <summary>
+    /// Returns the full items of a playlist in playlist order. The playlist items endpoint
+    /// already returns complete track metadata, so rendering a tracklist costs one request
+    /// rather than one per track.
+    /// </summary>
+    public async Task<List<JellyfinMediaItem>> GetPlaylistItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(userId)
             || string.IsNullOrWhiteSpace(playlistId))
         {
-            return new List<JellyfinPlaylistEntry>();
+            return new List<JellyfinMediaItem>();
         }
 
-        var query = $"/Playlists/{Uri.EscapeDataString(playlistId)}/Items?UserId={Uri.EscapeDataString(userId)}";
+        var query = $"/Playlists/{Uri.EscapeDataString(playlistId)}/Items?UserId={Uri.EscapeDataString(userId)}"
+            + "&Fields=Overview,ProductionYear,IndexNumber,ParentIndexNumber,ImageTags,RunTimeTicks,Artists,Album,Path";
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query));
         ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return new List<JellyfinPlaylistEntry>();
+            return new List<JellyfinMediaItem>();
         }
 
         var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        var items = payload?.Items ?? new List<JellyfinMediaItem>();
-        return items
+        return (payload?.Items ?? new List<JellyfinMediaItem>())
             .Where(static item => !string.IsNullOrWhiteSpace(item.Id))
-            .Select(static item => new JellyfinPlaylistEntry(
-                item.Id!,
-                string.IsNullOrWhiteSpace(item.PlaylistItemId) ? item.Id! : item.PlaylistItemId!))
             .ToList();
+    }
+
+    /// <summary>Reads a playlist's own metadata, used for the tracklist header.</summary>
+    public async Task<JellyfinMediaItem?> GetPlaylistAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return null;
+        }
+
+        var query = $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(playlistId)}"
+            + "?Fields=Overview,ProductionYear,ImageTags,RunTimeTicks,ChildCount";
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query));
+        ApplyAuthorization(request, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var item = await response.Content.ReadFromJsonAsync<JellyfinMediaItem>(cancellationToken: cancellationToken);
+        return item is null || string.IsNullOrWhiteSpace(item.Id) ? null : item;
     }
 
     public async Task<bool> AddPlaylistItemsAsync(
@@ -857,10 +902,11 @@ public class JellyfinApiClient
             return true;
         }
 
+        var query = new StringBuilder();
         for (var offset = 0; offset < normalizedItemIds.Count; offset += PlaylistWriteBatchSize)
         {
+            query.Clear();
             var ids = string.Join(",", normalizedItemIds.Skip(offset).Take(PlaylistWriteBatchSize));
-            var query = new StringBuilder();
             query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
             query.Append($"?UserId={Uri.EscapeDataString(userId)}");
             query.Append($"&Ids={Uri.EscapeDataString(ids)}");
@@ -924,10 +970,11 @@ public class JellyfinApiClient
         // ID for a large playlist (300+ tracks) produces a query string long enough that Jellyfin
         // (or an intermediate proxy) rejects the request outright, which previously made clearing
         // large playlists fail unconditionally.
+        var query = new StringBuilder();
         for (var offset = 0; offset < normalizedEntryIds.Count; offset += PlaylistWriteBatchSize)
         {
+            query.Clear();
             var ids = string.Join(",", normalizedEntryIds.Skip(offset).Take(PlaylistWriteBatchSize));
-            var query = new StringBuilder();
             query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
             query.Append($"?UserId={Uri.EscapeDataString(userId)}");
             query.Append($"&EntryIds={Uri.EscapeDataString(ids)}");

@@ -284,13 +284,21 @@ public sealed class AppleMusicCatalogService
             () => SendWithTokenRetryRawAsync(HttpMethod.Get, normalizedUrl, cancellationToken));
     }
 
+    /// <param name="maxTracks">
+    /// Optional ceiling on how many tracks are collected. Paging stops once this many tracks are
+    /// held, using the provider's own page size, and the result is reported as incomplete so the
+    /// caller can distinguish a bounded snapshot from a genuinely complete one. Omit or pass a
+    /// non-positive value to collect every page.
+    /// </param>
     public async Task<ApplePlaylistTracksResult> GetCompletePlaylistTracksAsync(
         string id,
         string storefront,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int maxTracks = 0)
     {
         const int pageSize = 100;
+        var hasCeiling = maxTracks > 0;
         var tracks = new List<JsonElement>();
         var seenPageUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         JsonDocument? pageDocument = await GetPlaylistTracksAsync(
@@ -316,6 +324,15 @@ public sealed class AppleMusicCatalogService
                 }
 
                 tracks.AddRange(data.EnumerateArray().Select(static track => track.Clone()));
+
+                // Reached the caller's ceiling: stop paging and report a bounded, incomplete read.
+                if (hasCeiling && tracks.Count >= maxTracks)
+                {
+                    return new ApplePlaylistTracksResult(
+                        tracks,
+                        IsComplete: false,
+                        $"Apple playlist track collection stopped at the requested maximum of {maxTracks} track(s).");
+                }
 
                 var nextUrl = ReadNextPageUrl(root);
                 if (string.IsNullOrWhiteSpace(nextUrl))

@@ -3051,8 +3051,14 @@ function mapRecommendationsTracklist(payload) {
     };
 }
 
-async function loadPlexTracklist() {
-    const response = await fetch(`/api/autoplaylists/${encodeURIComponent(tracklistId)}`);
+/// <summary>
+/// Loads a playlist that already lives in one of the local media servers. Plex, Jellyfin and
+/// Navidrome all return the same track shape from /api/autoplaylists/{id}?server=, so they share
+/// one mapping path here.
+async function loadLibraryPlaylistTracklist(server) {
+    const label = server === 'jellyfin' ? 'Jellyfin' : server === 'navidrome' ? 'Navidrome' : 'Plex';
+    const response = await fetch(
+        `/api/autoplaylists/${encodeURIComponent(tracklistId)}?server=${encodeURIComponent(server)}`);
     if (!response.ok) {
         throw new Error(`Failed to load Plex tracklist (HTTP ${response.status})`);
     }

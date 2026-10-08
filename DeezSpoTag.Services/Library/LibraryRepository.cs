@@ -9982,7 +9982,53 @@ WHERE source=@source AND playlist_id=@sourceId
             return;
         }
 
-        var sql = service.Trim().ToLowerInvariant() switch
+        var normalizedService = service.Trim().ToLowerInvariant();
+        var normalizedPlaylistId = string.IsNullOrWhiteSpace(playlistId) ? null : playlistId.Trim();
+        var linkId = BuildPlaylistSyncLinkId(normalizedSource, normalizedSourceId);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        // The generic link member row, written for every service. This is the record the
+        // reference model uses (provider_id -> playlist_id) and it is what lets a platform with no
+        // dedicated column hold a binding. The switch below used to return null for an unlisted
+        // service, so a binding written for YouTube Music was silently discarded and every sync
+        // created another playlist.
+        await using (var link = new SqliteCommand(@"
+INSERT OR IGNORE INTO playlist_sync_link (link_id, source, source_id, direction, enabled)
+VALUES (@linkId, @source, @sourceId, 'oneway', 1);", connection))
+        {
+            link.Transaction = transaction;
+            link.Parameters.AddWithValue("linkId", linkId);
+            link.Parameters.AddWithValue(SourceField, normalizedSource);
+            link.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await link.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var member = new SqliteCommand(@"
+INSERT INTO playlist_sync_link_member
+    (link_id, target_id, target_kind, target_playlist_id, target_name, sync_mode, role, enabled, position)
+VALUES (@linkId, @service, @kind, @playlistId, @targetName, 'mirror', 'mirror', 1, 0)
+ON CONFLICT(link_id, target_id) DO UPDATE SET
+    target_playlist_id = excluded.target_playlist_id,
+    updated_at = CURRENT_TIMESTAMP;", connection))
+        {
+            member.Transaction = transaction;
+            member.Parameters.AddWithValue("linkId", linkId);
+            member.Parameters.AddWithValue("service", normalizedService);
+            // A destination is either a self-hosted library or a streaming platform. Recording it
+            // explicitly is what lets a link tell the two apart later.
+            member.Parameters.AddWithValue(
+                "kind",
+                normalizedService is "plex" or "jellyfin" or "navidrome" ? "library" : "platform");
+            member.Parameters.AddWithValue("playlistId", normalizedPlaylistId is null ? DBNull.Value : normalizedPlaylistId);
+            member.Parameters.AddWithValue("targetName", normalizedSourceId);
+            await member.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // The legacy per-server column is still written for the three that have one, so a reader
+        // that has not moved to the member table yet keeps seeing the same value.
+        var legacySql = normalizedService switch
         {
             "plex" => @"
 UPDATE playlist_watch_preferences
@@ -10003,11 +10049,381 @@ WHERE source = @source AND source_id = @sourceId;",
         };
         if (sql is null)
         {
-            return;
+            await using var command = new SqliteCommand(legacySql, connection);
+            command.Transaction = transaction;
+            command.Parameters.AddWithValue(SourceField, normalizedSource);
+            command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            command.Parameters.AddWithValue("playlistId", normalizedPlaylistId is null ? DBNull.Value : normalizedPlaylistId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Stable link id for a source playlist. Matches the value the migration derives, so a
+    /// backfilled link and a newly written one address the same row.
+    /// </summary>
+    internal static string BuildPlaylistSyncLinkId(string source, string sourceId)
+        => $"{source}:{sourceId}";
+
+    /// <summary>
+    /// Reads one target's bound playlist id. Prefers the generic link member row and falls back to
+    /// the legacy per-server column, so a binding written before the migration still resolves.
+    /// </summary>
+
+        /// <summary>
+        /// Records what one member of a link held at the end of a reconcile. Ported from the
+        /// reference, which diffs every peer against this stored snapshot so a change on any one
+        /// member is detected and propagated.
+        /// </summary>
+        public async Task SavePlaylistSyncSnapshotAsync(
+            string linkId,
+            string targetId,
+            IReadOnlyList<string> trackSourceIds,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(linkId) || string.IsNullOrWhiteSpace(targetId))
+            {
+                return;
+            }
+
+            const string sql = @"
+INSERT INTO playlist_sync_snapshot (link_id, target_id, track_source_ids_json)
+VALUES (@linkId, @targetId, @tracks)
+ON CONFLICT(link_id, target_id) DO UPDATE SET
+    track_source_ids_json = excluded.track_source_ids_json,
+    recorded_at_utc = CURRENT_TIMESTAMP;";
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("linkId", linkId.Trim());
+            command.Parameters.AddWithValue("targetId", targetId.Trim());
+            command.Parameters.AddWithValue("tracks", JsonSerializer.Serialize(trackSourceIds));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        /// <summary>What one member held at the last reconcile, or null if never recorded.</summary>
+        public async Task<IReadOnlyList<string>?> GetPlaylistSyncSnapshotAsync(
+            string linkId,
+            string targetId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(linkId) || string.IsNullOrWhiteSpace(targetId))
+            {
+                return null;
+            }
+
+            const string sql = @"
+SELECT track_source_ids_json FROM playlist_sync_snapshot
+WHERE link_id = @linkId AND target_id = @targetId;";
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("linkId", linkId.Trim());
+            command.Parameters.AddWithValue("targetId", targetId.Trim());
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            if (value is null or DBNull)
+            {
+                return null;
+            }
+
+            try
+            {
+                return JsonSerializer.Deserialize<List<string>>(Convert.ToString(value) ?? "[]") ?? new List<string>();
+            }
+            catch (JsonException)
+            {
+                // A corrupt snapshot must not break the reconcile: treat it as "never recorded" so
+                // the pass re-establishes a baseline instead of failing.
+                return null;
+            }
+        }
+
+
+        /// <summary>
+        /// Reads one destination playlist's membership as source track ids. This is the one
+        /// vocabulary every member of a link can be compared in: a Plex rating key and a Jellyfin
+        /// item id are different namespaces, but both map back to the source track the app
+        /// recorded. N-way reconcile diffs on this rather than on platform ids.
+        /// </summary>
+    
+    /// <summary>One stored destination of a link, with the kind it was recorded as.</summary>
+    public sealed record PlaylistSyncLinkMemberRow(
+        string LinkId,
+        string TargetId,
+        string Kind,
+        string? PlaylistId,
+        string? PlaylistName,
+        bool IsAuthority,
+        bool Enabled);
+
+    /// <summary>
+    /// Every destination of a link. The kind is read from the row rather than inferred, so a
+    /// library and a platform stay distinguishable all the way into the reconcile.
+    /// </summary>
+    public async Task<IReadOnlyList<PlaylistSyncLinkMemberRow>> GetPlaylistSyncLinkMembersAsync(
+        string linkId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || string.IsNullOrWhiteSpace(linkId))
+        {
+            return Array.Empty<PlaylistSyncLinkMemberRow>();
+        }
+
+        const string sql = @"
+SELECT link_id, target_id, target_kind, target_playlist_id, target_name, role, enabled
+FROM playlist_sync_link_member
+WHERE link_id = @linkId
+ORDER BY position, target_id;";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("linkId", linkId.Trim());
+        var rows = new List<PlaylistSyncLinkMemberRow>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new PlaylistSyncLinkMemberRow(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? "library" : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) || string.Equals(reader.GetString(5), "authority", StringComparison.OrdinalIgnoreCase),
+                reader.IsDBNull(6) || reader.GetInt64(6) != 0));
+        }
+
+        return rows;
+    }
+
+
+    /// <summary>
+    /// The recorded ISRC for each local track id, for the ids that have one.
+    /// <para>
+    /// Read from <c>track_source</c> where the source is 'isrc', which is where the app already
+    /// records a track's recording identity and is the same source the library resolver matches on.
+    /// A track with no ISRC - an instrumental, a bootleg, something the tagger could not identify -
+    /// is simply absent from the result rather than returned as an empty string, so a caller cannot
+    /// mistake "no recording identity" for "the recording identity is blank".
+    /// </para>
+    /// <para>
+    /// One query for the whole batch. This is called to label a playlist's tracks, so a per-track
+    /// query would be a hundred round trips for a hundred-track playlist.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<long, string>> GetIsrcsByLocalTrackIdsAsync(
+        IReadOnlyCollection<long> localTrackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new Dictionary<long, string>();
+        if (!IsConfigured || localTrackIds is null || localTrackIds.Count == 0)
+        {
+            return result;
+        }
+
+        var wanted = localTrackIds.Where(static id => id > 0).Distinct().ToList();
+        if (wanted.Count == 0)
+        {
+            return result;
+        }
+
+        // SQLite's parameter limit is high but finite, and a large playlist can exceed it. The ids
+        // are chunked so the query stays valid however long the playlist is.
+        const int chunkSize = 500;
+        for (var offset = 0; offset < wanted.Count; offset += chunkSize)
+        {
+            var chunk = wanted.Skip(offset).Take(chunkSize).ToList();
+            const string sql = @"
+SELECT ts.track_id, MIN(ts.source_id)
+FROM track_source ts
+WHERE LOWER(ts.source) = 'isrc'
+  AND ts.track_id IN (
+      SELECT value FROM json_each(@trackIds))
+  AND NULLIF(TRIM(ts.source_id), '') IS NOT NULL
+GROUP BY ts.track_id;";
+
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("trackIds", JsonSerializer.Serialize(chunk));
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var trackId = reader.GetInt64(0);
+                var isrc = reader.IsDBNull(1) ? null : reader.GetString(1);
+                if (isrc is not null)
+                {
+                    result[trackId] = isrc;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves source track ids to a destination's own item ids, using the app's per-service
+    /// identity store rather than playlist membership.
+    /// <para>
+    /// Membership answers "is this track in that playlist". It cannot answer "what is this track
+    /// called on Plex", because a track that has never been added to a destination has no
+    /// membership row there - which is exactly the case N-way reconcile has to handle. The bridge
+    /// is the local track id carried on any membership row for the track, looked up in
+    /// media_server_track_metadata, which is keyed (track, service) and independent of playlists.
+    /// A track with no identity on that service is simply absent, and the caller must refuse
+    /// rather than write a shortened playlist.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> ResolveTargetItemIdsAsync(
+        IReadOnlyCollection<string> trackSourceIds,
+        string targetService,
+        CancellationToken cancellationToken = default)
+    {
+        var resolved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!IsConfigured
+            || string.IsNullOrWhiteSpace(targetService)
+            || trackSourceIds is null
+            || trackSourceIds.Count == 0)
+        {
+            return resolved;
+        }
+
+        var normalizedService = targetService.Trim().ToLowerInvariant();
+        var wanted = trackSourceIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (wanted.Count == 0)
+        {
+            return resolved;
+        }
+
+        const string sql = @"
+SELECT m.track_source_id, meta.target_item_id
+FROM playlist_watch_target_membership AS m
+JOIN media_server_track_metadata AS meta
+  ON meta.track_id = m.local_track_id
+ AND meta.service = @service
+WHERE m.local_track_id IS NOT NULL
+  AND m.track_source_id IN (
+      SELECT value FROM json_each(@trackSourceIds))
+  AND NULLIF(TRIM(COALESCE(meta.target_item_id, '')), '') IS NOT NULL
+ORDER BY m.track_source_id;";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        command.Parameters.AddWithValue("trackSourceIds", JsonSerializer.Serialize(wanted));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackSourceId = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+            var itemId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            // A track can appear in several membership rows; the first identity wins so the
+            // result is stable rather than dependent on row order.
+            if (trackSourceId.Length > 0
+                && itemId.Length > 0
+                && !resolved.ContainsKey(trackSourceId))
+            {
+                resolved[trackSourceId] = itemId;
+            }
+        }
+
+        return resolved;
+    }
+
+    public async Task<IReadOnlyList<string>> GetTargetPlaylistTrackSourceIdsAsync(
+            string targetService,
+            string targetPlaylistId,
+            CancellationToken cancellationToken = default)
+        {
+            if (!IsConfigured
+                || string.IsNullOrWhiteSpace(targetService)
+                || string.IsNullOrWhiteSpace(targetPlaylistId))
+            {
+                return Array.Empty<string>();
+            }
+
+            const string sql = @"
+SELECT DISTINCT track_source_id
+FROM playlist_watch_target_membership
+WHERE target_service = @targetService
+  AND target_playlist_id = @targetPlaylistId
+  AND NULLIF(TRIM(track_source_id), '') IS NOT NULL
+ORDER BY track_source_id;";
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+            command.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId.Trim());
+            var results = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    results.Add(reader.GetString(0));
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Maps each source track to this destination's own item id, so an intended membership
+        /// expressed in source tracks can be written in the destination's own vocabulary.
+        /// A source track with no recorded item id is absent: it has never resolved on that
+        /// destination, and a partial write would silently drop it.
+        /// </summary>
+        public async Task<IReadOnlyDictionary<string, string>> GetTargetPlaylistItemIdMapAsync(
+            string targetService,
+            string targetPlaylistId,
+            CancellationToken cancellationToken = default)
+        {
+            if (!IsConfigured
+                || string.IsNullOrWhiteSpace(targetService)
+                || string.IsNullOrWhiteSpace(targetPlaylistId))
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            const string sql = @"
+SELECT track_source_id, target_item_id
+FROM playlist_watch_target_membership
+WHERE target_service = @targetService
+  AND target_playlist_id = @targetPlaylistId
+  AND NULLIF(TRIM(track_source_id), '') IS NOT NULL
+  AND NULLIF(TRIM(COALESCE(target_item_id, '')), '') IS NOT NULL
+ORDER BY track_source_id;";
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+            command.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId.Trim());
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    map[reader.GetString(0)] = reader.GetString(1);
+                }
+            }
+
+            return map;
+        }
+
+    public async Task<string?> GetPlaylistSyncTargetPlaylistIdAsync(
+        string source,
+        string sourceId,
+        string service,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(service))
+        {
+            return null;
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("linkId", BuildPlaylistSyncLinkId(normalizedSource, normalizedSourceId));
+        command.Parameters.AddWithValue("service", normalizedService);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue(

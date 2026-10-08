@@ -86,6 +86,25 @@ public sealed class DeezerSessionManager : IDisposable
     // API access token (for public API calls)
     public string? AccessToken { get; set; }
 
+    /// <summary>
+    /// The ARL this session was signed in with, read back from the cookie container it was placed
+    /// in at login.
+    /// <para>
+    /// Exposed because the ARL is the durable credential: <see cref="AccessToken"/> is short-lived
+    /// and only set when a web session has been established. Anything that needs to re-establish a
+    /// session later - the playlist destinations, which cannot rely on a user being present - needs
+    /// the ARL, and it is already held here rather than stored a second time.
+    /// </para>
+    /// </summary>
+    public string? Arl
+    {
+        get
+        {
+            var cookies = _sharedCookieContainer.GetCookies(new Uri("https://www.deezer.com"));
+            return cookies["arl"]?.Value;
+        }
+    }
+
     private const string UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
 
     public DeezerSessionManager(

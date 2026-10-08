@@ -3,6 +3,8 @@ using DeezSpoTag.Core.Enums;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json.Serialization;
+using DeezSpoTag.Core.Utils;
 
 namespace DeezSpoTag.Core.Models.Settings;
 
@@ -287,6 +289,20 @@ public class DeezSpoTagSettings
     public bool WatchArtistTopSongsEnabled { get; set; } = false;
     public bool WatchArtistLatestReleasesOnly { get; set; } = false;
     public List<string> WatchedArtistAlbumGroup { get; set; } = new() { "album", "single" };
+
+    /// <summary>
+    /// Maximum number of tracks DeezSpoTag will collect into a single playlist snapshot. This bounds
+    /// snapshot work predictably while still letting very large playlists take part in
+    /// reconciliation, and is deliberately independent of any provider's HTTP page size: providers
+    /// keep requesting their own valid page size and the engine simply stops paging once this many
+    /// candidates are held. A playlist larger than this is snapshotted partially and reconciled as
+    /// incomplete, never as a source failure, and tracks beyond the fetched window are left
+    /// untouched rather than treated as removed.
+    /// </summary>
+    public const int DefaultPlaylistSnapshotTrackLimit = 3000;
+
+    /// <summary>Applies to every supported streaming platform. One shared value, not per provider.</summary>
+    public int PlaylistSnapshotTrackLimit { get; set; } = DefaultPlaylistSnapshotTrackLimit;
 
     // Download layout preferences
     public bool PreferAlbumLayoutForPlaylists { get; set; } = true;

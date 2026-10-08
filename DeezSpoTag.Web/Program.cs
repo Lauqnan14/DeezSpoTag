@@ -577,6 +577,151 @@ public partial class Program
         });
         services.AddHttpClient<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>();
         services.AddHttpClient<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>();
+        services.AddHttpClient<DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient>();
+          services.AddSingleton<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>();
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.YouTube.YouTubeMusicPlaylistSyncTarget(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>()
+                      .GetAccessTokenAsync));
+          services.AddSingleton<DeezSpoTag.Web.Services.PlexConnectionProvider>();
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Plex.PlexPlaylistSyncTarget(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlexConnectionProvider>().GetAsync));
+          services.AddSingleton<DeezSpoTag.Web.Services.NavidromeConnectionProvider>();
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Navidrome.NavidromePlaylistSyncTarget(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.NavidromeConnectionProvider>().GetAsync));
+          services.AddSingleton<DeezSpoTag.Web.Services.JellyfinConnectionProvider>();
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Jellyfin.JellyfinPlaylistSyncTarget(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.JellyfinConnectionProvider>().GetAsync));
+          services.AddSingleton<PlaylistSyncReconciler>();
+          // The scheduled-pass reader. Shared with the API controller so a scheduled sync and a
+          // manual one read the same playlist the same way.
+          services.AddSingleton<DeezSpoTag.Web.Services.LibraryPlaylistSourceResolver>();
+          services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncScheduleStore>();
+          services.AddHostedService(sp =>
+          {
+              var sourceResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryPlaylistSourceResolver>();
+              var candidates = sp.GetService<DeezSpoTag.Web.Services.IWatchlistTrackCandidateSource>();
+              return new DeezSpoTag.Web.Services.PlaylistSyncSchedulerService(
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncScheduleStore>(),
+                  async (server, id, ct) =>
+                  {
+                      var playlist = await sourceResolver.ResolveAsync(server, id, ct);
+                      return playlist is null
+                          ? null
+                          : new DeezSpoTag.Web.Services.PlaylistSyncPassSource(playlist);
+                  },
+                  candidates is null
+                      ? (Func<string, string, CancellationToken, Task<IReadOnlyList<DeezSpoTag.Web.Services.PlaylistTrackCandidate>>>)
+                        ((_, _, _) => Task.FromResult<IReadOnlyList<DeezSpoTag.Web.Services.PlaylistTrackCandidate>>(
+                            Array.Empty<DeezSpoTag.Web.Services.PlaylistTrackCandidate>()))
+                      : candidates.GetPlaylistTrackCandidatesAsync,
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
+                  sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncSchedulerService>>());
+          });
+          // One transport PER PLATFORM, not one shared instance. The transport paces requests
+          // because each provider's rate limit is per account, and a shared pacer would let a long
+          // Spotify write throttle Deezer even though the two have nothing to do with each other.
+          foreach (var platformClient in new[]
+                   {
+                       "PlaylistSyncSpotify", "PlaylistSyncDeezer", "PlaylistSyncQobuz",
+                       "PlaylistSyncTidal", "PlaylistSyncAppleMusic"
+                   })
+          {
+              services.AddHttpClient(platformClient, client => client.Timeout = TimeSpan.FromSeconds(30));
+          }
+
+          services.AddSingleton<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>();
+          services.AddSingleton(sp =>
+          {
+              // The write client is given the session the app's own pathfinder reads already use,
+              // so there is exactly one answer to "which Spotify account is signed in".
+              DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient pathfinder =
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>();
+              return new DeezSpoTag.Integrations.Spotify.SpotifyPlaylistWriteClient(
+                  sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncSpotify"),
+                  async token =>
+                  {
+                      DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient.SpotifyWebPlayerSession? session =
+                          await pathfinder.TryGetWebPlayerSessionAsync(token);
+                      return session is null
+                          ? null
+                          : new DeezSpoTag.Integrations.Spotify.SpotifyPlaylistWriteClient.SpotifyWebPlayerSession(
+                              session.AccessToken,
+                              session.ClientToken,
+                              session.ClientVersion);
+                  });
+          });
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Spotify.SpotifyPlaylistSyncTarget(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.Spotify.SpotifyPlaylistWriteClient>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetSpotifyAsync));
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Deezer.DeezerPlaylistSyncTarget(
+                  new DeezSpoTag.Integrations.TargetApiTransport(
+                      sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncDeezer")),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetDeezerAsync));
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Qobuz.QobuzPlaylistSyncTarget(
+                  new DeezSpoTag.Integrations.TargetApiTransport(
+                      sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncQobuz")),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetQobuzAsync));
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Tidal.TidalPlaylistSyncTarget(
+                  new DeezSpoTag.Integrations.TargetApiTransport(
+                      sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncTidal")),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetTidalAsync));
+          services.AddSingleton<IPlaylistSyncTarget>(sp =>
+              new DeezSpoTag.Integrations.Apple.AppleMusicPlaylistSyncTarget(
+                  new DeezSpoTag.Integrations.TargetApiTransport(
+                      sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncAppleMusic")),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetAppleAsync));
+          services.AddSingleton<PlaylistSyncLinkService>(sp => new PlaylistSyncLinkService(
+              sp.GetRequiredService<PlaylistSyncEngine>(),
+              sp.GetRequiredService<PlaylistSyncReconciler>(),
+              sp.GetRequiredService<LibraryRepository>()));
+          services.AddSingleton<PlaylistSyncTargetRegistry>();
+          services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncEngine>(sp =>
+          {
+              var registry = sp.GetRequiredService<PlaylistSyncTargetRegistry>();
+              var library = sp.GetRequiredService<LibraryRepository>();
+
+              // The engine resolves a destination's bound playlist id from the sync link, so a
+              // repeat pass reuses the playlist an earlier one created.
+              Task<string?> ReadBoundPlaylistAsync(
+                  string service,
+                  DeezSpoTag.Web.Services.PlaylistSyncBinding binding,
+                  CancellationToken ct)
+                  => library.GetPlaylistSyncTargetPlaylistIdAsync(
+                      binding.SourceService, binding.SourcePlaylistId, service, ct);
+
+              return new DeezSpoTag.Web.Services.PlaylistSyncEngine(
+                  registry,
+                  ReadBoundPlaylistAsync,
+                  (service, binding, playlistId, ct) =>
+                      library.UpdatePlaylistWatchTargetPlaylistIdAsync(
+                          binding.SourceService, binding.SourcePlaylistId, service, playlistId, ct),
+                  // The last entry count this app recorded for a destination playlist. A live
+                  // read that returns far fewer is a broken read, not a real deletion.
+                  async (service, playlistId, ct) =>
+                  {
+                      // The repository answers 0 for "never recorded"; the engine treats null as
+                      // "no baseline to compare against", which is the same state.
+                      var recorded = await library.GetPlaylistWatchTargetCountAsync(service, playlistId, ct);
+                      return recorded > 0 ? recorded : (int?)null;
+                  });
+          });
         services.AddHttpClient<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>();
         services.AddSignalR();
         services.AddDeezSpoTagQueue();
@@ -1579,6 +1724,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {
+                  PlaylistSyncEngine = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncEngine>(),
                 LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 LocalIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Library.ILocalTrackAmbiguityResolver>(),
                 SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
@@ -1592,6 +1738,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 SharedIdentityResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.SharedIdentityResolver>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
                 WatchlistRunSignal = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunSignal>(),
+                PlaylistSyncTargetRegistry = sp.GetRequiredService<PlaylistSyncTargetRegistry>(),
+                PlatformTrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>(),
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();
@@ -1703,6 +1851,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddScoped<DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies>(sp =>
             new DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies
             {
+                PlaylistSyncTargetRegistry = sp.GetRequiredService<PlaylistSyncTargetRegistry>(),
+                PlaylistSyncScheduleStore = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncScheduleStore>(),
                 Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 ConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
                 PlaylistWatchReconciler = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(),

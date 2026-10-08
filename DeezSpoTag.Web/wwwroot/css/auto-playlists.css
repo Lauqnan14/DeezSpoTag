@@ -73,19 +73,75 @@
     color: var(--text-muted);
 }
 
+.auto-playlists-warning {
+    margin: 12px 0 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: color-mix(in srgb, #ff6b6b 14%, transparent);
+    border: 1px solid color-mix(in srgb, #ff6b6b 40%, transparent);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+/* Per-server sections inside the Library Playlists tab. A section is only rendered when the
+   server is configured and has at least one playlist that is not already monitored. */
+.library-playlist-server-section {
+    margin-top: 28px;
+}
+
+.library-playlist-server-header {
+    align-items: center;
+}
+
+.library-playlist-server-identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.library-playlist-server-icon {
+    /* Matches the 13px optical weight of the badge provider marks in library.css. */
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    flex: 0 0 auto;
+}
+
+.library-playlist-server-name {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.library-playlist-server-count {
+    color: var(--text-muted);
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.library-playlist-server-warning {
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
 .library-playlist-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
     gap: 18px;
 }
 
+/* Matches the app's artist/playlist cards: relative so the hover menu can anchor, and
+   visible so the dropdown that opens upward is never clipped. */
 .library-playlist-card {
     background: var(--bg-secondary);
     border: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent);
     border-radius: 14px;
-    overflow: hidden;
+    overflow: visible;
     display: grid;
     grid-template-rows: auto 1fr;
+    position: relative;
     transition: transform 0.2s ease, border-color 0.2s ease;
 }
 

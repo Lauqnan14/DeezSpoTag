@@ -207,6 +207,24 @@ public sealed class NavidromeApiClientPlaylistTest
     }
 
     [Fact]
+    public async Task GetPlaylistsAsync_PreservesCoverArtIdentifier()
+    {
+        using var handler = new NavidromePlaylistHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var playlists = await client.GetPlaylistsAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            CancellationToken.None);
+
+        var playlist = Assert.Single(playlists);
+        var coverArt = playlist.GetType().GetProperty("CoverArt")?.GetValue(playlist) as string;
+        Assert.Equal("playlist-cover-1", coverArt);
+    }
+
+    [Fact]
     public async Task UpdateArtistImageFromFileAsync_LogsInAndUploadsMultipartImage()
     {
         var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-artist-{Guid.NewGuid():N}.jpg");
@@ -513,7 +531,7 @@ public sealed class NavidromeApiClientPlaylistTest
                               ]
                       """ : """
                               "playlist": [
-                                { "id": "playlist-1", "name": "Gold School", "songCount": 1 }
+                                { "id": "playlist-1", "name": "Gold School", "songCount": 1, "coverArt": "playlist-cover-1" }
                               ]
                       """
                     : """

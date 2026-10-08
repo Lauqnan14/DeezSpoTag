@@ -1101,6 +1101,57 @@ CREATE TABLE IF NOT EXISTS mix_sync (
     PRIMARY KEY (mix_cache_id, target)
 );
 
+-- A sync link is the portable pairing between one source playlist and the
+-- destinations it is pushed to. Ported from the reference implementation's
+-- PlaylistLink, which stores members as a provider_id -> playlist_id map so a
+-- new platform is data rather than code. The per-server playlist id columns on
+-- playlist_watch_preferences could not express that: each platform needed its
+-- own column and its own branch in the writer.
+CREATE TABLE IF NOT EXISTS playlist_sync_link (
+    link_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'oneway',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id)
+);
+
+CREATE TABLE IF NOT EXISTS playlist_sync_link_member (
+    link_id TEXT NOT NULL REFERENCES playlist_sync_link(link_id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'library',
+    target_playlist_id TEXT,
+    target_name TEXT,
+    sync_mode TEXT NOT NULL DEFAULT 'mirror',
+    role TEXT NOT NULL DEFAULT 'mirror',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_sync_link_source
+    ON playlist_sync_link (source, source_id);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_sync_link_member_target
+    ON playlist_sync_link_member (target_id, target_playlist_id);
+
+-- What each member of a link held at the last reconcile. Ported from the reference, where
+-- reconcile() diffs every peer against a stored canonical snapshot so a change on ANY member
+-- propagates to all. The membership is stored as source track ids, which is the one identity
+-- every member can be expressed in - playlist_watch_target_membership already maps each
+-- member's own item id back to its source track, so no new identity scheme is needed.
+CREATE TABLE IF NOT EXISTS playlist_sync_snapshot (
+    link_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    track_source_ids_json TEXT NOT NULL,
+    recorded_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (link_id, target_id)
+);
+
 CREATE TABLE IF NOT EXISTS track_analysis (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
     library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,

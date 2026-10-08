@@ -285,7 +285,7 @@ public sealed class PlaylistSyncReadinessTest : IAsyncLifetime
             => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
     }
 
-    private sealed class StubWebHostEnvironment(string contentRootPath) : IWebHostEnvironment
+    private sealed class StubWebHostEnvironment(string contentRootPath) : IWebHostEnvironment, IAppDataRootOverride
     {
         public string WebRootPath { get; set; } = contentRootPath;
         public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
@@ -293,5 +293,6 @@ public sealed class PlaylistSyncReadinessTest : IAsyncLifetime
         public IFileProvider ContentRootFileProvider { get; set; } = new PhysicalFileProvider(contentRootPath);
         public string ContentRootPath { get; set; } = contentRootPath;
         public string EnvironmentName { get; set; } = Environments.Development;
+        public string? AppDataRoot => contentRootPath;
     }
 }

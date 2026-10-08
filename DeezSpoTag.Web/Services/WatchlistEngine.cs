@@ -2880,6 +2880,250 @@ internal sealed class WatchlistEngine
         return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>(), metadata with { IsComplete = false });
     }
 
+    /// <summary>
+    /// Read-only, side-effect-free playlist head fetch. This is the only part of reconciliation that
+    /// is safe to run concurrently, so the platform snapshot phase fans out over this method while
+    /// everything that mutates state stays strictly serial. It performs no database writes, no state
+    /// transitions, and no queue work.
+    /// </summary>
+    public async Task<PlaylistHeadSnapshot> FetchPlaylistHeadAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = NormalizeWatchSource(source);
+        var normalizedSourceId = (sourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedSource) || string.IsNullOrWhiteSpace(normalizedSourceId))
+        {
+            return new PlaylistHeadSnapshot(
+                normalizedSource,
+                normalizedSourceId,
+                FailureCode: "playlist_source_unavailable");
+        }
+
+        var head = await FetchLivePlaylistHeadAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        return new PlaylistHeadSnapshot(
+            normalizedSource,
+            normalizedSourceId,
+            head.SnapshotId,
+            head.Name,
+            head.Description,
+            head.ImageUrl,
+            head.TrackCount,
+            head.IsAuthoritativeEmpty,
+            head.CanClearImageUrl,
+            head.OwnerName,
+            head.FailureCode,
+            head.FailureIncidentId,
+            head.FailureIsIncidentOrigin);
+    }
+
+    private static LivePlaylistSnapshot ToLiveHeadSnapshot(PlaylistHeadSnapshot head)
+        => new(
+            Array.Empty<PlaylistTrackCandidate>(),
+            head.SnapshotId,
+            head.Name,
+            head.Description,
+            head.ImageUrl,
+            head.TrackCount,
+            IsComplete: false,
+            head.IsAuthoritativeEmpty,
+            head.CanClearImageUrl,
+            head.OwnerName,
+            head.FailureCode,
+            head.FailureIncidentId,
+            head.FailureIsIncidentOrigin);
+
+    /// <summary>
+    /// Reads a self-hosted server's playlist for a sync.
+    /// <para>
+    /// The Library Playlists tab lists playlists that live on Plex, Jellyfin and Navidrome, and
+    /// offers a Sync action on each. This is what makes that action able to say anything at all:
+    /// the sync engine reads candidates through the source adapter registry, and these three had no
+    /// entry, so every attempt reported "no tracks to sync" - indistinguishable from a playlist
+    /// that genuinely has none.
+    /// </para>
+    /// <para>
+    /// A server that is not connected yields an empty snapshot rather than throwing, so a sync aimed
+    /// at one destination is not failed by an unrelated server being offline.
+    /// </para>
+    /// </summary>
+    private async Task<LivePlaylistSnapshot> GetLibraryServerSnapshotAsync(
+        string source,
+        string sourceId,
+        int maxCandidates,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await ResolveLibraryServerAsync(source);
+        if (resolved is null)
+        {
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
+        }
+
+        var (serverUrl, serverCredential, serverUser) = resolved.Value;
+        var kind = source;
+
+        try
+        {
+            var candidates = kind switch
+            {
+                LibraryServerJellyfinSource => await GetJellyfinServerCandidatesAsync(
+                    (Url: serverUrl, ApiKey: serverCredential, UserId: serverUser),
+                    sourceId,
+                    maxCandidates,
+                    cancellationToken),
+                LibraryServerNavidromeSource => await GetNavidromeServerCandidatesAsync(
+                    (Url: serverUrl, Username: serverCredential, Password: serverUser),
+                    sourceId,
+                    maxCandidates,
+                    cancellationToken),
+                _ => await GetPlexServerCandidatesAsync(
+                    (Url: serverUrl, Token: serverCredential),
+                    sourceId,
+                    maxCandidates,
+                    cancellationToken),
+            };
+
+            return BuildLivePlaylistSnapshot(candidates);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Reading a {Source} playlist for a sync failed.", source);
+            // An unreadable playlist is not an empty one. Reporting empty would make a mirror pass
+            // treat the destination as holding nothing and delete it.
+            return BuildLivePlaylistSnapshot(
+                Array.Empty<PlaylistTrackCandidate>(),
+                new LivePlaylistSnapshotMetadata(IsComplete: false));
+        }
+    }
+
+    /// <summary>
+    /// The head read used to decide whether a monitored playlist has changed. There is no cheap
+    /// equivalent for a self-hosted server, so this reports no snapshot id and the caller falls back
+    /// to comparing the full membership, which is correct if less efficient.
+    /// </summary>
+    private Task<LivePlaylistSnapshotMetadata> GetLibraryServerSnapshotHeadAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+        => Task.FromResult(new LivePlaylistSnapshotMetadata(SnapshotId: null, IsComplete: false));
+
+    /// <summary>
+    /// The credentials for one self-hosted server, or null when it is not connected. Returned as a
+    /// tuple because the three servers need different credential triples.
+    /// </summary>
+    private async Task<(string, string, string)?> ResolveLibraryServerAsync(string source)
+    {
+        var state = await _platformAuthService.LoadAsync();
+        return source.ToLowerInvariant() switch
+        {
+            LibraryServerJellyfinSource when !string.IsNullOrWhiteSpace(state.Jellyfin?.Url)
+                                                && !string.IsNullOrWhiteSpace(state.Jellyfin.ApiKey)
+                => (state.Jellyfin.Url, state.Jellyfin.ApiKey, state.Jellyfin.UserId ?? string.Empty),
+            LibraryServerNavidromeSource when !string.IsNullOrWhiteSpace(state.Navidrome?.Url)
+                                                && !string.IsNullOrWhiteSpace(state.Navidrome.Username)
+                                                && !string.IsNullOrWhiteSpace(state.Navidrome.Password)
+                => (state.Navidrome.Url, state.Navidrome.Username, state.Navidrome.Password),
+            LibraryServerPlexSource when !string.IsNullOrWhiteSpace(state.Plex?.Url)
+                                              && !string.IsNullOrWhiteSpace(state.Plex.Token)
+                => (state.Plex.Url, state.Plex.Token, string.Empty),
+            _ => null,
+        };
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlexServerCandidatesAsync(
+        (string Url, string Token) connection,
+        string playlistId,
+        int maxCandidates,
+        CancellationToken cancellationToken)
+    {
+        var client = new PlexApiClient(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<PlexApiClient>.Instance,
+            _httpClientFactory.CreateClient("PlexApiClient"));
+        var playlist = await client.GetPlaylistAsync(connection.Url, connection.Token, playlistId, cancellationToken);
+        if (playlist is null)
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var items = await client.GetPlaylistItemsDetailedAsync(connection.Url, connection.Token, playlist, cancellationToken);
+        return items.Tracks
+            .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+            .Take(maxCandidates > 0 ? maxCandidates : int.MaxValue)
+            .Select(track => new PlaylistTrackCandidate(
+                track.Id!,
+                null,
+                track.Title ?? "Unknown",
+                track.Artist ?? "Unknown",
+                track.Album ?? "Unknown",
+                null,
+                (int?)track.DurationMs,
+                null,
+                Array.Empty<string>()))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetJellyfinServerCandidatesAsync(
+        (string Url, string ApiKey, string UserId) connection,
+        string playlistId,
+        int maxCandidates,
+        CancellationToken cancellationToken)
+    {
+        var client = new JellyfinApiClient(_httpClientFactory.CreateClient("JellyfinApiClient"));
+        var items = await client.GetPlaylistItemsAsync(
+            connection.Url, connection.ApiKey, connection.UserId, playlistId, cancellationToken);
+        return items
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id))
+            .Take(maxCandidates > 0 ? maxCandidates : int.MaxValue)
+            .Select(item => new PlaylistTrackCandidate(
+                item.Id!,
+                null,
+                item.Name ?? "Unknown",
+                item.Artists is { Count: > 0 } ? string.Join(", ", item.Artists) : "Unknown",
+                item.Album ?? "Unknown",
+                null,
+                item.RunTimeTicks is null ? null : (int)(item.RunTimeTicks.Value / 10_000),
+                null,
+                Array.Empty<string>()))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetNavidromeServerCandidatesAsync(
+        (string Url, string Username, string Password) connection,
+        string playlistId,
+        int maxCandidates,
+        CancellationToken cancellationToken)
+    {
+        var client = new NavidromeApiClient(
+            _httpClientFactory.CreateClient("NavidromeApiClient"));
+        var (playlist, tracks) = await client.GetPlaylistWithTracksAsync(
+            connection.Url, connection.Username, connection.Password, playlistId, cancellationToken);
+        if (playlist is null)
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        return tracks
+            .Take(maxCandidates > 0 ? maxCandidates : int.MaxValue)
+            .Select(track => new PlaylistTrackCandidate(
+                track.Id,
+                // Navidrome's playlist row carries no ISRC, so the track is matched on title and
+                // artist rather than on recording identity. Recorded as absent rather than guessed.
+                null,
+                track.Title ?? "Unknown",
+                string.IsNullOrWhiteSpace(track.Artist) ? "Unknown" : track.Artist,
+                string.IsNullOrWhiteSpace(playlist.Name) ? "Unknown" : playlist.Name,
+                null,
+                track.DurationMs,
+                null,
+                Array.Empty<string>()))
+            .ToList();
+    }
+
     private IReadOnlyDictionary<string, IPlaylistSourceAdapter> CreateSourceAdapters()
         => new Dictionary<string, IPlaylistSourceAdapter>(StringComparer.OrdinalIgnoreCase)
         {

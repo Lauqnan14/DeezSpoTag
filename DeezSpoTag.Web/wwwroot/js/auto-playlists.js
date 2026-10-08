@@ -1,15 +1,16 @@
 (() => {
-    const libraryGrid = document.getElementById("libraryPlaylistsGrid");
+    const librarySections = document.getElementById("libraryPlaylistsSections");
     const autoGrid = document.getElementById("autoToolsGrid");
     const recommendationsGrid = document.getElementById("recommendationsGrid");
     const countEl = document.getElementById("autoPlaylistsCount");
-    const sourceEl = document.getElementById("autoPlaylistsSource");
     const libraryEmpty = document.getElementById("libraryPlaylistsEmpty");
+    const syncMessageEl = document.getElementById("libraryPlaylistsSyncMessage");
     const autoEmpty = document.getElementById("autoPlaylistsEmpty");
     const recommendationsEmpty = document.getElementById("recommendationsEmpty");
     const warningEl = document.getElementById("autoPlaylistsWarning");
 
-    const hasPlaylistSections = Boolean(libraryGrid && autoGrid && countEl && sourceEl && libraryEmpty && autoEmpty);
+    const hasPlaylistSections = Boolean(librarySections && autoGrid && countEl && libraryEmpty && autoEmpty);
+    let syncMessageTimer = null;
     const hasRecommendationSection = Boolean(recommendationsGrid && recommendationsEmpty);
     if (!hasPlaylistSections && !hasRecommendationSection) {
         return;
@@ -187,6 +188,9 @@
     };
 
     const normalizeRecommendationTitle = (station) => {
+        if (station?.cadence === "weekly" && station?.libraryName) {
+            return String(station.libraryName).trim();
+        }
         const normalizedName = String(station?.name || "")
             .replace(/^recommendations\s*-\s*/i, "")
             .trim();
@@ -203,7 +207,9 @@
     const renderLibraryCard = (playlist) => {
         const card = document.createElement("div");
         card.className = "library-playlist-card";
-        card.addEventListener("click", () => openTracklist(playlist.id, "plex", playlist.libraryId));
+
+        const art = document.createElement("div");
+        art.className = "library-playlist-art";
 
         const cover = document.createElement("div");
         cover.className = "library-playlist-cover";
@@ -212,7 +218,18 @@
             img.src = playlist.coverUrl;
             img.alt = "";
             cover.appendChild(img);
+        } else {
+            cover.appendChild(createCoverPlaceholder());
         }
+
+        const allTargets = syncTargetsFor(playlist.server);
+        // Split by kind so the panel can show Servers and Platforms as their own blocks rather than
+        // one flat list. The split is driven by the endpoint's `kind`, which is the same thing the
+        // menu is about: a self-hosted server and a streaming platform fail and reconnect
+        // differently, and lumping them together hides that.
+        const libraryTargets = allTargets.filter((target) => target.kind === "library");
+        const platformTargets = allTargets.filter((target) => target.kind !== "library");
+        art.appendChild(cover);
 
         const body = document.createElement("div");
         body.className = "library-playlist-body";
@@ -223,18 +240,28 @@
 
         const desc = document.createElement("p");
         desc.className = "library-playlist-desc";
-        desc.textContent = playlist.description || "Playlist available in Plex.";
+        desc.textContent = playlist.description || `Playlist available in ${serverLabels[playlist.server] || "your library"}.`;
 
         const meta = document.createElement("div");
         meta.className = "library-playlist-meta";
         const trackCount = document.createElement("span");
-        trackCount.textContent = `${playlist.trackCount || 0} tracks`;
+        trackCount.textContent = playlist.trackCount == null
+            ? "Playlist"
+            : `${playlist.trackCount} tracks`;
         const duration = document.createElement("span");
         duration.textContent = playlist.duration || "—";
         meta.append(trackCount, duration);
 
         body.append(title, desc, meta);
-        card.append(cover, body);
+        art.addEventListener("click", () => openTracklist(playlist.id, playlist.server, playlist.libraryId));
+        card.append(art, body);
+
+        // Sibling of the clickable art, exactly as the artist cards do it. Inside the art the
+        // click bubbled up and navigated while the user was picking a target.
+        if (allTargets.length > 0) {
+            card.appendChild(renderSyncMenu(playlist, libraryTargets, platformTargets));
+        }
+
         return card;
     };
 
@@ -314,6 +341,8 @@
 
         strip.append(title, meta, description, actions);
         card.append(artButton, strip);
+
+
         return card;
     };
 
@@ -380,6 +409,7 @@
         title.textContent = normalizeRecommendationTitle(station);
         header.append(title);
 
+
         const desc = document.createElement("p");
         desc.className = "auto-tool-desc";
         desc.textContent = station.description || "Instant recommendations from your library.";
@@ -387,7 +417,9 @@
         const meta = document.createElement("div");
         meta.className = "auto-tool-meta";
         const trackCount = document.createElement("span");
-        trackCount.textContent = station.trackCount ? `${station.trackCount} tracks` : "Daily mix";
+        trackCount.textContent = station.cadence === "weekly"
+            ? `${station.trackCount || 0} tracks · ${station.distinctArtistCount || 0} artists`
+            : (station.trackCount ? `${station.trackCount} tracks` : "Daily mix");
         const mode = document.createElement("span");
         mode.textContent = normalizeRecommendationMode(station);
         meta.append(trackCount, mode);
@@ -400,27 +432,11 @@
         return card;
     };
 
-    const renderLists = (playlists) => {
+    const renderAutoPlaylistsEmptyIfNeeded = () => {
         if (!hasPlaylistSections) {
             return;
         }
-        libraryGrid.innerHTML = "";
-        autoGrid.innerHTML = "";
-
-        if (!Array.isArray(playlists) || playlists.length === 0) {
-            libraryEmpty.hidden = false;
-            autoEmpty.hidden = false;
-            countEl.textContent = formatCount(0);
-            return;
-        }
-
-        playlists.forEach((playlist) => {
-            libraryGrid.appendChild(renderLibraryCard(playlist));
-        });
-
-        libraryEmpty.hidden = playlists.length > 0;
         autoEmpty.hidden = autoGrid.children.length > 0;
-        countEl.textContent = formatCount(playlists.length);
     };
 
     if (hasRecommendationSection) {
@@ -428,21 +444,24 @@
     }
 
     if (hasPlaylistSections) {
-        fetch("/api/autoplaylists", { cache: "no-store" })
+        // The connected destinations are loaded BEFORE the playlist sections are rendered. A card
+        // only gets its sync menu when there is at least one destination to offer, so rendering
+        // first meant every library playlist was built with an empty target list and got no menu at
+        // all - the kebab simply never appeared, with nothing in the console to explain it.
+        // The target list and the playlist list come from different endpoints, so the playlist fetch
+        // runs in parallel while this one is awaited.
+        loadConnectedSyncTargets()
+            .then(() => setAvailableSyncTargets(connectedSyncTargets))
+            .then(() => fetch("/api/autoplaylists", { cache: "no-store" }))
             .then((response) => response.json())
             .then((data) => {
-                const playlists = Array.isArray(data?.playlists) ? data.playlists : [];
-                if (data?.warning) {
-                    setWarning(data.warning);
-                }
-                sourceEl.textContent = playlists.length > 0 ? data.source || "Plex" : "";
-                renderLists(playlists);
+                setWarning(data?.warning || "");
+                renderLibrarySections(data?.sections);
                 loadMixes();
             })
             .catch(() => {
                 setWarning("Failed to load playlists.");
-                sourceEl.textContent = "";
-                renderLists([]);
+                renderLibrarySections([]);
                 loadMixes();
             });
     }
@@ -453,7 +472,7 @@
         }
         fetch("/api/mixes", { cache: "no-store" })
             .then((response) => response.ok ? response.json() : [])
-            .then((mixes) => {
+            .then(async (mixes) => {
                 const playlists = Array.isArray(mixes)
                     ? mixes.filter((mix) => mix?.id && mix?.libraryId).map((mix) => ({
                             id: mix.id,
@@ -467,11 +486,11 @@
                         }))
                     : [];
                 renderAutoPlaylistSections(playlists);
-                autoEmpty.hidden = playlists.length > 0;
+                renderAutoPlaylistsEmptyIfNeeded();
             })
             .catch(() => {
                 autoGrid.innerHTML = "";
-                autoEmpty.hidden = false;
+                renderAutoPlaylistsEmptyIfNeeded();
             });
     }
 
@@ -488,7 +507,7 @@
                 fetch(`/api/library/recommendations/stations?libraryId=${encodeURIComponent(libraryId)}`, { cache: "no-store" })
                     .then((response) => response.ok ? response.json() : [])
                     .then((stations) => ({ libraryId, stations: Array.isArray(stations) ? stations : [] }))
-                    .catch(() => ({ libraryId, stations: [] }))
+                    .catch(() => ({ libraryId, stations: [], failed: true }))
             )
         );
 

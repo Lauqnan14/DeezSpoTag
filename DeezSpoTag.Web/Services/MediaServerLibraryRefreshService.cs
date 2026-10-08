@@ -18,9 +18,19 @@ public sealed class MediaServerLibraryRefreshService
 {
     private const int PlexTrackPageSize = 500;
     private const int RefreshAttemptCount = 5;
-    private const string PlexService = "plex";
-    private const string JellyfinService = "jellyfin";
-    private const string NavidromeService = "navidrome";
+    /// <summary>
+    ///     The three self-hosted servers, aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These were private byte-identical copies of <see cref="MediaServerTargetServices" />.
+    ///     Defined once here so the servers this refresh writes to are the same set the Folder tab
+    ///     and the target checkboxes present, and a change to one cannot drift from the others.
+    /// </remarks>
+    private const string PlexService = MediaServerTargetServices.Plex;
+
+    private const string JellyfinService = MediaServerTargetServices.Jellyfin;
+
+    private const string NavidromeService = MediaServerTargetServices.Navidrome;
     private const string NoneService = "none";
     private static readonly TimeSpan RefreshRetryDelay = TimeSpan.FromSeconds(2);
 
@@ -179,14 +189,12 @@ public sealed class MediaServerLibraryRefreshService
 
             // 3. tiered path evidence, fingerprint-narrowed.
             var tierCandidates = new List<long>();
-            var matchedSuffixLength = 0;
             string? matchedSuffix = null;
             foreach (var suffix in BuildPathSuffixes(normalized))
             {
                 if (_suffixMap.TryGetValue(suffix, out var tier))
                 {
                     tierCandidates = tier.ToList();
-                    matchedSuffixLength = suffix.Split('/').Length;
                     matchedSuffix = suffix;
                     break;
                 }
@@ -781,7 +789,7 @@ public sealed class MediaServerLibraryRefreshService
                     state.Navidrome.Username!,
                     state.Navidrome.Password!,
                     cancellationToken),
-            _ => (bool?)null
+            _ => default(bool?)
         };
 
         return running != false;

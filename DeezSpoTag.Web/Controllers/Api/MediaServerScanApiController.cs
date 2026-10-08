@@ -15,15 +15,35 @@ public class MediaServerScanApiController : ControllerBase
     private readonly PlatformAuthService _authService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
+    private readonly PlaylistSyncService _playlistSyncService;
 
     public MediaServerScanApiController(
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
-        JellyfinApiClient jellyfinApiClient)
+        JellyfinApiClient jellyfinApiClient,
+        PlaylistSyncService playlistSyncService)
     {
         _authService = authService;
         _plexApiClient = plexApiClient;
         _jellyfinApiClient = jellyfinApiClient;
+        _playlistSyncService = playlistSyncService;
+    }
+
+    /// <summary>
+    /// The media servers that are connected right now, in the canonical Plex, Jellyfin, Navidrome
+    /// order. This delegates to the same check the sync writers use, so a surface that offers these
+    /// can never present a target the writers would reject as unconfigured.
+    ///
+    /// Callers use it to stay out of the user's way: one connected server is the only answer there
+    /// is, so it needs no picking, while several leave a real choice to make.
+    /// </summary>
+    [HttpGet("connected-servers")]
+    public async Task<IActionResult> GetConnectedServers(CancellationToken cancellationToken)
+    {
+        var connected = await _playlistSyncService.GetConfiguredTargetServicesAsync(cancellationToken);
+        return Ok(connected
+            .Where(MediaServerTargetServices.Contains)
+            .Select(target => new { value = target, label = MediaServerTargetServices.Label(target) }));
     }
 
     [HttpPost("scan")]

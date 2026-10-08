@@ -542,7 +542,8 @@ public sealed class NavidromeApiClient
                     playlist.Id!,
                     playlist.Name ?? playlist.Id!,
                     playlist.SongCount,
-                    playlist.Comment))
+                    playlist.Comment,
+                    playlist.CoverArt))
                 .ToList() ?? new List<NavidromePlaylistSummary>();
             return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Found(playlists, statusCode);
         }
@@ -862,6 +863,32 @@ public sealed class NavidromeApiClient
         return update?.SubsonicResponse?.Status is "ok";
     }
 
+    public string? BuildCoverArtRequestUrl(
+        string serverUrl,
+        string username,
+        string password,
+        string coverArtId,
+        int size = 420)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(coverArtId))
+        {
+            return null;
+        }
+
+        return BuildUrl(
+            serverUrl,
+            "getCoverArt",
+            username,
+            password,
+            [
+                new KeyValuePair<string, string?>("id", coverArtId.Trim()),
+                new KeyValuePair<string, string?>("size", Math.Clamp(size, 1, 2000).ToString(System.Globalization.CultureInfo.InvariantCulture))
+            ]);
+    }
+
     public async Task<bool> UpdatePlaylistImageFromFileAsync(
         string serverUrl,
         string username,
@@ -1004,6 +1031,59 @@ public sealed class NavidromeApiClient
     {
         var lookup = await GetPlaylistResult(serverUrl, username, password, playlistId, cancellationToken);
         return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    /// <summary>
+    /// Returns the playlist with its tracks, in playlist order. getPlaylist already returns
+    /// the full song entries, so this costs the same single request as
+    /// <see cref="GetPlaylistAsync"/> and does not fan out per track.
+    /// </summary>
+    public async Task<(NavidromePlaylistDetails? Playlist, IReadOnlyList<NavidromePlaylistTrack> Tracks)> GetPlaylistWithTracksAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return (null, Array.Empty<NavidromePlaylistTrack>());
+        }
+
+        var response = await SendAsync<NavidromePlaylistResponse>(
+            serverUrl,
+            username,
+            password,
+            "getPlaylist",
+            new[] { new KeyValuePair<string, string?>("id", playlistId) },
+            cancellationToken);
+        var playlist = response?.SubsonicResponse?.Playlist;
+        if (playlist is null || string.IsNullOrWhiteSpace(playlist.Id))
+        {
+            return (null, Array.Empty<NavidromePlaylistTrack>());
+        }
+
+        var tracks = playlist.Entries?
+            .Where(static entry => !string.IsNullOrWhiteSpace(entry.Id))
+            .Select(static entry => new NavidromePlaylistTrack(
+                entry.Id!,
+                string.IsNullOrWhiteSpace(entry.Title) ? "Unknown" : entry.Title!,
+                string.IsNullOrWhiteSpace(entry.Artist) ? "Unknown" : entry.Artist!,
+                entry.Duration.HasValue ? entry.Duration.Value * 1000 : null,
+                entry.Path,
+                entry.MusicFolderId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .ToList() ?? new List<NavidromePlaylistTrack>();
+
+        var details = new NavidromePlaylistDetails(
+            playlist.Id!,
+            string.IsNullOrWhiteSpace(playlist.Name) ? playlist.Id! : playlist.Name!,
+            playlist.Comment,
+            playlist.SongCount ?? tracks.Count,
+            tracks.Select(static track => new NavidromePlaylistEntry(track.Id)).ToList());
+        return (details, tracks);
     }
 
     public async Task<TargetPlaylistLookup<NavidromePlaylistDetails>> GetPlaylistResult(
@@ -1433,7 +1513,12 @@ public sealed record NavidromeArtistInfo(
     string? LargeImageUrl,
     string? LastFmUrl,
     string? MusicBrainzId);
-public sealed record NavidromePlaylistSummary(string Id, string Name, int? TrackCount, string? Comment = null);
+public sealed record NavidromePlaylistSummary(
+    string Id,
+    string Name,
+    int? TrackCount,
+    string? Comment = null,
+    string? CoverArt = null);
 public sealed record NavidromePlaylistDetails(
     string Id,
     string Name,
@@ -1441,6 +1526,19 @@ public sealed record NavidromePlaylistDetails(
     int? TrackCount,
     IReadOnlyList<NavidromePlaylistEntry> Entries);
 public sealed record NavidromePlaylistEntry(string ItemId);
+
+/// <summary>
+/// A playlist track with the metadata needed to render a tracklist row. The Subsonic
+/// getPlaylist response already carries full song entries, so no per-track follow-up call
+/// is needed.
+/// </summary>
+public sealed record NavidromePlaylistTrack(
+    string Id,
+    string Title,
+    string Artist,
+    int? DurationMs,
+    string? FilePath = null,
+    string? LibraryId = null);
 
 file class NavidromeBaseResponse
 {
@@ -1639,6 +1737,8 @@ file sealed class NavidromePlaylist
     public int? SongCount { get; set; }
     [JsonPropertyName("comment")]
     public string? Comment { get; set; }
+    [JsonPropertyName("coverArt")]
+    public string? CoverArt { get; set; }
     [JsonPropertyName("entry")]
     public List<NavidromeSong>? Entries { get; set; }
 }
