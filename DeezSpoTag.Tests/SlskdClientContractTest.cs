@@ -25,6 +25,38 @@ public sealed class SlskdClientContractTest
 {
     private const string ApiKey = "super-secret-api-key";
 
+
+    [Fact]
+    public async Task SecurityRequestFailureLog_SanitizesPathAndRetainsRequestCredentials()
+    {
+        const string apiPath = "users/peer\r\nFORGED\tentry/info";
+        var logger = new SecurityCaptureLogger<SlskdClient>();
+        var handler = new RecordingHandler(_ => throw new HttpRequestException("offline"));
+        var client = new SlskdClient(new HttpClient(handler), logger);
+        var credentials = new SlskdCredentials("http://localhost:5030", ApiKey);
+        var method = typeof(SlskdClient).GetMethod("SendCoreAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var task = (Task<HttpResponseMessage>)method.Invoke(client,
+            [credentials, HttpMethod.Get, apiPath, null, CancellationToken.None])!;
+        await Assert.ThrowsAsync<SlskdApiException>(() => task);
+        Assert.Equal(SlskdBaseUri.TryBuildRequestUri(credentials.BaseUrl, apiPath), handler.RequestUri);
+        Assert.Equal(ApiKey, Assert.Single(handler.ApiKeyHeaderValues));
+        var message = Assert.Single(logger.Messages);
+        Assert.DoesNotContain("\r", message);
+        Assert.DoesNotContain("\n", message);
+        Assert.DoesNotContain("\t", message);
+        Assert.DoesNotContain(ApiKey, message);
+    }
+
+    private sealed class SecurityCaptureLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
     [Fact]
     public void Credentials_ToString_NeverExposesTheApiKey()
     {

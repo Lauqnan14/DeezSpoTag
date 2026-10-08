@@ -268,10 +268,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             {
                 _logger.LogDebug(
                     "Hydrated SoundCloud source {Url} as urn={Urn} title={Title} artist={Artist} isrc={Isrc}",
-                    SoundCloudUrlRedactor.Redact(sourceUrl),
-                    track.Urn,
-                    track.Title,
-                    track.PreferredArtist,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(SoundCloudUrlRedactor.Redact(sourceUrl)),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Urn),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.PreferredArtist),
                     string.IsNullOrEmpty(track.Isrc) ? "(none)" : "(present)");
             }
         }

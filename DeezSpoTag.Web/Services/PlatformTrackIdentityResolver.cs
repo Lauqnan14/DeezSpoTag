@@ -182,7 +182,7 @@ public sealed class PlatformTrackIdentityResolver
         {
             _logger?.LogInformation(
                 "No identity search is wired for {Service}; {Count} track(s) stay unresolved there.",
-                service,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(service),
                 pending.Count);
             return resolved;
         }

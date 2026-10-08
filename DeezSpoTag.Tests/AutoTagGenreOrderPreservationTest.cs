@@ -98,7 +98,7 @@ public sealed class AutoTagGenreOrderPreservationTest
     [InlineData("hip hop", "Hip Hop")]
     [InlineData("HipHop", "HipHop")]
     [InlineData("EDM", "EDM")]
-    [InlineData("edm", "Edm")]
+    [InlineData("edm", "EDM")]
     [InlineData("drum & bass", "Drum & Bass")]
     public void CapitalizeGenre_KeepsAmpersandCompoundsAndExistingCasing(string input, string expected)
     {

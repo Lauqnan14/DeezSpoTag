@@ -51,6 +51,36 @@ public sealed class MusicBrainzArtistLocationTest : IDisposable
 
     // ── Area mapping ──────────────────────────────────────────────────────
 
+
+    [Fact]
+    public async Task SecurityArtistSearchLog_SanitizesNameWithoutChangingSearch()
+    {
+        const string artistName = "artist\r\nFORGED\tentry";
+        var harness = await CreateHarnessAsync([]);
+        var logger = new SecurityCaptureLogger<MusicBrainzArtistLocationService>();
+        var service = new MusicBrainzArtistLocationService(
+            new MusicBrainzClient(new HttpClient(harness.Http), NullLogger<MusicBrainzClient>.Instance),
+            logger, harness.Repository);
+        Assert.Null(await service.ResolveAsync(ArtistId, artistName, CancellationToken.None));
+        Assert.True(harness.Http.SawDecoded(string.Concat("artist:", (char)34, artistName, (char)34)));
+        Assert.NotEmpty(logger.Messages);
+        foreach (var message in logger.Messages)
+        {
+            Assert.DoesNotContain("\r", message);
+            Assert.DoesNotContain("\n", message);
+            Assert.DoesNotContain("\t", message);
+        }
+    }
+
+    private sealed class SecurityCaptureLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
     [Fact]
     public void CityLevelBeginAreaBecomesTheCity()
     {
@@ -577,6 +607,8 @@ public sealed class MusicBrainzArtistLocationTest : IDisposable
         private readonly List<string> _seen = [];
 
         public void WhenContains(string match, string body) => _routes.Add((match, body));
+
+        public bool SawDecoded(string match) => _seen.Exists(url => Uri.UnescapeDataString(url).Contains(match, StringComparison.Ordinal));
 
         public bool Saw(string match) => _seen.Exists(url => url.Contains(match, StringComparison.Ordinal));
 

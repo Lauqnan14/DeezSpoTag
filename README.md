@@ -6,6 +6,10 @@
 
 Bridge streaming services and your local libraries with one web app. DeezSpoTag handles discovery, queueing, downloading, tagging, conversion, and organization workflows for self-hosted music stacks.
 
+<p>
+  <a href="https://github.com/Lauqnan14/DeezSpoTag/actions/workflows/docker-publish.yml"><img src="https://img.shields.io/github/actions/workflow/status/Lauqnan14/DeezSpoTag/docker-publish.yml?branch=main&label=Build&labelColor=black&logo=github" alt="Build" /></a><a href="https://github.com/Lauqnan14/DeezSpoTag#run-with-docker-compose"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?labelColor=black&logo=docker&logoColor=white" alt="Docker Compose" /></a><a href="https://github.com/Lauqnan14/DeezSpoTag#run-with-docker-compose"><img src="https://img.shields.io/badge/Linux-amd64-FCC624?labelColor=black&logo=linux&logoColor=white" alt="Linux amd64" /></a><a href="https://dotnet.microsoft.com/"><img src="https://img.shields.io/badge/.NET-10-512BD4?labelColor=black&logo=dotnet&logoColor=white" alt=".NET 10" /></a><a href="https://t.me/+YbvDmhuy5zQ5MTA0"><img src="https://img.shields.io/badge/Announcements-369eff?labelColor=black&logo=telegram&logoColor=white" alt="Telegram Announcements" /></a><a href="https://github.com/Lauqnan14/DeezSpoTag/tree/traffic-stats"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FLauqnan14%2FDeezSpoTag%2Ftraffic-stats%2Fclone-badge.json" alt="Cumulative tracked clones" /></a>
+</p>
+
 Support: [GitHub Issues](https://github.com/Lauqnan14/DeezSpoTag/issues)
 
 ---
@@ -38,6 +42,9 @@ DeezSpoTag automates music workflows end-to-end:
 - Enhacement run, otherwise can be considered as Library maintenance, is approximately 70% ready. Folder Uniformity is the biggest section that is still under development, and requires thorough testing.
 - Manual tagging is still under heavy development.
 - Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
+- Soulseek support has been added, but is not yet fully reliable and remains a work in progress.
+- Genre Intelligence is a new, incomplete feature for rewriting genres and styles (sub-genres). Users can try it at their own risk. Its Style Construction sub-feature is being added gradually.
+- Music syncing to different platforms has been added, but has not yet been tested. Use it with caution.
 
 ## Key Features
 
@@ -53,6 +60,7 @@ DeezSpoTag automates music workflows end-to-end:
 ### Metadata, Tagging, and File Handling
 
 - Multi-platform tagging controls.
+- Genre Intelligence for rewriting genres and styles (sub-genres), with Style Construction being added gradually (experimental; use at your own risk).
 - Built-in manual lyrics editor and lyrics creator.
 - Essentia-based tagging support.
 - Animated album artwork support.
@@ -63,7 +71,9 @@ DeezSpoTag automates music workflows end-to-end:
 ### Recommendations and Automation
 
 - Daily music recommendations based on the music in your library.
+- Weekly recommendations featuring similar artists not in your library and top songs from Spotify that are missing from your library.
 - Automated playlist generation based on listening patterns.
+- Music syncing to different platforms (untested; use with caution).
 
 ---
 
@@ -144,22 +154,27 @@ Use the `Login` page to configure platform credentials.
   - `Cookie` is optional and enables the authenticated Amazon Music session.
 - Amazon Music downloads can also use an enabled `Public API Provider` without an authenticated Amazon Music session.
 
+### SoundCloud
+
+- Public tracks can be downloaded without a token.
+- Open `Login → SoundCloud` to optionally connect your account:
+  - Paste your SoundCloud OAuth token into `OAuth token`.
+  - Click `Save token`.
+- A saved token enables access to private tracks that your account can access.
+
+### YouTube Music
+
+- Open `Login → YouTube Music`.
+- Enable the YouTube Data API for your Google Cloud project and configure an OAuth client with the redirect URI displayed on the login page.
+- Enter your `OAuth client ID` and `OAuth client secret`.
+- Click `Connect YouTube Music`, then complete Google's authorization flow to return to DeezSpoTag.
+
 ### Soulseek
 
 - `Soulseek Connection`:
   - `slskd URL` is required.
   - `slskd API key` can be set if your slskd instance requires one.
-- Soulseek is not deployed for you. It talks to a separate [`slskd`](https://github.com/slskd/slskd) instance
-  that you run yourself, reachable over HTTP. The app stores the URL and key encrypted in `soulseek.json` in
-  the data directory; nothing about slskd is baked into the image or the compose file.
-- Soulseek is the last resort for each quality tier. In the fallback ladder each Soulseek step sits directly
-  after the catalogue steps of the same quality, so a peer search is only attempted once every service that
-  could deliver that tier has been tried. A 24/192 request tries Qobuz, then Tidal, then a peer with 24/192 —
-  it never walks past a 96 kbps step looking for one.
-- It has no on/off switch, exactly like every other download engine. To stop using it, pick a different source
-  in settings, or clear it in the custom engine order.
-- Its FLAC quality is split into the same three bands Qobuz and Tidal use (24/192, 24/96, 16/44.1). ALAC,
-  WAV, APE and WavPack are all reported as generic `Lossless`.
+- Soulseek support has been added, but is not yet fully reliable and remains a work in progress.
 
 ### Discogs
 
@@ -176,8 +191,13 @@ Use the `Login` page to configure platform credentials.
 
 ### Boomplay
 
+- Open `Login → Boomplay`.
+- Before logging in, drag `Boomplay Import` to your browser's bookmarks bar. The setup area is hidden after login.
 - `Boomplay Session`:
-  - `Cookie` from a logged-in Boomplay browser session is required.
+  - Log in to your account at `boomplay.com` in your browser.
+  - In Chrome, open `DevTools → Application → Cookies` and copy the `sessionID` cookie value.
+  - Paste it into `Boomplay sessionID cookie` in DeezSpoTag, then click `Login`. Both the bare value and `sessionID=...` are accepted.
+- To import a Boomplay playlist or album, open its page in your browser and click the saved `Boomplay Import` bookmarklet. It passes the item's numeric ID to DeezSpoTag.
 
 ### Plex
 
