@@ -585,7 +585,7 @@ class AudioAnalyzer:
 
         if self.genre_predictor is not None:
             self.genre_labels = self._load_genre_labels()
-            if self.genre_labels:
+            if self.genre_labels and self.genre_model_name is None:
                 # Only claim this model when the head, the extractor and the label
                 # set are all usable; otherwise GenreModel stays unset and the
                 # payload reports the truth (no genre model available).

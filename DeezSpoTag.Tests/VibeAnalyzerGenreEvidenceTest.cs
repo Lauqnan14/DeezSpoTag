@@ -19,6 +19,28 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class VibeAnalyzerGenreEvidenceTest
 {
+    [Theory]
+    [InlineData("discogs519-maest-30s-pw-519l", "discogs519-maest-30s-pw-519l")]
+    [InlineData(null, "discogs400-discogs-effnet")]
+    public void EffnetLoading_PreservesLoadedMaestProvenance(string? loadedModel, string expected)
+    {
+        var result = RunPythonScript($@"
+from types import SimpleNamespace
+module.os.path.exists = lambda path: True
+module.TensorflowPredictEffnetDiscogs = lambda **kwargs: object()
+module.TensorflowPredict2D = lambda **kwargs: object()
+analyzer = SimpleNamespace(
+    genre_model_name={ToPythonLiteral(loadedModel ?? "")},
+    effnet_extractor=None, genre_predictor=None,
+    _model_path=lambda name: name, _load_genre_labels=lambda: ['Rock'])
+if not analyzer.genre_model_name:
+    analyzer.genre_model_name = None
+module.AudioAnalyzer._load_effnet_genre_models(analyzer)
+print(json.dumps(analyzer.genre_model_name))
+");
+        Assert.Equal(expected, result.GetString());
+    }
+
     [Fact]
     public void Discogs519Branch_UsesEssentiaPoolInsteadOfAnUnboundName()
     {

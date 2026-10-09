@@ -7,6 +7,16 @@ namespace DeezSpoTag.Tests;
 
 public sealed class PublishingWorkflowGuardrailTest
 {
+    [Fact]
+    public void VibeWorkerSmoke_UsesAudioLongEnoughForMaestAndRetainsModelAssertions()
+    {
+        var smoke = File.ReadAllText(Path.Join(ResolveSrcRoot(), "scripts", "docker-parity-smoke.sh"));
+        Assert.Contains("sine=frequency=440:sample_rate=44100:duration=35", smoke, StringComparison.Ordinal);
+        Assert.Contains("response.get(\"GenreModel\") != \"discogs519-maest-30s-pw-519l\"", smoke, StringComparison.Ordinal);
+        Assert.Contains("first_evidence.get(\"model\") != \"discogs519-maest-30s-pw-519l\"", smoke, StringComparison.Ordinal);
+        Assert.Contains("stderr: {completed.stderr[-2000:]}", smoke, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("guardrails.yml", "name: Run guardrails")]
     [InlineData("docker-publish.yml", "name: Run full guardrails")]

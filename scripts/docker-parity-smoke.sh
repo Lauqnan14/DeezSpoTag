@@ -154,7 +154,7 @@ print("vibe probe ok=", payload.get("ok"))
 PY
 
 ffmpeg -hide_banner -loglevel error -nostdin -y \
-  -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=8" \
+  -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=35" \
   -c:a flac /tmp/vibe-worker-smoke.flac
 /opt/venv/bin/python3 - <<'"'"'PY'"'"'
 import json
@@ -188,7 +188,7 @@ for index, response in enumerate(responses, start=1):
     if response.get("AnalysisVersion") != "musicnn-1":
         raise RuntimeError(f"persistent vibe worker returned the wrong analysis version: {response}")
     if response.get("GenreModel") != "discogs519-maest-30s-pw-519l":
-        raise RuntimeError(f"persistent vibe worker did not initialize Discogs519/MAEST: {response}")
+        raise RuntimeError(f"persistent vibe worker did not initialize Discogs519/MAEST: {response}; stderr: {completed.stderr[-2000:]}")
     genre_evidence = response.get("EssentiaGenreEvidence")
     if not isinstance(genre_evidence, list) or not genre_evidence:
         raise RuntimeError(f"persistent vibe worker returned no Essentia genre evidence: {response}")

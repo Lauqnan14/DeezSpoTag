@@ -24,18 +24,32 @@ public sealed class UpdateCheckServiceTest
 {
     private const string ReleasesPath = "repos/Lauqnan14/DeezSpoTag/releases";
 
+    private static readonly string CurrentReleaseTag = BuildReleaseTag(0);
+    private static readonly string NewerReleaseTag = BuildReleaseTag(1);
+
+    private static string BuildReleaseTag(int revisionOffset)
+    {
+        var versionInfo = new AppVersionInfo(
+            Options.Create(new AppVersionOptions()),
+            NullLogger<AppVersionInfo>.Instance);
+        var (major, minor, patch, revision) = AppVersionComparison.TryParse(versionInfo.CurrentVersion)
+            ?? throw new InvalidOperationException("Update-check fixtures require a four-part build version.");
+        return $"v{major}.{minor}.{patch}.{checked(revision + revisionOffset)}-pre";
+    }
+
+
     [Fact]
     public async Task PrereleaseBranch_PicksTheNewestPrereleaseAndReportsAnUpdate()
     {
         var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(
-            ("v0.1.27.6-pre", Prerelease: true),
-            ("v0.1.27.5-pre", Prerelease: true),
+            (NewerReleaseTag, Prerelease: true),
+            (CurrentReleaseTag, Prerelease: true),
             ("v0.1.26.0", Prerelease: false)));
         var service = BuildService(handler, branch: "main");
 
         var status = await service.GetStatusAsync();
 
-        Assert.Equal("v0.1.27.6-pre", status.LatestVersion);
+        Assert.Equal(NewerReleaseTag, status.LatestVersion);
         Assert.True(status.UpdateAvailable);
         Assert.Equal("main", status.Branch);
         Assert.Contains("tree/main", status.BranchUrl, StringComparison.Ordinal);
@@ -45,8 +59,8 @@ public sealed class UpdateCheckServiceTest
     public async Task StableBranch_NeverSeesPrereleases()
     {
         var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(
-            ("v0.1.27.6-pre", Prerelease: true),
-            ("v0.1.27.5-pre", Prerelease: true),
+            (NewerReleaseTag, Prerelease: true),
+            (CurrentReleaseTag, Prerelease: true),
             ("v0.1.26.0", Prerelease: false)));
         var service = BuildService(handler, branch: "stable");
 
@@ -59,8 +73,8 @@ public sealed class UpdateCheckServiceTest
     public async Task StableBranch_WithNoStableRelease_ReportsNothingRatherThanBorrowingAPrerelease()
     {
         var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(
-            ("v0.1.27.6-pre", Prerelease: true),
-            ("v0.1.27.5-pre", Prerelease: true)));
+            (NewerReleaseTag, Prerelease: true),
+            (CurrentReleaseTag, Prerelease: true)));
         var service = BuildService(handler, branch: "stable");
 
         var status = await service.GetStatusAsync();
@@ -72,7 +86,7 @@ public sealed class UpdateCheckServiceTest
     [Fact]
     public async Task UnknownBranch_PerformsNoOutboundCallAtAll()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(("v0.1.27.6-pre", Prerelease: true)));
+        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson((NewerReleaseTag, Prerelease: true)));
         var sink = new RecordingNotificationSink();
         var service = BuildService(handler, branch: "feature/personal-genre", sink: sink);
 
@@ -87,7 +101,7 @@ public sealed class UpdateCheckServiceTest
     [Fact]
     public async Task SecondCallWithinTheInterval_IsServedFromCache()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(("v0.1.27.6-pre", Prerelease: true)));
+        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson((NewerReleaseTag, Prerelease: true)));
         var service = BuildService(handler, branch: "main", minimumIntervalMinutes: 15);
 
         var first = await service.GetStatusAsync();
@@ -102,7 +116,7 @@ public sealed class UpdateCheckServiceTest
     [Fact]
     public async Task RepeatedPolling_RaisesTheUpdateNotificationOnlyOnce()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(("v0.1.27.6-pre", Prerelease: true)));
+        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson((NewerReleaseTag, Prerelease: true)));
         var sink = new RecordingNotificationSink();
         var service = BuildService(handler, branch: "main", sink: sink);
 
@@ -112,13 +126,13 @@ public sealed class UpdateCheckServiceTest
 
         var raised = Assert.Single(sink.Raised);
         Assert.Equal("app_update_available", raised.kind);
-        Assert.Contains("v0.1.27.6-pre", raised.title, StringComparison.Ordinal);
+        Assert.Contains(NewerReleaseTag, raised.title, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task UpToDateBuild_DoesNotRaiseANotification()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(("v0.1.27.5-pre", Prerelease: true)));
+        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson((CurrentReleaseTag, Prerelease: true)));
         var sink = new RecordingNotificationSink();
         var service = BuildService(handler, branch: "main", sink: sink);
 
@@ -131,7 +145,7 @@ public sealed class UpdateCheckServiceTest
     [Fact]
     public async Task RateLimited_KeepsTheCachedAnswerInsteadOfClearingIt()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson(("v0.1.27.6-pre", Prerelease: true)));
+        var handler = new StubHandler(HttpStatusCode.OK, ReleasesJson((NewerReleaseTag, Prerelease: true)));
         var service = BuildService(handler, branch: "main", minimumIntervalMinutes: 0);
 
         var first = await service.GetStatusAsync();
@@ -147,7 +161,7 @@ public sealed class UpdateCheckServiceTest
         var second = await service.GetStatusAsync();
 
         Assert.True(second.UpdateAvailable);
-        Assert.Equal("v0.1.27.6-pre", second.LatestVersion);
+        Assert.Equal(NewerReleaseTag, second.LatestVersion);
     }
 
     private static UpdateCheckService BuildService(
