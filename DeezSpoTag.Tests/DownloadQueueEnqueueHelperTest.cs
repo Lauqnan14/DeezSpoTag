@@ -23,6 +23,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class DownloadQueueEnqueueHelperTest
 {
     [Fact]
