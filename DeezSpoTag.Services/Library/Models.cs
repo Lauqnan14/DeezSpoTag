@@ -93,7 +93,14 @@ public sealed record RecommendationStationDto(
     string? ImageUrl = null,
     string Status = "ready",
     IReadOnlyList<string>? ReasonCodes = null,
-    string? Message = null);
+    string? Message = null,
+    int? DistinctArtistCount = null,
+    DateTimeOffset? GeneratedAtUtc = null,
+    string Cadence = "daily",
+    long? LibraryId = null,
+    string? LibraryName = null);
+
+public sealed record LibraryRecommendationArtistSeedDto(long ArtistId, string Name);
 
 public sealed record RecommendationArtistDto(
     string Id,
@@ -111,7 +118,12 @@ public sealed record RecommendationTrackDto(
     string Isrc,
     int TrackPosition,
     RecommendationArtistDto Artist,
-    RecommendationAlbumDto Album);
+    RecommendationAlbumDto Album,
+    string Source = "deezer",
+    string? SourceUrl = null,
+    string? SeedArtistId = null,
+    string? DeezerId = null,
+    string? MappingStatus = null);
 
 public sealed record RecommendationDetailDto(
     RecommendationStationDto Station,
@@ -119,7 +131,8 @@ public sealed record RecommendationDetailDto(
     DateTimeOffset GeneratedAtUtc,
     string Status = "ready",
     IReadOnlyList<string>? ReasonCodes = null,
-    string? Message = null);
+    string? Message = null,
+    IReadOnlyList<RecommendationTrackDto>? ReserveTracks = null);
 
 public sealed record RecommendationRejectionUpsertInput(
     long LibraryId,

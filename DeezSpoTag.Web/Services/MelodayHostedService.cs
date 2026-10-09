@@ -111,31 +111,39 @@ public sealed class MelodayHostedService : BackgroundService
                     continue;
                 }
 
-                var stateKey = MelodayRunStateStore.Key(library.LibraryId, slot.Id, library.Mode);
-                var state = await _runStateStore.GetAsync(stateKey, stoppingToken);
-                if (!MelodayScheduleMath.IsDue(slot, today, nowTime, state, effective.MissedRunGraceMinutes))
+                // The configured mode is expanded to the concrete modes that actually
+                // run. "both" names two instances, not one, so asking for "both"
+                // directly matched no instance and the slot silently generated nothing
+                // on every heartbeat. Each concrete mode keeps its own run-state key,
+                // which is what makes Direct and Sonic independently once-per-day.
+                foreach (var mode in MelodayService.ResolveRunModes(library.Mode))
                 {
-                    continue;
-                }
+                    var stateKey = MelodayRunStateStore.Key(library.LibraryId, slot.Id, mode);
+                    var state = await _runStateStore.GetAsync(stateKey, stoppingToken);
+                    if (!MelodayScheduleMath.IsDue(slot, today, nowTime, state, effective.MissedRunGraceMinutes))
+                    {
+                        continue;
+                    }
 
-                MelodayRunResult? result = null;
-                await _workCoordinator.RunHeavyWorkAsync(
-                    async token => result = await _melodayService.RunSlotAsync(library.LibraryId, slot.Id, library.Mode, token),
-                    stoppingToken);
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Meloday scheduled generation for {LibraryId}/{SlotId}/{Mode}: {Message}",
-                        library.LibraryId,
-                        slot.Id,
-                        library.Mode,
-                        result?.Message);
-                }
+                    MelodayRunResult? result = null;
+                    await _workCoordinator.RunHeavyWorkAsync(
+                        async token => result = await _melodayService.RunSlotAsync(library.LibraryId, slot.Id, mode, token),
+                        stoppingToken);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Meloday scheduled generation for {LibraryId}/{SlotId}/{Mode}: {Message}",
+                            library.LibraryId,
+                            slot.Id,
+                            mode,
+                            result?.Message);
+                    }
 
-                if (nowTime != TimeOnly.FromDateTime(DateTimeOffset.Now.DateTime))
-                {
-                    // The run crossed midnight; re-evaluate the day on the next heartbeat.
-                    break;
+                    if (nowTime != TimeOnly.FromDateTime(DateTimeOffset.Now.DateTime))
+                    {
+                        // The run crossed midnight; re-evaluate the day on the next heartbeat.
+                        break;
+                    }
                 }
             }
         }

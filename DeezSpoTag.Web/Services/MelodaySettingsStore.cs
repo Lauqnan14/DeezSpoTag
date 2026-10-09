@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DeezSpoTag.Services.Library.Dj;
 using Microsoft.AspNetCore.Hosting;
 
 namespace DeezSpoTag.Web.Services;
@@ -181,12 +182,23 @@ public sealed class MelodaySettingsStore
             || !enabledValue.TryGetValue<bool>(out var parsedEnabled)
             || parsedEnabled;
 
+        // Absent means Random. This converter rebuilds every library field explicitly,
+        // so a DJ selection it did not copy here would be erased from every existing
+        // settings file the first time it was loaded.
+        var djSelection = library.TryGetPropertyValue("djSelection", out var djNode)
+            && djNode is JsonValue djValue
+            && djValue.TryGetValue<string>(out var parsedDj)
+            && !string.IsNullOrWhiteSpace(parsedDj)
+                ? parsedDj.Trim().ToLowerInvariant()
+                : MelodayDjSelections.Random;
+
         return new JsonObject
         {
             ["libraryId"] = libraryId,
             ["enabled"] = enabled,
             ["maxActivePlaylists"] = maxActivePlaylists,
             ["mode"] = mode,
+            ["djSelection"] = djSelection,
             ["slotIds"] = new JsonArray(slotIds.Select(slotId => JsonValue.Create(slotId)).ToArray())
         };
     }
@@ -235,7 +247,10 @@ public sealed class MelodaySettingsStore
                 true,
                 MelodayScheduleSlots.DefaultMaxActivePlaylists,
                 merged.Mode,
-                MelodayScheduleSlots.Defaults.Select(static slot => slot.Id).ToList()))
+                MelodayScheduleSlots.Defaults.Select(static slot => slot.Id).ToList())
+            {
+                DjSelection = MelodayDjSelections.Random,
+            })
             .ToList();
     }
 

@@ -2097,6 +2097,10 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
             services,
             StartupWorkerCategory.Deferred,
             "Meloday automation after HTTP readiness.");
+        // There is deliberately no Meloday DJ hosted service. A DJ is resolved inside
+        // MelodyService's existing generation, so it has no cadence of its own and
+        // nothing to schedule: adding one would give the same playlist two independent
+        // triggers and two chances to disagree about which DJ filled it.
         services.AddSingleton<DeezSpoTag.Web.Services.PlexMetadataRefreshService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.PlexMetadataRefreshService>(
             services,

@@ -8,7 +8,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
-[Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public sealed class MelodayArtworkApiController : ControllerBase
 {
     private readonly MelodayArtworkPool _pool;

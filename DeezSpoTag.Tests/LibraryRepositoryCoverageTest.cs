@@ -1,3 +1,7 @@
+using DeezSpoTag.Web.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+using System.Text.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -40,6 +44,160 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
     private IConfiguration _configuration = default!;
     private LibraryRepository _repository = default!;
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task WeeklyScopeRepair_PreservesUnprovenPoolsWithoutAssigningThemToAFolder(bool alreadyMigrated, bool archiveCollision)
+    {
+        var seeded = await SeedLibraryAsync(("Song", "dz", "sp", "ap"));
+        var second = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            RootPath: Path.Join(_tempRoot, "second"), DisplayName: "Renamed music", Enabled: true,
+            LibraryName: "Music", DesiredQuality: "flac", ConvertEnabled: false,
+            ConvertFormat: null, ConvertBitrate: null, AutoTagProfileId: "test-profile"));
+        Assert.Equal(seeded.LibraryId, second.LibraryId);
+        var legacy = $"library:{seeded.LibraryId}:weekly-missing-favourites";
+        var stationId = alreadyMigrated
+            ? $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites" : legacy;
+        var payload = JsonSerializer.Serialize(new RecommendationDetailDto(
+            new(legacy, "Old library selection", "", LibraryRecommendationService.WeeklyMissingType, null, 0), [], DateTimeOffset.UtcNow));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", stationId, "v1:20261005", payload, 0, null, null, true);
+        if (archiveCollision)
+            await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-legacy-pool", stationId, "v1:20260928", "{\"older\":true}", 0, null, null, true);
+        await _repository.AddRecommendationRejectionAsync(new(seeded.LibraryId, alreadyMigrated ? seeded.Folder.Id : -1,
+            stationId, "spotify:track:0123456789ABCDEFGHIJKL", null, "Old rejection", "Artist"));
+        var daily = $"daily-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}";
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", daily, "v1:20261005", "{}", 0, null, null, true);
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM app_schema_migration WHERE migration_id='weekly-recommendation-folder-provenance-v2';";
+            await command.ExecuteNonQueryAsync();
+        }
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", stationId));
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM playlist_track_candidate_cache WHERE source='recommendations-weekly-legacy-pool' AND candidates_json=@payload;";
+            command.Parameters.AddWithValue("payload", payload);
+            Assert.Equal(1L, await command.ExecuteScalarAsync());
+        }
+        Assert.Equal(archiveCollision ? "{\"older\":true}" : payload,
+            (await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-legacy-pool", stationId))!.CandidatesJson);
+        Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", daily));
+        Assert.Equal(2, (await _repository.GetFoldersAsync()).Count);
+        Assert.Empty(await _repository.GetRecommendationRejectedTrackIdsAsync(seeded.LibraryId, seeded.Folder.Id, stationId));
+        Assert.Contains("spotify:track:0123456789ABCDEFGHIJKL", await _repository.GetRecommendationRejectedTrackIdsAsync(
+            seeded.LibraryId, alreadyMigrated ? seeded.Folder.Id : -1, "legacy-scope-unverified:" + stationId));
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM playlist_track_candidate_cache WHERE source='recommendations-weekly-legacy-pool' AND candidates_json=@payload;";
+            command.Parameters.AddWithValue("payload", payload);
+            Assert.Equal(1L, await command.ExecuteScalarAsync());
+        }
+        Assert.Equal(archiveCollision ? "{\"older\":true}" : payload,
+            (await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-legacy-pool", stationId))!.CandidatesJson);
+    }
+
+    [Fact]
+    public async Task WeeklyStateMigration_PreservesLegacyRowsAndSeparatesDailyAndWeeklyClaims()
+    {
+        var day = new DateOnly(2026, 10, 5);
+        var daily = new RecommendationGenerationStateKey(1, 1, "daily-rotation:l1:f1", day);
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(daily, "test"));
+        await _repository.CompleteRecommendationGenerationAsync(daily);
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT sql FROM sqlite_master WHERE name='recommendation_generation_state';";
+            var definition = (string)(await command.ExecuteScalarAsync())!;
+            definition = definition.Replace("PRIMARY KEY (library_id, folder_id, target_day, station_id)", "PRIMARY KEY (library_id, folder_id, target_day)", StringComparison.Ordinal);
+            command.CommandText = "ALTER TABLE recommendation_generation_state RENAME TO old_state;";
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = definition;
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = """
+                INSERT INTO recommendation_generation_state SELECT * FROM old_state;
+                DROP TABLE old_state;
+                INSERT INTO recommendation_generation_state (library_id,folder_id,station_id,target_day,status)
+                VALUES (1,-1,'library:1:weekly-missing-favourites','2026-10-05','completed');
+                DELETE FROM app_schema_migration WHERE migration_id LIKE 'weekly-recommendation-%';
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        Assert.Equal("completed", (await _repository.GetRecommendationGenerationStateAsync(1, 1, daily.StationId, day))!.Status);
+        var weekly = daily with { StationId = "weekly-rotation:l1:f1:weekly-missing-favourites" };
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(weekly, "test"));
+        await using var verify = new SqliteConnection($"Data Source={_dbPath}");
+        await verify.OpenAsync();
+        await using var count = verify.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM recommendation_generation_state WHERE folder_id=-1 AND status='completed';";
+        Assert.Equal(1L, await count.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task RecommendationPublication_RequiresClaimAndKeepsNewerDailyPointer()
+    {
+        var publish = typeof(LibraryRepository).GetMethod("PublishRecommendationSnapshotAsync");
+        Assert.NotNull(publish);
+        async Task<bool> Save(RecommendationGenerationStateKey key, string payload)
+            => await (Task<bool>)publish.Invoke(_repository,
+                [key, "recommendations-daily-pool", "daily-rotation:l1:f1", $"v1:{key.TargetDay:yyyyMMdd}", payload, System.Threading.CancellationToken.None])!;
+        var monday = new RecommendationGenerationStateKey(1, 1, "daily-rotation:l1:f1", new DateOnly(2026, 10, 5));
+        var tuesday = monday with { TargetDay = monday.TargetDay.AddDays(1) };
+        Assert.False(await Save(monday, "{\"day\":\"Monday\"}"));
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", monday.StationId));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", monday.StationId + ":day:20260928", "v1:20260928", "{}", 0, null, null, true);
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("other-source", monday.StationId + ":day:20260928", "v1:20260928", "{}", 0, null, null, true);
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(tuesday, "test"));
+        Assert.True(await Save(tuesday, "{\"day\":\"Tuesday\"}"));
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(monday, "recovery"));
+        Assert.True(await Save(monday, "{\"day\":\"Monday\"}"));
+        Assert.Equal("v1:20261006", (await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", monday.StationId))!.SnapshotId);
+        Assert.Equal("completed", (await _repository.GetRecommendationGenerationStateAsync(1, 1, monday.StationId, monday.TargetDay))!.Status);
+        Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", monday.StationId + ":day:20261005"));
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", monday.StationId + ":day:20260928"));
+        Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("other-source", monday.StationId + ":day:20260928"));
+        Assert.False(await Save(monday, "{}"));
+    }
+
+    [Fact]
+    public async Task RecommendationPublication_InvalidPayloadRollsBackClaimAndCache()
+    {
+        var publish = typeof(LibraryRepository).GetMethod("PublishRecommendationSnapshotAsync");
+        Assert.NotNull(publish);
+        var key = new RecommendationGenerationStateKey(1, 1, "weekly-rotation:l1:f1:weekly-missing-favourites", new DateOnly(2026, 10, 5));
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.False(await (Task<bool>)publish.Invoke(_repository,
+            [key, "recommendations-weekly-pool", key.StationId, "v1:20261005", "invalid json", System.Threading.CancellationToken.None])!);
+        Assert.Equal("running", (await _repository.GetRecommendationGenerationStateAsync(1, 1, key.StationId, key.TargetDay))!.Status);
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", key.StationId));
+    }
+
+    [Fact]
+    public async Task RecommendationPublication_StorageFailureRollsBackCompletion()
+    {
+        var key = new RecommendationGenerationStateKey(1, 1, "daily-rotation:l1:f1", new DateOnly(2026, 10, 5));
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(key, "test"));
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + _dbPath);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TRIGGER fail_snapshot BEFORE INSERT ON playlist_track_candidate_cache BEGIN SELECT RAISE(ABORT, 'test storage failure'); END";
+        await command.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => _repository.PublishRecommendationSnapshotAsync(key,
+            "recommendations-daily-pool", key.StationId, "v1:20261005", "{}"));
+        Assert.Equal("running", (await _repository.GetRecommendationGenerationStateAsync(1, 1, key.StationId, key.TargetDay))!.Status);
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", key.StationId));
+    }
+
     public async Task InitializeAsync()
     {
         _tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-library-tests-" + Path.GetRandomFileName());
@@ -74,6 +232,195 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
         }
 
         return Task.CompletedTask;
+    }
+
+    private sealed class WeeklyTestEnvironment : IWebHostEnvironment
+    {
+        public string ApplicationName { get; set; } = "Tests";
+        public string EnvironmentName { get; set; } = "Development";
+        public string ContentRootPath { get; set; } = "";
+        public string WebRootPath { get; set; } = "";
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private static async Task PrepareSavedWeeklyForTestAsync(LibraryRecommendationService service, long libraryId, string stationId)
+    {
+        var method = typeof(LibraryRecommendationService).GetMethod("PrepareWeeklyRecommendationsAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        await (Task<RecommendationDetailDto?>)method.Invoke(service,
+            [libraryId, stationId, 50, System.Threading.CancellationToken.None, true, false, null, null])!;
+    }
+
+    private LibraryRecommendationService CreateWeeklyService() => new(
+        new LibraryRecommendationService.LibraryRecommendationCollaborators { Repository = _repository },
+        new WeeklyTestEnvironment(), NullLogger<LibraryRecommendationService>.Instance);
+
+    private async Task PersistWeeklyTestPoolAsync(long libraryId, string type, params RecommendationTrackDto[] tracks)
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var monday = day.AddDays(-(((int)day.DayOfWeek + 6) % 7));
+        var folder = Assert.Single((await _repository.GetFoldersAsync()).Where(f => f.LibraryId == libraryId));
+        var station = new RecommendationStationDto($"weekly-rotation:l{libraryId}:f{folder.Id}:{type}", "Weekly", "Test", type, null, tracks.Length, Cadence: "weekly");
+        var detail = new RecommendationDetailDto(station, tracks, DateTimeOffset.UtcNow);
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", station.Id,
+            $"v1:{monday:yyyyMMdd}", JsonSerializer.Serialize(detail), 0, null, null, true);
+    }
+
+    [Fact]
+    public async Task WeeklyServing_RemovesAcquiredTracksWithoutProviderCallsAndSurvivesRestart()
+    {
+        var seeded = await SeedLibraryAsync(("Owned Song", "dz", "ownedSpotify", "ap"));
+        var owned = new RecommendationTrackDto("ownedSpotify", "Owned Song", 180, "", 1,
+            new("seed", "Artist One"), new("album", "Album One", ""), "spotify", SeedArtistId: "seed", DeezerId: "100", MappingStatus: "matched");
+        var missing = owned with { Id = "missingSpotify", DeezerId = "98765", Title = "Entirely Different Song", Artist = new("other", "Other Artist"), Album = new("other", "Other Album", "") };
+        await PersistWeeklyTestPoolAsync(seeded.LibraryId, LibraryRecommendationService.WeeklyMissingType, owned, missing);
+        var service = CreateWeeklyService();
+        await PrepareSavedWeeklyForTestAsync(service, seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites");
+        var result = await service.GetRecommendationsAsync(seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites");
+        Assert.NotNull(result);
+        Assert.Equal("missingSpotify", Assert.Single(result.Tracks).Id);
+        var restarted = await CreateWeeklyService().GetRecommendationsAsync(seeded.LibraryId, result.Station.Id);
+        Assert.Equal(result.GeneratedAtUtc, restarted!.GeneratedAtUtc);
+        Assert.Equal("98765", Assert.Single(restarted.Tracks).DeezerId);
+        Assert.Equal("matched", Assert.Single(restarted.Tracks).MappingStatus);
+        Assert.Equal(seeded.LibraryId, restarted.Station.LibraryId);
+        Assert.False(string.IsNullOrWhiteSpace(restarted.Station.LibraryName));
+        Assert.Equal(result.Tracks.Select(t => t.Id), restarted.Tracks.Select(t => t.Id));
+        Assert.Null(await service.GetRecommendationsAsync(seeded.LibraryId + 1, result.Station.Id));
+    }
+
+    [Fact]
+    public async Task WeeklyServing_BackfillsAcquiredTrackFromSavedReserve()
+    {
+        var seeded = await SeedLibraryAsync(("Owned Song", "dz", "ownedSpotify", "ap"));
+        var tracks = Enumerable.Range(0, 50).Select(i => new RecommendationTrackDto(
+            i == 0 ? "ownedSpotify" : $"missing-{i}", i == 0 ? "Owned Song" : $"Different Song {i}", 180, "", i + 1,
+            new($"artist-{i}", i == 0 ? "Artist One" : $"Other Artist {i}"), new("album", "Other Album", ""),
+            "spotify", DeezerId: $"{90000+i}", MappingStatus: "matched")).ToArray();
+        await PersistWeeklyTestPoolAsync(seeded.LibraryId, LibraryRecommendationService.WeeklyMissingType, tracks);
+        var stationId = $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites";
+        var saved = (await _repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", stationId))!;
+        var reserve = tracks[1] with { Id = "reserve-track", Title = "Reserve Song", DeezerId = "99999", Artist = new("reserve", "Reserve Artist") };
+        var json = System.Text.Json.Nodes.JsonNode.Parse(saved.CandidatesJson)!;
+        json["ReserveTracks"] = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(new[] { reserve }));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", stationId, saved.SnapshotId, json.ToJsonString(), 0, null, null, true);
+        var service = CreateWeeklyService();
+        await PrepareSavedWeeklyForTestAsync(service, seeded.LibraryId, stationId);
+        var result = await service.GetRecommendationsAsync(seeded.LibraryId, stationId);
+        Assert.Equal(50, result!.Tracks.Count);
+        Assert.Contains(result.Tracks, t => t.Id == "reserve-track" && t.DeezerId == "99999");
+        Assert.DoesNotContain(result.Tracks, t => t.Id == "ownedSpotify");
+    }
+
+    [Fact]
+    public async Task WeeklyDiscovery_RemovesArtistWhoEnteredLibrary()
+    {
+        var seeded = await SeedLibraryAsync(("Owned", "dz", "sp", "ap"));
+        await _repository.UpsertArtistSourceIdAsync(seeded.ArtistId, "spotify", "newArtist");
+        var track = new RecommendationTrackDto("missingTrack", "Unowned Song", 180, "", 1,
+            new("newArtist", "Artist One"), new("album", "Album", ""), "spotify", SeedArtistId: "newArtist", DeezerId: "98765", MappingStatus: "matched");
+        await PersistWeeklyTestPoolAsync(seeded.LibraryId, LibraryRecommendationService.WeeklySimilarType, track);
+        var service = CreateWeeklyService();
+        await PrepareSavedWeeklyForTestAsync(service, seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-similar-artists");
+        var result = await service.GetRecommendationsAsync(seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-similar-artists");
+        Assert.Empty(result!.Tracks);
+        Assert.Equal("empty", result.Status);
+    }
+
+    [Fact]
+    public async Task WeeklyEmptySnapshot_IsServedWithoutRegeneration()
+    {
+        var seeded = await SeedLibraryAsync(("Owned", "dz", "sp", "ap"));
+        await PersistWeeklyTestPoolAsync(seeded.LibraryId, LibraryRecommendationService.WeeklyMissingType);
+        var result = await CreateWeeklyService().GetRecommendationsAsync(seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites");
+        Assert.Empty(result!.Tracks);
+        Assert.Equal("empty", result.Status);
+    }
+
+    [Fact]
+    public async Task WeeklyMissingAuthentication_IsFailedWithoutProviderSubstitution()
+    {
+        var seeded = await SeedLibraryAsync(("Owned", "dz", "sp", "ap"));
+        var service = CreateWeeklyService();
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var monday = day.AddDays(-(((int)day.DayOfWeek + 6) % 7));
+        var dailyId = $"daily-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}";
+        var key = new RecommendationGenerationStateKey(seeded.LibraryId, seeded.Folder.Id, dailyId, monday);
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(key, "test"));
+        var dailyTrack = new RecommendationTrackDto("12345", "Saved", 180, "", 1, new("1", "Artist"), new("1", "Album", ""));
+        Assert.True(await _repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", dailyId,
+            $"v1:{monday:yyyyMMdd}", JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { dailyTrack } })));
+        await service.RefreshWeeklyRecommendationsAsync("test", default);
+        var result = await service.GetRecommendationsAsync(seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites");
+        Assert.Equal("failed", result!.Status);
+        Assert.Contains("authentication", result.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Tracks);
+    }
+
+    [Fact]
+    public async Task WeeklyGeneration_SeparatesSectionsAndPreservesCompletedClaims()
+    {
+        var week = new DateOnly(2026, 9, 28);
+        var missing = new RecommendationGenerationStateKey(7, 9, "weekly-rotation:l7:f9:weekly-missing-favourites", week);
+        var similar = new RecommendationGenerationStateKey(7, 9, "weekly-rotation:l7:f9:weekly-similar-artists", week);
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(missing, "test"));
+        Assert.True(await _repository.TryStartRecommendationGenerationAsync(similar, "test"));
+        Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing, "duplicate"));
+        await _repository.CompleteRecommendationGenerationAsync(missing);
+        Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing, "restart"));
+        Assert.Equal("completed", (await _repository.GetRecommendationGenerationStateAsync(7, 9, missing.StationId, week))!.Status);
+        Assert.Equal("running", (await _repository.GetRecommendationGenerationStateAsync(7, 9, similar.StationId, week))!.Status);
+        Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing with { StationId = "weekly-rotation:l8:f9:weekly-missing-favourites" }, "forged"));
+        Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing with { FolderId = -3 }, "invalid"));
+    }
+
+    [Fact]
+    public async Task WeeklyArtistSeeds_AreScopedToLocalLibrary()
+    {
+        var seeded = await SeedLibraryAsync(("Song", "dz", "sp", "ap"));
+        var seeds = await _repository.GetRecommendationArtistSeedsForLibraryAsync(seeded.LibraryId);
+        Assert.Contains(seeds, artist => artist.ArtistId == seeded.ArtistId);
+        Assert.Empty(await _repository.GetRecommendationArtistSeedsForLibraryAsync(seeded.LibraryId + 100));
+    }
+
+    [Fact]
+    public async Task WeeklyArtistSeeds_StayWithinTheRequestedConfiguredFolder()
+    {
+        var first = await SeedLibraryAsync(("First song", "first-dz", "first-sp", "first-ap"));
+        var second = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            RootPath: Path.Join(_tempRoot, "second-music"), DisplayName: "Second songs", Enabled: true,
+            LibraryName: "Music", DesiredQuality: "flac", ConvertEnabled: false,
+            ConvertFormat: null, ConvertBitrate: null, AutoTagProfileId: "test-profile"));
+        Assert.Equal(first.LibraryId, second.LibraryId);
+        var path = Path.Join(second.RootPath, "second.flac");
+        await _repository.IngestLocalScanAsync(
+            [second],
+            [new LocalArtistScanDto("Artist Two", null)],
+            [new LocalAlbumScanDto("Artist Two", "Album Two", null, [second.DisplayName], false)],
+            [CreateTrackScan("Second song", path, "second-dz", "second-sp", "second-ap") with
+            {
+                ArtistName = "Artist Two", AlbumTitle = "Album Two", TagArtist = "Artist Two",
+                TagAlbumArtist = "Artist Two", TagAlbum = "Album Two", TagIsrc = "ISRC00000002"
+            }], pruneMissingArtists: false);
+        Assert.Equal("Artist One", Assert.Single(await _repository.GetRecommendationArtistSeedsForLibraryAsync(first.LibraryId, first.Folder.Id)).Name);
+        Assert.Equal("Artist Two", Assert.Single(await _repository.GetRecommendationArtistSeedsForLibraryAsync(first.LibraryId, second.Id)).Name);
+        Assert.Empty(await _repository.GetRecommendationArtistSeedsForLibraryAsync(first.LibraryId + 1, second.Id));
+        var method = typeof(LibraryRecommendationService).GetMethod("GetWeeklyLibraryArtistMembershipAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var membership = await (Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames)>)method.Invoke(
+            CreateWeeklyService(), [first.LibraryId, second.Id, false, System.Threading.CancellationToken.None])!;
+        Assert.Contains(ArtistAliasService.NormalizeName("Artist Two"), membership.Names);
+        Assert.DoesNotContain(ArtistAliasService.NormalizeName("Artist One"), membership.Names);
+    }
+
+    [Fact]
+    public async Task WeeklyRejections_PreserveSpotifyIdentityAndLibraryScope()
+    {
+        const string track = "spotify:track:0123456789ABCDEFGHIJKL";
+        await _repository.AddRecommendationRejectionAsync(new(7, 9, "weekly-rotation:l7:f9:weekly-missing-favourites", track, null, "Song", "Artist"));
+        Assert.Contains(track, await _repository.GetRecommendationRejectedTrackIdsAsync(7, 9, "weekly-rotation:l7:f9:weekly-missing-favourites"));
+        Assert.Empty(await _repository.GetRecommendationRejectedTrackIdsAsync(8, 9, "weekly-rotation:l7:f9:weekly-missing-favourites"));
+        Assert.Empty(await _repository.GetRecommendationRejectedTrackIdsAsync(7, 9, "weekly-rotation:l7:f9:weekly-similar-artists"));
     }
 
     [Fact]
@@ -2180,6 +2527,72 @@ CREATE TABLE track_shazam_cache (
             10,
             includeCompletedStandard: true);
         Assert.DoesNotContain(enhancedCandidates, item => item.TrackId == trackId);
+    }
+
+    [Fact]
+    public async Task AnalysisStatus_FiltersEachLibraryAndPreservesApiDefault()
+    {
+        var primary = await SeedLibraryAsync(
+            ("Completed A", "dz-a1", "sp-a1", "ap-a1"),
+            ("Failed A", "dz-a2", "sp-a2", "ap-a2"),
+            ("Pending A", "dz-a3", "sp-a3", "ap-a3"));
+        var otherRoot = Path.Join(_tempRoot, "music", "library-b");
+        await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            RootPath: otherRoot, DisplayName: "Library B", Enabled: true, LibraryName: "Other Music",
+            DesiredQuality: "flac", ConvertEnabled: false, ConvertFormat: null,
+            ConvertBitrate: null, AutoTagProfileId: "test-profile"));
+        var otherTracks = Enumerable.Range(1, 4).Select(i => CreateTrackScan(
+            $"Other {i}", Path.Join(otherRoot, $"other-{i}.flac"), $"dz-b{i}", $"sp-b{i}", $"ap-b{i}")).ToArray();
+        Directory.CreateDirectory(otherRoot);
+        foreach (var track in otherTracks)
+        {
+            await File.WriteAllTextAsync(track.FilePath, "audio placeholder");
+        }
+        await _repository.IngestLocalScanAsync(await _repository.GetFoldersAsync(),
+            new[] { new LocalArtistScanDto("Artist One", null) },
+            new[] { new LocalAlbumScanDto("Artist One", "Album One", null, new[] { "Library B" }, false) },
+            otherTracks, pruneMissingArtists: false);
+        var otherLibrary = Assert.Single((await _repository.GetLibrariesAsync()).Where(l => l.Name == "Other Music"));
+        var firstTime = new DateTimeOffset(2026, 10, 1, 1, 0, 0, TimeSpan.Zero);
+        var secondTime = firstTime.AddDays(1);
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(primary.TrackIdsByTitle["Completed A"], primary.LibraryId, firstTime, []));
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(primary.TrackIdsByTitle["Failed A"], primary.LibraryId, firstTime, []) with { Status = "failed" });
+        foreach (var track in otherTracks.Take(2))
+        {
+            var id = await _repository.GetTrackIdForFilePathAsync(track.FilePath);
+            Assert.NotNull(id);
+            await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(id!.Value, otherLibrary.Id, secondTime, []));
+        }
+
+        var first = await _repository.GetAnalysisStatusAsync(new[] { primary.LibraryId });
+        Assert.Equal(new AnalysisStatusDto(3, 1, 1, 1, firstTime), first);
+        var second = await _repository.GetAnalysisStatusAsync(new[] { otherLibrary.Id });
+        Assert.Equal(new AnalysisStatusDto(4, 2, 2, 0, secondTime), second);
+        var unknown = await _repository.GetAnalysisStatusAsync(new[] { long.MaxValue });
+        Assert.Equal(new AnalysisStatusDto(0, 0, 0, 0, null), unknown);
+        var all = await _repository.GetAnalysisStatusAsync();
+        Assert.Equal(new AnalysisStatusDto(7, 3, 3, 1, secondTime), all);
+
+        var controller = new DeezSpoTag.Web.Controllers.Api.LibraryAnalysisStatusApiController(
+            _repository, null!, null!, null!, null!, null!);
+        var method = controller.GetType().GetMethod("GetStatus")!;
+        Assert.Equal(2, method.GetParameters().Length);
+        async Task<object?> GetStatus(long? libraryId)
+        {
+            var action = await (Task<Microsoft.AspNetCore.Mvc.IActionResult>)method.Invoke(
+                controller, new object?[] { default(System.Threading.CancellationToken), libraryId })!;
+            return Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(action).Value;
+        }
+        Assert.Equal(first, await GetStatus(primary.LibraryId));
+        Assert.Equal(second, await GetStatus(otherLibrary.Id));
+        Assert.Equal(unknown, await GetStatus(long.MaxValue));
+        Assert.Equal(all, await GetStatus(null));
+        foreach (var invalid in new long[] { 0, -1 })
+        {
+            var action = await (Task<Microsoft.AspNetCore.Mvc.IActionResult>)method.Invoke(
+                controller, new object?[] { default(System.Threading.CancellationToken), invalid })!;
+            Assert.IsType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>(action);
+        }
     }
 
     [Fact]

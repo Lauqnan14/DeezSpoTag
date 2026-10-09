@@ -1898,6 +1898,7 @@ function setDestinationContentMode(select, contentMode) {
 
 function normalizeDownloadSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
+    if (normalized === 'recommendations' && (String(tracklistId || '').startsWith('library:') || String(tracklistId || '').startsWith('weekly-rotation:'))) return 'spotify';
     const deezerMappedSources = new Set([
         'recommendations',
         'youtube',
@@ -1965,7 +1966,7 @@ function resolveDownloadSourceForQueue(source, trackElements = []) {
 function normalizeTrackRowPlaybackSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
     if (normalized === 'recommendations') {
-        return String(tracklistId || '').startsWith('library:') ? 'spotify' : 'deezer';
+        return (String(tracklistId || '').startsWith('library:') || String(tracklistId || '').startsWith('weekly-rotation:')) ? 'spotify' : 'deezer';
     }
     if (normalized === 'applemusic'
         || normalized === 'apple-music'
@@ -2989,7 +2990,12 @@ function buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath) {
     return `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio${query ? `?${query}` : ''}`;
 }
 
+let recommendationReloadTimer;
+let recommendationRequestGeneration = 0;
+
 async function loadRecommendationsTracklist() {
+    clearTimeout(recommendationReloadTimer);
+    const requestGeneration = ++recommendationRequestGeneration;
     if (!tracklistLibraryId) {
         throw new Error('Library is required for recommendations.');
     }
@@ -3014,18 +3020,27 @@ async function loadRecommendationsTracklist() {
     }
 
     const payload = await response.json();
+    if (requestGeneration !== recommendationRequestGeneration || tracklistSource !== 'recommendations') return;
     if (!payload?.station || !Array.isArray(payload.tracks)) {
         throw new Error('Recommendations unavailable.');
     }
 
     const mapped = mapRecommendationsTracklist(payload);
     await loadIgnoredTracks();
+    if (requestGeneration !== recommendationRequestGeneration) return;
     const status = String(payload.status || payload.station?.status || '').trim().toLowerCase();
-    const isGenerating = status === 'generating';
-    renderTracklist(mapped, { allowEmptyTracks: isGenerating });
-    if (isGenerating || (payload.station?.cadence === 'weekly' && status === 'failed')) {
-        const message = payload.message || payload.station?.message || 'Recommendation generation is running in the background.';
-        setTracksEmptyMessage(message);
+    const refreshing = ['generating', 'waiting', 'refreshing', 'refresh_failed', 'failed'].includes(status);
+    renderTracklist(mapped, { allowEmptyTracks: refreshing });
+    if (refreshing) {
+        const message = payload.message || payload.station?.message || 'Saved recommendations are being refreshed.';
+        const savedDate = payload.tracks.length && payload.generatedAtUtc
+            ? ` Saved ${new Date(payload.generatedAtUtc).toLocaleDateString()}.` : '';
+        if (payload.tracks.length === 0) setTracksEmptyMessage(message);
+        const notice = document.getElementById('tracklist-notice');
+        if (notice) {
+            notice.textContent = message + savedDate;
+            notice.classList.remove('is-hidden');
+        }
         scheduleRecommendationsReload();
     } else {
         globalThis.recommendationReloadAttempt = 0;
@@ -3033,17 +3048,16 @@ async function loadRecommendationsTracklist() {
 }
 
 function scheduleRecommendationsReload() {
+    clearTimeout(recommendationReloadTimer);
     const currentAttempt = Number.parseInt(String(globalThis.recommendationReloadAttempt || '0'), 10) || 0;
-    if (!String(tracklistId || '').startsWith('library:') && currentAttempt >= 24) {
-        return;
-    }
-
+    if (currentAttempt >= 24) return;
     globalThis.recommendationReloadAttempt = currentAttempt + 1;
-    setTimeout(() => {
+    const delay = Math.min(60000, 5000 * (1 + Math.floor(currentAttempt / 4)));
+    recommendationReloadTimer = setTimeout(() => {
         if (tracklistSource === 'recommendations') {
-            void loadRecommendationsTracklist();
+            void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
         }
-    }, 5000);
+    }, delay);
 }
 
 function mapRecommendationsTracklist(payload) {
@@ -6637,7 +6651,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             : ` title="${isSourceUnmatchedDownloadableRow ? 'Select source track' : 'Select track'}"`;
         const recommendationRejectButton = isRecommendationSource
             ? `<button class="track-recommendation-reject-btn" type="button"
-                    data-recommendation-track-id="${escapeHtml(track.id || deezerId || '')}"
+                    data-recommendation-track-id="${escapeHtml(track.source === 'spotify' ? `spotify:track:${track.id}` : (track.id || deezerId || ''))}"
                     data-recommendation-track-isrc="${escapeHtml(track.isrc || '')}"
                     data-recommendation-track-title="${escapeHtml(track.title || '')}"
                     data-recommendation-track-artist="${escapeHtml(artistName || '')}"
@@ -6728,7 +6742,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             </td>
             ${shouldShowIgnore ? `<td class="track-ignore">
                 <button class="track-ignore-btn ${ignoreToggleClass}" type="button"
-                    data-ignore-track-id="${track.id}"
+                    data-ignore-track-id="${escapeHtml(track.source === 'spotify' && isRecommendationSource ? `spotify:track:${track.id}` : track.id)}"
                     data-ignore-track-isrc="${escapeHtml(track.isrc || '')}"
                     title="${isPodcastShow ? 'Ignore episode' : 'Ignore track'}">Ignore</button>
             </td>` : ''}

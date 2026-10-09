@@ -8,7 +8,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
-[Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public class MelodayApiController : ControllerBase
 {
     // A run updates every populated library and may contact three remote media servers.

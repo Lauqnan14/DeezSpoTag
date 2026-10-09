@@ -43,6 +43,30 @@ public sealed class LibraryRecommendationServiceTest
     private static readonly string[] GenerationQueuedReasonCodes = ["generation_queued"];
 
     [Fact]
+    public async System.Threading.Tasks.Task PreviousDailySelectionRetainsSavedDateAndOrdering()
+    {
+        var fixture = new RecommendationCacheServingTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var savedDay = DateOnly.FromDateTime(DateTime.Now).AddDays(-1);
+            var id = $"daily-rotation:l{fixture.Folder.LibraryId}:f{fixture.Folder.Id}";
+            var tracks = Enumerable.Range(1, 80).Select(i => new RecommendationTrackDto(i.ToString(), $"Track {i}", 180, "", i,
+                new((i % 8).ToString(), $"Artist {i % 8}"), new("1", "Album", ""))).ToList();
+            var generated = new DateTimeOffset(savedDay.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
+            await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id, $"v1:{savedDay:yyyyMMdd}",
+                System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = generated, Tracks = tracks }), 0, null, null, true);
+            var expected = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(null,
+                [tracks, new HashSet<string>(StringComparer.Ordinal), 50, savedDay])!;
+            var response = await fixture.Service().GetRecommendationsAsync(fixture.Folder.LibraryId!.Value, id);
+            Assert.Equal("refreshing", response!.Status);
+            Assert.Equal(generated, response.GeneratedAtUtc);
+            Assert.Equal(expected.Select(t => t.Id), response.Tracks.Select(t => t.Id));
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
     public void MergeRotating_UsesRecommendationPoolLimit()
     {
         var deezerTracks = CreateTracks("deezer", 240, 1);
@@ -132,6 +156,21 @@ public sealed class LibraryRecommendationServiceTest
         Assert.Equal(50, result.Count);
         Assert.DoesNotContain(result, track => ignored.Contains(track.Id));
         Assert.Equal(Enumerable.Range(1, 50), result.Select(track => track.TrackPosition));
+    }
+
+    [Fact]
+    public void DailyRefillPreservesEligibleSongsAndReplacesExcludedSong()
+    {
+        var tracks = CreateTracks("daily", 50, 1);
+        var replacement = CreateTracks("refill", 1, 51);
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { tracks[0].Id };
+        var method = typeof(LibraryRecommendationService).GetMethod("MergeDailyRefillTracks", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var merged = (List<RecommendationTrackDto>)method.Invoke(null, [tracks, replacement, excluded])!;
+        Assert.Equal(50, merged.Count);
+        Assert.DoesNotContain(merged, t => excluded.Contains(t.Id));
+        Assert.Equal(tracks[1].Id, merged[0].Id);
+        Assert.Contains(merged, t => t.Id == replacement[0].Id);
     }
 
     [Fact]

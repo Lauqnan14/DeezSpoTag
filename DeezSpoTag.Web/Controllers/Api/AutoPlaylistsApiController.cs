@@ -94,12 +94,11 @@ public class AutoPlaylistsApiController : ControllerBase
         }
 
         var items = await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken);
-        foreach (var item in items)
+        foreach (var key in items
+            .Where(item => !string.IsNullOrWhiteSpace(item.Source) && !string.IsNullOrWhiteSpace(item.SourceId))
+            .Select(item => BuildPlaylistKey(item.Source, item.SourceId)))
         {
-            if (!string.IsNullOrWhiteSpace(item.Source) && !string.IsNullOrWhiteSpace(item.SourceId))
-            {
-                monitored.Add(BuildPlaylistKey(item.Source, item.SourceId));
-            }
+            monitored.Add(key);
         }
 
         return monitored;
@@ -297,6 +296,7 @@ public class AutoPlaylistsApiController : ControllerBase
     /// unmonitored playlists here.
     /// </summary>
     [HttpPost("{id}/sync")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> SyncPlaylist(
         string id,
         [FromBody] LibraryPlaylistSyncRequest request,
@@ -512,7 +512,7 @@ public class AutoPlaylistsApiController : ControllerBase
                 description = playlist.Overview,
                 trackCount = tracks.Count,
                 duration = FormatJellyfinRuntime(playlist.RunTimeTicks),
-                updated = (string?)null,
+                updated = default(string?),
                 coverUrl = BuildJellyfinImageProxyUrl(playlist.Id!, playlist.ImageTags),
                 source = JellyfinServer,
                 itemLoad = new { success = true },
@@ -563,9 +563,9 @@ public class AutoPlaylistsApiController : ControllerBase
                 name = playlist.Name,
                 description = playlist.Comment,
                 trackCount = playlist.TrackCount ?? candidates.Count,
-                duration = (string?)null,
-                updated = (string?)null,
-                coverUrl = (string?)null,
+                duration = default(string?),
+                updated = default(string?),
+                coverUrl = default(string?),
                 source = NavidromeServer,
                 tracks = BuildLibraryPlaylistTracks(
                     candidates,
@@ -779,12 +779,9 @@ public class AutoPlaylistsApiController : ControllerBase
         IReadOnlyList<PlexPlaylistTrack> plexTracks)
     {
         var streamUrlsById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var track in plexTracks)
+        foreach (var track in plexTracks.Where(track => !string.IsNullOrWhiteSpace(track.Id)))
         {
-            if (!string.IsNullOrWhiteSpace(track.Id))
-            {
-                streamUrlsById[track.Id] = BuildPlexStreamProxyUrl(track.StreamUrl);
-            }
+            streamUrlsById[track.Id] = BuildPlexStreamProxyUrl(track.StreamUrl);
         }
 
         return resolvedTracks

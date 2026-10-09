@@ -147,6 +147,15 @@ public sealed class MelodayGuardrailTest
     }
 
     [Fact]
+    public void MelodaySettings_AcceptsNoneButStillRejectsUnknownDj()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "MelodaySettingsApiController.cs");
+        Assert.Contains("MelodayDjSelections.IsNone(selection)", controller, StringComparison.Ordinal);
+        Assert.Contains("_strategyCatalog.GetById(selection) is null", controller, StringComparison.Ordinal);
+        Assert.Contains("Unknown Meloday DJ selection", controller, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Meloday_Settings_Render_Selected_Target_Server_And_Library_Controls_Without_Manual_Mappings()
     {
         var activities = ReadActivitiesView();

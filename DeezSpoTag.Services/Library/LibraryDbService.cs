@@ -53,6 +53,8 @@ public sealed class LibraryDbService
     private const string MelodayAutomaticScopeMigrationId = "meloday-automatic-library-scope-v1";
     private const string WatchlistReliabilityRepairMigrationId = "watchlist-reliability-repair-v1";
     private const string WatchlistPerTargetPlaylistSyncJobMigrationId = "watchlist-per-target-playlist-sync-job-v1";
+    private const string WeeklyRecommendationFolderScopeMigrationId = "weekly-recommendation-folder-scope-v1";
+    private const string WeeklyRecommendationFolderProvenanceMigrationId = "weekly-recommendation-folder-provenance-v2";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -756,6 +758,8 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
         await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "deadline_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "scan_submitted_utc", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_media_server_refresh_outbox_due", MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
+        await MigrateWeeklyRecommendationFolderScopeAsync(connection, cancellationToken);
+        await RepairWeeklyRecommendationFolderProvenanceAsync(connection, cancellationToken);
         await MigrateAndDropWatchlistSharedIdentityAsync(connection, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
@@ -2794,6 +2798,150 @@ WHERE ph.track_id IS NOT NULL
   );";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Separates station identities in generation state without guessing a real folder for
+    /// legacy library-wide weekly rows. The provenance repair handles their cached selections.
+    /// </summary>
+    private static async Task MigrateWeeklyRecommendationFolderScopeAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS app_schema_migration (
+    migration_id TEXT NOT NULL PRIMARY KEY,
+    completed_at_utc TEXT NOT NULL
+);", cancellationToken);
+
+        await using (var check = new SqliteCommand(
+            "SELECT 1 FROM app_schema_migration WHERE migration_id = @migrationId LIMIT 1;",
+            connection))
+        {
+            check.Parameters.AddWithValue("migrationId", WeeklyRecommendationFolderScopeMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var tableSql = new SqliteCommand(
+            "SELECT COALESCE((SELECT sql FROM sqlite_master WHERE type='table' AND name='recommendation_generation_state'), '');",
+            connection, transaction))
+        {
+            var definition = (await tableSql.ExecuteScalarAsync(cancellationToken)) as string ?? string.Empty;
+            if (!definition.Contains("PRIMARY KEY (library_id, folder_id, target_day, station_id)", StringComparison.Ordinal))
+            {
+                const string rebuildSql = @"
+CREATE TABLE recommendation_generation_state_new (
+    library_id BIGINT NOT NULL,
+    folder_id BIGINT NOT NULL,
+    station_id TEXT NOT NULL,
+    target_day TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason_code TEXT,
+    started_at_utc TEXT,
+    completed_at_utc TEXT,
+    last_error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (library_id, folder_id, target_day, station_id)
+);
+INSERT INTO recommendation_generation_state_new
+    (library_id, folder_id, station_id, target_day, status, reason_code, started_at_utc,
+     completed_at_utc, last_error, attempt_count, updated_at_utc)
+SELECT library_id, folder_id, station_id, target_day, status, reason_code, started_at_utc,
+       completed_at_utc, last_error, attempt_count, updated_at_utc
+FROM recommendation_generation_state;
+DROP TABLE recommendation_generation_state;
+ALTER TABLE recommendation_generation_state_new RENAME TO recommendation_generation_state;
+CREATE INDEX IF NOT EXISTS idx_recommendation_generation_state_status
+    ON recommendation_generation_state (status, target_day, updated_at_utc);";
+                await using var rebuild = new SqliteCommand(rebuildSql, connection, transaction);
+                rebuild.CommandTimeout = 0;
+                await rebuild.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        // Preserve legacy rows as written. A library-wide selection has no proven folder
+        // ownership; the separately versioned provenance repair excludes it from active reads.
+
+        await using (var marker = new SqliteCommand(@"
+INSERT INTO app_schema_migration (migration_id, completed_at_utc)
+VALUES (@migrationId, @completedAtUtc);", connection, transaction))
+        {
+            marker.Parameters.AddWithValue("migrationId", WeeklyRecommendationFolderScopeMigrationId);
+            marker.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task RepairWeeklyRecommendationFolderProvenanceAsync(
+        SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var check = new SqliteCommand(
+            "SELECT 1 FROM app_schema_migration WHERE migration_id=@migrationId;", connection, transaction);
+        check.Parameters.AddWithValue("migrationId", WeeklyRecommendationFolderProvenanceMigrationId);
+        if (await check.ExecuteScalarAsync(cancellationToken) is not null) return;
+
+        // v1 renamed cache keys without changing their library-wide payload identities. Keep
+        // those payloads and their rejections, but do not present them as folder-scoped evidence.
+        const string sql = @"
+UPDATE recommendation_rejection
+SET station_id = 'legacy-scope-unverified:' || station_id
+WHERE station_id LIKE 'library:%'
+   OR station_id IN (
+       SELECT source_id FROM playlist_track_candidate_cache
+       WHERE source='recommendations-weekly-pool'
+         AND (source_id LIKE 'library:%' OR
+             CASE WHEN json_valid(candidates_json) THEN
+                 COALESCE(json_extract(candidates_json, '$.Station.Id'), json_extract(candidates_json, '$.station.id'), '') <> source_id
+             ELSE 1 END));
+
+INSERT INTO playlist_track_candidate_cache
+    (source, source_id, snapshot_id, candidates_json, updated_at, schema_version,
+     identity_revision, provider_readiness_revision, is_complete)
+SELECT 'recommendations-weekly-legacy-pool',
+       CASE WHEN EXISTS (SELECT 1 FROM playlist_track_candidate_cache previous
+           WHERE previous.source='recommendations-weekly-legacy-pool'
+             AND previous.source_id=original.source_id
+             AND previous.candidates_json<>original.candidates_json)
+       THEN source_id || ':unverified:' || lower(hex(randomblob(16))) ELSE source_id END,
+       snapshot_id, candidates_json, updated_at, schema_version, identity_revision, provider_readiness_revision, is_complete
+FROM playlist_track_candidate_cache original
+WHERE source='recommendations-weekly-pool'
+  AND (source_id LIKE 'library:%' OR
+       CASE WHEN json_valid(candidates_json) THEN
+           COALESCE(json_extract(candidates_json, '$.Station.Id'), json_extract(candidates_json, '$.station.id'), '') <> source_id
+       ELSE 1 END)
+ON CONFLICT(source, source_id) DO NOTHING;
+
+UPDATE recommendation_generation_state
+SET status='pending', reason_code='weekly_folder_provenance_repair', started_at_utc=NULL, completed_at_utc=NULL
+WHERE (station_id LIKE 'weekly-rotation:%' OR station_id LIKE 'library:%:weekly-%')
+  AND station_id IN (
+    SELECT source_id FROM playlist_track_candidate_cache
+    WHERE source='recommendations-weekly-legacy-pool');
+
+DELETE FROM playlist_track_candidate_cache
+WHERE source='recommendations-weekly-pool'
+  AND EXISTS (SELECT 1 FROM playlist_track_candidate_cache archived
+      WHERE archived.source='recommendations-weekly-legacy-pool'
+        AND (archived.source_id=playlist_track_candidate_cache.source_id
+          OR substr(archived.source_id,1,length(playlist_track_candidate_cache.source_id)+12)=playlist_track_candidate_cache.source_id || ':unverified:')
+        AND archived.candidates_json=playlist_track_candidate_cache.candidates_json);";
+        await using var repair = new SqliteCommand(sql, connection, transaction);
+        await repair.ExecuteNonQueryAsync(cancellationToken);
+        await using var marker = new SqliteCommand(
+            "INSERT INTO app_schema_migration (migration_id, completed_at_utc) VALUES (@migrationId,@completedAtUtc);", connection, transaction);
+        marker.Parameters.AddWithValue("migrationId", WeeklyRecommendationFolderProvenanceMigrationId);
+        marker.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await marker.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task MigrateMelodayAutomaticScopeAsync(

@@ -1,5 +1,6 @@
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Library.Dj;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Authorization;
@@ -10,22 +11,44 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
-[Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public sealed class MelodaySettingsApiController : ControllerBase
 {
     private readonly MelodaySettingsStore _store;
     private readonly MelodayOptions _defaults;
     private readonly LibraryRepository _libraryRepository;
+    private readonly IDjStrategyCatalog _strategyCatalog;
     private Dictionary<long, string> _libraryNamesById = new();
 
     public MelodaySettingsApiController(
         MelodaySettingsStore store,
         IOptions<MelodayOptions> defaults,
-        LibraryRepository libraryRepository)
+        LibraryRepository libraryRepository,
+        IDjStrategyCatalog strategyCatalog)
     {
         _store = store;
         _defaults = defaults.Value;
         _libraryRepository = libraryRepository;
+        _strategyCatalog = strategyCatalog;
+    }
+
+    /// <summary>
+    /// The registered DJs, for the Target Libraries DJ selector.
+    ///
+    /// <para>Served from the catalogue so the option list cannot drift from what can
+    /// actually be selected. Adding a DJ makes it appear here with no UI change.</para>
+    /// </summary>
+    [HttpGet("djs")]
+    public IActionResult Djs()
+    {
+        return Ok(_strategyCatalog.GetAll()
+            .Select(static descriptor => new
+            {
+                id = descriptor.Id,
+                displayName = descriptor.DisplayName,
+                description = descriptor.Description,
+                requirements = descriptor.Requirements,
+            })
+            .ToList());
     }
 
     [HttpGet]
@@ -94,6 +117,22 @@ public sealed class MelodaySettingsApiController : ControllerBase
 
         var slots = MelodayScheduleSlots.Normalize(request.Slots);
         var libraries = MelodayScheduleSlots.NormalizeLibraries(request.Libraries);
+
+        // A specific DJ that is not registered is rejected rather than quietly replaced
+        // with Random. The selector is populated from the catalogue, so the UI cannot
+        // produce this; only a hand-edited or stale payload can, and silently accepting
+        // it would leave the dropdown showing something that is not what will run.
+        var unknownDjs = libraries
+            .Select(static library => library.DjSelection)
+            .Where(selection => !MelodayDjSelections.IsRandom(selection) && !MelodayDjSelections.IsNone(selection))
+            .Where(selection => _strategyCatalog.GetById(selection) is null)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (unknownDjs.Count > 0)
+        {
+            return BadRequest($"Unknown Meloday DJ selection: {string.Join(", ", unknownDjs)}.");
+        }
+
         if (request.Enabled)
         {
             _libraryNamesById = await LoadLibraryNamesAsync(cancellationToken);
@@ -103,13 +142,11 @@ public sealed class MelodaySettingsApiController : ControllerBase
                 return BadRequest("Select at least one time slot for at least one library.");
             }
 
-            foreach (var library in targetedLibraries)
+            foreach (var library in targetedLibraries
+                .Where(library => library.SlotIds.Count > library.MaxActivePlaylists))
             {
-                if (library.SlotIds.Count > library.MaxActivePlaylists)
-                {
-                    return BadRequest(
-                        $"{ResolveLibraryDisplayName(library.LibraryId)}: {library.SlotIds.Count} of {library.MaxActivePlaylists} playlist slots selected — raise the maximum or deselect slots.");
-                }
+                return BadRequest(
+                    $"{ResolveLibraryDisplayName(library.LibraryId)}: {library.SlotIds.Count} of {library.MaxActivePlaylists} playlist slots selected — raise the maximum or deselect slots.");
             }
         }
 
@@ -152,12 +189,10 @@ public sealed class MelodaySettingsApiController : ControllerBase
         }
 
         var names = new Dictionary<long, string>();
-        foreach (var folder in await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+        foreach (var folder in (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+            .Where(folder => folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName)))
         {
-            if (folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName))
-            {
-                names.TryAdd(folder.LibraryId.Value, folder.LibraryName);
-            }
+            names.TryAdd(folder.LibraryId!.Value, folder.LibraryName!);
         }
 
         return names;

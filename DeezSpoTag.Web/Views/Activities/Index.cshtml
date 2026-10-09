@@ -2211,10 +2211,40 @@ span.badge.badge-artwork-animated {
 }
 
 .media-operations-tab .meloday-library-max,
-.media-operations-tab .meloday-library-mode {
+.media-operations-tab .meloday-library-mode,
+.media-operations-tab .meloday-library-dj {
     display: grid;
     gap: 4px;
     justify-items: start;
+}
+
+/* The DJ selector is the last header group. The wrapping header moves it to its own
+   line on narrower windows. */
+.media-operations-tab .meloday-library-dj {
+    margin-left: auto;
+}
+
+.media-operations-tab .meloday-library-dj select {
+    border: 1px solid var(--border-secondary);
+    border-radius: 9px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 10px;
+    max-width: 220px;
+}
+
+.media-operations-tab .meloday-library-hint {
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.media-operations-tab .meloday-library-hint.is-warning {
+    color: #d9a514;
 }
 
 .media-operations-tab .meloday-library-max label,
@@ -2483,6 +2513,14 @@ span.badge.badge-artwork-animated {
     accent-color: var(--primary-color);
     width: 15px;
     height: 15px;
+}
+
+/* A media server that is not connected cannot receive anything, so it reads as unavailable
+   rather than as a choice the user forgot to make. */
+.media-operations-tab .meloday-target-option.is-unavailable,
+.media-operations-tab .metadata-updater-option.is-unavailable {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .media-operations-tab .meloday-advanced-grid {
@@ -4149,6 +4187,19 @@ span.badge.badge-artwork-animated {
                                                 <span>Navidrome</span>
                                             </label>
                                         </div>
+                                        <div class="meloday-target-server-grid meloday-sync-mode-grid" id="meloday-sync-modes" role="radiogroup" aria-label="How Meloday updates a target playlist">
+                                            <label class="meloday-target-option">
+                                                <input type="radio" name="meloday-sync-mode" data-meloday-sync-mode="match" />
+                                                <span>Match</span>
+                                            </label>
+                                            <label class="meloday-target-option">
+                                                <input type="radio" name="meloday-sync-mode" data-meloday-sync-mode="append" />
+                                                <span>Append only</span>
+                                            </label>
+                                        </div>
+                                        <p class="meloday-sync-mode-hint">
+                                            Match replaces the target playlist with the current mix. Append only adds tracks that are missing and leaves anything you added yourself.
+                                        </p>
                                     </div>
 
                                     <div class="meloday-section">
@@ -4447,7 +4498,7 @@ const activityLazyScriptUrls = {
     enhancementResume: '@AssetUrl.Versioned(ViewContext, Url, "~/js/enhancement-resume.js")',
     autoTagStatus: '@AssetUrl.Versioned(ViewContext, Url, "~/js/autotag-status.js")',
     watchlistHistory: '@Url.Content("~/js/watchlist-history.js")',
-    meloday: '@AssetUrl.Versioned(ViewContext, Url, "~/js/meloday.js")'
+    meloday: '@AssetUrl.Versioned(ViewContext, Url, "~/js/meloday.js")',
 };
 const activityCsrfUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const activityNativeFetch = globalThis.fetch.bind(globalThis);
@@ -4536,6 +4587,79 @@ function buildActivityFetchOptions(options) {
 
 function activityFetch(resource, options) {
     return activityNativeFetch(resource, buildActivityFetchOptions(options));
+}
+
+/* Media server target awareness, shared by the Meloday and artist metadata cards on this tab.
+
+   Both cards offer the same three servers, and neither should make the user pick when there is
+   nothing to pick. One connected server is the only answer there is, so it is selected for them and
+   the servers that are not connected are switched off. Several connected servers is a real choice,
+   so the checkboxes are left exactly as they were.
+
+   A target the user already chose or saved is never overridden: the single-server shortcut only
+   applies when nothing usable is selected yet, or when the only thing selected is a server that is
+   not connected. */
+const MEDIA_SERVER_TARGET_SERVICES = ['plex', 'jellyfin', 'navidrome'];
+let mediaServerConnectedServicesPromise = null;
+
+function loadConnectedMediaServerServices() {
+    if (!mediaServerConnectedServicesPromise) {
+        mediaServerConnectedServicesPromise = activityFetch('/api/media-server/connected-servers')
+            .then((response) => (response.ok ? response.json() : []))
+            .then((payload) => (Array.isArray(payload) ? payload : [])
+                .map((entry) => String(entry?.value ?? entry ?? '').trim().toLowerCase())
+                .filter((value) => MEDIA_SERVER_TARGET_SERVICES.includes(value)))
+            // An unreachable endpoint must not leave the card broken, just not content aware.
+            .catch(() => []);
+    }
+    return mediaServerConnectedServicesPromise;
+}
+
+/* Applies the single-connected-server rule to a set of target checkboxes.
+   `attribute` is the checkbox attribute holding the service name, and `hasSavedChoice` is true
+   when the user already chose or saved targets. */
+async function applyConnectedMediaServerTargets(attribute, hasSavedChoice) {
+    const inputs = Array.from(document.querySelectorAll(`[${attribute}]`));
+    if (!inputs.length) {
+        return null;
+    }
+
+    const connected = await loadConnectedMediaServerServices();
+    if (connected.length === 0) {
+        return null;
+    }
+
+    // A server that is not connected cannot receive anything, so it must not look selectable.
+    inputs.forEach((input) => {
+        const service = String(input.getAttribute(attribute) || '').trim().toLowerCase();
+        const isConnected = connected.includes(service);
+        input.disabled = !isConnected;
+        input.closest('label')?.classList.toggle('is-unavailable', !isConnected);
+        if (!isConnected) {
+            input.checked = false;
+        }
+    });
+
+    if (connected.length > 1) {
+        return connected;
+    }
+
+    const onlyConnected = inputs.find(
+        (input) => String(input.getAttribute(attribute) || '').trim().toLowerCase() === connected[0]);
+    if (!onlyConnected) {
+        return connected;
+    }
+
+    // Keep a real choice the user already made. Only step in when nothing connected is selected,
+    // which is the case the app used to make them resolve by hand.
+    const hasUsableSelection = inputs.some((input) => input.checked && !input.disabled);
+    if (hasUsableSelection && hasSavedChoice) {
+        return connected;
+    }
+
+    inputs.forEach((input) => { input.checked = false; });
+    onlyConnected.checked = true;
+    return connected;
 }
 
 let analysisPollTimeoutId = null;

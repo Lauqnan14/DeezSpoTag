@@ -2,6 +2,8 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Library.Dj;
+using DeezSpoTag.Services.Library.Sonic;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
@@ -28,6 +30,13 @@ public sealed class MelodayOptions
     public int MissedRunGraceMinutes { get; set; } = 60;
     public string MoodMapPath { get; set; } = "Resources/meloday/assets/moodmap.json";
     public List<string> TargetServers { get; set; } = new() { MelodayTargetServers.Plex, MelodayTargetServers.Jellyfin, MelodayTargetServers.Navidrome };
+
+    /// <summary>
+    /// How a run updates each target playlist. "match" mirrors the generated mix onto the
+    /// target; "append" only adds tracks that are missing and leaves anything the user added
+    /// on the server. Same append/match choice the other sync surfaces offer.
+    /// </summary>
+    public string TargetSyncMode { get; set; } = MelodayTargetServers.Match;
     public List<long> TargetLibraryIds { get; set; } = new();
 }
 
@@ -68,23 +77,44 @@ public static class MelodayModes
 
 public static class MelodayTargetServers
 {
-    public const string Plex = "plex";
-    public const string Jellyfin = "jellyfin";
-    public const string Navidrome = "navidrome";
+    /// <summary>
+    ///     The three self-hosted servers, aliased to the one canonical definition.
+    /// </summary>
+    /// <remarks>
+    ///     These were declared here as a second, byte-identical copy of
+    ///     <see cref="MediaServerTargetServices" />, which is where the Folder tab and the
+    ///     per-surface checkboxes read the same ids from. Meloday still exposes the shorter names
+    ///     because its own call sites read better with them, but the value now has one definition
+    ///     and a change to one cannot drift from the other.
+    /// </remarks>
+    public const string Plex = MediaServerTargetServices.Plex;
 
-    public static IReadOnlyList<string> All { get; } = new[] { Plex, Jellyfin, Navidrome };
+    public const string Jellyfin = MediaServerTargetServices.Jellyfin;
+
+    public const string Navidrome = MediaServerTargetServices.Navidrome;
+
+    public const string YouTubeMusic = "ytmusic";
+
+    /// <summary>Replace the target playlist with the current mix.</summary>
+    public const string Match = "match";
+
+    /// <summary>Only add tracks that are missing, leaving anything added on the server.</summary>
+    public const string Append = "append";
+
+    public static IReadOnlyList<string> All { get; } = new[] { Plex, Jellyfin, Navidrome, YouTubeMusic };
+
+    public static string NormalizeSyncMode(string? mode)
+        => (mode ?? string.Empty).Trim().ToLowerInvariant() == Append ? Append : Match;
 
     public static List<string> Normalize(IEnumerable<string>? values, bool defaultToAll)
     {
         var normalized = new List<string>();
-        foreach (var value in values ?? Array.Empty<string>())
+        foreach (var target in (values ?? Array.Empty<string>())
+                     .Select(value => (value ?? string.Empty).Trim().ToLowerInvariant())
+                     .Where(candidate => candidate is Plex or Jellyfin or Navidrome or YouTubeMusic
+                         && !normalized.Contains(candidate, StringComparer.OrdinalIgnoreCase)))
         {
-            var target = (value ?? string.Empty).Trim().ToLowerInvariant();
-            if (target is Plex or Jellyfin or Navidrome
-                && !normalized.Contains(target, StringComparer.OrdinalIgnoreCase))
-            {
-                normalized.Add(target);
-            }
+            normalized.Add(target);
         }
 
         return normalized.Count == 0 && defaultToAll
@@ -142,6 +172,10 @@ public sealed class MelodayService
     private readonly MelodayCoverComposer _coverComposer;
     private readonly Random _random = new();
     private readonly string _webRoot;
+    private readonly IDjStrategyCatalog _djStrategyCatalog;
+    private readonly MelodayDjContextBuilder _djContextBuilder;
+    private readonly DjSonicAffinityResolver _djAffinityResolver;
+    private readonly ISonicSimilarityService _sonicSimilarity;
     private DateTimeOffset? _lastRunUtc;
     private string? _lastMessage;
     private IReadOnlyList<MelodayHistoryImportResult> _lastImportResults = Array.Empty<MelodayHistoryImportResult>();
@@ -163,7 +197,10 @@ public sealed class MelodayService
         MelodayDaypart Daypart,
         string? Username,
         long MixUserId,
-        PlexAuth? SonicPlex);
+        PlexAuth? SonicPlex,
+        MelodayDjContext? DjContext = null,
+        MelodayDjResolution? DjResolution = null,
+        bool UsedAllDayFallback = false);
     private static readonly Regex DashVersionRegex = CreateRegex(@"\s-\s.*(mix|dub|remix|edit|version)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex TrailingSpaceOrHyphenRegex = CreateRegex(@"[\s-]+$", RegexOptions.Compiled);
     private static readonly Regex MultiWhitespaceRegex = CreateRegex(@"\s+", RegexOptions.Compiled);
@@ -197,7 +234,11 @@ public sealed class MelodayService
         MelodayRunStateStore runStateStore,
         MelodayArtworkPool artworkPool,
         MelodayArtworkAssignments artworkAssignments,
-        MelodayCoverComposer coverComposer)
+        MelodayCoverComposer coverComposer,
+        IDjStrategyCatalog djStrategyCatalog,
+        MelodayDjContextBuilder djContextBuilder,
+        DjSonicAffinityResolver djAffinityResolver,
+        ISonicSimilarityService sonicSimilarity)
     {
         _options = options.Value;
         _plexApiClient = collaborators.PlexApiClient;
@@ -214,6 +255,10 @@ public sealed class MelodayService
         _artworkPool = artworkPool;
         _artworkAssignments = artworkAssignments;
         _coverComposer = coverComposer;
+        _djStrategyCatalog = djStrategyCatalog;
+        _djContextBuilder = djContextBuilder;
+        _djAffinityResolver = djAffinityResolver;
+        _sonicSimilarity = sonicSimilarity;
     }
 
     private Task<MelodayOptions> GetEffectiveOptionsAsync()
@@ -535,8 +580,10 @@ public sealed class MelodayService
             .Where(trackId => !similarContext.ExcludedTrackIds.Contains(trackId))
             .Distinct()
             .ToList();
+        var usedAllDayFallback = false;
         if (historyTrackIds.Count == 0 && !isFullDayWindow)
         {
+            usedAllDayFallback = true;
             history.Clear();
             foreach (var historyUserId in historyUserIds)
             {
@@ -589,7 +636,42 @@ public sealed class MelodayService
             mixUserId,
             sonicPlex);
 
-        var result = await RunModeAsync(instance.Mode, runModeContext, cancellationToken);
+        // One resolution for the whole time occasion. The key deliberately omits the
+        // mode, so Direct and Sonic of one slot get the same DJ and the mode
+        // comparison is not confounded by a second random variable.
+        var djContext = await BuildDjContextAsync(
+            libraryId,
+            runModeContext.Library.Name,
+            instance.Slot,
+            runModeContext.WeekdayId,
+            daypartHours,
+            usedAllDayFallback,
+            history,
+            similarContext,
+            cancellationToken);
+        var djResolution = MelodayDjResolver.Resolve(
+            librarySchedule.DjSelection,
+            djContext,
+            _djStrategyCatalog);
+
+        if (djResolution.FallbackDiagnostic is not null)
+        {
+            _logger.LogInformation(
+                "Meloday DJ fallback for library {LibraryId}/{SlotId}: {Diagnostic}",
+                libraryId,
+                instance.Slot.Id,
+                djResolution.FallbackDiagnostic);
+        }
+
+        var result = await RunModeAsync(
+            instance.Mode,
+            runModeContext with
+            {
+                DjContext = djContext,
+                DjResolution = djResolution,
+                UsedAllDayFallback = usedAllDayFallback,
+            },
+            cancellationToken);
         if (result.Success)
         {
             await _runStateStore.SetAsync(
@@ -605,31 +687,388 @@ public sealed class MelodayService
     }
 
 
+    /// <summary>
+    /// How much wider than the playlist a DJ's candidate pool is.
+    /// </summary>
+    /// <remarks>
+    /// A DJ choosing from exactly <c>MaxTracks</c> candidates has no choice left, and
+    /// would be reduced to reordering what Mode already decided. Three times the
+    /// playlist is enough to give each strategy room without making the qualifying
+    /// query meaningfully more expensive.
+    /// </remarks>
+    private const int DjCandidatePoolHeadroom = 3;
+
+    /// <summary>
+    /// Writes what a DJ did, so the playlist can be explained later.
+    /// </summary>
+    /// <remarks>
+    /// Never fails the run. The playlist has already been generated and published by
+    /// this point, and refusing to record provenance would throw away a good playlist
+    /// because an explanation of it could not be written.
+    /// </remarks>
+    private async Task RecordDjGenerationAsync(
+        RunModeContext context,
+        string mode,
+        long mixCacheId,
+        DjPlaylistOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var identity = SonicModelIdentity.Current;
+            await _libraryRepository.UpsertMelodayGenerationAsync(
+                new LibraryRepository.MelodayGenerationUpsertInput(
+                    mixCacheId,
+                    BuildMelodayMixId(context.Library.Id, context.SlotId, mode, context.WeekdayId),
+                    context.Library.Id,
+                    context.SlotId,
+                    context.WeekdayId,
+                    MelodayModes.Normalize(mode),
+                    outcome.ConfiguredDj,
+                    outcome.ResolvedDj,
+                    outcome.WasRandom,
+                    outcome.OccurrenceKey,
+                    outcome.ContextSource,
+                    identity.EmbeddingVersion,
+                    context.DjContext?.SonicCoveragePercent,
+                    outcome.SeedSummary,
+                    outcome.Candidates.Count,
+                    outcome.Diagnostics,
+                    null,
+                    DateTimeOffset.UtcNow),
+                outcome.Candidates
+                    .Select((candidate, index) => new LibraryRepository.MelodayGenerationItemUpsertInput(
+                        index,
+                        candidate.TrackId > 0 ? candidate.TrackId : null,
+                        candidate.Similarity,
+                        candidate.Reason,
+                        ResolveRelatedSeedId(outcome.SeedAffinities, candidate.TrackId)))
+                    .ToList(),
+                cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Failed to record Meloday DJ provenance for {MixId}.", context.SlotId);
+        }
+    }
+
+    /// <summary>
+    /// The seed a track was measured against, when it was measured against exactly one.
+    /// </summary>
+    /// <remarks>
+    /// Null when the strategy did not name one, or when several seeds were equally
+    /// close. Picking one arbitrarily would invent a provenance the strategy did not
+    /// assert, and an honest null is more useful than a confident wrong answer.
+    /// </remarks>
+    private static long? ResolveRelatedSeedId(
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> seedAffinities,
+        long trackId)
+    {
+        if (!seedAffinities.TryGetValue(trackId, out var affinities) || affinities.Count != 1)
+        {
+            return null;
+        }
+
+        // Exactly one seed affinity exists here, so single it out instead of looping.
+        return affinities.Keys.First();
+    }
+
+
+    /// <summary>
+    /// Explains who built this playlist and on what evidence.
+    /// </summary>
+    /// <remarks>
+    /// The context-source line is not decoration. Meloday falls back to all-day history
+    /// when a slot has no eligible history of its own, and without this the playlist
+    /// would claim to be an evening selection while having been built from every hour of
+    /// the day.
+    /// </remarks>
+    private static string AppendDjProvenance(string description, string mode, DjPlaylistOutcome outcome)
+    {
+        var lines = new List<string>
+        {
+            $"Time context: {outcome.ContextSource}",
+            $"Configured DJ: {(outcome.WasRandom ? MelodayDjSelections.Random : outcome.ConfiguredDj)}",
+            $"Resolved DJ: {outcome.ResolvedDj}",
+            $"Mode: {MelodayModes.Normalize(mode)}",
+        };
+
+        if (!string.IsNullOrWhiteSpace(outcome.SeedSummary))
+        {
+            lines.Add($"Seeds: {outcome.SeedSummary}");
+        }
+
+        foreach (var diagnostic in outcome.Diagnostics.Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
+        {
+            lines.Add(diagnostic);
+        }
+
+        return description + "\n\n" + string.Join("\n", lines);
+    }
+
+
+    private sealed record DjPlaylistOutcome(
+        List<long> OrderedTrackIds,
+        IReadOnlyList<DjCandidate> Candidates,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<long, double>> SeedAffinities,
+        string ResolvedDj,
+        string ConfiguredDj,
+        bool WasRandom,
+        string OccurrenceKey,
+        string ContextSource,
+        string? SeedSummary,
+        IReadOnlyList<string> Diagnostics);
+
+    /// <summary>
+    /// Runs one DJ over this mode's candidate pool.
+    /// </summary>
+    /// <returns>
+    /// Null when no DJ applies, which is the signal to use the mode's own ordering. A DJ
+    /// that runs but produces nothing is <em>not</em> null: it is reported, because a
+    /// silently empty playlist would be indistinguishable from a library with no music.
+    /// </returns>
+    private async Task<DjPlaylistOutcome?> TryBuildDjPlaylistAsync(
+        string mode,
+        bool isDirect,
+        RunModeContext context,
+        CancellationToken cancellationToken)
+    {
+        var resolution = context.DjResolution;
+        var djContext = context.DjContext;
+        if (resolution is null || djContext is null || resolution.ResolvedDj.Length == 0)
+        {
+            return null;
+        }
+
+        var descriptor = _djStrategyCatalog.GetById(resolution.ResolvedDj);
+        if (descriptor is null)
+        {
+            return null;
+        }
+
+        var maxTracks = context.SimilarContext.Options.MaxTracks;
+
+        // Mode's contribution: the qualified pool, and only that. Direct and Sonic differ
+        // here exactly as they always did — Sonic keeps its Plex priority rerank — so the
+        // two modes remain comparable under one DJ.
+        var candidatePool = await BuildVibeDrivenTrackSelectionAsync(
+            context.HistoryTrackIds,
+            context.BalancedHistorical,
+            context.Library.Id,
+            prioritizePlexSonicMatches: !isDirect,
+            context.SimilarContext,
+            maxTracks * DjCandidatePoolHeadroom);
+
+        if (candidatePool.Count == 0)
+        {
+            return null;
+        }
+
+        // The pool is this mode's, so it is stamped onto a copy. A strategy must not be
+        // able to see or influence what the other mode considered.
+        var scopedContext = djContext with { EligibleTrackIds = candidatePool };
+
+        // The descriptor's own bounds, folded the same way DjDefinitionDto folds them so
+        // a DJ with an inverted range contributes tracks instead of nothing.
+        var djMin = Math.Max(0, Math.Min(descriptor.MinTracks, descriptor.MaxTracks));
+        var trackCount = Math.Clamp(maxTracks, djMin, Math.Max(djMin, descriptor.MaxTracks));
+        var affinities = await _djAffinityResolver.ResolveAsync(
+            context.Library.Id,
+            scopedContext.Seeds,
+            candidatePool,
+            trackCount,
+            cancellationToken);
+
+        var result = descriptor.Strategy.BuildPlaylist(new DjStrategyRequest
+        {
+            Definition = descriptor.ToDefinition(),
+            Seeds = scopedContext.Seeds,
+            CandidateTrackIds = candidatePool,
+            TrackCount = trackCount,
+            SonicCoveragePercent = scopedContext.SonicCoveragePercent,
+            OccurrenceKey = scopedContext.OccurrenceKey,
+            SeedAffinities = affinities,
+        });
+
+        return new DjPlaylistOutcome(
+            result.Candidates
+                .Select(static candidate => candidate.TrackId)
+                .Where(static trackId => trackId > 0)
+                .Distinct()
+                .Take(maxTracks)
+                .ToList(),
+            result.Candidates,
+            affinities,
+            resolution.ResolvedDj,
+            resolution.ConfiguredDj,
+            resolution.WasRandom,
+            resolution.OccurrenceKey,
+            scopedContext.ContextSource,
+            result.SeedSummary,
+            result.Diagnostics);
+    }
+
+    /// <summary>
+    /// Builds what a DJ knows about this time slot, before any mode has narrowed
+    /// anything.
+    /// </summary>
+    /// <remarks>
+    /// The candidate pool is left empty on purpose. It is the mode's output, it differs
+    /// per mode, and a strategy must not be able to influence what the mode considered —
+    /// so each mode stamps its own pool onto a copy of this context once it has one.
+    /// Eligibility only needs seeds, which is why Random DJ can be resolved before any
+    /// mode runs.
+    /// </remarks>
+    private async Task<MelodayDjContext> BuildDjContextAsync(
+        long libraryId,
+        string libraryName,
+        MelodayScheduleSlot slot,
+        string weekdayId,
+        IReadOnlyList<int> daypartHours,
+        bool usedAllDayFallback,
+        IReadOnlyList<PlayHistoryEntryDto> history,
+        SimilarTrackContext similarContext,
+        CancellationToken cancellationToken)
+    {
+        var analyses = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
+            similarContext.AllowedTrackIds.ToList(),
+            cancellationToken);
+
+        var context = _djContextBuilder.Build(
+            libraryId,
+            libraryName,
+            slot.Id,
+            slot.Name,
+            weekdayId,
+            daypartHours,
+            usedAllDayFallback,
+            history,
+            similarContext.ExcludedTrackIds,
+            Array.Empty<long>(),
+            analyses.ToDictionary(static entry => entry.Key, static entry => entry.Value),
+            new HashSet<long>(),
+            await ResolveSonicCoveragePercentAsync(libraryId, cancellationToken),
+            DjOccurrenceKey.ForOccurrence(libraryId, slot.Id, DateOnly.FromDateTime(DateTimeOffset.Now.DateTime)));
+
+        // Second phase: only the seeds need to know whether they have a vector, and
+        // there are at most MaxSeeds of them. Probing the whole library would issue a
+        // query per track to answer a question about sixty.
+        var embedded = await ResolveEmbeddedSeedIdsAsync(context.Seeds, cancellationToken);
+
+        return context with
+        {
+            EmbeddedTrackIds = embedded,
+            Seeds = context.Seeds
+                .Select(seed => seed with { HasEmbedding = embedded.Contains(seed.TrackId) })
+                .ToList(),
+        };
+    }
+
+    /// <summary>
+    /// How much of the library has sonic vectors, as a percentage.
+    /// </summary>
+    /// <remarks>
+    /// Advisory only. A DJ that cannot be told the coverage should still build a
+    /// playlist and report low coverage in its diagnostics, rather than Meloday refusing
+    /// to generate because one aggregate count was unavailable.
+    /// </remarks>
+    private async Task<double> ResolveSonicCoveragePercentAsync(long libraryId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var coverage = await _sonicSimilarity.GetCoverageAsync(libraryId, cancellationToken);
+            return coverage.TotalTracks <= 0
+                ? 0d
+                : Math.Round(coverage.TracksWithEmbedding * 100d / coverage.TotalTracks, 1);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Sonic coverage unavailable for library {LibraryId}.", libraryId);
+            return 0d;
+        }
+    }
+
+    private async Task<IReadOnlySet<long>> ResolveEmbeddedSeedIdsAsync(
+        IReadOnlyList<DjSeed> seeds,
+        CancellationToken cancellationToken)
+    {
+        if (seeds.Count == 0)
+        {
+            return new HashSet<long>();
+        }
+
+        try
+        {
+            var identity = SonicModelIdentity.Current;
+            return await _libraryRepository.GetSonicEmbeddedTrackIdsAsync(
+                seeds.Select(static seed => seed.TrackId).ToList(),
+                identity.ModelId,
+                identity.ModelVersion,
+                identity.EmbeddingVersion,
+                cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // HasEmbedding = false is the honest answer: the strategy then plays its
+            // seeds alone and says so, which is what it is built to do.
+            _logger.LogWarning(ex, "Sonic embedding lookup failed for Meloday DJ seeds; treating them as unembedded.");
+            return new HashSet<long>();
+        }
+    }
+
     private async Task<MelodayRunResult> RunModeAsync(
         string mode,
         RunModeContext context,
         CancellationToken cancellationToken)
     {
-        var finalTracks = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase)
-            ? await BuildDirectTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext)
-            : await BuildSonicTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext);
+        // Mode answers one question — which tracks are reasonable candidates — and a DJ
+        // answers the other: which of those form this playlist, and in what order.
+        //
+        // The division is the point. Running the mode's own ordering after a DJ would
+        // let it undo the DJ's work: a Journey that deliberately arcs across the
+        // playlist would be handed straight back to a greedy nearest-neighbour walk,
+        // and the arc would never reach the server. So when a DJ is active its order is
+        // final, and OrderTracksDirect / OrderTracksSonicAsync are not called at all.
+        //
+        // With no DJ the previous behaviour runs unchanged, in the same order, with the
+        // same inputs. That path is not a fallback bolted on afterwards; it is the
+        // original code path.
+        var isDirect = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase);
+        var djOutcome = await TryBuildDjPlaylistAsync(mode, isDirect, context, cancellationToken);
 
-        if (finalTracks.Count == 0)
+        IReadOnlyList<long> orderedTrackIds;
+        if (djOutcome is not null)
+        {
+            orderedTrackIds = djOutcome.OrderedTrackIds;
+        }
+        else
+        {
+            var finalTracks = isDirect
+                ? await BuildDirectTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext)
+                : await BuildSonicTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext);
+
+            if (finalTracks.Count == 0)
+            {
+                return new MelodayRunResult(false, $"No tracks available for {context.Library.Name} Meloday {GetModeLabel(mode)}.", null);
+            }
+
+            var selectedTrackIds = finalTracks.Take(context.SimilarContext.Options.MaxTracks).ToList();
+            orderedTrackIds = isDirect
+                ? OrderTracksDirect(selectedTrackIds, context.Daypart, context.SimilarContext.LiveMetadataByTrackId)
+                : await OrderTracksSonicAsync(
+                    selectedTrackIds,
+                    context.Daypart,
+                    context.SonicPlex,
+                    context.SimilarContext.Options,
+                    context.SimilarContext.RatingKeyByTrackId,
+                    context.SimilarContext.LiveMetadataByTrackId,
+                    cancellationToken);
+        }
+
+        if (orderedTrackIds.Count == 0)
         {
             return new MelodayRunResult(false, $"No tracks available for {context.Library.Name} Meloday {GetModeLabel(mode)}.", null);
         }
-
-        var selectedTrackIds = finalTracks.Take(context.SimilarContext.Options.MaxTracks).ToList();
-        var orderedTrackIds = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase)
-            ? OrderTracksDirect(selectedTrackIds, context.Daypart, context.SimilarContext.LiveMetadataByTrackId)
-            : await OrderTracksSonicAsync(
-                selectedTrackIds,
-                context.Daypart,
-                context.SonicPlex,
-                context.SimilarContext.Options,
-                context.SimilarContext.RatingKeyByTrackId,
-                context.SimilarContext.LiveMetadataByTrackId,
-                cancellationToken);
 
         var persistedMetadata = (await _libraryRepository.GetPlexTrackMetadataAsync(orderedTrackIds, cancellationToken))
             .ToDictionary(entry => entry.TrackId);
@@ -650,8 +1089,21 @@ public sealed class MelodayService
             trackAnalyses,
             context.Username,
             DateTimeOffset.Now));
-        var description = playlistText.Description;
+        // The DJ goes in the description and the persisted metadata, never the title.
+        //
+        // The title is the playlist's identity as a person sees it on the server, and a
+        // Random DJ changes weekly. Naming it would rename "Tuesday Evening" every week,
+        // and although app-side renaming does not break provider tracking, a playlist
+        // whose name flickers between performers is harder to recognise than one whose
+        // description explains who filled it.
+        var description = djOutcome is null
+            ? playlistText.Description
+            : AppendDjProvenance(playlistText.Description, mode, djOutcome);
 
+        // The artwork is deliberately left alone. Its filename is a content hash, so
+        // adding the DJ to the overlay would mint a new JPEG every time Random moved and
+        // nothing prunes images/meloday/generated, turning a weekly detail into permanent
+        // disk growth.
         var cover = await TryGenerateCoverAsync(
             context.SimilarContext.Options,
             context.SlotName,
@@ -677,6 +1129,10 @@ public sealed class MelodayService
                 ResolveNextOccurrenceUtc(context.SlotGenerateAt, DateTimeOffset.UtcNow)),
             cancellationToken);
         await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
+        if (djOutcome is not null)
+        {
+            await RecordDjGenerationAsync(context, mode, mixCacheId, djOutcome, cancellationToken);
+        }
         var mixTracks = await _libraryRepository.GetMixTracksAsync(mixCacheId, cancellationToken);
         var existingPlaylistIds = await _libraryRepository.GetMixSyncPlaylistIdsAsync(mixCacheId, cancellationToken);
         var syncResult = await _playlistSyncService.SyncGeneratedLocalPlaylistAsync(
@@ -689,7 +1145,8 @@ public sealed class MelodayService
                 cover?.FilePath,
                 cover?.ContentType,
                 cover?.Url,
-                ExistingPlaylistIds: existingPlaylistIds),
+                ExistingPlaylistIds: existingPlaylistIds,
+                AppendMissingOnly: MelodayTargetServers.NormalizeSyncMode(context.SimilarContext.Options.TargetSyncMode) == MelodayTargetServers.Append),
             cancellationToken);
         foreach (var target in syncResult.Targets)
         {
@@ -708,7 +1165,17 @@ public sealed class MelodayService
         return new MelodayRunResult(true, $"{context.Library.Name} {MelodayScheduleSlots.WeekdayDisplayName(context.WeekdayId)} {context.SlotName} Meloday {GetModeLabel(mode)} playlist updated. {syncResult.Message}", syncResult.FirstPlaylistId);
     }
 
-    private static string[] ResolveRunModes(string mode)
+    /// <summary>
+    /// The concrete modes a configured mode expands to.
+    ///
+    /// <para>"both" is a configuration value, not a runnable mode: it names two
+    /// independent instances that differ in how they pick and order tracks. Anything
+    /// that needs one concrete mode per generation — the scheduler above all — must
+    /// expand through here rather than passing the configured value straight down,
+    /// or "both" reaches RunSlotAsync, matches no instance, and silently generates
+    /// nothing.</para>
+    /// </summary>
+    internal static string[] ResolveRunModes(string mode)
     {
         return MelodayModes.Normalize(mode) switch
         {
@@ -852,28 +1319,32 @@ public sealed class MelodayService
         IReadOnlyList<long> historyTrackIds,
         IReadOnlyList<long> balancedHistorical,
         long libraryId,
-        SimilarTrackContext context)
+        SimilarTrackContext context,
+        int trackLimit = 0)
     {
         return await BuildVibeDrivenTrackSelectionAsync(
             historyTrackIds,
             balancedHistorical,
             libraryId,
             prioritizePlexSonicMatches: false,
-            context);
+            context,
+            trackLimit);
     }
 
     private async Task<List<long>> BuildSonicTrackSelectionAsync(
         IReadOnlyList<long> historyTrackIds,
         IReadOnlyList<long> balancedHistorical,
         long libraryId,
-        SimilarTrackContext context)
+        SimilarTrackContext context,
+        int trackLimit = 0)
     {
         return await BuildVibeDrivenTrackSelectionAsync(
             historyTrackIds,
             balancedHistorical,
             libraryId,
             prioritizePlexSonicMatches: true,
-            context);
+            context,
+            trackLimit);
     }
 
     private async Task<List<long>> BuildVibeDrivenTrackSelectionAsync(
@@ -881,7 +1352,8 @@ public sealed class MelodayService
         IReadOnlyList<long> balancedHistorical,
         long libraryId,
         bool prioritizePlexSonicMatches,
-        SimilarTrackContext context)
+        SimilarTrackContext context,
+        int trackLimit = 0)
     {
         var allowedIds = context.AllowedTrackIds.ToList();
         var analysisByTrackId = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
@@ -923,7 +1395,7 @@ public sealed class MelodayService
             .Concat(orderedVibeCandidates)
             .Distinct()
             .ToList();
-        var finalTracks = await ApplyPlexRatingFiltersAsync(candidatePool, context);
+        var finalTracks = await ApplyPlexRatingFiltersAsync(candidatePool, context, trackLimit);
         _logger.LogInformation(
             "Meloday vibe selection for library {LibraryId}: usableAnalyses={AnalyzedCount}, profileSeeds={ProfileSeedCount}, historicalIncluded={HistoricalTrackCount}, vibeQualified={VibeQualifiedCount}, selected={SelectedCount}.",
             libraryId,
@@ -937,21 +1409,24 @@ public sealed class MelodayService
 
     private async Task<List<long>> ApplyPlexRatingFiltersAsync(
         IReadOnlyList<long> candidateTracks,
-        SimilarTrackContext context)
+        SimilarTrackContext context,
+        int trackLimit = 0)
     {
         if (candidateTracks.Count == 0)
         {
             return new List<long>();
         }
 
+        var limit = trackLimit > 0 ? trackLimit : context.Options.MaxTracks;
         if (context.Plex is null)
         {
             return (await ProcessTracksAsync(
                     candidateTracks.ToList(),
                     context.Options,
                     context.LiveMetadataByTrackId,
-                    context.CancellationToken))
-                .Take(context.Options.MaxTracks)
+                    context.CancellationToken,
+                    limit))
+                .Take(limit)
                 .ToList();
         }
 
@@ -976,10 +1451,11 @@ public sealed class MelodayService
                     loadedCandidates,
                     context.Options,
                     context.LiveMetadataByTrackId,
-                    context.CancellationToken))
-                .Take(context.Options.MaxTracks)
+                    context.CancellationToken,
+                    limit))
+                .Take(limit)
                 .ToList();
-            if (finalTracks.Count >= context.Options.MaxTracks)
+            if (finalTracks.Count >= limit)
             {
                 break;
             }
@@ -1384,7 +1860,8 @@ public sealed class MelodayService
         List<long> trackIds,
         MelodayOptions options,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int trackLimit = 0)
     {
         if (trackIds.Count == 0)
         {
@@ -1405,7 +1882,11 @@ public sealed class MelodayService
         var metadata = await _libraryRepository.GetPlexTrackMetadataAsync(uniqueTrackIds, cancellationToken);
         var persistedMetadataByTrackId = metadata.ToDictionary(entry => entry.TrackId);
 
-        var state = new TrackFilterState(options.MaxTracks);
+        // 0 means "the playlist size", which is what every pre-DJ call site means. A DJ
+        // asks for a wider pool, and the per-artist allowance has to widen with it, or
+        // the pool would arrive pre-diversified down to playlist size and the DJ would
+        // be choosing from less than it was offered.
+        var state = new TrackFilterState(trackLimit > 0 ? trackLimit : options.MaxTracks);
         var orderedSummaries = summaries
             .OrderBy(summary => trackOrder.TryGetValue(summary.TrackId, out var index) ? index : int.MaxValue)
             .ToList();
@@ -1989,7 +2470,7 @@ public sealed class MelodayService
 
         var descriptorMap = LoadDescriptorMap(context.Options);
         var descriptorSource = secondCommonMood ?? mostCommonMood;
-        var descriptor = ChooseDescriptor(descriptorMap, descriptorSource);
+        ChooseDescriptor(descriptorMap, descriptorSource);
 
         var dayName = context.Now.ToString("dddd");
 

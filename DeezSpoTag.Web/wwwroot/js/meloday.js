@@ -69,8 +69,15 @@ const melodayState = {
     settings: null,
     slots: [],
     libraries: [],
-    view: 'grid'
+    view: 'grid',
+    // Registered DJs, fetched from the server so the selector cannot offer a DJ that
+    // does not exist. Populated from the strategy catalogue, never hard-coded here.
+    djs: []
 };
+
+// The DJ selection applied when a library has none stored, and the value a settings
+// file written before DJs existed reads as. Must match MelodayDjSelections.Random.
+const melodayRandomDj = 'random';
 
 const melodayDefaults = {
     maxTracks: 50,
@@ -107,6 +114,24 @@ function melodayNotify(message, isError) {
     } else if (typeof showToast === 'function') {
         showToast(message, Boolean(isError));
     }
+}
+
+function melodayDjSelected(library, djId) {
+    const current = melodayNormalizeDjSelection(library?.djSelection);
+    return current === melodayRandomDj ? false : current === djId;
+}
+
+function melodayDjDisplayName(value) {
+    const id = melodayNormalizeDjSelection(value);
+    if (id === melodayRandomDj) return 'Random DJ';
+    if (id === 'none') return 'None';
+    const dj = melodayState.djs.find(entry => entry.id === id);
+    return dj ? `DJ ${dj.displayName}` : id;
+}
+
+function melodayNormalizeDjSelection(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized.length > 0 ? normalized : melodayRandomDj;
 }
 
 function melodayNormalizeMode(value) {
@@ -261,16 +286,26 @@ function melodayNormalizeLibraries(values, libraryCatalog) {
             enabled: saved.enabled !== false,
             maxActivePlaylists: Math.max(1, Math.min(7, Number(saved.maxActivePlaylists) || melodayDefaults.maxActivePlaylists)),
             mode: melodayNormalizeMode(saved.mode),
+            djSelection: melodayNormalizeDjSelection(saved.djSelection),
             slotIds
         };
     });
 }
 
 async function loadMelodayPageConfig() {
-    const [settings, libraries] = await Promise.all([
+    const [settings, libraries, djs] = await Promise.all([
         melodayFetchJson('/api/meloday/settings'),
-        melodayFetchJson('/api/meloday/settings/libraries')
+        melodayFetchJson('/api/meloday/settings/libraries'),
+        melodayFetchJson('/api/meloday/settings/djs').catch(() => [])
     ]);
+
+    melodayState.djs = (Array.isArray(djs) ? djs : [])
+        .filter((dj) => dj && dj.id)
+        .map((dj) => ({
+            id: String(dj.id).trim().toLowerCase(),
+            displayName: dj.displayName || dj.id,
+            description: dj.description || ''
+        }));
 
     melodayState.settings = settings;
     melodayState.enabled = settings.enabled ?? true;
@@ -282,6 +317,8 @@ async function loadMelodayPageConfig() {
         enabledEl.checked = melodayState.enabled;
     }
     melodaySetTargetServers(settings.targetServers);
+    await melodayApplyConnectedServerShortcut(melodayNormalizeTargetServers(settings.targetServers).length > 0);
+    melodaySetSyncMode(settings.targetSyncMode ?? 'match');
     const maxTracks = document.getElementById('meloday-max-tracks');
     const lookback = document.getElementById('meloday-lookback-days');
     const exclude = document.getElementById('meloday-exclude-days');
@@ -329,6 +366,37 @@ function melodayGetTargetServers() {
             .filter(input => input && input.checked)
             .map(input => input.getAttribute('data-meloday-target-server')),
         false);
+}
+
+/* Meloday used to demand "Select at least one Meloday target server" even when a single connected
+   server was the only possible answer. The shared helper on the Activities page knows which
+   servers are connected: one of them is selected here without asking, and the servers that cannot
+   receive anything are switched off. A target that was already chosen or saved is left alone. */
+async function melodayApplyConnectedServerShortcut(hasSavedChoice) {
+    const apply = globalThis.applyConnectedMediaServerTargets;
+    if (typeof apply !== 'function') {
+        return;
+    }
+
+    await apply('data-meloday-target-server', hasSavedChoice);
+}
+
+/* How a Meloday run updates each target playlist. "match" mirrors the mix, "append" only
+   adds what is missing. Same append/match choice the other sync surfaces offer. */
+function melodayNormalizeSyncMode(value) {
+    return String(value || '').trim().toLowerCase() === 'append' ? 'append' : 'match';
+}
+
+function melodaySetSyncMode(value) {
+    const normalized = melodayNormalizeSyncMode(value);
+    document.querySelectorAll('[data-meloday-sync-mode]').forEach((input) => {
+        input.checked = input.getAttribute('data-meloday-sync-mode') === normalized;
+    });
+}
+
+function melodayGetSyncMode() {
+    const selected = document.querySelector('[data-meloday-sync-mode]:checked');
+    return melodayNormalizeSyncMode(selected?.getAttribute('data-meloday-sync-mode'));
 }
 
 /* ------------------------------------------------------------------ *
@@ -437,7 +505,12 @@ function buildMelodayLibraryCard(library) {
     const maxWrap = document.createElement('div');
     maxWrap.className = 'meloday-library-max';
     const maxLabel = document.createElement('label');
-    maxLabel.textContent = 'Maximum playlists';
+    // Deliberately not "Maximum playlists". That name promises a cap on generated
+    // playlists, and there is none: this value only limits how many time-slot
+    // checkboxes may be ticked. Mode "Both" alone can produce twice this many
+    // playlists. Renaming the label is the honest fix; implementing a real playlist
+    // cap is a separate change.
+    maxLabel.textContent = 'Maximum time slots';
     const maxSelect = document.createElement('select');
     maxSelect.setAttribute('data-meloday-library-max', String(library.libraryId));
     maxSelect.setAttribute('aria-label', `Maximum playlists for ${library.name}`);
@@ -480,7 +553,45 @@ function buildMelodayLibraryCard(library) {
     });
     modeWrap.append(modeLabel, modeGroup);
 
-    head.append(tile, identity, maxWrap, modeWrap);
+    const djWrap = document.createElement('div');
+    djWrap.className = 'meloday-library-dj';
+    const djSelect = document.createElement('select');
+    djSelect.setAttribute('data-meloday-library-dj', String(library.libraryId));
+    djSelect.setAttribute('aria-label', `DJ for ${library.name}`);
+
+    // Random is the default. Registered DJs come from the server catalogue, with
+    // the three familiar choices first and any future registrations still available.
+    const randomOption = document.createElement('option');
+    randomOption.value = melodayRandomDj;
+    randomOption.textContent = 'Random DJ';
+    randomOption.selected = melodayNormalizeDjSelection(library.djSelection) === melodayRandomDj;
+    djSelect.appendChild(randomOption);
+
+    const djPriority = { anchor: 0, companion: 1, journey: 2 };
+    [...melodayState.djs].sort((a, b) =>
+        (djPriority[a.id] ?? 3) - (djPriority[b.id] ?? 3) || a.id.localeCompare(b.id)
+    ).forEach((dj) => {
+        const option = document.createElement('option');
+        option.value = dj.id;
+        option.textContent = `DJ ${dj.displayName}`;
+        option.title = dj.description || '';
+        option.selected = melodayDjSelected(library, dj.id);
+        djSelect.appendChild(option);
+    });
+
+    const noneOption = document.createElement('option');
+    noneOption.value = 'none';
+    noneOption.textContent = 'None';
+    noneOption.selected = melodayDjSelected(library, 'none');
+    djSelect.appendChild(noneOption);
+    djSelect.addEventListener('change', () => {
+        library.djSelection = melodayNormalizeDjSelection(djSelect.value);
+        updateMelodayLibraryFooter(library);
+    });
+
+    djWrap.appendChild(djSelect);
+
+    head.append(tile, identity, maxWrap, modeWrap, djWrap);
 
     const chips = document.createElement('div');
     chips.className = 'meloday-library-chips';
@@ -494,6 +605,10 @@ function buildMelodayLibraryCard(library) {
     const example = document.createElement('div');
     example.className = 'meloday-library-example';
     example.setAttribute('data-meloday-library-example', String(library.libraryId));
+    const hint = document.createElement('p');
+    hint.className = 'meloday-library-hint';
+    hint.setAttribute('data-meloday-library-hint', String(library.libraryId));
+
     const meta = document.createElement('div');
     meta.className = 'meloday-library-meta';
     const counter = document.createElement('span');
@@ -503,7 +618,7 @@ function buildMelodayLibraryCard(library) {
     note.className = 'meloday-library-note';
     note.textContent = 'Names are generated automatically';
     meta.append(counter, note);
-    foot.append(example, meta);
+    foot.append(example, hint, meta);
 
     card.append(head, chips, foot);
     updateMelodayLibraryFooter(library);
@@ -614,6 +729,27 @@ function updateMelodayLibraryFooter(library) {
         counter.classList.toggle('is-over-limit', over);
     }
 
+    const hint = document.querySelector(`[data-meloday-library-hint="${library.libraryId}"]`);
+    if (hint) {
+        // Two things the user cannot infer from the card itself, said plainly rather
+        // than left to be discovered when a playlist turns out wrong.
+        const messages = [];
+        const selection = melodayNormalizeDjSelection(library.djSelection);
+        if (selection === 'none') {
+            messages.push('This playlist uses normal Meloday track selection and ordering.');
+        } else if (selection === melodayRandomDj) {
+            messages.push('Random DJ picks one registered DJ each time this playlist is generated, and may pick differently next week. The playlist name does not change.');
+        } else {
+            messages.push(`This playlist will be built by ${melodayDjDisplayName(selection)} every time.`);
+        }
+        if (selection !== 'none' && melodayGetSyncMode() === 'append') {
+            messages.push('Sync mode is set to add only: tracks a DJ leaves out are kept on the server, '
+                + 'so the playlist grows into a mix of several DJs. Use "Replace" for DJ-controlled playlists.');
+        }
+        hint.textContent = messages.join(' ');
+        hint.classList.toggle('is-warning', selection !== 'none' && melodayGetSyncMode() === 'append');
+    }
+
     const example = document.querySelector(`[data-meloday-library-example="${library.libraryId}"]`);
     if (example) {
         example.innerHTML = '';
@@ -650,6 +786,11 @@ function buildMelodayLibrariesFromDom() {
         enabled: library.enabled !== false,
         maxActivePlaylists: library.maxActivePlaylists,
         mode: melodayNormalizeMode(library.mode),
+        // Read from the select rather than the state object, so what is saved is what
+        // the card is showing.
+        djSelection: melodayNormalizeDjSelection(
+            document.querySelector(`[data-meloday-library-dj="${library.libraryId}"]`)?.value
+            || library.djSelection),
         slotIds: [...library.slotIds]
     }));
 }
@@ -677,7 +818,7 @@ function buildMelodayPayload(enabledOverride) {
             const state = melodayState.libraries.find(candidate => candidate.libraryId === library.libraryId);
             if (library.slotIds.length > library.maxActivePlaylists) {
                 throw new Error(
-                    `${state?.name || `Library ${library.libraryId}`}: ${library.slotIds.length} of ${library.maxActivePlaylists} playlist slots selected — raise the maximum or deselect slots.`);
+                    `${state?.name || `Library ${library.libraryId}`}: ${library.slotIds.length} of ${library.maxActivePlaylists} time slots selected — raise the maximum or deselect slots.`);
             }
         }
     }
@@ -697,7 +838,8 @@ function buildMelodayPayload(enabledOverride) {
             generateAt: slot.generateAt
         })),
         libraries,
-        targetServers
+        targetServers,
+        targetSyncMode: melodayGetSyncMode()
     };
 }
 

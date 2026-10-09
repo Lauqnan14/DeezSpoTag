@@ -73,14 +73,36 @@ public sealed class MelodayArtworkPool
             return deck;
         }
 
-        var random = new Random(DeckSeed);
+        var random = new DeckShuffleRandom((ulong)DeckSeed);
         for (var index = deck.Count - 1; index > 0; index--)
         {
-            var swap = random.Next(index + 1);
+            var swap = random.NextInt(index + 1);
             (deck[index], deck[swap]) = (deck[swap], deck[index]);
         }
 
         return deck;
+    }
+
+    /// <summary>
+    /// Deterministic non-cryptographic PRNG used only to shuffle the Meloday deck.
+    /// <see cref="System.Random"/>'s seeded sequence is not guaranteed to stay
+    /// identical across .NET versions, which would silently reshuffle every
+    /// library on upgrade; this keeps the documented cross-restart stability.
+    /// </summary>
+    private struct DeckShuffleRandom(ulong seed)
+    {
+        private ulong _state = seed;
+
+        public int NextInt(int exclusiveMax)
+        {
+            // splitmix64
+            _state += 0x9E3779B97F4A7C15UL;
+            var z = _state;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            z ^= z >> 31;
+            return (int)(z % (ulong)exclusiveMax);
+        }
     }
 
     public string ResolveSourcePath(string imageId)

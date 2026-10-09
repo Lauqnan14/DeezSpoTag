@@ -134,3 +134,22 @@ docs/superpowers/specs/2026-09-15-provider-identity-boundaries-design.md
 docs/*plan*.md
 docs/**/*plan*.md
 docs/**/plans/
+
+# Debug scratch files that capture live session state. c2.txt is a curl cookie
+# jar and l.html is a saved page; both embed a real ASP.NET Identity
+# authentication cookie and antiforgery token, so they must never be committed.
+c2.txt
+l.html
+
+# Meloday runtime covers only. These are ImageSharp derivatives written by
+# MelodayCoverComposer under content-hashed, per-library names and pruned when
+# stale, so they are regenerated on demand and must stay out of git.
+# NOTE: images/meloday/source is deliberately NOT ignored: it is the shipped
+# persistent artwork pool read by MelodayArtworkPool and guarded by
+# MelodyGuardrailTest. Its images are project assets and must be committed.
+DeezSpoTag.Web/wwwroot/images/meloday/generated/
+
+# Private machine-specific application configuration and credentials
+**/appsettings.Local.json
+**/appsettings.local.json
+**/appsettings.Secrets.json

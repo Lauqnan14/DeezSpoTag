@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Serialization;
+using DeezSpoTag.Services.Library.Dj;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -31,6 +32,26 @@ public sealed record MelodayLibrarySchedule(
 
     [JsonIgnore]
     public bool ProducesBothPlaylists => MelodayModes.Normalize(Mode) == MelodayModes.Both;
+
+    /// <summary>
+    /// Which DJ builds this library's playlists.
+    ///
+    /// <para>A body property rather than a positional parameter, because the positional
+    /// shape above is pinned by source-text guardrails and is the shape the legacy
+    /// settings converter rebuilds field by field. Adding it positionally would move
+    /// that pinned text for no functional gain.</para>
+    ///
+    /// <para>Doubles as the library-level answer to "which DJ is in charge", and is
+    /// deliberately NOT part of playlist identity — see
+    /// <see cref="SlotIdForMix"/>. A Random DJ that changed weekly would otherwise
+    /// mint a new <c>mix_cache</c> row and a new remote playlist every week, leaving
+    /// the old ones behind forever.</para>
+    ///
+    /// <para>Defaults to Random. A settings file written before DJs existed has no such
+    /// field, and the required default has to come from that absence rather than from
+    /// a migration step nobody would remember to run.</para>
+    /// </summary>
+    public string DjSelection { get; init; } = MelodayDjSelections.Random;
 }
 
 /// <summary>Canonical slot definitions, time parsing, naming and limit arithmetic.</summary>
@@ -212,14 +233,10 @@ public static class MelodayScheduleSlots
             }
 
             var slotIds = new List<string>();
-            foreach (var slotId in library.SlotIds ?? new List<string>())
+            foreach (var normalizedSlotId in (library.SlotIds ?? new List<string>())
+                .Select(slotId => NormalizeSlotId(slotId))
+                .Where(normalizedSlotId => normalizedSlotId.Length > 0))
             {
-                var normalizedSlotId = NormalizeSlotId(slotId);
-                if (normalizedSlotId.Length == 0)
-                {
-                    continue;
-                }
-
                 slotIds.RemoveAll(existing => string.Equals(existing, normalizedSlotId, StringComparison.OrdinalIgnoreCase));
                 slotIds.Add(normalizedSlotId);
             }
@@ -229,7 +246,14 @@ public static class MelodayScheduleSlots
                 library.Enabled,
                 MelodayClamp.PositiveOrDefault(library.MaxActivePlaylists, DefaultMaxActivePlaylists, 1, MaxAllowedPlaylistsPerLibrary),
                 MelodayModes.Normalize(string.IsNullOrWhiteSpace(library.Mode) ? MelodayModes.Sonic : library.Mode),
-                slotIds.OrderBy(SlotOrder).ToList()));
+                slotIds.OrderBy(SlotOrder).ToList())
+            {
+                // Set explicitly rather than left to the initialiser: this constructor is
+                // the only path through which a saved schedule survives a reload, and an
+                // unset field here would quietly reset a library a user had pinned to a
+                // specific DJ.
+                DjSelection = MelodayDjSelections.Normalize(library.DjSelection),
+            });
         }
 
         return normalized.OrderBy(library => library.LibraryId).ToList();

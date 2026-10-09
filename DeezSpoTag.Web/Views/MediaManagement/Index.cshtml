@@ -54,15 +54,24 @@
         <div class="tab-pane fade show active" id="recommendations-content" role="tabpanel" aria-labelledby="recommendations-tab">
             <div class="media-tab-header">
                 <div>
-                    <h2>Recommendations</h2>
-                    <p>Daily recommendations generated based on the tracks in your library.</p>
+                    <h2 class="recommendation-section-title">Recommendations</h2>
+                    <p>Daily and weekly recommendations generated from your library.</p>
                 </div>
             </div>
             <section class="auto-section">
+                <h2 class="recommendation-section-title">Daily Recommendations</h2>
                 <div id="recommendationsGrid" class="auto-tools-grid auto-tools-grid--recommendations"></div>
                 <div id="recommendationsEmpty" class="auto-playlists-empty" hidden>
                     No recommendations available yet.
                 </div>
+            </section>
+            <section class="auto-section weekly-recommendation-section">
+                <h2 class="recommendation-section-title">Missing Top Songs</h2>
+                <div id="weeklyMissingRecommendationsGrid" class="auto-tools-grid auto-tools-grid--recommendations"></div>
+            </section>
+            <section class="auto-section weekly-recommendation-section">
+                <h2 class="recommendation-section-title">Discover similar artists</h2>
+                <div id="weeklySimilarRecommendationsGrid" class="auto-tools-grid auto-tools-grid--recommendations"></div>
             </section>
         </div>
 

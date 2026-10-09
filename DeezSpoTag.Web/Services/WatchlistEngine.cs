@@ -457,7 +457,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                     liveSnapshot.TrackCount,
                     existingCandidateCache?.IsComplete == true)
                 && string.Equals(
-                    existingCandidateCache?.ProviderReadinessRevision,
+                    existingCandidateCache!.ProviderReadinessRevision,
                     providerReadinessRevision,
                     StringComparison.Ordinal);
             if (cachedCandidatesComplete)
@@ -4056,9 +4056,9 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
-                Name: playlistData?.Name,
-                Description: playlistData?.Description,
-                ImageUrl: playlistData?.ImageUrl,
+                Name: playlistData.Name,
+                Description: playlistData.Description,
+                ImageUrl: playlistData.ImageUrl,
                 TrackCount: declaredTrackCount,
                 IsComplete: isComplete,
                 CanClearImageUrl: true,
@@ -4164,7 +4164,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         var resolvedLibraryId = 0L;
         if (!TryParseRecommendationLibraryId(sourceId, out resolvedLibraryId))
         {
-            if (sourceId.StartsWith("library:", StringComparison.Ordinal)) return Array.Empty<PlaylistTrackCandidate>();
+            if (sourceId.StartsWith("library:", StringComparison.Ordinal)
+                || sourceId.StartsWith("weekly-rotation:", StringComparison.Ordinal)) return Array.Empty<PlaylistTrackCandidate>();
             var libraries = await _libraryRepository.GetLibrariesAsync(cancellationToken);
             resolvedLibraryId = libraries.Count > 0 ? libraries[0].Id : 0;
         }
@@ -5095,8 +5096,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     {
         artistId = 0;
         if (!IsArtistWatchContainerKey(sourceId)
-            || sourceId is null
-            || !long.TryParse(sourceId["artist:".Length..], out var parsed))
+            || !long.TryParse(sourceId!["artist:".Length..], out var parsed))
         {
             return false;
         }
@@ -5378,6 +5378,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
+        var spotifyRecommendation = source == RecommendationsSource && trackId.StartsWith("spotify:track:", StringComparison.Ordinal);
+        if (spotifyRecommendation) trackId = trackId[14..];
         var canonicalTrackId = string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase)
             ? (candidate.DeezerId ?? string.Empty).Trim()
             : trackId;
@@ -5388,7 +5390,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         var sourceService = source switch
         {
-            RecommendationsSource => DeezerSource,
+            RecommendationsSource => spotifyRecommendation ? SpotifySource : DeezerSource,
             SmartTracklistSource => DeezerSource,
             BoomplaySource => DeezerSource,
             _ => source
@@ -5415,9 +5417,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         {
             case SpotifySource:
                 intent.SpotifyId = trackId;
+                if (spotifyRecommendation) intent.DeezerId = candidate.DeezerId ?? string.Empty;
                 break;
             case DeezerSource:
-            case RecommendationsSource:
             case SmartTracklistSource:
                 // canonicalTrackId, not trackId. A Boomplay playlist is downloaded through
                 // Deezer, so sourceService has already been rewritten to Deezer by the time
@@ -6766,6 +6768,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         }
 
         var value = stationId.Trim();
+        if (LibraryRecommendationService.TryParseWeeklyStation(value, out libraryId, out _, out _)) return true;
         if (!value.StartsWith("daily-rotation:l", StringComparison.OrdinalIgnoreCase))
         {
             return false;

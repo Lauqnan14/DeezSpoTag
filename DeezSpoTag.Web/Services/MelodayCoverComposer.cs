@@ -106,9 +106,9 @@ public sealed class MelodayCoverComposer
                     Size = new Size(CoverSize, CoverSize),
                     Mode = ResizeMode.Crop
                 }));
-                using (var overlay = new Image<Rgba32>(CoverSize, CoverSize, Color.Transparent))
+                using (var overlay = new Image<Rgba32>(CoverSize, CoverSize))
                 {
-                    overlay.Mutate(context => context.Fill(BuildScrimBrush()));
+                    overlay.Mutate(context => context.Paint(canvas => canvas.Fill(BuildScrimBrush())));
                     image.Mutate(context => context.DrawImage(
                         overlay,
                         new GraphicsOptions
@@ -183,7 +183,7 @@ public sealed class MelodayCoverComposer
         while (size > 24)
         {
             var font = family.CreateFont(size, FontStyle.Bold);
-            var measured = TextMeasurer.MeasureSize(text, new TextOptions(font));
+            var measured = TextMeasurer.MeasureBounds(text, new TextOptions(font));
             if (measured.Width <= MaxTextWidth)
             {
                 return font;
@@ -197,14 +197,18 @@ public sealed class MelodayCoverComposer
 
     private static void DrawCentered(Image image, string text, Font font, int baseline)
     {
-        var measured = TextMeasurer.MeasureSize(text, new TextOptions(font));
+        var measured = TextMeasurer.MeasureBounds(text, new TextOptions(font));
         var x = (CoverSize - measured.Width) / 2f;
         var location = new PointF(x, baseline);
-        image.Mutate(context =>
+        image.Mutate(context => context.Paint(canvas =>
         {
-            context.DrawText(text, font, Color.Black.WithAlpha(0.55f), new PointF(x + 3, baseline + 3));
-            context.DrawText(text, font, Color.White, location);
-        });
+            canvas.DrawText(
+                new RichTextOptions(font) { Origin = new PointF(x + 3, baseline + 3) },
+                text, Brushes.Solid(Color.Black.WithAlpha(0.55f)), null);
+            canvas.DrawText(
+                new RichTextOptions(font) { Origin = location },
+                text, Brushes.Solid(Color.White), null);
+        }));
     }
 
     private static string? BuildUrl(string? baseUrl, string fileName)
@@ -220,12 +224,13 @@ public sealed class MelodayCoverComposer
         var prefix = $"meloday-{libraryId}-{MelodayScheduleSlots.NormalizeSlotId(slotId)}-{MelodayModes.Normalize(mode)}-{MelodayScheduleSlots.NormalizeWeekdayId(weekday)}-";
         try
         {
-            foreach (var stale in Directory.EnumerateFiles(_generatedDirectory, $"{prefix}*.jpg"))
+            foreach (var stale in Directory.EnumerateFiles(_generatedDirectory, $"{prefix}*.jpg")
+                .Where(stale => !string.Equals(
+                    Path.GetFullPath(stale),
+                    Path.GetFullPath(keepPath),
+                    StringComparison.OrdinalIgnoreCase)))
             {
-                if (!string.Equals(Path.GetFullPath(stale), Path.GetFullPath(keepPath), StringComparison.OrdinalIgnoreCase))
-                {
-                    File.Delete(stale);
-                }
+                File.Delete(stale);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

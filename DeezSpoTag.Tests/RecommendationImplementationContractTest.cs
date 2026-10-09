@@ -31,7 +31,7 @@ public sealed class RecommendationImplementationContractTest
     }
 
     [Fact]
-    public void StationsEndpoint_QueuesMissingDailyPools()
+    public void StationsEndpoint_ReadsSavedSummariesWithoutQueueing()
     {
         var source = ReadRecommendationServiceSource();
         var method = ExtractBetween(
@@ -40,9 +40,10 @@ public sealed class RecommendationImplementationContractTest
             "public async Task<RecommendationDetailDto?> GetRecommendationsAsync");
 
         Assert.DoesNotContain("GetRecommendationsAsync(", method, StringComparison.Ordinal);
-        Assert.Contains("GetDailyPoolAsync(", method, StringComparison.Ordinal);
-        Assert.Contains("CreateMissingDailyPoolResponseAsync(", method, StringComparison.Ordinal);
-        Assert.Contains("stations.Add(missingDetail.Station)", method, StringComparison.Ordinal);
+        Assert.Contains("GetSavedDailyResponseAsync(", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrepareWeeklyRecommendationsAsync(", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateMissingDailyPoolResponseAsync(", method, StringComparison.Ordinal);
+        Assert.Contains("stations.Add(detail.Station)", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -65,7 +66,7 @@ public sealed class RecommendationImplementationContractTest
     }
 
     [Fact]
-    public void EmptyRecommendationRebuild_DeletesPersistedDailyPool()
+    public void FailedRecommendationRebuild_PreservesLastSavedDailyPool()
     {
         var source = ReadRecommendationServiceSource();
         var method = ExtractBetween(
@@ -80,9 +81,8 @@ public sealed class RecommendationImplementationContractTest
         Assert.Contains("_dailyPoolCache.TryRemove(cacheKey, out _)", method, StringComparison.Ordinal);
         Assert.Contains("RunDailyRecommendationGenerationAsync", method, StringComparison.Ordinal);
         Assert.Contains("forceReset: true", method, StringComparison.Ordinal);
-        Assert.Contains("DeletePlaylistTrackCandidateCacheAsync", coordinator, StringComparison.Ordinal);
-        Assert.Contains("DailyPoolCacheSource", coordinator, StringComparison.Ordinal);
-        Assert.Contains("scope.ScopeKey", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeletePlaylistTrackCandidateCacheAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("PersistDailyPoolAsync", coordinator, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public sealed class RecommendationImplementationContractTest
     }
 
     [Fact]
-    public void RecommendationAutomation_PassesRefreshReasonIntoService()
+    public void RecommendationAutomation_ReconcilesCapturedCalendarTime()
     {
         var source = File.ReadAllText(Path.Join(
             FindRepoRoot(),
@@ -122,8 +122,9 @@ public sealed class RecommendationImplementationContractTest
             "Services",
             "LibraryRecommendationAutomationHostedService.cs"));
 
-        Assert.Contains("_recommendationService.RefreshDailyRecommendationsAsync(reason, token)", source, StringComparison.Ordinal);
-        Assert.Contains("TryClaimBackgroundJobAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_recommendationService.ReconcileRecommendationGenerationAsync(targetTime, token)", source, StringComparison.Ordinal);
+        Assert.Contains("GetReconciliationDelay", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunRecommendationLoopsAsync", source, StringComparison.Ordinal);
         Assert.Contains("RunHeavyWorkAsync", source, StringComparison.Ordinal);
     }
 

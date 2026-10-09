@@ -94,6 +94,9 @@ public class LibraryRecommendationsApiController : ControllerBase
             return BadRequest(MissingLibraryIdMessage);
         }
 
+        if (LibraryRecommendationService.TryParseWeeklyStation(stationId, out _, out _, out _))
+            return Conflict("Weekly recommendations refresh after Monday daily charts at the Sunday-to-Monday midnight boundary; this selection cannot be rebuilt early.");
+
         var detail = await _recommendationService.RebuildRecommendationsAsync(
             libraryId,
             stationId,
@@ -129,7 +132,11 @@ public class LibraryRecommendationsApiController : ControllerBase
             return BadRequest("trackSourceId is required.");
         }
 
-        if (!IsValidRecommendationTrackSourceId(request.TrackSourceId))
+        var weekly = LibraryRecommendationService.TryParseWeeklyStation(request.StationId, out var stationLibrary, out _, out _);
+        if (weekly && stationLibrary != request.LibraryId) return BadRequest("Station does not belong to this library.");
+        if (weekly ? !(request.TrackSourceId.StartsWith("spotify:track:", StringComparison.Ordinal)
+            && request.TrackSourceId.Length == 36 && request.TrackSourceId[14..].All(char.IsAsciiLetterOrDigit))
+            : !IsValidRecommendationTrackSourceId(request.TrackSourceId))
         {
             return BadRequest("trackSourceId must be a numeric Deezer track id.");
         }

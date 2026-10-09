@@ -640,7 +640,7 @@ CREATE TABLE IF NOT EXISTS recommendation_generation_state (
     last_error TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (library_id, folder_id, target_day)
+    PRIMARY KEY (library_id, folder_id, target_day, station_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_recommendation_generation_state_status

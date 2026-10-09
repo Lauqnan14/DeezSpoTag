@@ -45,6 +45,12 @@
     font-weight: 700;
 }
 
+.recommendation-section-title {
+    margin: 0 0 16px;
+    font-size: 22px;
+    font-weight: 700;
+}
+
 .media-tab-header p {
     margin: 0;
     color: var(--text-muted);
@@ -148,6 +154,204 @@
 .library-playlist-card:hover {
     transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
+}
+
+/* Wraps the cover so the action menu can be positioned over the art and revealed on hover.
+   The image rounds itself now that the card no longer clips. */
+.library-playlist-art {
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+    border-radius: 13px;
+}
+
+/* Reveal and position both come from the app's own rules: .watchlist-action-menu--hover
+   anchors the button bottom-right, and library.css reveals .watchlist-kebab-btn on
+   .library-playlist-card:hover. Nothing is overridden here. */
+.library-playlist-card:hover .library-playlist-actions,
+.library-playlist-card:focus-within .library-playlist-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* The page keeps the library playlists and the Meloday playlists in two separate containers, and
+   the Melody one (.auto-playlists-day-sections) is a positioned stacking context at z-index 1.
+   A sync panel grows upward out of its own card, so a panel opened on a library card was painted
+   behind that whole container - covering its own rows and making Sync unclickable. Lifting the
+   section that currently holds an open panel puts it above the other container. The class is set
+   in JS rather than with :has() so the behaviour does not depend on selector support. */
+#libraryPlaylistsSections,
+#autoToolsGrid {
+    position: relative;
+}
+
+#libraryPlaylistsSections.menu-open,
+#autoToolsGrid.menu-open {
+    z-index: 60;
+}
+
+/* Within one section the card holding the open panel must also clear its neighbours, otherwise a
+   later sibling paints over the panel. */
+.library-playlist-card.menu-open,
+.watchlist-playlist-card-v2.menu-open {
+    z-index: 60;
+}
+
+/* The sync settings open as a modal built from the watchlist's own panel classes, so nearly all of
+   the layout is already the app's. Only the tracklist needs styling, because the watchlist has no
+   equivalent: a scrollable list of tracks each with a skip toggle, inside the settings panel. */
+.library-playlist-sync-settings .playlist-settings-section {
+    gap: 8px;
+}
+
+/* The destination rows are the watchlist's own checkbox groups. The grid is left to the app's rule
+   except for the column floor, so a long platform name does not wrap the row onto two lines. */
+.library-playlist-sync-settings .artist-watch-options-grid {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.library-playlist-sync-settings .form-control,
+.library-playlist-sync-settings .form-select {
+    /* 16px stops iOS Safari zooming the viewport when the field is focused. */
+    font-size: 16px;
+}
+
+.library-playlist-sync-settings .merge-artwork-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    min-height: 0;
+}
+
+/* Before an image is chosen the grid has no tiles, so its auto-fill columns collapse to nothing
+   and the placeholder text is squeezed into a sliver. The placeholder is given the full width of
+   the panel instead, because it is a sentence rather than a tile. */
+.library-playlist-sync-settings .merge-artwork-empty {
+    grid-column: 1 / -1;
+    color: var(--text-secondary);
+    font-size: 13px;
+    padding: 12px 0;
+}
+
+.library-playlist-sync-settings .merge-artwork-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.playlist-sync-tracklist {
+    display: flex;
+    flex-direction: column;
+    max-height: 320px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 26%, transparent);
+    border-radius: 10px;
+}
+
+/* One row per track: cover, title over artist, ISRC, then the skip control. The grid, the
+   12px gap, the 10px/12px padding and the border treatment are the app's own .track-row values, so
+   a track looks the same here as it does in the tracklist page. */
+.playlist-sync-track {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 16%, transparent);
+}
+
+.playlist-sync-track:last-child {
+    border-bottom: none;
+}
+
+/* Square and fixed, so every row is the same height whether or not a cover loaded. A track whose
+   artwork is missing gets an empty square rather than a collapsed cell, which would otherwise
+   change the height of that one row. */
+.playlist-sync-track__art {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+.playlist-sync-track__art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.playlist-sync-track__text {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.playlist-sync-track__title {
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playlist-sync-track__artist {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* An ISRC is a fixed-width code, so it is monospaced and never truncated: a shortened identifier
+   is useless, and the one case that does not fit is marked as missing rather than cut off. */
+.playlist-sync-track__isrc {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.playlist-sync-track__isrc.is-missing {
+    font-style: italic;
+    opacity: 0.6;
+}
+
+/* A skipped track is still shown, not hidden. The user needs to see which tracks are being left
+   behind - a track that silently vanished from the list would look like a track that had been
+   removed from the playlist. */
+.playlist-sync-track.is-ignored .playlist-sync-track__title {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
+/* The cover and the artist are dimmed too, so a skipped row is obviously a whole track rather
+   than only a struck-through name. */
+.playlist-sync-track.is-ignored .playlist-sync-track__art,
+.playlist-sync-track.is-ignored .playlist-sync-track__artist {
+    opacity: 0.5;
+}
+
+.playlist-sync-track__exclude[aria-pressed="true"] {
+    border-color: color-mix(in srgb, var(--warning-color, #f0a04b) 70%, transparent);
+    color: var(--warning-color, #f0a04b);
+}
+
+.library-playlists-sync-message {
+    margin: 12px 0 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.library-playlists-sync-message.is-error {
+    background: color-mix(in srgb, #ff6b6b 14%, transparent);
+    border-color: color-mix(in srgb, #ff6b6b 40%, transparent);
 }
 
 .library-playlist-cover {
@@ -836,3 +1040,5 @@
         height: var(--art-thumb-size);
     }
 }
+
+.weekly-recommendation-section .auto-tool-meta { flex-wrap: wrap; }

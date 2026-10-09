@@ -2205,6 +2205,30 @@ WHERE f.library_id = @libraryId
         return ids;
     }
 
+    public async Task<IReadOnlyList<LibraryRecommendationArtistSeedDto>> GetRecommendationArtistSeedsForLibraryAsync(
+        long libraryId, long? folderId = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"SELECT DISTINCT ar.id, ar.name
+FROM artist ar JOIN album al ON al.artist_id=ar.id JOIN track t ON t.album_id=al.id
+JOIN track_local tl ON tl.track_id=t.id JOIN audio_file af ON af.id=tl.audio_file_id
+JOIN folder f ON f.id=af.folder_id
+WHERE f.library_id=@libraryId AND f.enabled=TRUE
+  AND (@folderId IS NULL OR f.id=@folderId)
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%atmos%'
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+ORDER BY ar.id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("libraryId", libraryId);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<LibraryRecommendationArtistSeedDto>();
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(new(reader.GetInt64(0), reader.GetString(1)));
+        return result;
+    }
+
     public async Task<IReadOnlyList<LibraryRecommendationSeedTrackDto>> GetRecommendationSeedTracksForLibraryScopeAsync(
         long libraryId,
         long? folderId,
@@ -12246,13 +12270,19 @@ WHERE library_id = @libraryId
         return long.TryParse(trimmed, out _) ? trimmed : string.Empty;
     }
 
+    /// <summary>
+    /// Reads the generation state for one station on one day. The station is part of the identity
+    /// because a folder publishes three states per day - its daily rotation plus both weekly
+    /// sections - and they must never share a row.
+    /// </summary>
     public async Task<RecommendationGenerationStateDto?> GetRecommendationGenerationStateAsync(
         long libraryId,
         long folderId,
+        string stationId,
         DateOnly targetDay,
         CancellationToken cancellationToken = default)
     {
-        if (libraryId <= 0 || folderId <= 0)
+        if (libraryId <= 0 || folderId <= 0 || string.IsNullOrWhiteSpace(stationId))
         {
             return null;
         }
@@ -12273,16 +12303,77 @@ SELECT library_id,
 FROM recommendation_generation_state
 WHERE library_id = @libraryId
   AND folder_id = @folderId
+  AND station_id = @stationId
   AND target_day = @targetDay
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue(FolderIdParameter, folderId);
+        command.Parameters.AddWithValue("stationId", stationId.Trim());
         command.Parameters.AddWithValue("targetDay", FormatRecommendationTargetDay(targetDay));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
             ? await ReadRecommendationGenerationStateAsync(reader, cancellationToken)
             : null;
+    }
+
+    public async Task<bool> PublishRecommendationSnapshotAsync(
+        RecommendationGenerationStateKey key, string source, string sourceId,
+        string snapshotId, string candidatesJson, CancellationToken cancellationToken = default)
+    {
+        var daily = source == "recommendations-daily-pool";
+        if (!IsValidRecommendationGenerationKey(key)
+            || (!daily && source != "recommendations-weekly-pool")
+            || (daily != key.StationId.StartsWith("daily-rotation:l", StringComparison.Ordinal)) || sourceId != key.StationId
+            || snapshotId != $"v1:{key.TargetDay:yyyyMMdd}") return false;
+        try { using var payload = System.Text.Json.JsonDocument.Parse(candidatesJson); }
+        catch (System.Text.Json.JsonException) { return false; }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var complete = new SqliteCommand(@"
+UPDATE recommendation_generation_state
+SET status='completed', completed_at_utc=@now, updated_at_utc=@now,
+    reason_code=NULL, last_error=NULL
+WHERE library_id=@libraryId AND folder_id=@folderId AND target_day=@targetDay
+  AND station_id=@stationId AND status='running';", connection, transaction);
+        AddRecommendationGenerationKeyParameters(complete, key);
+        complete.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        if (await complete.ExecuteNonQueryAsync(cancellationToken) != 1) return false;
+
+        async Task SaveAsync(string id, bool newestOnly)
+        {
+            await using var save = new SqliteCommand(@"
+INSERT INTO playlist_track_candidate_cache(source,source_id,snapshot_id,candidates_json,is_complete)
+VALUES(@source,@id,@snapshot,@json,1)
+ON CONFLICT(source,source_id) DO UPDATE SET
+ snapshot_id=excluded.snapshot_id, candidates_json=excluded.candidates_json,
+ is_complete=1, updated_at=CURRENT_TIMESTAMP
+WHERE @newestOnly=0 OR COALESCE(playlist_track_candidate_cache.snapshot_id,'')<=excluded.snapshot_id;", connection, transaction);
+            save.Parameters.AddWithValue("source", source);
+            save.Parameters.AddWithValue("id", id);
+            save.Parameters.AddWithValue("snapshot", snapshotId);
+            save.Parameters.AddWithValue("json", candidatesJson);
+            save.Parameters.AddWithValue("newestOnly", newestOnly ? 1 : 0);
+            await save.ExecuteNonQueryAsync(cancellationToken);
+        }
+        if (daily) await SaveAsync(sourceId + $":day:{key.TargetDay:yyyyMMdd}", false);
+        await SaveAsync(sourceId, true);
+        if (daily)
+        {
+            // Keep this week's prerequisite and all later daily snapshots.
+            var monday = key.TargetDay.AddDays(-(((int)key.TargetDay.DayOfWeek + 6) % 7));
+            await using var prune = new SqliteCommand(@"
+DELETE FROM playlist_track_candidate_cache
+WHERE source=@source AND substr(source_id,1,length(@prefix))=@prefix
+ AND source_id<@oldest;", connection, transaction);
+            prune.Parameters.AddWithValue("source", source);
+            prune.Parameters.AddWithValue("prefix", sourceId + ":day:");
+            prune.Parameters.AddWithValue("oldest", sourceId + $":day:{monday:yyyyMMdd}");
+            await prune.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task RequestRecommendationGenerationAsync(
@@ -12323,7 +12414,7 @@ VALUES (
     NULL,
     0,
     @updatedAtUtc)
-ON CONFLICT(library_id, folder_id, target_day) DO UPDATE SET
+ON CONFLICT(library_id, folder_id, target_day, station_id) DO UPDATE SET
     station_id = excluded.station_id,
     status = 'pending',
     reason_code = excluded.reason_code,
@@ -12349,7 +12440,7 @@ VALUES (
     'pending',
     @reasonCode,
     @updatedAtUtc)
-ON CONFLICT(library_id, folder_id, target_day) DO UPDATE SET
+ON CONFLICT(library_id, folder_id, target_day, station_id) DO UPDATE SET
     station_id = excluded.station_id,
     status = CASE
         WHEN recommendation_generation_state.status = 'completed' THEN recommendation_generation_state.status
@@ -12394,6 +12485,7 @@ SET status = 'running',
 WHERE library_id = @libraryId
   AND folder_id = @folderId
   AND target_day = @targetDay
+  AND station_id = @stationId
   AND (
       status IN ('pending', 'failed')
       OR (
@@ -12433,7 +12525,8 @@ SET status = 'completed',
     updated_at_utc = @completedAtUtc
 WHERE library_id = @libraryId
   AND folder_id = @folderId
-  AND target_day = @targetDay;";
+  AND target_day = @targetDay
+  AND station_id = @stationId;";
         await using var command = new SqliteCommand(sql, connection);
         AddRecommendationGenerationKeyParameters(command, key);
         command.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
@@ -12461,7 +12554,8 @@ SET status = 'failed',
     updated_at_utc = @completedAtUtc
 WHERE library_id = @libraryId
   AND folder_id = @folderId
-  AND target_day = @targetDay;";
+  AND target_day = @targetDay
+  AND station_id = @stationId;";
         await using var command = new SqliteCommand(sql, connection);
         AddRecommendationGenerationKeyParameters(command, key);
         command.Parameters.AddWithValue("reasonCode", NormalizeRecommendationGenerationText(reasonCode) ?? "failed");
@@ -12489,9 +12583,14 @@ WHERE library_id = @libraryId
     }
 
     private static bool IsValidRecommendationGenerationKey(RecommendationGenerationStateKey key)
-        => key.LibraryId > 0
-           && key.FolderId > 0
-           && !string.IsNullOrWhiteSpace(key.StationId);
+    {
+        if (key.LibraryId <= 0 || key.FolderId <= 0) return false;
+        var daily = $"daily-rotation:l{key.LibraryId}:f{key.FolderId}";
+        var weekly = $"weekly-rotation:l{key.LibraryId}:f{key.FolderId}:";
+        return key.StationId == daily
+            || key.StationId == weekly + "weekly-missing-favourites"
+            || key.StationId == weekly + "weekly-similar-artists";
+    }
 
     private static void AddRecommendationGenerationKeyParameters(
         SqliteCommand command,
