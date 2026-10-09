@@ -461,17 +461,17 @@ class AudioAnalyzer:
         try:
             return TensorflowPredict2D(
                 graphFilename=path,
-                input="serving_default_model_Placeholder",
+                input="model/Placeholder",
                 output="model/Identity",
             )
         except Exception:
             return None
 
-    def _predict_deam(self, audio_16k):
+    def _predict_deam(self, embeddings):
         if self.deam_predictor is None or np is None:
             return None
         try:
-            predictions = np.array(self.deam_predictor(audio_16k), dtype=float)
+            predictions = np.array(self.deam_predictor(embeddings), dtype=float)
             frame_scores = predictions.mean(axis=0) if predictions.ndim == 2 else predictions.reshape(-1)
             if frame_scores.size < 2:
                 return None
@@ -1013,7 +1013,7 @@ class AudioAnalyzer:
             result[mood_key] = value
 
         self._populate_ml_summary_scores(result)
-        deam = self._predict_deam(audio_16k)
+        deam = self._predict_deam(embeddings)
         if deam is not None:
             result["valence"] = deam["valence"]
             result["arousal"] = deam["arousal"]

@@ -19,6 +19,46 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class VibeAnalyzerGenreEvidenceTest
 {
+    [Fact]
+    public void DeamLoading_UsesTheClassificationHeadInputNode()
+    {
+        var result = RunPythonScript(@"
+from types import SimpleNamespace
+module.os.path.exists = lambda path: True
+module.TensorflowPredict2D = lambda **kwargs: kwargs
+analyzer = SimpleNamespace(_model_path=lambda name: name)
+print(json.dumps(module.AudioAnalyzer._load_deam_model(analyzer)))
+");
+        Assert.Equal("model/Placeholder", result.GetProperty("input").GetString());
+        Assert.Equal("model/Identity", result.GetProperty("output").GetString());
+    }
+
+    [Fact]
+    public void DeamPrediction_ReceivesMusicnnEmbeddingsAndReportsNormalizedScores()
+    {
+        var result = RunPythonScript(@"
+from types import SimpleNamespace
+embeddings = module.np.ones((2, 200))
+audio = module.np.zeros(16000)
+def predict(values):
+    assert values is embeddings, 'DEAM must consume MusicNN embeddings'
+    return [[1.0, 5.0], [9.0, 9.0]]
+analyzer = SimpleNamespace(
+    musicnn_model=lambda values: embeddings,
+    deam_predictor=predict,
+    _collect_raw_moods=lambda values, mapping: {},
+    _normalize_core_moods=lambda values: None,
+    _populate_ml_summary_scores=lambda result: None,
+    _populate_optional_ml_scores=lambda result, values: None)
+analyzer._predict_deam = lambda values: module.AudioAnalyzer._predict_deam(analyzer, values)
+print(json.dumps(module.AudioAnalyzer._extract_ml_features(analyzer, audio)))
+");
+        Assert.Equal(0.5, result.GetProperty("valence").GetDouble());
+        Assert.Equal(0.75, result.GetProperty("arousal").GetDouble());
+        Assert.Equal("deam-msd-musicnn-2", result.GetProperty("valenceSource").GetString());
+        Assert.Equal("deam-msd-musicnn-2", result.GetProperty("arousalSource").GetString());
+    }
+
     [Theory]
     [InlineData("discogs519-maest-30s-pw-519l", "discogs519-maest-30s-pw-519l")]
     [InlineData(null, "discogs400-discogs-effnet")]
