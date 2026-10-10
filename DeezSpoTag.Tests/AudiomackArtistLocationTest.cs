@@ -23,6 +23,34 @@ public sealed class AudiomackArtistLocationTest
 {
     public sealed class Normalizer
     {
+        [Theory]
+        [InlineData("Savannah, Georgia", "Savannah")]
+        [InlineData("Tbilisi, Georgia", "Tbilisi")]
+        [InlineData(" Savannah , georgia ", "Savannah")]
+        public void Normalize_AmbiguousGeorgiaRetainsRegionWithoutClaimingCountry(string raw, string city)
+        {
+            var result = AudiomackLocationNormalizer.Normalize(raw)!;
+            Assert.Equal(raw.Trim(), result.RawLocation);
+            Assert.Equal(city, result.City);
+            Assert.Equal("Georgia", result.Region, ignoreCase: true);
+            Assert.Null(result.Country);
+            Assert.Null(result.CountryCode);
+        }
+
+        [Theory]
+        [InlineData("Georgia", null, null, "Georgia", "GE")]
+        [InlineData("Savannah, Georgia, USA", "Savannah", "Georgia", "USA", "US")]
+        [InlineData("Tbilisi, Tbilisi, Georgia", "Tbilisi", "Tbilisi", "Georgia", "GE")]
+        public void Normalize_ExplicitGeorgiaCountryAndThreePartLocationsRemainSupported(
+            string raw, string? city, string? region, string country, string code)
+        {
+            var result = AudiomackLocationNormalizer.Normalize(raw)!;
+            Assert.Equal(city, result.City);
+            Assert.Equal(region, result.Region);
+            Assert.Equal(country, result.Country);
+            Assert.Equal(code, result.CountryCode);
+        }
+
         [Fact]
         public void LocationSeparation_LiveCongoSpellingResolvesWithoutUsingHometown()
         {
@@ -120,6 +148,29 @@ public sealed class AudiomackArtistLocationTest
 
     public sealed class Parser
     {
+        [Theory]
+        [InlineData(null, null, true, null)]
+        [InlineData("unitedstatesgeorgiasavannah", "Savannah, Georgia", false, "US")]
+        [InlineData("GEORGIATBILISI", "Tbilisi, Georgia", false, "GE")]
+        [InlineData("ghanagreateraccraaccra", "Accra, Ghana", false, null)]
+        [InlineData("georgiatbilisi", null, true, null)]
+        public void CountryEvidence_ComesOnlyFromMatchedLocationWithDisplay(
+            string? tag, string? display, bool hometownFallback, string? countryCode)
+        {
+            var flight = JsonSerializer.Serialize(new
+            {
+                artist = new { name = "Quando Rondo", url_slug = "quando-rondo", hometown = "Savannah, Georgia", location = new { tag, display } },
+                unrelated = new { name = "Other", url_slug = "other", location = new { tag = "georgiatbilisi", display = "Tbilisi, Georgia" } }
+            });
+            var html = "<script>self.__next_f.push([1," + JsonSerializer.Serialize(flight) + "])</script>";
+            var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "quando-rondo", "Quando Rondo")!;
+            Assert.Equal(hometownFallback, info.IsHometownFallback);
+            Assert.Equal(countryCode, info.LocationCountryCode);
+            Assert.Equal(display ?? "Savannah, Georgia", info.RawLocation);
+            Assert.Equal("Savannah, Georgia", info.RawHometown);
+            Assert.Null(AudiomackArtistPageParser.TryExtractArtistPageInfo(html, "quando-rondo", "Different Artist"));
+        }
+
         // Mirrors the real flight-payload structure: each artist object sits in its
         // own balanced JSON object inside an escaped push string.
         private const string FlightPageHtml = """
@@ -772,18 +823,55 @@ public sealed class AudiomackArtistLocationTest
             Assert.Equal("Dar es Salaam", doc.RootElement.GetProperty("city").GetString());
             Assert.Equal("Tanzania", doc.RootElement.GetProperty("country").GetString());
             Assert.Equal("Dar es Salaam,Tanzania", doc.RootElement.GetProperty("hometown").GetString());
-            Assert.Equal(2, doc.RootElement.GetProperty("audiomack_location_schema").GetInt32());
+            Assert.Equal(3, doc.RootElement.GetProperty("audiomack_location_schema").GetInt32());
         }
 
         [Fact]
         public async Task CachedPayloadWithLocationSource_ReturnedUnchanged()
         {
             var controller = CreateController();
-            const string payloadJson = """{"name":"Alikiba","city":"Dar es Salaam","country":"Tanzania","country_code":"TZ","location_source":"audiomack","audiomack_location_schema":2}""";
+            const string payloadJson = """{"name":"Alikiba","city":"Dar es Salaam","country":"Tanzania","country_code":"TZ","location_source":"audiomack","audiomack_location_schema":3}""";
 
             var result = await InvokeAttachAsync(controller, payloadJson);
 
             Assert.Equal(payloadJson, result);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task SchemaTwoGeorgiaPayload_IsRefreshedInBothAttachmentPaths(bool dictionaryPath)
+        {
+            var controller = CreateController(FlightPageHtml.Replace("Dar es Salaam,Tanzania", "Savannah, Georgia"));
+            const string payload = """{"name":"Alikiba","city":"Savannah","country":"Georgia","country_code":"GE","location_source":"audiomack","audiomack_location_schema":2}""";
+            string result;
+            if (dictionaryPath)
+            {
+                var values = new Dictionary<string, object>
+                {
+                    ["name"] = "Alikiba", ["city"] = "Savannah", ["country"] = "Georgia",
+                    ["country_code"] = "GE", ["location_source"] = "audiomack", ["audiomack_location_schema"] = 2
+                };
+                var method = typeof(ApiController).GetMethod("AttachArtistLocationAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+                await (Task)method.Invoke(controller, [values, CancellationToken.None])!;
+                result = JsonSerializer.Serialize(values);
+            }
+            else result = await InvokeAttachAsync(controller, payload);
+
+            using var doc = JsonDocument.Parse(result);
+            Assert.Equal("Savannah", doc.RootElement.GetProperty("city").GetString());
+            Assert.Equal("Georgia", doc.RootElement.GetProperty("region").GetString());
+            Assert.Equal("Savannah, Georgia", doc.RootElement.GetProperty("hometown").GetString());
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("country").ValueKind);
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("country_code").ValueKind);
+            Assert.Equal(3, doc.RootElement.GetProperty("audiomack_location_schema").GetInt32());
+        }
+
+        [Fact]
+        public async Task NonAudiomackLocation_RemainsUnchanged()
+        {
+            const string payload = """{"name":"Alikiba","city":"Saved City","country":"Saved Country","location_source":"manual"}""";
+            Assert.Equal(payload, await InvokeAttachAsync(CreateController(), payload));
         }
 
         [Fact]
@@ -810,19 +898,111 @@ public sealed class AudiomackArtistLocationTest
             Assert.Equal(payloadJson, result);
         }
 
-        private static object CreateController()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FreshPayload_StringAndJsonStringNames_GetGeorgiaLocation(bool deserialize)
+        {
+            var values = deserialize
+                ? JsonSerializer.Deserialize<Dictionary<string, object>>("""{"name":"Alikiba","nb_fan":123}""")!
+                : new Dictionary<string, object> { ["name"] = "Alikiba", ["nb_fan"] = 123 };
+            var controller = CreateController(FlightPageHtml.Replace("Dar es Salaam,Tanzania", "Savannah, Georgia"));
+            await InvokeDictionaryAttachAsync(controller, values);
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(values));
+            AssertGeorgiaLocation(doc.RootElement);
+            Assert.Equal(123, doc.RootElement.GetProperty("nb_fan").GetInt32());
+        }
+
+        [Theory]
+        [InlineData("{}")]
+        [InlineData("{\"name\":\"   \"}")]
+        [InlineData("{\"name\":123}")]
+        [InlineData("{\"name\":{}}")]
+        [InlineData("{\"name\":null}")]
+        [InlineData("{\"name\":\"Alikiba\",\"city\":\"Saved City\",\"location_source\":\"manual\"}")]
+        public async Task FreshPayload_InvalidNamesAndManualLocation_RemainUnchanged(string json)
+        {
+            var values = JsonSerializer.Deserialize<Dictionary<string, object>>(json)!;
+            var original = JsonSerializer.Serialize(values);
+            await InvokeDictionaryAttachAsync(CreateController(), values);
+            Assert.Equal(original, JsonSerializer.Serialize(values));
+        }
+
+        private static async Task InvokeDictionaryAttachAsync(object controller, Dictionary<string, object> values)
+        {
+            var method = typeof(ApiController).GetMethod("AttachArtistLocationAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            await (Task)method.Invoke(controller, [values, CancellationToken.None])!;
+        }
+
+        private static void AssertGeorgiaLocation(JsonElement root)
+        {
+            Assert.Equal("Savannah", root.GetProperty("city").GetString());
+            Assert.Equal("Georgia", root.GetProperty("region").GetString());
+            Assert.Equal("Savannah, Georgia", root.GetProperty("hometown").GetString());
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("country").ValueKind);
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("country_code").ValueKind);
+            Assert.Equal("audiomack", root.GetProperty("location_source").GetString());
+            Assert.Equal(3, root.GetProperty("audiomack_location_schema").GetInt32());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task NormalCacheResponse_MissingOrOldLocation_GetsGeorgiaLocation(bool oldSchema)
+        {
+            var controller = CreateController(FlightPageHtml.Replace("Dar es Salaam,Tanzania", "Savannah, Georgia"));
+            var payload = oldSchema
+                ? """{"name":"Alikiba","nb_fan":123,"city":"Savannah","country":"Georgia","country_code":"GE","location_source":"audiomack","audiomack_location_schema":2}"""
+                : """{"name":"Alikiba","nb_fan":123}""";
+            var response = await InvokeCacheResponseAsync(controller, payload);
+            Assert.NotNull(response);
+            Assert.Equal("application/json", response.ContentType);
+            using var doc = JsonDocument.Parse(response.Content!);
+            AssertGeorgiaLocation(doc.RootElement);
+            Assert.Equal(123, doc.RootElement.GetProperty("nb_fan").GetInt32());
+        }
+
+        [Theory]
+        [InlineData("{\"name\":\"Alikiba\",\"city\":\"Saved City\",\"location_source\":\"manual\"}")]
+        [InlineData("{\"name\":\"Alikiba\",\"city\":\"Saved City\",\"location_source\":\"audiomack\",\"audiomack_location_schema\":3}")]
+        public async Task NormalCacheResponse_CurrentAndManualLocations_RemainUnchanged(string payload)
+        {
+            Assert.Equal(payload, (await InvokeCacheResponseAsync(CreateController(), payload))!.Content);
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task NormalCacheResponse_RefreshOrMissingCache_DoesNotReturnCachedResponse(bool refresh, bool missing)
+        {
+            Assert.Null(await InvokeCacheResponseAsync(CreateController(), missing ? null : """{"name":"Alikiba"}""", refresh));
+        }
+
+        private static async Task<Microsoft.AspNetCore.Mvc.ContentResult?> InvokeCacheResponseAsync(object controller, string? json, bool refresh = false)
+        {
+            ((ApiController)controller).ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext()
+            };
+            var method = typeof(ApiController).GetMethod("TryGetCachedArtistPageResponseAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var entry = json is null ? null : new ArtistCacheEntry(json, DateTimeOffset.UtcNow);
+            return await (Task<Microsoft.AspNetCore.Mvc.ContentResult?>)method.Invoke(controller,
+                ["123", "deezer", DateTimeOffset.UtcNow, refresh, entry, CancellationToken.None])!;
+        }
+
+        private static object CreateController(string? html = null)
         {
             var controller = RuntimeHelpers.GetUninitializedObject(typeof(ApiController));
             typeof(ApiController)
                 .GetField("_audiomackArtistLocation", BindingFlags.NonPublic | BindingFlags.Instance)!
-                .SetValue(controller, CreateLocationService());
+                .SetValue(controller, CreateLocationService(html));
             typeof(ApiController)
                 .GetField("_logger", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .SetValue(controller, NullLogger<ApiController>.Instance);
             return controller;
         }
 
-        private static AudiomackArtistLocationService CreateLocationService()
+        private static AudiomackArtistLocationService CreateLocationService(string? html = null)
         {
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
@@ -830,7 +1010,7 @@ public sealed class AudiomackArtistLocationTest
                     ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(Path.GetTempPath(), $"audiomack-location-attach-{Guid.NewGuid():N}.db")}"
                 })
                 .Build();
-            var httpClientFactory = new StubHttpClientFactory();
+            var httpClientFactory = new StubHttpClientFactory(html ?? FlightPageHtml);
             return new AudiomackArtistLocationService(
                 httpClientFactory,
                 new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance),
@@ -853,18 +1033,23 @@ public sealed class AudiomackArtistLocationTest
 
         private sealed class StubHandler : HttpMessageHandler
         {
+            private readonly string _html;
+            public StubHandler(string html) => _html = html;
+
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(FlightPageHtml, Encoding.UTF8, "text/html")
+                    Content = new StringContent(_html, Encoding.UTF8, "text/html")
                 });
             }
         }
 
         private sealed class StubHttpClientFactory : IHttpClientFactory
         {
-            public HttpClient CreateClient(string name) => new(new StubHandler());
+            private readonly string _html;
+            public StubHttpClientFactory(string html) => _html = html;
+            public HttpClient CreateClient(string name) => new(new StubHandler(_html));
         }
     }
 
@@ -874,6 +1059,76 @@ public sealed class AudiomackArtistLocationTest
     /// </summary>
     public sealed class ArtistProfileService
     {
+        [Theory]
+        [InlineData(null, null)]
+        [InlineData("unitedstatesgeorgiasavannah", "US")]
+        [InlineData("georgiatbilisi", "GE")]
+        public async Task SchemaTwoProfile_RefreshesAndPersistsCountryEvidence(string? tag, string? code)
+        {
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(Path.GetTempPath(), $"audiomack-georgia-cache-{Guid.NewGuid():N}.db")}"
+            }).Build();
+            await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            var cache = new ArtistPageCacheRepository(config, NullLogger<ArtistPageCacheRepository>.Instance);
+            const string stale = """{"location_schema":2,"raw_location":"Savannah, Georgia","city":"Savannah","country":"Georgia","country_code":"GE","raw_biography":"Stale biography"}""";
+            await cache.UpsertAsync(AudiomackArtistLocationService.LocationCacheSource, "quando-rondo", stale, DateTimeOffset.UtcNow, CancellationToken.None);
+            var display = code == "GE" ? "Tbilisi, Georgia" : "Savannah, Georgia";
+            var flight = JsonSerializer.Serialize(new { artist = new
+            {
+                name = "Quando Rondo", url_slug = "quando-rondo", hometown = "Savannah, Georgia",
+                bio = "Current biography", location = tag == null ? null : new { tag, display }
+            }});
+            var html = "<script>self.__next_f.push([1," + JsonSerializer.Serialize(flight) + "])</script>";
+            var (service, factory) = CreateService(html, configuration: config);
+            var profile = await service.ResolveProfileAsync("Quando Rondo", CancellationToken.None);
+            Assert.Equal(code, profile!.Location!.CountryCode);
+            Assert.Equal("Current biography", profile.Biography);
+            Assert.Equal(1, factory.RequestCount);
+
+            var entry = await cache.TryGetAsync(AudiomackArtistLocationService.LocationCacheSource, "quando-rondo", CancellationToken.None);
+            using var doc = JsonDocument.Parse(entry!.PayloadJson);
+            Assert.Equal(3, doc.RootElement.GetProperty("location_schema").GetInt32());
+            Assert.Equal(code, doc.RootElement.GetProperty("explicit_country_code").GetString());
+            Assert.Equal(tag == null, doc.RootElement.GetProperty("location_from_hometown").GetBoolean());
+
+            // A new service instance proves disk reuse, not just the memory cache.
+            var (restarted, noFetch) = CreateService("unavailable", HttpStatusCode.NotFound, config);
+            var retained = await restarted.ResolveProfileAsync("Quando Rondo", CancellationToken.None);
+            Assert.Equal(profile.Location, retained!.Location);
+            Assert.Equal(profile.Biography, retained.Biography);
+            Assert.Equal(0, noFetch.RequestCount);
+        }
+
+        [Theory]
+        [InlineData(null, "Savannah, Georgia", "Savannah", "Georgia", null, null)]
+        [InlineData("unitedstatesgeorgiasavannah", "Savannah, Georgia", "Savannah", "Georgia", "United States", "US")]
+        [InlineData("GEORGIATBILISI", "Tbilisi, Georgia", "Tbilisi", null, "Georgia", "GE")]
+        public async Task ResolveProfileAsync_GeorgiaRequiresMatchedStructuredCountryEvidence(
+            string? tag, string display, string city, string? region, string? country, string? code)
+        {
+            var artist = new
+            {
+                name = "Quando Rondo", url_slug = "quando-rondo", hometown = "Savannah, Georgia",
+                bio = "Original biography.",
+                location = tag == null ? null : new { tag, display }
+            };
+            var unrelated = new { name = "Other Artist", url_slug = "other", location = new { tag = "georgiatbilisi", display = "Tbilisi, Georgia" } };
+            var flight = JsonSerializer.Serialize(new { artist, unrelated });
+            var html = "<script>self.__next_f.push([1," + JsonSerializer.Serialize(flight) + "])</script>";
+            var (service, _) = CreateService(html);
+
+            var profile = await service.ResolveProfileAsync("Quando Rondo", CancellationToken.None);
+
+            Assert.NotNull(profile);
+            Assert.Equal(city, profile.Location!.City);
+            Assert.Equal(region, profile.Location.Region);
+            Assert.Equal(country, profile.Location.Country);
+            Assert.Equal(code, profile.Location.CountryCode);
+            Assert.Equal("Savannah, Georgia", profile.Location.Hometown);
+            Assert.Equal("Original biography.", profile.Biography);
+        }
+
         [Fact]
         public async Task ResolveProfileAsync_RealFixture_ReturnsLocationAndBiographyFromOneFetch()
         {
@@ -959,9 +1214,10 @@ public sealed class AudiomackArtistLocationTest
 
         private static (AudiomackArtistLocationService Service, StubHttpClientFactory Factory) CreateService(
             string html,
-            HttpStatusCode status = HttpStatusCode.OK)
+            HttpStatusCode status = HttpStatusCode.OK,
+            IConfiguration? configuration = null)
         {
-            var configuration = new ConfigurationBuilder()
+            configuration ??= new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(Path.GetTempPath(), $"audiomack-profile-{Guid.NewGuid():N}.db")}"

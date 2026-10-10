@@ -8,6 +8,7 @@ using System.Text;
 using System.Linq;
 using System.Net;
 using System.Globalization;
+using DeezSpoTag.Web.Services.Audiomack;
 using System.IO.Compression;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Integrations.Tidal;
@@ -2063,13 +2064,20 @@ namespace DeezSpoTag.Web.Controllers
             {
                 if (payload.TryGetValue("location_source", out var existingSource)
                     && (!string.Equals(existingSource?.ToString(), "audiomack", StringComparison.OrdinalIgnoreCase)
-                        || payload.TryGetValue("audiomack_location_schema", out var schema) && schema?.ToString() == "2"))
+                        || payload.TryGetValue("audiomack_location_schema", out var schema)
+                            && schema?.ToString() == AudiomackArtistLocationService.LocationSchemaVersion.ToString(CultureInfo.InvariantCulture)))
                 {
                     return;
                 }
 
-                if (!payload.TryGetValue("name", out var nameValue) || nameValue is not string artistName
-                    || string.IsNullOrWhiteSpace(artistName))
+                payload.TryGetValue("name", out var nameValue);
+                var artistName = nameValue switch
+                {
+                    string name => name,
+                    JsonElement { ValueKind: JsonValueKind.String } name => name.GetString(),
+                    _ => null
+                };
+                if (string.IsNullOrWhiteSpace(artistName))
                 {
                     return;
                 }
@@ -2083,7 +2091,7 @@ namespace DeezSpoTag.Web.Controllers
                 payload["city"] = location.City!;
                 payload["country"] = location.Country!;
                 payload["country_code"] = location.CountryCode!;
-                payload["audiomack_location_schema"] = 2;
+                payload["audiomack_location_schema"] = AudiomackArtistLocationService.LocationSchemaVersion;
                 payload["region"] = location.Region!;
                 payload["hometown"] = location.Hometown!;
                 payload["location_source"] = "audiomack";
@@ -2137,7 +2145,7 @@ namespace DeezSpoTag.Web.Controllers
                 return null;
             }
 
-            var payloadJson = existingCache.PayloadJson;
+            var payloadJson = await TryAttachLocationToCachedPayloadAsync(existingCache.PayloadJson, cancellationToken);
 
             var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
             if (_logger.IsEnabled(LogLevel.Information))
@@ -2166,7 +2174,8 @@ namespace DeezSpoTag.Web.Controllers
 
                 if (root["location_source"] is JsonValue existingSource
                     && existingSource.TryGetValue<string>(out var source)
-                    && (source != "audiomack" || root["audiomack_location_schema"]?.ToString() == "2"))
+                    && (source != "audiomack" || root["audiomack_location_schema"]?.ToString()
+                        == AudiomackArtistLocationService.LocationSchemaVersion.ToString(CultureInfo.InvariantCulture)))
                     return payloadJson;
 
                 var location = await _audiomackArtistLocation.ResolveAsync(artistName, cancellationToken);
@@ -2180,7 +2189,7 @@ namespace DeezSpoTag.Web.Controllers
                 root["country_code"] = location.CountryCode;
                 root["region"] = location.Region;
                 root["hometown"] = location.Hometown;
-                root["audiomack_location_schema"] = 2;
+                root["audiomack_location_schema"] = AudiomackArtistLocationService.LocationSchemaVersion;
                 root["location_source"] = "audiomack";
                 root["raw_location"] = location.RawLocation;
                 return root.ToJsonString();

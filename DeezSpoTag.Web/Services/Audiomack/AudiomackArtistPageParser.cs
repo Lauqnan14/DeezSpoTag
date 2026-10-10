@@ -29,7 +29,11 @@ namespace DeezSpoTag.Web.Services.Audiomack;
 /// of them is present, so a biography-only profile is still usable. The matched
 /// object's own numeric id (<c>RawArtistId</c>) is carried too so a search hit's
 /// id can be confirmed against Audiomack's own page before it is trusted.
-public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography, string? RawArtistId = null, string? RawHometown = null);
+public sealed record AudiomackArtistPageInfo(string CanonicalUrlSlug, string? RawLocation, string? RawBiography, string? RawArtistId = null, string? RawHometown = null)
+{
+    public bool IsHometownFallback { get; init; }
+    public string? LocationCountryCode { get; init; }
+}
 
 public static class AudiomackArtistPageParser
 {
@@ -98,6 +102,7 @@ public static class AudiomackArtistPageParser
             string? hometown;
             string? location;
             string? biography;
+            string? locationCountryCode;
             string? canonicalSlug = null;
             string? artistId = null;
             try
@@ -113,6 +118,7 @@ public static class AudiomackArtistPageParser
                 hometown = GetTrimmedStringOrNull(root, "hometown");
                 location = GetTrimmedStringOrNull(root, "location")
                            ?? GetLocationDisplayOrNull(root);
+                locationCountryCode = GetLocationCountryCodeOrNull(root);
                 biography = GetTrimmedStringOrNull(root, "bio");
                 canonicalSlug = GetTrimmedStringOrNull(root, "url_slug");
                 artistId = GetIdOrNull(root, "id");
@@ -133,7 +139,12 @@ public static class AudiomackArtistPageParser
             var rawBiography = string.IsNullOrWhiteSpace(biography) ? null : biography.Trim();
             if (rawLocation != null || rawBiography != null)
             {
-                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography, artistId, hometown);
+                var isHometownFallback = string.IsNullOrWhiteSpace(location);
+                return new AudiomackArtistPageInfo(canonicalSlug ?? urlSlug, rawLocation, rawBiography, artistId, hometown)
+                {
+                    IsHometownFallback = isHometownFallback,
+                    LocationCountryCode = isHometownFallback ? null : locationCountryCode
+                };
             }
         }
 
@@ -266,6 +277,17 @@ public static class AudiomackArtistPageParser
 
         var raw = display.GetString();
         return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+    }
+
+    private static string? GetLocationCountryCodeOrNull(JsonElement root)
+    {
+        if (!root.TryGetProperty("location", out var location) || location.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var tag = GetTrimmedStringOrNull(location, "tag");
+        if (tag?.StartsWith("unitedstates", StringComparison.OrdinalIgnoreCase) == true) return "US";
+        if (tag?.StartsWith("georgia", StringComparison.OrdinalIgnoreCase) == true) return "GE";
+        return null;
     }
 
     private static bool IsExpectedArtist(string? objectName, string expectedArtistName)

@@ -41,6 +41,7 @@ public sealed record AudiomackArtistProfile(AudiomackLocationResult? Location, s
 public sealed class AudiomackArtistLocationService
 {
     public const string LocationCacheSource = "audiomack-location";
+    public const int LocationSchemaVersion = 3;
     private const string ArtistPageBaseUrl = "https://audiomack.com/";
     private const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(10);
@@ -394,8 +395,13 @@ public sealed class AudiomackArtistLocationService
             return (true, null, null);
         }
 
-        var location = AudiomackLocationNormalizer.Normalize(info.RawLocation);
-        if (location is not null) location = location with { Hometown = info.RawHometown };
+        var location = AudiomackLocationNormalizer.Normalize(info.RawLocation, info.LocationCountryCode);
+        if (location is not null) location = location with
+        {
+            Hometown = info.RawHometown,
+            IsHometownFallback = info.IsHometownFallback,
+            ExplicitCountryCode = info.LocationCountryCode
+        };
         var biography = string.IsNullOrWhiteSpace(info.RawBiography) ? null : info.RawBiography.Trim();
         if (location == null && biography == null)
         {
@@ -543,9 +549,9 @@ public sealed class AudiomackArtistLocationService
                 return (true, null);
             }
 
-            if (!root.TryGetProperty("location_schema", out var schema) || schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out var version) || version != 2)
+            if (!root.TryGetProperty("location_schema", out var schema) || schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out var version) || version != LocationSchemaVersion)
             {
-                // Old entries selected hometown over location and cannot recover the discarded field.
+                // Old entries lack country evidence and may mistake the US state Georgia for a country.
                 return (false, null);
             }
 
@@ -553,7 +559,7 @@ public sealed class AudiomackArtistLocationService
             if (root.TryGetProperty("raw_location", out var rawLocationElement)
                 && rawLocationElement.ValueKind == JsonValueKind.String)
             {
-                location = AudiomackLocationNormalizer.Normalize(rawLocationElement.GetString());
+                location = AudiomackLocationNormalizer.Normalize(rawLocationElement.GetString(), ReadLocationField(root, "explicit_country_code"));
                 if (location is not null)
                 {
                     location = location with
@@ -562,7 +568,10 @@ public sealed class AudiomackArtistLocationService
                         Region = ReadLocationField(root, "region"),
                         Country = ReadLocationField(root, "country"),
                         CountryCode = ReadLocationField(root, "country_code"),
-                        Hometown = ReadLocationField(root, "hometown")
+                        Hometown = ReadLocationField(root, "hometown"),
+                        ExplicitCountryCode = ReadLocationField(root, "explicit_country_code"),
+                        IsHometownFallback = root.TryGetProperty("location_from_hometown", out var fromHometown)
+                            && fromHometown.ValueKind == JsonValueKind.True
                     };
                 }
             }
@@ -594,13 +603,15 @@ public sealed class AudiomackArtistLocationService
     private async Task WriteCachedProfileAsync(string slug, AudiomackArtistProfile? profile, CancellationToken cancellationToken)
     {
         var payload = profile == null
-            ? "{\"location_schema\":2}"
+            ? JsonSerializer.Serialize(new { location_schema = LocationSchemaVersion })
             : JsonSerializer.Serialize(new
             {
-                location_schema = 2,
+                location_schema = LocationSchemaVersion,
                 city = profile.Location?.City,
                 region = profile.Location?.Region,
                 hometown = profile.Location?.Hometown,
+                location_from_hometown = profile.Location?.IsHometownFallback,
+                explicit_country_code = profile.Location?.ExplicitCountryCode,
                 country = profile.Location?.Country,
                 country_code = profile.Location?.CountryCode,
                 location_source = "audiomack",

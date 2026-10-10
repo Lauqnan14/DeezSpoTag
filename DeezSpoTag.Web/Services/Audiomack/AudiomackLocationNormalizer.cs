@@ -14,6 +14,8 @@ public sealed record AudiomackLocationResult(
 {
     public string? Region { get; init; }
     public string? Hometown { get; init; }
+    public bool IsHometownFallback { get; init; }
+    public string? ExplicitCountryCode { get; init; }
 }
 
 /// <summary>
@@ -25,7 +27,7 @@ public static class AudiomackLocationNormalizer
 {
     private static readonly Dictionary<string, string> CountryNameToCode = BuildCountryNameToCode();
 
-    public static AudiomackLocationResult? Normalize(string? rawLocation)
+    public static AudiomackLocationResult? Normalize(string? rawLocation, string? explicitCountryCode = null)
     {
         if (string.IsNullOrWhiteSpace(rawLocation))
         {
@@ -50,6 +52,20 @@ public static class AudiomackLocationNormalizer
 
         var city = parts[0];
         var countryCandidate = parts[^1];
+        // Two-part Georgia text can name either a US state or a country.
+        // City names alone do not establish which interpretation is correct.
+        if (parts.Length == 2 && countryCandidate.Equals("Georgia", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.Equals(explicitCountryCode, "GE", StringComparison.OrdinalIgnoreCase))
+                return new AudiomackLocationResult(raw, city, countryCandidate, "GE") { ExplicitCountryCode = "GE" };
+
+            var isUnitedStates = string.Equals(explicitCountryCode, "US", StringComparison.OrdinalIgnoreCase);
+            return new AudiomackLocationResult(raw, city, isUnitedStates ? "United States" : null, isUnitedStates ? "US" : null)
+            {
+                Region = countryCandidate,
+                ExplicitCountryCode = isUnitedStates ? "US" : null
+            };
+        }
         var countryCode = ResolveCountryCode(countryCandidate);
         if (countryCode != null)
         {
