@@ -13,6 +13,29 @@ namespace DeezSpoTag.Tests;
 public sealed class ActivitiesControllerContractTest
 {
     [Fact]
+    public void ActivitiesQualityLabels_ScopeSoulseekMappingsToSoulseek()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        Assert.Contains("function mapBitrate(bitrate, engine)", source, StringComparison.Ordinal);
+        Assert.Contains("if (normalizeEngine(engine) === 'soulseek')", source, StringComparison.Ordinal);
+        Assert.Contains("return soulseekQualityMap[upper] || qualityMap[upper] || bitrate.replace(/_/g, ' ');", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesQualityLabels_UseDownloaderAndRawQualityAcrossQueueUpdates()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        Assert.Contains("mapBitrate(rawQuality, resolvedEngine)", source, StringComparison.Ordinal);
+        Assert.Contains("mapBitrate(nextRawQuality, nextEngine || task.engine)", source, StringComparison.Ordinal);
+        Assert.Contains("String(task?.rawQuality || task?.quality || '')", source, StringComparison.Ordinal);
+        Assert.Contains("mapBitrate(rawQuality, task?.engine)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CancelDownloadRequest_RejectsEmptyUuid()
     {
         var request = new CancelDownloadRequest { Uuid = string.Empty };

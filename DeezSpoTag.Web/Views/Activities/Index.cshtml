@@ -6282,12 +6282,12 @@ async function clearCanceledTasks() {
 
 	function normalizeTaskQualityLabel(task) {
 	    const engine = String(task?.engine || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
-	    const rawQuality = String(task?.quality || '').trim();
+	    const rawQuality = String(task?.rawQuality || task?.quality || '').trim();
 	    if (!rawQuality) {
 	        return '';
 	    }
 
-	    const displayQuality = mapBitrate(rawQuality);
+	    const displayQuality = mapBitrate(rawQuality, task?.engine);
 	    if (engine !== 'amazon') {
 	        return displayQuality;
 	    }
@@ -6861,7 +6861,7 @@ function mapQueueItem(item) {
     const isVideo = contentType === 'video' || String(rawQuality).toLowerCase().startsWith('video-');
     const displayQuality = isVideo
         ? 'Video'
-        : mapBitrate(rawQuality);
+        : mapBitrate(rawQuality, resolvedEngine);
     const taskId = String(item.uuid || '');
     const prefetchArtworkStatus = item.prefetchArtworkStatus ?? item.PrefetchArtworkStatus;
     updateTaskPrefetchStatus(taskId, prefetchArtworkStatus);
@@ -7650,7 +7650,7 @@ function applyQueueRealtimeUpdate(payload) {
     if (nextRawQuality) {
         const nextContentType = String(update?.contentType || update?.ContentType || '').toLowerCase();
         const nextIsVideo = nextContentType === 'video' || String(nextRawQuality).toLowerCase().startsWith('video-');
-        const nextDisplayQuality = nextIsVideo ? 'Video' : mapBitrate(nextRawQuality);
+        const nextDisplayQuality = nextIsVideo ? 'Video' : mapBitrate(nextRawQuality, nextEngine || task.engine);
         const nextVideoBadges = nextIsVideo ? resolveVideoBadges(update, nextRawQuality) : [];
         if (task.rawQuality !== nextRawQuality) {
             task.rawQuality = nextRawQuality;
@@ -7980,7 +7980,7 @@ function deriveQueueState(taskList) {
     return hasActive ? 'running' : 'paused';
 }
 
-function mapBitrate(bitrate) {
+function mapBitrate(bitrate, engine) {
     const numeric = typeof bitrate === 'number'
         ? bitrate
         : (typeof bitrate === 'string' && /^\d+$/.test(bitrate) ? Number(bitrate) : null);
@@ -8003,21 +8003,25 @@ function mapBitrate(bitrate) {
         const qualityMap = {
             ULTRA_HD_FLAC: 'Ultra HD FLAC',
             HD_FLAC: 'HD FLAC',
-            OPUS: 'Opus',
-
-            // Soulseek's own codes. These strings must stay identical to the labels the server publishes in
-            // QualityCatalog.GetEngineQualityOptions()['soulseek'], because the same code is shown both by
-            // this table and by the quality badge, and the two must not disagree.
-            FLAC_HI_RES_LOSSLESS: 'Max Hi-Res (24-bit/192kHz)',
-            FLAC_HI_RES: 'Hi-Res (24-bit/96kHz)',
-            FLAC: 'FLAC (16-bit/44.1kHz)',
-            LOSSLESS: 'Lossless (FLAC, ALAC, WAV, APE)',
-            MP3_320: 'MP3 320 kbps',
-            MP3_256: 'MP3 256 kbps',
-            MP3_192: 'MP3 192 kbps',
-            MP3_128: 'MP3 128 kbps',
-            UNKNOWN: 'Unknown quality'
+            OPUS: 'Opus'
         };
+        if (normalizeEngine(engine) === 'soulseek') {
+            const soulseekQualityMap = {
+                // Soulseek's own codes. These strings must stay identical to the labels the server publishes in
+                // QualityCatalog.GetEngineQualityOptions()['soulseek'], because the same code is shown both by
+                // this table and by the quality badge, and the two must not disagree.
+                FLAC_HI_RES_LOSSLESS: 'Max Hi-Res (24-bit/192kHz)',
+                FLAC_HI_RES: 'Hi-Res (24-bit/96kHz)',
+                FLAC: 'FLAC (16-bit/44.1kHz)',
+                LOSSLESS: 'Lossless (FLAC, ALAC, WAV, APE)',
+                MP3_320: 'MP3 320 kbps',
+                MP3_256: 'MP3 256 kbps',
+                MP3_192: 'MP3 192 kbps',
+                MP3_128: 'MP3 128 kbps',
+                UNKNOWN: 'Unknown quality'
+            };
+            return soulseekQualityMap[upper] || qualityMap[upper] || bitrate.replace(/_/g, ' ');
+        }
         return qualityMap[upper] || bitrate.replace(/_/g, ' ');
     }
 
