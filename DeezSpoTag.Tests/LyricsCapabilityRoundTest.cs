@@ -248,6 +248,30 @@ public class LyricsCapabilityRoundTest
         };
     }
 
+    [Theory]
+    [InlineData("Line", false)]
+    [InlineData("None", false)]
+    [InlineData("Word", true)]
+    public void PublicApplePayload_PreservesWordTimingAndExplainsLineOnlyResponse(string timing, bool word)
+    {
+        var text = "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"" + timing
+            + "\"><body><div><p begin=\"1.0\" end=\"2.0\">" + (word ? "<span begin=\"1.0\" end=\"2.0\">hello</span>" : "hello") + "</p></div></body></tt>";
+        using var payload = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new { type = "TTML", content = text, source = "api" }));
+        var result = Invoke<LyricsBase>("ParsePaxsenixLyricsPayload", payload.RootElement, new DeezSpoTagSettings { SynthesizeLrcFromTtml = false });
+        Assert.Equal(word, DeezSpoTag.Services.Apple.AppleLyricsService.IsWordSyncedTtml(result.TtmlLyrics));
+        if (word)
+        {
+            Assert.Equal(text, result.TtmlLyrics);
+            Assert.Equal(LyricsSourceFormat.DownloadedTtml, result.TtmlLyricsSourceFormat);
+            Assert.True(string.IsNullOrEmpty(result.ErrorMessage));
+        }
+        else if (timing == "Line")
+        {
+            Assert.Contains("line", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+            Assert.False(result.IsLoaded());
+        }
+    }
+
     private static string[] DefaultOrder =>
         new[] { "apple", "deezer", "spotify", "lrclib", "musixmatch", "youlyplus", "betterlyrics" };
 

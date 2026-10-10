@@ -195,31 +195,46 @@ public sealed class AppleMusicCatalogService
             return cachedStorefront;
         }
 
-        var url = $"{BuildCatalogApiBaseUrl()}/v1/me/account?meta=subscription";
-        var payload = await SendWithTokenRetryRawAsync(
-            HttpMethod.Get,
-            url,
-            cancellationToken,
-            request => ApplyMediaUserHeaders(request, mediaUserToken, null));
+        var metadata = await GetAccountMetadataAsync(mediaUserToken, cancellationToken);
+        _cache.Set(cacheKey, metadata.Storefront, TimeSpan.FromDays(365));
+        return metadata.Storefront;
+    }
 
+    public async Task<bool?> GetAccountSubscriptionActiveAsync(string mediaUserToken, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(mediaUserToken)) return null;
+        return (await GetAccountMetadataAsync(mediaUserToken, cancellationToken)).SubscriptionActive;
+    }
+
+    private async Task<(string? Storefront, bool? SubscriptionActive)> GetAccountMetadataAsync(
+        string mediaUserToken, CancellationToken cancellationToken)
+    {
+        var tokenHash = mediaUserToken.Length > 16 ? mediaUserToken[^16..] : mediaUserToken;
+        var cacheKey = $"apple:account-metadata:{tokenHash}";
+        if (_cache.TryGetValue(cacheKey, out (string? Storefront, bool? SubscriptionActive) cached)) return cached;
+
+        var url = $"{BuildCatalogApiBaseUrl()}/v1/me/account?meta=subscription";
+        var payload = await SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken,
+            request => ApplyMediaUserHeaders(request, mediaUserToken, null));
         using var doc = JsonDocument.Parse(payload);
         string? storefront = null;
+        bool? active = null;
         if (doc.RootElement.TryGetProperty("meta", out var meta)
-            && meta.TryGetProperty("subscription", out var subscription)
-            && subscription.TryGetProperty("storefront", out var storefrontElement))
+            && meta.TryGetProperty("subscription", out var subscription))
         {
-            storefront = storefrontElement.GetString();
-            if (string.IsNullOrWhiteSpace(storefront))
+            if (subscription.TryGetProperty("storefront", out var storefrontElement)
+                && storefrontElement.ValueKind == JsonValueKind.String)
             {
-                storefront = null;
+                storefront = storefrontElement.GetString();
+                if (string.IsNullOrWhiteSpace(storefront)) storefront = null;
             }
+            if (subscription.TryGetProperty("active", out var activeElement)
+                && activeElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                active = activeElement.GetBoolean();
         }
-
-        // Cache indefinitely — storefront is a static account property (country/region) that
-        // virtually never changes. The cache key includes the token suffix, so a new token
-        // naturally invalidates it, and IMemoryCache clears on app restart.
-        _cache.Set(cacheKey, storefront, TimeSpan.FromDays(365));
-        return storefront;
+        var metadata = (Storefront: storefront, SubscriptionActive: active);
+        _cache.Set(cacheKey, metadata, TimeSpan.FromMinutes(5));
+        return metadata;
     }
 
     public async Task<JsonDocument> GetMusicVideoAsync(

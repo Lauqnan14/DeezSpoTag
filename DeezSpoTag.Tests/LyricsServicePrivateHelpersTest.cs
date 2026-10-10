@@ -2498,6 +2498,260 @@ public sealed class LyricsServicePrivateHelpersTest
         Assert.Equal("identity-rejected", InvokeStatic<string>("ClassifyProviderOutcome", "musixmatch", rejected, state));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [InlineData(null)]
+    public async Task AppleAccountSubscription_PreservesActivityAndCachesMetadata(bool? active)
+    {
+        var factory = new AppleProbeFactory(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent("{\"meta\":{\"subscription\":{\"storefront\":\"ke\"" + (active.HasValue ? ",\"active\":" + active.Value.ToString().ToLowerInvariant() : "") + "}}}")
+        });
+        var (catalog, _) = CreateAppleProbe(factory);
+        var method = typeof(AppleMusicCatalogService).GetMethod("GetAccountSubscriptionActiveAsync");
+        Assert.NotNull(method);
+        Assert.Equal("ke", await catalog.GetAccountStorefrontAsync(new string('t', 60), CancellationToken.None));
+        Assert.Equal(active, await (Task<bool?>)method!.Invoke(catalog, [new string('t', 60), CancellationToken.None])!);
+        Assert.Equal(active, await (Task<bool?>)method.Invoke(catalog, [new string('t', 60), CancellationToken.None])!);
+        Assert.Equal(1, factory.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData("false", 200, "subscription is inactive", false)]
+    [InlineData("true", 401, "authentication", true)]
+    [InlineData("true", 403, "authentication", true)]
+    [InlineData("true", 404, "not available", true)]
+    [InlineData(null, 404, "not available", true)]
+    public async Task AppleNativeLyrics_PreservesAuthenticationAndUnavailableDetails(
+        string? active, int lyricsStatus, string expectedError, bool sendsLyrics)
+    {
+        var factory = new AppleProbeFactory(request => new System.Net.Http.HttpResponseMessage(
+            request.RequestUri!.AbsolutePath == "/v1/me/account" ? System.Net.HttpStatusCode.OK : (System.Net.HttpStatusCode)lyricsStatus)
+        {
+            Content = new System.Net.Http.StringContent("{\"meta\":{\"subscription\":{\"storefront\":\"ke\"" + (active == null ? "" : ",\"active\":" + active) + "}}}")
+        });
+        var (_, apple) = CreateAppleProbe(factory);
+        var result = await apple.ResolveLyricsAsync("1789008403", AppleProbeSettings(), CancellationToken.None);
+        Assert.False(result.IsLoaded());
+        Assert.Contains(expectedError, result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sendsLyrics, factory.Requests.Any(path => path.Contains("/songs/", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task AppleNativeLyrics_UnknownAccountActivityDoesNotBlockLyricsAttempt()
+    {
+        var factory = new AppleProbeFactory(request => new System.Net.Http.HttpResponseMessage(
+            request.RequestUri!.AbsolutePath == "/v1/me/account" ? System.Net.HttpStatusCode.ServiceUnavailable : System.Net.HttpStatusCode.NotFound));
+        var (_, apple) = CreateAppleProbe(factory);
+        await apple.ResolveLyricsAsync("1789008403", AppleProbeSettings(), CancellationToken.None);
+        Assert.Contains(factory.Requests, path => path.Contains("/songs/", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(408)]
+    [InlineData(429)]
+    [InlineData(500)]
+    [InlineData(502)]
+    [InlineData(503)]
+    [InlineData(504)]
+    public async Task ApplePublicLyrics_RetriesTemporaryFailureThenReturnsBody(int status)
+    {
+        var count = 0;
+        var factory = new AppleProbeFactory(_ => new System.Net.Http.HttpResponseMessage(
+            ++count == 1 ? (System.Net.HttpStatusCode)status : System.Net.HttpStatusCode.OK)
+        { Content = new System.Net.Http.StringContent("word-response") });
+        Assert.Equal("word-response", await FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Equal(2, count);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(400)]
+    public async Task ApplePublicLyrics_NonRetryableErrorsRetainHttpStatus(int status)
+    {
+        var factory = new AppleProbeFactory(_ => new System.Net.Http.HttpResponseMessage((System.Net.HttpStatusCode)status));
+        var error = await Assert.ThrowsAsync<System.Net.Http.HttpRequestException>(() => FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Equal((System.Net.HttpStatusCode)status, error.StatusCode);
+        Assert.Single(factory.Requests);
+    }
+
+    [Fact]
+    public async Task ApplePublicLyrics_MissingContentDoesNotRetry()
+    {
+        var factory = new AppleProbeFactory(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        Assert.Null(await FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Single(factory.Requests);
+    }
+
+    [Fact]
+    public async Task ApplePublicLyrics_ExhaustsAtThreeAttempts()
+    {
+        var factory = new AppleProbeFactory(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+        var error = await Assert.ThrowsAsync<System.Net.Http.HttpRequestException>(() => FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, error.StatusCode);
+        Assert.Equal(3, factory.Requests.Count);
+    }
+
+    [Fact]
+    public async Task ApplePublicLyrics_RetriesTransportFailure()
+    {
+        var count = 0;
+        var factory = new AppleProbeFactory(_ => ++count == 1
+            ? throw new System.Net.Http.HttpRequestException("connection reset")
+            : new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent("word-response") });
+        Assert.Equal("word-response", await FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Equal(2, count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ApplePublicLyrics_RetryDelayCannotRestartOrExceedTotalBudget(bool retryAfter)
+    {
+        var factory = new AppleProbeFactory(_ =>
+        {
+            var response = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+            if (retryAfter) response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(100));
+            return response;
+        });
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAsync<System.Net.Http.HttpRequestException>(() => FetchAppleProbeAsync(factory, TimeSpan.FromMilliseconds(400)));
+        Assert.Equal(retryAfter ? 1 : 2, factory.Requests.Count);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(2), "The retry budget must not restart or wait for an unbounded Retry-After.");
+    }
+
+    [Fact]
+    public async Task ApplePublicLyrics_HonorsRetryAfterWithinBudget()
+    {
+        var count = 0;
+        var factory = new AppleProbeFactory(_ =>
+        {
+            var response = new System.Net.Http.HttpResponseMessage(++count == 1 ? System.Net.HttpStatusCode.TooManyRequests : System.Net.HttpStatusCode.OK)
+            { Content = new System.Net.Http.StringContent("word-response") };
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMilliseconds(350));
+            return response;
+        });
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal("word-response", await FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3)));
+        Assert.Equal(2, count);
+        Assert.True(watch.Elapsed >= TimeSpan.FromMilliseconds(300));
+    }
+
+    [Fact]
+    public async Task ApplePublicLyrics_CallerCancellationStopsRetries()
+    {
+        using var cts = new CancellationTokenSource();
+        var factory = new AppleProbeFactory(_ =>
+        {
+            cts.Cancel();
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => FetchAppleProbeAsync(factory, TimeSpan.FromSeconds(3), cts.Token));
+        Assert.Single(factory.Requests);
+    }
+
+    [Theory]
+    [InlineData(200, "resolved")]
+    [InlineData(404, "authentication-failure")]
+    [InlineData(503, "transient-failure")]
+    [InlineData(401, "authentication-failure")]
+    [InlineData(403, "authentication-failure")]
+    public async Task AppleProvider_InactiveNativeAndPublicFallbackRetainCorrectOutcome(int status, string expected)
+    {
+        var word = CreateWordTimedTtmlLyrics().TtmlLyrics;
+        var factory = new AppleProbeFactory(request =>
+        {
+            var account = request.RequestUri!.AbsolutePath == "/v1/me/account";
+            return new System.Net.Http.HttpResponseMessage(account ? System.Net.HttpStatusCode.OK : (System.Net.HttpStatusCode)status)
+            {
+                Content = new System.Net.Http.StringContent(account ? "{\"meta\":{\"subscription\":{\"storefront\":\"ke\",\"active\":false}}}" : JsonSerializer.Serialize(new { type = "TTML", content = word, source = "api" }))
+            };
+        });
+        var (_, apple) = CreateAppleProbe(factory);
+        var service = new LyricsService(NullLogger<LyricsService>.Instance, factory, null!, null!, apple, null!, null!);
+        var settings = AppleProbeSettings();
+        var track = CreateLyricsTestTrack();
+        track.Urls["apple_track_id"] = Random.Shared.NextInt64(1000000000, 9000000000).ToString();
+        var key = InvokeStatic<string>("BuildProviderCacheKey", "apple", track, settings);
+        try
+        {
+            var result = await service.ResolveLyricsWithDetailsAsync(track, settings, null, null, CancellationToken.None);
+            Assert.Equal(expected, Assert.Single(result.ProviderOutcomes).Status);
+            if (status == 200)
+            {
+                Assert.True(AppleLyricsService.IsWordSyncedTtml(result.Lyrics?.TtmlLyrics));
+                Assert.Equal(word, result.Lyrics!.TtmlLyrics);
+                Assert.Equal("apple", result.SourcesByFormat["ttml"]);
+            }
+            else Assert.DoesNotContain("ttml", result.ResolvedFormats);
+        }
+        finally
+        {
+            var path = InvokeStatic<string?>("TryResolveProviderCachePath", key);
+            if (path != null && File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task AppleProvider_InactiveNativeAndLineFallbackPreservesTimingDetail()
+    {
+        const string line = "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"1.0\" end=\"2.0\">hello</p></div></body></tt>";
+        var factory = new AppleProbeFactory(request => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent(request.RequestUri!.AbsolutePath == "/v1/me/account"
+                ? "{\"meta\":{\"subscription\":{\"storefront\":\"ke\",\"active\":false}}}"
+                : JsonSerializer.Serialize(new { type = "TTML", content = line, source = "api" }))
+        });
+        var (_, apple) = CreateAppleProbe(factory);
+        var service = new LyricsService(NullLogger<LyricsService>.Instance, factory, null!, null!, apple, null!, null!);
+        var track = CreateLyricsTestTrack();
+        track.Urls["apple_track_id"] = "1443677225";
+        var result = await (Task<LyricsBase?>)typeof(LyricsService).GetMethod("ResolveAppleProviderLyricsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, [track, AppleProbeSettings(), CancellationToken.None])!;
+        Assert.Contains("subscription is inactive", result!.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line timing", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.IsLoaded());
+    }
+
+    private static Task<string?> FetchAppleProbeAsync(AppleProbeFactory factory, TimeSpan timeout, CancellationToken token = default)
+    {
+        var service = new LyricsService(NullLogger<LyricsService>.Instance, factory, null!, null!, null!, null!, null!);
+        return (Task<string?>)typeof(LyricsService).GetMethod("FetchPublicLyricsBodyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, ["https://lyrics.example/apple-music/lyrics?id=123&ttml=true", "apple", "Apple Music", timeout, token])!;
+    }
+
+    private static DeezSpoTagSettings AppleProbeSettings() => new()
+    {
+        AppleMusic = new AppleMusicSettings { MediaUserToken = new string('t', 60), Storefront = "ke" },
+        SyncedLyrics = true, LrcType = "ttml-lyrics", LrcFormat = "ttml",
+        LyricsFallbackOrder = "apple", SynthesizeLrcFromTtml = false
+    };
+
+    private static (AppleMusicCatalogService Catalog, AppleLyricsService Apple) CreateAppleProbe(AppleProbeFactory factory)
+    {
+        var catalog = new AppleMusicCatalogService(factory, null!, NullLogger<AppleMusicCatalogService>.Instance,
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
+        typeof(AppleMusicCatalogService).GetField("_cachedToken", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(catalog, "test-catalog-token");
+        typeof(AppleMusicCatalogService).GetField("_cachedTokenExpiresAt", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(catalog, DateTimeOffset.UtcNow.AddHours(1));
+        return (catalog, new AppleLyricsService(catalog, factory, NullLogger<AppleLyricsService>.Instance));
+    }
+
+    private sealed class AppleProbeFactory : System.Net.Http.HttpMessageHandler, System.Net.Http.IHttpClientFactory
+    {
+        private readonly Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> _respond;
+        public List<string> Requests { get; } = new();
+        public AppleProbeFactory(Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> respond) => _respond = respond;
+        public System.Net.Http.HttpClient CreateClient(string name) => new(this, disposeHandler: false);
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(request.RequestUri!.AbsolutePath);
+            return Task.FromResult(_respond(request));
+        }
+    }
+
     private static void AssertRequirement(object requirements, string propertyName, bool expected)
     {
         var property = requirements.GetType().GetProperty(propertyName)

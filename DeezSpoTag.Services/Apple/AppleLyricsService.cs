@@ -34,7 +34,8 @@ public sealed class AppleLyricsService
     private sealed record AppleLyricsCandidates(
         string? WordTtml,
         string? LineTtml,
-        string? UntimedTtml);
+        string? UntimedTtml,
+        string? Error = null);
 
     private const string DefaultLanguage = "en-US";
     private const string SyncedLyricsType = "lyrics";
@@ -84,6 +85,18 @@ public sealed class AppleLyricsService
             settings.AppleMusic?.Storefront,
             mediaUserToken,
             cancellationToken);
+        if (!string.IsNullOrWhiteSpace(mediaUserToken))
+        {
+            try
+            {
+                if (await _catalogService.GetAccountSubscriptionActiveAsync(mediaUserToken, cancellationToken) == false)
+                    return AppleLyrics.CreateError("Apple authentication unavailable: Apple Music subscription is inactive.");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug("Apple subscription activity could not be checked; attempting lyrics lookup.");
+            }
+        }
         var language = string.IsNullOrWhiteSpace(settings.DeezerLanguage) ? DefaultLanguage : settings.DeezerLanguage;
         var lrcType = string.IsNullOrWhiteSpace(settings.LrcType) ? SyncedLyricsType : settings.LrcType;
 
@@ -117,7 +130,7 @@ public sealed class AppleLyricsService
 
         if (!HasUsableCandidate(candidates))
         {
-            return AppleLyrics.CreateError("Apple Music lyrics not available.");
+            return AppleLyrics.CreateError(candidates?.Error ?? "Apple Music lyrics not available.");
         }
 
         return AppleLyrics.FromCandidates(candidates!, settings.SynthesizeLrcFromTtml);
@@ -273,7 +286,8 @@ public sealed class AppleLyricsService
                                 response.StatusCode);
                         }
 
-                        return new AppleLyricsCandidates(null, lineTtml, plainTextTtml);
+                        return new AppleLyricsCandidates(null, lineTtml, plainTextTtml,
+                            $"Apple authentication failed: media user token rejected with HTTP {(int)response.StatusCode}.");
                     }
 
                     if (_logger.IsEnabled(LogLevel.Debug))

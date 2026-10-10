@@ -625,6 +625,12 @@ public class LyricsService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
             return null;
         }
+        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            state.ProviderOutcomes.Add(new LyricsProviderOutcome(provider, "authentication-failure", ex.Message));
+            _logger.LogWarning("Lyrics provider {Provider} authentication failed with HTTP {StatusCode}.", provider, (int)ex.StatusCode.Value);
+            return null;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             state.ProviderOutcomes.Add(new LyricsProviderOutcome(provider, "transient-failure", ex.Message));
@@ -1322,8 +1328,7 @@ public class LyricsService
         LyricsBase? appleLyrics = null;
         try
         {
-            appleLyrics = await ResolveLoadedLyricsOrNullAsync(
-                () => _appleLyricsService.ResolveLyricsAsync(appleId, settings, cancellationToken));
+            appleLyrics = await _appleLyricsService.ResolveLyricsAsync(appleId, settings, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1356,6 +1361,12 @@ public class LyricsService
             return fallbackLyrics;
         }
 
+        if (appleLyrics?.IsLoaded() != true && !string.IsNullOrWhiteSpace(fallbackLyrics?.ErrorMessage))
+        {
+            return string.IsNullOrWhiteSpace(appleLyrics?.ErrorMessage)
+                ? fallbackLyrics
+                : LyricsNew.CreateError($"{appleLyrics.ErrorMessage} {fallbackLyrics.ErrorMessage}");
+        }
         return appleLyrics;
     }
 
@@ -1431,7 +1442,7 @@ public class LyricsService
         {
             using var payload = JsonDocument.Parse(body);
             var lyrics = ParsePaxsenixLyricsPayload(payload.RootElement, settings);
-            return lyrics.IsLoaded() ? lyrics : null;
+            return lyrics.IsLoaded() || !string.IsNullOrWhiteSpace(lyrics.ErrorMessage) ? lyrics : null;
         }
         catch (JsonException)
         {
@@ -1495,41 +1506,58 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.GetTimestamp();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
         try
         {
             using var client = _httpClientFactory.CreateClient(PublicLyricsClientName);
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation(UserAgentHeader, DefaultSpotifyWebPlayerUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept", $"{ApplicationJson}, text/plain, application/xml, text/xml");
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(timeout);
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
-            if (!response.IsSuccessStatusCode)
+            for (var attempt = 1; attempt <= 3; attempt++)
             {
-                _logger.LogDebug("Public Apple lyrics request failed with status {StatusCode} for {Source}", response.StatusCode, sourceName);
-                return null;
-            }
+                timeoutCts.Token.ThrowIfCancellationRequested();
+                HttpRequestException? failure;
+                TimeSpan? retryAfter = null;
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.TryAddWithoutValidation(UserAgentHeader, DefaultSpotifyWebPlayerUserAgent);
+                    request.Headers.TryAddWithoutValidation("Accept", $"{ApplicationJson}, text/plain, application/xml, text/xml");
+                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (response.IsSuccessStatusCode)
+                        return await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    if (response.StatusCode == HttpStatusCode.NotFound) return null;
 
-            return await response.Content.ReadAsStringAsync(timeoutCts.Token);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Public Apple lyrics request failed for {Source}.", sourceName);
-            return null;
+                    failure = new HttpRequestException(
+                        $"Apple public lyrics request failed with HTTP {(int)response.StatusCode}.", null, response.StatusCode);
+                    if (response.StatusCode is not (HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
+                        or HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway
+                        or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout))
+                        throw failure;
+
+                    retryAfter = response.Headers.RetryAfter?.Delta;
+                    if (retryAfter == null && response.Headers.RetryAfter?.Date is { } retryDate)
+                        retryAfter = retryDate - DateTimeOffset.UtcNow;
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == null)
+                {
+                    failure = new HttpRequestException("Apple public lyrics transport request failed.", ex);
+                }
+
+                if (attempt == 3) throw failure;
+                var delay = TimeSpan.FromMilliseconds(attempt == 1 ? 250 : 500);
+                if (retryAfter > delay) delay = retryAfter.Value;
+                var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+                if (delay >= remaining) throw failure;
+                _logger.LogDebug("Retrying public Apple lyrics after temporary failure; attempt {Attempt} of 3 for {Source}.", attempt + 1, sourceName);
+                await Task.Delay(delay, timeoutCts.Token);
+            }
+            throw new InvalidOperationException("Apple public lyrics attempts exhausted.");
         }
         finally
         {
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
-            _logger.LogInformation(
-                "Apple public lyrics lookup for {Source} finished in {ElapsedMs} ms (budget {BudgetMs} ms).",
-                sourceName,
-                (long)elapsed.TotalMilliseconds,
-                (long)timeout.TotalMilliseconds);
+            _logger.LogInformation("Apple public lyrics lookup for {Source} finished in {ElapsedMs} ms (budget {BudgetMs} ms).",
+                sourceName, (long)elapsed.TotalMilliseconds, (long)timeout.TotalMilliseconds);
         }
     }
 
@@ -1538,10 +1566,13 @@ public class LyricsService
         DeezSpoTagSettings? settings = null)
     {
         var lyrics = new LyricsSource();
+        string? timingError = null;
         if (TryFindStringByName(root, IsTtmlPropertyName, out var ttml)
             && LooksLikeTtml(ttml))
         {
-            MergeLyricsData(lyrics, BuildLyricsFromAppleTtml(ttml, settings));
+            var ttmlLyrics = BuildLyricsFromAppleTtml(ttml, settings);
+            timingError = ttmlLyrics.ErrorMessage;
+            MergeLyricsData(lyrics, ttmlLyrics);
         }
         else if (!string.IsNullOrWhiteSpace(ttml)
                  && DeezSpoTag.Services.Apple.AppleLyricsService.TryExtractPlainLyrics(ttml, out var plainTtml))
@@ -1572,6 +1603,8 @@ public class LyricsService
             lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
         }
 
+        if (!lyrics.IsLoaded() && !string.IsNullOrWhiteSpace(timingError))
+            lyrics.SetErrorMessage(timingError);
         return lyrics;
     }
 
@@ -1602,6 +1635,8 @@ public class LyricsService
             lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
         }
 
+        if (!lyrics.IsLoaded() && kind == AppleTtmlTimingKind.Line)
+            lyrics.SetErrorMessage("Apple lyrics returned line timing; word-synced TTML is unavailable.");
         return lyrics;
     }
 
