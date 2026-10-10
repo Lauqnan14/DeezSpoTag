@@ -52,6 +52,12 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
     /// </summary>
     private const string ItemInclude = "items,items.artists,items.albums,items.albums.coverArt";
 
+    /// <summary>
+    /// The point at which a page chain stops being a playlist and starts being a provider that
+    /// will not stop handing back a next link. Real playlists are a handful of pages of 100.
+    /// </summary>
+    private const int MaxPlaylistPages = 1000;
+
     private readonly TargetApiTransport _transport;
 
     /// <summary>
@@ -76,6 +82,32 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
     public string TargetId => "tidal";
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
+
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        var description = PlaylistMetadataFieldStatus.NotRequested;
+        var artwork = write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Unsupported;
+        var messages = new List<string>();
+        if (write.Artwork is not null) messages.Add("Tidal custom artwork upload and linking require internal API access unavailable to this integration.");
+        if (write.Description is not null)
+        {
+            var credentials = await ResolveAsync(cancellationToken).ConfigureAwait(false);
+            if (!TidalTargetCredentials.IsUsable(credentials))
+                return PlaylistMetadataWriteResult.Failed(write, "Tidal is not connected.");
+            var body = JsonBody(new Dictionary<string, object>
+            {
+                ["data"] = new { type = "playlists", id = write.PlaylistId, attributes = new { description = write.Description } }
+            });
+            var response = await _transport.SendAsync(System.Net.Http.HttpMethod.Patch,
+                $"{ApiBase}/playlists/{Uri.EscapeDataString(write.PlaylistId)}",
+                request => request.Content = new System.Net.Http.StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/vnd.api+json"),
+                Headers(credentials!), cancellationToken).ConfigureAwait(false);
+            description = response.Success && response.TryParseJson()?.ReadString("data.id") == write.PlaylistId
+                ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
+            if (description == PlaylistMetadataFieldStatus.Failed) messages.Add($"Tidal description update failed (HTTP {response.Status}).");
+        }
+        return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
+    }
 
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
@@ -188,8 +220,8 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
 
     public async Task<TargetPlaylistItemsRead> ReadItemIdsAsync(string playlistId, CancellationToken cancellationToken)
     {
-        var (ids, _) = await ReadItemsAsync(playlistId, cancellationToken);
-        return ids is null
+        var (ids, failed) = await ReadItemsAsync(playlistId, cancellationToken);
+        return failed || ids is null
             ? TargetPlaylistItemsRead.Unreadable
             : TargetPlaylistItemsRead.Ok(ids.Select(static item => item.CatalogTrackId).ToList());
     }
@@ -209,8 +241,8 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
 
         if (!write.AppendMissingOnly)
         {
-            var (items, _) = await ReadItemsAsync(write.PlaylistId, cancellationToken);
-            if (items is null)
+            var (items, failed) = await ReadItemsAsync(write.PlaylistId, cancellationToken);
+            if (failed || items is null)
             {
                 return PlaylistMembershipWriteResult.Failed(
                     "TIDAL playlist could not be read, so nothing was written.");
@@ -261,12 +293,10 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
         // One request per track, in order. TIDAL appends with its own added-at stamp and offers no
         // positional insert, so a batched or continued-after-failure write would invert the order
         // with no way to put it back.
-        // Only what is actually missing. Sending every id again appends a duplicate of the whole
-        // playlist on each pass.
-        var present = new HashSet<string>(write.CurrentItemIds, StringComparer.Ordinal);
-        var toAdd = write.AppendMissingOnly
-            ? write.OrderedItemIds.Where(id => !present.Contains(id)).ToList()
-            : write.OrderedItemIds.ToList();
+        // Only what is actually missing, in append mode AND in mirror mode: sending every id again
+        // appends a duplicate of the whole playlist on each pass. The mode above decides only
+        // whether the stale removals may run.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, write.CurrentItemIds);
 
         var added = 0;
         foreach (var trackId in toAdd)
@@ -313,6 +343,12 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
     /// <summary>
     /// The playlist's items as (entry id, catalog track id) pairs, or null when the read failed.
     /// Read through the relationships route for the reason documented on the class.
+    /// <para>
+    /// <c>Items is null</c> and <c>Failed</c> mean the same thing, and both matter: the callers
+    /// distinguish a broken read from an empty playlist, and an empty playlist is a real state
+    /// this destination has. A newly created playlist reads zero rows, and reporting that as a
+    /// failure means the engine can never populate what it just created.
+    /// </para>
     /// </summary>
     private async Task<(IReadOnlyList<TidalPlaylistItem>? Items, bool Failed)> ReadItemsAsync(
         string playlistId,
@@ -326,11 +362,22 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
 
         var headers = Headers(credentials!);
         var items = new List<TidalPlaylistItem>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var emptyPageFollowed = false;
+        var pages = 0;
         var url = $"{ApiBase}/playlists/{Uri.EscapeDataString(playlistId)}/relationships/items"
             + $"?countryCode={credentials!.Country}&sort=itemIndex&include={ItemInclude}&page[limit]=100";
 
         while (!string.IsNullOrWhiteSpace(url))
         {
+            // Asking for a URL already asked for would repeat the same answer forever, and a page
+            // budget stops a provider that invents a fresh one each time. Either way the read is
+            // reported as failed rather than as the partial membership collected so far.
+            if (!visited.Add(url) || ++pages > MaxPlaylistPages)
+            {
+                return (null, true);
+            }
+
             var page = await _transport.GetAsync(url, headers, cancellationToken);
             if (!page.Reached)
             {
@@ -358,12 +405,22 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
             var next = json.ReadString("links.next");
             url = string.IsNullOrWhiteSpace(next) ? null : next;
 
-            // A page that returns nothing while claiming more would silently truncate the
-            // membership and make the caller remove tracks it never saw.
-            if (rows.Count == 0)
+            if (rows.Count != 0 || url is null)
             {
-                return (null, json.ReadString("links.next") is { Length: > 0 });
+                // Either content came back, or the list is complete. The latter includes the
+                // empty playlist: a full read that ends with nothing in it is empty, not broken.
+                continue;
             }
+
+            // A page that delivers nothing while still claiming a next link. Followed ONCE,
+            // because TIDAL legitimately answers the first request against a brand-new playlist
+            // this way; a second one means the pages are not going anywhere.
+            if (emptyPageFollowed)
+            {
+                return (null, true);
+            }
+
+            emptyPageFollowed = true;
         }
 
         return (items, false);
@@ -371,6 +428,10 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
 
     private async Task<TidalTargetCredentials?> ResolveAsync(CancellationToken cancellationToken)
         => await _credentials(cancellationToken);
+
+    /// <summary>Whether a usable TIDAL token is stored, answered from the store alone.</summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => TidalTargetCredentials.IsUsable(await ResolveAsync(cancellationToken).ConfigureAwait(false));
 
     private static IReadOnlyDictionary<string, string> Headers(TidalTargetCredentials credentials)
         => new Dictionary<string, string>(StringComparer.Ordinal)

@@ -122,7 +122,27 @@ public sealed class PlaylistSyncEngineTest
 
         public bool LookupTransient { get; set; }
 
+        /// <summary>Whether the destination holds a usable credential right now.</summary>
+        public bool Connected { get; set; } = true;
+
+        public Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+            => Task.FromResult(Connected);
+
         public bool WriteFails { get; set; }
+
+        public List<PlaylistMetadataWrite> MetadataWrites { get; } = new();
+        public PlaylistMetadataWriteResult? MetadataResponse { get; set; }
+        public bool CancelMetadata { get; set; }
+
+        public Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+        {
+            if (CancelMetadata) throw new OperationCanceledException(cancellationToken);
+            MetadataWrites.Add(write);
+            return Task.FromResult(MetadataResponse ?? new PlaylistMetadataWriteResult(
+                write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Applied,
+                write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Applied,
+                null));
+        }
 
         /// <summary>Set to make creation return null, with this as the reason it reports.</summary>
         public string? CreateFailsWith { get; set; }
@@ -182,6 +202,84 @@ public sealed class PlaylistSyncEngineTest
                 write.OrderedItemIds.Count,
                 write.AppendMissingOnly ? 0 : write.CurrentItemIds.Count));
         }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Updated description")]
+    public async Task PlatformMetadataUpdatesTheExistingPlaylistAndPreservesDescriptionIntent(string? description)
+    {
+        var target = new FakeTarget("spotify", new() { ["pl-1"] = new() }) { TargetKind = PlaylistTargetKind.Platform };
+        var (engine, _) = Build(target);
+        var artwork = new PlaylistArtworkPayload(new byte[] { 1, 2 }, "image/jpeg");
+        var result = await engine.SyncAsync("spotify", "Road", description, new[] { "a" }, false, Binding, "pl-1", artwork: artwork);
+        Assert.True(result.Success);
+        Assert.True(result.MetadataComplete);
+        Assert.Equal(0, target.CreateCount);
+        var write = Assert.Single(target.MetadataWrites);
+        Assert.Equal("pl-1", write.PlaylistId);
+        Assert.Equal(description, write.Description);
+        Assert.Same(artwork, write.Artwork);
+    }
+
+    [Fact]
+    public async Task NewPlatformPlaylistReceivesMetadataAndIsReusedOnTheNextPass()
+    {
+        var target = new FakeTarget("spotify") { TargetKind = PlaylistTargetKind.Platform };
+        var (engine, bindings) = Build(target);
+        await engine.SyncAsync("spotify", "Road", "Description", new[] { "a" }, false, Binding);
+        var second = await engine.SyncAsync("spotify", "Road", "Changed", new[] { "a" }, false, Binding);
+        Assert.True(second.Success);
+        Assert.Equal(1, target.CreateCount);
+        Assert.Equal(2, target.MetadataWrites.Count);
+        Assert.Equal("Changed", target.MetadataWrites[1].Description);
+        Assert.Equal(2, bindings.Count);
+    }
+
+    [Theory]
+    [InlineData(PlaylistMetadataFieldStatus.Failed)]
+    [InlineData(PlaylistMetadataFieldStatus.Unsupported)]
+    public async Task MetadataFailureRetainsMembershipEvidenceAndBinding(PlaylistMetadataFieldStatus status)
+    {
+        var target = new FakeTarget("spotify", new() { ["pl-1"] = new() })
+        {
+            TargetKind = PlaylistTargetKind.Platform,
+            MetadataResponse = new(PlaylistMetadataFieldStatus.Applied, status, "Artwork unavailable")
+        };
+        var (engine, bindings) = Build(target);
+        var result = await engine.SyncAsync("spotify", "Road", "Description", new[] { "a" }, false, Binding, "pl-1",
+            artwork: new(new byte[] { 1 }, "image/jpeg"));
+        Assert.True(result.Success);
+        Assert.True(result.WriteComplete);
+        Assert.False(result.MetadataComplete);
+        Assert.Equal(status, result.MetadataResult!.ArtworkStatus);
+        Assert.Equal(1, result.AddedCount);
+        Assert.Single(bindings);
+        Assert.Contains("Artwork unavailable", result.Message!);
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(false, false, false)]
+    public async Task MetadataIsNotWrittenForFailedMembershipDisconnectedOrLibraryTargets(bool fails, bool disconnected, bool platform)
+    {
+        var target = new FakeTarget("spotify", new() { ["pl-1"] = new() })
+        {
+            WriteFails = fails, Connected = !disconnected,
+            TargetKind = platform ? PlaylistTargetKind.Platform : PlaylistTargetKind.Library
+        };
+        await Build(target).Engine.SyncAsync("spotify", "Road", "Description", new[] { "a" }, false, Binding, "pl-1");
+        Assert.Empty(target.MetadataWrites);
+    }
+
+    [Fact]
+    public async Task MetadataCancellationPropagates()
+    {
+        var target = new FakeTarget("spotify", new() { ["pl-1"] = new() }) { TargetKind = PlaylistTargetKind.Platform, CancelMetadata = true };
+        await Assert.ThrowsAsync<OperationCanceledException>(() => Build(target).Engine.SyncAsync(
+            "spotify", "Road", "Description", new[] { "a" }, false, Binding, "pl-1"));
     }
 
     private static (PlaylistSyncEngine Engine, List<(string Service, string PlaylistId)> Bindings) Build(
@@ -389,5 +487,48 @@ public sealed class PlaylistSyncEngineTest
 
         Assert.False(outcome.Success);
         Assert.Empty(bindings);
+    }
+
+    /// <summary>
+    /// "Registered" and "connected" are different facts. A destination with no stored credential
+    /// used to reach the lookup below and come back as an outage, which sends the user to their
+    /// network instead of to the account they have never linked.
+    /// </summary>
+    [Fact]
+    public async Task Sync_ReportsNotConfiguredWhenTheDestinationHoldsNoCredential()
+    {
+        var target = new FakeTarget("spotify") { Connected = false };
+        var (engine, bindings) = Build(target);
+
+        var outcome = await engine.SyncAsync(
+            "spotify", "Road", null, new[] { "a" }, appendMissingOnly: false, Binding, "pl-1");
+
+        Assert.False(outcome.Success);
+        Assert.Contains("is not configured.", outcome.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("responding", outcome.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, target.CreateCount);
+        Assert.Equal(0, target.WriteCount);
+        Assert.Empty(bindings);
+    }
+
+    /// <summary>
+    /// The credential question has to stay distinct from the lookup's own status: a target reports
+    /// "nothing is stored" and "the provider did not answer" with the same status, so a caller
+    /// reading that status cannot tell an unconnected platform from a broken network.
+    /// </summary>
+    [Fact]
+    public async Task AConnectedDestinationStillReachesItsLookup()
+    {
+        var target = new FakeTarget("spotify", new Dictionary<string, List<string>> { ["pl-1"] = new() })
+        {
+            Connected = true
+        };
+        var (engine, _) = Build(target);
+
+        var outcome = await engine.SyncAsync(
+            "spotify", "Road", null, new[] { "a" }, appendMissingOnly: false, Binding, "pl-1");
+
+        Assert.True(outcome.Success);
+        Assert.Equal(1, target.WriteCount);
     }
 }

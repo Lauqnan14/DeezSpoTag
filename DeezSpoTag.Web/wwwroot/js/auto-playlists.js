@@ -562,10 +562,11 @@
         const modeSection = settingsSection('How to sync');
         const modeGrid = document.createElement('div');
         modeGrid.className = 'artist-watch-options-grid';
+        const savedMode = String(saved?.syncMode || 'mirror').toLowerCase();
         [
             { value: "mirror", label: "Mirror tracks", hint: "Match the destination playlist exactly." },
             { value: "append", label: "Append only", hint: "Only add tracks that are missing." }
-        ].forEach((mode, index) => {
+        ].forEach((mode) => {
             const row = document.createElement('label');
             row.className = 'checkbox-group';
             const input = document.createElement('input');
@@ -573,7 +574,9 @@
             input.name = `library-playlist-sync-mode-${playlist.server}-${playlist.id}`;
             input.className = 'library-playlist-sync-mode-option';
             input.value = mode.value;
-            input.checked = index === 0;
+            // The saved mode, so reopening the panel shows what the next run will actually do
+            // instead of silently resetting to the default on the next Save.
+            input.checked = mode.value === savedMode;
             const label = document.createElement('span');
             label.textContent = mode.label;
             row.append(input, label);
@@ -755,7 +758,10 @@
                     targets: selected,
                     excludedTrackIds: Array.from(excluded),
                     artworkDataUrl,
-                    description: description.value
+                    description: description.value,
+                    // Saved with the schedule, not just sent with this run: the scheduled pass a
+                    // minute later has to apply the same mode or the two disagree.
+                    syncMode: selectedMode
                 })
             });
         } catch (error) {
@@ -850,7 +856,12 @@
         return wrapper;
     };
 
-    /// <summary>One immediate sync to every connected destination, using the saved mirror mode.</summary>
+    /// <summary>
+    /// One immediate sync. The endpoint reads the playlist's saved schedule for the mode,
+    /// exclusions, cover, description and destination list, so this does the same thing an
+    /// unattended pass would have done. The target list below is only the fallback for a playlist
+    /// that has no schedule saved yet; the mode is deliberately not sent, so the saved one applies.
+    /// </summary>
     const runPlaylistSyncNow = async (playlist) => {
         let targets = [];
         try {
@@ -875,7 +886,11 @@
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targets: targets.map((t) => t.value), syncMode: 'mirror' })
+                    // No syncMode: the endpoint prefers the saved schedule's mode, and the
+                    // hardcoded "mirror" this used to send overrode it - which is how a playlist a
+                    // user had set to append-only was still having tracks removed on every
+                    // hand-triggered run.
+                    body: JSON.stringify({ targets: targets.map((t) => t.value) })
                 });
             const failed = (response?.targets || []).filter((t) => !t.success);
             if (failed.length === 0) {

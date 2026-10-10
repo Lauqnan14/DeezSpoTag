@@ -70,6 +70,31 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
 
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        var description = PlaylistMetadataFieldStatus.NotRequested;
+        var artwork = write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Unsupported;
+        var messages = new List<string>();
+        if (write.Artwork is not null) messages.Add("Apple Music custom playlist artwork has no verified upload operation in the current web integration.");
+        if (write.Description is not null)
+        {
+            var credentials = await ResolveAsync(cancellationToken).ConfigureAwait(false);
+            if (!AppleTargetCredentials.IsUsable(credentials))
+                return PlaylistMetadataWriteResult.Failed(write, "Apple Music is not connected.");
+            var body = JsonBody(new Dictionary<string, object> { ["attributes"] = new { description = write.Description } });
+            var response = await _transport.SendAsync(System.Net.Http.HttpMethod.Patch,
+                $"{AmpApiBase}/me/library/playlists/{Uri.EscapeDataString(write.PlaylistId)}",
+                request => request.Content = new System.Net.Http.StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json"),
+                Headers(credentials!), cancellationToken).ConfigureAwait(false);
+            var payload = response.TryParseJson();
+            description = response.Success && (response.Status == 204 || payload?.ReadString("data.id") == write.PlaylistId
+                || payload?.ReadString("data.0.id") == write.PlaylistId)
+                ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
+            if (description == PlaylistMetadataFieldStatus.Failed) messages.Add($"Apple Music description update failed (HTTP {response.Status}).");
+        }
+        return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
+    }
+
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
         string name,
@@ -321,11 +346,11 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        // Only what is actually missing. Apple allows duplicates, so re-sending every id appends
-        // another copy of the whole playlist on each pass.
-        var toAdd = write.AppendMissingOnly
-            ? write.OrderedItemIds.Where(id => !presentCatalogIds.Contains(id)).ToList()
-            : write.OrderedItemIds.ToList();
+        // Only what is actually missing, in append mode AND in mirror mode. Apple allows
+        // duplicates, so re-sending every id appends another copy of the whole playlist on each
+        // pass. The comparison is against Apple's own catalog ids rather than the caller's ids,
+        // because the caller holds library ids for this destination.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, presentCatalogIds);
 
         var added = 0;
         foreach (var trackId in toAdd)
@@ -423,6 +448,10 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
     private async Task<AppleTargetCredentials?> ResolveAsync(CancellationToken cancellationToken)
         => await _credentials(cancellationToken);
+
+    /// <summary>Whether both Apple Music tokens are stored, answered from the store alone.</summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => AppleTargetCredentials.IsUsable(await ResolveAsync(cancellationToken).ConfigureAwait(false));
 
     private static IReadOnlyDictionary<string, string> Headers(AppleTargetCredentials credentials)
     {

@@ -56,6 +56,16 @@ public sealed class PlaylistSyncScheduleEntry
     /// <summary>The description sent to each destination on a sync.</summary>
     public string? Description { get; set; }
 
+    /// <summary>
+    /// "append" or "mirror", or null when the user has never chosen.
+    /// <para>
+    /// This used to live only in the dialog, which meant the mode a user picked was applied to the
+    /// immediate sync that followed it and then forgotten: the scheduled pass a minute later ran
+    /// the default instead, so the two disagreed about what the playlist was supposed to do.
+    /// </para>
+    /// </summary>
+    public string? SyncMode { get; set; }
+
     public DateTimeOffset? LastRunAtUtc { get; set; }
 
     public string? LastRunMessage { get; set; }
@@ -198,6 +208,7 @@ public sealed class PlaylistSyncScheduleStore
         IReadOnlyCollection<string>? excludedTrackIds = null,
         string? artworkDataUrl = null,
         string? description = null,
+        string? syncMode = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(sourceService) || string.IsNullOrWhiteSpace(sourcePlaylistId))
@@ -210,6 +221,8 @@ public sealed class PlaylistSyncScheduleStore
             throw new ArgumentOutOfRangeException(
                 nameof(cadence), cadence, "That cadence is not one this app offers.");
         }
+
+        var mode = NormalizeSyncMode(syncMode);
 
         // The browser checks these too, but the server is the only place they are enforced for a
         // caller that is not the browser. An oversized or unsupported upload is rejected here rather
@@ -259,6 +272,11 @@ public sealed class PlaylistSyncScheduleStore
                 entry.Description = description.Trim();
             }
 
+            if (mode is not null)
+            {
+                entry.SyncMode = mode;
+            }
+
             if (cadence == PlaylistSyncCadence.Manual)
             {
                 entry.NextRunAtUtc = null;
@@ -286,6 +304,35 @@ public sealed class PlaylistSyncScheduleStore
         {
             _writeGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The two modes this app offers, or null when the caller did not choose one.
+    /// <para>
+    /// An unknown value is rejected rather than quietly coerced: what the sync service does with an
+    /// unrecognised mode is fall back to mirror, which is the mode that DELETES tracks on the
+    /// destination. Storing a typo as mirror would turn a typo into a destructive pass.
+    /// </para>
+    /// </summary>
+    internal static string? NormalizeSyncMode(string? mode)
+    {
+        var normalized = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return null;
+        }
+
+        if (normalized == PlaylistSyncService.SyncModeAppend)
+        {
+            return PlaylistSyncService.SyncModeAppend;
+        }
+
+        if (normalized == PlaylistSyncService.SyncModeMirror)
+        {
+            return PlaylistSyncService.SyncModeMirror;
+        }
+
+        throw new ArgumentException("That sync mode is not one this app offers.", nameof(mode));
     }
 
     /// <summary>

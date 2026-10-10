@@ -161,11 +161,20 @@ public sealed class PlaylistSyncSchedulerService : BackgroundService
                 return;
             }
 
+            // Every preference the user saved comes from the entry rather than from a default, so an
+            // unattended pass does the same thing the dialog would have done: the same mode (the
+            // default is the one that removes tracks), the same exclusions, the same cover and the
+            // same description. Before this, only the destinations were carried across and the rest
+            // silently reverted on every scheduled run.
             var request = new PlaylistSyncService.PlaylistSingleSyncRequest(
                 source.Playlist,
                 SourcePreference: null,
                 candidates,
-                entry.Targets);
+                entry.Targets,
+                SyncMode: entry.SyncMode,
+                ExcludedTrackIds: entry.ExcludedTrackIds,
+                ArtworkDataUrl: entry.Artwork,
+                Description: entry.Description);
 
             var result = await _playlistSyncService.SyncSinglePlaylistAsync(request, cancellationToken);
             _logger.LogInformation(

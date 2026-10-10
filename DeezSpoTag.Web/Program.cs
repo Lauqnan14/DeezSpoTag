@@ -577,6 +577,10 @@ public partial class Program
         services.AddHttpClient<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>();
         services.AddHttpClient<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>();
         services.AddHttpClient<DeezSpoTag.Integrations.YouTube.YouTubeDataApiClient>();
+        // The resolution search. It is a separate client from the Data API one on purpose: it is
+        // unauthenticated, never touches the user's YouTube account, and costs no Data API quota,
+        // so it must not inherit an OAuth token the Data API client would attach.
+        services.AddHttpClient<DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient>();
           services.AddSingleton<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>();
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.YouTube.YouTubeMusicPlaylistSyncTarget(
@@ -674,10 +678,20 @@ public partial class Program
                       sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncQobuz")),
                   sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
                       .GetQobuzAsync));
+          // One TIDAL transport, shared by the destination and the catalog reader. The rule is one
+          // pacer PER PLATFORM because a provider's rate limit is per account, and two pacers on
+          // one account would each behave as if it had the whole budget to itself.
+          services.AddSingleton<DeezSpoTag.Integrations.TargetApiTransport>(sp =>
+              new DeezSpoTag.Integrations.TargetApiTransport(
+                  sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncTidal")));
+          services.AddSingleton<DeezSpoTag.Integrations.Tidal.TidalCatalogClient>(sp =>
+              new DeezSpoTag.Integrations.Tidal.TidalCatalogClient(
+                  sp.GetRequiredService<DeezSpoTag.Integrations.TargetApiTransport>(),
+                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
+                      .GetTidalAsync));
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.Tidal.TidalPlaylistSyncTarget(
-                  new DeezSpoTag.Integrations.TargetApiTransport(
-                      sp.GetRequiredService<IHttpClientFactory>().CreateClient("PlaylistSyncTidal")),
+                  sp.GetRequiredService<DeezSpoTag.Integrations.TargetApiTransport>(),
                   sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
                       .GetTidalAsync));
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
@@ -1718,7 +1732,13 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 sp.GetService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 sp.GetService<DeezSpoTag.Services.Metadata.Qobuz.QobuzTrackResolver>(),
                 sp.GetService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
-                sp.GetService<ILogger<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>>()));
+                sp.GetService<DeezSpoTag.Integrations.Tidal.TidalCatalogClient>(),
+                sp.GetService<DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient>(),
+                sp.GetService<ILogger<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>>(),
+                // The Apple storefront comes from the destination's own credential rather than a
+                // second store, so an Apple search can never scope itself to a different catalog
+                // from the one the playlist is written into.
+                sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>().GetAppleAsync));
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {

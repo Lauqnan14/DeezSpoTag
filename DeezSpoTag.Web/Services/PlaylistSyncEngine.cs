@@ -100,10 +100,21 @@ public sealed class PlaylistSyncEngine
         PlaylistSyncBinding binding,
         string? requestedPlaylistId = null,
         string? forceAppendReason = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PlaylistArtworkPayload? artwork = null)
     {
         var target = _registry.Find(service);
         if (target is null)
+        {
+            return PlaylistSyncTargetOutcome.NotConfigured(service);
+        }
+
+        // Registered is not the same as connected. A destination whose credential was never stored,
+        // or was cleared since the schedule that asked for it was saved, used to reach the lookup
+        // below and come back as "not responding" - an outage, which sends the user to their network
+        // instead of to the account they have not linked yet. It is not configured, and that is the
+        // one thing that will fix it.
+        if (!await target.IsConnectedAsync(cancellationToken).ConfigureAwait(false))
         {
             return PlaylistSyncTargetOutcome.NotConfigured(service);
         }
@@ -199,6 +210,29 @@ public sealed class PlaylistSyncEngine
             write.RemovedCount,
             effectiveAppend) with { WriteComplete = write.WriteComplete };
 
+        if (target.TargetKind == PlaylistTargetKind.Platform && (playlistDescription is not null || artwork is not null))
+        {
+            var metadataWrite = new PlaylistMetadataWrite(playlistId, playlistName, playlistDescription, artwork);
+            PlaylistMetadataWriteResult metadata;
+            try
+            {
+                metadata = await target.WriteMetadataAsync(metadataWrite, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TimeoutException
+                || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                metadata = PlaylistMetadataWriteResult.Failed(metadataWrite, "Playlist metadata request did not complete.");
+            }
+            outcome = outcome with { MetadataResult = metadata };
+            if (!metadata.Complete)
+            {
+                outcome = outcome with
+                {
+                    Message = outcome.Message + $" Metadata incomplete: description {metadata.DescriptionStatus}, artwork {metadata.ArtworkStatus}. {metadata.Message}"
+                };
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(appendReason))
         {
             outcome = outcome with
@@ -252,6 +286,8 @@ public sealed record PlaylistSyncTargetOutcome(
     /// the membership as verified.
     /// </summary>
     public bool WriteComplete { get; init; } = true;
+    public PlaylistMetadataWriteResult? MetadataResult { get; init; }
+    public bool MetadataComplete => MetadataResult?.Complete ?? true;
     public static PlaylistSyncTargetOutcome Succeeded(
         string service, string playlistId, int added, int removed, bool appendMissingOnly)
         => new(

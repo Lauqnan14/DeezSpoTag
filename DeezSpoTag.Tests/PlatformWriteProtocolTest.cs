@@ -27,6 +27,136 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class PlatformWriteProtocolTest
 {
+    [Theory]
+    [InlineData("qobuz", "description")]
+    [InlineData("qobuz", "")]
+    [InlineData("tidal", "description")]
+    [InlineData("tidal", "")]
+    [InlineData("applemusic", "description")]
+    [InlineData("applemusic", "")]
+    public async Task MetadataDescriptionUsesTheProviderUpdateProtocol(string service, string description)
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK,
+            service == "qobuz" ? "{\"id\":42}" : "{\"data\":{\"id\":\"42\"}}"));
+        IPlaylistSyncTarget target = service switch
+        {
+            "qobuz" => new QobuzPlaylistSyncTarget(Transport(handler), _ => Task.FromResult<QobuzTargetCredentials?>(new("app", "token", "user"))),
+            "tidal" => Tidal(handler),
+            _ => Apple(handler)
+        };
+        var result = await target.WriteMetadataAsync(new("42", "Road", description, new(new byte[] { 1 }, "image/jpeg")), CancellationToken.None);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Unsupported, result.ArtworkStatus);
+        var request = Assert.Single(handler.Requests);
+        if (service == "qobuz")
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Contains("/playlist/update", request.Url);
+            Assert.Contains("playlist_id=42", request.Body!);
+            Assert.Contains("description=" + description, request.Body!);
+        }
+        else
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.Contains("/playlists/42", request.Url);
+            Assert.Contains("\"description\":\"" + description + "\"", request.Body!);
+            Assert.DoesNotContain("isPublic", request.Body!);
+            Assert.DoesNotContain("accessType", request.Body!);
+        }
+    }
+
+    [Theory]
+    [InlineData("qobuz", 401)]
+    [InlineData("tidal", 403)]
+    [InlineData("applemusic", 429)]
+    [InlineData("applemusic", 503)]
+    [InlineData("qobuz", 200)]
+    public async Task MetadataRejectionOrMalformedResponseDoesNotBecomeApplied(string service, int status)
+    {
+        var handler = new RecordingHandler((_, _) => ((HttpStatusCode)status, "{\"error\":\"sensitive-provider-data\"}"));
+        IPlaylistSyncTarget target = service switch
+        {
+            "qobuz" => new QobuzPlaylistSyncTarget(Transport(handler), _ => Task.FromResult<QobuzTargetCredentials?>(new("app", "token", "user"))),
+            "tidal" => Tidal(handler),
+            _ => Apple(handler)
+        };
+        var result = await target.WriteMetadataAsync(new("42", "Road", "Updated", null), CancellationToken.None);
+        Assert.Equal(PlaylistMetadataFieldStatus.Failed, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.NotRequested, result.ArtworkStatus);
+        Assert.DoesNotContain("sensitive-provider-data", result.Message ?? "");
+    }
+
+    [Theory]
+    [InlineData("deezer")]
+    public async Task MetadataWithNoVerifiedCurrentCredentialProtocolIsExplicitlyUnsupported(string service)
+    {
+        var handler = new RecordingHandler((_, _) => throw new InvalidOperationException("No speculative metadata requests"));
+        IPlaylistSyncTarget target = service == "spotify" ? Spotify(handler) : Deezer(handler);
+        var result = await target.WriteMetadataAsync(new("42", "Road", "Description", new(new byte[] { 1 }, "image/jpeg")), CancellationToken.None);
+        Assert.Equal(PlaylistMetadataFieldStatus.Unsupported, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Unsupported, result.ArtworkStatus);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("Updated")]
+    [InlineData("")]
+    public async Task SpotifyMetadataUsesTheExistingWebSessionAndRegisteredPicture(string description)
+    {
+        var handler = new RecordingHandler((request, _) => (HttpStatusCode.OK,
+            request.RequestUri!.Host == "image-upload.spotify.com" ? "{\"uploadToken\":\"upload-one\"}"
+            : request.RequestUri!.AbsolutePath.EndsWith("register-image") ? "{\"picture\":\"picture-one\"}"
+            : "{\"revision\":\"revision-one\"}"));
+        var result = await Spotify(handler).WriteMetadataAsync(new("spotify:playlist:42", "Road", description,
+            new(new byte[] { 1, 2, 3 }, "image/jpeg")), CancellationToken.None);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, result.ArtworkStatus);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal("https://image-upload.spotify.com/v4/playlist", handler.Requests[0].Url);
+        Assert.Equal("image/jpeg", handler.Requests[0].ContentType);
+        Assert.Contains("/playlist/v2/playlist/42/register-image", handler.Requests[1].Url);
+        Assert.Contains("\"uploadToken\":\"upload-one\"", handler.Requests[1].Body!);
+        Assert.Contains("/playlist/v2/playlist/42/changes", handler.Requests[2].Url);
+        Assert.Contains("\"deltas\"", handler.Requests[2].Body!);
+        Assert.Contains("\"picture\":\"picture-one\"", handler.Requests[2].Body!);
+        Assert.Contains(description.Length == 0 ? "LIST_DESCRIPTION" : "\"description\":\"Updated\"", handler.Requests[2].Body!);
+        Assert.DoesNotContain("api.spotify.com", string.Join(" ", handler.Requests.Select(r => r.Url)));
+    }
+
+    [Fact]
+    public async Task SpotifyImageRejectionDoesNotSuppressTheDescription()
+    {
+        var handler = new RecordingHandler((request, _) => request.RequestUri!.Host == "image-upload.spotify.com"
+            ? (HttpStatusCode.Forbidden, "{}") : (HttpStatusCode.OK, "{\"revision\":\"r\"}"));
+        var result = await Spotify(handler).WriteMetadataAsync(new("42", "Road", "Updated", new(new byte[] { 1 }, "image/jpeg")), CancellationToken.None);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Failed, result.ArtworkStatus);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("description", handler.Requests[1].Body!);
+        Assert.DoesNotContain("picture-one", handler.Requests[1].Body!);
+    }
+
+    [Theory]
+    [InlineData("spotify")]
+    [InlineData("deezer")]
+    [InlineData("qobuz")]
+    [InlineData("tidal")]
+    [InlineData("applemusic")]
+    public async Task UnrequestedMetadataMakesNoProviderRequest(string service)
+    {
+        var handler = new RecordingHandler((_, _) => throw new InvalidOperationException("Unrequested metadata must not write"));
+        IPlaylistSyncTarget target = service switch
+        {
+            "spotify" => Spotify(handler), "deezer" => Deezer(handler), "tidal" => Tidal(handler), "applemusic" => Apple(handler),
+            _ => new QobuzPlaylistSyncTarget(Transport(handler), _ => Task.FromResult<QobuzTargetCredentials?>(new("app", "token", "user")))
+        };
+        var result = await target.WriteMetadataAsync(new("42", "Road", null, null), CancellationToken.None);
+        Assert.True(result.Complete);
+        Assert.Equal(PlaylistMetadataFieldStatus.NotRequested, result.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.NotRequested, result.ArtworkStatus);
+        Assert.Empty(handler.Requests);
+    }
+
     private sealed class RecordingHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, string?, (HttpStatusCode, string)> _respond;
@@ -335,6 +465,113 @@ public sealed class PlatformWriteProtocolTest
 
         var adds = handler.Requests.Where(r => r.Url.Contains("addTracks", StringComparison.Ordinal)).ToList();
         Assert.Single(adds);
+    }
+
+    // ------------------------------------------------------- mirror mode never re-adds
+
+    // Mirror mode governs REMOVAL only. The reference computes the additions the same way in both
+    // modes - the wanted list minus what the destination already holds - so a writer that sent the
+    // whole list whenever removals were allowed would re-append every track on every pass and a
+    // playlist mirroring itself would grow forever instead of converging. Each of these is the same
+    // assertion against one destination.
+
+    [Fact]
+    public async Task Spotify_MirrorModeSendsOnlyTheMissingTracks()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK, "{}"));
+
+        await Spotify(handler).WriteMembershipAsync(
+            new PlaylistMembershipWrite("pl-1", "Roadtrip", new[] { "a", "b", "c" }, new[] { "a", "b" }, false),
+            CancellationToken.None);
+
+        var adds = handler.Requests.Where(r => r.Method == HttpMethod.Post
+            && r.Body!.Contains("addToPlaylist", StringComparison.Ordinal)).ToList();
+        Assert.Single(adds);
+        Assert.Contains("spotify:track:c", adds[0].Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotify:track:a", adds[0].Body!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Deezer_MirrorModeSendsOnlyTheMissingTracks()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK, "{}"));
+
+        await Deezer(handler).WriteMembershipAsync(
+            new PlaylistMembershipWrite("123", "Roadtrip", new[] { "a", "b" }, new[] { "a" }, false),
+            CancellationToken.None);
+
+        var post = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post);
+        Assert.Contains("songs=b", post.Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain("songs=a", post.Body!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Apple_MirrorModeSendsOnlyTheMissingCatalogIds()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK, TwoTrackApplePage));
+
+        await Apple(handler).WriteMembershipAsync(
+            new PlaylistMembershipWrite("p.pl", "Roadtrip", new[] { "i.abc", "i.xyz" }, new[] { "p.1", "p.2" }, false),
+            CancellationToken.None);
+
+        var post = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post);
+        Assert.Contains("i.xyz", post.Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain("i.abc\"", post.Body!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Tidal_MirrorModeSendsOnlyTheMissingTracks()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK,
+            """{"data":[{"id":"a","meta":{"itemId":"i1"}},{"id":"b","meta":{"itemId":"i2"}}]}"""));
+
+        await Tidal(handler).WriteMembershipAsync(
+            new PlaylistMembershipWrite("pl-1", "Roadtrip", new[] { "a", "b", "c" }, new[] { "a", "b" }, false),
+            CancellationToken.None);
+
+        var posts = handler.Requests.Where(r => r.Method == HttpMethod.Post).ToList();
+        Assert.Single(posts);
+        Assert.Contains("\"id\":\"c\"", posts[0].Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"id\":\"a\"", posts[0].Body!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Qobuz_MirrorModeSendsOnlyTheMissingTracks()
+    {
+        var handler = new RecordingHandler((request, body) =>
+            request.RequestUri!.AbsolutePath.EndsWith("playlist/get", StringComparison.Ordinal)
+                ? (HttpStatusCode.OK, """
+                    {"tracks":{"total":2,"items":[
+                      {"id":"a","playlist_track_id":"pa"},
+                      {"id":"b","playlist_track_id":"pb"}]}}
+                    """)
+                : (HttpStatusCode.OK, "{}"));
+
+        await QobuzPlaylistSyncTargetFactory(handler).WriteMembershipAsync(
+            new PlaylistMembershipWrite("pl-1", "Roadtrip", new[] { "a", "b", "c" }, new[] { "a", "b" }, false),
+            CancellationToken.None);
+
+        var adds = handler.Requests.Where(r => r.Url.Contains("addTracks", StringComparison.Ordinal)).ToList();
+        Assert.Single(adds);
+        Assert.Contains("track_ids=c", adds[0].Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain("track_ids=a", adds[0].Body!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A playlist the account genuinely holds nothing in must read as empty, not as a failure. The
+    /// two answers look identical from the outside and mean opposite things: an empty read is a
+    /// playlist that needs filling, a failed one must block every removal.
+    /// </summary>
+    [Fact]
+    public async Task Tidal_AnEmptyPlaylistReadsAsEmptyRatherThanAsAFailedRead()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK,
+            """{"data":[],"links":{"next":null},"meta":{"total":0}}"""));
+
+        var read = await Tidal(handler).ReadItemIdsAsync("pl-1", CancellationToken.None);
+
+        Assert.True(read.Success);
+        Assert.Empty(read.ItemIds);
     }
 
     private static QobuzPlaylistSyncTarget QobuzPlaylistSyncTargetFactory(RecordingHandler handler)

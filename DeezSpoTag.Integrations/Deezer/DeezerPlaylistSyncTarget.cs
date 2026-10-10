@@ -46,6 +46,13 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
 
+    public Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(PlaylistMetadataWriteResult.Unsupported(write,
+            "Deezer description and custom artwork updates have no verified protocol for this integration's current credentials."));
+    }
+
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
         string name,
@@ -269,12 +276,10 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        // Only what is actually missing. Sending every id again appends a duplicate of the whole
-        // playlist on each pass, because Deezer permits duplicates.
-        var present = new HashSet<string>(write.CurrentItemIds, StringComparer.Ordinal);
-        var toAdd = write.AppendMissingOnly
-            ? write.OrderedItemIds.Where(id => !present.Contains(id)).ToList()
-            : write.OrderedItemIds.ToList();
+        // Only what is actually missing, in append mode AND in mirror mode. Sending every id again
+        // appends a duplicate of the whole playlist on each pass, because Deezer permits
+        // duplicates; the mode above decides only whether stale copies may be removed.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, write.CurrentItemIds);
 
         // One request per track, in order. Deezer has no positional insert, so an out-of-order batch
         // could not be repaired afterwards; and stopping at the first rejection keeps the tracks
@@ -321,6 +326,10 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
 
     private async Task<DeezerTargetSession?> ResolveAsync(CancellationToken cancellationToken)
         => await _session(cancellationToken);
+
+    /// <summary>Whether a usable Deezer session is stored, answered from the store alone.</summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => DeezerTargetSession.IsUsable(await ResolveAsync(cancellationToken).ConfigureAwait(false));
 
     /// <summary>
     /// Deezer's API authenticates with an <c>access_token</c> query parameter, not an

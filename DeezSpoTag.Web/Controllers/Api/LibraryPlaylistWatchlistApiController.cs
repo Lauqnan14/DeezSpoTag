@@ -47,6 +47,12 @@ public sealed class PlaylistSyncScheduleRequest
 
     /// <summary>The description to send to each destination.</summary>
     public string? Description { get; set; }
+
+    /// <summary>
+    /// "mirror" or "append". Saved alongside the schedule so an unattended pass runs the mode the
+    /// user chose rather than the default, which is the one that removes tracks.
+    /// </summary>
+    public string? SyncMode { get; set; }
 }
 
 public sealed class LibraryPlaylistWatchlistDependencies
@@ -1127,6 +1133,7 @@ public partial class WatchlistApiController : ControllerBase
                 targets = Array.Empty<string>(),
                 excludedTrackIds = Array.Empty<string>(),
                 description = default(string?),
+                syncMode = default(string?),
                 hasArtwork = false,
             }
             : new
@@ -1135,6 +1142,7 @@ public partial class WatchlistApiController : ControllerBase
                 targets = entry.Targets,
                 excludedTrackIds = entry.ExcludedTrackIds,
                 description = entry.Description,
+                syncMode = entry.SyncMode,
                 hasArtwork = entry.Artwork is { Length: > 0 },
                 lastRunAtUtc = entry.LastRunAtUtc,
                 lastRunMessage = entry.LastRunMessage,
@@ -1201,8 +1209,8 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         // The artwork and description are validated by the store, which throws a plain
-        // ArgumentException for a bad type or an oversized upload. That is a client mistake, so it
-        // becomes a 400 with the reason rather than a 500.
+        // ArgumentException for a bad type, an oversized upload or a mode that is not one this app
+        // offers. Those are client mistakes, so they become a 400 with the reason rather than a 500.
         PlaylistSyncScheduleEntry entry;
         try
         {
@@ -1214,6 +1222,7 @@ public partial class WatchlistApiController : ControllerBase
                 request.ExcludedTrackIds,
                 request.ArtworkDataUrl,
                 request.Description,
+                request.SyncMode,
                 cancellationToken);
         }
         catch (ArgumentException ex)
@@ -1227,6 +1236,7 @@ public partial class WatchlistApiController : ControllerBase
             targets = entry.Targets,
             excludedTrackIds = entry.ExcludedTrackIds,
             description = entry.Description,
+            syncMode = entry.SyncMode,
             hasArtwork = entry.Artwork is { Length: > 0 },
             nextRunAtUtc = entry.Cadence == PlaylistSyncCadence.Manual ? null : entry.NextRunAtUtc,
         });

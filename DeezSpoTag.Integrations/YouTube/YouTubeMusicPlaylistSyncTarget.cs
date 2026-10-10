@@ -27,6 +27,17 @@ public sealed class YouTubeMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
 
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        var token = await _accessToken(cancellationToken).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(token) ? PlaylistMetadataWriteResult.Failed(write, "YouTube Music is not connected.")
+            : await _client.WritePlaylistMetadataAsync(token, write, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether a YouTube access token is stored, answered without calling the API.</summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => !string.IsNullOrWhiteSpace(await _accessToken(cancellationToken).ConfigureAwait(false));
+
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
         string name,
@@ -48,7 +59,12 @@ public sealed class YouTubeMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
         // No id yet: find by name so a re-run reuses the playlist an earlier pass created rather
         // than creating a second one with the same title.
-        var playlists = await _client.GetMyPlaylistsAsync(token, cancellationToken: cancellationToken);
+        // All of the account's playlists, not the first page of them: a playlist created by an
+        // earlier pass but sitting on page two would otherwise be created a second time.
+        var playlists = await _client.GetMyPlaylistsAsync(
+            token,
+            int.MaxValue,
+            cancellationToken: cancellationToken);
         if (playlists is null)
         {
             return TargetPlaylistLookup<string>.Unavailable();
@@ -83,7 +99,13 @@ public sealed class YouTubeMusicPlaylistSyncTarget : IPlaylistSyncTarget
             return TargetPlaylistItemsRead.Unreadable;
         }
 
-        var items = await _client.GetPlaylistItemsAsync(token, playlistId, cancellationToken: cancellationToken);
+        // The whole membership, not one page: a 50-item view of a 100-item playlist is a read that
+        // looks complete enough to mirror against and then removes the other half.
+        var items = await _client.GetPlaylistItemsAsync(
+            token,
+            playlistId,
+            int.MaxValue,
+            cancellationToken: cancellationToken);
         if (items is null)
         {
             // A failed read is not an empty playlist. Reporting it as empty would make a mirror
@@ -107,16 +129,24 @@ public sealed class YouTubeMusicPlaylistSyncTarget : IPlaylistSyncTarget
             return PlaylistMembershipWriteResult.Failed("YouTube Music authorization expired. Reconnect it in Login.");
         }
 
+        // The write needs the destination's video ids, not the caller's ids: ReadItemIdsAsync
+        // returns PLAYLIST ITEM ids for this destination, because that is the only handle a
+        // removal can address. So the membership is re-read here in append mode too rather than
+        // trusting write.CurrentItemIds, which is the wrong namespace to diff against.
+        var current = await _client.GetPlaylistItemsAsync(
+            token,
+            write.PlaylistId,
+            int.MaxValue,
+            cancellationToken: cancellationToken);
+        if (current is null)
+        {
+            return PlaylistMembershipWriteResult.Failed(
+                "YouTube Music playlist could not be read, so nothing was written.");
+        }
+
         var removed = 0;
         if (!write.AppendMissingOnly)
         {
-            var current = await _client.GetPlaylistItemsAsync(token, write.PlaylistId, cancellationToken: cancellationToken);
-            if (current is null)
-            {
-                return PlaylistMembershipWriteResult.Failed(
-                    "YouTube Music playlist could not be read, so nothing was written.");
-            }
-
             var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
             foreach (var item in current)
             {
@@ -135,11 +165,20 @@ public sealed class YouTubeMusicPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        if (!await _client.AddPlaylistItemsAsync(token, write.PlaylistId, write.OrderedItemIds, cancellationToken))
+        // Only what is actually missing, in append mode AND in mirror mode. YouTube permits
+        // duplicates, so re-sending ids the playlist already holds appends a second copy of the
+        // whole playlist and the pass never converges. The mode decides only whether the removals
+        // above may run.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(
+            write.OrderedItemIds,
+            current.Select(static item => item.VideoId ?? string.Empty));
+
+        if (toAdd.Count > 0
+            && !await _client.AddPlaylistItemsAsync(token, write.PlaylistId, toAdd, cancellationToken))
         {
             return PlaylistMembershipWriteResult.Failed("YouTube Music failed to write the playlist.");
         }
 
-        return PlaylistMembershipWriteResult.Ok(write.OrderedItemIds.Count, removed);
+        return PlaylistMembershipWriteResult.Ok(toAdd.Count, removed);
     }
 }

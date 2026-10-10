@@ -30,6 +30,7 @@ public class AutoPlaylistsApiController : ControllerBase
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly IWatchlistTrackCandidateSource? _watchlistEngine;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly PlaylistSyncScheduleStore? _playlistSyncScheduleStore;
     private readonly ILogger<AutoPlaylistsApiController>? _logger;
 
     public AutoPlaylistsApiController(
@@ -42,7 +43,8 @@ public class AutoPlaylistsApiController : ControllerBase
         PlaylistSyncService playlistSyncService,
         ILogger<AutoPlaylistsApiController>? logger = null,
         ILocalTrackAmbiguityResolver? localIdentityResolver = null,
-        IWatchlistTrackCandidateSource? watchlistEngine = null)
+        IWatchlistTrackCandidateSource? watchlistEngine = null,
+        PlaylistSyncScheduleStore? playlistSyncScheduleStore = null)
     {
         _authService = authService;
         _plexApiClient = plexApiClient;
@@ -53,6 +55,7 @@ public class AutoPlaylistsApiController : ControllerBase
         _playlistSyncService = playlistSyncService;
         _watchlistEngine = watchlistEngine;
         _httpClientFactory = httpClientFactory;
+        _playlistSyncScheduleStore = playlistSyncScheduleStore;
         _logger = logger;
     }
 
@@ -303,12 +306,29 @@ public class AutoPlaylistsApiController : ControllerBase
         [FromQuery] string? server,
         CancellationToken cancellationToken)
     {
-        if (request is null || request.Targets.Count == 0)
+        if (request is null)
         {
             return BadRequest("Select at least one destination server.");
         }
 
         var normalizedServer = string.IsNullOrWhiteSpace(server) ? PlexServer : server.Trim().ToLowerInvariant();
+
+        // The saved schedule decides HOW this runs - which destinations, which mode, which tracks
+        // are excluded, which cover and which description - so "Sync now" does what an unattended
+        // pass would have done rather than a different thing with different defaults. The request
+        // still carries its own target list and mode for a playlist that has no schedule yet.
+        var saved = _playlistSyncScheduleStore is null
+            ? null
+            : await _playlistSyncScheduleStore.GetAsync(normalizedServer, id, cancellationToken);
+
+        var targets = saved?.Targets is { Count: > 0 } savedTargets
+            ? savedTargets
+            : request.Targets;
+        if (targets.Count == 0)
+        {
+            return BadRequest("Select at least one destination server.");
+        }
+
         var source = await BuildSyncSourceAsync(normalizedServer, id, cancellationToken);
         if (source is null)
         {
@@ -328,11 +348,14 @@ public class AutoPlaylistsApiController : ControllerBase
                 source,
                 SourcePreference: null,
                 candidates,
-                request.Targets,
-                request.SyncMode,
+                targets,
+                saved?.SyncMode ?? request.SyncMode,
                 request.ExistingPlexPlaylistId,
                 request.ExistingJellyfinPlaylistId,
-                request.ExistingNavidromePlaylistId),
+                request.ExistingNavidromePlaylistId,
+                ExcludedTrackIds: saved?.ExcludedTrackIds,
+                ArtworkDataUrl: saved?.Artwork ?? request.ArtworkDataUrl,
+                Description: saved?.Description ?? request.Description),
             cancellationToken);
 
         return result.Success || result.Targets.Count > 0

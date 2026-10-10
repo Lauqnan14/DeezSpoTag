@@ -11,6 +11,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -128,8 +131,14 @@ public sealed class PlaylistSyncService
 
     private const string YouTubeMusicService = "ytmusic";
     private const string JellyfinPlaylistMoveCapability = "playlist_move";
-    private const string SyncModeMirror = "mirror";
-    private const string SyncModeAppend = "append";
+    /// <summary>
+    /// The canonical mode strings. Internal rather than private because the schedule store validates
+    /// and persists the same two values, and a second copy of them is a copy that can drift and
+    /// silently store a mode no reader recognises.
+    /// </summary>
+    internal const string SyncModeMirror = "mirror";
+
+    internal const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
     private const string NoTargetServerSelectedMessage = "No target server selected.";
     private const string UnsupportedPlaylistSyncTargetMessage = "Unsupported playlist sync target.";
@@ -920,7 +929,17 @@ public sealed class PlaylistSyncService
         string? SyncMode = null,
         string? ExistingPlexPlaylistId = null,
         string? ExistingJellyfinPlaylistId = null,
-        string? ExistingNavidromePlaylistId = null);
+        string? ExistingNavidromePlaylistId = null,
+        /// <summary>
+        /// Tracks saved on this playlist's schedule that must not be copied out of it. Applied
+        /// here rather than in the shared blocklist, so excluding a track from one playlist's sync
+        /// cannot change how the app collects or tags it anywhere else.
+        /// </summary>
+        IReadOnlyCollection<string>? ExcludedTrackIds = null,
+        /// <summary>Cover art as a data URL, stored as the playlist's own visual before writing.</summary>
+        string? ArtworkDataUrl = null,
+        /// <summary>Overrides the source playlist's description on every destination.</summary>
+        string? Description = null);
 
     public sealed record PlaylistSingleSyncResult(
         bool Success,
@@ -933,7 +952,11 @@ public sealed class PlaylistSyncService
         bool Success,
         string Message,
         string? PlaylistId,
-        int SyncedTracks);
+        int SyncedTracks)
+    {
+        public PlaylistMetadataWriteResult? MetadataResult { get; init; }
+        public bool MetadataComplete => MetadataResult?.Complete ?? true;
+    }
 
     public sealed record PlaylistMergeSyncResult(
         bool Success,
@@ -1018,12 +1041,15 @@ public sealed class PlaylistSyncService
     }
 
     /// <summary>
-    /// The streaming platforms that hold the credential their playlist target needs.
+    /// The streaming platforms whose stored credential their playlist target can actually use.
     /// <para>
-    /// Reported by asking the registered targets whether they are usable rather than by repeating
-    /// each platform's credential rules here. A platform added later is then included automatically,
-    /// and there is no second list that can disagree with the adapters about what "configured"
-    /// means.
+    /// Reported by asking each registered target whether it is connected rather than by repeating
+    /// each platform's credential rules here, so a platform added later is included automatically
+    /// and there is no second list that can disagree with the adapters. The question itself is
+    /// deliberately NOT a probe: a target reports "no credential is stored" and "the provider did
+    /// not answer" with the same lookup status, so asking the provider could only ever treat both
+    /// as connected - which is how an account the user had never linked was still offered as a
+    /// destination that then failed on its very first write.
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<string>> GetConfiguredPlatformSyncServicesAsync(
@@ -1037,19 +1063,7 @@ public sealed class PlaylistSyncService
                 continue;
             }
 
-            var probe = await target.FindPlaylistAsync(null, PlaylistSyncTargetReadinessProbe, cancellationToken);
-            // A probe that could not reach the provider is transient, not unconfigured, so it is not
-            // treated as "not connected" - otherwise a momentary outage would remove the platform
-            // from the user's list and any preference they had set for it.
-            if (probe.Status == TargetLookupStatus.Transient)
-            {
-                platforms.Add(target.TargetId);
-                continue;
-            }
-
-            // A Missing result means the provider answered and the account is connected, it simply
-            // has no playlist with the probe's name.
-            if (probe.Status == TargetLookupStatus.NotFound)
+            if (await target.IsConnectedAsync(cancellationToken).ConfigureAwait(false))
             {
                 platforms.Add(target.TargetId);
             }
@@ -1057,12 +1071,6 @@ public sealed class PlaylistSyncService
 
         return platforms;
     }
-
-    /// <summary>
-    /// A playlist name no account will have, used to ask a platform whether its credentials work
-    /// without creating or reading anything real.
-    /// </summary>
-    private const string PlaylistSyncTargetReadinessProbe = "\u0001playlist-sync-readiness-probe\u0001";
 
     /// <summary>
     /// Copies one existing server playlist to the requested servers. This is deliberately not
@@ -1134,6 +1142,7 @@ public sealed class PlaylistSyncService
             request.SourcePreference,
             candidates,
             cancellationToken);
+        ApplyScheduleExclusions(filtered, request.ExcludedTrackIds);
         if (filtered.Count == 0)
         {
             return new PlaylistSingleSyncResult(
@@ -1145,6 +1154,43 @@ public sealed class PlaylistSyncService
                 Array.Empty<PlaylistMergeTargetResult>());
         }
 
+        // The saved artwork becomes the playlist's own visual before anything is written, because
+        // that visual is what every library destination reads its cover from. Storing it here - once
+        // per pass, for both a scheduled and a manual run - is what makes an uploaded cover a
+        // preference rather than a thing that only the merge dialog ever applies.
+        string? artworkPreparationFailure = null;
+        try
+        {
+            await ApplyUploadedPlaylistArtworkAsync(request, cancellationToken);
+        }
+        catch (Exception ex) when (platformTargets.Count > 0 && targets.Count == 0
+            && ex is IOException or UnauthorizedAccessException)
+        {
+            artworkPreparationFailure = "Selected playlist artwork could not be stored.";
+        }
+
+        PlaylistArtworkPayload? platformArtwork = null;
+        if (platformTargets.Count > 0 && artworkPreparationFailure is null)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(request.ArtworkDataUrl))
+                {
+                    var selected = TryParseUploadedArtwork(request.ArtworkDataUrl)
+                        ?? throw new ArgumentException("Selected artwork data is invalid.");
+                    platformArtwork = PreparePlatformArtwork(selected.Bytes);
+                }
+                else if (_playlistVisualService.GetStoredVisual(request.Source.Source, request.Source.SourceId) is { } visual)
+                {
+                    platformArtwork = PreparePlatformArtwork(await File.ReadAllBytesAsync(visual.FilePath, cancellationToken).ConfigureAwait(false));
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                artworkPreparationFailure = "Selected playlist artwork could not be prepared; invalid, oversized or animated images are unsupported for streaming uploads.";
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
         var syncMode = NormalizeSyncMode(request.SyncMode);
         var targetResults = new List<PlaylistMergeTargetResult>();
@@ -1154,7 +1200,7 @@ public sealed class PlaylistSyncService
             targetResults.AddRange(await SyncMergedPlaylistTargetsAsync(
                 new PlaylistMergeSyncRequest(
                     request.Source.Name,
-                    request.Source.Description,
+                    request.Description ?? request.Source.Description,
                     ArtworkDataUrl: null,
                     ArtworkSource: request.Source.Source,
                     ArtworkSourceId: request.Source.SourceId,
@@ -1178,9 +1224,12 @@ public sealed class PlaylistSyncService
             targetResults.AddRange(await SyncPlatformTargetsAsync(
                 platformTargets,
                 request.Source,
+                request.Description ?? request.Source.Description,
                 filtered,
                 syncMode,
-                cancellationToken));
+                cancellationToken,
+                platformArtwork,
+                artworkPreparationFailure));
         }
 
         var anySucceeded = targetResults.Any(static target => target.Success);
@@ -1231,17 +1280,21 @@ public sealed class PlaylistSyncService
     /// The platform path cannot reuse the library writers: a self-hosted server tracks the library's
     /// own file ids, while a platform needs a CATALOG id for the same recording. The bridge is
     /// <c>media_server_track_metadata</c>, which records what a track is called on each service. A
-    /// track with no identity there is refused rather than written as a guess - a wrong catalog id
-    /// puts the wrong song on a user's playlist, and a skipped one leaves the destination one track
-    /// short and visibly fixable.
+    /// track with no identity there is skipped rather than written as a guess - a wrong catalog id
+    /// puts the wrong song on a user's playlist. The pass continues without it and holds that
+    /// track's removals, so one unfindable recording leaves the destination one track short and
+    /// visibly fixable instead of blocking every track that did resolve.
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<PlaylistMergeTargetResult>> SyncPlatformTargetsAsync(
         IReadOnlyList<string> platformTargets,
         PlaylistWatchlistDto source,
+        string? description,
         IReadOnlyList<SyncTrackSummary> tracks,
         string syncMode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PlaylistArtworkPayload? artwork = null,
+        string? artworkPreparationFailure = null)
     {
         var results = new List<PlaylistMergeTargetResult>(platformTargets.Count);
         var engine = _playlistSyncEngine;
@@ -1304,9 +1357,25 @@ public sealed class PlaylistSyncService
         foreach (var target in platformTargets)
         {
             var resolved = resolvedByTarget[target];
-            var missing = tracks.Count(track => !resolved.ContainsKey(track.SourceTrackId));
 
-            if (missing > 0)
+            // The source order is preserved, and the platform's append stamping makes order the
+            // one thing that cannot be repaired afterwards.
+            var ordered = new List<string>(tracks.Count);
+            var missing = 0;
+            foreach (var track in tracks)
+            {
+                if (resolved.TryGetValue(track.SourceTrackId, out var itemId)
+                    && !string.IsNullOrWhiteSpace(itemId))
+                {
+                    ordered.Add(itemId);
+                }
+                else
+                {
+                    missing++;
+                }
+            }
+
+            if (ordered.Count == 0)
             {
                 results.Add(new PlaylistMergeTargetResult(
                     target,
@@ -1317,24 +1386,49 @@ public sealed class PlaylistSyncService
                 continue;
             }
 
-            // The source order is preserved; the platform's append stamping makes order the one
-            // thing that cannot be repaired afterwards.
-            var ordered = tracks.Select(track => resolved[track.SourceTrackId]).ToList();
+            // One track with no id on a destination used to stop that destination entirely: every
+            // track the search DID find was thrown away, and in mirror mode the whole pass was
+            // refused - so a single unfindable deep cut meant nothing was ever written, on any
+            // pass, while the destination kept looking broken to the user. The reference writes the
+            // subset it has and holds removals instead, and that is what forceAppendReason is for:
+            // the membership grows toward what was resolved and never shrinks toward a list built
+            // from incomplete data.
+            var forceAppendReason = missing > 0
+                ? $"{missing} of {tracks.Count} track(s) were not found on {target}, so their removals were held."
+                : null;
+
             var outcome = await engine.SyncAsync(
                 target,
                 source.Name,
-                source.Description,
+                description,
                 ordered,
                 appendMissingOnly: syncMode != "mirror",
                 new PlaylistSyncBinding(source.Source, source.SourceId),
-                cancellationToken: cancellationToken);
+                forceAppendReason: forceAppendReason,
+                cancellationToken: cancellationToken,
+                artwork: artwork);
+
+            if (outcome.Success && artworkPreparationFailure is not null)
+            {
+                var metadata = outcome.MetadataResult ?? new PlaylistMetadataWriteResult(
+                    PlaylistMetadataFieldStatus.NotRequested, PlaylistMetadataFieldStatus.NotRequested, null);
+                outcome = outcome with
+                {
+                    MetadataResult = metadata with
+                    {
+                        ArtworkStatus = PlaylistMetadataFieldStatus.Failed,
+                        Message = string.Join(" ", new[] { metadata.Message, artworkPreparationFailure }.Where(static text => !string.IsNullOrEmpty(text)))
+                    },
+                    Message = outcome.Message + " " + artworkPreparationFailure
+                };
+            }
 
             results.Add(new PlaylistMergeTargetResult(
                 target,
-                outcome.Success,
+                outcome.Success && outcome.MetadataComplete,
                 outcome.Message ?? "Done.",
                 outcome.PlaylistId,
-                outcome.AddedCount));
+                outcome.AddedCount) { MetadataResult = outcome.MetadataResult });
         }
 
         return results;
@@ -1479,6 +1573,40 @@ public sealed class PlaylistSyncService
 
         var visual = _playlistVisualService.GetStoredVisual(source, sourceId);
         return visual is not null && File.Exists(visual.FilePath) ? visual : null;
+    }
+
+    /// <summary>Prepares a static copy without modifying the source visual or selecting an animation frame.</summary>
+    internal static PlaylistArtworkPayload PreparePlatformArtwork(byte[] bytes)
+    {
+        if (bytes.Length is 0 || bytes.Length > MaxArtworkBytes)
+            throw new ArgumentException("Artwork exceeds the accepted input size.", nameof(bytes));
+        try
+        {
+            using var image = Image.Load(bytes);
+            if (image.Frames.Count != 1)
+                throw new ArgumentException("Animated artwork is unsupported for streaming uploads.", nameof(bytes));
+            var largestSize = Math.Min(640, Math.Min(image.Width, image.Height));
+            foreach (var size in new[] { largestSize, Math.Min(largestSize, 320), Math.Min(largestSize, 160) }.Distinct())
+            {
+                using var square = image.Clone(context => context.Resize(new ResizeOptions
+                {
+                    Size = new Size(size, size), Mode = ResizeMode.Crop
+                }));
+                foreach (var quality in new[] { 85, 70, 55, 40 })
+                {
+                    using var stream = new MemoryStream();
+                    square.Save(stream, new JpegEncoder { Quality = quality });
+                    var encoded = stream.ToArray();
+                    if (Convert.ToBase64String(encoded).Length <= 256 * 1024)
+                        return new PlaylistArtworkPayload(encoded, "image/jpeg");
+                }
+            }
+            throw new ArgumentException("Artwork cannot fit the supported upload payload limit.", nameof(bytes));
+        }
+        catch (Exception ex) when (ex is UnknownImageFormatException or InvalidImageContentException or NotSupportedException)
+        {
+            throw new ArgumentException("Artwork is not a supported static image.", nameof(bytes), ex);
+        }
     }
 
     private static UploadedMergeArtwork? TryParseUploadedArtwork(string? dataUrl)
@@ -4625,6 +4753,63 @@ public sealed class PlaylistSyncService
             .Where(track => !ignoredTrackIds.Contains(track.SourceTrackId))
             .Where(track => !ShouldBlockTrack(track, effectiveBlockRules))
             .ToList();
+    }
+
+    /// <summary>
+    /// Drops the tracks this playlist's own schedule excluded.
+    /// <para>
+    /// Deliberately a different store from the watchlist blocklist: that one decides what the app
+    /// may COLLECT, this decides what one playlist may COPY. Sharing a store would mean excluding a
+    /// track from a single playlist's sync silently stopped it appearing everywhere else in the app.
+    /// </para>
+    /// </summary>
+    private static void ApplyScheduleExclusions(
+        List<SyncTrackSummary> tracks,
+        IReadOnlyCollection<string>? excludedTrackIds)
+    {
+        if (tracks.Count == 0 || excludedTrackIds is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var excluded = new HashSet<string>(
+            excludedTrackIds.Where(static id => !string.IsNullOrWhiteSpace(id)),
+            StringComparer.Ordinal);
+        if (excluded.Count == 0)
+        {
+            return;
+        }
+
+        tracks.RemoveAll(track =>
+            !string.IsNullOrWhiteSpace(track.SourceTrackId) && excluded.Contains(track.SourceTrackId));
+    }
+
+    /// <summary>
+    /// Stores the schedule's uploaded artwork as this playlist's own visual.
+    /// <para>
+    /// A library destination reads its cover from that visual, so this is the one place an uploaded
+    /// cover becomes a saved preference instead of something only the merge dialog ever applied.
+    /// The write is content-addressed, so a scheduled pass that runs every fifteen minutes rewrites
+    /// the file only when the artwork actually changed and otherwise leaves the revision the
+    /// destinations compare against untouched.
+    /// </para>
+    /// </summary>
+    private async Task ApplyUploadedPlaylistArtworkAsync(
+        PlaylistSingleSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        var artwork = TryParseUploadedArtwork(request.ArtworkDataUrl);
+        if (artwork is null)
+        {
+            return;
+        }
+
+        await _playlistVisualService.StoreUploadedVisualAsync(
+            request.Source.Source,
+            request.Source.SourceId,
+            artwork.Value.Bytes,
+            artwork.Value.ContentType,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)

@@ -6,6 +6,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Integrations;
+using System.Net.Http;
+using Microsoft.Extensions.Configuration;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,6 +29,208 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class PlaylistSyncScheduleTest : IDisposable
 {
+    [Theory]
+    [InlineData(100, 100, false)]
+    [InlineData(1280, 960, false)]
+    [InlineData(120, 80, true)]
+    public void PlatformArtworkIsASquareBoundedJpegWithoutChangingTheSource(int width, int height, bool jpeg)
+    {
+        using var image = new Image<Rgba32>(width, height, Color.DarkBlue.ToPixel<Rgba32>());
+        using var stream = new MemoryStream();
+        if (jpeg) image.SaveAsJpeg(stream); else image.SaveAsPng(stream);
+        var source = stream.ToArray();
+        var original = source.ToArray();
+        var prepared = PlaylistSyncService.PreparePlatformArtwork(source);
+        Assert.Equal(original, source);
+        Assert.Equal("image/jpeg", prepared.ContentType);
+        Assert.True(Convert.ToBase64String(prepared.Bytes).Length <= 256 * 1024);
+        using var decoded = Image.Load(prepared.Bytes);
+        Assert.Equal(decoded.Width, decoded.Height);
+        Assert.True(decoded.Width <= 640);
+    }
+
+    [Fact]
+    public void InvalidOversizedAndAnimatedPlatformArtworkAreExplicitFailures()
+    {
+        Assert.Throws<ArgumentException>(() => PlaylistSyncService.PreparePlatformArtwork(new byte[] { 1, 2, 3 }));
+        Assert.Throws<ArgumentException>(() => PlaylistSyncService.PreparePlatformArtwork(new byte[PlaylistSyncService.MaxArtworkBytes + 1]));
+        using var image = new Image<Rgba32>(10, 10, Color.Blue.ToPixel<Rgba32>());
+        using var second = new Image<Rgba32>(10, 10, Color.Red.ToPixel<Rgba32>());
+        image.Frames.AddFrame(second.Frames.RootFrame);
+        using var stream = new MemoryStream();
+        image.SaveAsGif(stream);
+        Assert.Throws<ArgumentException>(() => PlaylistSyncService.PreparePlatformArtwork(stream.ToArray()));
+    }
+
+    private sealed class MetadataTarget : IPlaylistSyncTarget
+    {
+        public string TargetId => "spotify";
+        public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
+        public bool Exists { get; set; }
+        public int Creates { get; private set; }
+        public List<string> Items { get; } = new();
+        public List<PlaylistMetadataWrite> MetadataWrites { get; } = new();
+        public bool RefuseArtwork { get; set; }
+        public Task<TargetPlaylistLookup<string>> FindPlaylistAsync(string? id, string name, CancellationToken ct)
+            => Task.FromResult(Exists ? TargetPlaylistLookup<string>.Found("remote-1") : TargetPlaylistLookup<string>.Missing());
+        public Task<string?> CreatePlaylistAsync(string name, string? description, CancellationToken ct)
+        { Creates++; Exists = true; return Task.FromResult<string?>("remote-1"); }
+        public Task<TargetPlaylistItemsRead> ReadItemIdsAsync(string id, CancellationToken ct)
+            => Task.FromResult(TargetPlaylistItemsRead.Ok(Items.ToArray()));
+        public Task<PlaylistMembershipWriteResult> WriteMembershipAsync(PlaylistMembershipWrite write, CancellationToken ct)
+        {
+            var additions = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, Items);
+            Items.AddRange(additions);
+            return Task.FromResult(PlaylistMembershipWriteResult.Ok(additions.Count, 0));
+        }
+        public Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken ct)
+        {
+            MetadataWrites.Add(write);
+            return Task.FromResult(new PlaylistMetadataWriteResult(
+                write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Applied,
+                write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : RefuseArtwork ? PlaylistMetadataFieldStatus.Failed : PlaylistMetadataFieldStatus.Applied,
+                RefuseArtwork ? "Artwork was refused" : null));
+        }
+    }
+
+    private sealed class ArtworkHttpFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => throw new InvalidOperationException("Saved artwork must not fetch another cover");
+    }
+
+    private async Task<PlaylistSyncService> MetadataServiceAsync(MetadataTarget target)
+    {
+        Directory.CreateDirectory(_dataRoot);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:Library"] = "Data Source=" + Path.Join(_dataRoot, "library.db") }).Build();
+        await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+        await repository.UpsertMediaServerTrackMetadataAsync(new[] { new MediaServerTrackMetadataUpsertDto(1, "spotify", "song-1", "", DateTimeOffset.UtcNow) });
+        await repository.AddPlaylistWatchTracksAsync("plex", "source-1", new[] { new PlaylistWatchTrackInsert("track-1", null) });
+        await repository.ReplacePlaylistWatchTargetMembershipAsync("plex", "source-1", "spotify", "remote-1",
+            new[] { new PlaylistWatchTargetMembership("track-1", 1, "song-1") });
+        Assert.Equal("song-1", (await repository.ResolveTargetItemIdsAsync(new[] { "track-1" }, "spotify"))["track-1"]);
+        var registry = new PlaylistSyncTargetRegistry(new[] { target });
+        return new PlaylistSyncService(new PlaylistSyncService.PlaylistSyncDependencies
+        {
+            LibraryRepository = repository, LocalIdentityResolver = new PassthroughLocalTrackAmbiguityResolver(),
+            SpotifyMetadataService = null!, PlexApiClient = null!, JellyfinApiClient = null!, NavidromeApiClient = null!, AuthService = null!,
+            PlaylistVisualService = new PlaylistVisualService(new ArtworkHttpFactory(), new TestEnvironment { ContentRootPath = _dataRoot }, NullLogger<PlaylistVisualService>.Instance),
+            MediaServerRefreshService = null!, MediaServerRefreshOutboxService = null!, SharedIdentityResolver = new SharedIdentityResolver(repository),
+            PlaylistSyncTargetRegistry = registry,
+            PlaylistSyncEngine = new PlaylistSyncEngine(registry, (_, _, _) => Task.FromResult<string?>(target.Exists ? "remote-1" : null), (_, _, _, _) => Task.CompletedTask),
+            Logger = NullLogger<PlaylistSyncService>.Instance
+        });
+    }
+
+    private static PlaylistWatchlistDto MetadataSource() => new(0, "plex", "source-1", "Road", null, "Source description", 1, DateTimeOffset.UtcNow);
+    private static PlaylistTrackCandidate[] MetadataCandidates() => new[] { new PlaylistTrackCandidate("track-1", null, "Song", "Artist", "Album", null, 180000, false, Array.Empty<string>()) };
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManualAndSavedScheduledPreferencesReachNewAndExistingPlatformPlaylists(bool existing)
+    {
+        var target = new MetadataTarget { Exists = existing };
+        var service = await MetadataServiceAsync(target);
+        using var image = new Image<Rgba32>(80, 80, Color.Blue.ToPixel<Rgba32>());
+        using var stream = new MemoryStream(); image.SaveAsPng(stream);
+        var dataUrl = "data:image/png;base64," + Convert.ToBase64String(stream.ToArray());
+        var manual = await service.SyncSinglePlaylistAsync(new(MetadataSource(), null, MetadataCandidates(), new[] { "spotify" },
+            SyncMode: "append", ArtworkDataUrl: dataUrl, Description: "Manual description"), CancellationToken.None);
+        Assert.True(manual.Success);
+        await NewStore().SaveAsync("plex", "source-1", PlaylistSyncCadence.Hourly, new[] { "spotify" }, null, dataUrl, "Scheduled description", "append");
+        var entry = (await NewStore().GetAsync("plex", "source-1"))!;
+        var scheduled = await service.SyncSinglePlaylistAsync(new(MetadataSource(), null, MetadataCandidates(), entry.Targets,
+            SyncMode: entry.SyncMode, ExcludedTrackIds: entry.ExcludedTrackIds, ArtworkDataUrl: entry.Artwork, Description: entry.Description), CancellationToken.None);
+        Assert.True(scheduled.Success);
+        Assert.Equal(existing ? 0 : 1, target.Creates);
+        Assert.Single(target.Items);
+        Assert.Equal(0, Assert.Single(scheduled.Targets).SyncedTracks);
+        Assert.Equal(2, target.MetadataWrites.Count);
+        Assert.Equal("Scheduled description", target.MetadataWrites[1].Description);
+        Assert.NotNull(target.MetadataWrites[1].Artwork);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, Assert.Single(scheduled.Targets).MetadataResult!.ArtworkStatus);
+    }
+
+    [Fact]
+    public async Task FailedArtworkPreparationKeepsDescriptionAndMembershipEvidence()
+    {
+        var target = new MetadataTarget();
+        var service = await MetadataServiceAsync(target);
+        var result = await service.SyncSinglePlaylistAsync(new(MetadataSource(), null, MetadataCandidates(), new[] { "spotify" },
+            ArtworkDataUrl: "data:image/png;base64,AQID", Description: ""), CancellationToken.None);
+        Assert.False(result.Success);
+        var outcome = Assert.Single(result.Targets);
+        Assert.False(outcome.Success);
+        Assert.Equal(1, outcome.SyncedTracks);
+        Assert.Equal("remote-1", outcome.PlaylistId);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, outcome.MetadataResult!.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Failed, outcome.MetadataResult.ArtworkStatus);
+        Assert.Equal("", Assert.Single(target.MetadataWrites).Description);
+        Assert.Null(target.MetadataWrites[0].Artwork);
+    }
+
+    [Fact]
+    public async Task AProviderArtworkFailureRemainsVisibleAfterTracksAndDescriptionSucceed()
+    {
+        var target = new MetadataTarget { RefuseArtwork = true };
+        var service = await MetadataServiceAsync(target);
+        using var image = new Image<Rgba32>(20, 20, Color.Blue.ToPixel<Rgba32>());
+        using var stream = new MemoryStream(); image.SaveAsPng(stream);
+        var result = await service.SyncSinglePlaylistAsync(new(MetadataSource(), null, MetadataCandidates(), new[] { "spotify" },
+            ArtworkDataUrl: "data:image/png;base64," + Convert.ToBase64String(stream.ToArray()), Description: "Updated"), CancellationToken.None);
+        var outcome = Assert.Single(result.Targets);
+        Assert.False(outcome.Success);
+        Assert.Equal(1, outcome.SyncedTracks);
+        Assert.Equal(PlaylistMetadataFieldStatus.Applied, outcome.MetadataResult!.DescriptionStatus);
+        Assert.Equal(PlaylistMetadataFieldStatus.Failed, outcome.MetadataResult.ArtworkStatus);
+        Assert.Contains("Artwork was refused", outcome.Message);
+    }
+
+    [Fact]
+    public async Task MissingMetadataPreservesTheDestinationAndACachedCoverIsReused()
+    {
+        var target = new MetadataTarget { Exists = true };
+        var service = await MetadataServiceAsync(target);
+        var source = MetadataSource() with { Description = null };
+        var without = await service.SyncSinglePlaylistAsync(new(source, null, MetadataCandidates(), new[] { "spotify" }), CancellationToken.None);
+        Assert.True(without.Success);
+        Assert.Empty(target.MetadataWrites);
+        using var image = new Image<Rgba32>(20, 20, Color.Blue.ToPixel<Rgba32>());
+        using var stream = new MemoryStream(); image.SaveAsPng(stream);
+        await service.SyncSinglePlaylistAsync(new(source, null, MetadataCandidates(), new[] { "spotify" },
+            ArtworkDataUrl: "data:image/png;base64," + Convert.ToBase64String(stream.ToArray())), CancellationToken.None);
+        var cached = await service.SyncSinglePlaylistAsync(new(source, null, MetadataCandidates(), new[] { "spotify" }), CancellationToken.None);
+        Assert.True(cached.Success);
+        Assert.Equal(2, target.MetadataWrites.Count);
+        Assert.Null(target.MetadataWrites[1].Description);
+        Assert.NotNull(target.MetadataWrites[1].Artwork);
+        Assert.Equal(target.MetadataWrites[0].Artwork!.Bytes, target.MetadataWrites[1].Artwork!.Bytes);
+        Assert.Single(target.Items);
+    }
+
+    [Fact]
+    public void HighEntropyArtworkIsReencodedToFitTheUploadLimit()
+    {
+        using var image = new Image<Rgba32>(640, 640);
+        var random = new Random(42);
+        image.ProcessPixelRows(accessor =>
+        {
+            for (var y = 0; y < accessor.Height; y++)
+            {
+                var row = accessor.GetRowSpan(y);
+                for (var x = 0; x < row.Length; x++) row[x] = new Rgba32((byte)random.Next(256), (byte)random.Next(256), (byte)random.Next(256), 255);
+            }
+        });
+        using var original = new MemoryStream();
+        image.Save(original, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 85 });
+        Assert.True(Convert.ToBase64String(original.ToArray()).Length > 256 * 1024);
+        using var source = new MemoryStream(); image.SaveAsPng(source);
+        var prepared = PlaylistSyncService.PreparePlatformArtwork(source.ToArray());
+        Assert.True(Convert.ToBase64String(prepared.Bytes).Length <= 256 * 1024);
+    }
+
     private readonly string _dataRoot = Path.Combine(
         Path.GetTempPath(), "playlist-sync-schedule-" + Guid.NewGuid().ToString("N"));
 
@@ -410,6 +617,62 @@ public sealed class PlaylistSyncScheduleTest : IDisposable
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             store.SaveAsync("plex", "pl-1", PlaylistSyncCadence.Hourly, new[] { "spotify" }, null, svg));
+
+        Assert.Empty(await store.LoadAsync());
+    }
+
+    // ------------------------------------------------------------------ sync mode
+
+    [Fact]
+    public async Task EverySavedPreferenceComesBackFromOneReadTogether()
+    {
+        // The scheduled pass and the hand-triggered one both rebuild their request from this single
+        // entry. If a preference were sent only with the run that saved it, the next pass would fall
+        // back to a different mode or would write the tracks the user had excluded.
+        var store = NewStore();
+        await store.SaveAsync(
+            "plex",
+            "pl-1",
+            PlaylistSyncCadence.Hourly,
+            new[] { "spotify", "tidal" },
+            new[] { "t1", "t2" },
+            "data:image/png;base64,AA==",
+            "A description",
+            "append");
+
+        var entry = await store.GetAsync("plex", "pl-1");
+
+        Assert.NotNull(entry);
+        Assert.Equal(new[] { "spotify", "tidal" }, entry!.Targets);
+        Assert.Equal(new[] { "t1", "t2" }, entry.ExcludedTrackIds);
+        Assert.Equal("data:image/png;base64,AA==", entry.Artwork);
+        Assert.Equal("A description", entry.Description);
+        Assert.Equal("append", entry.SyncMode);
+    }
+
+    [Fact]
+    public async Task TheSyncModeSurvivesBeingReadBackFromDisk()
+    {
+        // Held only on the returned object, the mode would be gone at the next restart and the
+        // playlist would silently return to whichever mode is the default.
+        var store = NewStore();
+        await store.SaveAsync("plex", "pl-1", PlaylistSyncCadence.Hourly, new[] { "spotify" }, null, null, null, "append");
+
+        var reloaded = NewStore();
+        var entry = await reloaded.GetAsync("plex", "pl-1");
+
+        Assert.Equal("append", entry?.SyncMode);
+    }
+
+    [Fact]
+    public async Task ASyncModeTheAppDoesNotOfferIsRefusedRatherThanCoerced()
+    {
+        // Coercing an unknown mode falls back to mirror - the mode that removes tracks. A typo must
+        // never be able to turn an append-only playlist into a destructive one.
+        var store = NewStore();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(
+            "plex", "pl-1", PlaylistSyncCadence.Hourly, new[] { "spotify" }, null, null, null, "delete-everything"));
 
         Assert.Empty(await store.LoadAsync());
     }

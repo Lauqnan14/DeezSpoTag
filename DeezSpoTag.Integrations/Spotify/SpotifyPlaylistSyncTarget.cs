@@ -67,6 +67,11 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
 
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+        => await IsConnectedAsync(cancellationToken).ConfigureAwait(false)
+            ? await _client.WriteMetadataAsync(write, cancellationToken).ConfigureAwait(false)
+            : PlaylistMetadataWriteResult.Failed(write, "Spotify is not connected.");
+
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
         string name,
@@ -231,12 +236,11 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        // Only what is actually missing. Spotify permits duplicates, so re-sending ids the playlist
-        // already holds appends a second copy of the whole playlist and the pass never converges.
-        var present = new HashSet<string>(write.CurrentItemIds, StringComparer.Ordinal);
-        var toAdd = write.AppendMissingOnly
-            ? write.OrderedItemIds.Where(id => !present.Contains(id)).ToList()
-            : write.OrderedItemIds.ToList();
+        // Only what is actually missing, in append mode AND in mirror mode. Spotify permits
+        // duplicates, so re-sending ids the playlist already holds appends a second copy of the
+        // whole playlist and the pass never converges. What the mode decides is whether the stale
+        // removals above may run - never which additions to send.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, write.CurrentItemIds);
 
         if (toAdd.Count > 0)
         {
@@ -247,7 +251,7 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        return PlaylistMembershipWriteResult.Ok(write.OrderedItemIds.Count, removedCount);
+        return PlaylistMembershipWriteResult.Ok(toAdd.Count, removedCount);
     }
 
     private async Task<IReadOnlyList<SpotifyPlaylistWriteClient.SpotifyPlaylistItem>?> ReadContentsAsync(
@@ -257,7 +261,11 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
             .ReadContentsAsync(SpotifyPlaylistWriteClient.ToPlaylistUri(playlistId), cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-    private async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Whether a usable Spotify session is stored. Answered from the store, not from a request, so
+    /// an account the user never connected is never offered as a destination.
+    /// </summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
         => SpotifyTargetCredentials.IsUsable(await _credentials(cancellationToken).ConfigureAwait(false));
 
     private static string Describe(SpotifyPlaylistWriteClient.SpotifyPayload payload)

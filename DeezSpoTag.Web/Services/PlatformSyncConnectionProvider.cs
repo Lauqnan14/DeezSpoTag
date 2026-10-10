@@ -217,6 +217,9 @@ public sealed class PlatformSyncConnectionProvider
             return null;
         }
 
-        return new AppleTargetCredentials(apple.AuthorizationToken, apple.MediaUserToken, null);
+        // The configured storefront is the third credential, not an optional extra: dropping it here
+        // made every Apple lookup in the app default to "us" no matter what the user had set, and the
+        // playlist resolver then searched a catalog the account's own tracks are not in.
+        return new AppleTargetCredentials(apple.AuthorizationToken, apple.MediaUserToken, apple.Storefront);
     }
 }

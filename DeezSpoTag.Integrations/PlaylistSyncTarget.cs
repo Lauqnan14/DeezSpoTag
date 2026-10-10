@@ -6,6 +6,39 @@ using System.Threading.Tasks;
 
 namespace DeezSpoTag.Integrations;
 
+public sealed record PlaylistArtworkPayload(byte[] Bytes, string ContentType);
+
+/// <summary>Null fields preserve the destination; an empty description explicitly clears it.</summary>
+public sealed record PlaylistMetadataWrite(
+    string PlaylistId, string PlaylistName, string? Description, PlaylistArtworkPayload? Artwork);
+
+public enum PlaylistMetadataFieldStatus
+{
+    NotRequested,
+    Applied,
+    Unsupported,
+    Failed
+}
+
+public sealed record PlaylistMetadataWriteResult(
+    PlaylistMetadataFieldStatus DescriptionStatus,
+    PlaylistMetadataFieldStatus ArtworkStatus,
+    string? Message)
+{
+    public bool Complete => DescriptionStatus is PlaylistMetadataFieldStatus.NotRequested or PlaylistMetadataFieldStatus.Applied
+        && ArtworkStatus is PlaylistMetadataFieldStatus.NotRequested or PlaylistMetadataFieldStatus.Applied;
+
+    public static PlaylistMetadataWriteResult Unsupported(PlaylistMetadataWrite write, string message)
+        => new(write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Unsupported,
+            write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Unsupported,
+            write.Description is null && write.Artwork is null ? null : message);
+
+    public static PlaylistMetadataWriteResult Failed(PlaylistMetadataWrite write, string message)
+        => new(write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed,
+            write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed,
+            message);
+}
+
 /// <summary>
 /// The membership a sync wants one destination playlist to end up with.
 /// <para>
@@ -36,6 +69,69 @@ public sealed record PlaylistMembershipWriteResult(
 
     public static PlaylistMembershipWriteResult Ok(int added, int removed, bool writeComplete = true)
         => new(true, null, added, removed, writeComplete);
+}
+
+/// <summary>
+/// The additions one membership write actually needs, shared by every destination.
+/// <para>
+/// Additions are computed the same way in append mode and in mirror mode, because the reference
+/// does it that way: <c>plan = {src: (desired - ids, ids - desired)}</c>. What
+/// <see cref="PlaylistMembershipWrite.AppendMissingOnly"/> governs is removal, never addition.
+/// A writer that sends the whole desired list whenever removals are allowed re-appends every track
+/// the destination already holds, and a playlist that mirrors against itself grows on every pass
+/// instead of converging.
+/// </para>
+/// <para>
+/// The difference is a multiset difference, not a set difference. Set semantics silently
+/// under-fill a source that legitimately holds a track twice, while a per-occurrence filter that
+/// never decrements over-fills for the same reason: against a destination holding one copy, it
+/// would send both copies of a wanted pair. Each occurrence of an id in <paramref name="currentIds"/>
+/// retires exactly one occurrence in <paramref name="orderedItemIds"/>, and the source's order is
+/// preserved so the destination ends up in the order the platform can only append in.
+/// </para>
+/// </summary>
+public static class PlaylistMembershipDiff
+{
+    public static IReadOnlyList<string> MissingAdditions(
+        IReadOnlyList<string> orderedItemIds,
+        IEnumerable<string> currentIds)
+    {
+        if (orderedItemIds.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var remaining = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var currentId in currentIds)
+        {
+            if (string.IsNullOrWhiteSpace(currentId))
+            {
+                continue;
+            }
+
+            remaining.TryGetValue(currentId, out var count);
+            remaining[currentId] = count + 1;
+        }
+
+        var missing = new List<string>(orderedItemIds.Count);
+        foreach (var wanted in orderedItemIds)
+        {
+            if (string.IsNullOrWhiteSpace(wanted))
+            {
+                continue;
+            }
+
+            if (remaining.TryGetValue(wanted, out var count) && count > 0)
+            {
+                remaining[wanted] = count - 1;
+                continue;
+            }
+
+            missing.Add(wanted);
+        }
+
+        return missing;
+    }
 }
 
 /// <summary>The result of reading a destination playlist's current membership.</summary>
@@ -90,6 +186,26 @@ public interface IPlaylistSyncTarget
     PlaylistTargetKind TargetKind { get; }
 
     /// <summary>
+    /// Whether this destination holds the credential a write needs, answered from its own store.
+    /// <para>
+    /// This is NOT a lookup's <see cref="TargetLookupStatus"/>, and conflating the two is how an
+    /// account with no credentials at all still turned up as somewhere the user could sync to: a
+    /// target reports "nothing is stored for this account" and "the provider did not answer" with
+    /// the same status, so a caller reading that status cannot tell an unconnected platform from a
+    /// broken network and offers both. The two questions are different, so they get different
+    /// answers - this one is unambiguous and does not depend on a provider that may be
+    /// unreachable, while a lookup still reports whatever the provider said.
+    /// </para>
+    /// <para>
+    /// A default of true keeps this off destinations that are gated elsewhere. Every streaming
+    /// platform overrides it, because a platform with no stored credential is the case this exists
+    /// for.
+    /// </para>
+    /// </summary>
+    Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => Task.FromResult(true);
+
+    /// <summary>
     /// Resolves the destination playlist: by id when one is known, otherwise by name so a
     /// re-run finds the playlist an earlier pass created.
     /// </summary>
@@ -114,6 +230,9 @@ public interface IPlaylistSyncTarget
     /// </para>
     /// </summary>
     string? CreateFailureDetail => null;
+
+    Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+        => Task.FromResult(PlaylistMetadataWriteResult.Unsupported(write, "Playlist metadata updates are unsupported by this destination."));
 
     /// <summary>Reads the destination's current membership, reporting failure separately.</summary>
     Task<TargetPlaylistItemsRead> ReadItemIdsAsync(

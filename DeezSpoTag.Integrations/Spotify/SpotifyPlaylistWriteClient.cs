@@ -220,6 +220,94 @@ public sealed class SpotifyPlaylistWriteClient
     /// <summary>Why the last create attempt failed, when it did. Null after a success.</summary>
     public string? LastCreateError { get; private set; }
 
+    /// <summary>Uses the web player's image upload, registration, and attribute-change operations.</summary>
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        if (write.Description is null && write.Artwork is null)
+            return new(PlaylistMetadataFieldStatus.NotRequested, PlaylistMetadataFieldStatus.NotRequested, null);
+        var session = await _session(cancellationToken).ConfigureAwait(false);
+        if (!SpotifyWebPlayerSession.IsUsable(session))
+            return PlaylistMetadataWriteResult.Failed(write, "Spotify web session is unavailable.");
+
+        var description = write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed;
+        var artwork = write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed;
+        var messages = new List<string>();
+        var id = Uri.EscapeDataString(ToPlaylistUri(write.PlaylistId).Split(':').Last());
+        string? picture = null;
+        if (write.Artwork is not null)
+        {
+            if (write.Artwork.ContentType != "image/jpeg" || write.Artwork.Bytes.Length == 0
+                || Convert.ToBase64String(write.Artwork.Bytes).Length > 256 * 1024)
+            {
+                messages.Add("Spotify artwork must be a JPEG within the supported image payload limit.");
+            }
+            else
+            {
+                var uploaded = await SendMetadataRequestAsync(session, "https://image-upload.spotify.com/v4/playlist",
+                    write.Artwork.Bytes, "image/jpeg", cancellationToken).ConfigureAwait(false);
+                var token = uploaded?.ReadString("uploadToken");
+                if (!string.IsNullOrWhiteSpace(token))
+                {
+                    var registered = await SendMetadataRequestAsync(session, $"{SpclientBase}/playlist/v2/playlist/{id}/register-image",
+                        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { uploadToken = token })), "application/json", cancellationToken).ConfigureAwait(false);
+                    picture = registered?.ReadString("picture");
+                }
+                if (string.IsNullOrWhiteSpace(picture)) messages.Add("Spotify artwork upload or registration failed.");
+            }
+        }
+
+        if (write.Description is not null || !string.IsNullOrWhiteSpace(picture))
+        {
+            var values = new Dictionary<string, object> { ["formatAttributes"] = Array.Empty<object>(), ["pictureSize"] = Array.Empty<object>() };
+            var noValue = new List<string>();
+            if (write.Description is not null)
+            {
+                if (write.Description.Length == 0) noValue.Add("LIST_DESCRIPTION");
+                else values["description"] = write.Description;
+            }
+            if (!string.IsNullOrWhiteSpace(picture)) values["picture"] = picture;
+            var body = JsonSerializer.Serialize(new
+            {
+                deltas = new[] { new { ops = new[] { new { kind = "UPDATE_LIST_ATTRIBUTES",
+                    updateListAttributes = new { newAttributes = new { values, noValue } } } },
+                    info = new { source = new { client = "WEBPLAYER" } } } },
+                wantResultingRevisions = false, wantSyncResult = false, nonces = Array.Empty<object>()
+            });
+            var changed = await SendMetadataRequestAsync(session, $"{SpclientBase}/playlist/v2/playlist/{id}/changes",
+                Encoding.UTF8.GetBytes(body), "application/json", cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(changed?.ReadString("revision")))
+            {
+                if (write.Description is not null) description = PlaylistMetadataFieldStatus.Applied;
+                if (!string.IsNullOrWhiteSpace(picture)) artwork = PlaylistMetadataFieldStatus.Applied;
+            }
+            else messages.Add("Spotify playlist attribute update did not confirm a revision.");
+        }
+        return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
+    }
+
+    private async Task<JsonElement?> SendMetadataRequestAsync(SpotifyWebPlayerSession session, string url,
+        byte[] bytes, string contentType, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(bytes) };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+            request.Headers.TryAddWithoutValidation("client-token", session.ClientToken);
+            request.Headers.UserAgent.ParseAdd(UserAgent);
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            return document.RootElement.Clone();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TimeoutException
+            || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            // Mutations are never retried: the provider may have applied the lost response.
+            return null;
+        }
+    }
+
     /// <summary>
     /// Adds a freshly-created playlist to the account's rootlist.
     /// <para>

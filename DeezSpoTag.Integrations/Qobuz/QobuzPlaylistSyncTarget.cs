@@ -56,6 +56,27 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
 
     public PlaylistTargetKind TargetKind => PlaylistTargetKind.Platform;
 
+    public async Task<PlaylistMetadataWriteResult> WriteMetadataAsync(PlaylistMetadataWrite write, CancellationToken cancellationToken)
+    {
+        var description = PlaylistMetadataFieldStatus.NotRequested;
+        var artwork = write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Unsupported;
+        var messages = new List<string>();
+        if (write.Artwork is not null) messages.Add("Qobuz custom playlist artwork has no verified upload operation in this integration.");
+        if (write.Description is not null)
+        {
+            var credentials = await ResolveAsync(cancellationToken).ConfigureAwait(false);
+            if (!QobuzTargetCredentials.IsUsable(credentials))
+                return PlaylistMetadataWriteResult.Failed(write, "Qobuz is not connected.");
+            var response = await _transport.PostAsync($"{ApiBase}/playlist/update",
+                formFields: new Dictionary<string, string> { ["playlist_id"] = write.PlaylistId, ["description"] = write.Description },
+                headers: Headers(credentials!), cancellationToken: cancellationToken).ConfigureAwait(false);
+            var id = response.TryParseJson()?.ReadString("id");
+            description = response.Success && id == write.PlaylistId ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
+            if (description == PlaylistMetadataFieldStatus.Failed) messages.Add($"Qobuz description update failed (HTTP {response.Status}).");
+        }
+        return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
+    }
+
     public async Task<TargetPlaylistLookup<string>> FindPlaylistAsync(
         string? playlistId,
         string name,
@@ -285,13 +306,11 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
             }
         }
 
-        // Only what is actually missing. Re-sending ids the playlist already holds is what a batch
-        // does, and although no_duplicate stops the insert, the request itself is wasted and the
-        // ordering guarantee below depends on sending each id exactly once.
-        var present = new HashSet<string>(write.CurrentItemIds, StringComparer.Ordinal);
-        var toAdd = write.AppendMissingOnly
-            ? write.OrderedItemIds.Where(id => !present.Contains(id)).ToList()
-            : write.OrderedItemIds.ToList();
+        // Only what is actually missing, in append mode AND in mirror mode. Re-sending ids the
+        // playlist already holds is what a batch does: although no_duplicate stops the insert, the
+        // request itself is wasted and over-reports the additions. The ordering guarantee below
+        // depends on sending each genuinely new id exactly once.
+        var toAdd = PlaylistMembershipDiff.MissingAdditions(write.OrderedItemIds, write.CurrentItemIds);
 
         // One request per track, with duplicate suppression on. A batched append can land out of
         // order, and Qobuz offers no positional insert to undo that.
@@ -393,6 +412,10 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
 
     private async Task<QobuzTargetCredentials?> ResolveAsync(CancellationToken cancellationToken)
         => await _credentials(cancellationToken);
+
+    /// <summary>Whether a usable Qobuz credential pair is stored, answered from the store alone.</summary>
+    public async Task<bool> IsConnectedAsync(CancellationToken cancellationToken)
+        => QobuzTargetCredentials.IsUsable(await ResolveAsync(cancellationToken).ConfigureAwait(false));
 
     private static IReadOnlyDictionary<string, string> Headers(QobuzTargetCredentials credentials)
         => new Dictionary<string, string>(StringComparer.Ordinal)
