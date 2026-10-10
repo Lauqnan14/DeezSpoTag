@@ -1273,7 +1273,22 @@ async function fetchHomeSections(channel, refreshEnabled) {
         throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data = await response.json();
-    return Array.isArray(data?.sections) ? data.sections : [];
+    const sections = Array.isArray(data?.sections) ? data.sections : [];
+    if (channel) {
+        return sections;
+    }
+
+    const exploreSections = await fetchHomeSections('channels/explore', refreshEnabled);
+    const categoriesSection = exploreSections.find(section =>
+        (section?.title || '').toString().trim().toLowerCase() === 'categories');
+    if (!categoriesSection) {
+        throw new Error('Deezer Explore response is missing its Categories section');
+    }
+    const restoredCategories = { ...categoriesSection, pagePath: 'channels/explore' };
+    return sections.map(section =>
+        (section?.title || '').toString().trim().toLowerCase() === 'explore'
+            ? restoredCategories
+            : section);
 }
 
 function renderHomeSectionsWithLazyImages(sections) {
@@ -3030,33 +3045,14 @@ function buildDiscoverClick(item, avatarImage, heroImage) {
 }
 
 function mergeSpotifyCategories(deezerItems, limit) {
-    const baseItems = Array.isArray(deezerItems) ? deezerItems : [];
-    if (spotifyHomeCategories.length === 0) {
-        return limit ? baseItems.slice(0, limit) : baseItems.slice();
-    }
-
-    const spotifyLimit = limit
-        ? Math.min(spotifyHomeCategories.length, 7, Math.max(1, Math.floor(limit / 2)))
-        : spotifyHomeCategories.length;
-    const deezerLimit = limit ? Math.max(0, limit - spotifyLimit) : baseItems.length;
-    const combined = [
-        ...baseItems.slice(0, deezerLimit),
-        ...spotifyHomeCategories.slice(0, spotifyLimit)
-    ];
-    const seen = new Set();
-    const deduped = combined.filter((item) => {
-        const key = [
-            item?.source || 'deezer',
-            item?.type || 'category',
-            item?.id || item?.categoryId || item?.name || item?.title || ''
-        ].map((value) => String(value).trim().toLowerCase()).join(':');
-        if (seen.has(key)) {
-            return false;
-        }
-        seen.add(key);
-        return true;
-    });
-    return limit ? deduped.slice(0, limit) : deduped;
+    const baseItems = Array.isArray(deezerItems) ? deezerItems.slice() : [];
+    const targetPerPlatform = 7;
+    const deezerSlice = baseItems.slice(0, targetPerPlatform);
+    const spotifyItems = spotifyHomeCategories
+        .filter(item => !/podcast/i.test(item.name || item.title || ''))
+        .slice(0, targetPerPlatform);
+    const merged = deezerSlice.concat(spotifyItems);
+    return limit ? merged.slice(0, limit) : merged;
 }
 
 function openTracklist(id, type) {

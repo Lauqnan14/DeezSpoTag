@@ -164,10 +164,6 @@
 
 @section Scripts {
 <script>
-function normalizeTitle(value) {
-    return (value || '').toString().trim().toLowerCase();
-}
-
 function buildDeezerImageUrlWithSize(imageHash, type = 'cover', size = 1000, quality = 80) {
     if (!imageHash) {
         return '';
@@ -347,27 +343,13 @@ async function loadDeezerCategories() {
     const container = document.getElementById('deezer-categories');
     try {
         statusEl.textContent = 'Loading Deezer categories...';
-        const response = await fetch('/api/home');
+        const response = await fetch('/api/home?channel=channels%2Fexplore');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         const data = await response.json();
         const sections = Array.isArray(data?.sections) ? data.sections : [];
-        const baseSection = sections.find(section => {
-            const title = normalizeTitle(section?.title);
-            return title === 'your top genres' || title === 'categories';
-        });
-        const pageTarget = baseSection?.pagePath || baseSection?.related?.target || baseSection?.related?.Target || '';
-        let renderSections = [];
-        if (pageTarget) {
-            const target = stripLeadingSlashes(pageTarget);
-            const channelResp = await fetch(`/api/home?channel=${encodeURIComponent(target)}`);
-            if (channelResp.ok) {
-                const channelData = await channelResp.json();
-                const channelSections = Array.isArray(channelData?.sections) ? channelData.sections : [];
-                renderSections = channelSections.filter(section => Array.isArray(section?.items) && section.items.length > 0);
-            }
-        }
-        if (!renderSections.length && baseSection?.items?.length) {
-            renderSections = [baseSection];
-        }
+        const renderSections = sections.filter(section => Array.isArray(section?.items) && section.items.length > 0);
         if (!renderSections.length) {
             container.innerHTML = '<div class="empty-section">No Deezer categories available</div>';
             statusEl.textContent = 'No Deezer categories available';
