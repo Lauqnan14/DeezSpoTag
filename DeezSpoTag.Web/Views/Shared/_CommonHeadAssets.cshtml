@@ -2,6 +2,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0f172a">
 <link rel="manifest" href="@Url.Content("~/manifest.webmanifest")">
+<script>
+    (() => {
+        const manifest = document.querySelector('link[rel="manifest"]');
+        const manifestUrl = new URL(manifest.href);
+        manifestUrl.searchParams.set('origin', globalThis.location.origin);
+        manifest.href = manifestUrl.href;
+    })();
+</script>
 <link rel="icon" href="@Url.Content("~/favicon.ico")" sizes="any">
 <link rel="icon" type="image/png" sizes="256x256" href="@Url.Content("~/images/favicon/favicon-256.png")">
 <link rel="icon" type="image/png" sizes="128x128" href="@Url.Content("~/images/favicon/favicon-128.png")">

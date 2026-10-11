@@ -29,25 +29,30 @@
         // playback into the OS media session (lock screen, media notification, media
         // keys). Notification permission is requested on the first real play rather than
         // on page load, which is the only point it is both allowed and non-intrusive.
-        if (!('serviceWorker' in navigator) || !('mediaSession' in navigator)) {
-            return;
-        }
+        // The worker and the media session are independent features. Registering the
+        // worker is gated on serviceWorker support alone: gating it on mediaSession meant
+        // any browser without the media session API never registered the worker, losing
+        // the Download notification action entirely.
+        var canRegisterWorker = 'serviceWorker' in navigator;
+        var canUseMediaSession = 'mediaSession' in navigator;
 
-        if ('Notification' in window && Notification.permission === 'default') {
+        if (canUseMediaSession && 'Notification' in window && Notification.permission === 'default') {
             globalThis.__deezspotRequestNotificationPermissionOnPlay = true;
         }
 
         globalThis.addEventListener('load', function () {
-            navigator.serviceWorker.register('/sw.js', {
-                scope: '/',
-                // The app serves every response with no-store; this additionally bypasses
-                // the browser's service-worker script cache so updates land immediately.
-                updateViaCache: 'none'
-            }).catch(function () {
-                // Without a worker there is still a media session, just no Download action.
-            });
+            if (canRegisterWorker) {
+                navigator.serviceWorker.register('/sw.js', {
+                    scope: '/',
+                    // The app serves every response with no-store; this additionally bypasses
+                    // the browser's service-worker script cache so updates land immediately.
+                    updateViaCache: 'none'
+                }).catch(function () {
+                    // Without a worker there is still a media session, just no Download action.
+                });
+            }
 
-            if (globalThis.DeezSpoTagMediaSession) {
+            if (canUseMediaSession && globalThis.DeezSpoTagMediaSession) {
                 globalThis.DeezSpoTagMediaSession.attach();
             }
         });

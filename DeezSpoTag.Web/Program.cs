@@ -1030,6 +1030,52 @@ public partial class Program
 
     static void ConfigureStaticFiles(WebApplication app)
     {
+        var manifestTemplate = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(
+            Path.Combine(app.Environment.WebRootPath, "manifest.webmanifest")))!;
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Path != "/manifest.webmanifest"
+                || (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method)))
+            {
+                await next();
+                return;
+            }
+
+            // Desktop installed-app detection requires an absolute manifest ID.
+            // Resolve it for this request so installations on any NAS host can be found.
+            var manifest = manifestTemplate.DeepClone();
+            var applicationId = Microsoft.AspNetCore.Http.Extensions.UriHelper.BuildAbsolute(
+                context.Request.Scheme, context.Request.Host, path: new PathString("/"));
+            var browserOrigin = context.Request.Query["origin"].ToString();
+            if (Uri.TryCreate(browserOrigin, UriKind.Absolute, out var origin)
+                && (origin.Scheme == Uri.UriSchemeHttp || origin.Scheme == Uri.UriSchemeHttps)
+                && origin.AbsolutePath == "/" && string.IsNullOrEmpty(origin.UserInfo)
+                && string.IsNullOrEmpty(origin.Query) && string.IsNullOrEmpty(origin.Fragment))
+            {
+                // The browser sees the public origin even when a NAS proxy terminates TLS.
+                applicationId = origin.GetLeftPart(UriPartial.Authority) + "/";
+            }
+            var relatedApplications = (System.Text.Json.Nodes.JsonArray)manifest["related_applications"]!;
+            relatedApplications[0]!["id"] = applicationId;
+            if (!string.IsNullOrEmpty(browserOrigin))
+            {
+                // Keep the original manifest URL detectable for existing installations,
+                // alongside the URL used by new installations behind a proxy.
+                var currentApplication = relatedApplications[0]!.DeepClone();
+                currentApplication["url"] = context.Request.Path + context.Request.QueryString;
+                relatedApplications.Add(currentApplication);
+            }
+            context.Response.ContentType = "application/manifest+json";
+            context.Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, max-age=0, must-revalidate";
+            context.Response.Headers[HeaderNames.Pragma] = "no-cache";
+            context.Response.Headers[HeaderNames.Expires] = "0";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            if (!HttpMethods.IsHead(context.Request.Method))
+            {
+                await context.Response.WriteAsync(manifest.ToJsonString(), context.RequestAborted);
+            }
+        });
+
         var contentTypeProvider = new FileExtensionContentTypeProvider();
         contentTypeProvider.Mappings[".webmanifest"] = "application/manifest+json";
         app.UseStaticFiles(new StaticFileOptions

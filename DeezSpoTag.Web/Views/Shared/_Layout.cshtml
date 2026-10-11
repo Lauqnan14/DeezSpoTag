@@ -37,7 +37,6 @@
                     'tabs-preference-enabled': 'tabsPreferenceEnabled',
                     'deezspotag-disabled-login-platforms': 'disabledLoginPlatforms',
                     'pwa-prompt-dismissed': 'pwaPromptDismissedAt',
-                    'pwa-installed': 'pwaInstalledAt',
                     'autotag-selected-platforms': 'autoTagSelectedPlatforms',
                     'autotag-preferences': 'autoTagPreferences',
                     'autotag-active-profile-id': 'autoTagActiveProfileId',
@@ -75,8 +74,11 @@
                     'sidebarCollapsed',
                     'tabs-preference-enabled',
                     'deezspotag-disabled-login-platforms',
+                    // The installed-app latch is deliberately NOT here. It describes one device's
+                    // browser, not the account, so syncing it made an install on any device
+                    // suppress the install prompt on every other one. It is a device-local
+                    // key stored in the real localStorage instead.
                     'pwa-prompt-dismissed',
-                    'pwa-installed',
                     'autotag-selected-platforms',
                     'autotag-preferences',
                     'autotag-active-profile-id',
@@ -193,6 +195,18 @@
                     var sessionRef = globalThis.sessionStorage;
                     var storagePrototype = globalThis.Storage.prototype;
 
+                    // Keys that describe this device's browser rather than the account. They still have to
+                    // survive a reload, but the shadow above is in-memory, so these fall
+                    // through to the real localStorage instead of the server-backed store.
+                    var deviceLocalKeys = {
+                        'pwa-installed': true
+                    };
+
+                    // Captured before the prototype is overridden below.
+                    var nativeGetItem = storagePrototype.getItem;
+                    var nativeSetItem = storagePrototype.setItem;
+                    var nativeRemoveItem = storagePrototype.removeItem;
+
                     var resolveShadow = function (storageInstance) {
                         return storageInstance === sessionRef ? sessionShadow : localShadow;
                     };
@@ -205,6 +219,10 @@
                         }
 
                         if (this === localRef) {
+                            if (deviceLocalKeys[normalizedKey] === true) {
+                                return nativeGetItem.call(localRef, normalizedKey);
+                            }
+
                             var preferenceRaw = getPreferenceRawValue(normalizedKey);
                             if (preferenceRaw !== null) {
                                 return preferenceRaw;
@@ -225,6 +243,10 @@
                         var normalizedValue = String(value);
                         var shadow = resolveShadow(this);
                         shadow[normalizedKey] = normalizedValue;
+
+                        if (this === localRef && deviceLocalKeys[normalizedKey] === true) {
+                            nativeSetItem.call(localRef, normalizedKey, normalizedValue);
+                        }
 
                         if (this === localRef) {
                             var field = preferenceKeyMap[normalizedKey];
@@ -254,6 +276,10 @@
                         var normalizedKey = String(key);
                         var shadow = resolveShadow(this);
                         delete shadow[normalizedKey];
+
+                        if (this === localRef && deviceLocalKeys[normalizedKey] === true) {
+                            nativeRemoveItem.call(localRef, normalizedKey);
+                        }
 
                         if (this === localRef && isTabSelectionKey(normalizedKey)) {
                             var tabPrefs = window.__userPrefsData || {};

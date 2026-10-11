@@ -8,6 +8,13 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "/manifest.webmanifest",
+      "id": "/"
+    }
+  ],
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "icons": [

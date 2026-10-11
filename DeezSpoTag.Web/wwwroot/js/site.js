@@ -1051,20 +1051,38 @@ globalThis.DeezSpoTag = {
         const dismissButton = promptEl.querySelector('[data-pwa-dismiss]');
         const messageEl = promptEl.querySelector('[data-pwa-message]');
         let deferredPrompt = null;
+        let currentlyInstalled = this.isRunningAsInstalledApp();
+        let installationRevision = 0;
 
         const showPrompt = () => {
-            if (!promptEl.classList.contains('hidden')) {
+            if (currentlyInstalled || !promptEl.classList.contains('hidden')) {
                 return;
             }
             promptEl.classList.remove('hidden');
         };
 
+        const hidePrompt = () => {
+            promptEl.classList.add('hidden');
+        };
+
+        // Used when the browser has not offered a beforeinstallprompt event. Previously
+        // the Install button returned silently in that case, so a user whose browser
+        // never fired the event had no way to install at all.
+        const showManualInstallInstructions = () => {
+            if (messageEl) {
+                messageEl.textContent = this.getManualPwaInstallInstructions();
+            }
+            showPrompt();
+        };
+
         const handleBeforeInstallPrompt = (event) => {
             event.preventDefault();
+            installationRevision++;
+            currentlyInstalled = this.isRunningAsInstalledApp();
             // Browsers only offer installation while the app is not installed for this
             // origin, so this event also proves a recorded install is now stale.
             this.clearRecordedPwaInstall();
-            if (this.isRunningAsInstalledApp() || this.hasRecordedPwaInstall() || this.hasRecentPwaDismissal()) {
+            if (this.isRunningAsInstalledApp() || this.hasRecentPwaDismissal()) {
                 return;
             }
             deferredPrompt = event;
@@ -1076,28 +1094,35 @@ globalThis.DeezSpoTag = {
         globalThis.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
         globalThis.addEventListener('appinstalled', () => {
-            promptEl.classList.add('hidden');
+            installationRevision++;
+            currentlyInstalled = true;
+            hidePrompt();
             this.markPwaInstalled();
         });
 
         if (installButton) {
             installButton.addEventListener('click', async () => {
                 if (!deferredPrompt) {
+                    showManualInstallInstructions();
                     return;
                 }
-                deferredPrompt.prompt();
+
+                const promptToUse = deferredPrompt;
+                deferredPrompt = null;
+                promptToUse.prompt();
                 try {
-                    await deferredPrompt.userChoice;
+                    await promptToUse.userChoice;
+                } catch (e) {
+                    // A prompt that was already used or dismissed must not break playback.
                 } finally {
-                    deferredPrompt = null;
-                    promptEl.classList.add('hidden');
+                    hidePrompt();
                 }
             });
         }
 
         if (dismissButton) {
             dismissButton.addEventListener('click', () => {
-                promptEl.classList.add('hidden');
+                hidePrompt();
                 const _pwaDismissedAt = Date.now();
                 localStorage.setItem(this.pwaDismissedStorageKey, _pwaDismissedAt.toString());
                 if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaPromptDismissedAt', _pwaDismissedAt);
@@ -1105,26 +1130,76 @@ globalThis.DeezSpoTag = {
         }
 
         // Running as an installed app is the authoritative "already installed" signal.
-        // Record it so a later visit from a browser tab stays quiet as well.
+        // Record it for this device and stay out of the way.
         if (this.isRunningAsInstalledApp()) {
             this.markPwaInstalled();
             return;
         }
 
-        // A previous install was observed on this instance. Only a browser that
-        // reports the app as installable again may clear this latch.
-        if (this.hasRecordedPwaInstall()) {
-            return;
+        // A recorded install suppresses the automatic banner only. The listeners, the
+        // buttons and the manual instructions are already wired above, so a recorded
+        // install can never make the prompt unreachable. Returning early here instead is
+        // what left users permanently unable to install: the latch was cleared only by
+        // beforeinstallprompt, which Chrome does not guarantee to fire.
+        if (!this.hasRecordedPwaInstall() && !this.hasRecentPwaDismissal()) {
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !globalThis.MSStream;
+            if (isIOS) {
+                this.prepareIosPwaPrompt(promptEl, messageEl, installButton);
+            }
         }
 
-        if (this.hasRecentPwaDismissal()) {
-            return;
-        }
+        // Query current device state on every page load. A saved install timestamp
+        // cannot tell us whether the user has since uninstalled the app.
+        const refreshInstallationState = async () => {
+            if (typeof navigator.getInstalledRelatedApps !== 'function') {
+                return;
+            }
 
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !globalThis.MSStream;
-        if (isIOS) {
-            this.prepareIosPwaPrompt(promptEl, messageEl, installButton);
-        }
+            // Older desktop Chromium exposes this API for native apps only;
+            // an empty result there does not establish that this PWA is absent.
+            const chromiumVersion = navigator.userAgent.match(/(?:Chrome|Chromium)\/(\d+)/);
+            if (!/Android/i.test(navigator.userAgent)
+                && chromiumVersion && Number(chromiumVersion[1]) < 140) {
+                return;
+            }
+
+            const revision = installationRevision;
+            try {
+                const installedApps = await navigator.getInstalledRelatedApps();
+                if (revision !== installationRevision) {
+                    return;
+                }
+
+                const manifestUrl = document.querySelector('link[rel="manifest"]')?.href;
+                if (!manifestUrl) {
+                    return;
+                }
+
+                const ownManifest = new URL(manifestUrl);
+                currentlyInstalled = installedApps.some(app => {
+                    if (app.platform !== 'webapp' || !app.url) {
+                        return false;
+                    }
+                    const appManifest = new URL(app.url, manifestUrl);
+                    return appManifest.origin === ownManifest.origin
+                        && appManifest.pathname === ownManifest.pathname;
+                });
+                if (currentlyInstalled) {
+                    this.markPwaInstalled();
+                    hidePrompt();
+                    return;
+                }
+
+                const wasInstalled = this.hasRecordedPwaInstall();
+                this.clearRecordedPwaInstall();
+                if (wasInstalled || !this.hasRecentPwaDismissal()) {
+                    setTimeout(showPrompt, 1500);
+                }
+            } catch (e) {
+                // A failed check leaves installation state unknown; it is not an uninstall.
+            }
+        };
+        void refreshInstallationState();
     },
 
     // True only while this document is rendered by an installed web app. Covers every
@@ -1148,8 +1223,11 @@ globalThis.DeezSpoTag = {
         });
     },
 
-    // True once an installed run has been seen. Unlike a dismissal this never expires,
-    // so an already-installed app is never nagged from a browser tab or a new device.
+    // True once an installed run has been seen on THIS device. Unlike a dismissal this never
+    // expires, so an already-installed app is not nagged. It is deliberately device-local:
+    // when it was synced to the account, an install on any one device suppressed the prompt
+    // on every other device signed in, and uninstalling could not clear it because an
+    // uninstall is a client-side action that the server never learns about.
     hasRecordedPwaInstall() {
         const recordedAt = localStorage.getItem(this.pwaInstalledStorageKey);
         if (!recordedAt) {
@@ -1160,14 +1238,15 @@ globalThis.DeezSpoTag = {
         return !Number.isNaN(recordedTime) && recordedTime > 0;
     },
 
+    // Records the install for this device only. It is not written to UserPrefs because
+    // whether DeezSpoTag is installed is a property of one browser on one device, not
+    // of the account.
     markPwaInstalled() {
         if (this.hasRecordedPwaInstall()) {
             return;
         }
 
-        const installedAt = Date.now();
-        localStorage.setItem(this.pwaInstalledStorageKey, installedAt.toString());
-        if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaInstalledAt', installedAt);
+        localStorage.setItem(this.pwaInstalledStorageKey, Date.now().toString());
     },
 
     clearRecordedPwaInstall() {
@@ -1176,7 +1255,24 @@ globalThis.DeezSpoTag = {
         }
 
         localStorage.setItem(this.pwaInstalledStorageKey, '0');
-        if (globalThis.UserPrefs) globalThis.UserPrefs.set('pwaInstalledAt', 0);
+    },
+
+    // The browser's own install path, for when beforeinstallprompt never fires. Chrome
+    // gates that event behind engagement heuristics and permanently stops firing it for
+    // an origin once the user dismisses its native install banner, so it cannot be the
+    // only way into the app.
+    getManualPwaInstallInstructions() {
+        const userAgent = navigator.userAgent || '';
+
+        if (/iPad|iPhone|iPod/.test(userAgent) && !globalThis.MSStream) {
+            return 'Tap the Share button, then "Add to Home Screen" to install DeezSpoTag.';
+        }
+
+        if (/Android/i.test(userAgent)) {
+            return 'Open the browser menu and choose "Install app" or "Add to Home screen".';
+        }
+
+        return 'Use the browser menu and choose "Install DeezSpoTag", or the install icon in the address bar.';
     },
 
     hasRecentPwaDismissal() {
