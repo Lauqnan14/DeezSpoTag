@@ -4,6 +4,7 @@
 }
 
 @section Styles {
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/home-index.css")" />
 <style>
 .categories-header {
     margin-bottom: 20px;
@@ -145,6 +146,10 @@
     <li class="nav-item">
         <button class="nav-link" id="categories-spotify-tab" data-bs-toggle="tab" data-bs-target="#categories-spotify" type="button" role="tab">Spotify</button>
     </li>
+    <li class="nav-item">
+        <button class="nav-link" id="categories-apple-tab" data-bs-toggle="tab" data-bs-target="#categories-apple" type="button" role="tab">Apple Music</button>
+    </li>
+<li class="nav-item"><button class="nav-link" id="categories-youtube-tab" data-bs-toggle="tab" data-bs-target="#categories-youtube" type="button" role="tab">YouTube Music</button></li>
 </ul>
 
 <div class="tab-content categories-panels" id="categoriesTabsContent">
@@ -160,9 +165,16 @@
             <div class="empty-section">Loading Spotify categories...</div>
         </div>
     </div>
+    <div class="tab-pane fade" id="categories-apple" role="tabpanel">
+        <button id="apple-back" class="action-btn action-btn-sm mb-3" type="button" onclick="loadAppleCategories()" hidden>Back to categories</button>
+        <div id="apple-status" class="spotify-home-greeting">Loading Apple Music categories...</div>
+        <div id="apple-categories" class="categories-sections"></div>
+    </div>
+    <div class="tab-pane fade" id="categories-youtube" role="tabpanel"><button id="youtube-back" class="action-btn action-btn-sm mb-3" type="button" onclick="loadYouTubeCategories()" hidden>Back to categories</button><div id="youtube-status">Loading YouTube Music...</div><div id="youtube-categories" class="categories-sections"></div></div>
 </div>
 
 @section Scripts {
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/home-view-helpers.js")"></script>
 <script>
 function buildDeezerImageUrlWithSize(imageHash, type = 'cover', size = 1000, quality = 80) {
     if (!imageHash) {
@@ -199,7 +211,7 @@ function renderCategoryCard(item) {
     const linked = item.image_linked_item || item.imageLinkedItem || {};
     const imageType = linked?.type || linked?.TYPE || item.picture_type || item.pictureType || item.imageType || 'playlist';
     const imageHash = linked?.md5 || linked?.MD5 || item.md5_image || item.md5 || item.imageHash || item.cover?.md5 || item.cover?.MD5 || item.background_image?.md5;
-    const image = source === 'spotify'
+    const image = source === 'spotify' || source === 'apple' || source === 'ytmusic'
         ? (item.coverUrl || item.imageUrl || item.image || item.picture || item.artwork || '')
         : (item.image?.thumbUrl
             || item.image?.thumb
@@ -213,11 +225,13 @@ function renderCategoryCard(item) {
             || buildDeezerImageUrlWithSize(imageHash, imageType, 250, 80)
             || buildDeezerImageUrl(imageHash, imageType)
             || '');
-    const click = source === 'spotify'
-        ? buildSpotifyBrowseClick(item)
-        : buildHomeClick(item);
+    const click = source === 'ytmusic'
+        ? HomeViewHelpers.buildYouTubeBrowseClick(item)
+        : source === 'apple'
+        ? HomeViewHelpers.buildAppleBrowseClick(item)
+        : source === 'spotify' ? buildSpotifyBrowseClick(item) : buildHomeClick(item);
     const artStyle = image ? `style="background-image: url('${image}');"` : '';
-    const platformIcon = source === 'spotify' ? 'spotify' : 'deezer';
+    const platformIcon = source === 'apple' ? 'apple' : source === 'spotify' ? 'spotify' : 'deezer';
     const subtitleCandidate = (item.subtitle
         || item.artist
         || item.artists
@@ -230,8 +244,8 @@ function renderCategoryCard(item) {
         ? ''
         : escapeHtml(subtitleCandidate);
     return `
-        <div class="top-genres-card top-genres-card--thumb" onclick="${click}" style="position: relative;">
-            <div class="top-genres-platform" style="--platform-icon: url('/images/availability/${platformIcon}.svg');"></div>
+        <div class="top-genres-card top-genres-card--thumb" onclick="${click}" style="position: relative;${source === 'ytmusic' && Number.isFinite(item.stripeColor) ? `border-left-color:#${(item.stripeColor >>> 0).toString(16).padStart(8, '0').slice(2)};` : ''}">
+            ${source === 'ytmusic' ? '' : `<div class="top-genres-platform" style="--platform-icon: url('/images/availability/${platformIcon}.svg');"></div>`}
             <div class="top-genres-content">
                 <div class="top-genres-title">${title}</div>
                 ${subtitle ? `<div class="top-genres-subtitle">${subtitle}</div>` : ''}
@@ -399,9 +413,91 @@ async function loadSpotifyCategories() {
     }
 }
 
+let appleCategoryRequest = 0;
+const appleCategoryPages = new Map();
+
+async function loadAppleCategories() {
+    await loadAppleCategoryPage('/api/apple/browse/categories', true);
+}
+
+async function openAppleCategory(encodedPath) {
+    await loadAppleCategoryPage(`/api/apple/browse/page?path=${encodeURIComponent(decodeURIComponent(encodedPath))}`, false);
+}
+
+async function loadAppleCategoryPage(url, root) {
+    const request = ++appleCategoryRequest;
+    const status = document.getElementById('apple-status');
+    const container = document.getElementById('apple-categories');
+    status.textContent = 'Loading Apple Music categories...';
+    try {
+        const cached = appleCategoryPages.get(url);
+        let data;
+        if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
+            data = cached.data;
+        } else {
+            const response = await fetch(url);
+            data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.error || 'Apple Music categories unavailable');
+            appleCategoryPages.set(url, { data, loadedAt: Date.now() });
+        }
+        if (request !== appleCategoryRequest) return;
+        document.getElementById('apple-back').hidden = root;
+        const sections = root ? [{ title: 'Browse Categories', items: data.categories || [] }] : data.sections || [];
+        const visible = sections.filter(section => Array.isArray(section.items) && section.items.length);
+        container.innerHTML = visible.map(section => `<div class="home-section">
+            <div class="home-section-title">${escapeHtml(section.title || '')}</div>
+            <div class="top-genres-grid">${section.items.map(item => item.type === 'video' || item.type === 'track' ? HomeViewHelpers.renderAppleBrowseItem(item) : renderCategoryCard(item)).join('')}</div>
+        </div>`).join('') || '<div class="empty-section">No Apple Music content available</div>';
+        status.textContent = visible.length ? `Apple Music · ${data.storefront.toUpperCase()}` : 'No Apple Music content available';
+    } catch (error) {
+        if (request !== appleCategoryRequest) return;
+        status.textContent = error.message || 'Apple Music categories unavailable';
+        if (!container.innerHTML) container.innerHTML = '<div class="empty-section">Apple Music categories unavailable</div>';
+    }
+}
+
+let youtubeCategoryRequest = 0;
+const youtubeCategoryPages = new Map();
+async function loadYouTubeCategories() { await loadYouTubeCategoryPage('/api/youtube/browse/categories', true); }
+async function openYouTubeCategory(id, parameters) {
+    await loadYouTubeCategoryPage(`/api/youtube/browse/page?id=${id}&parameters=${parameters}`, false);
+}
+async function loadYouTubeCategoryPage(url, root) {
+    const request = ++youtubeCategoryRequest;
+    const status = document.getElementById('youtube-status');
+    const container = document.getElementById('youtube-categories');
+    status.textContent = 'Loading YouTube Music...';
+    try {
+        const cached = youtubeCategoryPages.get(url);
+        let data;
+        if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) data = cached.data;
+        else {
+            const response = await fetch(url);
+            data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.error || 'YouTube Music unavailable');
+            youtubeCategoryPages.set(url, { data, loadedAt: Date.now() });
+        }
+        if (request !== youtubeCategoryRequest) return;
+        document.getElementById('youtube-back').hidden = root;
+        const sections = data.sections;
+        container.innerHTML = (sections || []).map(section => `<div class="home-section"><div class="home-section-title">${escapeHtml(section.title)}</div><div class="top-genres-grid">${(section.items || []).map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderCategoryCard)).join('')}</div></div>`).join('') || '<div class="empty-section">No YouTube Music content available</div>';
+        status.textContent = `YouTube Music · ${data.country}`;
+    } catch (error) {
+        if (request !== youtubeCategoryRequest) return;
+        status.textContent = error.message || 'YouTube Music unavailable';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     loadDeezerCategories();
     loadSpotifyCategories();
+    loadAppleCategories();
+    const youtubeParams = new URLSearchParams(globalThis.location.search);
+    if (youtubeParams.get('provider') === 'ytmusic') {
+        globalThis.bootstrap?.Tab.getOrCreateInstance(document.getElementById('categories-youtube-tab')).show();
+        if (youtubeParams.get('id')) openYouTubeCategory(encodeURIComponent(youtubeParams.get('id')), encodeURIComponent(youtubeParams.get('parameters') || ''));
+        else loadYouTubeCategories();
+    } else loadYouTubeCategories();
 });
 </script>
 }
