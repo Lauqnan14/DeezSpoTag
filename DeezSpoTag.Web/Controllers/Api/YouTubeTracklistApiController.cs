@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
-[ApiController, Authorize, Route("api/youtube/tracklist")]
+[ApiController]
+[Authorize]
+[Route("api/youtube/tracklist")]
 public sealed class YouTubeTracklistApiController(YouTubeMusicSearchClient client, DeezSpoTagSettingsService settingsService, ILogger<YouTubeTracklistApiController> logger) : ControllerBase
 {
     [HttpGet]

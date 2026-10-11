@@ -8,7 +8,9 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
-[ApiController, Authorize, Route("api/youtube/browse")]
+[ApiController]
+[Authorize]
+[Route("api/youtube/browse")]
 public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, DeezSpoTagSettingsService settingsService, IMemoryCache cache, ILogger<YouTubeBrowseApiController> logger, IWebHostEnvironment? environment = null) : ControllerBase
 {
     [HttpGet("categories")]

@@ -56,7 +56,18 @@ public sealed class YouTubePlaybackResolver(DeezSpoTagSettingsService settings, 
             using var process = new Process { StartInfo = BuildProcess(executable, id) };
             try { process.Start(); }
             catch (System.ComponentModel.Win32Exception) { throw new InvalidOperationException("YouTube streaming is unavailable."); }
-            using var registration = deadline.Token.Register(() => { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } });
+            using var registration = deadline.Token.Register(() =>
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException) when (process.HasExited)
+                {
+                    // The extractor exited between the check and the deadline kill.
+                }
+            });
             // Drain both pipes concurrently and cap output so an extractor cannot fill server memory.
             var output = ReadBoundedAsync(process.StandardOutput, 2_000_000, deadline.Token);
             var errors = ReadBoundedAsync(process.StandardError, 100_000, deadline.Token);

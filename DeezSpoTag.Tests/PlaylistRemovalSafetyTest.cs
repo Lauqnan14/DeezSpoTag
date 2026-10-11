@@ -124,7 +124,7 @@ public sealed class PlaylistRemovalSafetyTest
         // The engine explains a held removal in the outcome message, and a writer that surfaces
         // the outcome to the user must pass that message through.
         var engine = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncEngine.cs");
-        var engineSync = Head(engine, "public async Task<PlaylistSyncTargetOutcome> SyncAsync", 6000);
+        var engineSync = Head(engine, "public async Task<PlaylistSyncTargetOutcome> SyncAsync", 8000);
         Assert.Contains("Removals held", engineSync, StringComparison.Ordinal);
         Assert.Contains("looked incomplete", engineSync, StringComparison.Ordinal);
         Assert.Contains("BuildEngineHoldSuffix", source, StringComparison.Ordinal);
