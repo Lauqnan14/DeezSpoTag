@@ -60,6 +60,8 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
         Assert.Equal("9", payload.Quality);
         Assert.Equal(2, payload.AutoIndex);
         Assert.Contains(payload.FallbackHistory, attempt => attempt.StepId == "step-1" && attempt.Status == "skipped");
+        var providerFailure = Assert.Single(payload.FallbackHistory, attempt => attempt.StepId == "step-1");
+        Assert.Contains(httpFailure ? "Amazon unavailable" : "metadata session", providerFailure.Detail, StringComparison.OrdinalIgnoreCase);
         var saved = await _repository.GetByUuidAsync(payload.Id);
         Assert.NotNull(saved);
         Assert.Equal("deezer", saved.Engine);

@@ -24,7 +24,7 @@ public sealed class QobuzResolutionGuardrailTest
             "PersistExpectedStagingPathAsync",
             StringComparison.Ordinal);
         var failureIndex = source.IndexOf(
-            "Qobuz track not found for ISRC or metadata.",
+            "identity_unresolved: Qobuz downloader requires a centrally approved Qobuz track ID.",
             StringComparison.Ordinal);
 
         Assert.True(resolveIndex >= 0);

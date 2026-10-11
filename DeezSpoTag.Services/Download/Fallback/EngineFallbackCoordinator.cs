@@ -474,7 +474,7 @@ public sealed class EngineFallbackCoordinator
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException
-                                   && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                                   && FallbackFailureClassifier.IsRecoverableProviderFailure(ex))
         {
             AddFallbackAttempt(
                 context.PayloadForSerialization,
@@ -612,6 +612,12 @@ public sealed class EngineFallbackCoordinator
             FallbackFailureClassifier.ProviderTransient
                 or FallbackFailureClassifier.ProviderManifestUnavailable =>
                 "was temporarily unavailable.",
+            FallbackFailureClassifier.CatalogLookupFailed =>
+                "could not access its catalog.",
+            FallbackFailureClassifier.IdentityUnresolved =>
+                "could not approve a matching track identity.",
+            FallbackFailureClassifier.ProviderQualityUnknown =>
+                "could not verify the requested quality.",
             FallbackFailureClassifier.ProviderTimeout =>
                 "timed out.",
             FallbackFailureClassifier.ProviderRateLimited =>

@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using DeezSpoTag.Services.Metadata.Qobuz;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Qobuz;
@@ -15,6 +18,22 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class QobuzQueueEndToEndTest
 {
+    [Theory]
+    [InlineData("https://www.deezer.com/track/123")]
+    [InlineData("https://music.apple.com/us/album/cry/123?i=456")]
+    public async Task QobuzProcessor_UnresolvedSourceDoesNotEnterAudioAcquisition(string sourceUrl)
+    {
+        var processor = (QobuzEngineProcessor)RuntimeHelpers.GetUninitializedObject(typeof(QobuzEngineProcessor));
+        var payload = new QobuzQueueItem { SourceUrl = sourceUrl, Isrc = "GBAHS1800090", ResolutionStatus = "pending" };
+        var method = typeof(QobuzEngineProcessor).GetMethod("ResolveAndPersistPreferredTrackAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var result = await (Task<QobuzTrackResolution?>)method.Invoke(processor,
+            new object?[] { "unresolved-test", payload, payload.Isrc, CancellationToken.None })!;
+        Assert.Null(result);
+        Assert.Equal("pending", payload.ResolutionStatus);
+        Assert.False(payload.AudioAcquired);
+        Assert.True(string.IsNullOrWhiteSpace(payload.QobuzId));
+    }
+
     [Fact]
     public async Task EnqueueAndProcessQobuzItem_CompletesQueueItem()
     {

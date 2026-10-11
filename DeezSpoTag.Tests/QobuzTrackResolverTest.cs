@@ -13,6 +13,93 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzTrackResolverTest
 {
+    [Theory]
+    [InlineData("Artist", 180, true)]
+    [InlineData("Different Artist", 180, false)]
+    [InlineData("Artist", 250, false)]
+    public async Task YouTubeConversion_ValidatesReturnedQobuzIdBeforeDownload(string hydratedArtist, int duration, bool expected)
+    {
+        var service = new StubQobuzMetadataService {
+            SearchHandler = _ => [new QobuzTrack { Id = 123, Title = "Song", Performer = new QobuzArtist { Name = "Artist" } }],
+            TrackResult = new QobuzTrack { Id = 123, Title = "Song", Duration = duration, Performer = new QobuzArtist { Name = hydratedArtist } }
+        };
+        var result = await CreateResolver(service).ResolveTrackAsync(null, "Song", "Artist", null, 180000, CancellationToken.None,
+            rejectAmbiguous: true, conversionQuery: "Song Artist");
+        Assert.Equal(expected, result is not null);
+        if (expected) Assert.Equal(123, result!.Track.Id);
+        Assert.Equal(new[] { "Song Artist" }, service.Queries);
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_StrictRejectsAmbiguousRecordings()
+    {
+        var resolver = CreateResolver(new StubQobuzMetadataService { SearchHandler = _ => [
+            new QobuzTrack { Id = 1, Title = "Song", Duration = 180, Performer = new QobuzArtist { Name = "Artist" } },
+            new QobuzTrack { Id = 2, Title = "Song", Duration = 180, Performer = new QobuzArtist { Name = "Artist" } }] });
+        Assert.Null(await resolver.ResolveTrackAsync(null, "Song", "Artist", null, 180000, CancellationToken.None, rejectAmbiguous: true));
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_PreservesLookupFailureWhenNoSourceResolvesIdentity()
+    {
+        var service = new StubQobuzMetadataService { IsrcFailure = new InvalidOperationException("catalog source unavailable") };
+        var failure = await Assert.ThrowsAsync<AggregateException>(() => CreateResolver(service).ResolveTrackAsync(
+            "USGZ20930467", "Big Boy", "The Jackson Five", "The First Recordings", 176000, CancellationToken.None));
+        Assert.Contains("catalog lookup failed", failure.Message);
+        Assert.Contains(failure.InnerExceptions, exception => exception.Message == "catalog source unavailable");
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_ExistingMetadataSearchCanRecoverFromIsrcFailure()
+    {
+        var service = new StubQobuzMetadataService
+        {
+            IsrcFailure = new InvalidOperationException("catalog source unavailable"),
+            SearchHandler = _ => [new QobuzTrack { Id = 74444082, ISRC = "USGZ20930467", Title = "Big Boy",
+                Duration = 176, Performer = new QobuzArtist { Name = "Jackson 5" } }]
+        };
+        var result = await CreateResolver(service).ResolveTrackAsync("USGZ20930467", "Big Boy", "The Jackson Five", "The First Recordings", 176000, CancellationToken.None);
+        Assert.Equal(74444082, result?.Track.Id);
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_SelectsBestValidCandidateAfterInvalidHigherScore()
+    {
+        var invalid = new QobuzTrack { Id = 1, Title = "Big Boy", ISRC = "USGZ20930467", Duration = 222,
+            Performer = new QobuzArtist { Name = "The Jackson Five" }, Album = new QobuzAlbum { Title = "The First Recordings" },
+            MaximumBitDepth = 24, MaximumSamplingRate = 96 };
+        var valid = new QobuzTrack { Id = 74444082, Title = "Big Boy", ISRC = "USGZ20930467", Duration = 190,
+            Performer = new QobuzArtist { Name = "The Jackson Five" } };
+        var resolver = CreateResolver(new StubQobuzMetadataService { SearchHandler = _ => [invalid, valid] });
+        var result = await resolver.ResolveTrackAsync("USGZ20930467", "Big Boy", "The Jackson Five", "The First Recordings", 176000, CancellationToken.None);
+        Assert.Equal(74444082, result?.Track.Id);
+    }
+
+    [Theory]
+    [InlineData("USSM11604298", "For Free (feat. Drake)", "DJ Khaled", 184000, "USCM51600263", 183)]
+    [InlineData("GBAHS1800090", "Cry", "Anne-Marie", 271000, "GBAHS1800286", 215)]
+    [InlineData("GBAHS1800795", "Perfect To Me", "Anne-Marie", 288000, "GBAHS1800729", 197)]
+    public async Task ResolveTrackAsync_DoesNotSubstituteDifferentRecording(string isrc, string title, string artist,
+        int duration, string candidateIsrc, int candidateDuration)
+    {
+        var resolver = CreateResolver(new StubQobuzMetadataService { SearchHandler = _ => [new QobuzTrack {
+            Id = 1, ISRC = candidateIsrc, Title = title, Duration = candidateDuration, Performer = new QobuzArtist { Name = artist } }] });
+        Assert.Null(await resolver.ResolveTrackAsync(isrc, title, artist, null, duration, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_AcceptsBigBoyExactIsrcWithVerifiedArtistAlias()
+    {
+        var resolver = CreateResolver(new StubQobuzMetadataService
+        {
+            IsrcResult = new QobuzTrack { Id = 74444082, ISRC = "USGZ20930467", Title = "Big Boy",
+                Duration = 176, Performer = new QobuzArtist { Name = "Jackson 5" } }
+        });
+        var result = await resolver.ResolveTrackAsync("USGZ20930467", "Big Boy", "The Jackson Five",
+            "The First Recordings", 176000, CancellationToken.None);
+        Assert.Equal(74444082, result?.Track.Id);
+    }
+
     [Fact]
     public async Task ResolveTrackAsync_AcceptsExactIsrcWithoutTitleArtist()
     {
@@ -338,6 +425,7 @@ public sealed class QobuzTrackResolverTest
 
     private sealed class StubQobuzMetadataService : IQobuzMetadataService
     {
+        public Exception? IsrcFailure { get; init; }
         public QobuzTrack? IsrcResult { get; init; }
         public QobuzTrack? TrackResult { get; init; }
         public Func<string, List<QobuzTrack>> SearchHandler { get; set; } = _ => new List<QobuzTrack>();
@@ -346,7 +434,7 @@ public sealed class QobuzTrackResolverTest
 
         public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct)
         {
-            return Task.FromResult(IsrcResult);
+            return IsrcFailure == null ? Task.FromResult(IsrcResult) : Task.FromException<QobuzTrack?>(IsrcFailure);
         }
 
         public Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct)

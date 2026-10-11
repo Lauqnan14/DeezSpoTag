@@ -44,15 +44,40 @@ public sealed class QobuzTrackResolver
         string? artist,
         string? album,
         int? durationMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool rejectAmbiguous = false, string? conversionQuery = null)
     {
+        var failures = new List<Exception>();
+        QobuzTrackResolution? PreserveFailureIfUnresolved(QobuzTrackResolution? result)
+        {
+            if (result == null && failures.Count > 0)
+            {
+                throw new AggregateException("Qobuz catalog lookup failed: "
+                    + string.Join("; ", failures.Select(static failure => failure.Message)), failures);
+            }
+            return result;
+        }
+
         var expectedDurationSec = durationMs.HasValue && durationMs.Value > 0
             ? (int)Math.Round(durationMs.Value / 1000d)
             : 0;
 
+        if (!string.IsNullOrWhiteSpace(conversionQuery))
+        {
+            var links = await SearchTracksSafeAsync(conversionQuery, cancellationToken, failures);
+            var converted = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(links.Take(4), conversionQuery,
+                item => item.Title ?? "", GetTrackArtist, item => item.Id.ToString());
+            if (converted is not null)
+            {
+                var returnedId = converted.Id;
+                converted = await TryGetTrackAsync(returnedId, cancellationToken);
+                if (converted?.Id != returnedId) return null;
+            }
+            return PreserveFailureIfUnresolved(converted is null ? null : PickBestCandidate([converted], isrc, title, artist, album, expectedDurationSec, rejectAmbiguous));
+        }
+
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var exact = await TryFindTrackByISRCAsync(isrc, cancellationToken);
+            var exact = await TryFindTrackByISRCAsync(isrc, cancellationToken, failures);
             if (exact != null
                 && IsExactIsrcMatch(exact, isrc)
                 && !HasContradictoryMetadata(exact, title, artist, expectedDurationSec))
@@ -65,17 +90,17 @@ public sealed class QobuzTrackResolver
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
             if (string.IsNullOrWhiteSpace(metadataQuery))
             {
-                return null;
+                return PreserveFailureIfUnresolved(null);
             }
 
-            var metadataCandidates = await SearchTracksSafeAsync(metadataQuery, cancellationToken);
+            var metadataCandidates = await SearchTracksSafeAsync(metadataQuery, cancellationToken, failures);
             var metadataMatch = PickBestCandidate(
                 metadataCandidates,
                 isrc,
                 title,
                 artist,
                 album,
-                expectedDurationSec);
+                expectedDurationSec, rejectAmbiguous);
             if (metadataMatch != null)
             {
                 return metadataMatch;
@@ -88,25 +113,25 @@ public sealed class QobuzTrackResolver
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
             if (string.IsNullOrWhiteSpace(albumQuery))
             {
-                return null;
+                return PreserveFailureIfUnresolved(null);
             }
 
-            var albumCandidates = await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken);
-            return PickBestCandidate(
+            var albumCandidates = await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken, failures);
+            return PreserveFailureIfUnresolved(PickBestCandidate(
                 albumCandidates,
                 isrc,
                 title,
                 artist,
                 album,
-                expectedDurationSec);
+                expectedDurationSec, rejectAmbiguous));
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
-        await CollectAlbumCandidatesAsync(candidates, title, artist, album, cancellationToken);
-        await CollectCandidatesAsync(candidates, title, artist, album, requireArtist: !string.IsNullOrWhiteSpace(isrc), cancellationToken);
+        await CollectAlbumCandidatesAsync(candidates, title, artist, album, cancellationToken, failures);
+        await CollectCandidatesAsync(candidates, title, artist, album, requireArtist: !string.IsNullOrWhiteSpace(isrc), cancellationToken, failures);
 
-        var best = PickBestCandidate(candidates.Values, isrc, title, artist, album, expectedDurationSec);
-        return best;
+        var best = PickBestCandidate(candidates.Values, isrc, title, artist, album, expectedDurationSec, rejectAmbiguous);
+        return PreserveFailureIfUnresolved(best);
     }
 
     public async Task<QobuzTrackResolution?> ValidateTrackIdAsync(
@@ -159,11 +184,12 @@ public sealed class QobuzTrackResolver
         string? artist,
         string? album,
         bool requireArtist,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         foreach (var query in BuildQueries(title, artist, album, requireArtist))
         {
-            await CollectQueryAsync(candidates, query, cancellationToken);
+            await CollectQueryAsync(candidates, query, cancellationToken, failures);
 
             if (requireArtist)
             {
@@ -172,7 +198,7 @@ public sealed class QobuzTrackResolver
 
             foreach (var store in ResolveStores())
             {
-                var autosuggest = await SearchAutosuggestSafeAsync(query, store, cancellationToken);
+                var autosuggest = await SearchAutosuggestSafeAsync(query, store, cancellationToken, failures);
                 foreach (var track in autosuggest.Where(static t => t.Id > 0))
                 {
                     candidates[track.Id] = track;
@@ -186,11 +212,12 @@ public sealed class QobuzTrackResolver
         string? title,
         string? artist,
         string? album,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         foreach (var query in BuildAlbumQueries(title, artist, album))
         {
-            var albumTracks = await SearchAlbumTracksSafeAsync(query, cancellationToken);
+            var albumTracks = await SearchAlbumTracksSafeAsync(query, cancellationToken, failures);
             foreach (var track in albumTracks.Where(static track => track.Id > 0))
             {
                 candidates[track.Id] = track;
@@ -198,7 +225,8 @@ public sealed class QobuzTrackResolver
         }
     }
 
-    private async Task<QobuzTrack?> TryFindTrackByISRCAsync(string isrc, CancellationToken cancellationToken)
+    private async Task<QobuzTrack?> TryFindTrackByISRCAsync(string isrc, CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         try
         {
@@ -206,6 +234,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            failures?.Add(ex);
             if (IsRateLimit(ex))
             {
                 _logger.LogWarning(
@@ -245,16 +274,18 @@ public sealed class QobuzTrackResolver
     private async Task CollectQueryAsync(
         Dictionary<int, QobuzTrack> candidates,
         string query,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
-        var results = await SearchTracksSafeAsync(query, cancellationToken);
+        var results = await SearchTracksSafeAsync(query, cancellationToken, failures);
         foreach (var track in results.Where(static t => t.Id > 0))
         {
             candidates[track.Id] = track;
         }
     }
 
-    private async Task<List<QobuzTrack>> SearchTracksSafeAsync(string query, CancellationToken cancellationToken)
+    private async Task<List<QobuzTrack>> SearchTracksSafeAsync(string query, CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         try
         {
@@ -262,6 +293,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            failures?.Add(ex);
             if (IsRateLimit(ex))
             {
                 _logger.LogWarning(
@@ -276,7 +308,8 @@ public sealed class QobuzTrackResolver
         }
     }
 
-    private async Task<List<QobuzTrack>> SearchAlbumTracksSafeAsync(string query, CancellationToken cancellationToken)
+    private async Task<List<QobuzTrack>> SearchAlbumTracksSafeAsync(string query, CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         try
         {
@@ -284,6 +317,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            failures?.Add(ex);
             if (IsRateLimit(ex))
             {
                 _logger.LogWarning(
@@ -301,7 +335,8 @@ public sealed class QobuzTrackResolver
     private async Task<List<QobuzTrack>> SearchAutosuggestSafeAsync(
         string query,
         string store,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ICollection<Exception>? failures = null)
     {
         try
         {
@@ -309,6 +344,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            failures?.Add(ex);
             if (IsRateLimit(ex))
             {
                 _logger.LogWarning(
@@ -333,8 +369,9 @@ public sealed class QobuzTrackResolver
         string? expectedTitle,
         string? expectedArtist,
         string? expectedAlbum,
-        int expectedDurationSec)
+        int expectedDurationSec, bool rejectAmbiguous = false)
     {
+        var acceptedRecordings = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         QobuzTrack? bestTrack = null;
         var bestScore = int.MinValue;
 
@@ -348,6 +385,34 @@ public sealed class QobuzTrackResolver
             }
 
             var score = ScoreCandidate(candidate, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, preferHiRes: true);
+            var validation = TrackCandidateValidator.Validate(
+                new TrackMatchSource(
+                    expectedIsrc,
+                    expectedTitle,
+                    expectedArtist,
+                    expectedAlbum,
+                    expectedDurationSec > 0 ? expectedDurationSec * 1000 : null),
+                BuildTrackMatchCandidate(candidate),
+                new TrackCandidateValidationOptions(
+                    StrictWithoutIsrc: true,
+                    AllowMissingCandidateArtist: false,
+                    RequireCandidateDurationWhenSourceHasDuration: true,
+                    MaxIsrcDurationDifferenceMs: 20_000,
+                    MaxMetadataDurationDifferenceMs: 8_000));
+            if (!validation.Accepted)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Rejected Qobuz candidate id={TrackId} reason={Reason} score={Score}",
+                        candidate.Id,
+                        validation.Reason,
+                        score);
+                }
+                continue;
+            }
+
+            acceptedRecordings.Add(!string.IsNullOrWhiteSpace(candidate.ISRC) ? candidate.ISRC : candidate.Id.ToString());
             if (score > bestScore)
             {
                 bestScore = score;
@@ -355,35 +420,8 @@ public sealed class QobuzTrackResolver
             }
         }
 
-        if (bestTrack == null)
+        if (bestTrack == null || (rejectAmbiguous && acceptedRecordings.Count > 1))
         {
-            return null;
-        }
-
-        var validation = TrackCandidateValidator.Validate(
-            new TrackMatchSource(
-                expectedIsrc,
-                expectedTitle,
-                expectedArtist,
-                expectedAlbum,
-                expectedDurationSec > 0 ? expectedDurationSec * 1000 : null),
-            BuildTrackMatchCandidate(bestTrack),
-            new TrackCandidateValidationOptions(
-                StrictWithoutIsrc: true,
-                AllowMissingCandidateArtist: false,
-                RequireCandidateDurationWhenSourceHasDuration: true,
-                MaxIsrcDurationDifferenceMs: 20_000,
-                MaxMetadataDurationDifferenceMs: 8_000));
-        if (!validation.Accepted)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Rejected Qobuz candidate id={TrackId} reason={Reason} score={Score}",
-                    bestTrack.Id,
-                    validation.Reason,
-                    bestScore);
-            }
             return null;
         }
 

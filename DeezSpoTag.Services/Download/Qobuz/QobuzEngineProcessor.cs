@@ -155,7 +155,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var resolvedTrack = await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
         if (resolvedTrack == null)
         {
-            payload.ResolutionError = "Qobuz track not found for ISRC or metadata.";
+            payload.ResolutionError = "identity_unresolved: Qobuz downloader requires a centrally approved Qobuz track ID.";
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
             throw new InvalidOperationException(payload.ResolutionError);
         }
@@ -178,7 +178,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             FallbackAttemptRecorder.RecordCurrent(
                 payload,
                 "skipped",
-                "catalog_quality_below_requested",
+                payload.QobuzQualityDecisionReason == "provider_quality_unknown"
+                    ? FallbackFailureClassifier.ProviderQualityUnknown
+                    : FallbackFailureClassifier.CatalogQualityBelowRequested,
                 qualityDecision.Message);
             throw new QobuzCatalogQualityBelowPlanStepException(qualityDecision.Message);
         }

@@ -535,7 +535,12 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         var version = ReadString(document.RootElement, "version");
         if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(csrf))
         {
-            throw new InvalidOperationException("Amazon Music metadata session could not be initialized.");
+            var missingFields = new List<string>();
+            if (string.IsNullOrWhiteSpace(sessionId)) missingFields.Add("sessionId");
+            if (string.IsNullOrWhiteSpace(deviceId)) missingFields.Add("deviceId");
+            if (string.IsNullOrWhiteSpace(csrf)) missingFields.Add("csrf");
+            throw new InvalidOperationException("Amazon Music metadata session could not be initialized: missing "
+                + string.Join(", ", missingFields) + ".");
         }
 
         return new AmazonSession(

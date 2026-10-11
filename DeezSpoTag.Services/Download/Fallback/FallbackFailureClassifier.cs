@@ -2,8 +2,11 @@ using System.Net.Http;
 
 namespace DeezSpoTag.Services.Download.Fallback;
 
-internal static class FallbackFailureClassifier
+public static class FallbackFailureClassifier
 {
+    public const string CatalogLookupFailed = "catalog_lookup_failed";
+    public const string IdentityUnresolved = "identity_unresolved";
+    public const string ProviderQualityUnknown = "provider_quality_unknown";
     public const string CatalogQualityBelowRequested = "catalog_quality_below_requested";
     public const string QualityBelowRequested = "quality_below_requested";
     public const string SameEngineBlocked = "same_engine_blocked";
@@ -20,8 +23,39 @@ internal static class FallbackFailureClassifier
     public const string DownloadStreamFailed = "download_stream_failed";
     public const string DownloadFailed = "download_failed";
 
+    public static bool IsRecoverableProviderFailure(Exception exception)
+        => DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(exception)
+           || (exception is AggregateException aggregate
+               && aggregate.Flatten().InnerExceptions.Count > 0
+               && aggregate.Flatten().InnerExceptions.All(
+                   DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable));
+
     public static string Classify(Exception exception)
     {
+        if (exception is AggregateException aggregate)
+        {
+            var classes = aggregate.Flatten().InnerExceptions.Select(Classify).ToList();
+            foreach (var failureClass in new[] { ProviderRateLimited, ProviderVerificationRequired, ProviderTimeout })
+            {
+                if (classes.Contains(failureClass)) return failureClass;
+            }
+            if (aggregate.Message.Contains("catalog lookup failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return classes.Count > 0 && classes.All(static value => value == AuthenticationRequired)
+                    ? AuthenticationRequired
+                    : CatalogLookupFailed;
+            }
+            return classes.FirstOrDefault(static value => !IsTerminalErrorClass(value))
+                ?? classes.FirstOrDefault() ?? DownloadFailed;
+        }
+        if (exception.InnerException is HttpRequestException httpFailure)
+        {
+            var cause = Classify(httpFailure);
+            return exception.Message.Contains("catalog lookup failed", StringComparison.OrdinalIgnoreCase)
+                && cause is ProviderTransient or DownloadFailed or ProviderManifestUnavailable
+                    ? CatalogLookupFailed
+                    : cause;
+        }
         var message = exception.Message ?? string.Empty;
         var normalized = message.Trim().ToLowerInvariant();
 
@@ -48,6 +82,41 @@ internal static class FallbackFailureClassifier
             || normalized.Contains("session exchange", StringComparison.Ordinal))
         {
             return ProviderVerificationRequired;
+        }
+
+        if (exception is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden }
+            || normalized.Contains("http 401", StringComparison.Ordinal)
+            || normalized.Contains("http 403", StringComparison.Ordinal)
+            || normalized.Contains("authentication required", StringComparison.Ordinal)
+            || normalized.Contains("metadata session could not be initialized", StringComparison.Ordinal))
+        {
+            return AuthenticationRequired;
+        }
+
+        if (normalized.Contains("public download session is invalid", StringComparison.Ordinal)
+            || normalized.Contains("download verification session", StringComparison.Ordinal))
+        {
+            return ProviderVerificationRequired;
+        }
+
+        if (normalized.Contains("catalog lookup failed", StringComparison.Ordinal))
+        {
+            return CatalogLookupFailed;
+        }
+
+        if (normalized.Contains("identity_unresolved", StringComparison.Ordinal))
+        {
+            return IdentityUnresolved;
+        }
+
+        if (normalized.Contains("quality_below_requested", StringComparison.Ordinal))
+        {
+            return QualityBelowRequested;
+        }
+
+        if (normalized.Contains("provider_quality_unknown", StringComparison.Ordinal))
+        {
+            return ProviderQualityUnknown;
         }
 
         if (normalized.Contains("manifest", StringComparison.Ordinal)
@@ -110,6 +179,9 @@ internal static class FallbackFailureClassifier
     public static bool IsTerminalErrorClass(string? errorClass)
         => (errorClass ?? string.Empty).Trim().ToLowerInvariant() switch
         {
+            CatalogLookupFailed => false,
+            IdentityUnresolved => true,
+            ProviderQualityUnknown => false,
             CatalogQualityBelowRequested => true,
             QualityBelowRequested => true,
             SameEngineBlocked => true,

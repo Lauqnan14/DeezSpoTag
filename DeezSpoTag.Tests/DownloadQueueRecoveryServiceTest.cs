@@ -96,6 +96,30 @@ public sealed class DownloadQueueRecoveryServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task RecoveryPreservesUnresolvedWatchlistIdentityAndSavedPlan()
+    {
+        const string queueUuid = "recovery-unresolved-watchlist";
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid, Engine = "qobuz", SourceService = "deezer", SourceUrl = "https://www.deezer.com/track/789",
+            Title = "Perfect To Me", Artist = "Anne-Marie", Isrc = "GBAHS1800795", Quality = "7",
+            ResolutionStatus = "pending", AutoIndex = 0,
+            FallbackPlan = [new("step-0", "qobuz", "7", QobuzSourceUrlInput, "mapped_url")]
+        };
+        await EnqueueRunningItemAsync(queueUuid, payload);
+        await AgeQueueItemAsync(queueUuid, DownloadQueueRecoveryPolicy.RunningStallThreshold + TimeSpan.FromMinutes(1));
+        await _recoveryService.RecoverStaleRunningTasksAsync(CancellationToken.None);
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        var persisted = JsonSerializer.Deserialize<QobuzQueueItem>(recovered!.PayloadJson!)!;
+        Assert.Equal(payload.SourceUrl, persisted.SourceUrl);
+        Assert.Equal("pending", persisted.ResolutionStatus);
+        Assert.Equal(JsonSerializer.Serialize(payload.FallbackPlan), JsonSerializer.Serialize(persisted.FallbackPlan));
+        Assert.True(string.IsNullOrWhiteSpace(persisted.QobuzId));
+        Assert.False(persisted.AudioAcquired);
+        Assert.False(QueuePreResolutionPayload.IsResolved(QueuePreResolutionPayload.ParseOrEmpty(recovered.PayloadJson)));
+    }
+
+    [Fact]
     public async Task RecoverStaleRunningTasksAsync_RetriesPersistedEngineWithoutCrossEngineResolution()
     {
         var queueUuid = "recovery-qobuz-to-deezer";

@@ -25,8 +25,10 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DownloadIntentFallbackParityTest
 {
-    [Fact]
-    public async Task SavedPlan_ProviderSessionFailureContinuesToNextEnabledService()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SavedPlan_ProviderSessionFailureContinuesToNextEnabledService(bool aggregateFailure)
     {
         var root = Path.Join(Path.GetTempPath(), "fallback-pre-resolution-" + Path.GetRandomFileName());
         Directory.CreateDirectory(root);
@@ -35,7 +37,7 @@ public sealed class DownloadIntentFallbackParityTest
             using var scope = new TestConfigRootScope(root);
             var service = (DownloadIntentService)RuntimeHelpers.GetUninitializedObject(typeof(DownloadIntentService));
             SetPrivateField(service, "_settingsService", new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance));
-            SetPrivateField(service, "_trackIdentityResolver", new FailingAmazonIdentityResolver());
+            SetPrivateField(service, "_trackIdentityResolver", new FailingAmazonIdentityResolver(aggregateFailure));
             SetPrivateField(service, "_logger", NullLogger<DownloadIntentService>.Instance);
             var item = CreateQueueItem();
             var intent = new DownloadIntent
@@ -60,6 +62,10 @@ public sealed class DownloadIntentFallbackParityTest
             Assert.Equal(1, result.AutoIndex);
             Assert.Equal("9", result.Quality);
             Assert.Equal(plan, result.FallbackPlan);
+            Assert.NotEmpty(result.FallbackHistory!);
+            Assert.Equal("step-0", result.FallbackHistory![0].StepId);
+            Assert.Contains("amazon", result.FallbackHistory[0].Detail);
+            Assert.Contains("ULTRA_HD_FLAC", result.FallbackHistory[0].Detail);
         }
         finally
         {
@@ -113,12 +119,117 @@ public sealed class DownloadIntentFallbackParityTest
 
             Assert.NotNull(result.Error);
             Assert.Equal(2, resolver.CallCount);
+            Assert.Equal(2, result.FallbackHistory!.Count);
+            Assert.All(result.FallbackHistory, attempt => Assert.Contains("Provider unavailable", attempt.Detail));
+            var persisted = new JsonObject();
+            QueuePreResolutionPayload.ApplyHistory(persisted, result);
+            Assert.Equal(2, persisted["FallbackHistory"]!.AsArray().Count);
             Assert.Equal(plan, result.FallbackPlan);
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("Mary J. Blige", "Hate It Or Love It (Remix)", "FR8GV1829050", "deezer", "https://www.deezer.com/track/123", 236000)]
+    [InlineData("Anne-Marie", "Cry", "GBAHS1800090", "apple", "https://music.apple.com/us/album/cry/123?i=456", 271000)]
+    [InlineData("Anne-Marie", "Perfect To Me", "GBAHS1800795", "deezer", "https://www.deezer.com/track/789", 288000)]
+    public async Task SavedPlan_UnresolvedSourceCannotBecomeApprovedQobuzIdentity(
+        string artist, string title, string isrc, string source, string url, int duration)
+    {
+        var root = Path.Join(Path.GetTempPath(), "identity-handoff-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var resolver = new CountingFailingIdentityResolver();
+            var service = CreateService(resolver);
+            var intent = new DownloadIntent { Artist = artist, Title = title, Isrc = isrc, SourceService = source,
+                SourceUrl = url, DurationMs = duration, WatchlistOrigin = "playlist" };
+            var plan = new List<FallbackPlanStep> { new("step-0", "qobuz", "7", [], "mapped_url") };
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), intent, new JsonObject(), plan, CancellationToken.None])!;
+            Assert.NotNull(result.Error);
+            Assert.Null(result.SourceUrl);
+            Assert.True(string.IsNullOrWhiteSpace(result.QobuzId));
+            Assert.Equal(1, resolver.CallCount);
+            Assert.Single(result.FallbackHistory!);
+            Assert.Contains("Provider unavailable", result.FallbackHistory![0].Detail);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResolutionHistorySurvivesExistingPayloadApplication(bool failed)
+    {
+        var previous = new FallbackAttempt("step-0", "failed", "provider_timeout", "previous request timed out");
+        var current = new FallbackAttempt("step-1", "skipped", "identity_unresolved", "qobuz quality=7: missing identity");
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(System.Text.Json.JsonSerializer.Serialize(new { FallbackHistory = new[] { previous } }));
+        var result = new QueuePreResolutionPayload.ResolutionResult("qobuz", "https://play.qobuz.com/track/74444082", "7", 1,
+            null, failed ? "identity_unresolved" : null, FallbackHistory: new[] { current });
+        QueuePreResolutionPayload.ApplyHistory(payload, result);
+        if (failed) QueuePreResolutionPayload.ApplyFailed(payload, result.Error!, DateTimeOffset.UtcNow);
+        else QueuePreResolutionPayload.ApplyResolved(payload, result, DateTimeOffset.UtcNow);
+        QueuePreResolutionPayload.ApplyHistory(payload, result);
+        Assert.Equal(2, payload["FallbackHistory"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public void WatchlistEnqueueRetainsPendingTargetWithoutRequiringAnApprovedIdentity()
+    {
+        var type = typeof(DownloadIntentService).GetNestedType("EnqueueRoutingState", BindingFlags.NonPublic)!;
+        var routing = Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new object?[] { "qobuz", false, false, new List<string>(), "qobuz", "7", null, false }, null)!;
+        var method = typeof(DownloadIntentService).GetMethod("BuildPendingEnqueueTarget", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var target = method.Invoke(null, new object[]
+        {
+            new DownloadIntent { SourceUrl = "https://www.deezer.com/track/789", WatchlistOrigin = "playlist", Isrc = "GBAHS1800795" },
+            routing, new DeezSpoTagSettings { Service = "qobuz" }
+        })!;
+        Assert.Equal("qobuz", target.GetType().GetProperty("Engine")!.GetValue(target));
+        var resolution = ((string Engine, string? SourceUrl, string Message, string MappingSource))target.GetType().GetProperty("Resolution")!.GetValue(target)!;
+        Assert.Null(resolution.SourceUrl);
+        Assert.Equal("queue-pending", resolution.MappingSource);
+    }
+
+    [Theory]
+    [InlineData("tidal-timeout", "provider_timeout")]
+    [InlineData("tidal-error", "catalog_lookup_failed")]
+    [InlineData("duration_mismatch", "identity_unresolved")]
+    public async Task SavedPlan_PreservesCentralResolverRejectionReason(string reason, string expectedClass)
+    {
+        var root = Path.Join(Path.GetTempPath(), "central-rejection-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var service = CreateService(new RejectingIdentityResolver(reason));
+            var intent = new DownloadIntent { SourceService = "spotify", SourceUrl = "https://open.spotify.com/track/source",
+                Title = "Big Boy", Artist = "The Jackson Five", DurationMs = 176000 };
+            var plan = new List<FallbackPlanStep> { new("step-0", "tidal", "LOSSLESS", [], "mapped_url") };
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), intent, new JsonObject(), plan, CancellationToken.None])!;
+            Assert.Contains(reason, result.Error);
+            var failure = Assert.Single(result.FallbackHistory!);
+            Assert.Equal("skipped", failure.Status);
+            Assert.Equal(expectedClass, failure.ErrorClass);
+            Assert.Contains(reason, failure.Detail);
+            Assert.Null(result.SourceUrl);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class RejectingIdentityResolver(string reason) : ITrackIdentityResolver
+    {
+        public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken ct)
+            => Task.FromResult(TrackIdentityResolution.Empty(request) with
+            {
+                Candidates = new[] { new PlatformIdentityCandidate("tidal", null, null, "tidal-native", false, reason) }
+            });
     }
 
     private static DownloadIntentService CreateService(ITrackIdentityResolver resolver)
@@ -152,10 +263,12 @@ public sealed class DownloadIntentFallbackParityTest
     private static void SetPrivateField(object instance, string name, object value)
         => typeof(DownloadIntentService).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
 
-    private sealed class FailingAmazonIdentityResolver : ITrackIdentityResolver
+    private sealed class FailingAmazonIdentityResolver(bool aggregateFailure) : ITrackIdentityResolver
     {
         public Task<TrackIdentityResolution> ResolveAsync(TrackIdentityResolutionRequest request, CancellationToken cancellationToken)
-            => Task.FromException<TrackIdentityResolution>(new InvalidOperationException("Amazon Music metadata session could not be initialized."));
+            => Task.FromException<TrackIdentityResolution>(aggregateFailure
+                ? new AggregateException("catalog lookup failed", new InvalidOperationException("Amazon Music metadata session could not be initialized."))
+                : new InvalidOperationException("Amazon Music metadata session could not be initialized."));
     }
 
     private sealed class CancelingIdentityResolver : ITrackIdentityResolver

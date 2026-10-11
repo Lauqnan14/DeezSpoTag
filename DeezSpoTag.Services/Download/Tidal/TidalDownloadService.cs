@@ -160,7 +160,7 @@ public sealed class TidalDownloadService
                     if (string.IsNullOrWhiteSpace(tidalUrl))
                     {
                         throw new InvalidOperationException(
-                            $"Tidal catalog does not expose a validated track for {TidalStereoQuality.FormatRequested(request.Quality)}.");
+                            $"Tidal identity_unresolved: no approved track for {TidalStereoQuality.FormatRequested(request.Quality)}.");
                     }
                 }
 
@@ -316,9 +316,7 @@ public sealed class TidalDownloadService
                 expectedDuration,
                 requestedQuality,
                 cancellationToken);
-            return trackInfo == null || trackInfo.Id <= 0
-                ? null
-                : BuildTidalTrackListenUrl(trackInfo.Id);
+            return BuildTidalTrackListenUrl(trackInfo.Id);
         }
         catch (InvalidOperationException ex)
         {
@@ -327,7 +325,7 @@ public sealed class TidalDownloadService
                 "Tidal quality-aware metadata resolution failed for {Title} - {Artist}",
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
-            return null;
+            throw;
         }
     }
 
@@ -713,6 +711,8 @@ public sealed class TidalDownloadService
             candidates.AddRange(await SearchTracksAsync(query, 50, cancellationToken));
         }
 
+        var hasMatchingIdentity = candidates.Any(track => ValidateResolvedTrack(
+            track, trackName, artistName, sourceAlbum ?? string.Empty, isrc, expectedDuration).Accepted);
         var qualityCandidates = candidates
             .Where(track => track.Id > 0)
             .GroupBy(static track => track.Id)
@@ -721,7 +721,9 @@ public sealed class TidalDownloadService
             .ToList();
         if (qualityCandidates.Count == 0)
         {
-            throw new InvalidOperationException("No Tidal track candidate can satisfy the requested quality.");
+            throw new InvalidOperationException(hasMatchingIdentity
+                ? "Tidal quality_below_requested: matching track cannot satisfy the requested quality."
+                : "Tidal identity_unresolved: no validated matching track identity.");
         }
 
         var isrcMatch = FindIsrcMatch(qualityCandidates, isrc, sourceAlbum);
@@ -742,7 +744,9 @@ public sealed class TidalDownloadService
             return validatedMatch;
         }
 
-        throw new InvalidOperationException("No validated quality-compatible Tidal track match found");
+        throw new InvalidOperationException(hasMatchingIdentity
+            ? "Tidal quality_below_requested: matching track cannot satisfy the requested quality."
+            : "Tidal identity_unresolved: no validated quality-compatible track match found.");
     }
 
     private async Task<TidalTrack> SearchAtmosTrackByMetadataWithIsrcAsync(
@@ -842,7 +846,6 @@ public sealed class TidalDownloadService
                     ["limit"] = "50",
                     ["offset"] = "0"
                 }),
-            null,
             ex =>
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -1129,7 +1132,7 @@ public sealed class TidalDownloadService
                 ["limit"] = Math.Clamp(limit, 1, 100).ToString(CultureInfo.InvariantCulture),
                 ["offset"] = "0"
             });
-        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(url, null, _ => { }, cancellationToken);
+        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(url, _ => { }, cancellationToken);
         return payload?.Items ?? new List<TidalTrack>();
     }
 
@@ -1183,7 +1186,6 @@ public sealed class TidalDownloadService
             });
         var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(
             url,
-            null,
             ex =>
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -1205,7 +1207,6 @@ public sealed class TidalDownloadService
 
         var track = await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
             BuildTidalNativeApiUrl($"tracks/{trackId}"),
-            null,
             ex =>
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -1263,7 +1264,6 @@ public sealed class TidalDownloadService
 
     private async Task<TPayload?> SendTidalPublicJsonOrDefaultAsync<TPayload>(
         string url,
-        TPayload? fallback,
         Action<Exception> logFailure,
         CancellationToken cancellationToken)
     {
@@ -1282,7 +1282,8 @@ public sealed class TidalDownloadService
                 {
                     if (!IsTransientProviderStatus(response.StatusCode) || attempt == MaxProviderStageAttempts)
                     {
-                        return fallback;
+                        throw new HttpRequestException(
+                            $"Tidal catalog lookup failed: HTTP {(int)response.StatusCode}.", null, response.StatusCode);
                     }
 
                     await Task.Delay(ResolveProviderRetryDelay(response, attempt), cancellationToken);
@@ -1294,14 +1295,15 @@ public sealed class TidalDownloadService
                 {
                     if (attempt == MaxProviderStageAttempts)
                     {
-                        return fallback;
+                        throw new HttpRequestException("Tidal catalog lookup failed: empty response.");
                     }
 
                     await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
                     continue;
                 }
 
-                return JsonSerializer.Deserialize<TPayload>(body, SerializerOptions);
+                return JsonSerializer.Deserialize<TPayload>(body, SerializerOptions)
+                    ?? throw new HttpRequestException("Tidal catalog lookup failed: null JSON response.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1313,7 +1315,8 @@ public sealed class TidalDownloadService
                 if (!IsTransientProviderException(ex) || attempt == MaxProviderStageAttempts)
                 {
                     logFailure(ex);
-                    return fallback;
+                    throw new HttpRequestException($"Tidal catalog lookup failed: {ex.Message}", ex,
+                        (ex as HttpRequestException)?.StatusCode);
                 }
 
                 await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
@@ -1324,7 +1327,7 @@ public sealed class TidalDownloadService
         {
             logFailure(lastFailure);
         }
-        return fallback;
+        throw new HttpRequestException("Tidal catalog lookup failed after bounded retries.", lastFailure);
     }
 
     private async Task<TResult> SendTidalJsonOrDefaultAsync<TPayload, TResult>(
@@ -3472,7 +3475,9 @@ public sealed class TidalDownloadService
         var coolingDown = providers.Where(IsProviderCoolingDown).ToList();
         if (coolingDown.Count == 0)
         {
-            return "No Tidal download provider is currently available.";
+            return providers.Any(static provider => provider.RequiresVerification)
+                ? "No Tidal download provider is currently available: download verification session is unavailable."
+                : "No Tidal download provider is currently available.";
         }
 
         var soonest = coolingDown.Min(provider => provider.CooldownUntil!.Value);

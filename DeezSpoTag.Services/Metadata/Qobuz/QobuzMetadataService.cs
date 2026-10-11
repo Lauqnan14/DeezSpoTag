@@ -27,19 +27,9 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         var officialTask = FindExactIsrcFromOfficialSearchAsync($"isrc:{normalizedIsrc}", normalizedIsrc, ct);
         var catalogTask = FindExactIsrcFromCatalogSearchAsync(normalizedIsrc, normalizedIsrc, ct);
         var autosuggestTask = FindExactIsrcFromAutosuggestAsync(normalizedIsrc, normalizedIsrc, ct);
-        var pending = new List<Task<QobuzTrack?>> { officialTask, catalogTask, autosuggestTask };
-        while (pending.Count > 0)
-        {
-            var completed = await Task.WhenAny(pending);
-            pending.Remove(completed);
-            var match = await completed;
-            if (match != null)
-            {
-                return match;
-            }
-        }
-
-        return null;
+        var results = await CollectSuccessfulSourcesAsync(
+            new[] { officialTask, catalogTask, autosuggestTask }, ct);
+        return results.FirstOrDefault(static track => track != null);
     }
 
     public async Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct)
@@ -76,26 +66,56 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
             return new List<QobuzTrack>();
         }
 
-        var officialTask = _apiClient.SearchTracksAsync(query, limit: 50, offset: 0, ct);
-        var catalogTask = SearchCatalogTracks(query, ct);
-        var autosuggestTask = SearchTracksAutosuggest(query, _config.DefaultStore, ct);
-        await Task.WhenAll(officialTask, catalogTask, autosuggestTask);
-        var response = await officialTask;
-        var tracks = response?.Tracks?.Items ?? new List<QobuzTrack>();
-        var catalogTracks = await catalogTask;
-        var autosuggestTracks = await autosuggestTask;
-        if (catalogTracks.Count == 0 && autosuggestTracks.Count == 0)
+        var results = await CollectSuccessfulSourcesAsync(new[]
         {
-            return tracks;
-        }
-
+            SearchOfficialTracksAsync(query, ct),
+            SearchCatalogTracks(query, ct),
+            SearchTracksAutosuggest(query, _config.DefaultStore, ct)
+        }, ct);
         var merged = new Dictionary<int, QobuzTrack>();
-        foreach (var track in tracks.Concat(catalogTracks).Concat(autosuggestTracks).Where(track => track.Id > 0))
+        foreach (var track in results.SelectMany(static tracks => tracks).Where(static track => track.Id > 0))
         {
             merged.TryAdd(track.Id, track);
         }
 
-        return merged.Count > 0 ? merged.Values.ToList() : tracks;
+        return merged.Values.ToList();
+    }
+
+    private async Task<List<QobuzTrack>> SearchOfficialTracksAsync(string query, CancellationToken ct)
+    {
+        var response = await _apiClient.SearchTracksAsync(query, limit: 50, offset: 0, ct);
+        return response?.Tracks?.Items ?? new List<QobuzTrack>();
+    }
+
+    private static async Task<List<T>> CollectSuccessfulSourcesAsync<T>(
+        IEnumerable<Task<T>> sources, CancellationToken ct)
+    {
+        var tasks = sources.ToArray();
+        // Observe every source, including siblings of a successful request.
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (tasks.Any(static task => task.IsCanceled))
+            {
+                throw new OperationCanceledException("Qobuz catalog source was cancelled.", ct);
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+        var results = tasks.Where(static task => task.IsCompletedSuccessfully)
+            .Select(static task => task.Result).ToList();
+        if (results.Count == 0)
+        {
+            throw new AggregateException("Qobuz catalog lookup failed for every search source.",
+                tasks.Where(static task => task.Exception != null)
+                    .SelectMany(static task => task.Exception!.InnerExceptions));
+        }
+
+        return results;
     }
 
     private async Task<QobuzTrack?> FindExactIsrcFromOfficialSearchAsync(

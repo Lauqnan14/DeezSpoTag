@@ -20,6 +20,7 @@ public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayload
         var originalPayloadJson = item.PayloadJson ?? string.Empty;
         var payload = QueuePreResolutionPayload.ParseOrEmpty(originalPayloadJson);
         var result = await _downloadIntentService.ResolveQueuedPayloadAsync(item, cancellationToken);
+        QueuePreResolutionPayload.ApplyHistory(payload, result);
         if (!string.IsNullOrWhiteSpace(result.Error))
         {
             // Propagate the real failure text. A constant here collapses every resolution failure

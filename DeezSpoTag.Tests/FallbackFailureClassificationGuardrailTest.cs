@@ -1,5 +1,8 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using DeezSpoTag.Services.Download.Fallback;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -136,6 +139,57 @@ public sealed class FallbackFailureClassificationGuardrailTest
         Assert.DoesNotContain("[failed/", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("Tried enabled fallback steps:", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("HasLaterDistinctEngineStep", coordinator, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(401, "authentication_required")]
+    [InlineData(403, "authentication_required")]
+    [InlineData(429, "provider_rate_limited")]
+    [InlineData(503, "catalog_lookup_failed")]
+    public void FailedCatalogAccessRetainsItsCause(int status, string expected)
+    {
+        var failure = new HttpRequestException($"Tidal catalog lookup failed: HTTP {status}.", null, (HttpStatusCode)status);
+        Assert.Equal(expected, FallbackFailureClassifier.Classify(failure));
+        Assert.Equal(expected, FallbackFailureClassifier.Classify(new InvalidOperationException("Tidal URL download failed", failure)));
+    }
+
+    [Theory]
+    [InlineData("identity_unresolved: no approved ID", "identity_unresolved")]
+    [InlineData("provider_quality_unknown", "provider_quality_unknown")]
+    [InlineData("Tidal quality_below_requested", "quality_below_requested")]
+    [InlineData("Qobuz public download session is invalid and must be renewed.", "provider_verification_required")]
+    [InlineData("Tidal download verification session is unavailable", "provider_verification_required")]
+    [InlineData("Amazon Music metadata session could not be initialized: missing csrf.", "authentication_required")]
+    public void ResolutionFailuresDoNotBecomeCatalogAbsence(string message, string expected)
+        => Assert.Equal(expected, FallbackFailureClassifier.Classify(new InvalidOperationException(message)));
+
+    [Fact]
+    public void MixedSourceFailureRetainsRetryableCatalogAccessFailure()
+    {
+        var exception = new AggregateException("Qobuz catalog lookup failed", new Exception[]
+        {
+            new HttpRequestException("HTTP 401", null, HttpStatusCode.Unauthorized),
+            new HttpRequestException("HTTP 503", null, HttpStatusCode.ServiceUnavailable)
+        });
+        Assert.Equal("catalog_lookup_failed", FallbackFailureClassifier.Classify(exception));
+        Assert.False(FallbackFailureClassifier.IsTerminalErrorClass(FallbackFailureClassifier.Classify(exception)));
+    }
+
+    [Fact]
+    public void WrappedCatalogNetworkFailureRetainsCatalogOperation()
+    {
+        var network = new HttpRequestException("network unavailable");
+        var catalog = new HttpRequestException("Tidal catalog lookup failed: network unavailable", network);
+        Assert.Equal("catalog_lookup_failed", FallbackFailureClassifier.Classify(catalog));
+        Assert.Equal("catalog_lookup_failed", FallbackFailureClassifier.Classify(new InvalidOperationException("Tidal URL download failed", catalog)));
+        Assert.Equal("catalog_lookup_failed", FallbackFailureClassifier.Classify(new AggregateException("Qobuz catalog lookup failed", network)));
+    }
+
+    [Fact]
+    public void AggregateOperationalFailuresRemainRecoverableWhileUnexpectedBugsPropagate()
+    {
+        Assert.True(FallbackFailureClassifier.IsRecoverableProviderFailure(new AggregateException(new HttpRequestException("HTTP 503"))));
+        Assert.False(FallbackFailureClassifier.IsRecoverableProviderFailure(new AggregateException(new NullReferenceException())));
     }
 
     private static string ReadSource(string relativePath)

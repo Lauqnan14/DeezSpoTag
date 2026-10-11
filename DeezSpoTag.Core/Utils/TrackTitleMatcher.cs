@@ -171,8 +171,9 @@ public static class TrackTitleMatcher
 
         return expectedArtists.Any(exp => actualArtists.Any(act =>
             exp == act
-            || exp.Contains(act, StringComparison.Ordinal)
-            || act.Contains(exp, StringComparison.Ordinal)));
+            || (exp != "jackson 5" && act != "jackson 5"
+                && (exp.Contains(act, StringComparison.Ordinal)
+                    || act.Contains(exp, StringComparison.Ordinal)))));
     }
 
     public static bool StrictArtistsMatch(string? expected, string? actual)
@@ -268,12 +269,16 @@ public static class TrackTitleMatcher
             builder.Append(char.IsLetterOrDigit(character) ? character : ' ');
         }
 
-        return Regex.Replace(
+        var identity = Regex.Replace(
             builder.ToString().Normalize(NormalizationForm.FormC),
             @"\s+",
             " ",
             RegexOptions.None,
             RegexTimeout).Trim();
+
+        return identity is "the jackson five" or "jackson five" or "the jackson 5" or "jackson 5"
+            ? "jackson 5"
+            : identity;
     }
 
     private static bool HasIncompatibleVariants(TrackTitleSignature expected, TrackTitleSignature actual)

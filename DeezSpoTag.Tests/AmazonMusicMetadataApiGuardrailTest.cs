@@ -11,6 +11,21 @@ namespace DeezSpoTag.Tests;
 public sealed class AmazonMusicMetadataApiGuardrailTest
 {
     [Fact]
+    public void AmazonMetadataSessionFailure_ReportsMissingFieldNamesWithoutValues()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");
+        var start = source.IndexOf("if (string.IsNullOrWhiteSpace(sessionId) ||", StringComparison.Ordinal);
+        var end = source.IndexOf("return new AmazonSession", start, StringComparison.Ordinal);
+        var failure = source[start..end];
+        Assert.Contains("missingFields.Add(\"sessionId\")", failure);
+        Assert.Contains("missingFields.Add(\"deviceId\")", failure);
+        Assert.Contains("missingFields.Add(\"csrf\")", failure);
+        Assert.DoesNotContain("missingFields.Add(sessionId)", failure);
+        Assert.DoesNotContain("missingFields.Add(deviceId)", failure);
+        Assert.DoesNotContain("missingFields.Add(csrf)", failure);
+    }
+
+    [Fact]
     public void AmazonMetadata_UsesRegionalSkillEndpointsWithLegacyFallback()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");

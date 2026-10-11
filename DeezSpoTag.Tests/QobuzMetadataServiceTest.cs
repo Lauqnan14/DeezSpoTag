@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
@@ -15,6 +16,57 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzMetadataServiceTest
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SearchSources_PreserveExactCatalogResultWhenOfficialSourceFails(bool isrcLookup)
+    {
+        var expected = new QobuzTrack { Id = 74444082, ISRC = "USGZ20930467", Title = "Big Boy" };
+        var client = new StubQobuzApiClient
+        {
+            OfficialFailure = new HttpRequestException("official source unavailable"),
+            CatalogResponse = new QobuzCatalogSearchResponse { Tracks = new QobuzSearchList<QobuzTrack> { Items = [expected] } }
+        };
+        var options = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" });
+        var service = new QobuzMetadataService(client,
+            new QobuzArtistService(client, new MemoryCache(new MemoryCacheOptions()), options), options);
+        if (isrcLookup)
+            Assert.Same(expected, await service.FindTrackByISRC("USGZ20930467", CancellationToken.None));
+        else
+            Assert.Contains(expected, await service.SearchTracks("Big Boy Jackson", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SearchTracks_AllSourcesFailedDoesNotBecomeEmptyCatalog()
+    {
+        var client = new StubQobuzApiClient
+        {
+            OfficialFailure = new HttpRequestException("official failed"),
+            CatalogFailure = new HttpRequestException("catalog failed"),
+            AutosuggestFailure = new HttpRequestException("autosuggest failed")
+        };
+        var options = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" });
+        var service = new QobuzMetadataService(client,
+            new QobuzArtistService(client, new MemoryCache(new MemoryCacheOptions()), options), options);
+        var searchFailure = await Assert.ThrowsAsync<AggregateException>(() => service.SearchTracks("Big Boy", CancellationToken.None));
+        var isrcFailure = await Assert.ThrowsAsync<AggregateException>(() => service.FindTrackByISRC("USGZ20930467", CancellationToken.None));
+        Assert.Equal(3, searchFailure.InnerExceptions.Count);
+        Assert.Equal(3, isrcFailure.InnerExceptions.Count);
+        Assert.Contains(searchFailure.InnerExceptions, failure => failure.Message == "catalog failed");
+    }
+
+    [Fact]
+    public async Task SearchTracks_CallerCancellationPropagates()
+    {
+        var client = new StubQobuzApiClient();
+        var options = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" });
+        var service = new QobuzMetadataService(client,
+            new QobuzArtistService(client, new MemoryCache(new MemoryCacheOptions()), options), options);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.SearchTracks("Big Boy", cancellation.Token));
+    }
+
     [Fact]
     public void QobuzTrack_AllowsNullAlbumReleasedAt()
     {
@@ -290,6 +342,9 @@ public sealed class QobuzMetadataServiceTest
 
     private sealed class StubQobuzApiClient : IQobuzApiClient
     {
+        public Exception? OfficialFailure { get; init; }
+        public Exception? CatalogFailure { get; init; }
+        public Exception? AutosuggestFailure { get; init; }
         public QobuzAutosuggestResponse? AutosuggestResponse { get; init; }
         public QobuzCatalogSearchResponse? CatalogResponse { get; init; }
         public QobuzAlbumSearchResponse? AlbumResponse { get; init; }
@@ -301,7 +356,9 @@ public sealed class QobuzMetadataServiceTest
             string query,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(AutosuggestResponse);
+            cancellationToken.ThrowIfCancellationRequested();
+            return AutosuggestFailure is null ? Task.FromResult(AutosuggestResponse)
+                : Task.FromException<QobuzAutosuggestResponse?>(AutosuggestFailure);
         }
 
         public Task<QobuzCatalogSearchResponse?> SearchCatalogAsync(
@@ -310,7 +367,9 @@ public sealed class QobuzMetadataServiceTest
             int offset,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(CatalogResponse);
+            cancellationToken.ThrowIfCancellationRequested();
+            return CatalogFailure is null ? Task.FromResult(CatalogResponse)
+                : Task.FromException<QobuzCatalogSearchResponse?>(CatalogFailure);
         }
 
         public Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken)
@@ -334,7 +393,9 @@ public sealed class QobuzMetadataServiceTest
             int offset,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult<QobuzTrackSearchResponse?>(null);
+            cancellationToken.ThrowIfCancellationRequested();
+            return OfficialFailure is null ? Task.FromResult<QobuzTrackSearchResponse?>(null)
+                : Task.FromException<QobuzTrackSearchResponse?>(OfficialFailure);
         }
 
         public Task<QobuzAlbumSearchResponse?> SearchAlbumsAsync(

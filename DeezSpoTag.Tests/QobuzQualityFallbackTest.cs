@@ -3,6 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
+using DeezSpoTag.Integrations.Qobuz;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Shared;
@@ -13,6 +18,62 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzQualityFallbackTest
 {
+    [Fact]
+    public async Task ResolveQuality_PreservesOfficialFailureWhenNoPublicStreamSucceeds()
+    {
+        var failure = new InvalidOperationException("Qobuz official API returned HTTP 401");
+        var service = CreateQualityService(new FailingCredentials(failure));
+        var result = await Assert.ThrowsAsync<AggregateException>(() => service.ResolveQualityAsync(74444082, "7", CancellationToken.None));
+        Assert.Contains(failure, result.InnerExceptions);
+    }
+
+    [Fact]
+    public async Task ResolveQuality_CallerCancellationPropagates()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var service = CreateQualityService(new FailingCredentials(new OperationCanceledException(cancellation.Token)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ResolveQualityAsync(74444082, "7", cancellation.Token));
+    }
+
+    private static QobuzDownloadService CreateQualityService(IQobuzCredentialProvider credentials)
+        => new(NullLogger<QobuzDownloadService>.Instance, Options.Create(new QobuzApiConfig()), credentials,
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance), new EmptyQualityProviders());
+
+    private sealed class FailingCredentials(Exception failure) : IQobuzCredentialProvider
+    {
+        public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromException<QobuzOfficialCredentials>(failure);
+        }
+    }
+
+    private sealed class EmptyQualityProviders : IQobuzPublicProviderRegistry
+    {
+        public Task<IReadOnlyList<QobuzPublicProvider>> GetProvidersAsync(CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<QobuzPublicProvider>>([]);
+        public Task<IReadOnlyList<QobuzPublicProvider>> CheckEnabledProvidersAsync(CancellationToken ct) => GetProvidersAsync(ct);
+        public Task<QobuzPublicProvider?> SetEnabledAsync(string id, bool enabled, CancellationToken ct) => Task.FromResult<QobuzPublicProvider?>(null);
+        public Task RecordSuccessAsync(string id, long ms, CancellationToken ct) => Task.CompletedTask;
+        public Task RecordFailureAsync(string id, string category, long ms, DateTimeOffset? cooldown, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Fact]
+    public void QualityUnknown_DoesNotClaimCatalogQualityIsBelowRequested()
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."));
+        var processor = File.ReadAllText(Path.Join(root, "DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        Assert.Contains("? FallbackFailureClassifier.ProviderQualityUnknown", processor);
+        var downloader = File.ReadAllText(Path.Join(root, "DeezSpoTag.Services/Download/Qobuz/QobuzDownloadService.cs"));
+        var start = downloader.IndexOf("public async Task<QobuzQualityResolution?> ResolveQualityAsync", StringComparison.Ordinal);
+        var end = downloader.IndexOf("private static bool IsReusableResolution", start, StringComparison.Ordinal);
+        var quality = downloader[start..end];
+        Assert.Contains("failures.Add(ex)", quality);
+        Assert.Contains("failures.Add(attempt.Failure)", quality);
+        Assert.Contains("throw new AggregateException", quality);
+    }
+
     [Fact]
     public void BuildRequest_UsesOnlyTheCurrentPersistedPlanQuality()
     {

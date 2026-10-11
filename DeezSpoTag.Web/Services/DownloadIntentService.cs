@@ -316,7 +316,14 @@ public sealed class DownloadIntentService
             return gateFailure;
         }
 
-        var preparation = await PrepareEnqueueAsync(intent, applyManualDownloadPreference: true, cancellationToken);
+        EnqueuePreparation preparation;
+        try { preparation = await PrepareEnqueueAsync(intent, applyManualDownloadPreference: true, cancellationToken); }
+        catch (InvalidOperationException ex) when (intent.SourceService is "ytmusic" or "youtube")
+        {
+            return new DownloadIntentResult { Success = false, Message = ex.Message, Engine = string.Empty,
+                SkipReasonCodes = ["unresolved_engine_identity"], SkipReasons = [ex.Message] };
+        }
+
         var profileValidation = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
         if (profileValidation.Failure != null)
         {
@@ -766,6 +773,11 @@ public sealed class DownloadIntentService
         var fallbackPlan = savedPlan;
         var startIndex = ResolveSavedPlanStartIndex(item, payload, fallbackPlan);
 
+        var resolutionHistory = new List<FallbackAttempt>();
+        void RecordResolutionFailure(FallbackPlanStep step, string reason, string errorClass)
+            => resolutionHistory.Add(new FallbackAttempt(step.StepId, "skipped", errorClass,
+                $"{step.Engine} quality={step.Quality}: {reason}"));
+
         string? lastSkipReason = null;
         for (var index = startIndex; index < fallbackPlan.Count; index++)
         {
@@ -833,6 +845,7 @@ public sealed class DownloadIntentService
             if (!string.IsNullOrWhiteSpace(identityError))
             {
                 lastSkipReason = identityError;
+                RecordResolutionFailure(step, identityError, FallbackFailureClassifier.IdentityUnresolved);
                 continue;
             }
 
@@ -862,7 +875,8 @@ public sealed class DownloadIntentService
                 DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
                 DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
                 ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType,
-                Metadata: BuildResolvedQueueMetadata(intent));
+                Metadata: BuildResolvedQueueMetadata(intent),
+                FallbackHistory: resolutionHistory);
         }
 
         // One line on the item, same as everywhere else in the queue: the reason, and nothing the status beside
@@ -897,7 +911,8 @@ public sealed class DownloadIntentService
             AmazonId: intent.AmazonId,
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
-            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType,
+            FallbackHistory: resolutionHistory);
     }
 
     internal static int ResolveSavedPlanStartIndex(
@@ -2453,16 +2468,35 @@ public sealed class DownloadIntentService
             return directResult.Value;
         }
 
-        if (ShouldBypassQobuzWatchlistPreResolve(intent, engine, sourceUrl))
-        {
-            return (engine, sourceUrl, string.Empty, "watchlist-qobuz-deferred");
-        }
-
-        await ResolveTrackIdentityMatrixAsync(
+        var identityResolution = await ResolveTrackIdentityMatrixAsync(
             intent,
             settings,
             BuildIdentityTargetsForDownload(settings, new[] { engine }),
             cancellationToken);
+        (string Engine, string? SourceUrl, string Message, string MappingSource) PreserveIdentityRejection(
+            (string Engine, string? SourceUrl, string Message, string MappingSource) candidate)
+        {
+            if (candidate.Engine == engine && IsServiceUrlMatch(candidate.SourceUrl ?? string.Empty, engine))
+            {
+                return candidate;
+            }
+            var rejections = identityResolution?.Candidates
+                .Where(candidate => !candidate.Accepted && string.Equals(candidate.Platform, engine, StringComparison.OrdinalIgnoreCase))
+                .Select(candidate => FirstNonEmpty(candidate.Reason, candidate.Source))
+                .Where(static reason => !string.IsNullOrWhiteSpace(reason)).Distinct().ToList();
+            if (rejections is not { Count: > 0 })
+            {
+                return candidate;
+            }
+            var reason = string.Join("; ", rejections);
+            var diagnosis = rejections.Any(static reason => reason!.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+                ? "provider timed out"
+                : rejections.Any(static reason => reason!.EndsWith("-error", StringComparison.OrdinalIgnoreCase))
+                    ? "catalog lookup failed"
+                    : "identity_unresolved";
+            return (string.Empty, null, $"{candidate.Message} {engine} {diagnosis}: {reason}".Trim(), candidate.MappingSource);
+        }
+
         var generatedIdentityResult = TryResolveDirectEngineIdentity(intent, engine, sourceUrl);
         if (generatedIdentityResult.HasValue)
         {
@@ -2493,14 +2527,14 @@ public sealed class DownloadIntentService
         var nativeResolutionResult = await TryResolveEngineSpecificIntentUrlAsync(intent, engine, cancellationToken);
         if (nativeResolutionResult.HasValue)
         {
-            return nativeResolutionResult.Value;
+            return PreserveIdentityRejection(nativeResolutionResult.Value);
         }
 
         if (string.Equals(engine, SpotifyPlatform, StringComparison.OrdinalIgnoreCase)
             || string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase))
         {
             var nativeMismatchResult = BuildMismatchedEngineResolution(engine, sourceUrl, intent.Isrc);
-            return nativeMismatchResult ?? (engine, sourceUrl, string.Empty, string.Empty);
+            return PreserveIdentityRejection(nativeMismatchResult ?? (engine, sourceUrl, string.Empty, string.Empty));
         }
 
         PlatformLinkResult? platformLinks = await ResolvePlatformLinksForIntentAsync(
@@ -2544,43 +2578,10 @@ public sealed class DownloadIntentService
         var mismatchResult = BuildMismatchedEngineResolution(engine, sourceUrl, intent.Isrc);
         if (mismatchResult.HasValue)
         {
-            return mismatchResult.Value;
+            return PreserveIdentityRejection(mismatchResult.Value);
         }
 
-        return (engine, sourceUrl, string.Empty, string.Empty);
-    }
-
-    private static bool ShouldBypassQobuzWatchlistPreResolve(
-        DownloadIntent intent,
-        string engine,
-        string sourceUrl)
-    {
-        if (!string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var isWatchlistIntent = !string.IsNullOrWhiteSpace(intent.WatchlistOrigin)
-            || !string.IsNullOrWhiteSpace(intent.WatchlistSource)
-            || !string.IsNullOrWhiteSpace(intent.WatchlistPlaylistId)
-            || !string.IsNullOrWhiteSpace(intent.WatchlistTrackId);
-        if (!isWatchlistIntent)
-        {
-            return false;
-        }
-
-        if (string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(intent.Isrc))
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(intent.Isrc))
-        {
-            return false;
-        }
-
-        return !string.IsNullOrWhiteSpace(sourceUrl);
+        return PreserveIdentityRejection((engine, sourceUrl, string.Empty, string.Empty));
     }
 
     private static bool ShouldSkipWatchlistPreEnqueueMetadataHydration(DownloadIntent intent)
@@ -2911,7 +2912,7 @@ public sealed class DownloadIntentService
         return platformLinks;
     }
 
-    private async Task ResolveTrackIdentityMatrixAsync(
+    private async Task<TrackIdentityResolution?> ResolveTrackIdentityMatrixAsync(
         DownloadIntent intent,
         DeezSpoTagSettings settings,
         IEnumerable<string>? targetEngines,
@@ -2921,11 +2922,12 @@ public sealed class DownloadIntentService
         var engines = BuildIdentityEngineSet(targetEngines);
         if (engines.Count == 0)
         {
-            return;
+            return null;
         }
 
         var resolution = await ResolveCentralIdentityAsync(intent, settings, engines, cancellationToken);
         ApplyResolvedIdentity(intent, resolution);
+        return resolution;
     }
 
     private static IEnumerable<string> BuildIdentityTargetsForDownload(

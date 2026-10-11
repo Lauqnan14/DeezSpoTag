@@ -5,6 +5,23 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TrackCandidateValidatorTest
 {
+    [Theory]
+    [InlineData("Jackson 5", 176000, "USGZ20930467", true)]
+    [InlineData("The Jackson 5", 178000, "USGZ20930467", true)]
+    [InlineData("Jackson 5 Tribute", 176000, "USGZ20930467", false)]
+    [InlineData("The Jackson 5 Tribute", 176000, "USGZ20930467", false)]
+    [InlineData("Jackson Five Tribute", 176000, "USGZ20930467", false)]
+    [InlineData("Jackson 5", 176000, "USGZ20930468", false)]
+    [InlineData("Jackson 5", 222000, "USGZ20930467", false)]
+    public void Validate_BigBoy_PreservesRecordingChecksWithVerifiedArtistAlias(
+        string artist, int duration, string isrc, bool accepted)
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("USGZ20930467", "Big Boy", "The Jackson Five", "The First Recordings", 176000),
+            new TrackMatchCandidate("74444082", isrc, "Big Boy", artist, "The First Recordings", duration));
+        Assert.Equal(accepted, result.Accepted);
+    }
+
     [Fact]
     public void Validate_AcceptsExactIsrc_WhenMetadataIsCompatible()
     {

@@ -46,7 +46,8 @@ public static class QueuePreResolutionPayload
         string? ContentType = null,
         string? Album = null,
         string? AlbumArtist = null,
-        ResolvedMetadata? Metadata = null);
+        ResolvedMetadata? Metadata = null,
+        IReadOnlyList<FallbackAttempt>? FallbackHistory = null);
 
     public sealed record ResolvedMetadata(
         string? Title = null,
@@ -142,6 +143,26 @@ public static class QueuePreResolutionPayload
         SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Resolving);
         SetResolutionPair(payload, "ResolutionStartedAtUtc", "resolutionStartedAtUtc", now);
         SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, string.Empty);
+    }
+
+    public static void ApplyHistory(JsonObject payload, ResolutionResult result)
+    {
+        if (result.FallbackHistory == null || result.FallbackHistory.Count == 0)
+        {
+            return;
+        }
+
+        var history = (payload["FallbackHistory"] ?? payload["fallbackHistory"])
+            ?.Deserialize<List<FallbackAttempt>>() ?? [];
+        foreach (var attempt in result.FallbackHistory)
+        {
+            if (!history.Contains(attempt))
+            {
+                history.Add(attempt);
+            }
+        }
+        payload["FallbackHistory"] = JsonSerializer.SerializeToNode(history);
+        payload.Remove("fallbackHistory");
     }
 
     public static void ApplyResolved(JsonObject payload, ResolutionResult result, DateTimeOffset now)

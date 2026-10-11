@@ -319,6 +319,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
+        var failures = new List<Exception>();
         QobuzQualityResolution? official = null;
         try
         {
@@ -330,6 +331,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            failures.Add(ex);
             _logger.LogWarning(
                 ex,
                 "Qobuz official quality resolution failed for track {TrackId} quality {Quality}; checking enabled public providers.",
@@ -346,6 +348,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             if (IsProviderCoolingDown(provider.Name))
             {
+                failures.Add(new InvalidOperationException($"Qobuz provider {provider.Name} is cooling down after a recent provider failure."));
                 continue;
             }
 
@@ -354,12 +357,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 trackId,
                 normalizedQuality,
                 cancellationToken);
+            if (attempt.Failure != null)
+            {
+                failures.Add(attempt.Failure);
+            }
             if (attempt.Resolution != null)
             {
                 return attempt.Resolution;
             }
         }
 
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("Qobuz stream quality resolution failed: "
+                + string.Join("; ", failures.Select(static failure => failure.Message)), failures);
+        }
         return null;
     }
 

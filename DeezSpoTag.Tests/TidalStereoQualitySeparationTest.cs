@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Diagnostics;
 using System.Reflection;
@@ -20,6 +21,125 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Fact]
+    public void TidalReadinessRemainsObservationalAndRefreshStaysAtDownloadBoundary()
+    {
+        var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs"));
+        var start = source.IndexOf("public Task<bool> HasPublicDownloadSessionAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("public Task<bool> PeekPublicDownloadSessionAsync", start, StringComparison.Ordinal);
+        var readiness = source[start..end];
+        Assert.Contains("HasUsableSessionAsync", readiness);
+        Assert.DoesNotContain("EnsureSessionAsync", readiness);
+        Assert.DoesNotContain("Bootstrap", readiness);
+        Assert.DoesNotContain("Refresh", readiness);
+        var boundaryStart = source.IndexOf("private async Task<HttpResponseMessage> SendZarzSignedRequestAsync", StringComparison.Ordinal);
+        var boundary = source[boundaryStart..start];
+        Assert.Contains("EnsureSessionAsync", boundary);
+        Assert.Contains("allowSessionRetry: false", boundary);
+        Assert.Contains("ZarzResponseDisposition.SessionInvalid", boundary);
+        Assert.Contains("ZarzResponseDisposition.VerificationRequired", boundary);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TidalMatchingLosslessRecordingReportsQualityMismatchDespiteUnrelatedHiResResults(bool unrelatedHiRes)
+    {
+        var items = new List<object>
+        {
+            new { id = 39565351, title = "Big Boy", isrc = "USGZ20930467", duration = 178,
+                artist = new { name = "The Jackson 5" }, audioQuality = "LOSSLESS", audioModes = new[] { "STEREO" } }
+        };
+        if (unrelatedHiRes)
+            items.Add(new { id = 123, title = "Other Song", isrc = "USGZ20930468", duration = 178,
+                artist = new { name = "Other Artist" }, audioQuality = "HI_RES_LOSSLESS", audioModes = new[] { "STEREO" },
+                mediaMetadata = new { tags = new[] { "HIRES_LOSSLESS" } } });
+        using var client = new HttpClient(new CatalogResponseHandler(HttpStatusCode.OK,
+            System.Text.Json.JsonSerializer.Serialize(new { items })));
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()), new UnauthenticatedTidalAccessTokenProvider(),
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var method = typeof(TidalDownloadService).GetMethod("SearchTrackByMetadataWithIsrcForQualityAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(service, new object[]
+            { "Big Boy", "The Jackson Five", "The First Recordings", "USGZ20930467", 176, "HI_RES", CancellationToken.None })!;
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(async () => await task);
+        Assert.Contains("quality_below_requested", failure.Message);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task TidalCatalogFailure_PreservesStatusInsteadOfReturningEmpty(int status)
+    {
+        var handler = new CatalogResponseHandler((HttpStatusCode)status, "{}");
+        var task = InvokeCatalogRequest(handler, CancellationToken.None);
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => task);
+        Assert.Equal((HttpStatusCode)status, failure.StatusCode);
+        Assert.Contains("catalog lookup failed", failure.Message);
+    }
+
+    [Fact]
+    public async Task TidalCatalogSuccessfulEmptyResponse_IsDistinctFromFailedAccess()
+    {
+        var result = await InvokeCatalogRequest(new CatalogResponseHandler(HttpStatusCode.OK, "{\"items\":[]}"), CancellationToken.None);
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public async Task TidalCatalogCallerCancellation_RemainsCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => InvokeCatalogRequest(
+            new CatalogResponseHandler(HttpStatusCode.OK, "{}"), cancellation.Token));
+    }
+
+    private static async Task<object?> InvokeCatalogRequest(HttpMessageHandler handler, CancellationToken ct)
+    {
+        var service = new TidalDownloadService(
+            NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+            new UnauthenticatedTidalAccessTokenProvider(),
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        using var client = new HttpClient(handler);
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var method = typeof(TidalDownloadService).GetMethod("SendTidalPublicJsonOrDefaultAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(object));
+        return await (Task<object?>)method.Invoke(service,
+            new object?[] { "https://catalog.invalid/search", (Action<Exception>)(_ => { }), ct })!;
+    }
+
+    private sealed class CatalogResponseHandler(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
+        }
+    }
+
+    [Fact]
+    public void TidalValidation_AcceptsBigBoyExactIsrcWithVerifiedArtistAlias()
+    {
+        var track = BuildTidalTrack("STEREO", "LOSSLESS");
+        var type = track.GetType();
+        type.GetProperty("Id")!.SetValue(track, 39565351L);
+        type.GetProperty("Title")!.SetValue(track, "Big Boy");
+        type.GetProperty("Isrc")!.SetValue(track, "USGZ20930467");
+        type.GetProperty("Duration")!.SetValue(track, 178);
+        var artistType = type.GetProperty("Artist")!.PropertyType;
+        var artist = Activator.CreateInstance(artistType)!;
+        artistType.GetProperty("Name")!.SetValue(artist, "The Jackson 5");
+        type.GetProperty("Artist")!.SetValue(track, artist);
+        var method = typeof(TidalDownloadService).GetMethod("ValidateResolvedTrack", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var result = (DeezSpoTag.Services.Matching.TrackCandidateValidationResult)method.Invoke(null,
+            new object[] { track, "Big Boy", "The Jackson Five", "The First Recordings", "USGZ20930467", 176 })!;
+        Assert.True(result.Accepted);
+    }
+
     [Fact]
     public void TidalAtmosValidation_FailsClosedWhenFfprobeCannotConfirmAtmos()
     {
