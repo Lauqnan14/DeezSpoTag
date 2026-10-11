@@ -675,7 +675,7 @@ public sealed class DownloadIntentService
         var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, target.Engine)
             ?? target.Resolution.SourceUrl
             ?? intent.SourceUrl;
-        intent.SourceUrl = sourceUrl ?? string.Empty;
+        if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = sourceUrl ?? string.Empty;
         await PopulateIntentMetadataAsync(intent, state.Settings, resolvedDownloadTagSource: null, cancellationToken);
 
         var qobuzId = FirstNonEmpty(
@@ -799,31 +799,36 @@ public sealed class DownloadIntentService
                     cancellationToken);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested
-                                       && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                                       && FallbackFailureClassifier.IsRecoverableProviderFailure(ex))
             {
                 _logger.LogWarning(ex, "Saved-plan download source {Engine} failed during candidate resolution; trying the next source.", step.Engine);
-                lastSkipReason = $"{step.Engine} candidate resolution failed.";
+                lastSkipReason = $"{step.Engine} candidate resolution failed: {ex.Message}";
+                RecordResolutionFailure(step, lastSkipReason, FallbackFailureClassifier.Classify(ex));
                 continue;
             }
             if (!TryAcceptResolvedCandidate(step.Engine, candidate, out var skipReason))
             {
-                lastSkipReason = skipReason;
+                lastSkipReason = string.IsNullOrWhiteSpace(candidate.Message) ? skipReason : candidate.Message;
+                var errorClass = FallbackFailureClassifier.Classify(new InvalidOperationException(lastSkipReason));
+                RecordResolutionFailure(step, lastSkipReason ?? "identity_unresolved",
+                    errorClass == FallbackFailureClassifier.DownloadFailed ? FallbackFailureClassifier.IdentityUnresolved : errorClass);
                 continue;
             }
 
             var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, step.Engine)
                 ?? candidate.SourceUrl
                 ?? intent.SourceUrl;
-            intent.SourceUrl = sourceUrl ?? string.Empty;
+            if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = sourceUrl ?? string.Empty;
             try
             {
                 await PopulateIntentMetadataAsync(intent, settings, resolvedDownloadTagSource: null, cancellationToken);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested
-                                       && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                                       && FallbackFailureClassifier.IsRecoverableProviderFailure(ex))
             {
                 _logger.LogWarning(ex, "Saved-plan download source {Engine} failed during metadata resolution; trying the next source.", step.Engine);
-                lastSkipReason = $"{step.Engine} metadata resolution failed.";
+                lastSkipReason = $"{step.Engine} metadata resolution failed: {ex.Message}";
+                RecordResolutionFailure(step, lastSkipReason, FallbackFailureClassifier.Classify(ex));
                 continue;
             }
             var qobuzId = FirstNonEmpty(
@@ -2005,6 +2010,17 @@ public sealed class DownloadIntentService
         {
             settings = sourceSettingsSnapshot.ApplyTo(settings);
         }
+        var youtubeId = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl);
+        if (youtubeId is not null || intent.SourceService is "ytmusic" or "youtube")
+        {
+            if (youtubeId is null) throw new ArgumentException("YouTube downloads require an exact video URL.");
+            intent.SourceService = "ytmusic";
+            intent.SourceUrl = "https://music.youtube.com/watch?v=" + youtubeId;
+            intent.SpotifyId = intent.DeezerId = intent.QobuzId = intent.TidalId = intent.AmazonId = intent.AppleId = intent.Isrc = "";
+            var identity = await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
+            if (identity is null || !identity.Candidates.Any(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id)))
+                throw new InvalidOperationException("No unambiguous destination recording was found for this YouTube song. Download blocked.");
+        }
         NormalizeEnqueueSettings(settings);
         var isPodcastIntent = NormalizeIntentContentType(intent);
         ApplyIntentDownloadEngineOrder(intent, settings);
@@ -3071,6 +3087,12 @@ public sealed class DownloadIntentService
 
     private static void ApplyResolvedIdentity(DownloadIntent intent, TrackIdentityResolution resolution)
     {
+        if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null
+            && resolution.Candidates.Any(candidate => candidate.Accepted))
+        {
+            intent.Title = resolution.Title ?? ""; intent.Artist = resolution.Artist ?? ""; intent.Album = resolution.Album ?? "";
+            intent.DurationMs = resolution.DurationMs ?? 0;
+        }
         intent.Isrc = FirstNonEmpty(intent.Isrc, resolution.Isrc) ?? string.Empty;
         intent.Title = FirstNonEmpty(intent.Title, resolution.Title) ?? string.Empty;
         intent.Artist = FirstNonEmpty(intent.Artist, resolution.Artist) ?? string.Empty;
@@ -4325,7 +4347,7 @@ public sealed class DownloadIntentService
             var resolvedExplicit = summary?.Explicit;
             var resolvedLabel = summary?.Label ?? string.Empty;
             var resolvedGenres = summary?.Genres;
-            ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, resolvedSourceUrl, value => intent.SourceUrl = value);
+            ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, resolvedSourceUrl, value => { if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = value; });
             ApplyIntentStringValue(overwriteExisting, intent.SpotifyId, resolvedSpotifyId, value => intent.SpotifyId = value);
             ApplyIntentStringValue(overwriteExisting, intent.Title, resolvedTitle, value => intent.Title = value);
             ApplyIntentStringValue(overwriteExisting, intent.Artist, resolvedArtist, value => intent.Artist = value);
@@ -4872,7 +4894,7 @@ public sealed class DownloadIntentService
                 return;
             }
 
-            ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Url, value => intent.SourceUrl = value);
+            ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Url, value => { if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = value; });
             ApplyIntentStringValue(overwriteExisting, intent.Title, track.Title, value => intent.Title = value);
             ApplyIntentStringValue(overwriteExisting, intent.Artist, track.Artist, value => intent.Artist = value);
             ApplyIntentStringValue(overwriteExisting, intent.Album, track.Album, value => intent.Album = value);
@@ -5202,7 +5224,7 @@ public sealed class DownloadIntentService
 
     private static void ApplyDeezerCoreMetadata(DownloadIntent intent, DeezSpoTag.Core.Models.Deezer.ApiTrack track, string sourceUrl, bool overwriteExisting)
     {
-        ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Link ?? sourceUrl, value => intent.SourceUrl = value);
+        ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Link ?? sourceUrl, value => { if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = value; });
         ApplyIntentStringValue(overwriteExisting, intent.DeezerId, track.Id, value => intent.DeezerId = value);
         ApplyIntentStringValue(overwriteExisting, intent.Title, track.Title, value => intent.Title = value);
         ApplyIntentStringValue(overwriteExisting, intent.Artist, track.Artist?.Name, value => intent.Artist = value);
@@ -5442,7 +5464,7 @@ public sealed class DownloadIntentService
             return;
         }
 
-        ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Url, value => intent.SourceUrl = value);
+        ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Url, value => { if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is null) intent.SourceUrl = value; });
         ApplyIntentStringValue(overwriteExisting, intent.Url, track.Url, value => intent.Url = value);
         ApplyIntentStringValue(overwriteExisting, intent.TidalId, track.Id.ToString(CultureInfo.InvariantCulture), value => intent.TidalId = value);
         ApplyIntentStringValue(overwriteExisting, intent.Title, track.Title, value => intent.Title = value);
@@ -7579,7 +7601,8 @@ public sealed class DownloadIntentService
     {
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QueueOrigin = "intent";
-        payload.SourceUrl = context.SourceUrl;
+        payload.SourceUrl = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null ? intent.SourceUrl : context.SourceUrl;
+        if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null) payload.ResolvedSourceUrl = context.SourceUrl;
         payload.CollectionName = intent.Album ?? string.Empty;
         payload.CollectionType = context.CollectionType;
         payload.Title = intent.Title ?? string.Empty;

@@ -20,6 +20,17 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadIntentPayloadPopulationTest
 {
+    [Fact]
+    public void YouTubeOrigin_IsPreservedSeparatelyFromDownloadPlatformUrl()
+    {
+        var intent = new DownloadIntent { SourceService = "ytmusic", SourceUrl = "https://music.youtube.com/watch?v=dQw4w9WgXcQ", Title = "Song", Artist = "Artist", DeezerId = "3466216111" };
+        var payload = new DeezerQueueItem();
+        InvokePopulateStandardQueuePayload(payload, intent, 180);
+        Assert.Equal(intent.SourceUrl, payload.SourceUrl);
+        Assert.Equal("https://www.deezer.com/track/3466216111", payload.ResolvedSourceUrl);
+        Assert.DoesNotContain("dQw4w9WgXcQ", payload.ResolvedSourceUrl);
+    }
+
     private static readonly MethodInfo PopulateStandardQueuePayloadMethod =
         typeof(DownloadIntentService).GetMethod(
             "PopulateStandardQueuePayload",

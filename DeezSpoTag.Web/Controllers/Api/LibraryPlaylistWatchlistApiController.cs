@@ -524,6 +524,18 @@ public partial class WatchlistApiController : ControllerBase
                 sourceUrl = $"https://music.apple.com/{sourceStorefront}/playlist/{Uri.EscapeDataString(normalizedSourceId)}";
             }
         }
+        else if (normalizedSource == "ytmusic")
+        {
+            try
+            {
+                normalizedSourceId = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.NormalizeCollectionId(normalizedSourceId, "playlist");
+                var expectedUrl = "https://music.youtube.com/playlist?list=" + normalizedSourceId[2..];
+                if (sourceUrl is not null && sourceUrl != expectedUrl) return BadRequest("YouTube Music playlist URL does not match its ID.");
+                sourceUrl = expectedUrl;
+                sourceStorefront = null;
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+        }
         else if (!string.Equals(normalizedSource, "boomplay", StringComparison.OrdinalIgnoreCase))
         {
             sourceUrl = null;

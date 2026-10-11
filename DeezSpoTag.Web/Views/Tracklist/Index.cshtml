@@ -1920,7 +1920,8 @@ function isDirectSourceDownloadSource(source) {
         || normalized === 'apple'
         || normalized === 'tidal'
         || normalized === 'qobuz'
-        || normalized === 'amazon';
+        || normalized === 'amazon'
+        || normalized === 'ytmusic';
 }
 
 function getDirectSourceDownloadIdFromCheckbox(checkbox, source) {
@@ -3683,7 +3684,7 @@ function renderTracklist(data, options = {}) {
         trackCount: trackCount || null,
         sourceUrl: tracklistSource === 'apple'
             ? (data.tracklist?.source_url || tracklistAppleUrl || null)
-            : null,
+            : tracklistSource === 'ytmusic' ? (data.source_url || data.tracklist?.source_url || null) : null,
         sourceStorefront: tracklistSource === 'apple'
             ? (data.tracklist?.storefront || null)
             : null
@@ -6115,6 +6116,8 @@ function isPlatformSourceUrl(url, platform) {
             return normalized.includes('qobuz.com/') && normalized.includes('/track/');
         case 'apple':
             return normalized.includes('music.apple.com/') && (normalized.includes('/song/') || normalized.includes('?i='));
+        case 'ytmusic':
+            return /^https:\/\/music\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/.test(url);
         case 'amazon':
             return normalized.includes('music.amazon.');
         default:
@@ -6722,7 +6725,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             || playbackSource === 'qobuz'
             || playbackSource === 'amazon';
         const isDirectSourceDownloadRow = hasDirectSourceDownloadIdentity(track, platformIds, playbackSource, spotifyId);
-        const isSourceUnmatchedDownloadableRow = playbackSource !== 'apple'
+        const isSourceUnmatchedDownloadableRow = playbackSource !== 'apple' && playbackSource !== 'ytmusic'
             && isDirectSourceDownloadRow
             && !deezerId;
         const isDeadGenericExternalRow = isGenericExternalSource && !isDirectDownloadExternalSource && !deezerId;
@@ -7995,7 +7998,7 @@ async function downloadTracks(trackElements, triggerButton) {
                     continue;
                 }
 
-                if (source === 'tidal' || source === 'amazon' || source === 'deezer') {
+                if (source === 'tidal' || source === 'amazon' || source === 'deezer' || source === 'ytmusic') {
                     const queueSourceUrl = source === 'tidal' && tidalId
                         ? `tidal:track:${tidalId}`
                         : resolvedSourceUrl;
@@ -8329,6 +8332,10 @@ async function downloadTracks(trackElements, triggerButton) {
                         'qobuz',
                         t.sourceUrl || undefined,
                         { isrc: t.isrc || undefined }));
+            } else if (downloadSource === 'ytmusic') {
+                filtered = tracksPayload
+                    .filter(t => isPlatformSourceUrl(t.sourceUrl, 'ytmusic'))
+                    .map(t => buildExternalIntent(t, 'ytmusic', t.sourceUrl));
             } else if (downloadSource === 'spotify') {
                 filtered = tracksPayload.map(t => {
                     const spotifyId = t.spotifyId || (t.sourceUrl ? (t.sourceUrl.match(/(?:spotify:track:|open\.spotify\.com\/track\/)([A-Za-z0-9]+)/i) || [])[1] || '' : '');

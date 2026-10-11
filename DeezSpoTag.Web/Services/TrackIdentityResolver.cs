@@ -63,6 +63,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     /// </summary>
     private readonly ISoundCloudClient? _soundCloudClient;
     private readonly ILogger<TrackIdentityResolver> _logger;
+    private readonly DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient? _youtubeClient;
 
     public TrackIdentityResolver(
         ISpotifyIdResolver spotifyIdResolver,
@@ -74,7 +75,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         AuthenticatedDeezerService authenticatedDeezerService,
         DeezerClient deezerClient,
         ISoundCloudClient? soundCloudClient,
-        ILogger<TrackIdentityResolver> logger)
+        ILogger<TrackIdentityResolver> logger,
+        DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient? youtubeClient = null)
     {
         _spotifyIdResolver = spotifyIdResolver;
         _spotifyMetadataService = spotifyMetadataService;
@@ -86,6 +88,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         _deezerClient = deezerClient;
         _soundCloudClient = soundCloudClient;
         _logger = logger;
+        _youtubeClient = youtubeClient;
     }
 
     public async Task<TrackIdentityResolution> ResolveAsync(
@@ -120,12 +123,12 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveQobuzAsync(localState, local, token), cancellationToken));
         }
 
-        if (ShouldResolve(targets, Tidal) && string.IsNullOrWhiteSpace(state.TidalId))
+        if (!state.IsYouTubeSource && ShouldResolve(targets, Tidal) && string.IsNullOrWhiteSpace(state.TidalId))
         {
             resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveTidalAsync(localState, local, token), cancellationToken));
         }
 
-        if (ShouldResolve(targets, Amazon) && string.IsNullOrWhiteSpace(state.AmazonId))
+        if (!state.IsYouTubeSource && ShouldResolve(targets, Amazon) && string.IsNullOrWhiteSpace(state.AmazonId))
         {
             resolutionTasks.Add(RunResolverAsync(state, (localState, local, token) => ResolveAmazonAsync(localState, local, token), cancellationToken));
         }
@@ -133,8 +136,25 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         var results = await Task.WhenAll(resolutionTasks);
         foreach (var result in results)
         {
-            state.MergeMissingFrom(result.State);
+            if (!state.IsYouTubeSource || result.Candidates.Any(candidate => candidate.Accepted)) state.MergeMissingFrom(result.State);
             candidates.AddRange(result.Candidates);
+        }
+
+        if (state.IsYouTubeSource)
+        {
+            var recordingIds = results.Select(result => result.State.Isrc).Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => TrackCandidateValidator.NormalizeIsrc(value)).Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (recordingIds.Length > 1) throw new InvalidOperationException("Conflicting recording identities across catalogs. Download blocked.");
+            if (recordingIds.Length == 1)
+            {
+                state.Isrc = recordingIds[0];
+                if (ShouldResolve(targets, Tidal)) await ResolveTidalAsync(state, candidates, cancellationToken);
+                if (ShouldResolve(targets, Amazon)) await ResolveAmazonAsync(state, candidates, cancellationToken);
+            }
+            else
+            {
+                if (ShouldResolve(targets, Tidal)) candidates.Add(Rejected(Tidal, "verified-recording-isrc-required"));
+                if (ShouldResolve(targets, Amazon)) candidates.Add(Rejected(Amazon, "verified-recording-isrc-required"));
+            }
         }
 
         return state.ToResolution(candidates);
@@ -188,6 +208,20 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         CancellationToken cancellationToken)
     {
         var source = NormalizePlatform(request.SourcePlatform);
+        if (state.IsYouTubeSource)
+        {
+            var id = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(request.SourceUrl) ?? throw new ArgumentException("A canonical YouTube video URL is required.");
+            using var metadataDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            metadataDeadline.CancelAfter(TimeSpan.FromSeconds(30));
+            var track = await (_youtubeClient ?? throw new InvalidOperationException("YouTube metadata client unavailable.")).GetSongMetadataAsync(id, metadataDeadline.Token);
+            if (string.IsNullOrWhiteSpace(track.Artist) || track.DurationSeconds is not > 0) throw new InvalidOperationException("YouTube recording artist/duration could not be verified. Download blocked.");
+            state.ConversionQuery = track.ConversionQuery;
+            state.Title = track.Title; state.Artist = track.Artist; state.Album = track.Album; state.DurationMs = track.DurationSeconds * 1000;
+            // Display metadata and foreign IDs supplied by the browser are not trusted recording evidence.
+            state.SpotifyUrl = state.DeezerUrl = state.AppleUrl = state.QobuzUrl = state.TidalUrl = state.AmazonUrl = null;
+            state.Isrc = null; state.SpotifyId = null; state.DeezerId = null; state.AppleId = null; state.QobuzId = null; state.TidalId = null; state.AmazonId = null;
+            return;
+        }
         if ((source == Spotify || !string.IsNullOrWhiteSpace(state.SpotifyId))
             && (string.IsNullOrWhiteSpace(state.Isrc)
                 || string.IsNullOrWhiteSpace(state.Title)
@@ -410,12 +444,23 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             providerTimeout.CancelAfter(SpotifyResolveTimeout);
             var providerToken = providerTimeout.Token;
-            id = await _spotifyIdResolver.ResolveTrackIdAsync(
+            if (state.IsYouTubeSource)
+            {
+                var verified = await (_spotifyIdResolver as SpotifyIdResolver ?? throw new InvalidOperationException("Strict Spotify resolver unavailable.")).ResolveVerifiedTrackAsync(state.Title ?? "", state.Artist ?? "", state.Album, state.Isrc, state.DurationMs, providerToken, state.ConversionQuery);
+                id = verified?.Id;
+                state.Isrc ??= verified?.Isrc;
+                if (verified is not null)
+                    state.SetMatchedMetadata(verified.Name, verified.Subtitle, null, verified.Isrc, verified.DurationMs);
+            }
+            else
+            {
+                id = await _spotifyIdResolver.ResolveTrackIdAsync(
                 state.Title ?? string.Empty,
                 state.Artist ?? string.Empty,
                 state.Album,
                 state.Isrc,
                 providerToken);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -490,6 +535,14 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
             state.DeezerId = id;
             state.DeezerUrl = BuildDeezerUrl(id);
+            if (state.IsYouTubeSource && !string.IsNullOrWhiteSpace(state.DeezerId))
+            {
+                var recording = await _deezerClient.GetTrackAsync(state.DeezerId).WaitAsync(providerToken);
+                if (recording is null || recording.Id != state.DeezerId)
+                    throw new InvalidOperationException("Deezer returned a different recording ID.");
+                state.Isrc ??= recording.Isrc;
+                state.SetMatchedMetadata(recording.Title, recording.Artist?.Name, recording.Album?.Title, recording.Isrc, recording.Duration * 1000);
+            }
             candidates.Add(Accepted(Deezer, state.DeezerId, state.DeezerUrl, "deezer-native"));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -506,21 +559,21 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
     private async Task<string?> ResolveDeezerByMetadataAsync(IdentityState state, CancellationToken cancellationToken)
     {
-        var query = string.Join(' ', new[] { state.Artist, state.Title, state.Album }
+        var query = state.ConversionQuery ?? string.Join(' ', new[] { state.Artist, state.Title, state.Album }
             .Where(static value => !string.IsNullOrWhiteSpace(value)));
         var countries = _deezerClient.CountryCandidates;
-        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
+        for (var countryIndex = 0; countryIndex < (state.IsYouTubeSource ? Math.Min(1, countries.Count) : countries.Count); countryIndex++)
         {
             List<DeezSpoTag.Integrations.Deezer.Track> tracks;
             try
             {
                 tracks = await _deezerClient.SearchTracksForCountryAsync(
                     query,
-                    25,
+                    state.IsYouTubeSource ? 4 : 25,
                     countries[countryIndex],
                     cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            catch (Exception ex) when (ex is not OperationCanceledException && !state.IsYouTubeSource && countryIndex + 1 < countries.Count)
             {
                 _logger.LogDebug(
                     ex,
@@ -545,12 +598,15 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     {
         string? bestId = null;
         var bestScore = double.MinValue;
-        foreach (var track in tracks.Take(15))
+        var referenceCandidate = state.IsYouTubeSource ? DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(tracks,
+            state.ConversionQuery!, track => track.Title ?? "", track => track.MainArtist?.Name ?? track.Artist?.Name, track => track.Id ?? "") : null;
+        if (state.IsYouTubeSource && referenceCandidate is null) return null;
+        foreach (var track in state.IsYouTubeSource ? new[] { referenceCandidate! } : tracks.Take(15))
         {
             var candidate = BuildDeezerSearchCandidate(track);
-            if (!string.IsNullOrWhiteSpace(state.Isrc))
+            if (state.IsYouTubeSource || !string.IsNullOrWhiteSpace(state.Isrc))
             {
-                candidate = await HydrateDeezerCandidateAsync(track, cancellationToken);
+                candidate = await HydrateDeezerCandidateAsync(track, cancellationToken, state.IsYouTubeSource);
             }
 
             var validation = ValidateDeezerCandidate(
@@ -583,7 +639,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
     private async Task<DeezerIdentityCandidate> HydrateDeezerCandidateAsync(
         Track track,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool requireExactId = false)
     {
         var id = track.Id;
         var title = track.Title;
@@ -598,6 +654,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             {
                 var full = await _deezerClient.GetTrackAsync(id)
                     .WaitAsync(cancellationToken);
+                if (full is null || (requireExactId && full.Id != id)) throw new InvalidOperationException("Deezer returned a different recording ID.");
                 title = FirstNonEmpty(full.TitleShort, full.Title, title);
                 artist = FirstNonEmpty(full.Artist?.Name, artist);
                 album = FirstNonEmpty(full.Album?.Title, album);
@@ -607,6 +664,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogDebug(ex, "Central identity resolver failed hydrating Deezer search candidate {TrackId}.", id);
+                if (requireExactId) throw;
             }
         }
 
@@ -783,7 +841,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private static bool HasAppleMetadataSearchSignal(IdentityState state)
         => !string.IsNullOrWhiteSpace(state.Title)
            && !string.IsNullOrWhiteSpace(state.Artist)
-           && !string.IsNullOrWhiteSpace(state.Album);
+           && (state.IsYouTubeSource || !string.IsNullOrWhiteSpace(state.Album));
 
     private static void ApplyAppleCandidate(IdentityState state, AppleIdentityCandidate appleCandidate, string storefront)
     {
@@ -793,7 +851,9 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         state.AppleAlbumName = appleCandidate.AlbumName;
         state.AppleArtistName = appleCandidate.ArtistName;
         state.AppleIsrc = appleCandidate.Isrc;
+        if (state.IsYouTubeSource) state.Isrc ??= appleCandidate.Isrc;
         state.AppleDurationMs = appleCandidate.DurationMs;
+        state.SetMatchedMetadata(appleCandidate.Title, appleCandidate.ArtistName, appleCandidate.AlbumName, appleCandidate.Isrc, appleCandidate.DurationMs);
     }
 
     private static string? BuildAppleIdentityCacheKey(IdentityState state, string storefront, string language)
@@ -810,7 +870,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         var durationBucket = state.DurationMs is > 0
             ? (state.DurationMs.Value / 1000).ToString(CultureInfo.InvariantCulture)
             : string.Empty;
-        return $"apple:identity:{storefront}:{language}:{title}:{artist}:{album}:{isrc}:{durationBucket}:{state.PreferredReleaseType}";
+        return $"apple:identity:{storefront}:{language}:{title}:{artist}:{album}:{isrc}:{durationBucket}:{state.PreferredReleaseType}:{state.IsYouTubeSource}";
     }
 
     private async Task<AppleIdentityCandidate?> ResolveAppleCandidateBySearchAsync(
@@ -824,10 +884,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return null;
         }
 
-        var term = string.Join(' ', new[] { state.Title, state.Artist, state.Album }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        var term = state.ConversionQuery ?? string.Join(' ', new[] { state.Title, state.Artist, state.Album }.Where(static part => !string.IsNullOrWhiteSpace(part)));
         using var doc = await _appleCatalogService.SearchAsync(
             term,
-            limit: 25,
+            limit: state.IsYouTubeSource ? 4 : 25,
             storefront: storefront,
             language: language,
             cancellationToken,
@@ -865,6 +925,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 hydrateTimeout.Token,
                 mediaUserToken).WaitAsync(hydrateTimeout.Token);
             var hydrated = FindBestAppleCandidateFromData(doc.RootElement, state);
+            if (state.IsYouTubeSource && hydrated?.Id != candidate.Id) throw new InvalidOperationException("Apple returned a different recording ID.");
             return hydrated == null
                 ? candidate
                 : candidate with
@@ -879,11 +940,13 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Central identity resolver failed hydrating Apple song identity {AppleId}.", candidate.Id);
+            if (state.IsYouTubeSource) throw;
             return candidate;
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogDebug(ex, "Central identity resolver timed out hydrating Apple song identity {AppleId}; using search identity.", candidate.Id);
+            if (state.IsYouTubeSource) throw;
             return candidate;
         }
     }
@@ -917,6 +980,15 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     {
         AppleIdentityCandidate? bestCandidate = null;
         var bestScore = double.MinValue;
+        string? convertedId = null;
+        if (state.IsYouTubeSource)
+        {
+            var links = data.EnumerateArray().Where(item => item.TryGetProperty("id", out _) && item.TryGetProperty("attributes", out _))
+                .Select(item => ReadAppleCandidate(item, item.GetProperty("attributes"), item.GetProperty("id").GetString()!)).ToList();
+            convertedId = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(links, state.ConversionQuery!,
+                item => item.Title ?? "", item => item.ArtistName, item => item.Id)?.Id;
+            if (convertedId is null) return null;
+        }
         foreach (var item in data.EnumerateArray())
         {
             var id = item.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
@@ -927,6 +999,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 continue;
             }
 
+            if (state.IsYouTubeSource && id != convertedId) continue;
             var candidate = ReadAppleCandidate(item, attributes, id);
             var source = new TrackMatchSource(
                 state.Isrc,
@@ -947,10 +1020,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 new TrackCandidateValidationOptions(
                     StrictWithoutIsrc: true,
                     AllowMissingCandidateArtist: false,
-                    RequireCandidateDurationWhenSourceHasDuration: false,
+                    RequireCandidateDurationWhenSourceHasDuration: state.IsYouTubeSource,
                     MaxIsrcDurationDifferenceMs: 20_000,
                     MaxMetadataDurationDifferenceMs: 8_000));
-            if (!validation.Accepted && allowVariantIsrc && string.Equals(validation.Reason, "isrc_mismatch", StringComparison.OrdinalIgnoreCase))
+            if (!state.IsYouTubeSource && !validation.Accepted && allowVariantIsrc && string.Equals(validation.Reason, "isrc_mismatch", StringComparison.OrdinalIgnoreCase))
             {
                 validation = TrackCandidateValidator.Validate(
                     source with { Isrc = null },
@@ -1065,7 +1138,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 state.Artist,
                 state.Album,
                 state.DurationMs,
-                providerToken).WaitAsync(providerToken);
+                providerToken, rejectAmbiguous: state.IsYouTubeSource, conversionQuery: state.ConversionQuery).WaitAsync(providerToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1095,6 +1168,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         state.Isrc ??= resolved.Track.ISRC;
         state.Title ??= resolved.Track.Title;
         state.Album ??= resolved.Track.Album?.Title;
+        state.SetMatchedMetadata(
+            string.IsNullOrWhiteSpace(resolved.Track.Version) ? resolved.Track.Title : $"{resolved.Track.Title} ({resolved.Track.Version})",
+            resolved.Track.Performer?.Name ?? resolved.Track.Album?.Artists.FirstOrDefault()?.Name,
+            resolved.Track.Album?.Title, resolved.Track.ISRC, resolved.Track.Duration * 1000);
         candidates.Add(Accepted(Qobuz, state.QobuzId, state.QobuzUrl, resolved.Source, resolved.Score));
     }
 
@@ -1147,6 +1224,14 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return;
         }
 
+        if (state.IsYouTubeSource)
+        {
+            var recording = await _tidalDownloadService.ResolveTrackMetadataAsync(tidalUrl, cancellationToken);
+            if (recording is null || !string.Equals(TrackCandidateValidator.NormalizeIsrc(recording.Isrc), TrackCandidateValidator.NormalizeIsrc(state.Isrc), StringComparison.Ordinal)
+                || !TrackCandidateValidator.Validate(new(state.Isrc, state.Title, state.Artist, state.Album, state.DurationMs), new(recording.Id.ToString(), recording.Isrc, recording.Title, recording.Artist, recording.Album, recording.DurationSeconds * 1000), new(RequireCandidateDurationWhenSourceHasDuration: true)).Accepted)
+            { candidates.Add(Rejected(Tidal, "recording-verification-failed")); return; }
+            state.SetMatchedMetadata(recording.Title, recording.Artist, recording.Album, recording.Isrc, recording.DurationSeconds * 1000);
+        }
         state.TidalUrl = tidalUrl;
         state.TidalId = EngineLinkParser.TryExtractTidalTrackId(tidalUrl);
         candidates.Add(Accepted(Tidal, state.TidalId, state.TidalUrl, "tidal-native"));
@@ -1199,6 +1284,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return;
         }
 
+        if (state.IsYouTubeSource && (!string.Equals(TrackCandidateValidator.NormalizeIsrc(resolved.Isrc), TrackCandidateValidator.NormalizeIsrc(state.Isrc), StringComparison.Ordinal)
+            || !TrackCandidateValidator.Validate(new(state.Isrc, state.Title, state.Artist, state.Album, state.DurationMs), new(resolved.Id, resolved.Isrc, resolved.Title, resolved.Artist, resolved.Album, resolved.DurationMs), new(RequireCandidateDurationWhenSourceHasDuration: true)).Accepted))
+        { candidates.Add(Rejected(Amazon, "recording-verification-failed")); return; }
+        state.SetMatchedMetadata(resolved.Title, resolved.Artist, resolved.Album, resolved.Isrc, resolved.DurationMs);
         state.AmazonId = resolved.Id;
         state.AmazonUrl = resolved.Url;
         state.Isrc ??= resolved.Isrc;
@@ -1263,6 +1352,18 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
     private sealed class IdentityState
     {
+        public bool IsYouTubeSource { get; set; }
+        private TrackMatchSource? MatchedMetadata { get; set; }
+
+        // Keep source metadata intact for all recording checks. Only presentation uses the verified catalog.
+        public void SetMatchedMetadata(string? title, string? artist, string? album, string? isrc, int? durationMs)
+        {
+            if (!IsYouTubeSource || string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist) || durationMs is not > 0)
+                return;
+            if (MatchedMetadata is null || (string.IsNullOrWhiteSpace(MatchedMetadata.Album) && !string.IsNullOrWhiteSpace(album)))
+                MatchedMetadata = new TrackMatchSource(isrc, title, artist, album, durationMs);
+        }
+        public string? ConversionQuery { get; set; }
         public string? Title { get; set; }
         public string? Artist { get; set; }
         public string? Album { get; set; }
@@ -1290,6 +1391,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         public static IdentityState FromRequest(TrackIdentityResolutionRequest request)
             => new()
             {
+                IsYouTubeSource = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(request.SourceUrl) is not null || request.SourcePlatform is "ytmusic" or "youtube",
                 Title = EmptyToNull(request.Title),
                 Artist = EmptyToNull(request.Artist),
                 Album = EmptyToNull(request.Album),
@@ -1316,6 +1418,9 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         public IdentityState Clone()
             => new()
             {
+                IsYouTubeSource = IsYouTubeSource,
+                ConversionQuery = ConversionQuery,
+                MatchedMetadata = MatchedMetadata,
                 Title = Title,
                 Artist = Artist,
                 Album = Album,
@@ -1343,6 +1448,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         public void MergeMissingFrom(IdentityState candidate)
         {
+            if (candidate.MatchedMetadata is { } metadata)
+                SetMatchedMetadata(metadata.Title, metadata.Artist, metadata.Album, metadata.Isrc, metadata.DurationMs);
             Title ??= candidate.Title;
             Artist ??= candidate.Artist;
             Album ??= candidate.Album;
@@ -1369,11 +1476,11 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         public TrackIdentityResolution ToResolution(IReadOnlyList<PlatformIdentityCandidate> candidates)
             => new(
-                Title,
-                Artist,
-                Album,
-                Isrc,
-                DurationMs,
+                MatchedMetadata?.Title ?? Title,
+                MatchedMetadata?.Artist ?? Artist,
+                MatchedMetadata?.Album ?? Album,
+                MatchedMetadata?.Isrc ?? Isrc,
+                MatchedMetadata?.DurationMs ?? DurationMs,
                 SpotifyId,
                 SpotifyUrl ?? BuildSpotifyUrl(SpotifyId),
                 DeezerId,

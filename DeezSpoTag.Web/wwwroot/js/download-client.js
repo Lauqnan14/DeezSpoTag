@@ -685,7 +685,14 @@ DeezSpoTag.DownloadClient = {
 
         const deferredCount = Number.isFinite(result.deferredCount) ? result.deferredCount : 1;
         const resolvedMessage = result.message || message || `Queued ${deferredCount} item(s) for background processing.`;
-        this.notifyAppleAware('started', resolvedMessage, 'info', { linkType });
+        const parsedUrl = this.tryParseAbsoluteUrl(url);
+        if (parsedUrl && this.hostMatches(parsedUrl.hostname, ['youtube.com', 'youtu.be'])) {
+            if (!options?.silent) {
+                this.showQueueToast(resolvedMessage, 'info');
+            }
+        } else {
+            this.notifyAppleAware('started', resolvedMessage, 'info', { linkType });
+        }
         this.logDownloadEvent('info', logMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         return { success: true, deferred: true, linkType };

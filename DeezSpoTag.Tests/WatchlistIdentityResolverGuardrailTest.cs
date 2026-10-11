@@ -11,6 +11,18 @@ namespace DeezSpoTag.Tests;
 public sealed class WatchlistIdentityResolverGuardrailTest
 {
     [Fact]
+    public void YouTubeMembership_RequiresExactVideoUrlAndUsesExistingIntent()
+    {
+        var candidate = new PlaylistTrackCandidate("abcdefghijk", null, "", "", "", null, null, null, Array.Empty<string>(), SourceUrl: "https://music.youtube.com/watch?v=abcdefghijk");
+        Assert.True(PlaylistCandidateContract.IsResolvable("ytmusic", candidate));
+        Assert.False(PlaylistCandidateContract.IsResolvable("ytmusic", candidate with { SourceUrl = "https://music.youtube.com/watch?v=lmnopqrstuv" }));
+        var method = typeof(WatchlistEngine).GetMethod("BuildWatchDownloadIntentFromCandidate", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var intent = (DeezSpoTag.Services.Download.Shared.Models.DownloadIntent)method.Invoke(null, ["ytmusic", candidate])!;
+        Assert.Equal("ytmusic", intent.SourceService); Assert.Equal(candidate.SourceUrl, intent.SourceUrl);
+        Assert.Empty(intent.DeezerId); Assert.Empty(intent.SpotifyId); Assert.Empty(intent.QobuzId); Assert.Empty(intent.TidalId);
+    }
+
+    [Fact]
     public void Ambiguous_identity_uses_one_shazam_assisted_ranker_in_required_order()
     {
         var source = File.ReadAllText(Path.Join(

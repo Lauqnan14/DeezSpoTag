@@ -8,6 +8,27 @@ namespace DeezSpoTag.Tests;
 
 public sealed class SpotifyIdResolverIdentityTest
 {
+    [Theory]
+    [InlineData("Song (Live)", "Artist", 180000, null)]
+    [InlineData("Song", "Different Artist", 180000, null)]
+    [InlineData("Song", "Artist", 250000, null)]
+    [InlineData("Song", "Artist", null, null)]
+    [InlineData("Song", "Artist", 180000, "USABC1234568")]
+    public void SpotifyStrictSelection_RejectsRecordingConflicts(string title, string artist, int? duration, string? isrc)
+    {
+        var candidate = new DeezSpoTag.Web.Services.SpotifySearchItem("id", title, "track", "", null, artist, duration, Isrc: isrc);
+        Assert.Null(DeezSpoTag.Web.Services.SpotifyIdResolver.SelectVerifiedCandidate([candidate], "Song", "Artist", null, "USABC1234567", 180000));
+    }
+
+    [Fact]
+    public void SpotifyStrictSelection_RejectsTiedRecordingCandidates()
+    {
+        var method = typeof(DeezSpoTag.Web.Services.SpotifyIdResolver).GetMethod("SelectVerifiedCandidate", BindingFlags.Public | BindingFlags.Static);
+        Assert.NotNull(method);
+        var items = new System.Collections.Generic.List<DeezSpoTag.Web.Services.SpotifySearchItem> { new("one", "Song", "track", "", null, "Artist", 180000), new("two", "Song", "track", "", null, "Artist", 180000) };
+        Assert.Null(method!.Invoke(null, [items, "Song", "Artist", null, null, 180000]));
+    }
+
     [Fact]
     public void SpotifyDownloadResolver_DoesNotUseRemovedSearchEndpoint()
     {

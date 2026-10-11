@@ -2058,6 +2058,12 @@
                         <label for="deezerCountry">Deezer content country</label>
                         <input type="text" id="deezerCountry" placeholder="US">
                     </div>
+                    <div class="form-group"><label for="youTubeMusicCountry">YouTube Music country</label><input type="text" id="youTubeMusicCountry" maxlength="2" placeholder="Use content country"><div class="warning-text">Leave empty to use the Deezer content country preference.</div></div>
+                    <div class="form-group">
+                        <label for="autoTagHistoryRetentionDays">AutoTag history retention (days)</label>
+                        <input type="number" id="autoTagHistoryRetentionDays" min="1" max="365" value="7">
+                        <div class="warning-text">AutoTag job and history files older than this are deleted automatically to prevent the data folder from growing without limit.</div>
+                    </div>
                 </div>
 
                 <div class="form-row">
@@ -2079,14 +2085,6 @@
                     <div class="form-group">
                         <label for="redownloadCooldownMinutes">Redownload cooldown (minutes)</label>
                         <input type="number" id="redownloadCooldownMinutes" min="0" max="10080" value="0">
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="autoTagHistoryRetentionDays">AutoTag history retention (days)</label>
-                        <input type="number" id="autoTagHistoryRetentionDays" min="1" max="365" value="7">
-                        <div class="warning-text">AutoTag job and history files older than this are deleted automatically to prevent the data folder from growing without limit.</div>
                     </div>
                 </div>
 
@@ -5030,6 +5028,7 @@ function loadSettings(settings) {
     
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
+    setFieldValue('youTubeMusicCountry', settings.youTubeMusicCountry || '');
     const dailyRecommendations = settings.dailyRecommendations || { trackCount: 60, shazamEnabled: false, shazamTrackCount: 0, deezerEnabled: true, deezerTrackCount: 20, spotifyEnabled: true, spotifyTrackCount: 20, tidalEnabled: true, tidalTrackCount: 20 };
     setFieldValue('dailyRecommendationTrackCount', dailyRecommendations.trackCount ?? 60);
     setFieldValue('dailyRecommendationAiFilterMode', dailyRecommendations.aiFilterMode ?? 1);
@@ -5322,6 +5321,7 @@ function collectFormData() {
 
         deezerLanguage: getValue('deezerLanguage', baseSettings.deezerLanguage || 'en'),
         deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
+        youTubeMusicCountry: getValue('youTubeMusicCountry', '').trim().toUpperCase(),
         apiToken: baseSettings.apiToken || '',
         dailyRecommendations: collectDailyRecommendations(),
         weeklyRecommendations: collectWeeklyRecommendations(),

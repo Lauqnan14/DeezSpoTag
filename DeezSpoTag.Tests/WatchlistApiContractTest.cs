@@ -136,6 +136,37 @@ public sealed class WatchlistApiContractTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task YouTubePlaylistWatchlist_PersistsCanonicalCollectionAndRemovesMonitor()
+    {
+        var controller = CreatePlaylistWatchlistController();
+        const string id = "VLPLabcdefghij";
+        const string url = "https://music.youtube.com/playlist?list=PLabcdefghij";
+        Assert.IsType<OkObjectResult>(await controller.Add(
+            new WatchlistApiController.PlaylistWatchlistRequest(
+                Source: "ytmusic", SourceId: "PLabcdefghij", Name: "YouTube Mix",
+                ImageUrl: null, Description: null, TrackCount: 3, SourceUrl: url), CancellationToken.None));
+        var all = Assert.IsType<OkObjectResult>(await controller.GetAll(CancellationToken.None));
+        using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(all.Value)))
+        {
+            var item = Assert.Single(doc.RootElement.EnumerateArray());
+            Assert.Equal(id, GetStringProperty(item, "sourceId"));
+            Assert.Equal(url, GetStringProperty(item, "sourceUrl"));
+        }
+        var status = Assert.IsType<OkObjectResult>(await controller.GetStatus("ytmusic", id, CancellationToken.None));
+        using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(status.Value)))
+            Assert.True(GetBooleanProperty(doc.RootElement, "watching"));
+        Assert.IsType<BadRequestObjectResult>(await controller.Add(
+            new WatchlistApiController.PlaylistWatchlistRequest(
+                Source: "ytmusic", SourceId: id, Name: "Wrong URL",
+                ImageUrl: null, Description: null, TrackCount: 3,
+                SourceUrl: "https://music.youtube.com/playlist?list=PLdifferent"), CancellationToken.None));
+        Assert.IsType<OkObjectResult>(await controller.Remove("ytmusic", id, CancellationToken.None));
+        status = Assert.IsType<OkObjectResult>(await controller.GetStatus("ytmusic", id, CancellationToken.None));
+        using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(status.Value)))
+            Assert.False(GetBooleanProperty(doc.RootElement, "watching"));
+    }
+
+    [Fact]
     public async Task ApplePlaylistWatchlist_PersistsOriginalUrlAndStorefront()
     {
         var controller = CreatePlaylistWatchlistController();

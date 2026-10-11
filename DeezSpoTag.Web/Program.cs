@@ -1848,6 +1848,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices>(sp =>
             new DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices
             {
+                YouTubeMusicClient = sp.GetRequiredService<DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient>(),
                 SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
                 SpotifyPathfinderMetadataClient = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
                 SpotifyArtistService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),

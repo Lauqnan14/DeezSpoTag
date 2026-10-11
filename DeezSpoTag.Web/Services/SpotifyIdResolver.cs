@@ -13,6 +13,24 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         _searchService = searchService;
     }
 
+    public async Task<SpotifySearchItem?> ResolveVerifiedTrackAsync(string title, string artist, string? album, string? isrc, int? durationMs, CancellationToken cancellationToken, string? conversionQuery = null)
+    {
+        var response = await _searchService.SearchByTypeAsync(conversionQuery ?? BuildPlainQuery(title, artist, album), "track", conversionQuery is null ? 20 : 4, 0, cancellationToken, hydrateTrackIsrcs: true, allowTrackFallbacks: false);
+        var converted = conversionQuery is null ? null : DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(response?.Items ?? [], conversionQuery,
+            item => item.Name ?? "", item => item.Subtitle, item => item.Id);
+        return SelectVerifiedCandidate(conversionQuery is null ? response?.Items : converted is null ? [] : [converted], title, artist, album, isrc, durationMs);
+    }
+
+    public static SpotifySearchItem? SelectVerifiedCandidate(List<SpotifySearchItem>? items, string title, string artist, string? album, string? isrc, int? durationMs)
+    {
+        var source = new DeezSpoTag.Services.Matching.TrackMatchSource(isrc, title, artist, album, durationMs);
+        var accepted = (items ?? []).Where(item => DeezSpoTag.Services.Matching.TrackCandidateValidator.Validate(source,
+            new(item.Id, item.Isrc, item.Name, item.Subtitle, null, item.DurationMs),
+            new(RequireCandidateDurationWhenSourceHasDuration: true)).Accepted).ToList();
+        var recordings = accepted.Select(item => string.IsNullOrWhiteSpace(item.Isrc) ? item.Id : item.Isrc).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        return recordings == 1 ? accepted.FirstOrDefault() : null;
+    }
+
     public async Task<string?> ResolveTrackIdAsync(
         string title,
         string artist,

@@ -19,6 +19,7 @@ internal static class PlaylistCandidateContract
         var normalizedSource = Normalize(source);
         return normalizedSource switch
         {
+            "ytmusic" => string.Equals(DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(candidate.SourceUrl), candidate.TrackSourceId, StringComparison.Ordinal),
             "boomplay" => !string.IsNullOrWhiteSpace(candidate.DeezerId)
                           && string.Equals(candidate.MappingStatus, BoomplayWatchlistMappingService.MatchedStatus, StringComparison.OrdinalIgnoreCase),
             "spotify" or "deezer" or "apple" or "qobuz" or "tidal" or "recommendations" or "smarttracklist" => true,

@@ -149,6 +149,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
     private const string BoomplaySource = "boomplay";
     private const string RecommendationsSource = "recommendations";
     private const string QobuzSource = "qobuz";
+    private const string YouTubeMusicSource = "ytmusic";
     private const string TidalSource = "tidal";
     private const string PlaylistWatchType = "playlist";
     private const string QueuedStatus = "queued";
@@ -179,6 +180,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
     private readonly DeezerGatewayService _deezerGatewayService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient? _youtubeMusicClient;
     private readonly BoomplayWatchlistMappingService _boomplayWatchlistMappingService;
     private readonly PlatformAuthService? _platformAuthService;
     private readonly LibraryRecommendationService _libraryRecommendationService;
@@ -222,6 +224,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         internal PlatformAuthService? PlatformAuthService { get; init; }
         public required LibraryRecommendationService LibraryRecommendationService { get; init; }
         public required IHttpClientFactory HttpClientFactory { get; init; }
+        public DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient? YouTubeMusicClient { get; init; }
         public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     }
 
@@ -253,6 +256,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         _deezerGatewayService = platformServices.DeezerGatewayService;
         _appleCatalogService = platformServices.AppleCatalogService;
         _boomplayMetadataService = platformServices.BoomplayMetadataService;
+        _youtubeMusicClient = platformServices.YouTubeMusicClient;
         _boomplayWatchlistMappingService = platformServices.BoomplayWatchlistMappingService;
         _platformAuthService = platformServices.PlatformAuthService;
         _libraryRecommendationService = platformServices.LibraryRecommendationService;
@@ -3263,6 +3267,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 RecommendationsSource,
                 async (id, _, token) => BuildLivePlaylistSnapshot(await GetRecommendationTrackCandidatesAsync(id, token)),
                 static (_, _) => Task.FromResult(new LivePlaylistSnapshotMetadata())),
+            [YouTubeMusicSource] = new PlaylistSourceAdapter(
+                YouTubeMusicSource, GetYouTubeMusicSnapshotAsync, GetYouTubeMusicSnapshotHeadAsync),
             [QobuzSource] = new PlaylistSourceAdapter(
                 QobuzSource,
                 GetQobuzSnapshotAsync,
@@ -4384,6 +4390,38 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             Array.Empty<string>()));
     }
 
+    private async Task<LivePlaylistSnapshot> GetYouTubeMusicSnapshotAsync(string sourceId, int maxCandidates, CancellationToken cancellationToken)
+    {
+        var settings = _settingsService.LoadSettings();
+        var country = (string.IsNullOrWhiteSpace(settings.YouTubeMusicCountry) ? settings.DeezerCountry : settings.YouTubeMusicCountry).Trim().ToUpperInvariant();
+        var collection = await (_youtubeMusicClient ?? throw new InvalidOperationException("YouTube Music client unavailable."))
+            .GetCollectionAsync(sourceId, "playlist", country, settings.DeezerLanguage.Trim(), cancellationToken);
+        var rows = collection["tracks"]!.AsArray();
+        var candidates = new List<PlaylistTrackCandidate>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var track in rows.Take(maxCandidates))
+        {
+            var videoId = track!["videoId"]!.GetValue<string>();
+            if (!seen.Add(videoId)) continue;
+            candidates.Add(new PlaylistTrackCandidate(videoId, null, track["title"]!.GetValue<string>(),
+                track["artist"]!["name"]!.GetValue<string>(), track["album"]!["title"]!.GetValue<string>(), null,
+                track["duration"]!.GetValue<int>() * 1000, null, Array.Empty<string>(), track["album"]!["cover_big"]?.GetValue<string>(),
+                SourceUrl: track["link"]!.GetValue<string>(), SourcePosition: candidates.Count));
+        }
+        return BuildLivePlaylistSnapshot(candidates, new LivePlaylistSnapshotMetadata(
+            Name: collection["title"]!.GetValue<string>(), ImageUrl: collection["cover_big"]?.GetValue<string>(),
+            TrackCount: rows.Count, IsComplete: rows.Count <= maxCandidates, IsAuthoritativeEmpty: rows.Count == 0,
+            OwnerName: "YouTube Music", SourceItemsObserved: Math.Min(rows.Count, maxCandidates)));
+    }
+
+    private async Task<LivePlaylistSnapshotMetadata> GetYouTubeMusicSnapshotHeadAsync(string sourceId, CancellationToken cancellationToken)
+    {
+        var snapshot = await GetYouTubeMusicSnapshotAsync(sourceId, int.MaxValue, cancellationToken);
+        return new LivePlaylistSnapshotMetadata(Name: snapshot.Name, ImageUrl: snapshot.ImageUrl, TrackCount: snapshot.TrackCount,
+            IsComplete: snapshot.IsComplete, IsAuthoritativeEmpty: snapshot.IsAuthoritativeEmpty, OwnerName: snapshot.OwnerName,
+            SourceItemsObserved: snapshot.SourceItemsObserved);
+    }
+
     private async Task<LivePlaylistSnapshot> GetQobuzSnapshotAsync(
         string sourceId,
         int maxCandidates,
@@ -5453,6 +5491,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             DeezerSource or RecommendationsSource or SmartTracklistSource => BuildDeezerTrackUrl(trackId),
             AppleSource => $"https://music.apple.com/song/{Uri.EscapeDataString(trackId)}",
             BoomplaySource => $"https://www.boomplay.com/songs/{Uri.EscapeDataString(trackId)}",
+            YouTubeMusicSource => $"https://music.youtube.com/watch?v={Uri.EscapeDataString(trackId)}",
             QobuzSource => BuildQobuzTrackUrl(trackId),
             TidalSource => BuildTidalTrackUrl(trackId),
             _ => string.Empty
@@ -5468,6 +5507,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             SmartTracklistSource => true,
             AppleSource => true,
             BoomplaySource => true,
+            YouTubeMusicSource => true,
             QobuzSource => true,
             TidalSource => true,
             _ => false
@@ -6596,6 +6636,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             BoomplaySource => "Boomplay",
             SmartTracklistSource => "Smart Tracklist",
             RecommendationsSource => "Recommendations",
+            YouTubeMusicSource => "YouTube Music",
             QobuzSource => "Qobuz",
             TidalSource => "Tidal",
             _ => source
