@@ -14,6 +14,81 @@ namespace DeezSpoTag.Tests;
 public sealed class DailyRecommendationSettingsTest
 {
     [Fact]
+    public void TooltipInitializationPreservesRecommendationStatusDuringSettingsLoad()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Join(root.FullName, "DeezSpoTag.Web", "Views"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+            const assert = require('node:assert/strict');
+            const view = fs.readFileSync(`${process.argv[1]}/DeezSpoTag.Web/Views/Settings/Index.cshtml`, 'utf8');
+            const elements = new Map();
+            const label = {};
+            const warnings = ['dailyRecommendationPaused', 'dailyShazamUnavailable', 'multiQualitySecondaryFolderWarning', 'staticHelp'].map(id => {
+                const warning = {
+                    id, hidden: id === 'dailyRecommendationPaused', textContent: 'Help text',
+                    getAttribute: () => null,
+                    closest: selector => selector === '.form-group' ? { querySelector: () => label } : null,
+                    remove() { elements.delete(id); }
+                };
+                elements.set(id, warning);
+                return warning;
+            });
+            elements.set('dailyRecommendationTrackCount', { value: '60' });
+            elements.set('dailyRecommendationAiFilterMode', { value: '1' });
+            for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
+                elements.set(`daily${source}Enabled`, { checked: source !== 'Shazam' });
+                elements.set(`daily${source}TrackCount`, { value: source === 'Shazam' ? '0' : '20' });
+            }
+            const context = vm.createContext({
+                document: {
+                    getElementById: id => elements.get(id) || null,
+                    querySelectorAll: () => warnings.filter(warning => elements.has(warning.id))
+                },
+                upsertSettingsTooltip: () => ({ dataset: {} })
+            });
+            for (const name of ['resolveTooltipTarget', 'initializeSettingsTooltips', 'collectDailyRecommendations', 'updateDailyRecommendationAllocation']) {
+                const match = view.match(new RegExp(`^function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?^\\}`, 'm'));
+                assert.ok(match, `Missing function ${name}`);
+                vm.runInContext(match[0], context);
+            }
+            // Tooltips initialize while the settings fetch is pending, then again after it finishes.
+            context.initializeSettingsTooltips();
+            assert.equal(context.updateDailyRecommendationAllocation(), true);
+            assert.equal(elements.get('dailyRecommendationPaused').hidden, true);
+            assert.ok(elements.has('dailyShazamUnavailable'));
+            assert.ok(elements.has('multiQualitySecondaryFolderWarning'));
+            assert.equal(elements.has('staticHelp'), false);
+            context.initializeSettingsTooltips();
+            for (const source of ['Deezer', 'Spotify', 'Tidal']) {
+                elements.get(`daily${source}Enabled`).checked = false;
+                elements.get(`daily${source}TrackCount`).value = '0';
+            }
+            assert.equal(context.updateDailyRecommendationAllocation(), true);
+            assert.equal(elements.get('dailyRecommendationPaused').hidden, false);
+            assert.ok(elements.has('dailyShazamUnavailable'));
+            elements.get('dailyDeezerEnabled').checked = true;
+            elements.get('dailyDeezerTrackCount').value = '60';
+            assert.equal(context.updateDailyRecommendationAllocation(), true);
+            assert.equal(elements.get('dailyRecommendationPaused').hidden, true);
+            """;
+        var start = new System.Diagnostics.ProcessStartInfo("node")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-e");
+        start.ArgumentList.Add(script);
+        start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
     public void SettingsSurfaceFourSourcesAndExistingThreeSections()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);

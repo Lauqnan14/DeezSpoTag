@@ -2488,7 +2488,9 @@ function initializeSettingsTooltips() {
     const targetMessages = new Map();
 
     document.querySelectorAll('.settings-section .warning-text').forEach((warning) => {
-        if (warning.id === 'multiQualitySecondaryFolderWarning') {
+        if (warning.id === 'multiQualitySecondaryFolderWarning'
+            || warning.id === 'dailyRecommendationPaused'
+            || warning.id === 'dailyShazamUnavailable') {
             return;
         }
 
