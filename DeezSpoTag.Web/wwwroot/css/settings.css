@@ -543,6 +543,144 @@
     border-color: var(--border-accent);
 }
 
+/* Daily Recommendations: one row per source, checkbox + track count together. */
+.daily-source-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.daily-source-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    transition: all 0.3s ease;
+}
+
+.daily-source-row:hover {
+    background: var(--bg-quaternary);
+    border-color: var(--border-accent);
+}
+
+.daily-source-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.daily-source-label input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
+.daily-source-row input[type="number"] {
+    flex: 0 0 auto;
+    width: 84px;
+    padding: 6px 10px;
+    text-align: center;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    color: var(--text-primary);
+}
+
+.daily-source-row input[type="number"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.daily-source-row input[type="number"]:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+    .daily-source-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Weekly Recommendations: two independent types, each with one platform and one track count. */
+/* Empty separator between the Daily and Weekly blocks. */
+.recommendations-divider {
+    margin: 26px 0 14px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-primary);
+}
+
+.weekly-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.weekly-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    padding: 12px;
+}
+
+/* Card title matches the .form-group label size/weight used in the Daily half. */
+.weekly-card h4 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.weekly-field {
+    margin-bottom: 12px;
+}
+
+.weekly-field:last-child {
+    margin-bottom: 0;
+}
+
+/* These controls sit outside a .form-group, so they need the input styling that
+   .form-group normally supplies, or they render as bare unstyled boxes. */
+.weekly-field select,
+.weekly-field input[type="number"] {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.weekly-field select:focus,
+.weekly-field input[type="number"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px var(--primary-color);
+}
+
+@media (max-width: 640px) {
+    .weekly-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 
 
 .form-checkbox {

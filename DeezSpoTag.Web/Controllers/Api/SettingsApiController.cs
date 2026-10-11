@@ -170,6 +170,12 @@ namespace DeezSpoTag.Web.Controllers.Api
                 }
 
                 PreserveSensitiveFieldsIfRedacted(persisted, settings, platformAuth);
+                settings.DailyRecommendations ??= new();
+                if (!settings.DailyRecommendations.TryValidate(out var dailyError))
+                    return Ok(new { result = false, error = dailyError });
+                settings.WeeklyRecommendations ??= new();
+                if (!settings.WeeklyRecommendations.TryValidate(out var weeklyError))
+                    return Ok(new { result = false, error = weeklyError });
                 PreserveCriticalFieldsIfBlank(persisted, settings);
                 var engineOrderValidation = DownloadSourceOrder.ValidateDownloadEngineOrderSettings(settings.DownloadEngineOrder);
                 if (!engineOrderValidation.IsValid)

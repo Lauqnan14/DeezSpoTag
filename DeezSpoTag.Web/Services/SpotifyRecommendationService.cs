@@ -29,13 +29,55 @@ public sealed class SpotifyRecommendationService
 
     private readonly SpotifyPathfinderMetadataClient _pathfinder;
     private readonly ILogger<SpotifyRecommendationService> _logger;
+    private readonly SpotifyMetadataService? _metadata;
 
     public SpotifyRecommendationService(
         SpotifyPathfinderMetadataClient pathfinder,
-        ILogger<SpotifyRecommendationService> logger)
+        ILogger<SpotifyRecommendationService> logger,
+        SpotifyMetadataService? metadata = null)
     {
         _pathfinder = pathfinder;
         _logger = logger;
+        _metadata = metadata;
+    }
+
+    public Task<IReadOnlyList<SpotifyTrackSummary>> FetchSeedTrackRecommendationsAsync(
+        string trackUrl, int limit, CancellationToken cancellationToken = default)
+        => FetchSeedTrackRecommendationsCoreAsync(trackUrl, limit,
+            (url, token) => url.StartsWith("https://open.spotify.com/playlist/", StringComparison.Ordinal)
+                ? _pathfinder.FetchByUrlAsync(url, token)
+                : _metadata is null ? _pathfinder.FetchByUrlAsync(url, token) : _metadata.FetchByUrlAsync(url, token),
+            _pathfinder.FetchSongRadioPlaylistUriAsync, cancellationToken);
+
+    internal static async Task<IReadOnlyList<SpotifyTrackSummary>> FetchSeedTrackRecommendationsCoreAsync(
+        string trackUrl, int limit,
+        Func<string, CancellationToken, Task<SpotifyUrlMetadata?>> fetchMetadata,
+        Func<string, CancellationToken, Task<string?>> fetchRadioPlaylistUri,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        limit = Math.Clamp(limit, 1, 300);
+        var seed = (await fetchMetadata(trackUrl, cancellationToken))?.TrackList.FirstOrDefault();
+        if (seed is null || string.IsNullOrWhiteSpace(seed.Id)) return Array.Empty<SpotifyTrackSummary>();
+        var playlistUri = await fetchRadioPlaylistUri(seed.Id, cancellationToken);
+        if (playlistUri is null) return Array.Empty<SpotifyTrackSummary>();
+        if (!playlistUri.StartsWith("spotify:playlist:", StringComparison.Ordinal))
+            throw new JsonException("Spotify Song Radio returned an invalid playlist identity.");
+        var playlistId = playlistUri["spotify:playlist:".Length..];
+        var metadata = await fetchMetadata("https://open.spotify.com/playlist/" + playlistId, cancellationToken);
+        if (metadata is null) throw new InvalidOperationException("Spotify Song Radio playlist metadata is unavailable.");
+        var tracks = new List<SpotifyTrackSummary>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var track in metadata.TrackList)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(track.Id) || track.Id == seed.Id
+                || (!string.IsNullOrWhiteSpace(seed.Isrc) && string.Equals(track.Isrc, seed.Isrc, StringComparison.OrdinalIgnoreCase))
+                || !seen.Add(track.Id)) continue;
+            tracks.Add(track);
+            if (tracks.Count >= limit) break;
+        }
+        return tracks;
     }
 
     public async Task<List<SpotifyRecommendationSection>> FetchRecommendationsAsync(

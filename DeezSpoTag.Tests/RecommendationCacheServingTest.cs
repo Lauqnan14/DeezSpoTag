@@ -5,6 +5,8 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -14,14 +16,142 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class RecommendationCacheServingTest : IAsyncLifetime
 {
+    [Fact]
+    public async Task DailyShortfallDiagnosticsReflectRejectionWithoutChangingSavedAiPolicy()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var quotas = new Dictionary<string, int> { ["deezer"] = 20 };
+        var rows = Enumerable.Range(1, 20).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
+            new("artist" + n, "Artist " + n), new("album", "Album", ""), RecommendationOrigin: "deezer")).ToArray();
+        var diagnostics = new DailyRecommendationDiagnosticsDto(1, new Dictionary<string, int>(), new Dictionary<string, int>(),
+            new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int> { ["deezer"] = 0 }, 20, 0);
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", id,
+            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = rows, TrackCount = 20,
+                Allocations = quotas, AiFilterMode = DailyRecommendationAiFilterMode.Strict, Diagnostics = diagnostics })));
+        var result = (await Service().RejectRecommendationTrackAsync(new(key.LibraryId, Folder.Id, id, "1", null, "Track 1", "Artist 1")))!;
+        Assert.Equal("partial", result.Status);
+        Assert.Equal(19, result.Tracks.Count);
+        Assert.Equal(1, result.Diagnostics!.MissingSourceCounts["deezer"]);
+        Assert.Equal(19, result.Diagnostics.DestinationCount);
+        Assert.Equal(DailyRecommendationAiFilterMode.Strict, result.DailyAiFilterMode);
+    }
+
+    [Fact]
+    public async Task AllDisabledReturnsPausedStateAndDoesNotQueueDailyGeneration()
+    {
+        using var scope = new TestConfigRootScope(_root);
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var value = settings.LoadSettings();
+        value.DailyRecommendations = new() { ShazamEnabled = false, ShazamTrackCount = 0, DeezerEnabled = false, DeezerTrackCount = 0,
+            SpotifyEnabled = false, SpotifyTrackCount = 0, TidalEnabled = false, TidalTrackCount = 0 };
+        settings.SaveSettings(value);
+        var service = Service(settings: settings);
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        await service.RefreshDailyRecommendationsForDateAsync(day, "test", System.Threading.CancellationToken.None);
+        var result = (await service.GetRecommendationsAsync(Folder.LibraryId!.Value, folderId: Folder.Id))!;
+        Assert.Equal("disabled", result.Status);
+        Assert.Empty(result.Tracks);
+        Assert.Contains("Enable a source", result.Message!);
+        Assert.Null(await Repository.GetRecommendationGenerationStateAsync(Folder.LibraryId.Value, Folder.Id, result.Station.Id, day));
+    }
+
+    [Theory]
+    [InlineData(20)]
+    [InlineData(50)]
+    [InlineData(100)]
+    public async Task WeeklySavedPolicyControlsDefaultServingAndSmallerView(int count)
+    {
+        var id = $"weekly-rotation:l{Folder.LibraryId}:f{Folder.Id}:{LibraryRecommendationService.WeeklyMissingType}";
+        var rows = Enumerable.Range(1, count).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
+            new("artist" + n, "Artist " + n), new("album", "Album", ""), "spotify", SeedArtistId: "artist" + n)).ToArray();
+        var station = new RecommendationStationDto(id, "Weekly", "Weekly", "spotify", "Music", count);
+        await Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", id, $"v1:{Monday:yyyyMMdd}",
+            JsonSerializer.Serialize(new RecommendationDetailDto(station, rows, DateTimeOffset.UtcNow, WeeklyTrackCount: count)), 0, null, null, true);
+        var result = (await Service().GetRecommendationsAsync(Folder.LibraryId!.Value, id))!;
+        Assert.Equal(count, result.Tracks.Count);
+        Assert.Equal(count, result.WeeklyTrackCount);
+        var smaller = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id, limit: 10))!;
+        Assert.Equal(10, smaller.Tracks.Count);
+        Assert.Equal(count, smaller.WeeklyTrackCount);
+    }
+
+    [Fact]
+    public async Task PartialSavedDailySelectionSurvivesProviderShortageAndRestart()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var rows = Enumerable.Range(1, 10).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
+            new("artist" + n, "Artist " + n), new("album", "Album", ""), RecommendationOrigin: "deezer")).ToArray();
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", id,
+            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = rows, TrackCount = 20,
+                Allocations = new Dictionary<string, int> { ["deezer"] = 10, ["tidal"] = 10 }, Status = "partial" })));
+        var result = (await Service().GetRecommendationsAsync(key.LibraryId, id))!;
+        Assert.Equal(10, result.Tracks.Count);
+        Assert.Equal("partial", result.Status);
+        Assert.Contains("tidal", result.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(20, result.DailyTrackCount);
+    }
+
+    [Theory]
+    [InlineData(20)]
+    [InlineData(50)]
+    [InlineData(100)]
+    public async Task SavedDailyCountAndAllocationsSurviveRestartAndRejection(int total)
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var quotas = new Dictionary<string, int> { ["shazam"] = total / 2, ["deezer"] = total / 2 };
+        var tracks = quotas.SelectMany((pair, source) => Enumerable.Range(1, pair.Value * 3).Select(i =>
+            new RecommendationTrackDto((source * 1000 + i).ToString(), "Track " + i, 180, "", i,
+                new("artist" + i, "Artist " + i), new("album", "Album", ""), RecommendationOrigin: pair.Key))).ToArray();
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", id,
+            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = tracks, TrackCount = total, Allocations = quotas })));
+        var first = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Equal(total, first.Tracks.Count);
+        Assert.Equal(total, first.DailyTrackCount);
+        Assert.Equal(total / 2, first.Tracks.Count(t => t.RecommendationOrigin == "shazam"));
+        var rejected = first.Tracks.First(t => t.RecommendationOrigin == "shazam");
+        var after = (await Service().RejectRecommendationTrackAsync(new(Folder.LibraryId.Value, Folder.Id, id,
+            rejected.Id, null, rejected.Title, rejected.Artist.Name)))!;
+        Assert.Equal(total, after.Tracks.Count);
+        Assert.DoesNotContain(after.Tracks, t => t.Id == rejected.Id);
+        Assert.Equal(total / 2, after.Tracks.Count(t => t.RecommendationOrigin == "shazam"));
+        Assert.Equal(total / 2, after.Tracks.Count(t => t.RecommendationOrigin == "deezer"));
+        var smaller = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id, limit: 10))!;
+        Assert.Equal(10, smaller.Tracks.Count);
+        Assert.Equal(total, smaller.DailyTrackCount);
+    }
+
+    [Fact]
+    public async Task SourceShortageIsReportedInsteadOfSuccessfulGeneration()
+    {
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        await Repository.FailRecommendationGenerationAsync(key, "shazam_allocation_incomplete", "shazam_allocation_incomplete");
+        var detail = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Equal("failed", detail.Status);
+        Assert.Empty(detail.Tracks);
+        Assert.Contains("shazam_allocation_incomplete", detail.ReasonCodes!);
+        Assert.Contains("Shazam", detail.Message!);
+    }
     private readonly string _root = Path.Combine(Path.GetTempPath(), "recommendation-cache-" + Guid.NewGuid().ToString("N"));
     internal LibraryRepository Repository { get; private set; } = null!;
     internal FolderDto Folder { get; private set; } = null!;
     internal string DatabasePath => Path.Combine(_root, "library.db");
-    internal LibraryRecommendationService Service(TimeProvider? clock = null) => new(
-        new LibraryRecommendationService.LibraryRecommendationCollaborators { Repository = Repository },
+    internal LibraryRecommendationService Service(TimeProvider? clock = null, DeezSpoTagSettingsService? settings = null) => new(
+        new LibraryRecommendationService.LibraryRecommendationCollaborators { Repository = Repository, Settings = settings },
         new EnvironmentFixture(), NullLogger<LibraryRecommendationService>.Instance, timeProvider: clock);
     public async Task InitializeAsync()
     {

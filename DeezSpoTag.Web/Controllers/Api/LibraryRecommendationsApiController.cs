@@ -24,7 +24,7 @@ public class LibraryRecommendationsApiController : ControllerBase
         string? Isrc,
         string? Title,
         string? Artist,
-        int? Limit = 50);
+        int? Limit = null);
 
     public LibraryRecommendationsApiController(LibraryRecommendationService recommendationService)
     {
@@ -51,7 +51,7 @@ public class LibraryRecommendationsApiController : ControllerBase
         [FromQuery] long libraryId,
         [FromQuery] string? stationId,
         [FromQuery] long? folderId,
-        [FromQuery] int limit = 50,
+        [FromQuery] int? limit = null,
         CancellationToken cancellationToken = default)
     {
         if (libraryId <= 0)
@@ -63,7 +63,7 @@ public class LibraryRecommendationsApiController : ControllerBase
             libraryId,
             stationId: stationId,
             folderId: folderId,
-            limit: Math.Clamp(limit, 1, 50),
+            limit: limit is null ? 0 : Math.Clamp(limit.Value, 1, 100),
             cancellationToken);
 
         if (detail is null)
@@ -86,7 +86,7 @@ public class LibraryRecommendationsApiController : ControllerBase
         [FromQuery] long libraryId,
         [FromQuery] string? stationId,
         [FromQuery] long? folderId,
-        [FromQuery] int limit = 50,
+        [FromQuery] int? limit = null,
         CancellationToken cancellationToken = default)
     {
         if (libraryId <= 0)
@@ -101,7 +101,7 @@ public class LibraryRecommendationsApiController : ControllerBase
             libraryId,
             stationId,
             folderId,
-            Math.Clamp(limit, 1, 50),
+            limit is null ? 0 : Math.Clamp(limit.Value, 1, 100),
             cancellationToken);
 
         return detail is null ? NotFound() : Ok(detail);
@@ -150,7 +150,7 @@ public class LibraryRecommendationsApiController : ControllerBase
                 request.Isrc,
                 request.Title,
                 request.Artist),
-            Math.Clamp(request.Limit ?? 50, 1, 50),
+            request.Limit is null ? 0 : Math.Clamp(request.Limit.Value, 1, 100),
             cancellationToken);
 
         return detail is null ? NotFound() : Ok(detail);

@@ -690,8 +690,23 @@ public partial class Program
           services.AddSingleton<DeezSpoTag.Integrations.Tidal.TidalCatalogClient>(sp =>
               new DeezSpoTag.Integrations.Tidal.TidalCatalogClient(
                   sp.GetRequiredService<DeezSpoTag.Integrations.TargetApiTransport>(),
-                  sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformSyncConnectionProvider>()
-                      .GetTidalAsync));
+                  async token =>
+                  {
+                      var provider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>();
+                      try
+                      {
+                          var accessToken = await provider.GetAccessTokenAsync(token);
+                          return string.IsNullOrWhiteSpace(accessToken) ? null : new DeezSpoTag.Integrations.Tidal.TidalTargetCredentials(
+                              accessToken, await provider.GetCountryCodeAsync(token));
+                      }
+                      catch (OperationCanceledException) { throw; }
+                      catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                      {
+                          sp.GetRequiredService<ILogger<DeezSpoTag.Integrations.Tidal.TidalCatalogClient>>()
+                              .LogWarning("Tidal catalog application authentication is unavailable ({FailureType}).", ex.GetType().Name);
+                          return null;
+                      }
+                  }));
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.Tidal.TidalPlaylistSyncTarget(
                   sp.GetRequiredService<DeezSpoTag.Integrations.TargetApiTransport>(),
@@ -2049,7 +2064,11 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
                 DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
-                DedupeService = sp.GetRequiredService<DeezSpoTag.Services.Download.DownloadDedupeService>()
+                DedupeService = sp.GetRequiredService<DeezSpoTag.Services.Download.DownloadDedupeService>(),
+                Settings = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
+                SpotifyRecommendations = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyRecommendationService>(),
+                TidalCatalog = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.TidalCatalogClient>(),
+                PlatformIdentities = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformTrackIdentityResolver>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();

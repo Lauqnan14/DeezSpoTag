@@ -14,6 +14,8 @@ namespace DeezSpoTag.Core.Models.Settings;
 /// </summary>
 public class DeezSpoTagSettings
 {
+    public DailyRecommendationSettings DailyRecommendations { get; set; } = new();
+    public WeeklyRecommendationSettings WeeklyRecommendations { get; set; } = new();
     private const string ContainerDownloadsPath = "/downloads";
 
     // EXACT PORT: Core settings from deezspotag DEFAULT_SETTINGS
@@ -355,6 +357,93 @@ public class DeezSpoTagSettings
     {
         var runningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
         return string.Equals(runningInContainer, "true", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public enum DailyRecommendationAiFilterMode { Allow, BlockAiArtistsAndFullyGenerated, Strict }
+
+public sealed class DailyRecommendationSettings
+{
+    public int TrackCount { get; set; } = 60;
+    public bool ShazamEnabled { get; set; }
+    public int ShazamTrackCount { get; set; }
+    public DailyRecommendationAiFilterMode AiFilterMode { get; set; } = DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated;
+    public bool IsDisabled => !DeezerEnabled && !SpotifyEnabled && !TidalEnabled;
+    public bool DeezerEnabled { get; set; } = true;
+    public int DeezerTrackCount { get; set; } = 20;
+    public bool SpotifyEnabled { get; set; } = true;
+    public int SpotifyTrackCount { get; set; } = 20;
+    public bool TidalEnabled { get; set; } = true;
+    public int TidalTrackCount { get; set; } = 20;
+
+    public IReadOnlyDictionary<string, int> Allocations() => new Dictionary<string, int>(StringComparer.Ordinal)
+    {
+        // Retain the saved source key while its similar-song service is unavailable.
+        ["shazam"] = 0,
+        ["deezer"] = DeezerEnabled ? DeezerTrackCount : 0,
+        ["spotify"] = SpotifyEnabled ? SpotifyTrackCount : 0,
+        ["tidal"] = TidalEnabled ? TidalTrackCount : 0
+    };
+
+    public bool TryValidate(out string? error)
+    {
+        error = null;
+        if (ShazamEnabled || ShazamTrackCount != 0)
+            error = "Shazam recommendations are unavailable because its similar-song service is not functional.";
+        else if (TrackCount is < 20 or > 100)
+            error = "Daily recommendations must contain between 20 and 100 tracks.";
+        else if (!Valid(ShazamEnabled, ShazamTrackCount) || !Valid(DeezerEnabled, DeezerTrackCount)
+            || !Valid(SpotifyEnabled, SpotifyTrackCount) || !Valid(TidalEnabled, TidalTrackCount))
+            error = "Enabled recommendation sources need 1–100 tracks; disabled sources must have zero tracks.";
+        else if (!Enum.IsDefined(AiFilterMode))
+            error = "Select a valid AI filtering mode.";
+        else if (!IsDisabled && (long)ShazamTrackCount + DeezerTrackCount + SpotifyTrackCount + TidalTrackCount != TrackCount)
+            error = "Source allocations must add up to the daily track count.";
+        return error is null;
+    }
+
+    private static bool Valid(bool enabled, int count) => enabled ? count is >= 1 and <= 100 : count == 0;
+}
+
+/// <summary>
+/// Weekly recommendation settings. Each weekly type selects one platform and one track count
+/// (20–100, default 50). Unlike <see cref="DailyRecommendationSettings"/> there is no multi-source
+/// allocation to reconcile — the two types are independent.
+/// </summary>
+public sealed class WeeklyRecommendationSettings
+{
+    public WeeklyRecommendationTypeSettings MissingTopSongs { get; set; } = new();
+    public WeeklyRecommendationTypeSettings SimilarArtists { get; set; } = new();
+
+    public bool TryValidate(out string? error)
+    {
+        error = null;
+        if (!MissingTopSongs.TryValidate(out var missingError))
+            error = $"Missing Top Songs: {missingError}";
+        else if (!SimilarArtists.TryValidate(out var similarError))
+            error = $"Discover similar artists: {similarError}";
+        return error is null;
+    }
+}
+
+/// <summary>
+/// One weekly recommendation type: the platform to pull from and how many tracks to generate.
+/// </summary>
+public sealed class WeeklyRecommendationTypeSettings
+{
+    /// <summary>Source platform id. Only Spotify is offered today.</summary>
+    public string Platform { get; set; } = "spotify";
+
+    public int TrackCount { get; set; } = 50;
+
+    public bool TryValidate(out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(Platform))
+            error = "select a platform.";
+        else if (TrackCount is < 20 or > 100)
+            error = "track count must be between 20 and 100.";
+        return error is null;
     }
 }
 

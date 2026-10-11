@@ -1267,6 +1267,57 @@ public sealed class SpotifyPathfinderMetadataClient
     /// <summary>What the web player needs on every pathfinder call, as this class resolves it.</summary>
     public sealed record SpotifyWebPlayerSession(string AccessToken, string ClientToken, string ClientVersion);
 
+    /// <summary>Resolves an individual track to its Song Radio playlist using the active web-player session.</summary>
+    public async Task<string?> FetchSongRadioPlaylistUriAsync(string trackId, CancellationToken cancellationToken = default)
+    {
+        var session = await TryGetWebPlayerSessionAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Spotify Song Radio requires an available web-player session.");
+        using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestTimeout.CancelAfter(PathfinderQueryTimeout);
+        try
+        {
+            return await FetchSongRadioPlaylistUriCoreAsync(_httpClientFactory.CreateClient(), session, trackId, requestTimeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new HttpRequestException("Spotify Song Radio request timed out.", null, HttpStatusCode.RequestTimeout);
+        }
+    }
+
+    internal static async Task<string?> FetchSongRadioPlaylistUriCoreAsync(
+        HttpClient client, SpotifyWebPlayerSession session, string trackId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (trackId.Length != 22 || !trackId.All(char.IsAsciiLetterOrDigit))
+            throw new ArgumentException("Spotify Song Radio requires a valid track ID.", nameof(trackId));
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            "https://spclient.wg.spotify.com/inspiredby-mix/v2/seed_to_playlist/spotify:track:" + trackId + "?response-format=json");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+        request.Headers.Add("Client-Token", session.ClientToken);
+        request.Headers.Add("Spotify-App-Version", session.ClientVersion);
+        request.Headers.Add("App-Platform", WebPlayerAppPlatform);
+        request.Headers.UserAgent.ParseAdd(WebPlayerUserAgent);
+        request.Headers.Referrer = new Uri("https://open.spotify.com/");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var response = await client.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("mediaItems", out var items) || items.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Spotify Song Radio response is missing its playlist list.");
+        if (items.GetArrayLength() == 0) return null;
+        foreach (var item in items.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("uri", out var uri) || uri.ValueKind != JsonValueKind.String) continue;
+            var value = uri.GetString();
+            const string prefix = "spotify:playlist:";
+            if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal)
+                && value.Length == prefix.Length + 22 && value[prefix.Length..].All(char.IsAsciiLetterOrDigit)) return value;
+        }
+        throw new JsonException("Spotify Song Radio response has no valid playlist identity.");
+    }
+
     public async Task<bool> HasBlobBackedAuthContextAsync(CancellationToken cancellationToken)
     {
         string? blobPath = await TryResolveActiveSpotifyBlobPathAsync(cancellationToken);

@@ -10,6 +10,12 @@ namespace DeezSpoTag.Tests;
 
 public sealed class RecommendationSchedulingTest
 {
+    [Theory]
+    [InlineData("2026-10-10T00:01:00+03:00", "2026-10-09T21:00:00Z")]
+    [InlineData("2026-10-10T23:59:00-04:00", "2026-10-10T04:00:00Z")]
+    [InlineData("2026-10-10T12:00:00Z", "2026-10-10T00:00:00Z")]
+    public void ShazamFreshnessBeginsAtTheUsersCalendarDay(string now, string expected)
+        => Assert.Equal(DateTimeOffset.Parse(expected), LibraryRecommendationService.GetShazamDailyFreshnessBoundary(DateTimeOffset.Parse(now)));
     [Fact]
     public async Task FridayInitializesMissingWeeklySectionsPerCompletedFolderAndRetainsRetryState()
     {

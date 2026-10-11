@@ -15,7 +15,8 @@ public sealed record TidalCatalogTrack(
     string? Artist,
     string? Album,
     int? DurationMs,
-    string? Isrc);
+    string? Isrc,
+    bool? Ai = null);
 
 /// <summary>
 /// Reads TIDAL's catalog - by ISRC and by query - for identity resolution.
@@ -96,6 +97,90 @@ public sealed class TidalCatalogClient
         }
 
         return ReadTracks(json);
+    }
+
+    public async Task<TidalTrackRadioResult> GetTrackRadioAsync(string trackId, int limit, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var credentials = await _credentials(cancellationToken).ConfigureAwait(false);
+        if (!TidalTargetCredentials.IsUsable(credentials)) return new(TidalTrackRadioOutcome.Unavailable, [], "tidal_application_token_unavailable");
+        if (string.IsNullOrWhiteSpace(trackId) || !trackId.All(char.IsAsciiDigit)) return new(TidalTrackRadioOutcome.Failed, [], "tidal_invalid_seed");
+        limit = Math.Clamp(limit, 1, 300);
+        var headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + credentials!.AccessToken, ["Accept"] = "application/json" };
+        var country = Uri.EscapeDataString(credentials.Country);
+        var metadata = await _transport.GetAsync($"https://api.tidal.com/v1/tracks/{trackId}?countryCode={country}", headers, cancellationToken).ConfigureAwait(false);
+        if (!metadata.Reached || metadata.TryParseJson() is not { } seed || seed.ValueKind != JsonValueKind.Object
+            || !seed.TryGetProperty("mixes", out var mixes) || mixes.ValueKind != JsonValueKind.Object
+            || !mixes.TryGetProperty("TRACK_MIX", out var mix) || mix.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(mix.GetString()))
+            return new(TidalTrackRadioOutcome.Failed, [], "tidal_track_mix_unavailable");
+        var response = await _transport.GetAsync($"https://api.tidal.com/v1/pages/mix?mixId={Uri.EscapeDataString(mix.GetString()!)}&countryCode={country}&deviceType=BROWSER", headers, cancellationToken).ConfigureAwait(false);
+        if (!response.Reached || response.TryParseJson() is not { } page || page.ValueKind != JsonValueKind.Object
+            || !page.TryGetProperty("rows", out var rows) || rows.ValueKind != JsonValueKind.Array)
+            return new(TidalTrackRadioOutcome.Failed, [], "tidal_mix_page_unavailable");
+        var tracks = new List<TidalCatalogTrack>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var requested = new HashSet<string>(StringComparer.Ordinal);
+        var foundModule = false;
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Object || !row.TryGetProperty("modules", out var modules) || modules.ValueKind != JsonValueKind.Array)
+                return new(TidalTrackRadioOutcome.Failed, [], "tidal_malformed_mix");
+            foreach (var module in modules.EnumerateArray())
+            {
+                if (ReadString(module, "type") != "TRACK_LIST") continue;
+                foundModule = true;
+                if (!module.TryGetProperty("pagedList", out var list) || list.ValueKind != JsonValueKind.Object)
+                    return new(TidalTrackRadioOutcome.Failed, [], "tidal_malformed_mix");
+                var supportsPaging = module.TryGetProperty("supportsPaging", out var paging) && paging.ValueKind == JsonValueKind.True;
+                for (var pageIndex = 0; pageIndex < limit; pageIndex++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!list.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                        return new(TidalTrackRadioOutcome.Failed, [], "tidal_malformed_mix");
+                    foreach (var item in items.EnumerateArray())
+                    {
+                        var track = ReadRadioTrack(item);
+                        if (track is null) return new(TidalTrackRadioOutcome.Failed, [], "tidal_invalid_track");
+                        if (track.Id != trackId && seen.Add(track.Id)) tracks.Add(track);
+                        if (tracks.Count >= limit) return new(TidalTrackRadioOutcome.Ready, tracks, null);
+                    }
+                    if (!supportsPaging) break;
+                    if (!list.TryGetProperty("offset", out var offsetNode) || !offsetNode.TryGetInt32(out var offset)
+                        || !list.TryGetProperty("totalNumberOfItems", out var totalNode) || !totalNode.TryGetInt32(out var total))
+                        return new(TidalTrackRadioOutcome.Failed, [], "tidal_invalid_paging");
+                    var nextOffset = offset + items.GetArrayLength();
+                    if (nextOffset >= total) break;
+                    var path = ReadString(list, "dataApiPath");
+                    if (items.GetArrayLength() == 0 || path is null || !Uri.TryCreate(new Uri("https://api.tidal.com/v1/"), path, out var uri)
+                        || uri.Host != "api.tidal.com" || uri.Scheme != "https" || !uri.AbsolutePath.StartsWith("/v1/", StringComparison.Ordinal))
+                        return new(TidalTrackRadioOutcome.Failed, [], "tidal_invalid_paging");
+                    var url = uri.GetLeftPart(UriPartial.Path) + $"?countryCode={country}&offset={nextOffset}&limit={limit - tracks.Count}";
+                    if (!requested.Add(url)) return new(TidalTrackRadioOutcome.Failed, [], "tidal_paging_cycle");
+                    var more = await _transport.GetAsync(url, headers, cancellationToken).ConfigureAwait(false);
+                    if (!more.Reached || more.TryParseJson() is not { } next || next.ValueKind != JsonValueKind.Object)
+                        return new(TidalTrackRadioOutcome.Failed, [], "tidal_page_failed");
+                    list = next;
+                    if (pageIndex == limit - 1) return new(TidalTrackRadioOutcome.Failed, [], "tidal_paging_incomplete");
+                }
+            }
+        }
+        if (!foundModule) return new(TidalTrackRadioOutcome.Failed, [], "tidal_track_list_missing");
+        return new(tracks.Count > 0 ? TidalTrackRadioOutcome.Ready : TidalTrackRadioOutcome.Empty, tracks, tracks.Count > 0 ? null : "tidal_track_mix_empty");
+    }
+
+    private static TidalCatalogTrack? ReadRadioTrack(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object) return null;
+        var id = ReadString(item, "id");
+        var title = ReadString(item, "title");
+        if (string.IsNullOrWhiteSpace(id) || !id.All(char.IsAsciiDigit) || string.IsNullOrWhiteSpace(title)
+            || !item.TryGetProperty("duration", out var duration) || !duration.TryGetInt32(out var seconds) || seconds <= 0 || seconds > int.MaxValue / 1000) return null;
+        string? artist = null, album = null;
+        if (item.TryGetProperty("artists", out var artists) && artists.ValueKind == JsonValueKind.Array)
+            artist = string.Join(", ", artists.EnumerateArray().Select(a => ReadString(a, "name")).Where(n => !string.IsNullOrWhiteSpace(n)));
+        if (item.TryGetProperty("album", out var albumNode) && albumNode.ValueKind == JsonValueKind.Object) album = ReadString(albumNode, "title");
+        bool? ai = item.TryGetProperty("ai", out var flag) && flag.ValueKind is JsonValueKind.True or JsonValueKind.False ? flag.GetBoolean() : null;
+        return new(id, title, artist, album, seconds * 1000, ReadString(item, "isrc"), ai);
     }
 
     private static IReadOnlyDictionary<string, string> Headers(TidalTargetCredentials credentials)
@@ -394,3 +479,6 @@ public sealed class TidalCatalogClient
         return value.ValueKind is JsonValueKind.String or JsonValueKind.Number ? value.ToString() : null;
     }
 }
+
+public enum TidalTrackRadioOutcome { Ready, Empty, Unavailable, Failed }
+public sealed record TidalTrackRadioResult(TidalTrackRadioOutcome Outcome, IReadOnlyList<TidalCatalogTrack> Tracks, string? Reason);

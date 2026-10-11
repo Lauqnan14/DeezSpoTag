@@ -634,6 +634,12 @@ public class DeezSpoTagSettingsService : ISettingsService
     /// </summary>
     public void SaveSettings(DeezSpoTagSettings settings)
     {
+        settings.DailyRecommendations ??= new();
+        if (!settings.DailyRecommendations.TryValidate(out var dailyError))
+            throw new ArgumentException(dailyError, nameof(settings));
+        settings.WeeklyRecommendations ??= new();
+        if (!settings.WeeklyRecommendations.TryValidate(out var weeklyError))
+            throw new ArgumentException(weeklyError, nameof(settings));
         lock (_settingsSync)
         {
             ApplyDefaultProfileOverlay(settings);
@@ -701,6 +707,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         EnsureTemplates(settings, defaultSettings, fixes);
         EnsureTagsAndMetadata(settings, defaultSettings, fixes);
         EnsureNestedSettings(settings, fixes);
+        NormalizeDailyRecommendationSettings(settings, fixes);
         NormalizeSpotifySettings(settings, defaultSettings, fixes);
         NormalizeDownloadExecutionSettings(settings, defaultSettings, fixes);
         NormalizeDownloadEngineOrderSettings(settings, fixes);
@@ -1305,6 +1312,21 @@ public class DeezSpoTagSettingsService : ISettingsService
             normalized => settings.LyricsFallbackOrder = normalized,
             fixes,
             nameof(settings.LyricsFallbackOrder));
+    }
+
+    private static void NormalizeDailyRecommendationSettings(DeezSpoTagSettings settings, SettingsFixTracker fixes)
+    {
+        var daily = settings.DailyRecommendations;
+        if (daily is not null && !daily.ShazamEnabled && daily.ShazamTrackCount == 0)
+        {
+            return;
+        }
+
+        settings.DailyRecommendations = new DailyRecommendationSettings
+        {
+            AiFilterMode = daily?.AiFilterMode ?? DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated
+        };
+        fixes.Mark(nameof(settings.DailyRecommendations));
     }
 
     private static void EnsureApiToken(DeezSpoTagSettings settings, SettingsFixTracker fixes)

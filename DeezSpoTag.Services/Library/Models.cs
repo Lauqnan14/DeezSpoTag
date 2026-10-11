@@ -123,7 +123,10 @@ public sealed record RecommendationTrackDto(
     string? SourceUrl = null,
     string? SeedArtistId = null,
     string? DeezerId = null,
-    string? MappingStatus = null);
+    string? MappingStatus = null,
+    string? RecommendationOrigin = null,
+    IReadOnlyList<RecommendationProvenanceDto>? Provenance = null,
+    IReadOnlyList<RecommendationAiEvidenceDto>? AiEvidence = null);
 
 public sealed record RecommendationDetailDto(
     RecommendationStationDto Station,
@@ -132,7 +135,12 @@ public sealed record RecommendationDetailDto(
     string Status = "ready",
     IReadOnlyList<string>? ReasonCodes = null,
     string? Message = null,
-    IReadOnlyList<RecommendationTrackDto>? ReserveTracks = null);
+    IReadOnlyList<RecommendationTrackDto>? ReserveTracks = null,
+    int? DailyTrackCount = null,
+    IReadOnlyDictionary<string, int>? DailyAllocations = null,
+    DailyRecommendationAiFilterMode? DailyAiFilterMode = null,
+    DailyRecommendationDiagnosticsDto? Diagnostics = null,
+    int? WeeklyTrackCount = null);
 
 public sealed record RecommendationRejectionUpsertInput(
     long LibraryId,
@@ -1331,3 +1339,24 @@ public sealed record WatchlistStateDriftReport(
 
     public bool HasDrift => Total > 0;
 }
+
+[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
+public enum RecommendationAiStatus
+{
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("UNKNOWN")] Unknown,
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("AI_ARTIST")] AiArtist,
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("FULLY_AI_TRACK")] FullyAiTrack,
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("PARTIAL_AI_INVOLVEMENT")] PartialAiInvolvement
+}
+public sealed record RecommendationAiEvidenceDto(RecommendationAiStatus Status, string EvidenceSource, string EvidenceType, string Authority, DateTimeOffset ObservedAtUtc);
+public sealed record RecommendationProvenanceDto(string Provider, string ProviderTrackId, long LocalSeedTrackId, string SeedProviderTrackId, int ProviderRank);
+public sealed record DailyRecommendationCandidateDto(string Provider, string ProviderTrackId, long LocalSeedTrackId, string SeedProviderTrackId, int ProviderRank, string Title, string? Artists, string? Album, int? DurationMs, string? Isrc, IReadOnlyList<RecommendationAiEvidenceDto>? AiEvidence = null);
+public sealed record DailyRecommendationDiagnosticsDto(
+    int SeedCount,
+    IReadOnlyDictionary<string, int> ResolvedSeeds,
+    IReadOnlyDictionary<string, int> RawCandidates,
+    IReadOnlyDictionary<string, int> Rejections,
+    IReadOnlyDictionary<string, string> ProviderFailures,
+    IReadOnlyDictionary<string, int> MissingSourceCounts,
+    int DestinationCount,
+    int OverflowCount);

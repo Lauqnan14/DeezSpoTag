@@ -23,6 +23,20 @@ public sealed class WeeklyPathfinderRecommendationTest
         Assert.Equal(DateOnly.Parse(expected), method.Invoke(null, [DateOnly.Parse(day)]));
     }
 
+    [Theory]
+    [InlineData(20)]
+    [InlineData(50)]
+    [InlineData(100)]
+    public void WeeklySelectionSupportsConfiguredSectionCount(int count)
+    {
+        var rows = Enumerable.Range(1, 120).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
+            new("artist" + n, "Artist " + n), new("album", "Album", ""), SeedArtistId: "artist" + n)).ToArray();
+        var method = typeof(LibraryRecommendationService).GetMethod("SelectWeeklyArtistTracks", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var result = (IReadOnlyList<RecommendationTrackDto>)method.Invoke(null, [rows, count, new DateOnly(2026, 10, 5), "missing"])!;
+        Assert.Equal(count, result.Count);
+        Assert.Equal(count, result.Select(t => t.SeedArtistId).Distinct().Count());
+    }
+
     [Fact]
     public async Task WeeklyMembershipUsesOnlyArtistIdsFromTheRequestedFolder()
     {

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Web.Services;
@@ -15,6 +17,202 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LibraryRecommendationServiceTest
 {
+    [Theory]
+    [InlineData(20)]
+    [InlineData(50)]
+    [InlineData(100)]
+    public void DailyAllocationSurvivesDuplicatesAndRejections(int total)
+    {
+        var quotas = new Dictionary<string, int> { ["shazam"] = total / 2, ["deezer"] = total / 2 };
+        var tracks = CreateTracks("shazam", total + 1, 1).Select(t => t with { RecommendationOrigin = "shazam" })
+            .Concat(CreateTracks("deezer", total + 1, 1).Select(t => t with { RecommendationOrigin = "deezer" })).ToList();
+        var excluded = new HashSet<string> { "1" };
+        var result = LibraryRecommendationService.BuildAllocatedDailySelection(tracks, quotas, total, new DateOnly(2026, 10, 10), excluded);
+        Assert.Equal(total, result.Count);
+        Assert.Equal(total / 2, result.Count(t => t.RecommendationOrigin == "shazam"));
+        Assert.Equal(total / 2, result.Count(t => t.RecommendationOrigin == "deezer"));
+        Assert.Equal(total, result.Select(t => t.Id).Distinct().Count());
+        Assert.DoesNotContain(result, t => excluded.Contains(t.Id));
+        Assert.Equal(Enumerable.Range(1, total), result.Select(t => t.TrackPosition));
+    }
+
+    [Fact]
+    public void DailyAllocationCannotReplaceAnUnavailableSource()
+    {
+        var tracks = CreateTracks("deezer", 100, 1).Select(t => t with { RecommendationOrigin = "deezer" }).ToList();
+        var quotas = new Dictionary<string, int> { ["shazam"] = 25, ["deezer"] = 25 };
+        var result = LibraryRecommendationService.BuildAllocatedDailySelection(tracks, quotas, 50, new DateOnly(2026, 10, 10));
+        Assert.Equal(25, result.Count);
+        Assert.False(LibraryRecommendationService.HasCompleteDailyAllocation(result, quotas));
+    }
+
+    [Fact]
+    public void FourSourceAndSingleSourceAllocationsAreExact()
+    {
+        var quotas = new Dictionary<string, int> { ["shazam"] = 20, ["deezer"] = 20, ["spotify"] = 30, ["tidal"] = 30 };
+        var tracks = quotas.SelectMany((pair, index) => CreateTracks(pair.Key, 100, index * 1000 + 1).Select(t => t with { RecommendationOrigin = pair.Key })).ToList();
+        var result = LibraryRecommendationService.BuildAllocatedDailySelection(tracks, quotas, 100, new DateOnly(2026, 10, 10));
+        Assert.True(LibraryRecommendationService.HasCompleteDailyAllocation(result, quotas));
+        foreach (var pair in quotas) Assert.Equal(pair.Value, result.Count(t => t.RecommendationOrigin == pair.Key));
+        var single = LibraryRecommendationService.BuildAllocatedDailySelection(tracks, new Dictionary<string, int> { ["tidal"] = 100 }, 100, new DateOnly(2026, 10, 10));
+        Assert.Equal(100, single.Count);
+        Assert.All(single, t => Assert.Equal("tidal", t.RecommendationOrigin));
+    }
+
+    [Fact]
+    public async Task DailyCollectionNeverCallsDisabledSources()
+    {
+        var calls = new List<string>();
+        var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings();
+        await LibraryRecommendationService.CollectDailySourcesAsync(configuration, (source, count, token) =>
+        {
+            calls.Add(source);
+            Assert.Equal(60, count);
+            return Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(Array.Empty<RecommendationTrackDto>());
+        }, CancellationToken.None);
+        Assert.Equal(new[] { "deezer", "spotify", "tidal" }, calls);
+    }
+
+    [Fact]
+    public async Task DailyCollectionNeverCallsUnavailableShazamEvenWithStaleSettings()
+    {
+        var calls = new List<string>();
+        var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings
+        {
+            ShazamEnabled = true, ShazamTrackCount = 25
+        };
+        await LibraryRecommendationService.CollectDailySourcesAsync(configuration, (source, _, _) =>
+        {
+            calls.Add(source);
+            return Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(Array.Empty<RecommendationTrackDto>());
+        }, CancellationToken.None);
+        Assert.Equal(new[] { "deezer", "spotify", "tidal" }, calls);
+    }
+    [Fact]
+    public void SharedDailyRecordingRetainsAllSeedAndProviderAttribution()
+    {
+        var rows = new[] { "deezer", "spotify", "tidal" }.SelectMany(provider => new[] { 1L, 2L }.Select(seed =>
+            CreateTracks(provider, 1, 101)[0] with { RecommendationOrigin = provider,
+                Provenance = new[] { new RecommendationProvenanceDto(provider, "provider101", seed, "seed" + seed, 3) } })).ToList();
+        var merged = LibraryRecommendationService.MergeDailyRecommendationProvenance(rows);
+        var track = Assert.Single(merged);
+        Assert.Equal(6, track.Provenance!.Count);
+        var selected = LibraryRecommendationService.BuildAllocatedDailySelection(merged,
+            new Dictionary<string, int> { ["tidal"] = 1 }, 20, new DateOnly(2026, 10, 11));
+        Assert.Equal("tidal", Assert.Single(selected).RecommendationOrigin);
+        Assert.Equal(6, selected[0].Provenance!.Count);
+    }
+
+    [Fact]
+    public async Task AllDisabledMakesNoDailyProviderRequests()
+    {
+        var paused = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings { ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerEnabled = false, DeezerTrackCount = 0, SpotifyEnabled = false, SpotifyTrackCount = 0, TidalEnabled = false, TidalTrackCount = 0 };
+        var rows = await LibraryRecommendationService.CollectDailySourcesAsync(paused,
+            (_, _, _) => throw new InvalidOperationException("Disabled source called"), CancellationToken.None);
+        Assert.Empty(rows);
+    }
+
+    [Theory]
+    [InlineData(DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Allow, 6)]
+    [InlineData(DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated, 5)]
+    [InlineData(DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Strict, 4)]
+    public async Task DailyAdmissionMergesTwoSeedsAcrossProvidersAndAppliesExplicitAiPolicy(DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode mode, int expectedCount)
+    {
+        var rows = new List<RecommendationTrackDto>();
+        var sources = new Dictionary<string, string[]> { ["deezer"] = new[] { "B", "C", "D" }, ["spotify"] = new[] { "B", "E", "F" }, ["tidal"] = new[] { "B", "C", "G" } };
+        foreach (var source in sources)
+            foreach (var seed in new[] { 1L, 2L })
+                for (var rank = 0; rank < source.Value.Length; rank++)
+                {
+                    var title = source.Value[rank];
+                    var status = title == "F" ? RecommendationAiStatus.AiArtist : title == "E" ? RecommendationAiStatus.PartialAiInvolvement : RecommendationAiStatus.Unknown;
+                    var candidate = new DailyRecommendationCandidateDto(source.Key, "native" + title, seed, "seed" + seed, rank + 1,
+                        title, "Artist " + title, "Album", 180000, null,
+                        new[] { new RecommendationAiEvidenceDto(status, "fixture", "explicit_disclosure", "verified_provider_disclosure", DateTimeOffset.UnixEpoch) });
+                    var row = await LibraryRecommendationService.ResolveDailyDeezerCandidateCoreAsync(candidate, mode,
+                        (track, _) => Task.FromResult<string?>((2000 + track.Title[0]).ToString()), _ => { }, CancellationToken.None);
+                    if (row is not null) rows.Add(row);
+                }
+        var merged = LibraryRecommendationService.MergeDailyRecommendationProvenance(rows);
+        Assert.Equal(expectedCount, merged.Count);
+        Assert.Equal(6, merged.Single(t => t.Title == "B").Provenance!.Count);
+        Assert.Equal(4, merged.Single(t => t.Title == "C").Provenance!.Count);
+        Assert.All(merged, t => Assert.Equal("deezer", t.Source));
+        if (mode != DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Allow) Assert.DoesNotContain(merged, t => t.Title == "F");
+        if (mode == DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Strict) Assert.DoesNotContain(merged, t => t.Title == "E");
+    }
+
+    [Fact]
+    public async Task DailyAdmissionRejectsInvalidMetadataAndUnmatchedRecording()
+    {
+        var rejected = new List<string>();
+        var candidate = new DailyRecommendationCandidateDto("spotify", "native", 1, "seed", 1, "", "Artist", "Album", 180000, null);
+        Assert.Null(await LibraryRecommendationService.ResolveDailyDeezerCandidateCoreAsync(candidate,
+            DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Strict,
+            (_, _) => throw new InvalidOperationException("Invalid metadata must not be mapped"), rejected.Add, CancellationToken.None));
+        Assert.Equal("INVALID_METADATA", Assert.Single(rejected));
+        rejected.Clear();
+        Assert.Null(await LibraryRecommendationService.ResolveDailyDeezerCandidateCoreAsync(candidate with { Title = "Song" },
+            DeezSpoTag.Core.Models.Settings.DailyRecommendationAiFilterMode.Strict,
+            (_, _) => Task.FromResult<string?>(null), rejected.Add, CancellationToken.None));
+        Assert.Equal("NO_DEEZER_MATCH", Assert.Single(rejected));
+    }
+
+    [Fact]
+    public void ShazamSharedRecommendationPreservesEachSeedRank()
+    {
+        var track = CreateTracks("deezer", 1, 201)[0];
+        var cache = new Dictionary<long, ShazamTrackCacheDto>
+        {
+            [1] = new(1, "matched", "shazamseed1", "Seed 1", "Artist", "", new[] { track }, DateTimeOffset.UtcNow, null),
+            [2] = new(2, "matched", "shazamseed2", "Seed 2", "Artist", "", new[] { track }, DateTimeOffset.UtcNow, null)
+        };
+        var method = typeof(LibraryRecommendationService).GetMethod("BuildRecommendationsFromShazamCache", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var rows = (List<RecommendationTrackDto>)method.Invoke(null, [new long[] { 1, 2 }, cache, CancellationToken.None, 20])!;
+        var selected = Assert.Single(rows);
+        Assert.Equal(new long[] { 1, 2 }, selected.Provenance!.Select(p => p.LocalSeedTrackId).OrderBy(n => n));
+        Assert.All(selected.Provenance!, p => { Assert.Equal("shazam", p.Provider); Assert.Equal(1, p.ProviderRank); });
+    }
+
+    [Fact]
+    public void DeezerAccumulatorRetainsDuplicateDiscoveryProvenance()
+    {
+        var type = typeof(LibraryRecommendationService).GetNestedType("RecommendationAccumulator", BindingFlags.NonPublic)!;
+        var accumulator = Activator.CreateInstance(type, 20)!;
+        var method = typeof(LibraryRecommendationService).GetMethod("TryAddRecommendationTrack", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (var seed in new long[] { 1, 2 })
+        {
+            var track = CreateTracks("deezer", 1, 201)[0] with { Provenance = new[] { new RecommendationProvenanceDto("deezer", "201", seed, "seed" + seed, 1) } };
+            method.Invoke(null, [track, new HashSet<string>(), accumulator]);
+        }
+        var rows = (List<RecommendationTrackDto>)type.GetProperty("DestinationTracks")!.GetValue(accumulator)!;
+        Assert.Equal(2, Assert.Single(rows).Provenance!.Count);
+    }
+
+    [Theory]
+    [InlineData(20, 0, 0)]
+    [InlineData(0, 20, 0)]
+    [InlineData(0, 0, 20)]
+    [InlineData(10, 10, 0)]
+    [InlineData(10, 0, 10)]
+    [InlineData(0, 10, 10)]
+    [InlineData(6, 6, 8)]
+    public async Task EnabledDailySourceCombinationsRetainIndependentAllocations(int deezer, int spotify, int tidal)
+    {
+        var config = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings { TrackCount = 20, ShazamEnabled = false,
+            ShazamTrackCount = 0, DeezerEnabled = deezer > 0, DeezerTrackCount = deezer,
+            SpotifyEnabled = spotify > 0, SpotifyTrackCount = spotify, TidalEnabled = tidal > 0, TidalTrackCount = tidal };
+        var raw = await LibraryRecommendationService.CollectDailySourcesAsync(config, (source, count, _) =>
+            Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(CreateTracks(source, count, source == "deezer" ? 1 : source == "spotify" ? 1001 : 2001)
+                .Select(t => t with { RecommendationOrigin = source }).ToList()), CancellationToken.None);
+        var selected = LibraryRecommendationService.BuildAllocatedDailySelection(raw, config.Allocations(), 20, new DateOnly(2026, 10, 11));
+        Assert.Equal(20, selected.Count);
+        Assert.Equal(deezer, selected.Count(t => t.RecommendationOrigin == "deezer"));
+        Assert.Equal(spotify, selected.Count(t => t.RecommendationOrigin == "spotify"));
+        Assert.Equal(tidal, selected.Count(t => t.RecommendationOrigin == "tidal"));
+    }
+
     private static readonly MethodInfo MergeRotatingMethod = typeof(LibraryRecommendationService).GetMethod(
         "MergeRotating",
         BindingFlags.NonPublic | BindingFlags.Static)!;

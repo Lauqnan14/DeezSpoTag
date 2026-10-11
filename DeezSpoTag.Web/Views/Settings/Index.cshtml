@@ -1674,6 +1674,84 @@
                 </div>
             </div>
         </div>
+        <div class="settings-section" id="recommendations-settings">
+            <div class="settings-header"><span class="material-icons">recommend</span>Recommendations</div>
+            <div class="settings-content">
+                <h3>Daily Recommendations</h3>
+                <div class="form-group">
+                    <label for="dailyRecommendationTrackCount">Tracks per day</label>
+                    <input type="number" id="dailyRecommendationTrackCount" min="20" max="100" step="1" value="60">
+                    <div class="warning-text">Generated each day at midnight in your configured timezone. Enabled source allocations must equal the daily total.</div>
+                </div>
+                <div class="form-group">
+                    <label for="dailyRecommendationAiFilterMode">AI filtering</label>
+                    <select id="dailyRecommendationAiFilterMode">
+                        <option value="0">Allow</option>
+                        <option value="1" selected>Block AI artists and fully generated tracks</option>
+                        <option value="2">Strict</option>
+                    </select>
+                    <div class="warning-text">Filtering uses verified AI disclosures. Unclassified tracks remain eligible.</div>
+                    <div class="warning-text" id="dailyRecommendationPaused" hidden>Daily recommendations are disabled. Enable a source to resume.</div>
+                </div>
+                <div class="warning-text" id="dailyShazamUnavailable">Unavailable — Shazam's similar-song service is not functional.</div>
+                <div class="daily-source-grid">
+                    <div class="daily-source-row">
+                        <label class="daily-source-label" for="dailyShazamEnabled">
+                            <input type="checkbox" id="dailyShazamEnabled" disabled aria-describedby="dailyShazamUnavailable">
+                            <span>Shazam</span>
+                        </label>
+                        <input type="number" id="dailyShazamTrackCount" min="0" max="100" step="1" value="0" disabled aria-describedby="dailyShazamUnavailable">
+                    </div>
+                    <div class="daily-source-row">
+                        <label class="daily-source-label" for="dailyDeezerEnabled">
+                            <input type="checkbox" id="dailyDeezerEnabled" checked>
+                            <span>Deezer</span>
+                        </label>
+                        <input type="number" id="dailyDeezerTrackCount" min="0" max="100" step="1" value="20">
+                    </div>
+                    <div class="daily-source-row">
+                        <label class="daily-source-label" for="dailySpotifyEnabled">
+                            <input type="checkbox" id="dailySpotifyEnabled" checked>
+                            <span>Spotify</span>
+                        </label>
+                        <input type="number" id="dailySpotifyTrackCount" min="0" max="100" step="1" value="20">
+                    </div>
+                    <div class="daily-source-row">
+                        <label class="daily-source-label" for="dailyTidalEnabled">
+                            <input type="checkbox" id="dailyTidalEnabled" checked>
+                            <span>Tidal</span>
+                        </label>
+                        <input type="number" id="dailyTidalTrackCount" min="0" max="100" step="1" value="20">
+                    </div>
+                </div>
+                <div class="recommendations-divider"></div>
+                <h3>Weekly Recommendations</h3>
+                <div class="weekly-grid">
+                    <div class="weekly-card">
+                        <h4>Missing Top Songs</h4>
+                        <div class="weekly-field">
+                            <select id="weeklyMissingTopSongsPlatform" aria-label="Platform">
+                                <option value="spotify">Spotify</option>
+                            </select>
+                        </div>
+                        <div class="weekly-field">
+                            <input type="number" id="weeklyMissingTopSongsTrackCount" min="20" max="100" step="1" value="50" aria-label="Tracks">
+                        </div>
+                    </div>
+                    <div class="weekly-card">
+                        <h4>Discover Similar Artists</h4>
+                        <div class="weekly-field">
+                            <select id="weeklySimilarArtistsPlatform" aria-label="Platform">
+                                <option value="spotify">Spotify</option>
+                            </select>
+                        </div>
+                        <div class="weekly-field">
+                            <input type="number" id="weeklySimilarArtistsTrackCount" min="20" max="100" step="1" value="50" aria-label="Tracks">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="settings-section" id="shazam-settings">
             <div class="settings-header">
                 <span class="material-icons">mic</span>
@@ -4952,6 +5030,18 @@ function loadSettings(settings) {
     
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
+    const dailyRecommendations = settings.dailyRecommendations || { trackCount: 60, shazamEnabled: false, shazamTrackCount: 0, deezerEnabled: true, deezerTrackCount: 20, spotifyEnabled: true, spotifyTrackCount: 20, tidalEnabled: true, tidalTrackCount: 20 };
+    setFieldValue('dailyRecommendationTrackCount', dailyRecommendations.trackCount ?? 60);
+    setFieldValue('dailyRecommendationAiFilterMode', dailyRecommendations.aiFilterMode ?? 1);
+    for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
+        const key = source.toLowerCase();
+        setCheckboxValue(`daily${source}Enabled`, dailyRecommendations[`${key}Enabled`] === true);
+        setFieldValue(`daily${source}TrackCount`, dailyRecommendations[`${key}TrackCount`] ?? 0);
+    }
+    setCheckboxValue('dailyShazamEnabled', false);
+    setFieldValue('dailyShazamTrackCount', 0);
+    updateDailyRecommendationAllocation();
+    loadWeeklyRecommendations(settings.weeklyRecommendations);
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
     setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
     setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 16);
@@ -5233,6 +5323,8 @@ function collectFormData() {
         deezerLanguage: getValue('deezerLanguage', baseSettings.deezerLanguage || 'en'),
         deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
         apiToken: baseSettings.apiToken || '',
+        dailyRecommendations: collectDailyRecommendations(),
+        weeklyRecommendations: collectWeeklyRecommendations(),
         shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
         shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),
         shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 16),
@@ -5370,6 +5462,91 @@ function collectFormData() {
     return formData;
 }
 
+function collectDailyRecommendations() {
+    const daily = { trackCount: Number(document.getElementById('dailyRecommendationTrackCount').value), aiFilterMode: Number(document.getElementById('dailyRecommendationAiFilterMode').value) };
+    for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
+        const key = source.toLowerCase();
+        daily[`${key}Enabled`] = document.getElementById(`daily${source}Enabled`).checked;
+        daily[`${key}TrackCount`] = Number(document.getElementById(`daily${source}TrackCount`).value);
+    }
+    daily.shazamEnabled = false;
+    daily.shazamTrackCount = 0;
+    return daily;
+}
+
+const WEEKLY_RECOMMENDATION_TYPES = [
+    { id: 'MissingTopSongs', label: 'Missing Top Songs' },
+    { id: 'SimilarArtists',  label: 'Discover Similar Artists' }
+];
+
+function collectWeeklyRecommendations() {
+    const weekly = { missingTopSongs: { platform: 'spotify', trackCount: 0 }, similarArtists: { platform: 'spotify', trackCount: 0 } };
+    for (const type of WEEKLY_RECOMMENDATION_TYPES) {
+        const key = type.id === 'MissingTopSongs' ? 'missingTopSongs' : 'similarArtists';
+        weekly[key] = {
+            platform: document.getElementById(`weekly${type.id}Platform`).value,
+            trackCount: Number(document.getElementById(`weekly${type.id}TrackCount`).value)
+        };
+    }
+    return weekly;
+}
+
+function updateWeeklyRecommendationTotal() {
+    const weekly = collectWeeklyRecommendations();
+    const missing = weekly.missingTopSongs.trackCount;
+    const similar = weekly.similarArtists.trackCount;
+    let valid = Number.isInteger(missing) && missing >= 20 && missing <= 100
+        && Number.isInteger(similar) && similar >= 20 && similar <= 100;
+    return valid;
+}
+
+function loadWeeklyRecommendations(weekly) {
+    const resolved = weekly || {};
+    for (const type of WEEKLY_RECOMMENDATION_TYPES) {
+        const key = type.id === 'MissingTopSongs' ? 'missingTopSongs' : 'similarArtists';
+        const entry = resolved[key] || {};
+        setFieldValue(`weekly${type.id}Platform`, entry.platform || 'spotify');
+        setFieldValue(`weekly${type.id}TrackCount`, entry.trackCount ?? 50);
+    }
+    updateWeeklyRecommendationTotal();
+}
+
+function updateDailyRecommendationAllocation() {
+    const daily = collectDailyRecommendations();
+    let total = 0;
+    let valid = Number.isInteger(daily.trackCount) && daily.trackCount >= 20 && daily.trackCount <= 100;
+    for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
+        const key = source.toLowerCase();
+        const enabled = daily[`${key}Enabled`];
+        const count = daily[`${key}TrackCount`];
+        document.getElementById(`daily${source}TrackCount`).disabled = !enabled;
+        valid = valid && Number.isInteger(count) && (enabled ? count >= 1 && count <= 100 : count === 0);
+        total += count;
+    }
+    const paused = !['shazam', 'deezer', 'spotify', 'tidal'].some(source => daily[`${source}Enabled`]);
+    document.getElementById('dailyRecommendationPaused').hidden = !paused;
+    valid = valid && (paused ? total === 0 : total === daily.trackCount);
+    return valid;
+}
+
+document.addEventListener('change', (event) => {
+    if (!event.target?.closest('#recommendations-settings')) return;
+    for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
+        if (event.target.id === `daily${source}Enabled` && !event.target.checked) {
+            document.getElementById(`daily${source}TrackCount`).value = '0';
+        }
+    }
+    updateDailyRecommendationAllocation();
+    if (event.target.matches('.weekly-field input, .weekly-field select')) {
+        updateWeeklyRecommendationTotal();
+    }
+});
+document.addEventListener('input', (event) => {
+    if (!event.target?.closest('#recommendations-settings')) return;
+    updateDailyRecommendationAllocation();
+    if (event.target.matches('.weekly-field input')) updateWeeklyRecommendationTotal();
+});
+
 async function saveSettings(showSuccessToast = true) {
     if (settingsSaveInFlight) {
         settingsSaveQueued = true;
@@ -5379,6 +5556,8 @@ async function saveSettings(showSuccessToast = true) {
 
     settingsSaveInFlight = true;
     try {
+        if (!updateDailyRecommendationAllocation()) throw new Error('Daily source allocations must be valid and equal the total (20–100).');
+        if (!updateWeeklyRecommendationTotal()) throw new Error('Weekly track counts must be between 20 and 100.');
         const settings = collectFormData();
         const response = await fetch('/api/settings', {
             method: 'POST',
