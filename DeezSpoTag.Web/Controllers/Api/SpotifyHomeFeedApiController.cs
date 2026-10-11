@@ -237,13 +237,13 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     }
 
     [HttpGet("sections")]
-    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, CancellationToken cancellationToken = default, [FromQuery] bool refresh = false)
     {
         try
         {
             var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
-            if (settings.SpotifyHomeFeedCacheEnabled &&
+            if (!refresh && settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, ResolveHomeFeedCacheTtl(settings), out var cachedFeed))
             {
                 var cachedSections = await EnsureTrendingSectionAsync(cacheKey, cachedFeed.Greeting, cachedFeed.Sections, cancellationToken);
@@ -253,7 +253,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             var homeFeed = await FetchSelectedHomeFeedAsync(timeZone, cancellationToken);
             var sections = homeFeed.Sections;
-            if (sections.Count > 0 && settings.SpotifyHomeFeedCacheEnabled)
+            if (homeFeed.Success && settings.SpotifyHomeFeedCacheEnabled)
             {
                 StoreHomeFeedCache(cacheKey, homeFeed.Greeting, sections);
             }
@@ -938,7 +938,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var finalSections = AddTrendingSection(selectedSections, await trendingTask);
 
         return new HomeFeedSelection(
-            finalSections.Count > 0,
+            blobResult.Success || legacyResult.Success,
             greeting ?? string.Empty,
             finalSections,
             blobResult.Sections.Count,
