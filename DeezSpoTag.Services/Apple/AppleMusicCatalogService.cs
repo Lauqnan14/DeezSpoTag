@@ -68,6 +68,41 @@ public sealed class AppleMusicCatalogService
         _cache = cache;
     }
 
+    public async Task<JsonDocument> GetBrowsePageAsync(string pagePath, string storefront, string language, CancellationToken cancellationToken, bool refresh = false)
+    {
+        var path = Uri.UnescapeDataString(pagePath.TrimStart('/'));
+        if (pagePath.StartsWith("//", StringComparison.Ordinal)
+            || !Regex.IsMatch(path, @"^(search|new(?:/top-charts)?|room/[0-9]+|grouping/[0-9]+|curator/[\p{L}\p{N}-]+/[0-9]+)$", RegexOptions.CultureInvariant, RegexTimeout)
+            || !Regex.IsMatch(storefront, "^[a-zA-Z]{2}$", RegexOptions.CultureInvariant, RegexTimeout))
+        {
+            throw new ArgumentException("Unsupported Apple Music browse path or storefront.");
+        }
+        storefront = storefront.ToLowerInvariant();
+        return await GetCachedJsonAsync($"apple:browse:{storefront}:{language}:{path}", path == "search" ? TimeSpan.FromHours(24) : path == "new" ? TimeSpan.FromHours(4) : TimeSpan.FromMinutes(15), async () =>
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://music.apple.com/{storefront}/{path}?l={Uri.EscapeDataString(language)}");
+            request.Headers.TryAddWithoutValidation(UserAgentHeader, GetRandomUserAgent());
+            request.Headers.TryAddWithoutValidation(AcceptLanguageHeader, language);
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using var document = ParseBrowsePage(await response.Content.ReadAsStringAsync(cancellationToken));
+            return document.RootElement.GetRawText();
+        }, refresh);
+    }
+
+    private static JsonDocument ParseBrowsePage(string html)
+    {
+        var match = CreateRegex("<script\\b[^>]*\\bid=[\"']serialized-server-data[\"'][^>]*>(?<json>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Match(html);
+        if (!match.Success) throw new JsonException("Apple Music structured browse data is unavailable.");
+        var document = JsonDocument.Parse(match.Groups["json"].Value);
+        if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        {
+            document.Dispose();
+            throw new JsonException("Apple Music browse data has an unsupported structure.");
+        }
+        return document;
+    }
+
     public Task<string> GetAuthorizationTokenAsync(CancellationToken cancellationToken)
         => GetTokenAsync(cancellationToken);
 
@@ -1399,9 +1434,9 @@ public sealed class AppleMusicCatalogService
         return trimmed.Length > 0 && (trimmed[0] == '{' || trimmed[0] == '[');
     }
 
-    private async Task<JsonDocument> GetCachedJsonAsync(string cacheKey, TimeSpan ttl, Func<Task<string>> fetch)
+    private async Task<JsonDocument> GetCachedJsonAsync(string cacheKey, TimeSpan ttl, Func<Task<string>> fetch, bool refresh = false)
     {
-        if (_cache.TryGetValue(cacheKey, out string? cached) && !string.IsNullOrWhiteSpace(cached))
+        if (!refresh && _cache.TryGetValue(cacheKey, out string? cached) && !string.IsNullOrWhiteSpace(cached))
         {
             return JsonDocument.Parse(cached);
         }

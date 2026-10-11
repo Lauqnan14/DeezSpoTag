@@ -2439,10 +2439,100 @@ function scheduleTracklistNoticeAutoHide(messageKey) {
     }, tracklistNoticeAutoHideMs);
 }
 
+function isHomeTrendingTracklistView() {
+    return isSpotifyHomeTrendingSourceId(tracklistId)
+        && ['spotify', 'apple', 'ytmusic'].includes(tracklistSource);
+}
+
+function renderHomeTrendingPlatformTabs() {
+    if (!isHomeTrendingTracklistView()) return '';
+    return `<div class="tracklist-actions" aria-label="Trending songs platform">${[
+        ['spotify', 'Spotify'], ['apple', 'Apple Music'], ['ytmusic', 'YouTube Music']
+    ].map(([source, label]) => `<a class="btn ${source === tracklistSource ? 'btn-primary' : 'btn-secondary'} action-btn" ${source === tracklistSource ? 'aria-current="page"' : ''} href="/Tracklist?id=home-trending-songs&type=playlist&source=${source}">${label}</a>`).join('')}</div>`;
+}
+
+async function loadBrowseTrendingTracklist() {
+    resetSpotifyState();
+    const provider = tracklistSource === 'apple' ? 'apple' : 'youtube';
+    const response = await fetch(`/api/${provider}/browse/sections`);
+    if (!response.ok) throw new Error('Trending songs unavailable');
+    const payload = await response.json();
+    const section = (payload.sections || []).find(section => section.role === 'trending');
+    if (!section) throw new Error('Trending songs unavailable');
+    const tracks = (section.items || []).map(item => {
+        const youtubeId = String(item.id || item.videoId || '');
+        const apple = tracklistSource === 'apple';
+        return {
+            id: apple ? String(item.appleId || item.id || '') : '',
+            appleId: apple ? String(item.appleId || item.id || '') : '',
+            title: item.title || '',
+            artist: { name: item.artist || item.subtitle || '' },
+            album: { title: item.albumName || item.album || '', cover_medium: item.coverUrl || '', cover_big: item.coverUrl || '' },
+            link: apple ? (item.appleUrl || item.url || '') : `https://music.youtube.com/watch?v=${encodeURIComponent(youtubeId)}`,
+            preview: apple ? (item.previewUrl || item.preview_url || item.preview || `apple-browse:${item.appleId || item.id || ''}`) : (/^[A-Za-z0-9_-]{11}$/.test(youtubeId) ? `/api/youtube/browse/stream?id=${encodeURIComponent(youtubeId)}` : ''),
+            duration: item.durationSeconds || 0
+        };
+    });
+    await loadIgnoredTracks();
+    renderTracklist({ title: 'Trending songs', creator: { name: tracklistSource === 'apple' ? 'Apple Music' : 'YouTube Music' }, cover_big: tracks[0]?.album.cover_big || '', tracks, nb_tracks: tracks.length }, { allowEmptyTracks: true });
+    await hydrateBrowseTrackMetadata(tracks, section.items || [], payload.storefront);
+}
+
+async function hydrateBrowseTrackMetadata(tracks, items, storefront) {
+    let nextMetadataIndex = 0;
+    await Promise.all(Array.from({ length: Math.min(4, tracks.length) }, async () => {
+        while (nextMetadataIndex < tracks.length) {
+            const index = nextMetadataIndex++;
+            const track = tracks[index];
+            if (track.album.title && track.duration > 0) continue;
+            const item = items[index];
+            const id = String(item.appleId || item.id || item.videoId || '');
+            try {
+                let url;
+                if (tracklistSource === 'apple') {
+                    let appleUrl = track.link;
+                    if (appleUrl.startsWith('/') && !/^\/[a-z]{2}\//i.test(appleUrl)) appleUrl = `/${storefront}${appleUrl}`;
+                    if (appleUrl.startsWith('/')) appleUrl = `https://music.apple.com${appleUrl}`;
+                    url = `/api/apple/tracklist?${new URLSearchParams({ type: 'track', id, appleUrl })}`;
+                } else {
+                    url = `/api/youtube/browse/metadata?id=${encodeURIComponent(id)}`;
+                }
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Recording metadata unavailable');
+                const metadata = await response.json();
+                const detail = tracklistSource === 'apple' ? metadata.tracklist?.tracks?.[0] : metadata.track;
+                if (!detail || String(tracklistSource === 'apple' ? detail.id : detail.videoId) !== id) throw new Error('Recording metadata identity mismatch');
+                if (!track.album.title) track.album.title = tracklistSource === 'apple' ? detail.album?.title || '' : detail.album || '';
+                if (!(track.duration > 0)) track.duration = tracklistSource === 'apple' ? detail.duration || 0 : detail.durationSeconds || 0;
+                const row = document.querySelector(`#tracks-table-body tr[data-track-index="${index}"]`);
+                if (row && row.dataset.availabilityUrl === track.link) {
+                    const albumCell = row.querySelector('.track-album');
+                    if (albumCell) albumCell.textContent = track.album.title || 'Unknown';
+                    const durationCell = row.querySelector('.track-duration');
+                    if (durationCell) durationCell.textContent = formatTrackDurationSeconds(track.duration);
+                    const checkbox = row.querySelector('.track-checkbox');
+                    if (checkbox) {
+                        checkbox.dataset.trackAlbum = track.album.title;
+                        checkbox.dataset.trackDurationMs = String(track.duration * 1000);
+                    }
+                    row.dataset.availabilityDuration = track.duration > 0 ? String(track.duration * 1000) : '';
+                }
+            } catch (error) {
+                console.warn('Trending recording metadata unavailable', error);
+            }
+        }
+    }));
+}
+
 async function loadTracklist() {
     try {
         console.log('Loading tracklist:', tracklistType, tracklistId);
         await preloadMonitoredPlaylistTrackStatuses();
+
+        if (isHomeTrendingTracklistView() && tracklistSource !== 'spotify') {
+            await loadBrowseTrendingTracklist();
+            return;
+        }
 
         if (tracklistSource === 'mix' || tracklistSource === 'meloday') {
             await loadMixTracklist();
@@ -2484,7 +2574,7 @@ async function loadTracklist() {
             return;
         }
 
-        if (tracklistSource === 'youtube') {
+        if (tracklistSource === 'youtube' || tracklistSource === 'ytmusic') {
             await loadYouTubeTracklist();
             return;
         }
@@ -2707,6 +2797,7 @@ async function loadYouTubeTracklist() {
 
     await loadIgnoredTracks();
     renderTracklist(payload.tracklist, { allowEmptyTracks: true });
+    await hydrateBrowseTrackMetadata(payload.tracklist.tracks || [], (payload.tracklist.tracks || []).map(track => ({ id: track.videoId })));
 }
 
 function resolveExternalPlaylistUrl() {
@@ -3654,6 +3745,7 @@ function renderTracklist(data, options = {}) {
         : '';
     container.innerHTML = `
         <div class="tracklist-content">
+            ${renderHomeTrendingPlatformTabs()}
             <div class="tracklist-header" style="background-image: url('${backgroundImage}')">
                 <div class="tracklist-header-content">
                     <div class="tracklist-cover">
@@ -7192,6 +7284,15 @@ function buildTracklistPlaybackRequest(control) {
             const currentRow = control.closest('tr');
             if (!currentRow) {
                 return { url: '', silentUnavailable: true };
+            }
+
+            if (resolvedPreviewUrl.startsWith('apple-browse:')) {
+                const params = new URLSearchParams({ id: resolvedPreviewUrl.slice('apple-browse:'.length), type: 'track' });
+                const response = await fetch(`/api/apple/browse/preview?${params}`);
+                const data = await response.json();
+                if (!response.ok || !data.success || !data.previewUrl) throw new Error(data.error || 'Preview unavailable.');
+                resolvedPreviewUrl = data.previewUrl;
+                control.setAttribute('data-preview', resolvedPreviewUrl);
             }
 
             if (!resolvedPreviewUrl) {

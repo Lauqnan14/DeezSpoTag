@@ -6,6 +6,50 @@
     let requestSequence = 0;
     const externalResolutionCache = new Map();
 
+    // Ported from Vivi Music 6.0.8 MusicService.kt, vivimusic Project (C) 2026,
+    // GPL-3.0: once-per-session non-music skipping and the existing skip toast.
+    function clearNonMusicSkipping(session) {
+        if (!session) return;
+        global.clearInterval(session.nonMusicTimer);
+        session.nonMusicAbort?.abort();
+        session.nonMusicTimer = null;
+        session.nonMusicSegments = [];
+        session.nonMusicSkipped = null;
+    }
+
+    async function loadNonMusicSkipping(session, resolvedUrl) {
+        let url;
+        try { url = new URL(resolvedUrl, global.location.href); } catch { return; }
+        const id = url.searchParams.get('id');
+        if (url.origin !== global.location.origin || url.pathname !== '/api/youtube/browse/stream'
+            || !/^[A-Za-z0-9_-]{11}$/.test(id || '')) return;
+        session.nonMusicAbort = new AbortController();
+        try {
+            const response = await global.fetch(`/api/youtube/browse/segments?id=${encodeURIComponent(id)}`, { signal: session.nonMusicAbort.signal });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (currentSession !== session || !Array.isArray(data.segments)) return;
+            session.nonMusicSegments = data.segments.filter(segment => typeof segment.uuid === 'string' && segment.uuid
+                && Number.isFinite(segment.startSeconds) && Number.isFinite(segment.endSeconds)
+                && segment.startSeconds >= 0 && segment.endSeconds > segment.startSeconds)
+                .sort((a, b) => a.startSeconds - b.startSeconds);
+            session.nonMusicSkipped = new Set();
+            session.nonMusicTimer = global.setInterval(() => {
+                if (currentSession !== session || audio.paused || audio.ended || !Number.isFinite(audio.duration)) return;
+                const segment = session.nonMusicSegments.find(item => item.endSeconds <= audio.duration
+                    && audio.currentTime >= item.startSeconds && audio.currentTime < item.endSeconds - 0.3
+                    && !session.nonMusicSkipped.has(item.uuid));
+                if (!segment) return;
+                try {
+                    audio.currentTime = segment.endSeconds;
+                    if (Math.abs(audio.currentTime - segment.endSeconds) > 0.3) return;
+                    session.nonMusicSkipped.add(segment.uuid);
+                    notify('Skipped non-music section', 'info');
+                } catch { /* Keep playback running when seeking is unavailable. */ }
+            }, 250);
+        } catch { /* Segment lookup never blocks playback. */ }
+    }
+
     function trim(value) {
         return String(value || '').trim();
     }
@@ -338,6 +382,7 @@
         }
 
         const previous = currentSession;
+        clearNonMusicSkipping(previous);
         currentSession = null;
         clearAudioSource();
         emitState(previous.request, reason, { reason });
@@ -350,6 +395,7 @@
         }
 
         const finished = currentSession;
+        clearNonMusicSkipping(finished);
         const nextFactory = typeof finished.request.getNextRequest === 'function'
             ? finished.request.getNextRequest
             : null;
@@ -508,6 +554,7 @@
         }
 
         const previous = currentSession;
+        clearNonMusicSkipping(previous);
         currentSession = null;
         clearAudioSource();
         emitState(previous.request, 'idle', { reason: 'switch' });
@@ -570,6 +617,7 @@
             emitState(request, 'playing', { url: resolvedUrl });
             return true;
         } catch {
+            clearNonMusicSkipping(currentSession?.id === requestId ? currentSession : null);
             if (!isSessionCurrent(requestId)) {
                 return false;
             }
@@ -616,6 +664,7 @@
             return false;
         }
 
+        void loadNonMusicSkipping(session, resolved.url);
         return await startConfiguredPlayback(request, requestId, resolved.url);
     }
 

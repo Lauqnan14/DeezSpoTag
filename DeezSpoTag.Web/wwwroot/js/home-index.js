@@ -38,6 +38,13 @@ let spotifyHomeItemSeq = 0;
 let homeTrendingWatchSeq = 0;
 let homeLoadRequestSeq = 0;
 let spotifyHomeCategories = [];
+let homeYouTubeSections = [];
+let homeYouTubeStatus = 'loading';
+let homeAppleSections = [];
+let homeAppleStatus = 'loading';
+let homeSpotifyStatus = 'loading';
+let homeTrendingProvider = 'spotify';
+let homeLatestSections = [];
 const homeTrendingPreviewState = {
     trackKey: null,
     button: null,
@@ -727,6 +734,10 @@ async function playHomeTrendingTrackInApp(button) {
         return;
     }
 
+    if (playButton.dataset.youtubeId) {
+        return HomeViewHelpers.playYouTubeBrowse(playButton);
+    }
+
     const player = globalThis.DeezerUnifiedPlayback;
     if (!player || typeof player.play !== 'function') {
         return;
@@ -1292,6 +1303,7 @@ async function fetchHomeSections(channel, refreshEnabled) {
 }
 
 function renderHomeSectionsWithLazyImages(sections) {
+    homeLatestSections = sections;
     renderHomeSections(sections);
     observeLazyImages(document.getElementById('home-sections'));
     syncHomeTrendingPlaybackFromSession();
@@ -1306,6 +1318,13 @@ async function loadHomeData() {
         const refreshEnabled = refresh === '1' || refresh === 'true' || refresh === 'yes';
 
         const spotifyPending = channel ? null : fetchSpotifyHomeEnhancements(refreshEnabled);
+        homeLatestSections = [];
+        if (!channel) {
+            homeAppleStatus = 'loading';
+            homeSpotifyStatus = 'loading';
+            void loadAppleHomeSections(requestId);
+            void loadYouTubeHomeSections(requestId);
+        }
 
         const sections = await fetchHomeSections(channel, refreshEnabled);
         if (requestId !== homeLoadRequestSeq) {
@@ -1325,6 +1344,112 @@ async function loadHomeData() {
             container.innerHTML = '<div class="empty-section">Failed to load home sections</div>';
         }
     }
+}
+
+async function loadYouTubeHomeSections(requestId) {
+    homeYouTubeStatus = 'loading';
+    try {
+        const response = await fetch('/api/youtube/browse/sections');
+        const data = await response.json();
+        if (requestId !== homeLoadRequestSeq) return;
+        if (!response.ok || !data.success) throw new Error(data.error || 'YouTube Music unavailable');
+        homeYouTubeSections = data.sections || [];
+        homeYouTubeStatus = 'ready';
+    } catch (error) {
+        if (requestId !== homeLoadRequestSeq) return;
+        homeYouTubeSections = [];
+        homeYouTubeStatus = 'error';
+    }
+    if (homeLatestSections.length) renderHomeSectionsWithLazyImages(homeLatestSections);
+}
+
+function renderYouTubeHomeTrending() {
+    if (homeYouTubeStatus !== 'ready') return `<div class="empty-section">${homeYouTubeStatus === 'loading' ? 'Loading YouTube Music...' : 'YouTube Music unavailable'}</div>`;
+    const section = homeYouTubeSections.find(s => s.role === 'trending');
+    return ((section?.items || []).map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeTrendingSongItem)).join('') || '<div class="empty-section">No YouTube Music trending chart available</div>');
+}
+
+function renderYouTubeFeaturedPlaylists() {
+    let content;
+    if (homeYouTubeStatus !== 'ready') {
+        content = `<div class="empty-section">${homeYouTubeStatus === 'loading' ? 'Loading YouTube Music...' : 'YouTube Music unavailable'}</div>`;
+    } else {
+        const seen = new Set();
+        const playlists = homeYouTubeSections.filter(section => section.role !== 'trending' && section.role !== 'videos')
+            .flatMap(section => section.items || []).filter(item => {
+                const id = String(item.browseId || item.id || '');
+                if (item.type !== 'playlist' || !id || seen.has(id)) return false;
+                seen.add(id);
+                return true;
+            });
+        content = playlists.map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem)).join('')
+            || '<div class="empty-section">No YouTube Music featured playlists available</div>';
+    }
+    return `<section class="home-section" id="home-youtube-featured-playlists"><div class="home-section-title">Featured playlists · YouTube Music</div><div class="home-row">${content}</div></section>`;
+}
+
+function renderYouTubeHomeRows() {
+    if (homeYouTubeStatus !== 'ready') return '';
+    return homeYouTubeSections.filter(section => section.role !== 'trending' && section.role !== 'videos'
+        && String(section.title || '').trim().toLowerCase() !== 'new music videos')
+        .map(section => ({ ...section, items: (section.items || []).filter(item => item.type !== 'playlist' && item.type !== 'video' && item.type !== 'browse-category') }))
+        .filter(section => section.items.length)
+        .map(section => `<section class="home-section"><div class="home-section-title">${escapeHtml(section.title)} · YouTube Music</div><div class="home-row">${section.items.map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem)).join('')}</div></section>`).join('');
+}
+
+function openYouTubeCategory(id, parameters) {
+    globalThis.location.href = `/Categories?provider=ytmusic&id=${id}&parameters=${parameters}`;
+}
+
+async function loadAppleHomeSections(requestId) {
+    try {
+        const response = await fetch('/api/apple/browse/sections');
+        const data = await response.json();
+        if (requestId !== homeLoadRequestSeq) return;
+        if (!response.ok || !data.success || !Array.isArray(data.sections)) throw new Error(data.error || 'Apple Music browse unavailable');
+        homeAppleSections = data.sections;
+        homeAppleStatus = 'ready';
+    } catch (error) {
+        if (requestId !== homeLoadRequestSeq) return;
+        homeAppleSections = [];
+        homeAppleStatus = 'error';
+        console.warn('Apple Music home sections unavailable:', error);
+    }
+    if (homeLatestSections.length) renderHomeSectionsWithLazyImages(homeLatestSections);
+}
+
+function renderHomeTrendingProviders() {
+    return `<div class="home-trending-providers" role="group" aria-label="Trending Songs provider">
+        ${['spotify', 'apple', 'ytmusic'].map(provider => `<button type="button" class="home-filter-btn" aria-pressed="${homeTrendingProvider === provider}" onclick="selectHomeTrendingProvider('${provider}')">${provider === 'apple' ? 'Apple Music' : provider === 'ytmusic' ? 'YouTube Music' : 'Spotify'}</button>`).join('')}
+    </div>`;
+}
+
+function selectHomeTrendingProvider(provider) {
+    if (provider !== 'spotify' && provider !== 'apple' && provider !== 'ytmusic') return;
+    homeTrendingProvider = provider;
+    renderHomeSectionsWithLazyImages(homeLatestSections);
+}
+
+function renderAppleHomeTrending() {
+    if (homeAppleStatus === 'loading') return '<div class="empty-section">Loading Apple Music Trending Songs...</div>';
+    if (homeAppleStatus === 'error') return '<div class="empty-section">Apple Music Trending Songs unavailable</div>';
+    const items = homeAppleSections.find(section => section.role === 'trending')?.items || [];
+    return items.map(HomeViewHelpers.renderAppleBrowseItem).join('') || '<div class="empty-section">No Apple Music Trending Songs available</div>';
+}
+
+function renderAppleHomeRows() {
+    if (homeAppleStatus !== 'ready') {
+        return `<section class="home-section home-apple-section"><div class="empty-section">${homeAppleStatus === 'error' ? 'Apple Music browse unavailable' : 'Loading Apple Music browse...'}</div></section>`;
+    }
+    return ['new-this-week', 'recent-releases', 'updated-playlists', 'videos'].map(role => {
+        const section = homeAppleSections.find(entry => entry.role === role);
+        if (!section?.items?.length) return '';
+        const video = role === 'videos';
+        return `<section class="home-section home-apple-section" data-apple-role="${role}">
+            <div class="home-section-title">${escapeHtml(section.title)} <span class="home-apple-provider">Apple Music</span></div>
+            <div class="${video ? 'home-apple-videos' : 'home-row'}">${section.items.map(video ? HomeViewHelpers.renderAppleBrowseItem : renderHomeItem).join('')}</div>
+        </section>`;
+    }).join('');
 }
 
 async function fetchSpotifyHomeJson(path) {
@@ -1394,7 +1519,9 @@ async function applySpotifyHomeEnhancements(pending, baseSections, requestId) {
         ? mapSpotifyHomeCategories(categoriesResult.value?.categories)
         : [];
 
+    homeSpotifyStatus = sectionsResult.status === 'rejected' ? 'error' : 'ready';
     if (spotifySections.length === 0 && spotifyHomeCategories.length === 0) {
+        renderHomeSectionsWithLazyImages(baseSections);
         return;
     }
 
@@ -1628,22 +1755,27 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
     const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
         ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
         : '';
-    const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : '';
-    const trendingWatchKey = meta.isTrendingSongs
+    const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : meta.isTopGenres && !isChannelPage ? ' id="home-categories"' : '';
+    const trendingWatchKey = meta.isTrendingSongs && (isChannelPage || homeTrendingProvider === 'spotify')
         ? cacheHomeTrendingWatchMeta(section, meta.filteredItems)
         : '';
     const titleHtml = trendingWatchKey
         ? `<button type="button" class="home-section-title home-section-title--action" data-home-trending-tracklist="${trendingWatchKey}">${escapeHtml(section.title || '')}</button>`
-        : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
+        : meta.isTrendingSongs
+            ? `<a class="home-section-title home-section-title--action" href="/Tracklist?id=home-trending-songs&type=playlist&source=${encodeURIComponent(homeTrendingProvider)}">${escapeHtml(section.title || '')}</a>`
+            : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
     const topGenres = meta.isTopGenres ? renderHomeTopGenresCards(meta, isChannelPage) : null;
-    let sectionItemsHtml = meta.filteredItems.map(item => renderHomeSectionCardItem(item, meta)).join('');
+    let sectionItemsHtml = meta.isTrendingSongs ? '' : meta.filteredItems.map(item => renderHomeSectionCardItem(item, meta)).join('');
     if (meta.isTopGenres && topGenres) {
         sectionItemsHtml = topGenres.cards;
     } else if (meta.isTrendingSongs) {
-        sectionItemsHtml = meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('');
+        sectionItemsHtml = !isChannelPage && homeTrendingProvider !== 'spotify'
+            ? (homeTrendingProvider === 'ytmusic' ? renderYouTubeHomeTrending() : renderAppleHomeTrending())
+            : meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('');
     }
-    const rowClass = meta.isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
-    const rowStyle = meta.isSpaceAware
+    const isSpaceAware = meta.isSpaceAware && (isChannelPage || !meta.isTrendingSongs || homeTrendingProvider === 'spotify');
+    const rowClass = isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
+    const rowStyle = isSpaceAware
         ? `style="--home-space-aware-count:${meta.filteredItems.length}; --home-space-aware-min:${resolveHomeSectionRowSpaceAwareMin(meta.rowClass)};"`
         : '';
     const deezerItemsAttr = topGenres ? topGenres.deezerItemsAttr : '';
@@ -1651,6 +1783,7 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
     return `
         <div class="home-section"${sectionIdAttr}>
             ${titleHtml}
+            ${meta.isTrendingSongs && !isChannelPage ? renderHomeTrendingProviders() : ''}
             ${filtersHtml}
             <div class="${rowClass}" ${rowStyle} ${deezerItemsAttr}>
                 ${sectionItemsHtml}
@@ -2168,6 +2301,16 @@ function renderHomeSections(sections) {
     container.innerHTML = sectionsToRender
         .map((entry, index) => renderHomeSectionEntry(entry, index, isChannelPage))
         .join('');
+    if (!isChannelPage) {
+        if (!sectionsToRender.some(entry => entry.meta.isTrendingSongs)) {
+            const trendingItems = homeTrendingProvider === 'ytmusic' ? renderYouTubeHomeTrending() : homeTrendingProvider === 'apple' ? renderAppleHomeTrending()
+                : `<div class="empty-section">${homeSpotifyStatus === 'loading' ? 'Loading Spotify Trending Songs...' : homeSpotifyStatus === 'error' ? 'Spotify Trending Songs unavailable' : 'No Spotify Trending Songs available'}</div>`;
+            container.insertAdjacentHTML('afterbegin', `<div class="home-section" id="home-trending"><div class="home-section-title">Trending Songs</div>${renderHomeTrendingProviders()}<div class="home-trending-grid">${trendingItems}</div></div>`);
+        }
+        container.querySelector('#home-categories')?.insertAdjacentHTML('afterend', renderYouTubeFeaturedPlaylists());
+        container.insertAdjacentHTML('beforeend', renderYouTubeHomeRows());
+        container.insertAdjacentHTML('beforeend', renderAppleHomeRows());
+    }
 
     setupHomeFilters(sectionsToRender.map(entry => entry.section));
     scheduleHomeTrendingTrackMappingWarmup();
@@ -2788,6 +2931,9 @@ function buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, p
     });
     const playAttrs = [];
     playAttrs.push('data-home-trending-track="true"');
+    if (String(item.source || '').toLowerCase() === 'ytmusic' && /^[A-Za-z0-9_-]{11}$/.test(String(item.id || item.videoId || ''))) {
+        playAttrs.push(`data-youtube-id="${escapeHtml(item.id || item.videoId)}"`, `data-cover="${escapeHtml(item.coverUrl || item.image || '')}"`);
+    }
 
     if (deezerTrackId) {
         playAttrs.push(`data-deezer-id="${escapeHtml(deezerTrackId)}"`);
@@ -2900,7 +3046,7 @@ function renderHomeTrendingSongItem(item) {
     const deezerTrackId = resolveHomeTrendingDeezerTrackId(item, itemSource, itemType);
     const previewUrl = (item.preview_url || item.previewUrl || item.preview || '').toString().trim();
     const spotifyTrackUrl = resolveHomeTrendingSpotifyTrackUrl(item, itemSource, itemType);
-    const canPlay = Boolean(deezerTrackId || spotifyTrackUrl || previewUrl);
+    const canPlay = Boolean(deezerTrackId || spotifyTrackUrl || previewUrl || (itemSource === 'ytmusic' && /^[A-Za-z0-9_-]{11}$/.test(String(item.id || item.videoId || ''))));
     const coverMarkup = cover
         ? `<img src="${escapeHtml(cover)}" alt="${altText}" loading="lazy" decoding="async" />`
         : '<div class="home-top-song-item__placeholder"></div>';

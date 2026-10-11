@@ -581,6 +581,9 @@ public partial class Program
         // unauthenticated, never touches the user's YouTube account, and costs no Data API quota,
         // so it must not inherit an OAuth token the Data API client would attach.
         services.AddHttpClient<DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient>();
+        services.AddSingleton<DeezSpoTag.Web.Services.YouTubePlaybackResolver>();
+        services.AddHttpClient("YouTubeStreaming", client => client.Timeout = TimeSpan.FromSeconds(30))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
           services.AddSingleton<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>();
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.YouTube.YouTubeMusicPlaylistSyncTarget(
@@ -1608,6 +1611,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyUserContextAccessor, DeezSpoTag.Web.Services.SpotifyUserContextAccessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserStateProvider>();
         services.AddSingleton<DeezSpoTag.Services.Apple.AppleMusicCatalogService>();
+        services.AddHostedService<DeezSpoTag.Web.Services.AppleBrowseRefreshHostedService>();
+        services.AddHostedService<DeezSpoTag.Web.Services.YouTubeBrowseRefreshHostedService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
         services.AddSingleton<
             DeezSpoTag.Services.Download.Utils.ISpotifyLyricsAuthProvider,

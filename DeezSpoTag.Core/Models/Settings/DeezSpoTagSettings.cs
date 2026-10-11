@@ -279,6 +279,8 @@ public class DeezSpoTagSettings
     public bool TrackAvailabilityColumnEnabled { get; set; } = false;
     public string DeezerLanguage { get; set; } = "en";
     public string DeezerCountry { get; set; } = "US";
+    public string YouTubeMusicCountry { get; set; } = "";
+    public string YouTubeExtractorPath { get; set; } = "yt-dlp";
     public string ApiToken { get; set; } = string.Empty;
 
     // Watchlist settings
