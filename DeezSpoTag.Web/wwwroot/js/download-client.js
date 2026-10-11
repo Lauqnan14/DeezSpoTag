@@ -2258,18 +2258,7 @@ DeezSpoTag.DownloadClient = {
     },
 
     showNotification(message, type = 'info', options = {}) {
-        // Use existing notification system or create one
-        if (globalThis.DeezSpoTag?.showNotification) {
-            globalThis.DeezSpoTag.showNotification(message, type, options);
-            return;
-        }
-
-        const toast = document.createElement('div');
-        const safeType = ['success', 'error', 'warning', 'info'].includes(type) ? type : 'info';
-        toast.className = `toast toast-${safeType}`;
-        toast.textContent = message;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
+        globalThis.DeezSpoTag.ui.showToast(message, { ...options, type });
     },
 
     showQueueToast(message, type = 'success') {

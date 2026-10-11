@@ -7453,20 +7453,7 @@ async function downloadSingleTrackFromRow(button) {
 }
 
 function showTracklistToast(message, type = 'info', options = {}) {
-    if (window.DeezSpoTag?.showNotification) {
-        window.DeezSpoTag.showNotification(message, type, options);
-        return;
-    }
-    if (window.DeezSpoTag?.ui?.showToast) {
-        window.DeezSpoTag.ui.showToast(message, { type });
-        return;
-    }
-    const toast = document.createElement('div');
-    const safeType = (type || 'info').toString().toLowerCase();
-    toast.className = `toast toast-${safeType}`;
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
+    window.DeezSpoTagDownload.showNotification(message, type, options);
 }
 
 function formatTracklistDescription(text) {
