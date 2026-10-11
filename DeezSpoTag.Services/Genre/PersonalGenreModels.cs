@@ -21,6 +21,11 @@ public enum PersonalGenreTaxonKind
 {
     Genre,
     Style,
+    /// <summary>
+    /// Legacy storage value. Musical sub-genre is <see cref="Style"/>. This member
+    /// remains so older JSON and database rows still deserialize. New
+    /// classification does not emit it.
+    /// </summary>
     Substyle,
     Context,
     Scene,
@@ -111,6 +116,13 @@ public sealed record GenreTagObservation(
     public bool WasNormalized
         => OriginalValue is not null
            && !string.Equals(OriginalValue, RawValue, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The physical tag this value was read from, such as STYLE or SUBGENRE.
+    /// Null means the semantic <see cref="InputField"/> is the only location known.
+    /// Style and sub-genre names are storage locations for one musical dimension.
+    /// </summary>
+    public string? PhysicalTag { get; init; }
 }
 
 /// <summary>
@@ -206,6 +218,9 @@ public sealed record PersonalGenreAliasRule(string Alias, string Canonical);
 /// </summary>
 public sealed record PersonalGenreSettings(
     bool Enabled = true,
+    // Retired stored value. Older profiles and the database column still carry
+    // it. Nothing in cleanup, preview, or file writing reads it to drop or hide
+    // genres. Do not apply it as a display cap or a cleanup cap.
     int MaxGenres = 3,
     bool PreserveUnmappedTags = true,
     bool IncludeParentGenres = false,
@@ -264,7 +279,8 @@ public sealed record PreservedTagValue(
     string Value,
     PersonalGenreTaxonKind InputField,
     int Order,
-    GenreObservationOrigin Origin);
+    GenreObservationOrigin Origin,
+    string? PhysicalTag = null);
 
 /// <summary>
 /// Why one value found in a file ended up where it did.

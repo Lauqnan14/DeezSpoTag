@@ -496,12 +496,13 @@ ORDER BY kind, name COLLATE NOCASE, id;
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var normalizedKind = taxon.ContextOnly
-            && taxon.Kind is PersonalGenreTaxonKind.Genre
-                or PersonalGenreTaxonKind.Style
-                or PersonalGenreTaxonKind.Substyle
-            ? PersonalGenreTaxonKind.Context
+        var requestedKind = taxon.Kind == PersonalGenreTaxonKind.Substyle
+            ? PersonalGenreTaxonKind.Style
             : taxon.Kind;
+        var normalizedKind = taxon.ContextOnly
+            && requestedKind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
+            ? PersonalGenreTaxonKind.Context
+            : requestedKind;
         var contextOnly = taxon.ContextOnly
             || normalizedKind is PersonalGenreTaxonKind.Context
                 or PersonalGenreTaxonKind.Scene
@@ -1835,7 +1836,8 @@ LIMIT 1;
         {
             "genre" => PersonalGenreTaxonKind.Genre,
             "style" => PersonalGenreTaxonKind.Style,
-            "substyle" => PersonalGenreTaxonKind.Substyle,
+            // Legacy rows used Substyle for musical sub-genre. That is Style.
+            "substyle" => PersonalGenreTaxonKind.Style,
             "context" => PersonalGenreTaxonKind.Context,
             "scene" => PersonalGenreTaxonKind.Scene,
             "language" => PersonalGenreTaxonKind.Language,

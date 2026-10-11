@@ -118,7 +118,8 @@ public sealed record GenreIntelligenceResolutionContext(
             // is carried forward. It was normalized the same way, so a blocked value
             // in either snapshot stays blocked and is never resurrected.
             originalObservations: NormalizedPre?.Observations,
-            removedByNormalization: RemovedByNormalization);
+            removedByNormalization: RemovedByNormalization,
+            blockedIdentities: Normalization.BlockList);
 }
 
 /// <summary>

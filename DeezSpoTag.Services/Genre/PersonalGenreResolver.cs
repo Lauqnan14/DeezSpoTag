@@ -33,10 +33,10 @@ namespace DeezSpoTag.Services.Genre;
 /// <item>Preserved unknown.</item>
 /// </list>
 ///
-/// <para>A blocked value never reaches any classification stage. There is no product
-/// requirement that lets a user rule resurrect a value their own block list forbids,
-/// so the preprocessing removal is final: no rule, mapping or lock is consulted for
-/// it, and it is recorded as a blocked decision instead.</para>
+/// <para>A blocked identity is removed before classification and cannot be recreated
+/// by an alias, a mapping, a rule, or parent derivation. A lock is an explicit user
+/// assignment and may still place that identity. The final filter drops every other
+/// blocked classification before the resolution becomes authoritative.</para>
 ///
 /// <para>POST-CLASSIFICATION:</para>
 /// <list type="bullet">
@@ -61,9 +61,11 @@ public static class PersonalGenreResolver
         PersonalGenreSettings? settings = null,
         IReadOnlyList<GenreArtistLocationContext>? artistLocations = null,
         IReadOnlyList<GenreTagObservation>? originalObservations = null,
-        IReadOnlyList<RemovedGenreTagValue>? removedByNormalization = null)
+        IReadOnlyList<RemovedGenreTagValue>? removedByNormalization = null,
+        IReadOnlyCollection<string>? blockedIdentities = null)
     {
         settings ??= new PersonalGenreSettings();
+        var blockedKeys = BuildBlockedKeys(blockedIdentities);
         var effective = (observations ?? Array.Empty<GenreTagObservation>())
             .Where(item => !string.IsNullOrWhiteSpace(item.RawValue))
             .Select((item, index) => item with
@@ -125,7 +127,7 @@ public static class PersonalGenreResolver
         for (var index = 0; index < effective.Count; index++)
         {
             var observation = effective[index];
-            var attempt = ResolveObservation(observation, effectiveMappings, effectiveRules, catalog);
+            var attempt = ResolveObservation(observation, effectiveMappings, effectiveRules, catalog, blockedKeys);
             var reason = artistLocations is { Count: > 0 }
                 ? attempt.Reason + " " + DescribeLocationSupport(observation.RawValue, artistLocations)
                 : attempt.Reason;
@@ -169,18 +171,36 @@ public static class PersonalGenreResolver
                         observation.RawValue,
                         observation.InputField,
                         observation.Order,
-                        observation.Origin));
+                        observation.Origin,
+                        observation.PhysicalTag));
                 }
 
                 continue;
             }
 
-            candidates.Add(new Candidate(attempt.Taxon, observation.InputField, observation.Order, index));
+            if (IsBlocked(attempt.Taxon, blockedKeys))
+            {
+                decisions[index] = decisions[index] with
+                {
+                    Outcome = "blocked",
+                    TaxonId = null,
+                    CanonicalValue = null,
+                    Reason = $"'{attempt.Taxon.Name}' is blocked. A mapping, alias or classification cannot recreate it."
+                };
+                continue;
+            }
+
+            var taxon = UnifyKind(attempt.Taxon);
+            candidates.Add(new Candidate(taxon, Unify(observation.InputField), observation.Order, index));
         }
 
         var classifications = Collect(candidates);
         classifications = ApplyLocks(classifications, locks ?? Array.Empty<PersonalGenreLock>(), catalog);
-        classifications = IncludeParentGenresIfRequested(classifications, locks ?? Array.Empty<PersonalGenreLock>(), settings, catalog);
+        classifications = IncludeParentGenresIfRequested(
+            classifications, locks ?? Array.Empty<PersonalGenreLock>(), settings, catalog, blockedKeys);
+        classifications = classifications
+            .Where(item => item.UserLocked || !IsBlocked(item, catalog, blockedKeys))
+            .ToList();
 
         var ordered = classifications
             .OrderByDescending(item => item.UserLocked)
@@ -189,13 +209,16 @@ public static class PersonalGenreResolver
             .ToList();
 
         var marked = MarkLocksAndParents(ordered, candidates);
+        // MaxGenres is a retired stored setting. It is not read here.
         var genres = marked
             .Where(item => item.Kind == PersonalGenreTaxonKind.Genre)
-            .Take(Math.Clamp(settings.MaxGenres, 1, 10))
             .Select(item => item.Name)
             .ToList();
-        var styles = marked.Where(item => item.Kind == PersonalGenreTaxonKind.Style).Select(item => item.Name).ToList();
-        var substyles = marked.Where(item => item.Kind == PersonalGenreTaxonKind.Substyle).Select(item => item.Name).ToList();
+        var styles = marked
+            .Where(item => item.Kind is PersonalGenreTaxonKind.Style or PersonalGenreTaxonKind.Substyle)
+            .Select(item => item.Name)
+            .ToList();
+        var substyles = Array.Empty<string>();
         var contexts = marked.Where(item => item.Kind == PersonalGenreTaxonKind.Context).Select(item => item.Name).ToList();
         var scenes = marked.Where(item => item.Kind == PersonalGenreTaxonKind.Scene).Select(item => item.Name).ToList();
         var languages = marked.Where(item => item.Kind == PersonalGenreTaxonKind.Language).Select(item => item.Name).ToList();
@@ -326,7 +349,11 @@ public static class PersonalGenreResolver
                 original.RawValue.Trim(),
                 original.InputField,
                 0,
-                GenreObservationOrigin.PreservedOriginal);
+                GenreObservationOrigin.PreservedOriginal)
+            {
+                PhysicalTag = original.PhysicalTag,
+                OriginalValue = original.OriginalValue
+            };
             if (ResolveObservation(probe, mappings, rules, catalog).Taxon is not null)
             {
                 // The taxonomy understands this value. A platform replacing it is
@@ -345,12 +372,39 @@ public static class PersonalGenreResolver
         GenreTagObservation observation,
         IReadOnlyList<PersonalGenreMapping> mappings,
         IReadOnlyList<PersonalGenreRule> rules,
-        PersonalGenreCatalog catalog)
+        PersonalGenreCatalog catalog,
+        HashSet<string>? blockedKeys = null)
     {
+        blockedKeys ??= new HashSet<string>(StringComparer.Ordinal);
         var normalized = PersonalGenreTaxonomy.Normalize(observation.RawValue);
         if (normalized.Length == 0)
         {
             return new ResolutionAttempt(null, null, "unmapped", "The value contained no usable characters.");
+        }
+
+        // An overloaded label is chosen by the input field before a user rule.
+        // When the field does not identify one identity, a rule or mapping may.
+        // Otherwise the value stays ambiguous. Insertion order never chooses.
+        string? overloadedAmbiguity = null;
+        var label = catalog.LookupLabel(observation.RawValue);
+        if (label.Status == PersonalGenreCatalog.LabelLookupStatus.Ambiguous
+            && GenreTaxonomyReconciliations.TrySelect(observation.InputField, label.Candidates, out var selected, out var selectionReason))
+        {
+            if (selected is not null)
+            {
+                if (IsBlocked(selected, blockedKeys))
+                {
+                    return new ResolutionAttempt(
+                        null,
+                        null,
+                        "blocked",
+                        $"'{selected.Name}' is blocked. A mapping, alias or classification cannot recreate it.");
+                }
+
+                return new ResolutionAttempt(selected, null, "canonical_match", selectionReason);
+            }
+
+            overloadedAmbiguity = selectionReason;
         }
 
         var rule = rules
@@ -363,7 +417,16 @@ public static class PersonalGenreResolver
 
         if (rule is not null && catalog.TryGetById(rule.TargetTaxonId, out var ruleTaxon))
         {
-            return new ResolutionAttempt(ruleTaxon, rule.Id, "rule_applied", $"Applied user rule {rule.Id}.");
+            if (IsBlocked(ruleTaxon, blockedKeys))
+            {
+                return new ResolutionAttempt(null, rule.Id, "blocked", $"User rule {rule.Id} targets '{ruleTaxon.Name}', which is blocked.");
+            }
+
+            return new ResolutionAttempt(
+                UnifyKind(ruleTaxon),
+                rule.Id,
+                "rule_applied",
+                DescribeIdentityChange(observation, catalog, ruleTaxon, $"Explicit user rule {rule.Id}"));
         }
 
         var mapping = mappings
@@ -388,6 +451,15 @@ public static class PersonalGenreResolver
 
             if (catalog.TryGetById(mapping.TargetTaxonId, out var mappedTaxon))
             {
+                if (IsBlocked(mappedTaxon, blockedKeys))
+                {
+                    return new ResolutionAttempt(
+                        null,
+                        null,
+                        "blocked",
+                        $"User mapping {mapping.Id} targets '{mappedTaxon.Name}', which is blocked.");
+                }
+
                 if (mapping.Action == PersonalGenreMappingAction.ContextOnly)
                 {
                     return new ResolutionAttempt(
@@ -397,8 +469,17 @@ public static class PersonalGenreResolver
                         $"Rule {mapping.Id} restricts this value to Context.");
                 }
 
-                return new ResolutionAttempt(mappedTaxon, null, "mapping_applied", $"Applied user mapping {mapping.Id}.");
+                return new ResolutionAttempt(
+                    UnifyKind(mappedTaxon),
+                    null,
+                    "mapping_applied",
+                    DescribeIdentityChange(observation, catalog, mappedTaxon, $"Explicit user mapping {mapping.Id}"));
             }
+        }
+
+        if (overloadedAmbiguity is not null)
+        {
+            return new ResolutionAttempt(null, null, "ambiguous", overloadedAmbiguity);
         }
 
         // The researched catalog is consulted before the built-in vocabulary because
@@ -454,13 +535,16 @@ public static class PersonalGenreResolver
                 _ => "canonical_match"
             };
 
+            var located = observation.PhysicalTag is { Length: > 0 }
+                ? $" Read from {observation.PhysicalTag}."
+                : string.Empty;
             return new ResolutionAttempt(
-                matched,
+                UnifyKind(matched),
                 null,
                 outcome,
-                match.ViaAlias
+                (match.ViaAlias
                     ? $"'{observation.RawValue}' is an alias of {matched.Name}."
-                    : $"Matched {(match.IsCustom ? "personal" : "canonical")} term {matched.Name}.");
+                    : $"Matched {(match.IsCustom ? "personal" : "canonical")} term {matched.Name}.") + located);
         }
 
         return new ResolutionAttempt(
@@ -475,7 +559,7 @@ public static class PersonalGenreResolver
         var output = new List<PersonalGenreClassification>();
         foreach (var group in candidates.GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase))
         {
-            var taxon = group.First().Taxon;
+            var taxon = UnifyKind(group.First().Taxon);
             var fields = group
                 .Select(item => item.InputField)
                 .Distinct()
@@ -484,7 +568,9 @@ public static class PersonalGenreResolver
             output.Add(new PersonalGenreClassification(
                 taxon.Id,
                 taxon.Name,
-                taxon.Kind,
+                taxon.Kind == PersonalGenreTaxonKind.Substyle
+                    ? PersonalGenreTaxonKind.Style
+                    : taxon.Kind,
                 fields,
                 UserLocked: false,
                 Status: "suggested"));
@@ -554,8 +640,12 @@ public static class PersonalGenreResolver
         IReadOnlyList<PersonalGenreClassification> classifications,
         IReadOnlyList<PersonalGenreLock> locks,
         PersonalGenreSettings settings,
-        PersonalGenreCatalog catalog)
+        PersonalGenreCatalog catalog,
+        HashSet<string> blockedKeys)
     {
+        // Parent links exist only on the built-in taxonomy. The researched master
+        // does not publish parents, so this walk is incomplete and must not be
+        // treated as a researched hierarchy or as Style Construction.
         if (!settings.IncludeParentGenres)
         {
             return classifications.ToList();
@@ -582,6 +672,7 @@ public static class PersonalGenreResolver
             {
                 if (!catalog.TryGetById(parentId, out var parent)
                     || parent.Kind != PersonalGenreTaxonKind.Genre
+                    || IsBlocked(parent, blockedKeys)
                     || output.Any(item => string.Equals(item.TaxonId, parent.Id, StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
@@ -657,7 +748,74 @@ public static class PersonalGenreResolver
     }
 
     private static bool InputFieldMatches(PersonalGenreTaxonKind? configured, PersonalGenreTaxonKind observed)
-        => configured is null || configured.Value == observed;
+        => configured is null || Unify(configured.Value) == Unify(observed);
+
+    private static PersonalGenreTaxonKind Unify(PersonalGenreTaxonKind kind)
+        => kind == PersonalGenreTaxonKind.Substyle ? PersonalGenreTaxonKind.Style : kind;
+
+    private static PersonalGenreTaxon UnifyKind(PersonalGenreTaxon taxon)
+        => taxon.Kind == PersonalGenreTaxonKind.Substyle
+            ? taxon with { Kind = PersonalGenreTaxonKind.Style }
+            : taxon;
+
+    private static HashSet<string> BuildBlockedKeys(IReadOnlyCollection<string>? blockedIdentities)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        if (blockedIdentities == null)
+        {
+            return keys;
+        }
+
+        foreach (var value in blockedIdentities)
+        {
+            var key = PersonalGenreTaxonomy.Normalize(value);
+            if (key.Length > 0)
+            {
+                keys.Add(key);
+            }
+        }
+
+        return keys;
+    }
+
+    private static bool IsBlocked(PersonalGenreTaxon taxon, HashSet<string> blockedKeys)
+    {
+        if (blockedKeys.Count == 0)
+        {
+            return false;
+        }
+
+        if (blockedKeys.Contains(PersonalGenreTaxonomy.Normalize(taxon.Name))
+            || blockedKeys.Contains(PersonalGenreTaxonomy.Normalize(taxon.Id)))
+        {
+            return true;
+        }
+
+        return taxon.Aliases?.Any(alias => blockedKeys.Contains(PersonalGenreTaxonomy.Normalize(alias))) == true;
+    }
+
+    private static bool IsBlocked(
+        PersonalGenreClassification classification,
+        PersonalGenreCatalog catalog,
+        HashSet<string> blockedKeys)
+        => catalog.TryGetById(classification.TaxonId, out var taxon)
+           && IsBlocked(taxon, blockedKeys);
+
+    private static string DescribeIdentityChange(
+        GenreTagObservation observation,
+        PersonalGenreCatalog catalog,
+        PersonalGenreTaxon target,
+        string actor)
+    {
+        catalog.TryMatch(observation.RawValue, out var source);
+        var from = source is null
+            ? observation.RawValue
+            : $"{source.Name}/{Unify(source.Kind)}";
+        var located = observation.PhysicalTag is { Length: > 0 }
+            ? $" Read from {observation.PhysicalTag}."
+            : string.Empty;
+        return $"{actor} changed canonical identity from {from} to {target.Name}/{Unify(target.Kind)}.{located}";
+    }
 
     private sealed record ResolutionAttempt(
         PersonalGenreTaxon? Taxon,

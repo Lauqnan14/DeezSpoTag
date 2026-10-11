@@ -7,8 +7,9 @@ namespace DeezSpoTag.Services.Genre;
 /// <remarks>
 /// <para>
 /// The researched master supplies Genre and Style recognition. It does not replace
-/// the built-in taxonomy, because it has no Context, Scene, Language or Substyle
-/// equivalents and those dimensions are live. It also does not replace the built-in
+/// the built-in taxonomy, because it has no Context, Scene or Language
+/// equivalents and those dimensions stay live. Sub-genre is Style, not a third
+/// musical kind. It also does not replace the built-in
 /// ids: a saved user lock, mapping or rule refers to an id, so where a built-in term
 /// and a researched term are the same musical thing the built-in id and display
 /// spelling are kept and only the classification is adopted.
@@ -36,7 +37,7 @@ public sealed class PersonalGenreCatalog
     private static readonly Lazy<CatalogBase> Base = new(BuildBase, isThreadSafe: true);
 
     private readonly IReadOnlyDictionary<string, PersonalGenreTaxon> _byId;
-    private readonly IReadOnlyDictionary<string, CatalogEntry> _byLookup;
+    private readonly IReadOnlyDictionary<string, IReadOnlyList<CatalogEntry>> _byLookup;
 
     /// <summary>
     /// The shared read-only catalog: built-ins plus the researched vocabulary.
@@ -114,10 +115,18 @@ public sealed class PersonalGenreCatalog
     /// Matches a value and reports how it matched, so a decision can distinguish a
     /// canonical term from a user's own and name the alias that was used.
     /// </summary>
+    /// <remarks>
+    /// A label with more than one semantic identity does not match. Callers that
+    /// need the candidates use <see cref="LookupLabel"/>. Insertion order is not
+    /// a way to pick one of them.
+    /// </remarks>
     public bool TryMatch(string? value, out PersonalGenreTaxon taxon, out CatalogMatch match)
     {
-        if (_byLookup.TryGetValue(Normalize(value), out var entry))
+        var lookup = LookupLabel(value);
+        if (lookup.Status == LabelLookupStatus.Unique
+            && _byLookup.TryGetValue(Normalize(value), out var entries))
         {
+            var entry = entries[0];
             taxon = entry.Taxon;
             match = new CatalogMatch(entry.IsCustom, entry.MatchedValue, entry.MatchedAlias);
             return true;
@@ -127,6 +136,34 @@ public sealed class PersonalGenreCatalog
         match = default;
         return false;
     }
+
+    /// <summary>
+    /// Resolves a visible label without choosing among several identities.
+    /// </summary>
+    public LabelLookup LookupLabel(string? value)
+    {
+        if (!_byLookup.TryGetValue(Normalize(value), out var entries) || entries.Count == 0)
+        {
+            return new LabelLookup(LabelLookupStatus.None, []);
+        }
+
+        var candidates = entries
+            .GroupBy(entry => entry.Taxon.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First().Taxon)
+            .ToList();
+        var status = candidates.Count == 1 ? LabelLookupStatus.Unique : LabelLookupStatus.Ambiguous;
+        return new LabelLookup(status, candidates);
+    }
+
+    /// <summary>Every lookup key that names more than one taxon, with the match path of each.</summary>
+    public IReadOnlyList<LookupCollision> LookupCollisions()
+        => _byLookup
+            .Where(pair => pair.Value.Select(entry => entry.Taxon.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            .Select(pair => new LookupCollision(
+                pair.Key,
+                pair.Value.Select(entry => new LookupCollisionMember(entry.Taxon, entry.MatchedAlias is not null)).ToList()))
+            .OrderBy(item => item.Key, StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>Whether the research decided this value is not a Genre or a Style.</summary>
     public bool IsResearchedExclusion(string? value)
@@ -143,6 +180,23 @@ public sealed class PersonalGenreCatalog
         => ResearchedGenreCatalog.Current.AmbiguityReason(value);
 
     /// <summary>How a value matched the taxonomy.</summary>
+    public enum LabelLookupStatus
+    {
+        None,
+        Unique,
+        Ambiguous
+    }
+
+    /// <summary>A label lookup that refuses to pick a winner when several identities share it.</summary>
+    public readonly record struct LabelLookup(LabelLookupStatus Status, IReadOnlyList<PersonalGenreTaxon> Candidates);
+
+    /// <summary>One normalized label that currently indexes more than one taxon.</summary>
+    public sealed record LookupCollision(string Key, IReadOnlyList<LookupCollisionMember> Members);
+
+    /// <summary>One taxon reached by an overloaded lookup key.</summary>
+    public sealed record LookupCollisionMember(PersonalGenreTaxon Taxon, bool ViaAlias);
+
+    /// <summary>How a value matched the taxonomy.</summary>
     public readonly record struct CatalogMatch(bool IsCustom, string MatchedValue, string? MatchedAlias)
     {
         /// <summary>True when the value matched through an alias rather than the term's own name or id.</summary>
@@ -153,7 +207,7 @@ public sealed class PersonalGenreCatalog
 
     private sealed record CatalogBase(
         IReadOnlyList<PersonalGenreTaxon> Taxa,
-        IReadOnlyDictionary<string, CatalogEntry> Lookup,
+        IReadOnlyDictionary<string, IReadOnlyList<CatalogEntry>> Lookup,
         IReadOnlyDictionary<string, PersonalGenreTaxon> ById);
 
     private static string Normalize(string? value)
@@ -170,12 +224,17 @@ public sealed class PersonalGenreCatalog
     }
 
     private static PersonalGenreTaxon NormalizeTaxon(PersonalGenreTaxon taxon)
-        => taxon.ContextOnly
-           && taxon.Kind is PersonalGenreTaxonKind.Genre
-               or PersonalGenreTaxonKind.Style
-               or PersonalGenreTaxonKind.Substyle
+    {
+        if (taxon.Kind == PersonalGenreTaxonKind.Substyle)
+        {
+            taxon = taxon with { Kind = PersonalGenreTaxonKind.Style };
+        }
+
+        return taxon.ContextOnly
+           && taxon.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
             ? taxon with { Kind = PersonalGenreTaxonKind.Context }
             : taxon;
+    }
 
     /// <summary>
     /// Merges the researched master into the built-in taxonomy.
@@ -184,8 +243,10 @@ public sealed class PersonalGenreCatalog
     /// A built-in term that the research also covers keeps its id, its display
     /// spelling and its parents, and adopts only the researched kind and regions.
     /// That is what lets a saved lock keep working while the classification becomes
-    /// the researched one. A researched term the built-ins do not have is added as
-    /// a new entry.
+    /// the researched one. A researched Genre or Style whose label is already a
+    /// Context, Scene or Language is added beside it, with a distinct id when the
+    /// built-in id has to stay. A researched term the built-ins do not have is
+    /// added as a new entry.
     /// </remarks>
     private static CatalogBase BuildBase()
     {
@@ -193,17 +254,6 @@ public sealed class PersonalGenreCatalog
         var researched = ResearchedGenreCatalog.Current;
 
         var merged = new List<PersonalGenreTaxon>(builtIns.Count + researched.Terms.Count);
-
-        // Every built-in id and name is claimed up front, not only the ones the
-        // research happens to match. A researched term may share an id with a
-        // built-in non-musical dimension without sharing its meaning, and a duplicate
-        // id would break saved locks outright, so the built-in keeps it.
-        var claimed = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var builtIn in builtIns)
-        {
-            claimed.Add(Normalize(builtIn.Name));
-            claimed.Add(Normalize(builtIn.Id));
-        }
 
         foreach (var builtIn in builtIns)
         {
@@ -243,14 +293,33 @@ public sealed class PersonalGenreCatalog
 
         foreach (var term in researched.Terms)
         {
-            var key = Normalize(term.Name);
-            if (claimed.Contains(key) || claimed.Contains(Normalize(term.Id)))
+            var nameKey = Normalize(term.Name);
+            var idKey = Normalize(term.Id);
+            // A built-in Genre or Style with this name already carries the musical
+            // identity. A Context, Scene or Language with the same label does not.
+            var represented = merged.Any(item =>
+                item.Kind is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
+                && (Normalize(item.Name) == nameKey || Normalize(item.Id) == idKey));
+            if (represented)
             {
                 continue;
             }
 
+            var runtimeId = term.Id.Trim();
+            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase)))
+            {
+                // The saved built-in id stays on the non-musical identity.
+                runtimeId = term.Id.Trim() + "-" + term.Kind.ToLowerInvariant();
+            }
+
+            if (merged.Any(item => string.Equals(item.Id, runtimeId, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Researched {term.Kind} '{term.Name}' ({term.Id}) has no free runtime id.");
+            }
+
             merged.Add(NormalizeTaxon(new PersonalGenreTaxon(
-                term.Id,
+                runtimeId,
                 term.Name,
                 Enum.Parse<PersonalGenreTaxonKind>(term.Kind),
                 ParentIds: null,
@@ -258,6 +327,8 @@ public sealed class PersonalGenreCatalog
                 Aliases: term.Aliases.Count > 0 ? term.Aliases.ToArray() : null,
                 Regions: term.Regions.Count > 0 ? term.Regions.ToArray() : null)));
         }
+
+        GenreTaxonomyReconciliations.EnsureNoSuppressedMusicalIdentities(merged, researched);
 
         var byId = merged.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
         // Nothing in the shared base is user-defined, so no id here is custom. The
@@ -271,17 +342,16 @@ public sealed class PersonalGenreCatalog
     /// Builds the value lookup.
     /// </summary>
     /// <remarks>
-    /// A term's own name and id are indexed before its aliases, and the first writer
-    /// wins, so an exact canonical name always beats an alias. That is also what makes
-    /// a researched canonical outrank a spelling variant that reconciles onto it, and
-    /// it is why the researched alias entries can be merged into the same table rather
-    /// than needing their own precedence pass.
+    /// A term's own name and id are indexed before its aliases. An alias does not
+    /// replace a canonical name and does not add a second identity. Two taxa that
+    /// each own the same visible label are both indexed. Neither one wins because
+    /// it was inserted first.
     /// </remarks>
-    private static Dictionary<string, CatalogEntry> BuildLookup(
+    private static Dictionary<string, IReadOnlyList<CatalogEntry>> BuildLookup(
         IReadOnlyList<PersonalGenreTaxon> taxa,
         IReadOnlySet<string> customIds)
     {
-        var result = new Dictionary<string, CatalogEntry>(taxa.Count * 2, StringComparer.Ordinal);
+        var result = new Dictionary<string, List<CatalogEntry>>(taxa.Count * 2, StringComparer.Ordinal);
 
         foreach (var taxon in taxa)
         {
@@ -304,17 +374,39 @@ public sealed class PersonalGenreCatalog
             }
         }
 
-        return result;
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<CatalogEntry>)pair.Value,
+            StringComparer.Ordinal);
 
         void Add(PersonalGenreTaxon taxon, string value, bool isCustom, string? alias)
         {
             var normalized = Normalize(value);
-            if (normalized.Length == 0 || result.ContainsKey(normalized))
+            if (normalized.Length == 0)
             {
                 return;
             }
 
-            result[normalized] = new CatalogEntry(taxon, isCustom, value, alias);
+            if (!result.TryGetValue(normalized, out var entries))
+            {
+                entries = [];
+                result[normalized] = entries;
+            }
+
+            if (entries.Any(entry => string.Equals(entry.Taxon.Id, taxon.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            // An alias is a spelling of one identity. It must not hide a canonical
+            // name and it must not invent a second identity for a label that
+            // already has one.
+            if (alias is not null && entries.Count > 0)
+            {
+                return;
+            }
+
+            entries.Add(new CatalogEntry(taxon, isCustom, value, alias));
         }
     }
 }

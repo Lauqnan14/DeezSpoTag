@@ -80,7 +80,8 @@ public sealed class ResearchedGenreCatalog
         IReadOnlyList<ResearchedGenreAlias> aliases,
         IReadOnlyDictionary<string, string> exclusions,
         IReadOnlyDictionary<string, string> ambiguities,
-        IReadOnlyDictionary<string, string> reconciledSpellings)
+        IReadOnlyDictionary<string, string> reconciledSpellings,
+        IReadOnlyDictionary<string, string> resolvedExclusionCollisions)
     {
         Version = version;
         SourceSha256 = sourceSha256;
@@ -89,6 +90,7 @@ public sealed class ResearchedGenreCatalog
         ExclusionReasons = exclusions;
         AmbiguityReasons = ambiguities;
         ReconciledSpellings = reconciledSpellings;
+        ResolvedExclusionCollisions = resolvedExclusionCollisions;
 
         _byId = terms.ToDictionary(term => term.Id, StringComparer.OrdinalIgnoreCase);
         _byKey = new Dictionary<string, ResearchedGenreTerm>(StringComparer.Ordinal);
@@ -143,11 +145,18 @@ public sealed class ResearchedGenreCatalog
     /// <remarks>
     /// Keyed by the spelling that collided, valued by the canonical term it now
     /// reaches. This is deliberately runtime state rather than a comment in the
-    /// generator: the research publishes 3,746 terms while the catalog carries 3,745
-    /// canonical identities, and that difference has to stay inspectable rather than
-    /// looking like a lost term.
+    /// generator: the spreadsheet publishes 3,746 terms. One spelling collision
+    /// (hypertechno) is an alias. Bollywood, OPM and Swahili stay canonical musical
+    /// terms and are disambiguated at runtime.
     /// </remarks>
     public IReadOnlyDictionary<string, string> ReconciledSpellings { get; }
+
+    /// <summary>
+    /// Exclusion lookup keys that collide with a canonical term and were reconciled
+    /// onto that term. They are not active exclusions. Keyed by the lookup key,
+    /// valued by the canonical id that keeps the identity.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ResolvedExclusionCollisions { get; }
 
     public int Genres => Terms.Count(term => term.Kind == nameof(PersonalGenreTaxonKind.Genre));
 
@@ -416,6 +425,30 @@ public sealed class ResearchedGenreCatalog
             }
         }
 
+        var canonicalKeys = new HashSet<string>(keys.Keys, StringComparer.Ordinal);
+        foreach (var term in terms)
+        {
+            canonicalKeys.Add(Key(term.Id));
+            canonicalKeys.Add(Key(term.Name));
+        }
+
+        foreach (var aliasKey in aliasKeys)
+        {
+            canonicalKeys.Add(aliasKey);
+        }
+
+        var resolvedExclusions = new Dictionary<string, string>(
+            document.ResolvedExclusionCollisions ?? new Dictionary<string, string>(),
+            StringComparer.Ordinal);
+        foreach (var (collisionKey, targetId) in resolvedExclusions)
+        {
+            if (string.IsNullOrWhiteSpace(targetId) || !idSet.Contains(targetId.Trim()))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: exclusion collision '{collisionKey}' targets unknown term '{targetId}'.");
+            }
+        }
+
         var exclusions = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (key, entry) in document.Exclusions ?? new Dictionary<string, CatalogEntry>())
         {
@@ -429,6 +462,19 @@ public sealed class ResearchedGenreCatalog
             {
                 throw new InvalidOperationException(
                     "Researched taxonomy is corrupt: an exclusion with no usable characters.");
+            }
+
+            if (canonicalKeys.Contains(exclusionKey))
+            {
+                if (!resolvedExclusions.TryGetValue(exclusionKey, out var target)
+                    || !idSet.Contains(target.Trim()))
+                {
+                    throw new InvalidOperationException(
+                        $"Researched taxonomy is corrupt: exclusion '{entry.Value}' collides with a canonical term "
+                        + "and has no reconciliation record.");
+                }
+
+                continue;
             }
 
             exclusions[exclusionKey] = entry.Reason ?? "Excluded by the researched master.";
@@ -449,6 +495,13 @@ public sealed class ResearchedGenreCatalog
                     "Researched taxonomy is corrupt: an ambiguity with no usable characters.");
             }
 
+            if (canonicalKeys.Contains(ambiguityKey) && !resolvedExclusions.ContainsKey(ambiguityKey))
+            {
+                throw new InvalidOperationException(
+                    $"Researched taxonomy is corrupt: ambiguity '{entry.Value}' collides with a canonical term "
+                    + "and has no reconciliation record.");
+            }
+
             ambiguities[ambiguityKey] = entry.Reason ?? "Held: insufficient evidence to classify.";
         }
 
@@ -459,7 +512,8 @@ public sealed class ResearchedGenreCatalog
             aliases,
             exclusions,
             ambiguities,
-            document.ResolvedCanonicalCollisions ?? new Dictionary<string, string>());
+            document.ResolvedCanonicalCollisions ?? new Dictionary<string, string>(),
+            resolvedExclusions);
     }
 
     // ------------------------------------------------------------------ document shape
@@ -475,6 +529,12 @@ public sealed class ResearchedGenreCatalog
 
         /// <summary>Researched spellings the generator reconciled. Empty means none.</summary>
         public Dictionary<string, string>? ResolvedCanonicalCollisions { get; set; }
+
+        /// <summary>
+        /// Exclusion keys that collide with a canonical term. The value is the canonical
+        /// id that remains reachable. Those exclusions are not active.
+        /// </summary>
+        public Dictionary<string, string>? ResolvedExclusionCollisions { get; set; }
     }
 
     public sealed class CatalogSource

@@ -59,9 +59,13 @@ public static class GenreNormalizationPreprocessor
     /// </returns>
     public static GenreNormalizationResult Apply(
         GenreSemanticSnapshot? snapshot,
-        GenreNormalizationSnapshot? normalization)
+        GenreNormalizationSnapshot? normalization,
+        PersonalGenreCatalog? catalog = null)
     {
         normalization ??= GenreNormalizationSnapshot.Default;
+        catalog ??= PersonalGenreCatalog.Default;
+        var aliasMap = AliasesThatDoNotRetarget(normalization.AliasMap, catalog);
+        Func<string, bool> isAtomic = value => GenreTermRecognizer.IsWholeValueRecognized(value, catalog, normalization);
 
         if (snapshot is null || snapshot.Observations.Count == 0)
         {
@@ -75,9 +79,9 @@ public static class GenreNormalizationPreprocessor
 
         foreach (var group in snapshot.Observations
                      .Where(item => NormalizedFields.Contains(item.InputField))
-                     .GroupBy(item => item.InputField))
+                     .GroupBy(item => (item.InputField, Tag: item.PhysicalTag ?? string.Empty)))
         {
-            var field = group.Key;
+            var field = group.Key.InputField;
             var originals = group
                 .Select(item => item with { RawValue = (item.RawValue ?? string.Empty).Trim() })
                 .Where(item => item.RawValue.Length > 0)
@@ -87,16 +91,14 @@ public static class GenreNormalizationPreprocessor
                 continue;
             }
 
-            // The genre field is the one AutoTag sanitizes, so it has to be produced
-            // by the same call with the same arguments. The user's block list is a
-            // genre block list and composite splitting is a genre-writing
-            // behaviour, so both are applied here and only here. The other semantic
-            // fields get the user's alias preference and deduplication, because a
-            // spelling preference should not depend on which field a value happened
-            // to land in, but they do not get genre-only behaviour AutoTag never
-            // applied to them.
-            var isGenreField = field == PersonalGenreTaxonKind.Genre;
-            var splitComposite = isGenreField && normalization.Enabled;
+            // Genre and Style are one musical vocabulary. A blocked identity is
+            // blocked wherever it was stored. Composite splitting still belongs to
+            // the genre-normalization toggle, and a recognized whole term is not
+            // split. Context, Scene and Language keep alias spelling only.
+            var musical = field is PersonalGenreTaxonKind.Genre
+                or PersonalGenreTaxonKind.Style
+                or PersonalGenreTaxonKind.Substyle;
+            var splitComposite = field == PersonalGenreTaxonKind.Genre && normalization.Enabled;
 
             // One call for the whole field, never one call per value. The shared
             // function deduplicates across the batch it is handed, so calling it
@@ -104,19 +106,21 @@ public static class GenreNormalizationPreprocessor
             // "Afropop" and the same composite would appear twice.
             var normalized = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
                 originals.Select(item => item.RawValue),
-                normalization.AliasMap,
+                aliasMap,
                 splitComposite,
-                blockedValues: isGenreField ? normalization.BlockList : null);
+                blockedValues: musical ? normalization.BlockList : null,
+                isAtomic: isAtomic);
 
             var surviving = normalized.ToHashSet(StringComparer.Ordinal);
-            var lineage = BuildLineage(originals, normalization, splitComposite, surviving);
+            var lineage = BuildLineage(originals, aliasMap, splitComposite, isAtomic, surviving);
 
             foreach (var original in originals)
             {
                 var tokens = GenreTagAliasNormalizer.NormalizeAndExpandValues(
                     [original.RawValue],
-                    normalization.AliasMap,
-                    splitComposite);
+                    aliasMap,
+                    splitComposite,
+                    isAtomic);
 
                 if (tokens.Any(token => surviving.Contains(token)))
                 {
@@ -126,16 +130,20 @@ public static class GenreNormalizationPreprocessor
                 removed.Add(new RemovedGenreTagValue(
                     original.RawValue,
                     field,
-                    DescribeRemoval(original.RawValue, normalization, isGenreField),
+                    DescribeRemoval(original.RawValue, normalization, musical),
                     original.Origin));
             }
 
             var order = 0;
             foreach (var value in normalized)
             {
-                kept.Add(new GenreTagObservation(value, field, order++, originals[0].Origin)
+                var source = lineage.GetValueOrDefault(value);
+                var origin = originals.FirstOrDefault(item =>
+                    source is not null && string.Equals(item.RawValue, source, StringComparison.Ordinal));
+                kept.Add(new GenreTagObservation(value, field, order++, origin?.Origin ?? originals[0].Origin)
                 {
-                    OriginalValue = lineage.GetValueOrDefault(value)
+                    OriginalValue = source,
+                    PhysicalTag = origin?.PhysicalTag ?? originals[0].PhysicalTag
                 });
             }
         }
@@ -162,8 +170,9 @@ public static class GenreNormalizationPreprocessor
     /// </remarks>
     private static Dictionary<string, string> BuildLineage(
         IReadOnlyList<GenreTagObservation> originals,
-        GenreNormalizationSnapshot normalization,
+        IReadOnlyDictionary<string, string> aliasMap,
         bool splitComposite,
+        Func<string, bool> isAtomic,
         HashSet<string> surviving)
     {
         var lineage = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -171,8 +180,9 @@ public static class GenreNormalizationPreprocessor
         {
             foreach (var token in GenreTagAliasNormalizer.NormalizeAndExpandValues(
                          [original.RawValue],
-                         normalization.AliasMap,
-                         splitComposite))
+                         aliasMap,
+                         splitComposite,
+                         isAtomic))
             {
                 if (surviving.Contains(token))
                 {
@@ -185,12 +195,43 @@ public static class GenreNormalizationPreprocessor
     }
 
     /// <summary>
+    /// Drops a normalization alias that would rename one taxonomy term into a
+    /// different one. Spelling preferences stay. A change of musical identity is
+    /// a mapping, and it has to stay visible as a mapping.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> AliasesThatDoNotRetarget(
+        IReadOnlyDictionary<string, string> aliasMap,
+        PersonalGenreCatalog catalog)
+    {
+        if (aliasMap.Count == 0)
+        {
+            return aliasMap;
+        }
+
+        var kept = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (key, canonical) in aliasMap)
+        {
+            var sourceMatches = catalog.TryMatch(key, out var source);
+            var targetMatches = catalog.TryMatch(canonical, out var target);
+            if (sourceMatches && targetMatches
+                && !string.Equals(source.Id, target.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            kept[key] = canonical;
+        }
+
+        return kept;
+    }
+
+    /// <summary>
     /// Says why a value disappeared, so the decision trail records the actual
     /// cause rather than a generic "removed".
     /// </summary>
-    private static string DescribeRemoval(string raw, GenreNormalizationSnapshot normalization, bool isGenreField)
+    private static string DescribeRemoval(string raw, GenreNormalizationSnapshot normalization, bool musical)
     {
-        if (!isGenreField)
+        if (!musical)
         {
             return $"'{raw}' normalized to nothing.";
         }

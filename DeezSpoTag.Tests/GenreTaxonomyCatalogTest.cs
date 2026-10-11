@@ -41,10 +41,10 @@ public sealed class GenreTaxonomyCatalogTest
     }
 
     /// <summary>
-    /// The researched master publishes 1,351 Genres and 2,395 Styles. One researched
-    /// Style spelling collides with another under the shared lookup key and is
-    /// carried as an alias rather than a second canonical record, so the canonical
-    /// Style count is one lower while every published term stays reachable.
+    /// The researched master publishes 1,351 Genres and 2,394 Styles. One researched
+    /// spelling collides with another under the shared lookup key and is carried
+    /// as an alias, which is why the term count is one below the spreadsheet.
+    /// Bollywood and Swahili remain researched Styles.
     /// </summary>
     [Fact]
     public void TheCatalogHoldsTheResearchedGenreAndStyleCounts()
@@ -168,7 +168,11 @@ public sealed class GenreTaxonomyCatalogTest
     [Fact]
     public void ResearchedExclusionsAreRecognisedAsExclusionsRatherThanUnknown()
     {
-        Assert.Equal(66, Catalog.ExclusionReasons.Count);
+        Assert.Equal(65, Catalog.ExclusionReasons.Count);
+        Assert.Equal("greek-pop", Catalog.ResolvedExclusionCollisions["greekpop"]);
+        Assert.False(Catalog.IsExcluded("Greek Pop"));
+        Assert.True(Catalog.TryMatch("Greek Pop", out var greekPop, out _));
+        Assert.Equal("Greek-Pop", greekPop.Name);
 
         // A RYM scene or movement entry the research declined to merge.
         Assert.True(Catalog.IsExcluded("Bosstown Sound"));

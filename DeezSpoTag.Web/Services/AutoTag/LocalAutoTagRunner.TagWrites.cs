@@ -76,8 +76,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         try
         {
             using var file = TagLib.File.Create(context.File);
+            var preSettings = await store.GetSettingsAsync(CancellationToken.None);
             snapshot = GenreSemanticTagIo.ReadSnapshot(
-                file, extension, ResolveStylesTagName(context.Plan.Config, extension));
+                file,
+                extension,
+                ResolveStylesTagName(context.Plan.Config, extension),
+                new DeezSpoTag.Services.Genre.PersonalGenreCatalog(await store.GetCustomTaxaAsync(CancellationToken.None)),
+                DeezSpoTag.Services.Genre.GenreNormalizationSnapshot.Create(preSettings));
         }
         catch
         {
@@ -135,7 +140,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // is the state Genre Intelligence is being asked to clean up, and it is
             // the primary input.
             var stylesTagName = ResolveStylesTagName(context.Plan.Config, extension);
-            var postSnapshot = PersonalGenreService.ReadFileSnapshot(context.File, stylesTagName);
+            var genreSettings = await store.GetSettingsAsync(context.Token);
+            var normalization = DeezSpoTag.Services.Genre.GenreNormalizationSnapshot.Create(genreSettings);
+            var catalog = new DeezSpoTag.Services.Genre.PersonalGenreCatalog(
+                await store.GetCustomTaxaAsync(context.Token));
+            var postSnapshot = PersonalGenreService.ReadFileSnapshot(
+                context.File, stylesTagName, catalog, normalization);
             var preSnapshot = await store.GetSnapshotAsync(
                 context.Plan.JobId, context.File, DeezSpoTag.Services.Genre.GenreSnapshotStage.PreAutoTag, context.Token);
 
@@ -167,7 +177,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // §27: the complete final payload is built and the decision record made
             // durable before any tag is touched, so a failure mid-write leaves a
             // full record of what was found rather than a half-written file.
-            var plan = GenreSemanticTagIo.PlanFields(resolution, context.Plan.Config.CapitalizeGenres);
+            var plan = GenreSemanticTagIo.PlanFields(
+                resolution, context.Plan.Config.CapitalizeGenres, stylesTagName);
 
             // The proposed transformation is computed from the same plan the writer
             // consumes, and it is computed before the write. Describing the moves
@@ -196,7 +207,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 stylesTagName,
                 plan,
                 context.Plan.Config.GenreIntelligence,
-                BuildConfiguredTagSet(context.Plan.Config.Tags));
+                BuildConfiguredTagSet(context.Plan.Config.Tags),
+                resolution);
             if (verify.Count > 0)
             {
                 await store.SaveAutoTagResultAsync(
@@ -294,26 +306,57 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var written = new List<string>();
 
         using var file = TagLib.File.Create(path);
+        // Genre Intelligence writes each value as its own container entry. A
+        // comma or slash inside a canonical name is part of that name, so the
+        // display separator must not join the values into one string.
         var context = new TagWriteContext(file, extension, writeConfig,
-            ResolveSeparatorForFormat(config, extension), "genre-intelligence",
-            config.Technical?.UseNullSeparator == true,
+            string.Empty, "genre-intelligence",
+            UseNullSeparator: true,
             new Dictionary<string, string>(), Array.Empty<string>(), false, new HashSet<SupportedTag>());
 
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Genre, selected.Contains(GenreTag),
-            values => SetField(context, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), values));
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Style, selected.Contains(StyleTag),
-            values => SetRaw(context, stylesTagName, SupportedTag.Style, values, force: true));
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Language, selected.Contains(LanguageTag),
-            values => SetRaw(context, LanguageRawTag, SupportedTag.Language, values, force: true));
+        // An enabled field is replaced with the plan, including when the plan is
+        // empty. Empty means clear. It does not mean leave the old value in place.
+        if (selected.Contains(GenreTag))
+        {
+            var values = Values(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Genre);
+            if (values.Count == 0)
+            {
+                ClearGenre(context);
+            }
+            else
+            {
+                SetField(context, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), values);
+            }
 
-        // The extra dimensions are opt-in: a user who never asked for a SUBSTYLE
-        // tag should not start getting one.
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Substyle, config.GenreIntelligence.WriteSubstyle,
-            values => SetRaw(context, "SUBSTYLE", SupportedTag.OtherTags, values, force: true));
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Context, config.GenreIntelligence.WriteContext,
-            values => SetRaw(context, "CONTEXT", SupportedTag.OtherTags, values, force: true));
-        Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Scene, config.GenreIntelligence.WriteScene,
-            values => SetRaw(context, "SCENE", SupportedTag.OtherTags, values, force: true));
+            written.Add(GenreTag);
+        }
+
+        if (selected.Contains(StyleTag))
+        {
+            WriteStyleDimension(context, stylesTagName, resolution, plan);
+            written.Add(StyleTag);
+        }
+
+        if (selected.Contains(LanguageTag))
+        {
+            WriteOrClearRaw(context, LanguageRawTag, SupportedTag.Language,
+                Values(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Language));
+            written.Add(LanguageTag);
+        }
+
+        if (config.GenreIntelligence.WriteContext)
+        {
+            WriteOrClearRaw(context, "CONTEXT", SupportedTag.OtherTags,
+                Values(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Context));
+            written.Add("context");
+        }
+
+        if (config.GenreIntelligence.WriteScene)
+        {
+            WriteOrClearRaw(context, "SCENE", SupportedTag.OtherTags,
+                Values(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Scene));
+            written.Add("scene");
+        }
 
         if (written.Count > 0)
         {
@@ -322,15 +365,68 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         return written;
 
-        void Write(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind field, bool enabled, Action<List<string>> writer)
+        List<string> Values(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind field)
+            => plan.TryGetValue(field, out var values) ? values : [];
+    }
+
+    /// <summary>
+    /// Writes the canonical Style field and clears other Style / Sub-genre tags
+    /// that Genre Intelligence discovered. An unknown left in one of those tags
+    /// is written back there and nowhere else.
+    /// </summary>
+    private static void WriteStyleDimension(
+        TagWriteContext context,
+        string stylesTagName,
+        DeezSpoTag.Services.Genre.PersonalGenreResolution resolution,
+        IReadOnlyDictionary<DeezSpoTag.Services.Genre.PersonalGenreTaxonKind, List<string>> plan)
+    {
+        var canonical = plan.TryGetValue(DeezSpoTag.Services.Genre.PersonalGenreTaxonKind.Style, out var values)
+            ? values
+            : [];
+        WriteOrClearRaw(context, stylesTagName, SupportedTag.Style, canonical);
+
+        foreach (var tag in GenreSemanticTagIo.StylePhysicalFields.DiscoveryNames(stylesTagName))
         {
-            if (!enabled || !plan.TryGetValue(field, out var values) || values.Count == 0)
+            if (tag.Equals(stylesTagName, StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                continue;
             }
 
-            writer(values);
-            written.Add(field.ToString());
+            var residual = resolution.Preserved
+                .Where(item => tag.Equals(item.PhysicalTag, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            WriteOrClearRaw(context, tag, SupportedTag.OtherTags, residual);
+        }
+    }
+
+    private static void WriteOrClearRaw(
+        TagWriteContext context,
+        string rawName,
+        SupportedTag tag,
+        List<string> values)
+    {
+        if (values.Count == 0)
+        {
+            RemoveRawTagValues(context, rawName);
+            return;
+        }
+
+        SetRaw(context, rawName, tag, values, force: true);
+    }
+
+    private static void ClearGenre(TagWriteContext context)
+    {
+        context.File.Tag.Genres = [];
+        RemoveRawTagValues(context, "GENRE");
+        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            if (context.File.GetTag(TagTypes.Id3v2, false) is TagLib.Id3v2.Tag id3)
+            {
+                id3.RemoveFrames("TCON");
+            }
         }
     }
 

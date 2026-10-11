@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Genre;
 using static DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner;
 
@@ -15,61 +16,99 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 /// </summary>
 internal static class GenreSemanticTagIo
 {
-    /// <summary>The semantic fields Genre Intelligence reads and rewrites.</summary>
-    private static readonly PersonalGenreTaxonKind[] SemanticFields =
-    [
-        PersonalGenreTaxonKind.Genre,
-        PersonalGenreTaxonKind.Style,
-        PersonalGenreTaxonKind.Substyle,
-        PersonalGenreTaxonKind.Context,
-        PersonalGenreTaxonKind.Scene,
-        PersonalGenreTaxonKind.Language
-    ];
+    /// <summary>
+    /// Physical tag names that store Style / Sub-genre. They are storage
+    /// locations for one musical dimension, not separate classifications.
+    /// </summary>
+    internal static class StylePhysicalFields
+    {
+        internal static readonly string[] StandardNames = ["STYLE", "SUBGENRE", "SUB-GENRE", "SUB_GENRE", "SUBSTYLE"];
+
+        internal static IReadOnlyList<string> DiscoveryNames(string? configuredStyleField)
+        {
+            var names = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Add(configuredStyleField);
+            foreach (var name in StandardNames)
+            {
+                Add(name);
+            }
+
+            return names;
+
+            void Add(string? name)
+            {
+                var trimmed = name?.Trim() ?? string.Empty;
+                if (trimmed.Length == 0 || !seen.Add(trimmed))
+                {
+                    return;
+                }
+
+                names.Add(trimmed);
+            }
+        }
+    }
 
     /// <summary>
     /// Reads every semantic field out of an open file, preserving the order
     /// within each field.
     ///
-    /// The order matters: it is the file's own ordering, and Genre Intelligence
-    /// keeps it so a rewrite does not reshuffle a user's library.
+    /// Style values are collected from every recognized Style / Sub-genre tag.
+    /// Each value keeps the physical tag it came from. A recognized whole term
+    /// is not split on a comma or a slash.
     /// </summary>
-    internal static GenreSemanticSnapshot ReadSnapshot(TagLib.File file, string extension, string stylesTagName)
-    {
-        var observations = new List<GenreTagObservation>();
-        foreach (var field in SemanticFields)
-        {
-            var raw = ReadValues(file, extension, field, stylesTagName);
-            var values = raw
-                .SelectMany(value => SplitComposite(value, extension))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            for (var index = 0; index < values.Count; index++)
-            {
-                observations.Add(new GenreTagObservation(values[index], field, index));
-            }
-        }
-
-        return new GenreSemanticSnapshot(observations, DateTimeOffset.UtcNow);
-    }
-
-    private static List<string> ReadValues(
+    internal static GenreSemanticSnapshot ReadSnapshot(
         TagLib.File file,
         string extension,
-        PersonalGenreTaxonKind field,
-        string stylesTagName)
+        string stylesTagName,
+        PersonalGenreCatalog? catalog = null,
+        GenreNormalizationSnapshot? normalization = null,
+        bool keepDuplicateValues = false)
     {
-        // Genre goes through TagLib's own accessor so ID3v1/ID3v2, Vorbis and
-        // MP4 all resolve the way the rest of AutoTag resolves them. Every other
-        // field is read as a raw tag, because they are custom fields in every
-        // container and have no typed accessor.
-        var values = field == PersonalGenreTaxonKind.Genre
-            ? (file.Tag.Genres ?? []).ToList()
-            : LocalAutoTagRunner.ReadRawTagValues(file, extension, RawTagName(field, stylesTagName));
+        catalog ??= PersonalGenreCatalog.Default;
+        var atomic = new Func<string, bool>(value =>
+            GenreTermRecognizer.IsWholeValueRecognized(value, catalog, normalization));
+        var normalizationEnabled = normalization?.Enabled == true;
+        var observations = new List<GenreTagObservation>();
 
-        return values
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .ToList();
+        Add(PersonalGenreTaxonKind.Genre, "GENRE", file.Tag.Genres ?? []);
+        foreach (var tag in StylePhysicalFields.DiscoveryNames(stylesTagName))
+        {
+            Add(PersonalGenreTaxonKind.Style, tag, LocalAutoTagRunner.ReadRawTagValues(file, extension, tag));
+        }
+
+        Add(PersonalGenreTaxonKind.Context, "CONTEXT", LocalAutoTagRunner.ReadRawTagValues(file, extension, "CONTEXT"));
+        Add(PersonalGenreTaxonKind.Scene, "SCENE", LocalAutoTagRunner.ReadRawTagValues(file, extension, "SCENE"));
+        Add(PersonalGenreTaxonKind.Language, LocalAutoTagRunner.LanguageTagName,
+            LocalAutoTagRunner.ReadRawTagValues(file, extension, LocalAutoTagRunner.LanguageTagName));
+
+        return new GenreSemanticSnapshot(observations, DateTimeOffset.UtcNow);
+
+        void Add(PersonalGenreTaxonKind field, string physicalTag, IEnumerable<string> rawValues)
+        {
+            var order = 0;
+            var seen = keepDuplicateValues ? null : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in rawValues)
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    continue;
+                }
+
+                foreach (var token in GenreValueTokenizer.Tokenize(raw.Trim(), extension, normalizationEnabled, atomic))
+                {
+                    if (seen is not null && !seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    observations.Add(new GenreTagObservation(token, field, order++)
+                    {
+                        PhysicalTag = physicalTag
+                    });
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -86,21 +125,7 @@ internal static class GenreSemanticTagIo
     /// which is legal inside a quoted Vorbis field — would corrupt it.
     /// </summary>
     internal static IEnumerable<string> SplitComposite(string value, string extension)
-    {
-        var name = extension.TrimStart('.').ToLowerInvariant();
-        if (name is not ("mp3" or "m4a" or "mp4" or "m4b" or "m4p" or "aac"))
-        {
-            yield return value;
-            yield break;
-        }
-
-        foreach (var trimmed in value.Split([',', ';', '\0'], StringSplitOptions.RemoveEmptyEntries)
-                     .Select(part => part.Trim())
-                     .Where(candidate => candidate.Length > 0))
-        {
-            yield return trimmed;
-        }
-    }
+        => GenreValueTokenizer.Tokenize(value, extension, normalizationEnabled: false);
 
     /// <summary>
     /// Resolves the physical tag name for a semantic field.
@@ -146,23 +171,37 @@ internal static class GenreSemanticTagIo
     /// </para>
     /// </remarks>
     internal static IReadOnlyDictionary<PersonalGenreTaxonKind, List<string>> PlanFields(
-        PersonalGenreResolution resolution, bool capitalizeGenres = true)
+        PersonalGenreResolution resolution,
+        bool capitalizeGenres = true,
+        string? canonicalStyleField = null)
     {
         var plan = new Dictionary<PersonalGenreTaxonKind, List<string>>();
         var seen = new Dictionary<PersonalGenreTaxonKind, HashSet<string>>();
+        canonicalStyleField = string.IsNullOrWhiteSpace(canonicalStyleField) ? "STYLE" : canonicalStyleField.Trim();
 
         Add(PersonalGenreTaxonKind.Genre, resolution.Genres);
         Add(PersonalGenreTaxonKind.Style, resolution.Styles);
-        Add(PersonalGenreTaxonKind.Substyle, resolution.Substyles);
+        // Legacy Substyle lists are the same musical dimension as Style.
+        Add(PersonalGenreTaxonKind.Style, resolution.Substyles);
         Add(PersonalGenreTaxonKind.Context, resolution.Contexts);
         Add(PersonalGenreTaxonKind.Scene, resolution.Scenes);
         Add(PersonalGenreTaxonKind.Language, resolution.Languages);
 
         // A value the taxonomy does not know returns to the field it was read
-        // from. It is not reclassified, not promoted into Genre, and not restyled.
+        // from. An unknown stored in a non-canonical Style tag stays there. It is
+        // not copied into the canonical Style field, and it is not restyled.
         foreach (var preserved in resolution.Preserved)
         {
-            Add(preserved.InputField, [preserved.Value], format: false);
+            var field = preserved.InputField == PersonalGenreTaxonKind.Substyle
+                ? PersonalGenreTaxonKind.Style
+                : preserved.InputField;
+            if (field == PersonalGenreTaxonKind.Style
+                && IsAlternateStyleTag(preserved.PhysicalTag, canonicalStyleField))
+            {
+                continue;
+            }
+
+            Add(field, [preserved.Value], format: false);
         }
 
         return plan;
@@ -195,6 +234,18 @@ internal static class GenreSemanticTagIo
                 }
             }
         }
+
+        static bool IsAlternateStyleTag(string? physicalTag, string canonical)
+        {
+            if (string.IsNullOrWhiteSpace(physicalTag)
+                || physicalTag.Equals(canonical, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return StylePhysicalFields.DiscoveryNames(canonical)
+                .Any(name => name.Equals(physicalTag, StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     /// <summary>
@@ -214,20 +265,22 @@ internal static class GenreSemanticTagIo
         string stylesTagName,
         IReadOnlyDictionary<PersonalGenreTaxonKind, List<string>> plan,
         AutoTagGenreIntelligenceSettings options,
-        IReadOnlyCollection<string>? selectedTags = null)
+        IReadOnlyCollection<string>? selectedTags = null,
+        PersonalGenreResolution? resolution = null)
     {
         var problems = new List<string>();
         GenreSemanticSnapshot actual;
         using (var file = TagLib.File.Create(path))
         {
-            actual = ReadSnapshot(file, extension, stylesTagName);
+            // Verification keeps repeated physical values. Classification still
+            // collapses them, and a set comparison here would hide Trap, Trap.
+            actual = ReadSnapshot(file, extension, stylesTagName, keepDuplicateValues: true);
         }
 
         foreach (var field in new[]
                  {
                      PersonalGenreTaxonKind.Genre,
                      PersonalGenreTaxonKind.Style,
-                     PersonalGenreTaxonKind.Substyle,
                      PersonalGenreTaxonKind.Context,
                      PersonalGenreTaxonKind.Scene,
                      PersonalGenreTaxonKind.Language
@@ -238,25 +291,101 @@ internal static class GenreSemanticTagIo
                 continue;
             }
 
-            if (!plan.TryGetValue(field, out var intended) || intended.Count == 0)
-            {
-                continue;
-            }
-
+            var intended = plan.TryGetValue(field, out var planned) ? planned : [];
             var found = actual.Observations
                 .Where(item => item.InputField == field)
-                .Select(item => PersonalGenreTaxonomy.Normalize(item.RawValue))
-                .ToHashSet(StringComparer.Ordinal);
-            var missing = intended
-                .Where(value => !found.Contains(PersonalGenreTaxonomy.Normalize(value)))
+                .Select(item => item.RawValue)
                 .ToList();
-            if (missing.Count > 0)
+            if (field == PersonalGenreTaxonKind.Style)
             {
-                problems.Add($"{field} is missing {string.Join(", ", missing)}");
+                found = actual.Observations
+                    .Where(item => item.InputField == PersonalGenreTaxonKind.Style
+                                   && (string.IsNullOrWhiteSpace(item.PhysicalTag)
+                                       || item.PhysicalTag.Equals(stylesTagName, StringComparison.OrdinalIgnoreCase)))
+                    .Select(item => item.RawValue)
+                    .ToList();
+                var leftovers = AlternateStyleLeftovers(actual, stylesTagName, resolution);
+                found.AddRange(leftovers);
+            }
+
+            var problem = DescribeMismatch(field.ToString(), intended, found);
+            if (problem is not null)
+            {
+                problems.Add(problem);
             }
         }
 
         return problems;
+    }
+
+    private static List<string> AlternateStyleLeftovers(
+        GenreSemanticSnapshot actual,
+        string canonicalStyleField,
+        PersonalGenreResolution? resolution)
+    {
+        var leftovers = new List<string>();
+        foreach (var tag in StylePhysicalFields.DiscoveryNames(canonicalStyleField))
+        {
+            if (tag.Equals(canonicalStyleField, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var allowed = resolution?.Preserved
+                .Where(item => tag.Equals(item.PhysicalTag, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Value.Trim())
+                .ToList() ?? [];
+            var present = actual.Observations
+                .Where(item => tag.Equals(item.PhysicalTag, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.RawValue.Trim())
+                .ToList();
+            leftovers.AddRange(Subtract(present, allowed));
+        }
+
+        return leftovers;
+    }
+
+    /// <summary>
+    /// Compares trim and casing only. Punctuation stays, so an old spelling such as
+    /// "Hip Hop" is not treated as the same value as "Hip-Hop".
+    /// </summary>
+    private static string? DescribeMismatch(string label, IReadOnlyList<string> expected, IReadOnlyList<string> actual)
+    {
+        var expectedValues = expected.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()).ToList();
+        var actualValues = actual.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()).ToList();
+        var missing = Subtract(expectedValues, actualValues);
+        var unexpected = Subtract(actualValues, expectedValues);
+        if (missing.Count == 0 && unexpected.Count == 0)
+        {
+            return null;
+        }
+
+        return label + ":\n"
+            + "  expected: [" + string.Join(", ", expectedValues) + "]\n"
+            + "  actual: [" + string.Join(", ", actualValues) + "]\n"
+            + "  unexpected: [" + string.Join(", ", unexpected) + "]\n"
+            + "  missing: [" + string.Join(", ", missing) + "]";
+    }
+
+    private static List<string> Subtract(IReadOnlyList<string> source, IReadOnlyList<string> other)
+    {
+        var remaining = other.ToList();
+        var missing = new List<string>();
+        foreach (var value in source)
+        {
+            var index = remaining.FindIndex(candidate =>
+                string.Equals(candidate, value, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                missing.Add(value);
+            }
+            else
+            {
+                remaining.RemoveAt(index);
+            }
+        }
+
+        return missing;
     }
 
     /// <summary>
@@ -278,7 +407,8 @@ internal static class GenreSemanticTagIo
             PersonalGenreTaxonKind.Genre => selectedTags is null || selectedTags.Contains(GenreTag),
             PersonalGenreTaxonKind.Style => selectedTags is null || selectedTags.Contains(StyleTag),
             PersonalGenreTaxonKind.Language => selectedTags is null || selectedTags.Contains(LanguageTag),
-            PersonalGenreTaxonKind.Substyle => options.WriteSubstyle,
+            // Substyle is not a write dimension. Style / Sub-genre is Style.
+            PersonalGenreTaxonKind.Substyle => false,
             PersonalGenreTaxonKind.Context => options.WriteContext,
             PersonalGenreTaxonKind.Scene => options.WriteScene,
             _ => false

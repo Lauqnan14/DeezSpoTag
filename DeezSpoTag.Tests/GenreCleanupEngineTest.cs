@@ -553,7 +553,6 @@ public sealed class GenreCleanupEngineTest
     [Theory]
     [InlineData("Afrosounds", PersonalGenreTaxonKind.Context)]
     [InlineData("Kenya", PersonalGenreTaxonKind.Context)]
-    [InlineData("Swahili", PersonalGenreTaxonKind.Language)]
     [InlineData("Zilizopendwa", PersonalGenreTaxonKind.Scene)]
     public void TheBuiltInNonGenreDimensionsStillResolve(string value, PersonalGenreTaxonKind expected)
     {

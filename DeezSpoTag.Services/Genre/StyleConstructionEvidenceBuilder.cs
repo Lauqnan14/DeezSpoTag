@@ -113,8 +113,12 @@ public static class StyleConstructionEvidenceBuilder
     }
 
     private static bool Matches(string value, PersonalGenreTaxonKind? field, GenreTagObservation observation)
-        => (field is null || field == observation.InputField)
+        => (field is null || Unify(field.Value) == Unify(observation.InputField))
            && PersonalGenreTaxonomy.Normalize(value) == PersonalGenreTaxonomy.Normalize(observation.RawValue);
+
+    /// <summary>Substyle is the legacy name of Style. Evidence does not treat it as a third kind.</summary>
+    private static PersonalGenreTaxonKind Unify(PersonalGenreTaxonKind kind)
+        => kind == PersonalGenreTaxonKind.Substyle ? PersonalGenreTaxonKind.Style : kind;
 
     private static int ScopeRank(string? scope) => scope?.Trim().ToLowerInvariant() switch
     {

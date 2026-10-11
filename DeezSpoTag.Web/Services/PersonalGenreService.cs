@@ -404,11 +404,15 @@ public sealed class PersonalGenreService
     /// this be a custom name per container, so the reader has to be told which
     /// one rather than assuming.
     /// </param>
-    public static GenreSemanticSnapshot ReadFileSnapshot(string path, string stylesTagName = "STYLE")
+    public static GenreSemanticSnapshot ReadFileSnapshot(
+        string path,
+        string stylesTagName = "STYLE",
+        PersonalGenreCatalog? catalog = null,
+        GenreNormalizationSnapshot? normalization = null)
     {
         var extension = Path.GetExtension(path);
         using var file = TagLib.File.Create(path);
-        return GenreSemanticTagIo.ReadSnapshot(file, extension, stylesTagName);
+        return GenreSemanticTagIo.ReadSnapshot(file, extension, stylesTagName, catalog, normalization);
     }
 
     /// <summary>

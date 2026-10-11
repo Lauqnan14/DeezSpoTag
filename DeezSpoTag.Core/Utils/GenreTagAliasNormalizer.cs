@@ -107,7 +107,8 @@ public static class GenreTagAliasNormalizer
     public static List<string> NormalizeAndExpandValues(
         IEnumerable<string>? values,
         IReadOnlyDictionary<string, string>? aliasMap,
-        bool splitComposite)
+        bool splitComposite,
+        Func<string, bool>? isAtomic = null)
     {
         var output = new List<string>();
         if (values == null)
@@ -122,32 +123,7 @@ public static class GenreTagAliasNormalizer
                 continue;
             }
 
-            var trimmed = rawValue.Trim();
-            var normalizedValue = trimmed;
-            if (TryNormalizeAliasMatch(trimmed, aliasMap, out var normalizedWholeValue))
-            {
-                normalizedValue = normalizedWholeValue;
-            }
-
-            if (!splitComposite)
-            {
-                output.Add(normalizedValue);
-                continue;
-            }
-
-            var tokens = normalizedValue.Split(
-                CompositeGenreSeparators,
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-            foreach (var normalized in tokens
-                .Select(token => NormalizeValue(token, aliasMap))
-                .Where(normalized => !string.IsNullOrWhiteSpace(normalized))
-                .SelectMany(value => value.Split(
-                    CompositeGenreSeparators,
-                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))
-            {
-                output.Add(normalized);
-            }
+            output.AddRange(ExpandOne(rawValue.Trim(), aliasMap, splitComposite, isAtomic, blocked: null));
         }
 
         return output;
@@ -157,29 +133,121 @@ public static class GenreTagAliasNormalizer
         IEnumerable<string>? values,
         IReadOnlyDictionary<string, string>? aliasMap,
         bool splitComposite,
-        IEnumerable<string>? blockedValues = null)
+        IEnumerable<string>? blockedValues = null,
+        Func<string, bool>? isAtomic = null)
     {
         var output = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var blocked = BuildLookupKeySet(blockedValues);
 
-        foreach (var value in NormalizeAndExpandValues(values, aliasMap, splitComposite))
+        if (values == null)
         {
-            if (string.IsNullOrWhiteSpace(value))
+            return output;
+        }
+
+        foreach (var rawValue in values)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
             {
                 continue;
             }
 
-            var key = ToLookupKey(value);
-            if (key.Length == 0 || blocked.Contains(key) || !seen.Add(key))
+            foreach (var expanded in ExpandOne(rawValue.Trim(), aliasMap, splitComposite, isAtomic, blocked))
             {
-                continue;
-            }
+                var key = ToLookupKey(expanded);
+                if (key.Length == 0 || blocked.Contains(key) || !seen.Add(key))
+                {
+                    continue;
+                }
 
-            output.Add(value.Trim());
+                output.Add(expanded.Trim());
+            }
         }
 
         return output;
+    }
+
+    /// <summary>
+    /// Applies an alias and, when the value is not one recognized term, splits it.
+    /// Tokens are separated before the alias runs. A blocked source key therefore
+    /// cannot be renamed into a different term, and a recognized term that contains
+    /// a slash or a comma is never torn apart.
+    /// </summary>
+    private static List<string> ExpandOne(
+        string trimmed,
+        IReadOnlyDictionary<string, string>? aliasMap,
+        bool splitComposite,
+        Func<string, bool>? isAtomic,
+        HashSet<string>? blocked,
+        HashSet<string>? expanding = null,
+        bool honorWholeAlias = true)
+    {
+        expanding ??= new HashSet<string>(StringComparer.Ordinal);
+        var tokens = RawTokens(trimmed, aliasMap, splitComposite, isAtomic, honorWholeAlias);
+        var output = new List<string>();
+        foreach (var token in tokens)
+        {
+            var sourceKey = ToLookupKey(token);
+            if (sourceKey.Length == 0 || blocked?.Contains(sourceKey) == true)
+            {
+                continue;
+            }
+
+            // A token already being expanded must not follow its alias again.
+            // Rap → "Rap, HipHop" would otherwise split back into Rap and recurse.
+            if (!expanding.Add(sourceKey))
+            {
+                output.Add(token);
+                continue;
+            }
+
+            try
+            {
+                var aliased = NormalizeValue(token, aliasMap);
+                if (string.IsNullOrWhiteSpace(aliased))
+                {
+                    continue;
+                }
+
+                if (splitComposite
+                    && !string.Equals(aliased, token, StringComparison.Ordinal)
+                    && isAtomic?.Invoke(aliased) != true
+                    && aliased.IndexOfAny(CompositeGenreSeparators) >= 0)
+                {
+                    output.AddRange(ExpandOne(aliased, aliasMap, splitComposite, isAtomic, blocked, expanding, honorWholeAlias: false));
+                    continue;
+                }
+
+                output.Add(aliased);
+            }
+            finally
+            {
+                expanding.Remove(sourceKey);
+            }
+        }
+
+        return output;
+    }
+
+    private static List<string> RawTokens(
+        string trimmed,
+        IReadOnlyDictionary<string, string>? aliasMap,
+        bool splitComposite,
+        Func<string, bool>? isAtomic,
+        bool honorWholeAlias)
+    {
+        // A saved alias for the complete value wins before any separator split.
+        // An alias target is expanded with this switch off, so "Rap, HipHop"
+        // still splits even when its letters match the source alias key.
+        var key = ToLookupKey(trimmed);
+        if (!splitComposite
+            || isAtomic?.Invoke(trimmed) == true
+            || (honorWholeAlias && key.Length > 0 && aliasMap?.ContainsKey(key) == true))
+        {
+            return [trimmed];
+        }
+
+        return GenreValueTokenizer.Tokenize(trimmed, extension: null, normalizationEnabled: true, isAtomic);
     }
 
     public static List<string> DedupeValues(

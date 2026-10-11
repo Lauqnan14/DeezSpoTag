@@ -9,9 +9,9 @@
   "genres": 1351,
   "styles": 2394,
   "terms": 3745,
-  "aliases": 167,
+  "aliases": 168,
   "regions": 10,
-  "exclusions": 66,
+  "exclusions": 65,
   "ambiguous": 3
  },
  "regions": [
@@ -694,6 +694,11 @@
   "yoruba": {
    "value": "Yoruba",
    "target": "yoruban"
+  },
+  "originalpilipinomusic": {
+   "value": "Original Pilipino Music",
+   "target": "opm",
+   "source": "reconciliation"
   }
  },
  "exclusions": {
@@ -784,12 +789,6 @@
    "reason": "Scene/non-mainstream umbrella rather than a sufficiently bounded genre/style for the canonical taxonomy.",
    "source": "Last.fm",
    "url": "https://www.last.fm/tag/greek+alternative"
-  },
-  "greekpop": {
-   "value": "Greek Pop",
-   "reason": "Last.fm itself warns that this tag is often misapplied instead of modern laika; not admitted as a canonical style.",
-   "source": "Last.fm",
-   "url": "https://www.last.fm/tag/greek+pop"
   },
   "greenwichvillagescene": {
    "value": "Greenwich Village Scene",
@@ -1064,15 +1063,6 @@
    "aliases": []
   },
   {
-   "id": "2-tone",
-   "name": "2 tone",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
    "id": "2-step",
    "name": "2-step",
    "kind": "Style",
@@ -1084,6 +1074,15 @@
   {
    "id": "2-step-british-garage",
    "name": "2-step/british garage",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "2-tone",
+   "name": "2 tone",
    "kind": "Style",
    "regions": [
     "europe"
@@ -1517,33 +1516,6 @@
    "aliases": []
   },
   {
-   "id": "afro-house",
-   "name": "afro house",
-   "kind": "Style",
-   "regions": [
-    "africa"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "afro-rock",
-   "name": "afro rock",
-   "kind": "Style",
-   "regions": [
-    "africa"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "afro-trap",
-   "name": "afro trap",
-   "kind": "Style",
-   "regions": [
-    "africa"
-   ],
-   "aliases": []
-  },
-  {
    "id": "afro-brazilian",
    "name": "afro-brazilian",
    "kind": "Style",
@@ -1593,6 +1565,15 @@
    "aliases": []
   },
   {
+   "id": "afro-house",
+   "name": "afro house",
+   "kind": "Style",
+   "regions": [
+    "africa"
+   ],
+   "aliases": []
+  },
+  {
    "id": "afro-jazz",
    "name": "afro-jazz",
    "kind": "Style",
@@ -1614,6 +1595,24 @@
   {
    "id": "afro-pop",
    "name": "afro-pop",
+   "kind": "Style",
+   "regions": [
+    "africa"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "afro-rock",
+   "name": "afro rock",
+   "kind": "Style",
+   "regions": [
+    "africa"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "afro-trap",
+   "name": "afro trap",
    "kind": "Style",
    "regions": [
     "africa"
@@ -1756,6 +1755,15 @@
    "aliases": []
   },
   {
+   "id": "al-jadīd",
+   "name": "Al-Jadīd",
+   "kind": "Style",
+   "regions": [
+    "mena"
+   ],
+   "aliases": []
+  },
+  {
    "id": "al-jeel",
    "name": "al jeel",
    "kind": "Genre",
@@ -1765,15 +1773,6 @@
    "aliases": [
     "Al-Jil"
    ]
-  },
-  {
-   "id": "al-jadīd",
-   "name": "Al-Jadīd",
-   "kind": "Style",
-   "regions": [
-    "mena"
-   ],
-   "aliases": []
   },
   {
    "id": "albanian",
@@ -1978,6 +1977,13 @@
    "aliases": []
   },
   {
+   "id": "alternative-indie-rock",
+   "name": "alternative/indie rock",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "alternative-latin",
    "name": "alternative latin",
    "kind": "Style",
@@ -2040,13 +2046,6 @@
   {
    "id": "alternative-singer-songwriter",
    "name": "alternative singer/songwriter",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "alternative-indie-rock",
-   "name": "alternative/indie rock",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -2763,15 +2762,15 @@
    "aliases": []
   },
   {
-   "id": "art-song",
-   "name": "art song",
+   "id": "art-rock-experimental",
+   "name": "art-rock/experimental",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "art-rock-experimental",
-   "name": "art-rock/experimental",
+   "id": "art-song",
+   "name": "art song",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -4446,13 +4445,6 @@
    "aliases": []
   },
   {
-   "id": "black-n-roll",
-   "name": "black 'n' roll",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "black-ambient",
    "name": "black ambient",
    "kind": "Style",
@@ -4476,6 +4468,13 @@
   {
    "id": "black-midi",
    "name": "black midi",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "black-n-roll",
+   "name": "black 'n' roll",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -4527,15 +4526,15 @@
    ]
   },
   {
-   "id": "blue-humor",
-   "name": "Blue Humor",
+   "id": "blue-eyed-soul",
+   "name": "blue-eyed soul",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "blue-eyed-soul",
-   "name": "blue-eyed soul",
+   "id": "blue-humor",
+   "name": "Blue Humor",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -4638,6 +4637,13 @@
    "aliases": []
   },
   {
+   "id": "bolero-beat",
+   "name": "bolero-beat",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "bolero-español",
    "name": "bolero español",
    "kind": "Genre",
@@ -4660,13 +4666,6 @@
    "regions": [
     "latin-america-caribbean"
    ],
-   "aliases": []
-  },
-  {
-   "id": "bolero-beat",
-   "name": "bolero-beat",
-   "kind": "Style",
-   "regions": [],
    "aliases": []
   },
   {
@@ -4854,13 +4853,6 @@
    "aliases": []
   },
   {
-   "id": "brass-military",
-   "name": "Brass & Military",
-   "kind": "Genre",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "brass-band",
    "name": "brass band",
    "kind": "Style",
@@ -4871,6 +4863,13 @@
    "id": "brass-instrument",
    "name": "Brass Instrument",
    "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "brass-military",
+   "name": "Brass & Military",
+   "kind": "Genre",
    "regions": [],
    "aliases": []
   },
@@ -6252,6 +6251,15 @@
    "aliases": []
   },
   {
+   "id": "celtic-british-isles",
+   "name": "celtic/british isles",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "celtic-chant",
    "name": "celtic chant",
    "kind": "Genre",
@@ -6337,15 +6345,6 @@
   {
    "id": "celtic-rock",
    "name": "celtic rock",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "celtic-british-isles",
-   "name": "celtic/british isles",
    "kind": "Style",
    "regions": [
     "europe"
@@ -8531,15 +8530,15 @@
    "aliases": []
   },
   {
-   "id": "cut-up-noise",
-   "name": "cut-up noise",
+   "id": "cut-up-dj",
+   "name": "Cut-up/DJ",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "cut-up-dj",
-   "name": "Cut-up/DJ",
+   "id": "cut-up-noise",
+   "name": "cut-up noise",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -8933,8 +8932,8 @@
    "aliases": []
   },
   {
-   "id": "death-n-roll",
-   "name": "death 'n' roll",
+   "id": "death-doom-metal",
+   "name": "death-doom metal",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -8954,8 +8953,8 @@
    "aliases": []
   },
   {
-   "id": "death-doom-metal",
-   "name": "death-doom metal",
+   "id": "death-n-roll",
+   "name": "death 'n' roll",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -10253,43 +10252,6 @@
    "aliases": []
   },
   {
-   "id": "electro-hop",
-   "name": "electro hop",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "electro-house",
-   "name": "electro house",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "electro-latino",
-   "name": "electro latino",
-   "kind": "Style",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "electro-swing",
-   "name": "electro swing",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "electro-trance",
-   "name": "electro trance",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "electro-cumbia",
    "name": "Electro-Cumbia",
    "kind": "Style",
@@ -10313,6 +10275,20 @@
    "aliases": []
   },
   {
+   "id": "electro-hop",
+   "name": "electro hop",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "electro-house",
+   "name": "electro house",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "electro-industrial",
    "name": "electro-industrial",
    "kind": "Style",
@@ -10327,8 +10303,31 @@
    "aliases": []
   },
   {
+   "id": "electro-latino",
+   "name": "electro latino",
+   "kind": "Style",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "electro-swing",
+   "name": "electro swing",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "electro-techno",
    "name": "electro-techno",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "electro-trance",
+   "name": "electro trance",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -10355,6 +10354,13 @@
    "aliases": []
   },
   {
+   "id": "electronic-computer-music",
+   "name": "electronic/computer music",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "electronic-dance-music",
    "name": "Electronic Dance Music",
    "kind": "Genre",
@@ -10364,13 +10370,6 @@
   {
    "id": "electronic-rock",
    "name": "electronic rock",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "electronic-computer-music",
-   "name": "electronic/computer music",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -10697,8 +10696,8 @@
    "aliases": []
   },
   {
-   "id": "euro-house",
-   "name": "euro house",
+   "id": "euro-disco",
+   "name": "euro-disco",
    "kind": "Style",
    "regions": [
     "europe"
@@ -10706,8 +10705,8 @@
    "aliases": []
   },
   {
-   "id": "euro-disco",
-   "name": "euro-disco",
+   "id": "euro-house",
+   "name": "euro house",
    "kind": "Style",
    "regions": [
     "europe"
@@ -11353,6 +11352,20 @@
    "aliases": []
   },
   {
+   "id": "folk-blues",
+   "name": "folk-blues",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "folk-country-rock",
+   "name": "folk/country rock",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "folk-jazz",
    "name": "folk jazz",
    "kind": "Style",
@@ -11398,20 +11411,6 @@
    "id": "folk-world-country",
    "name": "Folk, World, & Country",
    "kind": "Genre",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "folk-blues",
-   "name": "folk-blues",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "folk-country-rock",
-   "name": "folk/country rock",
-   "kind": "Style",
    "regions": [],
    "aliases": []
   },
@@ -11666,6 +11665,16 @@
    "aliases": []
   },
   {
+   "id": "french-canadian-folk-music",
+   "name": "French-Canadian Folk Music",
+   "kind": "Genre",
+   "regions": [
+    "north-america",
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "french-caribbean-music",
    "name": "French Caribbean Music",
    "kind": "Genre",
@@ -11759,16 +11768,6 @@
    "aliases": []
   },
   {
-   "id": "french-canadian-folk-music",
-   "name": "French-Canadian Folk Music",
-   "kind": "Genre",
-   "regions": [
-    "north-america",
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
    "id": "frenchcore",
    "name": "frenchcore",
    "kind": "Genre",
@@ -11796,6 +11795,15 @@
    "aliases": []
   },
   {
+   "id": "frevo-canção",
+   "name": "frevo-canção",
+   "kind": "Genre",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
    "id": "frevo-de-bloco",
    "name": "frevo de bloco",
    "kind": "Genre",
@@ -11816,15 +11824,6 @@
   {
    "id": "frevo-elétrico",
    "name": "frevo elétrico",
-   "kind": "Genre",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "frevo-canção",
-   "name": "frevo-canção",
    "kind": "Genre",
    "regions": [
     "latin-america-caribbean"
@@ -11903,13 +11902,6 @@
   {
    "id": "funk",
    "name": "funk",
-   "kind": "Genre",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "funk-soul",
-   "name": "Funk / Soul",
    "kind": "Genre",
    "regions": [],
    "aliases": []
@@ -12015,6 +12007,13 @@
    "id": "funk-rock",
    "name": "funk rock",
    "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "funk-soul",
+   "name": "Funk / Soul",
+   "kind": "Genre",
    "regions": [],
    "aliases": []
   },
@@ -13032,6 +13031,15 @@
    "aliases": []
   },
   {
+   "id": "greek-pop",
+   "name": "Greek-Pop",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "greek-rap",
    "name": "Greek Rap",
    "kind": "Style",
@@ -13043,15 +13051,6 @@
   {
    "id": "greek-rock",
    "name": "Greek Rock",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "greek-pop",
-   "name": "Greek-Pop",
    "kind": "Style",
    "regions": [
     "europe"
@@ -13295,20 +13294,6 @@
    "aliases": []
   },
   {
-   "id": "guitar-jazz",
-   "name": "guitar jazz",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "guitar-virtuoso",
-   "name": "guitar virtuoso",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "guitar-easy-listening",
    "name": "Guitar/Easy Listening",
    "kind": "Style",
@@ -13316,8 +13301,22 @@
    "aliases": []
   },
   {
+   "id": "guitar-jazz",
+   "name": "guitar jazz",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "guitar-new-age",
    "name": "guitar/new age",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "guitar-virtuoso",
+   "name": "guitar virtuoso",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -13683,15 +13682,15 @@
    "aliases": []
   },
   {
-   "id": "hardcore-edm",
-   "name": "Hardcore [EDM]",
+   "id": "hardcore-breaks",
+   "name": "hardcore breaks",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "hardcore-breaks",
-   "name": "hardcore breaks",
+   "id": "hardcore-edm",
+   "name": "Hardcore [EDM]",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -14071,15 +14070,15 @@
    "aliases": []
   },
   {
-   "id": "hip-house",
-   "name": "hip house",
+   "id": "hip-hop-urban",
+   "name": "hip-hop/urban",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "hip-hop-urban",
-   "name": "hip-hop/urban",
+   "id": "hip-house",
+   "name": "hip house",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -14751,19 +14750,19 @@
    "aliases": []
   },
   {
-   "id": "indo-jazz",
-   "name": "indo jazz",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "indo-caribbean-music",
    "name": "Indo-Caribbean Music",
    "kind": "Genre",
    "regions": [
     "latin-america-caribbean"
    ],
+   "aliases": []
+  },
+  {
+   "id": "indo-jazz",
+   "name": "indo jazz",
+   "kind": "Style",
+   "regions": [],
    "aliases": []
   },
   {
@@ -15220,6 +15219,15 @@
    "aliases": []
   },
   {
+   "id": "italo-disco",
+   "name": "italo-disco",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "italo-house",
    "name": "italo house",
    "kind": "Style",
@@ -15231,15 +15239,6 @@
   {
    "id": "italo-pop",
    "name": "Italo Pop",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "italo-disco",
-   "name": "italo-disco",
    "kind": "Style",
    "regions": [
     "europe"
@@ -15531,6 +15530,13 @@
    "aliases": []
   },
   {
+   "id": "jazz-funk",
+   "name": "jazz-funk",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "jazz-fusion",
    "name": "jazz fusion",
    "kind": "Style",
@@ -15598,13 +15604,6 @@
   {
    "id": "jazz-rock",
    "name": "jazz rock",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "jazz-funk",
-   "name": "jazz-funk",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -15895,19 +15894,19 @@
    "aliases": []
   },
   {
-   "id": "juke-joint-blues",
-   "name": "juke joint blues",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "juke-footwork",
    "name": "Juke/Footwork",
    "kind": "Style",
    "regions": [
     "north-america"
    ],
+   "aliases": []
+  },
+  {
+   "id": "juke-joint-blues",
+   "name": "juke joint blues",
+   "kind": "Style",
+   "regions": [],
    "aliases": []
   },
   {
@@ -15946,6 +15945,13 @@
    "aliases": []
   },
   {
+   "id": "jungle-drum-n-bass",
+   "name": "jungle/drum'n'bass",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "jungle-dutch",
    "name": "jungle dutch",
    "kind": "Genre",
@@ -15964,13 +15970,6 @@
   {
    "id": "jungle-terror",
    "name": "jungle terror",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "jungle-drum-n-bass",
-   "name": "jungle/drum'n'bass",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -17074,19 +17073,19 @@
    "aliases": []
   },
   {
+   "id": "la-hard-house",
+   "name": "LA Hard House",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "la-punk",
    "name": "l.a. punk",
    "kind": "Style",
    "regions": [
     "north-america"
    ],
-   "aliases": []
-  },
-  {
-   "id": "la-hard-house",
-   "name": "LA Hard House",
-   "kind": "Style",
-   "regions": [],
    "aliases": []
   },
   {
@@ -18901,6 +18900,15 @@
    "aliases": []
   },
   {
+   "id": "mexican-cumbia",
+   "name": "Mexican-Cumbia",
+   "kind": "Style",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
    "id": "mexican-folk-music",
    "name": "Mexican Folk Music",
    "kind": "Genre",
@@ -18930,15 +18938,6 @@
   {
    "id": "mexican-traditions",
    "name": "mexican traditions",
-   "kind": "Style",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "mexican-cumbia",
-   "name": "Mexican-Cumbia",
    "kind": "Style",
    "regions": [
     "latin-america-caribbean"
@@ -20383,29 +20382,6 @@
    "aliases": []
   },
   {
-   "id": "neo-kyma",
-   "name": "neo kyma",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "neo-rave",
-   "name": "neo rave",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "neo-soul",
-   "name": "neo soul",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "neo-acoustic",
    "name": "neo-acoustic",
    "kind": "Style",
@@ -20473,6 +20449,15 @@
    "aliases": []
   },
   {
+   "id": "neo-kyma",
+   "name": "neo kyma",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "neo-medieval-folk",
    "name": "neo-medieval folk",
    "kind": "Style",
@@ -20508,8 +20493,22 @@
    "aliases": []
   },
   {
+   "id": "neo-rave",
+   "name": "neo rave",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "neo-rockabilly",
    "name": "neo-rockabilly",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "neo-soul",
+   "name": "neo soul",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -20817,6 +20816,15 @@
    ]
   },
   {
+   "id": "new-orleans-classic-jazz",
+   "name": "new orleans/classic jazz",
+   "kind": "Style",
+   "regions": [
+    "north-america"
+   ],
+   "aliases": []
+  },
+  {
    "id": "new-orleans-jazz",
    "name": "new orleans jazz",
    "kind": "Style",
@@ -20837,15 +20845,6 @@
   {
    "id": "new-orleans-r-b",
    "name": "new orleans r&b",
-   "kind": "Style",
-   "regions": [
-    "north-america"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "new-orleans-classic-jazz",
-   "name": "new orleans/classic jazz",
    "kind": "Style",
    "regions": [
     "north-america"
@@ -21959,6 +21958,15 @@
    "aliases": []
   },
   {
+   "id": "opera-ballet",
+   "name": "opera-ballet",
+   "kind": "Style",
+   "regions": [
+    "europe"
+   ],
+   "aliases": []
+  },
+  {
    "id": "opera-buffa",
    "name": "opera buffa",
    "kind": "Style",
@@ -21986,15 +21994,6 @@
    "aliases": []
   },
   {
-   "id": "opera-ballet",
-   "name": "opera-ballet",
-   "kind": "Style",
-   "regions": [
-    "europe"
-   ],
-   "aliases": []
-  },
-  {
    "id": "operatic-pop",
    "name": "operatic pop",
    "kind": "Style",
@@ -22012,12 +22011,14 @@
   },
   {
    "id": "opm",
-   "name": "opm",
+   "name": "OPM",
    "kind": "Genre",
    "regions": [
     "southeast-asia"
    ],
-   "aliases": []
+   "aliases": [
+    "Original Pilipino Music"
+   ]
   },
   {
    "id": "opéra-comique",
@@ -22052,6 +22053,13 @@
    ]
   },
   {
+   "id": "orchestral-easy-listening",
+   "name": "orchestral/easy listening",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "orchestral-jazz",
    "name": "orchestral jazz",
    "kind": "Style",
@@ -22061,13 +22069,6 @@
   {
    "id": "orchestral-song",
    "name": "orchestral song",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "orchestral-easy-listening",
-   "name": "orchestral/easy listening",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -22804,20 +22805,6 @@
    "aliases": []
   },
   {
-   "id": "piano-jazz",
-   "name": "piano jazz",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "piano-rock",
-   "name": "piano rock",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "piano-easy-listening",
    "name": "Piano/Easy Listening",
    "kind": "Style",
@@ -22825,8 +22812,22 @@
    "aliases": []
   },
   {
+   "id": "piano-jazz",
+   "name": "piano jazz",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "piano-new-age",
    "name": "piano/new age",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "piano-rock",
+   "name": "piano rock",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -22911,13 +22912,6 @@
    "aliases": []
   },
   {
-   "id": "pipe-drum",
-   "name": "Pipe & Drum",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "pipe-band-music",
    "name": "pipe band music",
    "kind": "Genre",
@@ -22936,6 +22930,13 @@
    "aliases": [
     "Pipe Band"
    ]
+  },
+  {
+   "id": "pipe-drum",
+   "name": "Pipe & Drum",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
   },
   {
    "id": "piphat",
@@ -23585,16 +23586,16 @@
    "aliases": []
   },
   {
-   "id": "praise-worship",
-   "name": "praise & worship",
-   "kind": "Genre",
+   "id": "praise-break",
+   "name": "praise break",
+   "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "praise-break",
-   "name": "praise break",
-   "kind": "Style",
+   "id": "praise-worship",
+   "name": "praise & worship",
+   "kind": "Genre",
    "regions": [],
    "aliases": []
   },
@@ -23641,15 +23642,15 @@
    "aliases": []
   },
   {
-   "id": "process-music",
-   "name": "process music",
+   "id": "process-generated-radio-works",
+   "name": "Process-Generated Radio Works",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "process-generated-radio-works",
-   "name": "Process-Generated Radio Works",
+   "id": "process-music",
+   "name": "process music",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -23869,6 +23870,13 @@
    "aliases": []
   },
   {
+   "id": "psychedelic-garage",
+   "name": "psychedelic/garage",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "psychedelic-pop",
    "name": "psychedelic pop",
    "kind": "Style",
@@ -23885,13 +23893,6 @@
   {
    "id": "psychedelic-soul",
    "name": "psychedelic soul",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "psychedelic-garage",
-   "name": "psychedelic/garage",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -24037,8 +24038,22 @@
    "aliases": []
   },
   {
+   "id": "punk-new-wave",
+   "name": "punk/new wave",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "punk-poetry",
    "name": "punk poetry",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "punk-pop",
+   "name": "punk-pop",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -24060,20 +24075,6 @@
   {
    "id": "punk-rock",
    "name": "punk rock",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "punk-pop",
-   "name": "punk-pop",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "punk-new-wave",
-   "name": "punk/new wave",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -24652,15 +24653,15 @@
    "aliases": []
   },
   {
-   "id": "reggae-rock",
-   "name": "reggae rock",
+   "id": "reggae-pop",
+   "name": "reggae-pop",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "reggae-pop",
-   "name": "reggae-pop",
+   "id": "reggae-rock",
+   "name": "reggae rock",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -24757,13 +24758,6 @@
    "aliases": []
   },
   {
-   "id": "retro-swing",
-   "name": "retro swing",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "retro-rock",
    "name": "retro-rock",
    "kind": "Style",
@@ -24773,6 +24767,13 @@
   {
    "id": "retro-soul",
    "name": "retro-soul",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "retro-swing",
+   "name": "retro swing",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -24941,13 +24942,6 @@
    "aliases": []
   },
   {
-   "id": "rock-roll-roots",
-   "name": "rock & roll/roots",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "rock-and-roll",
    "name": "rock and roll",
    "kind": "Genre",
@@ -25049,6 +25043,13 @@
    "regions": [
     "europe"
    ],
+   "aliases": []
+  },
+  {
+   "id": "rock-roll-roots",
+   "name": "rock & roll/roots",
+   "kind": "Style",
+   "regions": [],
    "aliases": []
   },
   {
@@ -25601,6 +25602,24 @@
    "aliases": []
   },
   {
+   "id": "samba-canção",
+   "name": "samba-canção",
+   "kind": "Genre",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "samba-choro",
+   "name": "samba-choro",
+   "kind": "Genre",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
    "id": "samba-de-breque",
    "name": "samba de breque",
    "kind": "Genre",
@@ -25630,42 +25649,6 @@
   {
    "id": "samba-de-terreiro",
    "name": "samba de terreiro",
-   "kind": "Genre",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "samba-rap",
-   "name": "samba rap",
-   "kind": "Style",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "samba-soul",
-   "name": "samba soul",
-   "kind": "Style",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "samba-canção",
-   "name": "samba-canção",
-   "kind": "Genre",
-   "regions": [
-    "latin-america-caribbean"
-   ],
-   "aliases": []
-  },
-  {
-   "id": "samba-choro",
-   "name": "samba-choro",
    "kind": "Genre",
    "regions": [
     "latin-america-caribbean"
@@ -25709,6 +25692,15 @@
    "aliases": []
   },
   {
+   "id": "samba-rap",
+   "name": "samba rap",
+   "kind": "Style",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
    "id": "samba-reggae",
    "name": "samba-reggae",
    "kind": "Style",
@@ -25720,6 +25712,15 @@
   {
    "id": "samba-rock",
    "name": "samba-rock",
+   "kind": "Style",
+   "regions": [
+    "latin-america-caribbean"
+   ],
+   "aliases": []
+  },
+  {
+   "id": "samba-soul",
+   "name": "samba soul",
    "kind": "Style",
    "regions": [
     "latin-america-caribbean"
@@ -26573,15 +26574,15 @@
    "aliases": []
   },
   {
-   "id": "show-tunes",
-   "name": "show tunes",
+   "id": "show-musical",
+   "name": "show/musical",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "show-musical",
-   "name": "show/musical",
+   "id": "show-tunes",
+   "name": "show tunes",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -27611,6 +27612,13 @@
    "aliases": []
   },
   {
+   "id": "space-age",
+   "name": "Space-Age",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "space-age-pop",
    "name": "space age pop",
    "kind": "Style",
@@ -27641,13 +27649,6 @@
   {
    "id": "space-rock-revival",
    "name": "space rock revival",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
-   "id": "space-age",
-   "name": "Space-Age",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -28899,19 +28900,19 @@
    "aliases": []
   },
   {
+   "id": "techno-dub",
+   "name": "techno-dub",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
    "id": "techno-kayō",
    "name": "techno kayō",
    "kind": "Style",
    "regions": [
     "east-asia"
    ],
-   "aliases": []
-  },
-  {
-   "id": "techno-dub",
-   "name": "techno-dub",
-   "kind": "Style",
-   "regions": [],
    "aliases": []
   },
   {
@@ -29838,13 +29839,6 @@
    "aliases": []
   },
   {
-   "id": "trap-rap",
-   "name": "Trap (Rap)",
-   "kind": "Style",
-   "regions": [],
-   "aliases": []
-  },
-  {
    "id": "trap-dancehall",
    "name": "trap dancehall",
    "kind": "Style",
@@ -29872,6 +29866,13 @@
   {
    "id": "trap-metal",
    "name": "trap metal",
+   "kind": "Style",
+   "regions": [],
+   "aliases": []
+  },
+  {
+   "id": "trap-rap",
+   "name": "Trap (Rap)",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -30071,15 +30072,15 @@
    "aliases": []
   },
   {
-   "id": "trumpet-jazz",
-   "name": "trumpet jazz",
+   "id": "trumpet-easy-listening",
+   "name": "Trumpet/Easy Listening",
    "kind": "Style",
    "regions": [],
    "aliases": []
   },
   {
-   "id": "trumpet-easy-listening",
-   "name": "Trumpet/Easy Listening",
+   "id": "trumpet-jazz",
+   "name": "trumpet jazz",
    "kind": "Style",
    "regions": [],
    "aliases": []
@@ -30112,18 +30113,18 @@
    "aliases": []
   },
   {
-   "id": "tsugaru-shamisen",
-   "name": "Tsugaru shamisen",
-   "kind": "Style",
+   "id": "tsugaru-jamisen",
+   "name": "tsugaru-jamisen",
+   "kind": "Genre",
    "regions": [
     "east-asia"
    ],
    "aliases": []
   },
   {
-   "id": "tsugaru-jamisen",
-   "name": "tsugaru-jamisen",
-   "kind": "Genre",
+   "id": "tsugaru-shamisen",
+   "name": "Tsugaru shamisen",
+   "kind": "Style",
    "regions": [
     "east-asia"
    ],
@@ -32119,5 +32120,8 @@
    ],
    "aliases": []
   }
- ]
+ ],
+ "resolvedExclusionCollisions": {
+  "greekpop": "greek-pop"
+ }
 }

@@ -185,6 +185,33 @@ public sealed class PersonalGenreResolverTest
         Assert.Contains("Swahili", resolution.Languages);
         Assert.DoesNotContain("Swahili", resolution.Contexts);
         Assert.DoesNotContain("Swahili", resolution.Genres);
+        Assert.DoesNotContain("Swahili", resolution.Styles);
+    }
+
+    [Fact]
+    public void SwahiliInAGenreFieldBecomesTheMusicalStyle()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("Swahili", PersonalGenreTaxonKind.Genre)]);
+
+        Assert.Equal(new[] { "Swahili" }, resolution.Styles);
+        Assert.Empty(resolution.Genres);
+        Assert.Empty(resolution.Languages);
+        Assert.Contains(resolution.Classifications, item => item.TaxonId == "swahili-style");
+    }
+
+    [Fact]
+    public void AResearchedStyleWithoutABuiltInParentGainsNoParent()
+    {
+        // IncludeParentGenres walks built-in ParentIds only. The researched
+        // master has no parent relationships, so this is not a researched hierarchy.
+        var resolution = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("alternative pop/rock", PersonalGenreTaxonKind.Style)],
+            settings: new PersonalGenreSettings(IncludeParentGenres: true));
+
+        Assert.Contains("alternative pop/rock", resolution.Styles);
+        Assert.Empty(resolution.Genres);
+        Assert.DoesNotContain(resolution.Classifications, item => item.Status == "derived_parent");
     }
 
     [Fact]
@@ -610,7 +637,7 @@ public sealed class PersonalGenreResolverTest
     }
 
     [Fact]
-    public void MaxGenres_LimitsFinalGenres_ButNotPreservedValues()
+    public void MaxGenres_DoesNotDropRecognizedGenres()
     {
         var resolution = PersonalGenreResolver.Resolve(
         [
@@ -621,9 +648,9 @@ public sealed class PersonalGenreResolverTest
         ],
             settings: new PersonalGenreSettings(MaxGenres: 2));
 
-        Assert.Equal(2, resolution.Genres.Count);
-        // A personal value is not competing for a genre slot, so capping the
-        // number of genres must not silently delete it.
+        // MaxGenres remains a retired stored value. Cleanup keeps every
+        // recognized genre. The unknown value is still preserved beside them.
+        Assert.Equal(new[] { "Hip-Hop", "Reggae", "Pop" }, resolution.Genres);
         Assert.Equal("My Personal Genre", Assert.Single(resolution.Preserved).Value);
     }
 
@@ -931,6 +958,35 @@ public sealed class PersonalGenreResolverTest
         Assert.Empty(resolution.Preserved);
         Assert.Equal("mapping_applied", Assert.Single(
             resolution.Decisions, d => d.RawValue == "Rap").Outcome);
+    }
+
+    [Fact]
+    public void AnExplicitMappingNamesACrossKindIdentityChange()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("Trap", PersonalGenreTaxonKind.Genre, 0) { PhysicalTag = "GENRE" }],
+            mappings: [new PersonalGenreMapping(123, "Trap", "hip-hop", Priority: 500, Enabled: true)]);
+
+        Assert.Equal(new[] { "Hip-Hop" }, resolution.Genres);
+        Assert.Empty(resolution.Styles);
+        var decision = Assert.Single(resolution.Decisions);
+        Assert.Equal("mapping_applied", decision.Outcome);
+        Assert.Contains("Explicit user mapping 123", decision.Reason, StringComparison.Ordinal);
+        Assert.Contains("Trap/Style", decision.Reason, StringComparison.Ordinal);
+        Assert.Contains("Hip-Hop/Genre", decision.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AMappingCannotRecreateABlockedTarget()
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("Trap", PersonalGenreTaxonKind.Genre, 0)],
+            mappings: [new PersonalGenreMapping(123, "Trap", "hip-hop", Priority: 500, Enabled: true)],
+            blockedIdentities: ["Hip-Hop"]);
+
+        Assert.Empty(resolution.Genres);
+        Assert.Empty(resolution.Styles);
+        Assert.Equal("blocked", Assert.Single(resolution.Decisions).Outcome);
     }
 
     /// <summary>

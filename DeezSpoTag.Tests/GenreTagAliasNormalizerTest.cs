@@ -160,6 +160,23 @@ public sealed class GenreTagAliasNormalizerTest
     }
 
     [Fact]
+    public void AnAliasThatContainsItsOwnSourceDoesNotRecurse()
+    {
+        var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(
+        [
+            new GenreTagAliasRule { Alias = "Funk", Canonical = "Funk / Soul" },
+            new GenreTagAliasRule { Alias = "Soul", Canonical = "Funk / Soul" }
+        ]);
+
+        var values = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            ["Funk"],
+            aliasMap,
+            splitComposite: true);
+
+        Assert.Equal(["Funk", "Soul"], values);
+    }
+
+    [Fact]
     public void NormalizeExpandFilterAndDedupeValues_SplitsCompositeBeforeDedupe()
     {
         var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(

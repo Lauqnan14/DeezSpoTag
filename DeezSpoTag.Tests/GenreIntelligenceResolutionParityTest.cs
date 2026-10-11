@@ -192,7 +192,7 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
     }
 
     [Fact]
-    public async Task TheGenreCapIsAppliedIdenticallyOnEveryPath()
+    public async Task RecognizedGenresAreKeptIdenticallyOnEveryPath()
     {
         await Given(new StoredState
         {
@@ -202,8 +202,11 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
 
         var (autotag, preview) = await ResolveBothWaysAsync();
 
+        // MaxGenres is a retired stored value. Cleanup keeps every recognized genre.
         AssertSameResolution(autotag, preview);
-        Assert.Equal(2, autotag.Genres.Count);
+        Assert.Equal(
+            new[] { "Hip-Hop", "Bongo Flava", "Amapiano", "Reggae", "Gospel" },
+            autotag.Genres.ToArray());
     }
 
     [Fact]
@@ -225,11 +228,18 @@ public sealed class GenreIntelligenceResolutionParityTest : IDisposable
         var autotag = await ResolveAutoTagAsync();
         var preview = await _fixture.Service.GetCleanupPreviewAsync(42, CancellationToken.None);
 
-        Assert.Equal(3, autotag.Resolution.Genres.Count);
+        // The profile keeps preservation on and parent derivation off. MaxGenres
+        // no longer drops Bongo Flava, Amapiano, Reggae, or Gospel.
+        Assert.Equal(
+            new[] { "Bongo Flava", "Amapiano", "Reggae", "Gospel" },
+            autotag.Resolution.Genres.ToArray());
         Assert.Contains(autotag.Resolution.Preserved, item => item.Value == "My Personal Genre");
         Assert.DoesNotContain(autotag.Resolution.Classifications, item => item.Status == "derived_parent");
         Assert.NotNull(preview);
-        Assert.Equal(2, preview.AfterGenres.Count);
+        // Saved preview settings still turn preservation off and derive Hip-Hop.
+        Assert.Equal(
+            new[] { "Bongo Flava", "Amapiano", "Reggae", "Gospel", "Hip-Hop" },
+            preview.AfterGenres.ToArray());
         Assert.DoesNotContain("My Personal Genre", preview.AfterGenres);
     }
 

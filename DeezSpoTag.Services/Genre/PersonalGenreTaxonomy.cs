@@ -156,8 +156,9 @@ public static class PersonalGenreTaxonomy
         new("qawwali", "Qawwali", PersonalGenreTaxonKind.Genre, Regions: [PersonalGenreRegions.SouthAsia]),
         new("ghazal", "Ghazal", PersonalGenreTaxonKind.Genre, Regions: [PersonalGenreRegions.SouthAsia]),
         new("indian-pop", "Indian Pop", PersonalGenreTaxonKind.Style, ParentIds: ["pop"], Regions: [PersonalGenreRegions.SouthAsia]),
-        // Bollywood is a film/entertainment context spanning many musical forms,
-        // so it stays Context rather than becoming a canonical Genre.
+        // Bollywood the Hindi film industry stays this Context. The musical Style
+        // is a separate taxon supplied by the researched master. A shared label
+        // does not delete either identity.
         new("bollywood", "Bollywood", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.SouthAsia]),
 
         // =================================================================
@@ -187,7 +188,9 @@ public static class PersonalGenreTaxonomy
         new("p-pop", "P-Pop", PersonalGenreTaxonKind.Style, ParentIds: ["pop"], Regions: [PersonalGenreRegions.SoutheastAsia]),
         new("v-pop", "V-Pop", PersonalGenreTaxonKind.Style, ParentIds: ["pop"], Regions: [PersonalGenreRegions.SoutheastAsia]),
         new("t-pop", "T-Pop", PersonalGenreTaxonKind.Style, ParentIds: ["pop"], Regions: [PersonalGenreRegions.SoutheastAsia]),
-        // OPM is a national popular-music industry, not one musical form.
+        // OPM the Filipino industry umbrella stays this Context. The musical Genre
+        // is a separate taxon. Original Pilipino Music is an alias of that Genre,
+        // not a replacement for the acronym.
         new("opm", "OPM", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.SoutheastAsia]),
 
         // =================================================================
@@ -229,10 +232,13 @@ public static class PersonalGenreTaxonomy
         new("east-african-gospel", "East African Gospel", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"], Regions: [PersonalGenreRegions.Africa]),
         new("swahili-gospel", "Swahili Gospel", PersonalGenreTaxonKind.Style, ParentIds: ["gospel"], Regions: [PersonalGenreRegions.Africa]),
 
-        new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Substyle, ParentIds: ["bongo-flava", "afropop"], Regions: [PersonalGenreRegions.Africa]),
+        // Swahili Pop is a musical style. Sub-genre is not a separate kind.
+        new("swahili-pop", "Swahili Pop", PersonalGenreTaxonKind.Style, ParentIds: ["bongo-flava", "afropop"], Regions: [PersonalGenreRegions.Africa]),
 
         new("afrosounds", "Afrosounds", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.Africa]),
         new("east-africa", "East Africa", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.Africa]),
+        // Swahili the language stays this Language. The researched Style of the
+        // same name is a separate taxon. Taarab is not a substitute for it.
         new("swahili", "Swahili", PersonalGenreTaxonKind.Language, ContextOnly: true, Regions: [PersonalGenreRegions.Africa]),
         new("tanzania", "Tanzania", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.Africa]),
         new("kenya", "Kenya", PersonalGenreTaxonKind.Context, ContextOnly: true, Regions: [PersonalGenreRegions.Africa]),

@@ -862,7 +862,7 @@
             grouped.get(key).push(item);
         });
 
-        const html = ['genre', 'style', 'substyle', 'context', 'scene', 'language']
+        const html = ['genre', 'style', 'context', 'scene', 'language']
             .filter(kind => grouped.has(kind))
             .map(kind => {
                 const options = grouped.get(kind)

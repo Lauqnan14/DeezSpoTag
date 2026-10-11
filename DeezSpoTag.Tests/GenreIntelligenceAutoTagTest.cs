@@ -64,7 +64,9 @@ public sealed class GenreIntelligenceAutoTagTest
                 .Invoke(null, [file, writeContext, execution]);
             file.Save();
             Assert.Equal(expectedGenre, Assert.Single(file.Tag.Genres));
-            Assert.Equal(string.Join("; ", values), Assert.Single(ReadRawTag(path, "flac", "PERSONAL_STYLE")));
+            // A semicolon in a Vorbis value is a multi-value separator. The reader
+            // returns each style, which is the list the writer was given.
+            Assert.Equal(values, ReadRawTag(path, "flac", "PERSONAL_STYLE"));
         }
         finally { Directory.Delete(directory, true); }
     }
@@ -131,9 +133,9 @@ public sealed class GenreIntelligenceAutoTagTest
                 }, CancellationToken.None);
             Assert.Equal(new PersonalGenreSettings(true, maxGenres, preserve, parents), result.Context.Settings);
             Assert.Equal(preserve, result.Result.Resolution.Preserved.Any(value => value.Value == "My Personal Genre"));
-            Assert.True(result.Result.Resolution.Genres.Count <= maxGenres);
-            if (maxGenres == 1) Assert.Single(result.Result.Resolution.Genres);
-            else Assert.True(result.Result.Resolution.Genres.Count > 1);
+            // MaxGenres is a retired stored value. It does not drop Rock or Jazz.
+            Assert.Contains("Rock", result.Result.Resolution.Genres);
+            Assert.Contains("Jazz", result.Result.Resolution.Genres);
             Assert.Equal(parents, result.Result.Resolution.Classifications.Any(value => value.Status == "derived_parent"));
             var stored = await store.GetSettingsAsync();
             Assert.Equal(shared.MaxGenres, stored.MaxGenres);
@@ -899,12 +901,11 @@ public sealed class GenreIntelligenceAutoTagTest
                 Assert.Null(result.Resolution.PrimaryGenre);
                 Assert.Empty(result.Resolution.Genres);
                 Assert.Contains("Afrosounds", result.Resolution.Contexts);
-                // Nothing is invented for GENRE. The provider's own value is also
-                // left alone, because Genre Intelligence produces no Genre to
-                // replace it with — replacing it with nothing would be a loss.
+                // Afrosounds is Context. The enabled Genre field is cleared, and
+                // the value is written to CONTEXT. Leaving it in GENRE would keep
+                // a classification in the wrong field.
                 using var file = TagLib.File.Create(path);
-                Assert.Equal(new[] { "Afrosounds" }, ReadGenres(file, "flac"));
-                // The Context dimension does hold it, under the enabled flag.
+                Assert.Empty(ReadGenres(file, "flac"));
                 Assert.Contains("Afrosounds", ReadRawTag(path, "flac", "CONTEXT"));
             }
         }
@@ -1590,9 +1591,13 @@ public sealed class GenreIntelligenceAutoTagTest
             var read = typeof(LocalAutoTagRunner).GetMethod("ReadRawTagValues", BindingFlags.NonPublic | BindingFlags.Static)!;
             var contexts = (List<string>)read.Invoke(null, [result, "." + extension, "CONTEXT"])!;
             Assert.Contains("Afrosounds", contexts);
+            var personalStyle = (List<string>)read.Invoke(null, [result, "." + extension, "PERSONAL_STYLE"])!;
+            Assert.Contains("Bongo Flava Rap", personalStyle);
+            Assert.Contains("Alternative", personalStyle);
+            var substyle = (List<string>)read.Invoke(null, [result, "." + extension, "SUBSTYLE"])!;
+            Assert.Empty(substyle);
             foreach (var (name, expected) in new[]
                      {
-                         ("PERSONAL_STYLE", "Bongo Flava Rap"), ("SUBSTYLE", "Alternative"),
                          ("SCENE", "Zilizopendwa"), ("LANGUAGE", "Swahili")
                      })
             {
@@ -1600,10 +1605,10 @@ public sealed class GenreIntelligenceAutoTagTest
                 Assert.Contains(expected, values);
             }
 
-            // An empty resolution must not clear the file.
+            // An empty enabled resolution clears the fields Genre Intelligence owns.
             Write(write, path, config, PersonalGenreResolver.Resolve(Array.Empty<GenreTagObservation>()));
-            using var unchanged = TagLib.File.Create(path);
-            Assert.Equal(new[] { "Bongo Flava", "My Personal Genre" }, ReadGenres(unchanged, extension));
+            using var cleared = TagLib.File.Create(path);
+            Assert.Empty(ReadGenres(cleared, extension));
 
             // A lock still decides the final genre, and the personal value is
             // still preserved alongside it.
@@ -1620,7 +1625,7 @@ public sealed class GenreIntelligenceAutoTagTest
             Write(write, path, config, locked);
             using (var disabled = TagLib.File.Create(path))
             {
-                Assert.Equal(new[] { "Bongo Flava", "My Personal Genre" }, ReadGenres(disabled, extension));
+                Assert.Empty(ReadGenres(disabled, extension));
             }
 
             type.GetProperty("Tags")!.SetValue(config, new List<string> { "genre" });

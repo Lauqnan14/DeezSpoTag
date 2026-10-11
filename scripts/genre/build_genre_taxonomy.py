@@ -304,6 +304,35 @@ def collect_exclusions(workbook) -> dict[str, dict]:
     return exclusions
 
 
+def preserve_overloaded_musical_identities(terms, by_key, owner_of_key, ambiguous, aliases) -> None:
+    """Keep a researched Genre or Style when the same word also has another meaning.
+
+    A language, industry, or scene does not make the musical row incorrect.
+    Bollywood stays a Style. Swahili stays a Style. OPM stays a Genre whose
+    visible label is the acronym. Original Pilipino Music is an alias of that
+    genre. Runtime code disambiguates with the input field. A future regen
+    must not drop these rows to make a lookup key unique.
+    """
+
+    for key in ("bollywood", "opm", "swahili"):
+        ambiguous.pop(key, None)
+
+    opm = next((term for term in terms if term["id"] == "opm"), None)
+    if opm is None:
+        return
+    opm["name"] = "OPM"
+    opm["kind"] = "Genre"
+    name_key = normalize(opm["name"])
+    by_key[name_key] = opm
+    owner_of_key[name_key] = opm["id"]
+    expansion = normalize("Original Pilipino Music")
+    if expansion in by_key or expansion in aliases:
+        raise CatalogError(
+            "Original Pilipino Music collides with an existing canonical term or alias."
+        )
+    aliases[expansion] = opm["id"]
+
+
 def collect_ambiguous(workbook) -> dict[str, dict]:
     """Researched terms that are not known to be wrong, but are not safe to classify."""
     ambiguous: dict[str, dict] = {}
@@ -383,6 +412,24 @@ def main() -> int:
             aliases[key] = target["id"]
     exclusions = collect_exclusions(workbook)
     ambiguous = collect_ambiguous(workbook)
+    preserve_overloaded_musical_identities(terms, by_key, owner_of_key, ambiguous, aliases)
+    # An exclusion that shares a lookup key with a canonical term must not hide
+    # that term. The canonical identity wins and the collision is recorded.
+    # Known case: "Greek Pop" was excluded because Last.fm warns that the tag is
+    # often misapplied instead of modern laika. Its key is the Style Greek-Pop,
+    # so the exclusion is recorded and not published.
+    resolved_exclusion_collisions = {}
+    for key in list(exclusions):
+        if key in owner_of_key:
+            resolved_exclusion_collisions[key] = owner_of_key[key]
+            del exclusions[key]
+    for key in ambiguous:
+        if key in owner_of_key or key in aliases:
+            print(
+                f"catalog validation failed: ambiguity {key!r} collides with a canonical term",
+                file=sys.stderr,
+            )
+            return 4
 
     # An alias may not point at a term that does not exist.
     known_ids = {term["id"] for term in terms}
@@ -404,6 +451,7 @@ def main() -> int:
         alias_labels[normalize(str(row[0]).strip())] = str(row[0]).strip()
     for key, canonical_name in collision_aliases.items():
         alias_labels.setdefault(key, RESOLVED_CANONICAL_COLLISIONS.get(key, key))
+    alias_labels.setdefault(normalize("Original Pilipino Music"), "Original Pilipino Music")
 
     for term in terms:
         term["aliases"] = sorted(
@@ -447,6 +495,7 @@ def main() -> int:
         "exclusions": dict(sorted(exclusions.items())),
         "ambiguous": dict(sorted(ambiguous.items())),
         "resolvedCanonicalCollisions": RESOLVED_CANONICAL_COLLISIONS,
+        "resolvedExclusionCollisions": dict(sorted(resolved_exclusion_collisions.items())),
         "terms": terms,
     }
 

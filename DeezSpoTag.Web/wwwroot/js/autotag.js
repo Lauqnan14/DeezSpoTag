@@ -3050,7 +3050,6 @@
         el("autotagGenreIntelligenceMaxGenres").value = genreIntelligence.maxGenres ?? 3;
         setChecked("autotagGenreIntelligenceProviderFallback", genreIntelligence.preserveUnmappedTags !== false);
         setChecked("autotagGenreIntelligenceIncludeParents", genreIntelligence.includeParentGenres === true);
-        setChecked("autotagGenreIntelligenceWriteSubstyle", genreIntelligence.writeSubstyle === true);
         setChecked("autotagGenreIntelligenceWriteContext", genreIntelligence.writeContext === true);
         setChecked("autotagGenreIntelligenceWriteScene", genreIntelligence.writeScene === true);
         setChecked("autotag-overwrite", state.config.overwrite);
@@ -4084,7 +4083,7 @@
             maxGenres: Math.max(1, Math.min(10, Number(el("autotagGenreIntelligenceMaxGenres")?.value) || 3)),
             preserveUnmappedTags: el("autotagGenreIntelligenceProviderFallback")?.checked !== false,
             includeParentGenres: el("autotagGenreIntelligenceIncludeParents")?.checked === true,
-            writeSubstyle: el("autotagGenreIntelligenceWriteSubstyle")?.checked === true,
+            writeSubstyle: false,
             writeContext: el("autotagGenreIntelligenceWriteContext")?.checked === true,
             writeScene: el("autotagGenreIntelligenceWriteScene")?.checked === true
         };

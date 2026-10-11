@@ -427,19 +427,23 @@ public sealed class GenreTaxonomyRegionTest : IDisposable
             RegionsOf("tejano").OrderBy(x => x, StringComparer.Ordinal).ToArray());
 
     [Fact]
-    public void BollywoodAndOpm_StayContextRatherThanBecomingGenres()
+    public void BollywoodAndOpm_KeepBothIdentitiesAndDoNotPickByLookupOrder()
     {
-        // Both are industry or entertainment contexts spanning many musical forms,
-        // so neither may be classified as a canonical Genre.
         Assert.Equal(PersonalGenreTaxonKind.Context, Taxon("bollywood").Kind);
         Assert.True(Taxon("bollywood").ContextOnly);
         Assert.Equal(PersonalGenreTaxonKind.Context, Taxon("opm").Kind);
         Assert.True(Taxon("opm").ContextOnly);
-
-        var resolution = PersonalGenreResolver.Resolve(
-            [new GenreTagObservation("Bollywood", PersonalGenreTaxonKind.Genre)]);
-        Assert.Null(resolution.PrimaryGenre);
-        Assert.Contains("Bollywood", resolution.Contexts);
+        var catalog = PersonalGenreCatalog.Default;
+        Assert.True(catalog.TryGetById("bollywood-style", out var bollywoodStyle));
+        Assert.Equal(PersonalGenreTaxonKind.Style, bollywoodStyle.Kind);
+        Assert.Equal("Bollywood", bollywoodStyle.Name);
+        Assert.True(catalog.TryGetById("opm-genre", out var opmGenre));
+        Assert.Equal(PersonalGenreTaxonKind.Genre, opmGenre.Kind);
+        Assert.Equal("OPM", opmGenre.Name);
+        Assert.Equal(PersonalGenreCatalog.LabelLookupStatus.Ambiguous, catalog.LookupLabel("Bollywood").Status);
+        Assert.Equal(PersonalGenreCatalog.LabelLookupStatus.Ambiguous, catalog.LookupLabel("OPM").Status);
+        Assert.False(catalog.TryMatch("Bollywood", out _));
+        Assert.False(catalog.TryMatch("OPM", out _));
     }
 
     [Fact]

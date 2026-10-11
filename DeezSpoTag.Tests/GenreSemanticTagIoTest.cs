@@ -124,8 +124,8 @@ public sealed class GenreSemanticTagIoTest : IDisposable
 
         var snapshot = ReadBack(path);
         Assert.Equal(new[] { "Hip-Hop" }, Values(snapshot, PersonalGenreTaxonKind.Genre));
-        Assert.Equal(new[] { "Kenyan Drill" }, Values(snapshot, PersonalGenreTaxonKind.Style));
-        Assert.Equal(new[] { "Swahili Pop" }, Values(snapshot, PersonalGenreTaxonKind.Substyle));
+        Assert.Equal(new[] { "Kenyan Drill", "Swahili Pop" }, Values(snapshot, PersonalGenreTaxonKind.Style));
+        Assert.DoesNotContain(snapshot.Observations, item => item.PhysicalTag == "SUBSTYLE" && item.RawValue.Length > 0);
         Assert.Equal(new[] { "Afrosounds" }, Values(snapshot, PersonalGenreTaxonKind.Context));
         Assert.Equal(new[] { "Zilizopendwa" }, Values(snapshot, PersonalGenreTaxonKind.Scene));
         Assert.Equal(new[] { "Swahili" }, Values(snapshot, PersonalGenreTaxonKind.Language));
@@ -298,7 +298,7 @@ public sealed class GenreSemanticTagIoTest : IDisposable
         Assert.False(GenreSemanticTagIo.IsWriteEnabled(PersonalGenreTaxonKind.Scene, off, selected));
 
         var on = new AutoTagGenreIntelligenceSettings { WriteSubstyle = true, WriteContext = true, WriteScene = true };
-        Assert.True(GenreSemanticTagIo.IsWriteEnabled(PersonalGenreTaxonKind.Substyle, on, selected));
+        Assert.False(GenreSemanticTagIo.IsWriteEnabled(PersonalGenreTaxonKind.Substyle, on, selected));
         Assert.True(GenreSemanticTagIo.IsWriteEnabled(PersonalGenreTaxonKind.Context, on, selected));
         Assert.True(GenreSemanticTagIo.IsWriteEnabled(PersonalGenreTaxonKind.Scene, on, selected));
     }
@@ -315,7 +315,6 @@ public sealed class GenreSemanticTagIoTest : IDisposable
     }
 
     [Theory]
-    [InlineData(PersonalGenreTaxonKind.Substyle)]
     [InlineData(PersonalGenreTaxonKind.Context)]
     [InlineData(PersonalGenreTaxonKind.Scene)]
     public void TheOptInDimensionsAreGatedByTheirFlagEvenWithNoSelectedSet(PersonalGenreTaxonKind field)
@@ -416,7 +415,7 @@ public sealed class GenreSemanticTagIoTest : IDisposable
         var problems = GenreSemanticTagIo.VerifyWrittenFields(
             path, extension, "STYLE", plan, WriteAll(), SelectedTags());
 
-        Assert.Contains("Style is missing Kenyan Drill", problems);
+        Assert.Contains("missing: [Kenyan Drill]", string.Join("\n", problems));
         Assert.DoesNotContain(problems, problem => problem.Contains("Genre"));
     }
 
@@ -429,12 +428,12 @@ public sealed class GenreSemanticTagIoTest : IDisposable
         // The container accepted the write but stored something else entirely.
         WriteSemanticFields(path, Resolution(styles: ["Drill"]), WriteAll());
 
-        Assert.Contains("Style is missing Kenyan Drill", GenreSemanticTagIo.VerifyWrittenFields(
-            path, extension, "STYLE", plan, WriteAll(), SelectedTags()));
+        Assert.Contains("missing: [Kenyan Drill]", string.Join("\n", GenreSemanticTagIo.VerifyWrittenFields(
+            path, extension, "STYLE", plan, WriteAll(), SelectedTags())));
     }
 
     [Fact]
-    public void VerificationIgnoresCasingAndPunctuationButNotTheTermItself()
+    public void VerificationIgnoresCasingButNotADifferentTerm()
     {
         var path = CreateAudio(".flac");
         var plan = GenreSemanticTagIo.PlanFields(Resolution(styles: ["UK Garage"]));
@@ -444,8 +443,8 @@ public sealed class GenreSemanticTagIoTest : IDisposable
             path, ".flac", "STYLE", plan, WriteAll(), SelectedTags()));
 
         var other = GenreSemanticTagIo.PlanFields(Resolution(styles: ["Drill"]));
-        Assert.Contains("Style is missing Drill",
-            GenreSemanticTagIo.VerifyWrittenFields(path, ".flac", "STYLE", other, WriteAll(), SelectedTags()));
+        Assert.Contains("missing: [Drill]",
+            string.Join("\n", GenreSemanticTagIo.VerifyWrittenFields(path, ".flac", "STYLE", other, WriteAll(), SelectedTags())));
     }
 
     [Fact]
@@ -484,8 +483,8 @@ public sealed class GenreSemanticTagIoTest : IDisposable
 
         var on = WriteAll();
         on.WriteScene = true;
-        Assert.Contains("Scene is missing Zilizopendwa",
-            GenreSemanticTagIo.VerifyWrittenFields(path, ".flac", "STYLE", plan, on, SelectedTags()));
+        Assert.Contains("missing: [Zilizopendwa]",
+            string.Join("\n", GenreSemanticTagIo.VerifyWrittenFields(path, ".flac", "STYLE", plan, on, SelectedTags())));
     }
 
     [Fact]
@@ -497,8 +496,8 @@ public sealed class GenreSemanticTagIoTest : IDisposable
         WriteSemanticFields(path, Resolution(genres: ["Hip-Hop"]), WriteAll());
 
         // With Style selected the dropped value is reported...
-        Assert.Contains("Style is missing Drill", GenreSemanticTagIo.VerifyWrittenFields(
-            path, ".flac", "STYLE", plan, WriteAll(), SelectedTags()));
+        Assert.Contains("missing: [Drill]", string.Join("\n", GenreSemanticTagIo.VerifyWrittenFields(
+            path, ".flac", "STYLE", plan, WriteAll(), SelectedTags())));
 
         // ...and with Style unselected the very same plan is silent about it, which is
         // what makes this a selection gate rather than an accident of the plan.
@@ -509,8 +508,8 @@ public sealed class GenreSemanticTagIoTest : IDisposable
         // quiet when Genre is unselected.
         var second = CreateAudio(".flac");
         var genrePlan = GenreSemanticTagIo.PlanFields(Resolution(genres: ["Trap"]));
-        Assert.Contains("Genre is missing Trap", GenreSemanticTagIo.VerifyWrittenFields(
-            second, ".flac", "STYLE", genrePlan, WriteAll(), SelectedTags()));
+        Assert.Contains("missing: [Trap]", string.Join("\n", GenreSemanticTagIo.VerifyWrittenFields(
+            second, ".flac", "STYLE", genrePlan, WriteAll(), SelectedTags())));
         Assert.Empty(GenreSemanticTagIo.VerifyWrittenFields(
             second, ".flac", "STYLE", genrePlan, WriteAll(), new HashSet<string> { "style" }));
     }

@@ -32,16 +32,41 @@ public sealed class StyleConstructionEvidenceTest
     }
 
     [Fact]
-    public void AllSixCanonicalDimensionsCanSupplyExplicitFacts()
+    public void CanonicalDimensionsSupplyFactsFromAUniqueLabel()
     {
         var catalog = new PersonalGenreCatalog();
         foreach (var kind in Enum.GetValues<PersonalGenreTaxonKind>())
         {
-            var term = catalog.Taxa.First(t => t.Kind == kind);
+            // Substyle is a legacy alias of Style. The catalog no longer has a Substyle term.
+            if (kind == PersonalGenreTaxonKind.Substyle)
+            {
+                continue;
+            }
+
+            // An overloaded label is not an exemplar: TryMatch refuses to pick one
+            // identity, and this builder is intentionally left on that check.
+            var term = catalog.Taxa.FirstOrDefault(t =>
+                t.Kind == kind
+                && catalog.TryMatch(t.Name, out var matched)
+                && matched.Id == t.Id
+                && matched.Kind == kind);
+            if (term is null)
+            {
+                // Swahili is the only Language, and that label is also the Style.
+                Assert.Equal(PersonalGenreTaxonKind.Language, kind);
+                Assert.Equal(PersonalGenreCatalog.LabelLookupStatus.Ambiguous, catalog.LookupLabel("Swahili").Status);
+                continue;
+            }
+
             var fact = Assert.Single(Build([new(term.Name, kind)]).SemanticFacts);
             Assert.Equal(term.Id, fact.CanonicalId);
             Assert.Equal(kind, fact.Kind);
         }
+
+        var style = catalog.Taxa.First(t => t.Kind == PersonalGenreTaxonKind.Style);
+        var legacy = Assert.Single(Build([new(style.Name, PersonalGenreTaxonKind.Substyle)]).SemanticFacts);
+        Assert.Equal(style.Id, legacy.CanonicalId);
+        Assert.Equal(PersonalGenreTaxonKind.Style, legacy.Kind);
     }
 
     [Fact]
@@ -89,7 +114,7 @@ public sealed class StyleConstructionEvidenceTest
         Assert.Equal(kenyan.Id, Assert.Single(preview.UserAuthority.StyleLocks).TaxonId);
         var matching = Build([new("Kenyan Drill", PersonalGenreTaxonKind.Style)], locks: locks);
         Assert.Single(matching.SemanticFacts);
-        Assert.Single(Build([new("Hip-Hop", PersonalGenreTaxonKind.Genre), new("Rock", PersonalGenreTaxonKind.Genre)], settings: new(MaxGenres: 1)).SemanticFacts);
+        Assert.Equal(2, Build([new("Hip-Hop", PersonalGenreTaxonKind.Genre), new("Rock", PersonalGenreTaxonKind.Genre)], settings: new(MaxGenres: 1)).SemanticFacts.Count);
     }
 
     [Fact]

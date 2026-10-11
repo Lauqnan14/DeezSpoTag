@@ -197,19 +197,18 @@ public sealed class GenreNormalizationParityTest
     }
 
     /// <summary>
-    /// The genre block list is a genre block list. Applying it to STYLE would be new
-    /// behaviour that the shared authority never had, so it is deliberately not
-    /// applied there.
+    /// A blocked musical identity is blocked in Style as well as Genre. The block
+    /// list is about the identity, not the physical field that happened to hold it.
     /// </summary>
     [Fact]
-    public void TheGenreBlockListIsNotAppliedToNonGenreFields()
+    public void TheBlockListAppliesToStyleAsWellAsGenre()
     {
         var result = GenreNormalizationPreprocessor.Apply(
             SnapshotOf(("Worldwide", PersonalGenreTaxonKind.Style)),
             Snapshot(blocked: ["Worldwide"]));
 
-        Assert.Empty(result.Removed);
-        Assert.Equal("Worldwide", Assert.Single(result.Observations).RawValue);
+        Assert.Empty(result.Observations);
+        Assert.Equal("Worldwide", Assert.Single(result.Removed).Value);
     }
 
     /// <summary>

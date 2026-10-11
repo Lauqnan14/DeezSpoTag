@@ -33,7 +33,7 @@
         <div class="card-header"><h5 class="mb-0"><i class="fas fa-sitemap me-2"></i>Genre vocabulary</h5></div>
         <div class="card-body autotag-card-body">
             <div class="download-section">
-                <p class="helper mb-3">Built-ins are a protected foundation. Add custom Genre, Style, Substyle, Context, Scene or Language terms, and file them under a region so the vocabulary stays easy to browse. Regions organise what you see; they never decide which genres can be used.</p>
+                <p class="helper mb-3">Built-ins are a protected foundation. Add custom Genre, Style, Context, Scene or Language terms. Style and Sub-genre are one classification: sub-genre metadata is read as Style. File terms under a region so the vocabulary stays easy to browse. Regions organise what you see; they never decide which genres can be used.</p>
                 <div class="genre-intelligence-map-wrap" id="pgRegionMap" data-active-region="global">
                     <p class="helper pg-muted genre-intelligence-map-note mb-0">Highlighted to match the region you are browsing. Regions overlap, so a country can belong to more than one. The map is a guide; the tabs above are the navigation.</p>
                 </div>
@@ -74,7 +74,7 @@
                         <label for="pgTaxonomyKindFilter">Kind</label>
                         <select id="pgTaxonomyKindFilter">
                             <option value="">All kinds</option><option value="genre">Genre</option><option value="style">Style</option>
-                            <option value="substyle">Substyle</option><option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option>
+                            <option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -100,7 +100,7 @@
                 <form id="pgTaxonForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid mt-3">
                     <div class="form-group"><label for="pgTaxonId">ID</label><input id="pgTaxonId" required placeholder="e.g. reggaeton" /></div>
                     <div class="form-group"><label for="pgTaxonName">Name</label><input id="pgTaxonName" required placeholder="e.g. Reggaeton" /></div>
-                    <div class="form-group"><label for="pgTaxonKind">Kind</label><select id="pgTaxonKind"><option value="genre">Genre</option><option value="style">Style</option><option value="substyle">Substyle</option><option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option></select></div>
+                    <div class="form-group"><label for="pgTaxonKind">Kind</label><select id="pgTaxonKind"><option value="genre">Genre</option><option value="style">Style</option><option value="context">Context</option><option value="scene">Scene</option><option value="language">Language</option></select></div>
                     <div class="form-group"><label for="pgTaxonParents">Parent IDs</label><input id="pgTaxonParents" placeholder="hip-hop, pop" /><span class="helper">Comma separated; multiple parents are allowed.</span></div>
                     <div class="form-group"><label for="pgTaxonAliases">Aliases</label><input id="pgTaxonAliases" placeholder="Reggaeton Music, Reggaetón" /><span class="helper">Comma-separated raw labels.</span></div>
                     <div class="checkbox-group"><input id="pgTaxonContextOnly" type="checkbox" /><label for="pgTaxonContextOnly">Non-genre dimension</label></div>
@@ -152,7 +152,7 @@
                 <form id="pgMappingForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
                     <input id="pgMappingId" type="hidden" value="0" />
                     <div class="form-group"><label for="pgMappingValue">Value in the file</label><input id="pgMappingValue" required placeholder="e.g. My Afro Mix" /></div>
-                    <div class="form-group"><label for="pgMappingSource">File field</label><select id="pgMappingSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Substyle">Substyle</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
+                    <div class="form-group"><label for="pgMappingSource">File field</label><select id="pgMappingSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
                     <div class="form-group"><label for="pgMappingAction">Action</label><select id="pgMappingAction"><option value="0">Map</option><option value="1">Context only</option><option value="2">Ignore</option><option value="3">Ambiguous</option></select></div>
                     <div class="form-group"><label for="pgMappingTarget">Target taxon</label><select id="pgMappingTarget" required></select><span class="helper">Used by Map and Context-only actions.</span></div>
                     <div class="form-group"><label for="pgMappingPriority">Priority</label><input id="pgMappingPriority" type="number" value="100" /></div>
@@ -174,7 +174,7 @@
                 <form id="pgRuleForm" class="download-grid download-grid-3 genre-intelligence-checkbox-grid">
                     <input id="pgRuleId" type="hidden" value="0" />
                     <div class="form-group"><label for="pgRuleValue">Match value</label><input id="pgRuleValue" required placeholder="e.g. Sunday Worship" /></div>
-                    <div class="form-group"><label for="pgRuleSource">File field</label><select id="pgRuleSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Substyle">Substyle</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
+                    <div class="form-group"><label for="pgRuleSource">File field</label><select id="pgRuleSource"><option value="">Any field</option><option value="Genre">Genre</option><option value="Style">Style</option><option value="Context">Context</option><option value="Scene">Scene</option><option value="Language">Language</option></select></div>
                     <div class="form-group"><label for="pgRuleTarget">Target taxon</label><select id="pgRuleTarget" required></select></div>
                     <div class="form-group"><label for="pgRulePriority">Priority</label><input id="pgRulePriority" type="number" value="1000" /></div>
                     <div class="checkbox-group"><input id="pgRuleEnabled" type="checkbox" checked /><label for="pgRuleEnabled">Enabled</label></div>
@@ -197,7 +197,7 @@
                     <p class="helper mb-3">These settings control how the genre-related tags already in your audio files are classified. AutoTag runtime choices remain profile-specific above.</p>
                     <div class="download-grid download-grid-2 genre-intelligence-checkbox-grid">
                         <div class="checkbox-group"><input id="pgEnabled" type="checkbox" /><label for="pgEnabled">Enable Personal Genre classification</label></div>
-                        <div class="form-group"><label for="pgMaxGenres">Maximum final genres</label><input id="pgMaxGenres" type="number" min="1" max="10" value="3" /></div>
+                        <div class="form-group"><label for="pgMaxGenres">Retired genre limit</label><input id="pgMaxGenres" type="number" min="1" max="10" value="3" /><p class="helper mb-0">Kept so older profiles still load. It does not limit cleanup, preview, or the tags written to a file.</p></div>
                         <div class="checkbox-group"><input id="pgPreserveUnmappedTags" type="checkbox" /><label for="pgPreserveUnmappedTags">Preserve tags the taxonomy does not recognise</label></div>
                         <div class="checkbox-group"><input id="pgIncludeParents" type="checkbox" /><label for="pgIncludeParents">Include parent genres</label></div>
                     </div>
