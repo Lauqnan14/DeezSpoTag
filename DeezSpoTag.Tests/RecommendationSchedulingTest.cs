@@ -2,6 +2,10 @@ using System;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using DeezSpoTag.Services.Runtime;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -10,6 +14,123 @@ namespace DeezSpoTag.Tests;
 
 public sealed class RecommendationSchedulingTest
 {
+    [Fact]
+    public async Task MidnightCancelsPreviousDayWorkAndImmediatelyAllowsMondaysRun()
+    {
+        var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-11T20:59:00Z"));
+        var coordinator = new BackgroundWorkCoordinator(clock);
+        var worker = SchedulingWorker(clock, coordinator);
+        var started = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sunday = RunCalendarDay(worker, async (now, token) =>
+        {
+            started.SetResult(now);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
+        Assert.Equal(DayOfWeek.Sunday, (await started.Task).DayOfWeek);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await sunday.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Null(coordinator.GetSnapshot().ActiveHeavyOperation);
+        DateTimeOffset? monday = null;
+        Assert.False(await RunCalendarDay(worker, (now, token) =>
+        {
+            monday = now;
+            token.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }).WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(DateTimeOffset.Parse("2026-10-12T00:00:00+03:00"), monday);
+    }
+
+    [Fact]
+    public async Task MidnightCancelsQueuedOldDayAndUsesFreshDateAfterAcquiringSlot()
+    {
+        var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-11T20:59:00Z"));
+        var coordinator = new BackgroundWorkCoordinator(clock);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocker = coordinator.RunHeavyWorkAsync(_ => release.Task, CancellationToken.None);
+        var worker = SchedulingWorker(clock, coordinator);
+        var calls = 0;
+        var queued = RunCalendarDay(worker, (_, _) => { calls++; return Task.CompletedTask; });
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(await queued.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(0, calls);
+        DateTimeOffset? actual = null;
+        var monday = RunCalendarDay(worker, (now, _) => { actual = now; return Task.CompletedTask; });
+        clock.Advance(TimeSpan.FromSeconds(30));
+        release.SetResult();
+        await blocker;
+        Assert.False(await monday.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(DateTimeOffset.Parse("2026-10-12T00:00:30+03:00"), actual);
+    }
+
+    [Fact]
+    public async Task StoppingTheWorkerDoesNotStartAnotherCalendarDay()
+    {
+        var clock = new SchedulingClock(DateTimeOffset.Parse("2026-10-11T20:59:00Z"));
+        using var stopping = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = SchedulingWorker(clock, new BackgroundWorkCoordinator(clock));
+        var run = RunCalendarDay(worker, async (_, token) =>
+        {
+            started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }, stopping.Token);
+        await started.Task;
+        stopping.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+    }
+
+    private static LibraryRecommendationAutomationHostedService SchedulingWorker(TimeProvider clock, BackgroundWorkCoordinator coordinator)
+        => new(null!, coordinator, new ConfigurationBuilder().Build(),
+            NullLogger<LibraryRecommendationAutomationHostedService>.Instance, clock);
+
+    private static Task<bool> RunCalendarDay(LibraryRecommendationAutomationHostedService worker,
+        Func<DateTimeOffset, CancellationToken, Task> reconcile, CancellationToken stoppingToken = default)
+    {
+        var method = typeof(LibraryRecommendationAutomationHostedService).GetMethod("RunCalendarDayAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        return (Task<bool>)method.Invoke(worker, [reconcile, stoppingToken])!;
+    }
+
+    private sealed class SchedulingClock(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        private readonly List<SchedulingTimer> _timers = [];
+        public override DateTimeOffset GetUtcNow() => _now;
+        public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.FindSystemTimeZoneById("Africa/Nairobi");
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new SchedulingTimer(this, callback, state);
+            _timers.Add(timer);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+        public void Advance(TimeSpan elapsed)
+        {
+            _now += elapsed;
+            foreach (var timer in _timers.ToArray()) timer.Fire();
+        }
+        private sealed class SchedulingTimer(SchedulingClock clock, TimerCallback callback, object? state) : ITimer
+        {
+            private DateTimeOffset _due = DateTimeOffset.MaxValue;
+            private TimeSpan _period;
+            private bool _disposed;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                _due = dueTime == Timeout.InfiniteTimeSpan ? DateTimeOffset.MaxValue : clock.GetUtcNow() + dueTime;
+                _period = period;
+                return !_disposed;
+            }
+            public void Fire()
+            {
+                if (_disposed || clock.GetUtcNow() < _due) return;
+                _due = _period == Timeout.InfiniteTimeSpan ? DateTimeOffset.MaxValue : clock.GetUtcNow() + _period;
+                callback(state);
+            }
+            public void Dispose() => _disposed = true;
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
+
     [Theory]
     [InlineData("2026-10-10T00:01:00+03:00", "2026-10-09T21:00:00Z")]
     [InlineData("2026-10-10T23:59:00-04:00", "2026-10-10T04:00:00Z")]

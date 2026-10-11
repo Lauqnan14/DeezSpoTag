@@ -29,6 +29,35 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
         return untilMidnight < PollInterval ? untilMidnight : PollInterval;
     }
 
+    private async Task<bool> RunCalendarDayAsync(
+        Func<DateTimeOffset, CancellationToken, Task> reconcile,
+        CancellationToken stoppingToken)
+    {
+        var nowLocal = _timeProvider.GetLocalNow();
+        var midnightUtc = TimeZoneInfo.ConvertTimeToUtc(
+            nowLocal.Date.AddDays(1), _timeProvider.LocalTimeZone);
+        using var dayEnded = new CancellationTokenSource(
+            midnightUtc - nowLocal.UtcDateTime, _timeProvider);
+        using var work = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, dayEnded.Token);
+        try
+        {
+            await _workCoordinator.RunHeavyWorkAsync(token =>
+            {
+                token.ThrowIfCancellationRequested();
+                // Other background work may have held the slot since we queued.
+                // Choose the calendar date when reconciliation actually starts.
+                var targetTime = _timeProvider.GetLocalNow();
+                return reconcile(targetTime, token);
+            }, work.Token);
+            return dayEnded.IsCancellationRequested;
+        }
+        catch (OperationCanceledException) when (dayEnded.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            // Release the old day's work and start the new day without a polling delay.
+            return true;
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "LibraryRecommendations")) return;
@@ -36,9 +65,11 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
         {
             try
             {
-                var targetTime = _timeProvider.GetLocalNow();
-                await _workCoordinator.RunHeavyWorkAsync(
-                    token => _recommendationService.ReconcileRecommendationGenerationAsync(targetTime, token), stoppingToken);
+                if (await RunCalendarDayAsync(
+                    (targetTime, token) => _recommendationService.ReconcileRecommendationGenerationAsync(targetTime, token), stoppingToken))
+                {
+                    continue;
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
