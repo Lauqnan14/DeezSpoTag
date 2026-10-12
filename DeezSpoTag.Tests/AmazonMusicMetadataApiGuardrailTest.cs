@@ -1,3 +1,11 @@
+using System.Net;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.IO;
 using System.Linq;
@@ -8,8 +16,75 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class AmazonMusicMetadataApiGuardrailTest
 {
+    [Theory]
+    [InlineData("music.amazon.com")]
+    [InlineData("music.amazon.co.uk")]
+    public async Task AnonymousBootstrapUsesSkyfirePostAndPassesIssuedCsrfToSearch(string host)
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-bootstrap-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            await auth.SaveAsync(new PlatformAuthState { AmazonMusic = new AmazonMusicAuth { Host = host } });
+            using var handler = new BootstrapHandler();
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            await service.SearchAsync("Believer", "track", 3, CancellationToken.None);
+            Assert.Equal(HttpMethod.Post, handler.BootstrapMethod);
+            Assert.Equal($"https://{host}/config.json?skipToken=false&clientApplication=skyfire", handler.BootstrapUri);
+            Assert.False(handler.HadCookie);
+            Assert.NotNull(handler.SearchBody);
+            using var body = JsonDocument.Parse(handler.SearchBody!);
+            using var headers = JsonDocument.Parse(body.RootElement.GetProperty("headers").GetString()!);
+            using var csrf = JsonDocument.Parse(headers.RootElement.GetProperty("x-amzn-csrf").GetString()!);
+            Assert.Equal("guest-csrf", csrf.RootElement.GetProperty("token").GetString());
+            Assert.Equal("issued-ts", csrf.RootElement.GetProperty("timestamp").GetString());
+            Assert.Equal("issued-nonce", csrf.RootElement.GetProperty("rndNonce").GetString());
+            using var authentication = JsonDocument.Parse(headers.RootElement.GetProperty("x-amzn-authentication").GetString()!);
+            Assert.Equal(string.Empty, authentication.RootElement.GetProperty("accessToken").GetString());
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class BootstrapHandler : HttpMessageHandler, IHttpClientFactory
+    {
+        public HttpMethod? BootstrapMethod { get; private set; }
+        public string? BootstrapUri { get; private set; }
+        public bool HadCookie { get; private set; }
+        public string? SearchBody { get; private set; }
+        public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            HadCookie |= request.Headers.Contains("Cookie");
+            string response;
+            if (request.RequestUri!.AbsolutePath == "/config.json")
+            {
+                BootstrapMethod = request.Method;
+                BootstrapUri = request.RequestUri.AbsoluteUri;
+                response = request.Method == HttpMethod.Post && request.RequestUri.Query == "?skipToken=false&clientApplication=skyfire"
+                    ? "{\"sessionId\":\"guest-session\",\"deviceId\":\"guest-device\",\"csrf\":{\"token\":\"guest-csrf\",\"ts\":\"issued-ts\",\"rnd\":\"issued-nonce\"}}"
+                    : "{\"sessionId\":\"guest-session\",\"deviceId\":\"guest-device\"}";
+            }
+            else { SearchBody = await request.Content!.ReadAsStringAsync(token); response = "{\"methods\":[]}"; }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) };
+        }
+    }
+
+    private sealed class BootstrapEnvironment(string root) : IWebHostEnvironment
+    {
+        public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
+        public string EnvironmentName { get; set; } = "Development";
+        public string ContentRootPath { get; set; } = root;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public string WebRootPath { get; set; } = root;
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
     [Fact]
     public void AmazonMetadataSessionFailure_ReportsMissingFieldNamesWithoutValues()
     {

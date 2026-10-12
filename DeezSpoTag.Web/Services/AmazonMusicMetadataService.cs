@@ -522,7 +522,10 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         var client = _httpClientFactory.CreateClient(nameof(AmazonMusicMetadataService));
         client.Timeout = TimeSpan.FromSeconds(30);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/config.json");
+        // The Skyfire POST issues guest CSRF credentials; GET returns configuration without
+        // a usable token. This bootstrap also works without an Amazon account cookie.
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"https://{host}/config.json?skipToken=false&clientApplication=skyfire");
         AddAmazonHeaders(request, host, auth?.Cookie);
         using var response = await client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
