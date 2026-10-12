@@ -24,12 +24,40 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         }
 
         var normalizedIsrc = isrc.Trim();
-        var officialTask = FindExactIsrcFromOfficialSearchAsync($"isrc:{normalizedIsrc}", normalizedIsrc, ct);
-        var catalogTask = FindExactIsrcFromCatalogSearchAsync(normalizedIsrc, normalizedIsrc, ct);
-        var autosuggestTask = FindExactIsrcFromAutosuggestAsync(normalizedIsrc, normalizedIsrc, ct);
-        var results = await CollectSuccessfulSourcesAsync(
-            new[] { officialTask, catalogTask, autosuggestTask }, ct);
-        return results.FirstOrDefault(static track => track != null);
+        using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var token = lookupCancellation.Token;
+        var tasks = new List<Task<QobuzTrack?>>
+        {
+            FindExactIsrcFromOfficialSearchAsync($"isrc:{normalizedIsrc}", normalizedIsrc, token),
+            FindExactIsrcFromCatalogSearchAsync(normalizedIsrc, normalizedIsrc, token),
+            FindExactIsrcFromAutosuggestAsync(normalizedIsrc, normalizedIsrc, token)
+        };
+        // Observe sibling failures even when an exact result lets us return early.
+        _ = Task.WhenAll(tasks).ContinueWith(static task => { _ = task.Exception; },
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        var failures = new List<Exception>();
+        var succeeded = false;
+        try
+        {
+            while (tasks.Count > 0)
+            {
+                var completed = await Task.WhenAny(tasks).WaitAsync(ct);
+                tasks.Remove(completed);
+                try
+                {
+                    var track = await completed;
+                    ct.ThrowIfCancellationRequested();
+                    succeeded = true;
+                    if (track != null) return track;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { failures.Add(ex); }
+            }
+            if (!succeeded) throw new AggregateException("Qobuz catalog lookup failed for every search source.", failures);
+            return null;
+        }
+        finally { lookupCancellation.Cancel(); }
     }
 
     public async Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct)

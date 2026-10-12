@@ -572,7 +572,15 @@ public sealed class EngineFallbackCoordinator
             return $"{source} did not deliver the file.";
         }
 
-        return $"{source} {DescribeLastAttempt(payload.FallbackHistory[^1])}";
+        var attempt = payload.FallbackHistory.LastOrDefault(static entry =>
+                entry.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired or FallbackFailureClassifier.AuthenticationRequired)
+            ?? payload.FallbackHistory.LastOrDefault(static entry => entry.Status == "failed")
+            ?? payload.FallbackHistory.LastOrDefault(static entry =>
+                entry.ErrorClass is not (FallbackFailureClassifier.Unresolved or FallbackFailureClassifier.IdentityUnresolved))
+            ?? payload.FallbackHistory[^1];
+        var step = payload.FallbackPlan.FirstOrDefault(entry => entry.StepId == attempt.StepId);
+        if (step != null) source = SourceLabel(step.Engine);
+        return $"{source} {DescribeLastAttempt(attempt)}";
     }
 
     /// <summary>

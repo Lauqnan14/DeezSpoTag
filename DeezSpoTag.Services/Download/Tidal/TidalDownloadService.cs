@@ -590,7 +590,29 @@ public sealed class TidalDownloadService
         string albumName,
         string isrc,
         int expectedDuration)
+        => ValidateResolvedTrackCore(track, trackTitle, artistName, albumName, isrc, expectedDuration, allowMissingCandidateArtist: false);
+
+    private static TrackCandidateValidationResult ValidateResolvedTrackCore(
+        TidalTrack track, string trackTitle, string artistName, string albumName, string isrc,
+        int expectedDuration, bool allowMissingCandidateArtist)
     {
+        var candidateTitle = string.IsNullOrWhiteSpace(track.Version)
+            ? track.Title
+            : $"{track.Title} ({track.Version})";
+        // Some Tidal remix entries omit the edition label altogether. Only repair
+        // that missing label when the exact recording, duration and album agree.
+        var unmarkedTitle = RemoveTrailingRemixLabel(trackTitle);
+        if (!string.Equals(unmarkedTitle, trackTitle, StringComparison.Ordinal)
+            && string.Equals(TrackCandidateValidator.NormalizeIsrc(isrc), track.Isrc, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(isrc)
+            && expectedDuration > 0 && track.Duration > 0
+            && Math.Abs(expectedDuration - track.Duration) <= 3
+            && TrackTitleMatcher.TitlesMatch(unmarkedTitle, candidateTitle)
+            && !string.IsNullOrWhiteSpace(albumName)
+            && TrackTitleMatcher.TitlesMatch(RemoveTrailingRemixLabel(albumName), track.Album?.Title))
+        {
+            trackTitle = unmarkedTitle;
+        }
         return TrackCandidateValidator.Validate(
             new TrackMatchSource(
                 isrc,
@@ -601,17 +623,21 @@ public sealed class TidalDownloadService
             new TrackMatchCandidate(
                 track.Id.ToString(CultureInfo.InvariantCulture),
                 track.Isrc,
-                track.Title,
+                candidateTitle,
                 ResolveTidalArtistName(track),
                 track.Album?.Title,
                 track.Duration > 0 ? track.Duration * 1000 : null),
             new TrackCandidateValidationOptions(
                 StrictWithoutIsrc: true,
-                AllowMissingCandidateArtist: false,
+                AllowMissingCandidateArtist: allowMissingCandidateArtist,
                 RequireCandidateDurationWhenSourceHasDuration: true,
                 MaxIsrcDurationDifferenceMs: 20_000,
                 MaxMetadataDurationDifferenceMs: 3_000));
     }
+
+    private static string RemoveTrailingRemixLabel(string title)
+        => Regex.Replace(title, @"\s*\(Remix\)\s*$", string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
 
     private static long GetVideoIdFromUrl(string tidalUrl)
     {
@@ -1021,33 +1047,11 @@ public sealed class TidalDownloadService
         string isrc,
         int expectedDuration)
     {
-        var source = new TrackMatchSource(
-            isrc,
-            trackName,
-            artistName,
-            albumName,
-            expectedDuration > 0 ? expectedDuration * 1000 : null);
-        var options = new TrackCandidateValidationOptions(
-            StrictWithoutIsrc: true,
-            AllowMissingCandidateArtist: true,
-            RequireCandidateDurationWhenSourceHasDuration: true,
-            MaxIsrcDurationDifferenceMs: 20_000,
-            MaxMetadataDurationDifferenceMs: 3_000);
-
         TidalTrack? bestTrack = null;
         var bestScore = double.MinValue;
         foreach (var track in allTracks.Where(static track => track.Id > 0))
         {
-            var validation = TrackCandidateValidator.Validate(
-                source,
-                new TrackMatchCandidate(
-                    track.Id.ToString(CultureInfo.InvariantCulture),
-                    track.Isrc,
-                    track.Title,
-                    ResolveTidalArtistName(track),
-                    track.Album?.Title,
-                    track.Duration > 0 ? track.Duration * 1000 : null),
-                options);
+            var validation = ValidateResolvedTrackCore(track, trackName, artistName, albumName ?? string.Empty, isrc, expectedDuration, allowMissingCandidateArtist: true);
             if (!validation.Accepted)
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -1097,19 +1101,11 @@ public sealed class TidalDownloadService
 
     private static string ResolveTidalArtistName(TidalTrack track)
     {
-        if (!string.IsNullOrWhiteSpace(track.Artist?.Name))
-        {
-            return track.Artist.Name;
-        }
-
-        if (track.Artists is { Count: > 0 })
-        {
-            return string.Join(", ", track.Artists
-                .Select(static artist => artist.Name)
-                .Where(static name => !string.IsNullOrWhiteSpace(name)));
-        }
-
-        return string.Empty;
+        return string.Join(", ", (track.Artists ?? [])
+            .Select(static artist => artist.Name)
+            .Prepend(track.Artist?.Name ?? string.Empty)
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
     }
 
     private async Task<List<TidalTrack>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken)
@@ -3885,6 +3881,9 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("title")]
         public string Title { get; set; } = "";
+
+        [JsonPropertyName("version")]
+        public string? Version { get; set; }
 
         [JsonPropertyName("isrc")]
         public string Isrc { get; set; } = "";

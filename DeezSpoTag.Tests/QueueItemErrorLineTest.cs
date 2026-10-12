@@ -82,6 +82,19 @@ public sealed class QueueItemErrorLineTest
     }
 
     [Fact]
+    public void ExhaustedFallback_ShowsActualBlockedProviderInsteadOfLastEmptyLookup()
+    {
+        var payload = new SoulseekQueueItem
+        {
+            FallbackPlan = [new("step-0", "qobuz", "6", [], "isrc"), new("step-1", "amazon", "HD_FLAC", [], "isrc")],
+            FallbackHistory = [new("step-0", "failed", "provider_verification_required", "403"), new("step-1", "skipped", "unresolved", "missing URL")]
+        };
+        var method = typeof(EngineFallbackCoordinator).GetMethod("BuildExhaustionMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var line = (string)method.Invoke(null, new object[] { payload, "tidal" })!;
+        Assert.Equal("Qobuz needs signing in again.", line);
+    }
+
+    [Fact]
     public void AnEmptyHistoryStillGivesOneShortLine()
     {
         // The line is built when a walk ends, which is also when the history may not have been written. It still

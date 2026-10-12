@@ -9,6 +9,18 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QueuePreResolutionPayloadTest
 {
+    [Theory]
+    [InlineData("qobuz", "{\"ResolutionStatus\":\"resolved\",\"ResolvedEngine\":\"tidal\",\"TidalId\":\"50383\"}", false)]
+    [InlineData("qobuz", "{\"ResolutionStatus\":\"resolved\",\"QobuzId\":\"196087\"}", true)]
+    [InlineData("qobuz", "{\"ResolutionStatus\":\"resolved\",\"SourceUrl\":\"https://play.qobuz.com/track/196087\"}", true)]
+    [InlineData("qobuz", "{\"ResolutionStatus\":\"resolved\",\"SourceUrl\":\"https://www.deezer.com/track/196087\"}", false)]
+    public void ResolvedQueueItem_RequiresIdentityForItsCurrentEngine(string engine, string json, bool expected)
+    {
+        var method = typeof(QueuePreResolutionPayload).GetMethod("HasUsableResolvedIdentity");
+        Assert.NotNull(method);
+        Assert.Equal(expected, (bool)method.Invoke(null, new object[] { JsonNode.Parse(json)!.AsObject(), engine })!);
+    }
+
     [Fact]
     public void ParseOrEmpty_ReturnsEmptyObjectForInvalidJson()
     {

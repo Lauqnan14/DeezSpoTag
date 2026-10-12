@@ -466,7 +466,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         var resolutionStatus = QueuePreResolutionPayload.ReadStatus(payloadObj);
         var normalizedItem = item;
 
-        if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase)
+            && QueuePreResolutionPayload.HasUsableResolvedIdentity(payloadObj, item.Engine))
         {
             return normalizedItem;
         }

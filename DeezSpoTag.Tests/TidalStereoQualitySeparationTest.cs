@@ -21,6 +21,27 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Theory]
+    [InlineData("Cry Baby", "Cry Baby", null, "David Guetta", "Clean Bandit", "Cry Baby", 157, 157, true)]
+    [InlineData("Will You Still Love Me Tomorrow (Digitally Remastered: 1999)", "Will You Still Love Me Tomorrow", "Digitally Remastered: 1999", "Dionne Warwick", "Dionne Warwick", "The Definitive Collection", 330, 330, true)]
+    [InlineData("Ananipenda (Remix)", "Ananipenda", null, "Platform", "Platform", "Ananipenda (Remix)", 289, 290, true)]
+    [InlineData("Ananipenda (Remix)", "Ananipenda", null, "Platform", "Platform", "Ananipenda (Remix)", 289, 320, false)]
+    [InlineData("Ananipenda (Live)", "Ananipenda", null, "Platform", "Platform", "Ananipenda (Live)", 289, 290, false)]
+    [InlineData("Ananipenda", "Ananipenda", "Remix", "Platform", "Platform", "Ananipenda", 289, 290, false)]
+    public void TidalExactRecording_UsesAllCreditsAndVersionWithoutAcceptingDifferentVariants(
+        string sourceTitle, string title, string? version, string sourceArtist, string primaryArtist,
+        string album, int expectedDuration, int duration, bool accepted)
+    {
+        var method = typeof(TidalDownloadService).GetMethod("ValidateResolvedTrack", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var json = System.Text.Json.JsonSerializer.Serialize(new { id = 343424218, title, version, isrc = "ZA56E2415566", duration,
+            artist = new { name = primaryArtist }, artists = new[] { new { name = primaryArtist }, new { name = sourceArtist } },
+            album = new { title = album.Replace(" (Remix)", "") } });
+        var track = System.Text.Json.JsonSerializer.Deserialize(json, method.GetParameters()[0].ParameterType)!;
+        var result = (DeezSpoTag.Services.Matching.TrackCandidateValidationResult)method.Invoke(null,
+            new object[] { track, sourceTitle, sourceArtist, album, "ZA56E2415566", expectedDuration })!;
+        Assert.Equal(accepted, result.Accepted);
+    }
+
     [Fact]
     public void TidalReadinessRemainsObservationalAndRefreshStaysAtDownloadBoundary()
     {

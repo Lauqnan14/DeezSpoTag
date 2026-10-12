@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Shared.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
@@ -100,6 +101,31 @@ public static class QueuePreResolutionPayload
         => ReadString(payload, ResolutionStatusPascalKey)
            ?? ReadString(payload, ResolutionStatusCamelKey)
            ?? Pending;
+
+    public static bool HasUsableResolvedIdentity(JsonObject payload, string engine)
+    {
+        var normalizedEngine = engine.ToLowerInvariant();
+        if (normalizedEngine is not ("qobuz" or "tidal" or "amazon")) return true;
+        var resolvedEngine = ReadResolvedEngine(payload);
+        if (!string.IsNullOrWhiteSpace(resolvedEngine)
+            && !string.Equals(resolvedEngine, engine, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var url = ReadResolvedSourceUrl(payload) ?? ReadString(payload, "SourceUrl") ?? ReadString(payload, "sourceUrl");
+        return normalizedEngine switch
+        {
+            "qobuz" => int.TryParse(ReadString(payload, "QobuzId") ?? ReadString(payload, "qobuzId")
+                ?? EngineLinkParser.TryExtractQobuzTrackId(url), out var qobuzId) && qobuzId > 0,
+            "tidal" => long.TryParse(ReadString(payload, "TidalId") ?? ReadString(payload, "tidalId")
+                ?? EngineLinkParser.TryExtractTidalTrackId(url), out var tidalId) && tidalId > 0,
+            "amazon" => !string.IsNullOrWhiteSpace(EngineLinkParser.NormalizeAmazonTrackId(
+                ReadString(payload, "AmazonId") ?? ReadString(payload, "amazonId"))
+                ?? EngineLinkParser.TryExtractAmazonTrackId(url, EngineLinkParser.RegexTimeout)),
+            _ => true
+        };
+    }
 
     public static DateTimeOffset? ReadResolvedAt(JsonObject payload)
         => ReadDateTimeOffset(payload, "ResolvedAtUtc")

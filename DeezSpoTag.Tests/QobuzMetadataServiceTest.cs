@@ -37,6 +37,25 @@ public sealed class QobuzMetadataServiceTest
     }
 
     [Fact]
+    public async Task ExactIsrcResult_DoesNotWaitForASlowSiblingSource()
+    {
+        var pending = new TaskCompletionSource<QobuzTrackSearchResponse?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new StubQobuzApiClient
+        {
+            PendingOfficial = pending.Task,
+            CatalogResponse = new QobuzCatalogSearchResponse { Tracks = new QobuzSearchList<QobuzTrack> { Items = [new QobuzTrack { Id = 196087, ISRC = "USAR19901463" }] } }
+        };
+        var options = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" });
+        var service = new QobuzMetadataService(client, new QobuzArtistService(client, new MemoryCache(new MemoryCacheOptions()), options), options);
+        try
+        {
+            var result = await service.FindTrackByISRC("USAR19901463", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(196087, result?.Id);
+        }
+        finally { pending.TrySetResult(null); }
+    }
+
+    [Fact]
     public async Task SearchTracks_AllSourcesFailedDoesNotBecomeEmptyCatalog()
     {
         var client = new StubQobuzApiClient
@@ -343,6 +362,7 @@ public sealed class QobuzMetadataServiceTest
     private sealed class StubQobuzApiClient : IQobuzApiClient
     {
         public Exception? OfficialFailure { get; init; }
+        public Task<QobuzTrackSearchResponse?>? PendingOfficial { get; init; }
         public Exception? CatalogFailure { get; init; }
         public Exception? AutosuggestFailure { get; init; }
         public QobuzAutosuggestResponse? AutosuggestResponse { get; init; }
@@ -394,6 +414,7 @@ public sealed class QobuzMetadataServiceTest
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (PendingOfficial != null) return PendingOfficial.WaitAsync(cancellationToken);
             return OfficialFailure is null ? Task.FromResult<QobuzTrackSearchResponse?>(null)
                 : Task.FromException<QobuzTrackSearchResponse?>(OfficialFailure);
         }
