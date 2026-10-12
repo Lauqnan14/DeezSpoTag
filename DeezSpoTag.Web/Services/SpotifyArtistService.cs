@@ -2776,13 +2776,12 @@ public sealed class SpotifyArtistService
 
     private async Task<List<string>> FetchCandidateAlbumTitlesAsync(string candidateId, CancellationToken cancellationToken)
     {
-        var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-            BuildSpotifyArtistUrl(candidateId),
-            cancellationToken);
-        return metadata?.AlbumList
+        // Identity matching needs release titles, not every release's track listing.
+        var albums = await _pathfinderMetadataClient.FetchArtistDiscographyAllAsync(candidateId, cancellationToken);
+        return albums
             .Select(album => album.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
-            .ToList() ?? new List<string>();
+            .ToList();
     }
 
     private static int ComputeLocalAlbumOverlap(HashSet<string> localAlbumTitleSet, List<string> spotifyAlbumTitles)

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -7,6 +8,74 @@ namespace DeezSpoTag.Tests;
 
 public sealed class SpotifyArtistNameMatchingGuardrailTest
 {
+    [Theory]
+    [InlineData("Album 119", 1)]
+    [InlineData("Unrelated Album", 0)]
+    public async System.Threading.Tasks.Task CandidateAlbumEvidenceDoesNotFetchEveryAlbumsTracks(string localTitle, int expectedOverlap)
+    {
+        using var handler = new DiscographyHandler();
+        var client = new SpotifyPathfinderMetadataClient(null!, null!, null!, new BackgroundUser(),
+            new DiscographyHttpFactory(handler), Microsoft.Extensions.Logging.Abstractions.NullLogger<SpotifyPathfinderMetadataClient>.Instance);
+        var clientType = typeof(SpotifyPathfinderMetadataClient);
+        const string blobPath = "test-weekly-artist-evidence";
+        clientType.GetField("_backgroundUserBlobCachedPath", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(client, blobPath);
+        clientType.GetField("_backgroundUserBlobCheckedAt", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(client, DateTimeOffset.UtcNow);
+        var contextType = clientType.GetNestedType("PathfinderAuthContext", BindingFlags.NonPublic)!;
+        var context = Activator.CreateInstance(contextType, ["test-access", "test-client", "test-version", "test-device"]);
+        var stateType = clientType.GetNestedType("BlobAuthState", BindingFlags.NonPublic)!;
+        var state = Activator.CreateInstance(stateType, nonPublic: true)!;
+        stateType.GetProperty("Context")!.SetValue(state, context);
+        stateType.GetProperty("AccessTokenExpiresAt")!.SetValue(state, DateTimeOffset.UtcNow.AddHours(1));
+        stateType.GetProperty("ClientTokenExpiresAt")!.SetValue(state, DateTimeOffset.UtcNow.AddHours(1));
+        var states = (System.Collections.IDictionary)clientType.GetField("_blobAuthStates", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(client)!;
+        states.Add(blobPath, state);
+        var service = (SpotifyArtistService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(SpotifyArtistService));
+        typeof(SpotifyArtistService).GetField("_pathfinderMetadataClient", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, client);
+        var method = typeof(SpotifyArtistService).GetMethod("ResolveLocalAlbumOverlapAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var overlap = await (System.Threading.Tasks.Task<int>)method.Invoke(service,
+            ["0000000000000000000001", true, new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase) { localTitle }, System.Threading.CancellationToken.None])!;
+
+        Assert.Equal(expectedOverlap, overlap);
+        Assert.Equal(3, handler.Operations.Count);
+        Assert.All(handler.Operations, operation => Assert.Equal("queryArtistDiscographyAll", operation));
+    }
+
+    private sealed class BackgroundUser : ISpotifyUserContextAccessor
+    {
+        public string? UserId => null;
+    }
+
+    private sealed class DiscographyHttpFactory(DiscographyHandler handler) : System.Net.Http.IHttpClientFactory
+    {
+        public System.Net.Http.HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private sealed class DiscographyHandler : System.Net.Http.HttpMessageHandler
+    {
+        public readonly System.Collections.Generic.List<string> Operations = [];
+
+        protected override async System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(
+            System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            using var payload = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            var operation = payload.RootElement.GetProperty("operationName").GetString()!;
+            Operations.Add(operation);
+            object artist = new { profile = new { name = "Library Artist" } };
+            object response;
+            if (operation == "queryArtistDiscographyAll")
+            {
+                var offset = payload.RootElement.GetProperty("variables").GetProperty("offset").GetInt32();
+                var items = System.Linq.Enumerable.Range(offset, Math.Min(50, 120 - offset))
+                    .Select(index => new { uri = "spotify:album:" + index.ToString("D22"), name = "Album " + index, type = "ALBUM", tracks = new { totalCount = 15 } }).ToArray();
+                response = new { data = new { artistUnion = new { discography = new { all = new { totalCount = 120, items } } } } };
+            }
+            else if (operation == "getAlbum")
+                response = new { data = new { albumUnion = new { tracks = new { totalCount = 0, items = Array.Empty<object>() } } } };
+            else response = new { data = new { artistUnion = artist } };
+            return new(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(System.Text.Json.JsonSerializer.Serialize(response)) };
+        }
+    }
+
     private static readonly MethodInfo EquivalentMethod =
         typeof(SpotifyArtistService).GetMethod(
             "IsEquivalentArtistName",
