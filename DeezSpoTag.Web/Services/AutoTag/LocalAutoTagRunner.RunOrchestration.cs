@@ -84,7 +84,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // Typed outcome: the message is the pause reason, no string prefix needed.
             return AutoTagRunResult.Paused(ex.Message);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogError(ex, "Local AutoTag run failed with an unexpected request cancellation.");
+            return AutoTagRunResult.Failed(ex.ToString());
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogError(ex, "Local AutoTag run failed.");
             return AutoTagRunResult.Failed(ex.ToString());

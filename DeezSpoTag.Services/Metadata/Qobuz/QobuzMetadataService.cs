@@ -52,7 +52,11 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
                     if (track != null) return track;
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { failures.Add(ex); }
+                catch (Exception ex) when (ex is not OperationCanceledException
+                    && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                {
+                    failures.Add(ex);
+                }
             }
             if (!succeeded) throw new AggregateException("Qobuz catalog lookup failed for every search source.", failures);
             return null;

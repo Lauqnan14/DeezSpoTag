@@ -91,7 +91,7 @@ log "Mode: ${MODE}"
 
 # Map affected areas to existing test classes. A changed test selects its own class;
 # changing an unmapped source requires adding a mapping, never an unrelated smoke run.
-mapfile -t test_files < <(rg --files DeezSpoTag.Tests -g '*Test.cs' | sort)
+mapfile -t test_files < <(git ls-files --cached --others --exclude-standard 'DeezSpoTag.Tests/*Test.cs' | sort -u)
 selected=()
 unmapped=()
 add_tests_matching() {
