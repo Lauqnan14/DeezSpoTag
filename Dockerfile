@@ -17,6 +17,21 @@ RUN --mount=type=secret,id=sixlabors_license,required=true \
 
 FROM docker:cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS docker-cli
 
+FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS youtube-node
+
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-tools
+COPY --from=youtube-node /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && python3 -m venv /opt/youtube-venv \
+    && /opt/youtube-venv/bin/pip install --no-cache-dir yt-dlp==2026.8.19 yt-dlp-ejs==0.8.0 \
+    && /opt/youtube-venv/bin/pip check \
+    && /opt/youtube-venv/bin/yt-dlp --version \
+    && node --version \
+    && /opt/youtube-venv/bin/python3 -c "import yt_dlp, yt_dlp_ejs" \
+    && /opt/youtube-venv/bin/python3 -m pip uninstall --yes pip \
+    && rm -rf /var/lib/apt/lists/*
+
 FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
@@ -132,6 +147,13 @@ RUN apt-get update -o Acquire::Retries=5 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/vibe-runtime-requirements.txt /app/scripts/vibe-runtime-requirements.txt
+
+COPY --from=youtube-tools /opt/youtube-venv /opt/youtube-venv
+COPY --from=youtube-node /usr/local/bin/node /usr/local/bin/node
+RUN ln -s /opt/youtube-venv/bin/yt-dlp /usr/local/bin/yt-dlp \
+    && yt-dlp --version \
+    && node --version \
+    && /opt/youtube-venv/bin/python3 -c "import yt_dlp, yt_dlp_ejs"
 
 RUN set -eux; \
     python3 -m venv /opt/venv; \
