@@ -1,11 +1,108 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Web.Services.AutoTag;
+using DeezSpoTag.Web.Services.Audiomack;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagPlatformMatchTimeoutGuardrailTest
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task OptionalArtistMetadataRequest_ContinuesUnlessTheJobWasCanceled(bool jobCanceled, bool synchronousFailure)
+    {
+        using var cancellation = new CancellationTokenSource();
+        if (jobCanceled) cancellation.Cancel();
+        var logs = new List<string>();
+        var (runner, context) = CreateRunContext(cancellation.Token, logs);
+        var method = typeof(LocalAutoTagRunner).GetMethod("RunBoundedOptionalStepAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Func<CancellationToken, Task> action = _ => synchronousFailure
+            ? throw new TaskCanceledException("provider request timed out")
+            : Task.FromException(new TaskCanceledException("provider request timed out"));
+        var task = (Task)method.Invoke(runner, new object[] { context, "artist metadata", TimeSpan.FromSeconds(30), action })!;
+        if (jobCanceled)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        }
+        else
+        {
+            await task;
+            Assert.Contains(logs, line => line.Contains("continuing", StringComparison.Ordinal));
+            Assert.False(cancellation.IsCancellationRequested);
+            Func<CancellationToken, Task> nextStep = _ => Task.CompletedTask;
+            await (Task)method.Invoke(runner, new object[] { context, "next file", TimeSpan.FromSeconds(30), nextStep })!;
+            Assert.Contains(logs, line => line.Contains("next file completed", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AudiomackMatchRequest_ReportsProviderTimeoutWithoutCancelingTheJob(bool jobCanceled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        if (jobCanceled) cancellation.Cancel();
+        var logs = new List<string>();
+        var (runner, context) = CreateRunContext(cancellation.Token, logs);
+        var factory = new CanceledRequestFactory();
+        var api = new AudiomackApiClient(factory, new AudiomackWebCredentialsProvider(factory, NullLogger<AudiomackWebCredentialsProvider>.Instance), NullLogger<AudiomackApiClient>.Instance);
+        typeof(LocalAutoTagRunner).GetField("_audiomackMatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(runner, new AudiomackMatcher(api, NullLogger<AudiomackMatcher>.Instance));
+        var matchContextType = typeof(LocalAutoTagRunner).GetNestedType("PlatformMatchContext", BindingFlags.NonPublic)!;
+        var matchContext = Activator.CreateInstance(matchContextType, nonPublic: true)!;
+        var configType = typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunnerConfig", BindingFlags.NonPublic)!;
+        matchContextType.GetProperty("Config")!.SetValue(matchContext, Activator.CreateInstance(configType, nonPublic: true));
+        matchContextType.GetProperty("Settings")!.SetValue(matchContext, new DeezSpoTagSettings());
+        matchContextType.GetProperty("MatchingConfig")!.SetValue(matchContext, new AutoTagMatchingConfig());
+        matchContextType.GetProperty("FilePath")!.SetValue(matchContext, "/downloads/song.flac");
+        var method = typeof(LocalAutoTagRunner).GetMethod("RunPlatformMatchWithTimeoutAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(runner, new object[] { context, new AutoTagAudioInfo { Title = "Song", Artist = "Artist" }, matchContext })!;
+        if (jobCanceled) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        else
+        {
+            await task;
+            Assert.Equal("provider_timeout", context.GetType().GetProperty("MatchFailureOutcome")!.GetValue(context));
+            Assert.False(cancellation.IsCancellationRequested);
+            Assert.Contains(logs, line => line.Contains("continuing with later files", StringComparison.Ordinal));
+        }
+    }
+
+    private static (LocalAutoTagRunner Runner, object Context) CreateRunContext(CancellationToken token, List<string> logs)
+    {
+        var runner = (LocalAutoTagRunner)RuntimeHelpers.GetUninitializedObject(typeof(LocalAutoTagRunner));
+        typeof(LocalAutoTagRunner).GetField("_logger", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(runner, NullLogger<LocalAutoTagRunner>.Instance);
+        var type = typeof(LocalAutoTagRunner).GetNestedType("AutoTagFileRunContext", BindingFlags.NonPublic)!;
+        var context = Activator.CreateInstance(type, nonPublic: true)!;
+        type.GetProperty("Platform")!.SetValue(context, "audiomack");
+        type.GetProperty("File")!.SetValue(context, "/downloads/song.flac");
+        type.GetProperty("Token")!.SetValue(context, token);
+        type.GetProperty("LogCallback")!.SetValue(context, (Action<string>)logs.Add);
+        var cacheType = typeof(LocalAutoTagRunner).GetNestedType("JobMatchCacheState", BindingFlags.NonPublic)!;
+        type.GetProperty("JobMatchCache")!.SetValue(context, Activator.CreateInstance(cacheType, nonPublic: true));
+        return (runner, context);
+    }
+
+    private sealed class CanceledRequestFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new CanceledRequestHandler());
+        private sealed class CanceledRequestHandler : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                => Task.FromException<HttpResponseMessage>(new TaskCanceledException("provider request timed out"));
+        }
+    }
+
     [Fact]
     public void LocalAutoTagRunner_OpensPerJobCircuitAfterConsecutiveMatchTimeouts()
     {

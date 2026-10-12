@@ -263,6 +263,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         PlatformMatchContext matchContext)
     {
         context.LogCallback($"onetagger_autotag: {context.Platform} match starting");
+        context.Token.ThrowIfCancellationRequested();
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
         var matchTask = MatchPlatformAsync(
             context.Platform,
@@ -277,17 +278,25 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             context.LogCallback($"onetagger_autotag: {context.Platform} match completed");
             return match;
         }
-        catch (TimeoutException)
+        catch (Exception ex) when (ex is TimeoutException
+            || (ex is OperationCanceledException && !context.Token.IsCancellationRequested))
         {
+            context.Token.ThrowIfCancellationRequested();
             timeoutSource.Cancel();
             ObserveBackgroundTask(matchTask);
             var openedCircuit = NotePlatformMatchTimeout(context.JobMatchCache, context.Platform);
             context.MatchFailureOutcome = "provider_timeout";
-            context.MatchFailureMessage = $"provider timed out after {PlatformMatchTimeout.TotalSeconds:0}s";
+            var timeoutDescription = ex is TimeoutException
+                ? $"timed out after {PlatformMatchTimeout.TotalSeconds:0}s"
+                : "request timed out or was canceled";
+            context.MatchFailureMessage = $"provider {timeoutDescription}";
+            var timeoutLogPrefix = ex is TimeoutException
+                ? $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s"
+                : $"onetagger_autotag: {context.Platform} match request timed out or was canceled";
             context.LogCallback(
                 openedCircuit
-                    ? $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; skipping remaining {context.Platform} matches after consecutive timeouts"
-                    : $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; continuing with later files");
+                    ? $"{timeoutLogPrefix}; skipping remaining {context.Platform} matches after consecutive timeouts"
+                    : $"{timeoutLogPrefix}; continuing with later files");
             return null;
         }
     }

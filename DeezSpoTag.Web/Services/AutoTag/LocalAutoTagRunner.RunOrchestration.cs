@@ -75,7 +75,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
             return AutoTagRunResult.Completed();
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             return AutoTagRunResult.Stopped();
         }
@@ -84,7 +84,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // Typed outcome: the message is the pause reason, no string prefix needed.
             return AutoTagRunResult.Paused(ex.Message);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             _logger.LogError(ex, "Local AutoTag run failed.");
             return AutoTagRunResult.Failed(ex.ToString());

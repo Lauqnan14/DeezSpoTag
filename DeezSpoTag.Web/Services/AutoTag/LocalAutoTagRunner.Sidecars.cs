@@ -295,18 +295,27 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} starting");
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
-        var stepTask = action(timeoutSource.Token);
+        var stepTask = Task.CompletedTask;
         try
         {
+            context.Token.ThrowIfCancellationRequested();
+            stepTask = action(timeoutSource.Token);
             await stepTask.WaitAsync(timeout, context.Token);
+            context.Token.ThrowIfCancellationRequested();
             context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} completed");
         }
         catch (TimeoutException)
         {
+            context.Token.ThrowIfCancellationRequested();
             timeoutSource.Cancel();
             ObserveBackgroundTask(stepTask);
             context.LogCallback(
                 $"onetagger_autotag: {context.Platform} {stepName} timed out after {timeout.TotalSeconds:0}s; continuing");
+        }
+        catch (OperationCanceledException) when (!context.Token.IsCancellationRequested)
+        {
+            context.LogCallback(
+                $"onetagger_autotag: {context.Platform} optional {stepName} request timed out or was canceled; continuing with provider metadata");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
