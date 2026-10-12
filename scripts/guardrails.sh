@@ -7,6 +7,10 @@ cd "$ROOT_DIR"
 MODE="${GUARDRAILS_MODE:-changed}" # changed|full
 BASE_REF="${GUARDRAILS_BASE_REF:-origin/main}"
 BUILD_CONFIG="${GUARDRAILS_BUILD_CONFIG:-Debug}"
+HEAD_SHA="${GUARDRAILS_HEAD_SHA:-HEAD}"
+INCLUDE_WORKTREE="${GUARDRAILS_INCLUDE_WORKTREE:-1}"
+
+case "$MODE" in changed|full) ;; *) echo "Invalid guardrails mode: $MODE" >&2; exit 1 ;; esac
 
 resolve_test_framework() {
   if [[ -n "${GUARDRAILS_TEST_TFM:-}" ]]; then
@@ -39,23 +43,6 @@ log() {
   printf '[guardrails] %s\n' "$*"
 }
 
-have_changes_matching() {
-  local pattern="$1"
-  printf '%s\n' "$CHANGED_FILES" | grep -Eq "$pattern"
-}
-
-run_test_filter() {
-  local label="$1"
-  local filter="$2"
-  log "Running ${label}..."
-  dotnet test DeezSpoTag.Tests/DeezSpoTag.Tests.csproj \
-    -c "$BUILD_CONFIG" \
-    -f "$TEST_FRAMEWORK" \
-    --filter "$filter" \
-    --nologo \
-    --verbosity minimal
-}
-
 resolve_diff_base() {
   if [[ -n "${GUARDRAILS_BASE_SHA:-}" ]]; then
     printf '%s' "$GUARDRAILS_BASE_SHA"
@@ -79,10 +66,15 @@ BASE_SHA="$(resolve_diff_base)"
 if [[ "$MODE" == "full" ]]; then
   CHANGED_FILES="$(git ls-files)"
 else
-  committed_changes="$(git diff --name-only "$BASE_SHA"...HEAD)"
-  unstaged_changes="$(git diff --name-only)"
-  staged_changes="$(git diff --cached --name-only)"
-  untracked_changes="$(git ls-files --others --exclude-standard)"
+  committed_changes="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+  unstaged_changes=""
+  staged_changes=""
+  untracked_changes=""
+  if [[ "$INCLUDE_WORKTREE" == "1" ]]; then
+    unstaged_changes="$(git diff --name-only)"
+    staged_changes="$(git diff --cached --name-only)"
+    untracked_changes="$(git ls-files --others --exclude-standard)"
+  fi
   CHANGED_FILES="$(
     printf '%s\n%s\n%s\n%s\n' \
       "$committed_changes" \
@@ -94,99 +86,105 @@ else
   )"
 fi
 
-if [[ -z "$CHANGED_FILES" ]]; then
-  log "No changed files detected; running lightweight build check."
-  dotnet build DeezSpoTag.Web/DeezSpoTag.Web.csproj -c "$BUILD_CONFIG" --nologo
-  log "Guardrails passed."
-  exit 0
-fi
-
 log "Base: ${BASE_SHA}"
 log "Mode: ${MODE}"
-changed_count="$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')"
-log "Changed files count: ${changed_count}"
-if [[ "$changed_count" -le 200 ]]; then
-  printf '%s\n' "$CHANGED_FILES" | sed 's/^/  - /'
-else
-  log "Changed file list omitted (too large); first 40 entries:"
-  printf '%s\n' "$CHANGED_FILES" | awk 'NR <= 40 { print "  - " $0 }'
-fi
 
-log "Running build gate..."
-dotnet build DeezSpoTag.Web/DeezSpoTag.Web.csproj -c "$BUILD_CONFIG" --nologo
+# Map affected areas to existing test classes. A changed test selects its own class;
+# changing an unmapped source requires adding a mapping, never an unrelated smoke run.
+mapfile -t test_files < <(rg --files DeezSpoTag.Tests -g '*Test.cs' | sort)
+selected=()
+unmapped=()
+add_tests_matching() {
+  local pattern="$1" test_file name
+  for test_file in "${test_files[@]}"; do
+    name="${test_file##*/}"
+    name="${name%.cs}"
+    if [[ "$name" =~ $pattern ]]; then selected+=("$name"); fi
+  done
+}
 
-run_all_tests=0
-run_download_suite=0
-run_library_suite=0
-run_spotify_suite=0
-run_autotag_suite=0
+if [[ "$MODE" == "changed" ]]; then
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    before=${#selected[@]}
+    case "$file" in
+      DeezSpoTag.Tests/*Test.cs)
+        # Removed tests have nothing left to execute; CI still checks the full suite.
+        if [[ -f "$file" ]]; then
+          name="${file##*/}"
+          selected+=("${name%.cs}")
+        fi
+        continue ;;
+      *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
+      scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|Dockerfile*)
+        add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      *Amazon*) add_tests_matching '^(Amazon|DownloadIntentFallbackParity|EngineFallbackCoordinator)' ;;
+      *YouTube*) add_tests_matching '^(YouTube|FavoritesProvider|PublicDownloadProviderBoundary)' ;;
+      *Apple*Browse*|*AppleMusicCatalog*|*AppleCatalogJson*) add_tests_matching '^(AppleBrowse|ApplePlaylistPagination|AppleTracklistNativePlayback)' ;;
+      *Security*|*LogSanitizer*|*OutboundUrlGuard*) add_tests_matching '(Security|Secret|CodeQlCleanup)' ;;
+      *Recommendation*|*Pathfinder*) add_tests_matching '(Recommendation|WeeklyPathfinder)' ;;
+      DeezSpoTag.Services/Genre/*) add_tests_matching '(Genre|PersonalGenre|ResearchedGenre)' ;;
+      *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
+      *ArtistAlias*) add_tests_matching '(ArtistAlias|AliasGroup|ArtistMetadataAlias)' ;;
+      DeezSpoTag.Services/Library/*|DeezSpoTag.Web/Services/Library*|DeezSpoTag.Web/Controllers/Api/Library*)
+        add_tests_matching '^Library' ;;
+      *Playlist*Sync*|*Playlist*Write*|*Playlist*Target*) add_tests_matching '(PlaylistSync|PlaylistMembership|PlaylistRemoval|PlaylistProvisioning|PlaylistPlatform|PlaylistTarget|PlaylistMetadata|PlaylistBatching)' ;;
+      *Soulseek*|*Slskd*) add_tests_matching '^Soulseek' ;;
+      *Spotify*) add_tests_matching '^Spotify' ;;
+      *Lyrics*|*lyrics*) add_tests_matching '(Lyrics|Lrc|Ttml)' ;;
+      *Download/Queue/*|*VerificationRetry*|*PublicApiVerification*|*DownloadIntent*|*DownloadOrchestration*|*DownloadQueueEnqueue*|*DownloadApiController*)
+        add_tests_matching '(DownloadQueue|DownloadIntent|VerificationRetry|EngineFallback|PublicApiDownload|PublicDownloadProvider)' ;;
+      *Download/Fallback/*) add_tests_matching '(Fallback|DownloadIntent)' ;;
+      *Download/Apple/*) add_tests_matching '^Apple' ;;
+      *Download/Tidal/*|*TidalCatalog*) add_tests_matching '^Tidal' ;;
+      *Download/Qobuz/*) add_tests_matching '^Qobuz' ;;
+      *Download/Deezer/*) add_tests_matching '^Deezer' ;;
+      *SoundCloud*) add_tests_matching '^SoundCloud' ;;
+      *Download/Utils/*|*Download/Shared/*)
+        add_tests_matching '(AudioTagger|ArtworkFallback|LyricsSettingsPolicy|TechnicalLyricsSettingsApplier|DownloadIntentFallbackParity)' ;;
+      *Watchlist*|*watchlist*) add_tests_matching '(Watchlist|MonitoredPlaylist)' ;;
+      DeezSpoTag.Web/wwwroot/js/home-*|DeezSpoTag.Web/wwwroot/css/home-*|DeezSpoTag.Web/Views/Categories/*|DeezSpoTag.Web/Views/Home/*)
+        add_tests_matching '^(AppleBrowse|YouTubeBrowse|AssetUrlGuardrail)' ;;
+      *manifest.webmanifest|DeezSpoTag.Web/wwwroot/js/site.js|*CommonFooterScripts*|*CommonHeadAssets*|*Views/Shared/_Layout*)
+        add_tests_matching '(PwaInstall|TabPreference|AssetUrlGuardrail)' ;;
+      *Views/Settings/*) add_tests_matching '(Settings|AuthenticationStatus|PublicApiProviderRendering)' ;;
+      DeezSpoTag.Web/Program.cs) add_tests_matching '(StartupBackgroundWork|PwaInstall|LocalApiAccessSecurity|AssetUrlGuardrail)' ;;
+    esac
+    # Reuse conventional source-to-test names in addition to the area mappings.
+    stem="${file##*/}"
+    stem="${stem%.cs}"
+    if [[ "$stem" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      add_tests_matching "^${stem}(Test|.*GuardrailTest)$"
+    fi
+    if [[ ${#selected[@]} -eq "$before" ]]; then unmapped+=("$file"); fi
+  done <<< "$CHANGED_FILES"
 
-if [[ "$MODE" == "full" ]]; then
-  run_all_tests=1
-else
-  if have_changes_matching '^DeezSpoTag\.Tests/'; then
-    run_all_tests=1
-  fi
-
-  if have_changes_matching '^DeezSpoTag\.Services/Download/' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/Download' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/.*(Qobuz|Tidal|Apple|Deezer|Spotify).*(Download|Queue)' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/DownloadIntentService\.cs' ; then
-    run_download_suite=1
-  fi
-
-  if have_changes_matching '^DeezSpoTag\.Services/Library/' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/Library' \
-    || have_changes_matching '^DeezSpoTag\.Web/Controllers/Api/Library' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/LibrarySpotifyArtistQueueService\.cs' ; then
-    run_library_suite=1
-  fi
-
-  if have_changes_matching '^DeezSpoTag\.Web/Services/AutoTag' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/AutoTagService' \
-    || have_changes_matching '^DeezSpoTag\.Web/Controllers/Api/AutoTag' \
-    || have_changes_matching '^DeezSpoTag\.Web/Views/AutoTag' \
-    || have_changes_matching '^DeezSpoTag\.Web/wwwroot/js/autotag' \
-    || have_changes_matching '^DeezSpoTag\.Web/wwwroot/css/autotag' ; then
-    run_autotag_suite=1
-  fi
-
-  if have_changes_matching '^DeezSpoTag\.Web/Services/SpotifyArtistService\.cs' \
-    || have_changes_matching '^DeezSpoTag\.Web/Services/Spotify.*' \
-    || have_changes_matching '^DeezSpoTag\.Web/Controllers/Api/Spotify.*' ; then
-    run_spotify_suite=1
-  fi
-fi
-
-if [[ "$run_all_tests" -eq 1 ]]; then
-  log "Running full test suite..."
-  dotnet test DeezSpoTag.Tests/DeezSpoTag.Tests.csproj -c "$BUILD_CONFIG" -f "$TEST_FRAMEWORK" --nologo --verbosity minimal
-else
-  if [[ "$run_download_suite" -eq 1 ]]; then
-    run_test_filter "download regression suite" \
-      "FullyQualifiedName~QobuzQueueEndToEndTest|FullyQualifiedName~LyricsSettingsPolicyTest|FullyQualifiedName~TechnicalLyricsSettingsApplierTest|FullyQualifiedName~AppleAacVariantSelectionTest|FullyQualifiedName~AppleHlsManifestParserTest|FullyQualifiedName~ArtworkFallbackHelperTest"
-  fi
-
-  if [[ "$run_library_suite" -eq 1 ]]; then
-    run_test_filter "library regression suite" \
-      "FullyQualifiedName~LibraryRepositoryCoverageTest"
-  fi
-
-  if [[ "$run_spotify_suite" -eq 1 ]]; then
-    run_test_filter "spotify matching regression suite" \
-      "FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTest"
-  fi
-
-  if [[ "$run_autotag_suite" -eq 1 ]]; then
-    run_test_filter "autotag regression suite" \
-      "FullyQualifiedName~AutoTag|FullyQualifiedName~OneTagger|FullyQualifiedName~AlbumIdentity|FullyQualifiedName~ManualEnhancement|FullyQualifiedName~LastFmAutoTag"
-  fi
-
-  if [[ "$run_download_suite" -eq 0 && "$run_library_suite" -eq 0 && "$run_spotify_suite" -eq 0 && "$run_autotag_suite" -eq 0 ]]; then
-    log "No mapped impact area; running smoke subset."
-    run_test_filter "smoke suite" \
-      "FullyQualifiedName~QobuzQueueEndToEndTest|FullyQualifiedName~LibraryRepositoryCoverageTest|FullyQualifiedName~SpotifyArtistNameMatchingGuardrailTest"
+  if [[ ${#unmapped[@]} -gt 0 ]]; then
+    log "Unmapped changes: add affected-test mappings in scripts/guardrails.sh before pushing."
+    printf '  - %s\n' "${unmapped[@]}" >&2
+    exit 1
   fi
 fi
 
+# Build the test project (including its web dependencies) once, then reuse outputs.
+if [[ "$MODE" == "full" || ${#selected[@]} -gt 0 ]]; then
+  log "Running build gate..."
+  dotnet build DeezSpoTag.Tests/DeezSpoTag.Tests.csproj -c "$BUILD_CONFIG" -f "$TEST_FRAMEWORK" --nologo
+  test_args=(--no-build --no-restore -c "$BUILD_CONFIG" -f "$TEST_FRAMEWORK" --nologo --verbosity minimal)
+  if [[ "$MODE" == "changed" ]]; then
+    mapfile -t selected < <(printf '%s\n' "${selected[@]}" | sort -u)
+    filter=""
+    for name in "${selected[@]}"; do
+      filter+="${filter:+|}FullyQualifiedName~DeezSpoTag.Tests.${name}."
+    done
+    log "Selected ${#selected[@]} affected test classes: ${selected[*]}"
+    test_args+=(--filter "$filter")
+  else
+    log "Running full test suite..."
+  fi
+  dotnet test DeezSpoTag.Tests/DeezSpoTag.Tests.csproj "${test_args[@]}"
+else
+  log "No affected tests selected; running build gate only."
+  dotnet build DeezSpoTag.Web/DeezSpoTag.Web.csproj -c "$BUILD_CONFIG" --nologo
+fi
 log "Guardrails passed."

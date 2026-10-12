@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Diagnostics;
+using System.Collections.Generic;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -200,6 +202,202 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("Digest artifact for non-selected image", workflow, StringComparison.Ordinal);
         // Digest format is validated before admission to the notes.
         Assert.Contains("@sha256:[0-9a-f]{64}$", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ChangedTest_SelectsOnlyItsClassAndBuildsAndRunsOnce()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Tests/ExampleTest.cs", "public class ExampleTest { }");
+        var result = fixture.Run();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.StartsWith("build DeezSpoTag.Tests/", fixture.Calls[0]);
+        Assert.Contains("--filter FullyQualifiedName~DeezSpoTag.Tests.ExampleTest.", fixture.Calls[1]);
+        Assert.Contains("--no-build --no-restore", fixture.Calls[1]);
+        Assert.DoesNotContain("QobuzQueueEndToEndTest", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public void RelatedSourceChanges_CombineMappedSuitesInOneInvocation()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Web/Services/AmazonMusicMetadataService.cs", "// changed");
+        fixture.CommitFile("DeezSpoTag.Services/Download/Queue/VerificationRetryService.cs", "// changed");
+        var result = fixture.Run();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("AmazonMusicMetadataApiGuardrailTest", fixture.Calls[1]);
+        Assert.Contains("VerificationRetryServiceTest", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public void UnmappedSourceChange_BlocksWithoutRunningUnrelatedTests()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Web/Services/NewUnmappedService.cs", "// changed");
+        var result = fixture.Run();
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("Unmapped", result.Output);
+        Assert.Contains("NewUnmappedService.cs", result.Output);
+        Assert.Empty(fixture.Calls);
+    }
+
+    [Fact]
+    public void DocumentationChange_DoesNotSelectUnrelatedTests()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("docs/example.md", "documentation only");
+        var result = fixture.Run();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Single(fixture.Calls);
+        Assert.StartsWith("build DeezSpoTag.Web/", fixture.Calls[0]);
+    }
+
+    [Fact]
+    public void ManualChangedMode_StillIncludesUncommittedTests()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.WriteFile("DeezSpoTag.Tests/ExampleTest.cs", "public class ExampleTest { }");
+        var result = fixture.Run();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("DeezSpoTag.Tests.ExampleTest.", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public void OverlappingMappings_RunEachSelectedClassOnlyOnce()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Web/Services/AmazonMusicMetadataService.cs", "// changed");
+        fixture.CommitFile("DeezSpoTag.Tests/AmazonMusicMetadataApiGuardrailTest.cs", "public class AmazonMusicMetadataApiGuardrailTest { }");
+        var result = fixture.Run();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Equal(1, fixture.Calls[1].Split("FullyQualifiedName~DeezSpoTag.Tests.AmazonMusicMetadataApiGuardrailTest.").Length - 1);
+    }
+
+    [Fact]
+    public void ExplicitFullMode_RetainsFullSuiteAndBuildsOnlyOnce()
+    {
+        using var fixture = new GuardrailFixture();
+        var result = fixture.Run(mode: "full");
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.DoesNotContain("--filter", fixture.Calls[1]);
+        Assert.Contains("--no-build --no-restore", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public void TestFailure_DoesNotReportGuardrailsPassed()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Tests/ExampleTest.cs", "public class ExampleTest { }");
+        var result = fixture.Run(testExit: "23");
+        Assert.Equal(23, result.ExitCode);
+        Assert.DoesNotContain("Guardrails passed.", result.Output);
+    }
+
+    [Fact]
+    public void PrePush_UsesDestinationCommitAndExcludesUnpublishedWorkingTreeChanges()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Tests/EarlierTest.cs", "public class EarlierTest { }");
+        var remoteSha = fixture.Git("rev-parse", "HEAD");
+        fixture.CommitFile("DeezSpoTag.Tests/ExampleTest.cs", "public class ExampleTest { }");
+        fixture.WriteFile("DeezSpoTag.Web/Services/UncommittedService.cs", "// not being pushed");
+        var result = fixture.RunHook(remoteSha);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("ExampleTest", fixture.Calls[1]);
+        Assert.DoesNotContain("EarlierTest", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public void PrePush_RejectsDivergedDestinationBeforeBuilding()
+    {
+        using var fixture = new GuardrailFixture();
+        fixture.CommitFile("DeezSpoTag.Tests/RemoteTest.cs", "public class RemoteTest { }");
+        var remoteSha = fixture.Git("rev-parse", "HEAD");
+        fixture.Git("reset", "--hard", fixture.BaseSha);
+        fixture.CommitFile("DeezSpoTag.Tests/ExampleTest.cs", "public class ExampleTest { }");
+        var result = fixture.RunHook(remoteSha);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("merge", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(fixture.Calls);
+    }
+
+    private sealed class GuardrailFixture : IDisposable
+    {
+        private readonly string directory = Path.Join(Path.GetTempPath(), "guardrail-selection-" + Guid.NewGuid());
+        public string BaseSha { get; }
+        public string[] Calls => File.Exists(Path.Join(directory, "calls")) ? File.ReadAllLines(Path.Join(directory, "calls")) : [];
+
+        public GuardrailFixture()
+        {
+            Directory.CreateDirectory(directory);
+            WriteFile("scripts/guardrails.sh", File.ReadAllText(Path.Join(ResolveSrcRoot(), "scripts/guardrails.sh")));
+            WriteFile(".githooks/pre-push", File.ReadAllText(Path.Join(ResolveSrcRoot(), ".githooks/pre-push")));
+            WriteFile("DeezSpoTag.Tests/DeezSpoTag.Tests.csproj", "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+            foreach (var test in Directory.GetFiles(Path.Join(ResolveSrcRoot(), "DeezSpoTag.Tests"), "*Test.cs"))
+                WriteFile("DeezSpoTag.Tests/" + Path.GetFileName(test), File.ReadAllText(test));
+            WriteFile("bin/dotnet", "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$TEST_CALLS\"\nif [[ \"$1\" == test ]]; then exit \"${TEST_EXIT:-0}\"; fi\n");
+            Execute("chmod", ["+x", "bin/dotnet", "scripts/guardrails.sh"], []);
+            Git("init", "-b", "main");
+            Git("config", "user.email", "fixture@example.invalid");
+            Git("config", "user.name", "Guardrail fixture");
+            Git("add", ".");
+            Git("commit", "-m", "fixture baseline");
+            BaseSha = Git("rev-parse", "HEAD");
+            Git("update-ref", "refs/remotes/origin/main", BaseSha);
+        }
+
+        public void WriteFile(string path, string content)
+        {
+            var fullPath = Path.Join(directory, path);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, content);
+        }
+
+        public void CommitFile(string path, string content)
+        {
+            WriteFile(path, content);
+            Git("add", path);
+            Git("commit", "-m", "fixture change");
+        }
+
+        public string Git(params string[] args)
+        {
+            var result = Execute("git", args, []);
+            Assert.Equal(0, result.ExitCode);
+            return result.Output.Trim();
+        }
+
+        public (int ExitCode, string Output) Run(string mode = "changed", string testExit = "0")
+            => Execute("bash", ["scripts/guardrails.sh"], new Dictionary<string, string> { ["GUARDRAILS_MODE"] = mode, ["TEST_EXIT"] = testExit });
+
+        public (int ExitCode, string Output) RunHook(string remoteSha)
+            => Execute("bash", [".githooks/pre-push", "origin", "unused"], [], $"refs/heads/main {Git("rev-parse", "HEAD")} refs/heads/main {remoteSha}\n");
+
+        private (int ExitCode, string Output) Execute(string executable, string[] args, Dictionary<string, string> environment, string? input = null)
+        {
+            var start = new ProcessStartInfo(executable) { WorkingDirectory = directory, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true };
+            foreach (var arg in args) start.ArgumentList.Add(arg);
+            foreach (var key in start.Environment.Keys.Where(key => key.StartsWith("GUARDRAILS_", StringComparison.Ordinal)).ToArray()) start.Environment.Remove(key);
+            start.Environment.Remove("DEEZSPOTAG_SKIP_GUARDRAILS");
+            start.Environment["PATH"] = Path.Join(directory, "bin") + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+            start.Environment["TEST_CALLS"] = Path.Join(directory, "calls");
+            foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
+            using var process = Process.Start(start)!;
+            process.StandardInput.Write(input);
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            process.WaitForExit();
+            return (process.ExitCode, output.GetAwaiter().GetResult() + error.GetAwaiter().GetResult());
+        }
+
+        public void Dispose() => Directory.Delete(directory, recursive: true);
     }
 
     private static string ResolveSrcRoot()

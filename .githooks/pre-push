@@ -3,12 +3,28 @@ set -euo pipefail
 
 zero40="0000000000000000000000000000000000000000"
 run_guardrails="0"
+repo_root="$(git rev-parse --show-toplevel)"
+destination_base=""
+push_head=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/main)
       if [ "$local_sha" != "$zero40" ]; then
         run_guardrails="1"
+        push_head="$local_sha"
+        if [ "$remote_sha" = "$zero40" ]; then
+          destination_base="$(git hash-object -t tree /dev/null)"
+        else
+          if ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+            git fetch "$1" "$remote_sha"
+          fi
+          if ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+            echo "Push blocked: fetch and merge the destination main branch before running guardrails." >&2
+            exit 1
+          fi
+          destination_base="$remote_sha"
+        fi
       fi
       ;;
     refs/heads/*)
@@ -27,6 +43,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done
 
 if [ "$run_guardrails" = "1" ] && [ "${DEEZSPOTAG_SKIP_GUARDRAILS:-0}" != "1" ]; then
-  repo_root="$(git rev-parse --show-toplevel)"
-  "$repo_root/scripts/guardrails.sh"
+  GUARDRAILS_MODE=changed GUARDRAILS_BASE_SHA="$destination_base" \
+    GUARDRAILS_HEAD_SHA="$push_head" GUARDRAILS_INCLUDE_WORKTREE=0 \
+    "$repo_root/scripts/guardrails.sh"
 fi
