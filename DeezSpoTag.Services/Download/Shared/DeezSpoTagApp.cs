@@ -552,7 +552,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
-    public async Task<bool> RetryDownloadAsync(string uuid, CancellationToken cancellationToken = default)
+    public async Task<bool> RetryDownloadAsync(string uuid, CancellationToken cancellationToken = default, bool verificationRecovery = false)
     {
         if (string.IsNullOrWhiteSpace(uuid))
         {
@@ -560,7 +560,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         var queueItem = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
-        if (queueItem == null)
+        if (queueItem == null || (verificationRecovery && !string.Equals(queueItem.Status, "failed", StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }
@@ -624,7 +624,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         var requeued = await _queueRepository.RequeueAsync(
             uuid,
-            QueueRequeueOrigin.Manual,
+            verificationRecovery ? QueueRequeueOrigin.AutoRetry : QueueRequeueOrigin.Manual,
             cancellationToken);
         if (!requeued)
         {

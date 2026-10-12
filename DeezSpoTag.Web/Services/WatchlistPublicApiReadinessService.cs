@@ -51,6 +51,15 @@ public sealed class WatchlistPublicApiReadinessService
         _tidalDownloads = tidalDownloads;
     }
 
+    public async Task<IReadOnlyList<string>> GetUsablePublicSourcesAsync(CancellationToken cancellationToken)
+    {
+        var sources = new List<string>();
+        if (await HasUsableQobuzProviderAsync(cancellationToken)) sources.Add("qobuz");
+        if (await HasUsableTidalProviderAsync(cancellationToken)) sources.Add("tidal");
+        if (await HasUsableAmazonProviderAsync(cancellationToken)) sources.Add("amazon");
+        return sources;
+    }
+
     public async Task<WatchlistPublicApiReadiness> EvaluateAsync(
         CancellationToken cancellationToken)
     {

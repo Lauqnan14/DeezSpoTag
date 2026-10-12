@@ -92,6 +92,10 @@ public sealed class DownloadQueueRepository
         bool skipDuplicateCheck,
         CancellationToken cancellationToken = default)
     {
+        // Eligibility is independent of historical verification: sessions can expire and APIs
+        // can go down after they were verified. Every enqueue path reaches this repository.
+        item = item with { PublicApiUnverifiedWhenQueued = item.PublicApiUnverifiedWhenQueued
+            || VerificationRetryService.GetPublicApiSources(item).Count > 0 };
         await EnsureSchemaAsync(cancellationToken);
         await EnqueueAdmissionGate.WaitAsync(cancellationToken);
         try
@@ -1009,6 +1013,7 @@ LIMIT 1;";
         const string sql = @"
 UPDATE download_task
 SET status = @status,
+    public_api_unverified_when_queued = CASE WHEN lower(@status) IN ('completed', 'complete', 'finished', 'canceled', 'cancelled') THEN 0 ELSE public_api_unverified_when_queued END,
     error = @error,
     downloaded = COALESCE(@downloaded, downloaded),
     failed = COALESCE(@failed, failed),
@@ -1363,7 +1368,7 @@ WHERE status = 'running'
   AND lower(engine) IN ({placeholders})
 LIMIT 1;";
 
-    private static string BuildFailedForVerificationRetrySql(bool requireUnverifiedFlag)
+    private static string BuildFailedForVerificationRetrySql(bool requireUnverifiedFlag, bool verifiedEpoch = false)
     {
         const string baseSql = @"
 SELECT queue_uuid
@@ -1374,9 +1379,11 @@ WHERE lower(status) = 'failed'
   AND public_api_unverified_when_queued = 1";
         const string orderBy = @"
 ORDER BY COALESCE(last_queued_at_utc, created_at), id;";
-        return requireUnverifiedFlag
-            ? baseSql + unverifiedPredicate + orderBy
-            : baseSql + orderBy;
+        var epochPredicate = verifiedEpoch
+            ? @" AND COALESCE(last_public_api_retry_verification_at_utc, '') < @verifiedAt
+                   AND julianday(COALESCE(last_queued_at_utc, created_at)) <= julianday(@verifiedAt)"
+            : string.Empty;
+        return baseSql + (requireUnverifiedFlag ? unverifiedPredicate : string.Empty) + epochPredicate + orderBy;
     }
 
     private static void BindPublicEngineParameters(
@@ -3133,6 +3140,18 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "retry_reason", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "retry_engine", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "public_api_unverified_when_queued", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "last_public_api_retry_verification_at_utc", "TEXT", cancellationToken);
+        // Backfill existing public-dependent failures/active work, including rows inserted by
+        // the old unstamped main enqueue path. Completed and user-cancelled rows stay excluded.
+        await using (var recoveryMigration = new SqliteCommand(@"
+UPDATE download_task SET public_api_unverified_when_queued = 1
+WHERE lower(status) NOT IN ('completed', 'complete', 'finished', 'canceled', 'cancelled')
+ AND (lower(engine) IN ('qobuz', 'tidal', 'amazon') OR EXISTS (
+     SELECT 1 FROM json_each(CASE WHEN json_valid(payload)
+        THEN COALESCE(json_extract(payload, '$.FallbackPlan'), json_extract(payload, '$.fallbackPlan'), '[]') ELSE '[]' END) step
+     WHERE CASE WHEN json_valid(step.value) THEN lower(COALESCE(json_extract(step.value, '$.Engine'), json_extract(step.value, '$.engine'))) ELSE '' END
+           IN ('qobuz', 'tidal', 'amazon')));", connection))
+            await recoveryMigration.ExecuteNonQueryAsync(cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "last_queued_at_utc", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
@@ -3980,12 +3999,14 @@ WHERE queue_uuid = @queueUuid;";
     /// </summary>
     public async Task<IReadOnlyList<string>> GetFailedForVerificationRetryAsync(
         bool requireUnverifiedFlag,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? verifiedAtUtc = null)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var sql = BuildFailedForVerificationRetrySql(requireUnverifiedFlag);
+        var sql = BuildFailedForVerificationRetrySql(requireUnverifiedFlag, verifiedAtUtc.HasValue);
         await using var command = new SqliteCommand(sql, connection);
+        if (verifiedAtUtc.HasValue) command.Parameters.AddWithValue("verifiedAt", FormatTimestampForStorage(verifiedAtUtc)!);
         var results = new List<string>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -4000,9 +4021,19 @@ WHERE queue_uuid = @queueUuid;";
         return results;
     }
 
+    public async Task MarkPublicApiVerificationRetryAttemptAsync(string queueUuid, DateTimeOffset verifiedAtUtc, CancellationToken cancellationToken)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand("UPDATE download_task SET last_public_api_retry_verification_at_utc = @verifiedAt WHERE queue_uuid = @uuid;", connection);
+        command.Parameters.AddWithValue("verifiedAt", FormatTimestampForStorage(verifiedAtUtc)!);
+        command.Parameters.AddWithValue("uuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     /// <summary>
-    /// Clears the verification record once an item is released or succeeds, so it is not re-released
-    /// by a later verification.
+    /// Clears recovery eligibility. Requeueing alone must not clear this flag; a new attempt
+    /// may fail again and require a later verification.
     /// </summary>
     public async Task ClearPublicApiRetryFlagAsync(
         string queueUuid,
@@ -4296,17 +4327,15 @@ public sealed record DownloadQueueItem(
     public string? AmazonArtistId { get; init; }
 
     /// <summary>
-    /// True when the item was queued while at least one public download API had no verified
-    /// session. Read by verification-driven retry, which releases these items once a session
-    /// verification completes. Defaults to false so callers that never set it behave exactly as
-    /// before this column existed.
+    /// Eligible for public-API verification recovery. The historical column name is retained for
+    /// compatibility; public-dependent items are marked centrally regardless of prior verification,
+    /// because an API can become unavailable later. Cleared on success or user cancellation.
     /// </summary>
     public bool PublicApiUnverifiedWhenQueued { get; init; }
 
     /// <summary>
-    /// When the item was most recently queued. Recorded alongside
-    /// <see cref="PublicApiUnverifiedWhenQueued"/> so the queueing time of a released item is
-    /// recoverable after a process restart.
+    /// Original queue-admission time, used to reject verification events older than the file.
+    /// Recovery attempts have a separate persisted verification timestamp.
     /// </summary>
     public DateTimeOffset? LastQueuedAtUtc { get; init; }
 

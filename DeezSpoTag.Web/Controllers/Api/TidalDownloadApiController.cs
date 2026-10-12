@@ -54,17 +54,21 @@ public sealed class TidalDownloadApiController : ControllerBase
         });
 
     [HttpPost("public-session/start")]
-    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken, [FromQuery] bool deferRetry = false, [FromQuery] string? verifiedProviders = null)
     {
         try
         {
             var verificationUrl = await _tidalDownloadService.BeginPublicDownloadVerificationAsync(
                 cancellationToken,
                 publicAppBaseUrl: BuildPublicAppBaseUrl());
+            var released = string.IsNullOrWhiteSpace(verificationUrl)
+                ? await PublicApiVerificationRetry.OnVerifiedAsync("tidal", _serviceProvider, cancellationToken, deferRetry, verifiedProviders)
+                : 0;
             return Ok(new
             {
                 authenticated = string.IsNullOrWhiteSpace(verificationUrl),
-                verificationUrl
+                verificationUrl,
+                releasedFailedItems = released
             });
         }
         catch (ZarzSessionRateLimitException ex)
@@ -93,7 +97,7 @@ public sealed class TidalDownloadApiController : ControllerBase
 
         await _tidalDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
         var released = await PublicApiVerificationRetry
-            .OnVerifiedAsync("tidal", _serviceProvider, cancellationToken);
+            .OnVerifiedAsync("tidal", _serviceProvider, cancellationToken, request.DeferRetry);
         return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
@@ -308,6 +312,7 @@ public sealed class TidalDownloadBatchRequest : EngineDownloadBatchRequestBase
 
 public sealed class TidalPublicDownloadGrantRequest
 {
+    public bool DeferRetry { get; set; }
     public string? Grant { get; set; }
 }
 

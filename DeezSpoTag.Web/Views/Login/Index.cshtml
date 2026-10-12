@@ -4062,8 +4062,8 @@ async function reloadPublicDownloadSession(platformId) {
 // The verification itself, split out from the button handling so the all-platforms path can run it once per
 // platform and still learn which ones failed. It rejects instead of reporting, leaving it to the caller to
 // decide how a failure surfaces.
-async function runPublicDownloadVerification(config) {
-    const response = await fetch(`${config.sessionEndpoint}/start`, {
+async function runPublicDownloadVerification(config, options = {}) {
+    const response = await fetch(`${config.sessionEndpoint}/start?deferRetry=${options.deferRetry === true}`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: buildLoginApiHeaders()
@@ -4087,7 +4087,7 @@ async function runPublicDownloadVerification(config) {
         throw new Error(`The ${config.label} public download verification window was blocked.`);
     }
 
-    await waitForPublicDownloadGrant(verificationWindow, config);
+    await waitForPublicDownloadGrant(verificationWindow, config, options);
 }
 
 async function startPublicDownloadVerification(config) {
@@ -4114,15 +4114,29 @@ async function startAllPublicDownloadVerifications() {
 
     const triggers = Array.from(document.querySelectorAll('[data-public-api-provider-verify-all]'));
     const failures = [];
+    const verified = [];
     startAllPublicDownloadVerifications.running = true;
     triggers.forEach(button => { button.disabled = true; });
     try {
         for (const config of Object.values(PUBLIC_API_PROVIDER_CONFIG)) {
             try {
-                await runPublicDownloadVerification(config);
+                await runPublicDownloadVerification(config, { deferRetry: true });
+                verified.push(config);
             } catch (error) {
                 failures.push(error.message || `${config.label} public download verification failed`);
             }
+        }
+        if (verified.length) {
+            try {
+                const platforms = verified.map(config => config.platformId === 'amazonmusic' ? 'amazon' : config.platformId).join(',');
+                const response = await fetch(`${verified[0].sessionEndpoint}/start?verifiedProviders=${encodeURIComponent(platforms)}`, {
+                    method: 'POST', credentials: 'same-origin', headers: buildLoginApiHeaders()
+                });
+                if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed downloads could not be recovered.'));
+                const result = await response.json();
+                if (result.authenticated !== true) throw new Error('Verification expired before failed downloads could be recovered.');
+                if (result.releasedFailedItems > 0) showToast(`${result.releasedFailedItems} failed downloads queued.`, 'success');
+            } catch (error) { failures.push(error.message); }
         }
     } finally {
         startAllPublicDownloadVerifications.running = false;
@@ -4158,7 +4172,7 @@ function extractPublicDownloadGrant(payload, allowUntypedGrant) {
     return null;
 }
 
-function waitForPublicDownloadGrant(verificationWindow, config) {
+function waitForPublicDownloadGrant(verificationWindow, config, options = {}) {
     return new Promise((resolve, reject) => {
         let settled = false;
         let grantReceived = false;
@@ -4191,7 +4205,7 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: buildLoginApiHeaders(true),
-                    body: JSON.stringify({ grant })
+                    body: JSON.stringify({ grant, deferRetry: options.deferRetry === true })
                 });
                 if (!response.ok) {
                     throw new Error(await getApiErrorMessage(response, `${config.label} public download verification failed`));

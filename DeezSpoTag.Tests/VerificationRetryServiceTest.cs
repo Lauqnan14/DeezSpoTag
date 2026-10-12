@@ -18,6 +18,7 @@ namespace DeezSpoTag.Tests;
 /// Covers the repository surface that verification-driven retry selects on: the enqueue stamp,
 /// the failed-item query, and the release clear.
 /// </summary>
+[Collection("Settings Config Isolation")]
 public sealed class VerificationRetryServiceTest : IDisposable
 {
     private readonly string _tempRoot;
@@ -44,10 +45,68 @@ public sealed class VerificationRetryServiceTest : IDisposable
     }
 
     [Fact]
+    public void VerifyAllDefersRecoveryUntilAllPlatformsHaveBeenAttempted()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Join(root.FullName, "DeezSpoTag.Web", "Views", "Login", "Index.cshtml"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/Views/Login/Index.cshtml','utf8');
+        let calls=[],failTidal=false,reloads=0,challenge=false,completeBody;
+        let listener;
+        const window={location:{origin:'http://localhost:8668'},setTimeout,clearTimeout,setInterval,clearInterval,addEventListener:(event,handler)=>listener=handler,removeEventListener:()=>{},open:()=>{const popup={closed:false,close(){this.closed=true}};setTimeout(()=>listener({origin:'http://localhost:8668',data:{type:'zarz_grant',grant:'fixture'}}),0);return popup}};
+        const ctx=vm.createContext({URLSearchParams,console,encodeURIComponent,document:{querySelectorAll:()=>[]},
+          window,
+          fetch:async (url,options)=>{calls.push(url);if(url.endsWith('/complete'))completeBody=JSON.parse(options.body);return {ok:!(failTidal&&url.includes('/tidal/')),json:async()=>({authenticated:!challenge||url.endsWith('/complete')||!url.includes('deferRetry='),verificationUrl:'https://api.zarz.moe/verify',releasedFailedItems:2})}},
+          buildLoginApiHeaders:()=>({}),reloadPublicDownloadSession:async()=>reloads++,getApiErrorMessage:async()=> 'unavailable',showToast:()=>{}});
+        const runStart=source.indexOf('async function runPublicDownloadVerification('),runEnd=source.indexOf('async function startPublicDownloadVerification(',runStart);
+        const allStart=source.indexOf('async function startAllPublicDownloadVerifications()'),allEnd=source.indexOf('function extractPublicDownloadGrant(',allStart);
+        const configStart=source.indexOf('const PUBLIC_API_PROVIDER_CONFIG ='),configEnd=source.indexOf('const publicApiProviderStates',configStart);
+        const grantStart=source.indexOf('function extractPublicDownloadGrant('),grantEnd=source.indexOf('function renderTidalInfo(',grantStart);
+        vm.runInContext(source.slice(configStart,configEnd)+source.slice(runStart,runEnd)+source.slice(allStart,allEnd)+source.slice(grantStart,grantEnd)+'\nglobalThis.testConfig=PUBLIC_API_PROVIDER_CONFIG;',ctx);
+        (async()=>{
+          await ctx.startAllPublicDownloadVerifications();
+          assert.equal(calls.length,4);assert(calls.slice(0,3).every(url=>url.endsWith('?deferRetry=true')));
+          assert.equal(new URLSearchParams(calls[3].split('?')[1]).get('verifiedProviders'),'qobuz,tidal,amazon');assert.equal(reloads,3);
+          calls=[];failTidal=true;
+          await ctx.startAllPublicDownloadVerifications();
+          assert.equal(calls.length,4);assert.equal(new URLSearchParams(calls[3].split('?')[1]).get('verifiedProviders'),'qobuz,amazon');
+          calls=[];failTidal=false;
+          await ctx.runPublicDownloadVerification(ctx.testConfig.qobuz);
+          assert(calls[0].endsWith('?deferRetry=false'),'Already-authenticated single verification must invoke recovery');
+          calls=[];challenge=true;
+          await ctx.runPublicDownloadVerification(ctx.testConfig.qobuz,{deferRetry:true});
+          assert.equal(completeBody.deferRetry,true);assert.equal(completeBody.grant,'fixture');
+          assert.equal(calls.length,2);assert(calls[1].endsWith('/complete'));
+        })().catch(e=>{console.error(e);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public async Task CentralEnqueueTracksPublicApiFilesAfterEarlierVerifications()
+    {
+        using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "central"));
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var store = new PublicApiSessionVerificationStore(settings);
+        foreach (var slug in PublicApiSessionVerificationStore.PublicApiSlugs) store.RecordVerified(slug);
+        var repository = CreateRepository();
+        await repository.EnqueueAsync(CreateItem("public-path"), CancellationToken.None);
+        Assert.True((await ReadStampAsync(repository, "public-path")).Flag);
+        await repository.EnqueueAsync(CreateItem("public-plan") with { Engine = "deezer", PayloadJson = "{\"FallbackPlan\":[{\"StepId\":\"step-0\",\"Engine\":\"tidal\",\"Quality\":\"flac\",\"RequiredInputs\":[],\"ResolutionStrategy\":\"direct_url\"}]}" }, CancellationToken.None);
+        Assert.True((await ReadStampAsync(repository, "public-plan")).Flag);
+    }
+
+    [Fact]
     public async Task EnqueueAsync_DefaultsToNotStampedAndRecordsQueuedAt()
     {
         var repository = CreateRepository();
-        await repository.EnqueueAsync(CreateItem("unstamped"), CancellationToken.None);
+        await repository.EnqueueAsync(CreateItem("unstamped") with { Engine = "deezer" }, CancellationToken.None);
 
         var (flag, queuedAt) = await ReadStampAsync(repository, "unstamped");
 
@@ -97,7 +156,7 @@ public sealed class VerificationRetryServiceTest : IDisposable
             CreateItem("stamped-failed") with { Status = "failed", PublicApiUnverifiedWhenQueued = true },
             CancellationToken.None);
         await repository.EnqueueAsync(
-            CreateItem("unstamped-failed") with { Status = "failed" },
+            CreateItem("unstamped-failed") with { Engine = "deezer", Status = "failed" },
             CancellationToken.None);
         await repository.EnqueueAsync(
             CreateItem("stamped-queued") with { Status = "queued", PublicApiUnverifiedWhenQueued = true },
@@ -118,7 +177,7 @@ public sealed class VerificationRetryServiceTest : IDisposable
             CreateItem("stamped-failed") with { Status = "failed", PublicApiUnverifiedWhenQueued = true },
             CancellationToken.None);
         await repository.EnqueueAsync(
-            CreateItem("unstamped-failed") with { Status = "failed" },
+            CreateItem("unstamped-failed") with { Engine = "deezer", Status = "failed" },
             CancellationToken.None);
 
         var candidates = await repository.GetFailedForVerificationRetryAsync(
@@ -203,7 +262,7 @@ public sealed class VerificationRetryServiceTest : IDisposable
     }
 
     [Fact]
-    public async Task StampQueuedItemAsync_StampsWhenAnyPublicApiIsUnverified_RegardlessOfEngines()
+    public async Task CentralEnqueueTracksPublicFilesRegardlessOfOtherEnabledEngines()
     {
         using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "stamp"));
         var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
@@ -214,15 +273,6 @@ public sealed class VerificationRetryServiceTest : IDisposable
 
         var repository = CreateRepository();
         await repository.EnqueueAsync(CreateItem("to-stamp"), CancellationToken.None);
-        var service = new VerificationRetryService(
-            repository,
-            new PublicApiSessionVerificationStore(settingsService),
-            settingsService,
-            new NullActivityLogWriter(),
-            NullLogger<VerificationRetryService>.Instance);
-
-        // No public API has ever been verified, so the item is stamped.
-        Assert.True(await service.StampQueuedItemAsync("to-stamp", CancellationToken.None));
         var (flag, _) = await ReadStampAsync(repository, "to-stamp");
         Assert.True(flag);
     }
@@ -241,7 +291,7 @@ public sealed class VerificationRetryServiceTest : IDisposable
             CreateItem("first-sweep-stamped") with { Status = "failed", PublicApiUnverifiedWhenQueued = true },
             CancellationToken.None);
         await repository.EnqueueAsync(
-            CreateItem("first-sweep-unstamped") with { Status = "failed" },
+            CreateItem("first-sweep-unstamped") with { Engine = "deezer", Status = "failed" },
             CancellationToken.None);
 
         var service = new VerificationRetryService(
@@ -251,12 +301,10 @@ public sealed class VerificationRetryServiceTest : IDisposable
             new NullActivityLogWriter(),
             NullLogger<VerificationRetryService>.Instance);
 
-        // Mirrors PublicApiVerificationRetry.ReleaseAsync: requeue, then clear the flag so the same
-        // item is not released twice.
+        // Recovery keeps the flag until success; the verification epoch prevents duplicate release.
         async Task<bool> ReleaseAsync(string uuid, CancellationToken token)
         {
             await repository.UpdateStatusAsync(uuid, "queued", cancellationToken: token);
-            await repository.ClearPublicApiRetryFlagAsync(uuid, token);
             return true;
         }
 
@@ -273,7 +321,7 @@ public sealed class VerificationRetryServiceTest : IDisposable
 
         // A second verification must not repeat the unfiltered sweep.
         await repository.EnqueueAsync(
-            CreateItem("second-unstamped") with { Status = "failed" },
+            CreateItem("second-unstamped") with { Engine = "deezer", Status = "failed" },
             CancellationToken.None);
         var secondSweep = new List<string>();
         Assert.Equal(0, await service.OnSessionVerifiedAsync(
@@ -313,9 +361,87 @@ public sealed class VerificationRetryServiceTest : IDisposable
         Assert.Null(store.GetLastVerifiedAtUtc("deezer"));
     }
 
-    private DownloadQueueRepository CreateRepository()
+    [Fact]
+    public async Task RecoveryCatchesLateFailureWithoutLoopingAndRetriesAfterNewVerification()
     {
-        var queueDbPath = Path.Join(_tempRoot, Guid.NewGuid().ToString("N") + ".db");
+        using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "late"));
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var repository = CreateRepository();
+        await repository.EnqueueAsync(CreateItem("late") with { Status = "running" }, CancellationToken.None);
+        var service = new VerificationRetryService(repository, new PublicApiSessionVerificationStore(settings), settings,
+            new NullActivityLogWriter(), NullLogger<VerificationRetryService>.Instance);
+        async Task<bool> Release(string uuid, CancellationToken token)
+        {
+            await repository.UpdateStatusAsync(uuid, "queued", cancellationToken: token);
+            return true;
+        }
+        Assert.Equal(0, await service.OnSessionVerifiedAsync("qobuz", Release));
+        await repository.UpdateStatusAsync("late", "failed");
+        Assert.Equal(1, await service.RecoverPendingAsync(Release));
+        Assert.True((await ReadStampAsync(repository, "late")).Flag);
+        await repository.UpdateStatusAsync("late", "failed");
+        Assert.Equal(0, await service.RecoverPendingAsync(Release));
+        await Task.Delay(5);
+        Assert.Equal(1, await service.OnSessionVerifiedAsync("qobuz", Release));
+        await repository.UpdateStatusAsync("late", "completed");
+        Assert.False((await ReadStampAsync(repository, "late")).Flag);
+    }
+
+    [Fact]
+    public async Task RecoveryDoesNotUseAVerificationOlderThanTheQueuedFile()
+    {
+        using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "old"));
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var store = new PublicApiSessionVerificationStore(settings);
+        store.RecordVerified("qobuz", DateTimeOffset.UtcNow.AddHours(-1));
+        var repository = CreateRepository();
+        await repository.EnqueueAsync(CreateItem("new-failure") with { Status = "failed" }, CancellationToken.None);
+        var service = new VerificationRetryService(repository, store, settings, new NullActivityLogWriter(), NullLogger<VerificationRetryService>.Instance);
+        Assert.Equal(0, await service.RecoverPendingAsync((_, _) => throw new Exception("Must not release against an old verification")));
+    }
+
+    [Fact]
+    public async Task RecoveryDoesNotConsumeInitialSweepWhenReleaseIsUnavailable()
+    {
+        using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "unavailable"));
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var repository = CreateRepository();
+        await repository.EnqueueAsync(CreateItem("unavailable") with { Status = "failed" }, CancellationToken.None);
+        var service = new VerificationRetryService(repository, new PublicApiSessionVerificationStore(settings), settings,
+            new NullActivityLogWriter(), NullLogger<VerificationRetryService>.Instance);
+        Assert.Equal(0, await service.OnSessionVerifiedAsync("qobuz", (_, _) => Task.FromResult(false)));
+        Assert.False(settings.LoadSettings().VerificationRetryInitialSweepCompleted);
+        Assert.True((await ReadStampAsync(repository, "unavailable")).Flag);
+    }
+
+    [Fact]
+    public async Task SchemaRecoveryBackfillsOldPublicFailuresAndKeepsTerminalRowsExcluded()
+    {
+        var repository = CreateRepository("legacy.db");
+        await repository.EnqueueAsync(CreateItem("old-public") with { Status = "failed" });
+        await repository.EnqueueAsync(CreateItem("old-plan") with { Engine = "deezer", Status = "failed",
+            PayloadJson = "{\"FallbackPlan\":[{\"Engine\":\"tidal\"}]}" });
+        await repository.EnqueueAsync(CreateItem("old-cancelled") with { Status = "cancelled" });
+        await repository.EnqueueAsync(CreateItem("old-completed") with { Status = "completed" });
+        await using (var connection = new SqliteConnection("Data Source=" + Path.Join(_tempRoot, "legacy.db")))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE download_task SET public_api_unverified_when_queued=0; ALTER TABLE download_task DROP COLUMN last_public_api_retry_verification_at_utc;";
+            await command.ExecuteNonQueryAsync();
+        }
+        var restarted = CreateRepository("legacy.db");
+        var eligible = await restarted.GetFailedForVerificationRetryAsync(true);
+        Assert.Contains("old-public", eligible);
+        Assert.Contains("old-plan", eligible);
+        Assert.Equal(2, eligible.Count);
+        Assert.False((await ReadStampAsync(restarted, "old-cancelled")).Flag);
+        Assert.False((await ReadStampAsync(restarted, "old-completed")).Flag);
+    }
+
+    private DownloadQueueRepository CreateRepository(string? databaseName = null)
+    {
+        var queueDbPath = Path.Join(_tempRoot, databaseName ?? Guid.NewGuid().ToString("N") + ".db");
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {

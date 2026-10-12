@@ -58,17 +58,21 @@ public sealed class QobuzDownloadApiController : ControllerBase
         });
 
     [HttpPost("public-session/start")]
-    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken, [FromQuery] bool deferRetry = false, [FromQuery] string? verifiedProviders = null)
     {
         try
         {
             var verificationUrl = await _qobuzDownloadService.BeginPublicDownloadVerificationAsync(
                 cancellationToken,
                 publicAppBaseUrl: BuildPublicAppBaseUrl());
+            var released = string.IsNullOrWhiteSpace(verificationUrl)
+                ? await PublicApiVerificationRetry.OnVerifiedAsync("qobuz", _serviceProvider, cancellationToken, deferRetry, verifiedProviders)
+                : 0;
             return Ok(new
             {
                 authenticated = string.IsNullOrWhiteSpace(verificationUrl),
-                verificationUrl
+                verificationUrl,
+                releasedFailedItems = released
             });
         }
         catch (ZarzSessionRateLimitException ex)
@@ -97,7 +101,7 @@ public sealed class QobuzDownloadApiController : ControllerBase
 
         await _qobuzDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
         var released = await PublicApiVerificationRetry
-            .OnVerifiedAsync("qobuz", _serviceProvider, cancellationToken);
+            .OnVerifiedAsync("qobuz", _serviceProvider, cancellationToken, request.DeferRetry);
         return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
@@ -237,5 +241,6 @@ public sealed class QobuzDownloadTrackDto : EngineDownloadTrackDtoBase
 
 public sealed class QobuzPublicDownloadGrantRequest
 {
+    public bool DeferRetry { get; set; }
     public string? Grant { get; set; }
 }

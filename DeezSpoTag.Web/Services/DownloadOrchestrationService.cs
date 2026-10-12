@@ -237,6 +237,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pendingEnhancementResumeRootPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IServiceProvider _serviceProvider;
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _stagingCloseAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _processedCompletionStateLock = new();
@@ -268,6 +269,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IWebHostEnvironment env,
         ILogger<DownloadOrchestrationService> logger)
     {
+        _serviceProvider = serviceProvider;
         _notifications = serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>();
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         _queueRecoveryService = serviceProvider.GetRequiredService<DownloadQueueRecoveryService>();
@@ -940,11 +942,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> TryRunRetrySweepAsync(bool hasRunnableDownloads, CancellationToken cancellationToken)
     {
-        if (hasRunnableDownloads
-            || !await _retryScheduler.HasPendingRetriesAsync(cancellationToken))
+        if (hasRunnableDownloads) return false;
+        if (await PublicApiVerificationRetry.RecoverPendingAsync(_serviceProvider, cancellationToken) > 0)
         {
-            return false;
+            _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.Downloading);
+            return true;
         }
+        if (!await _retryScheduler.HasPendingRetriesAsync(cancellationToken)) return false;
 
         _queueIdleSince = null;
         SetPhase(OrchestrationPhase.RetrySweep);

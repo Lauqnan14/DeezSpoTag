@@ -23,8 +23,9 @@ public static class PublicApiVerificationRetry
     public static async Task<int> OnVerifiedAsync(
         string slug,
         IServiceProvider serviceProvider,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool deferRetry = false, string? verifiedProviders = null)
     {
+        if (deferRetry) return 0;
         try
         {
             await using var scope = serviceProvider.CreateAsyncScope();
@@ -34,10 +35,18 @@ public static class PublicApiVerificationRetry
                 return 0;
             }
 
-            return await service.OnSessionVerifiedAsync(
-                slug,
-                (queueUuid, token) => ReleaseAsync(scope.ServiceProvider, queueUuid, token),
-                cancellationToken);
+            var sessions = scope.ServiceProvider.GetRequiredService<ZarzSignedSessionCoordinator>();
+            var providers = string.IsNullOrWhiteSpace(verifiedProviders) ? new[] { slug } : verifiedProviders.Split(',');
+            var verified = new List<string>();
+            foreach (var provider in providers)
+                if (DeezSpoTag.Services.Download.PublicApiSessionVerificationStore.TryNormalizeSlug(provider, out var normalized)
+                    && await sessions.PeekUsableSessionAsync(normalized, cancellationToken)) verified.Add(normalized);
+            IReadOnlyList<string>? usable = null;
+            return await service.OnSessionsVerifiedAsync(verified, async (uuid, token) =>
+            {
+                usable ??= await scope.ServiceProvider.GetRequiredService<WatchlistPublicApiReadinessService>().GetUsablePublicSourcesAsync(token);
+                return await ReleaseAsync(scope.ServiceProvider, uuid, usable, token);
+            }, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -50,33 +59,28 @@ public static class PublicApiVerificationRetry
         }
     }
 
-    /// <summary>
-    /// Reuses the ordinary manual-retry path so a released item gets identical treatment to a user
-    /// pressing Retry: ladder restarted at the first step, retry budget reset, original queue
-    /// position kept. The verification flag is cleared so a later verification does not release the
-    /// same item twice.
-    /// </summary>
-    private static async Task<bool> ReleaseAsync(
-        IServiceProvider scopedProvider,
-        string queueUuid,
-        CancellationToken cancellationToken)
+    public static async Task<int> RecoverPendingAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
     {
-        var app = scopedProvider.GetService<DeezSpoTagApp>();
-        if (app is null)
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<VerificationRetryService>();
+        IReadOnlyList<string>? usable = null;
+        return await service.RecoverPendingAsync(async (uuid, token) =>
         {
-            return false;
-        }
+            usable ??= await scope.ServiceProvider.GetRequiredService<WatchlistPublicApiReadinessService>().GetUsablePublicSourcesAsync(token);
+            return await ReleaseAsync(scope.ServiceProvider, uuid, usable, token);
+        }, cancellationToken);
+    }
 
-        var released = await app.RetryDownloadAsync(queueUuid, cancellationToken);
-        if (released)
-        {
-            var repository = scopedProvider.GetService<DownloadQueueRepository>();
-            if (repository is not null)
-            {
-                await repository.ClearPublicApiRetryFlagAsync(queueUuid, cancellationToken);
-            }
-        }
-
-        return released;
+    private static async Task<bool> ReleaseAsync(IServiceProvider scopedProvider, string queueUuid,
+        IReadOnlyList<string> usable, CancellationToken cancellationToken)
+    {
+        var repository = scopedProvider.GetRequiredService<DownloadQueueRepository>();
+        var item = await repository.GetByUuidAsync(queueUuid, cancellationToken);
+        if (item is null || !string.Equals(item.Status, "failed", StringComparison.OrdinalIgnoreCase)) return false;
+        var sources = VerificationRetryService.GetPublicApiSources(item);
+        if (sources.Count > 0 && !sources.Any(source => usable.Contains(source, StringComparer.OrdinalIgnoreCase))) return false;
+        if (sources.Count == 0 && usable.Count == 0) return false;
+        var app = scopedProvider.GetRequiredService<DeezSpoTagApp>();
+        return await app.RetryDownloadAsync(queueUuid, cancellationToken, verificationRecovery: true);
     }
 }

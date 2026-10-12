@@ -55,17 +55,21 @@ public sealed class AmazonDownloadApiController : ControllerBase
         });
 
     [HttpPost("public-session/start")]
-    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken, [FromQuery] bool deferRetry = false, [FromQuery] string? verifiedProviders = null)
     {
         try
         {
             var verificationUrl = await _amazonDownloadService.BeginPublicDownloadVerificationAsync(
                 cancellationToken,
                 publicAppBaseUrl: BuildPublicAppBaseUrl());
+            var released = string.IsNullOrWhiteSpace(verificationUrl)
+                ? await PublicApiVerificationRetry.OnVerifiedAsync("amazon", _serviceProvider, cancellationToken, deferRetry, verifiedProviders)
+                : 0;
             return Ok(new
             {
                 authenticated = string.IsNullOrWhiteSpace(verificationUrl),
-                verificationUrl
+                verificationUrl,
+                releasedFailedItems = released
             });
         }
         catch (ZarzSessionRateLimitException ex)
@@ -94,7 +98,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
 
         await _amazonDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
         var released = await PublicApiVerificationRetry
-            .OnVerifiedAsync("amazon", _serviceProvider, cancellationToken);
+            .OnVerifiedAsync("amazon", _serviceProvider, cancellationToken, request.DeferRetry);
         return Ok(new { authenticated = true, releasedFailedItems = released });
     }
 
@@ -181,5 +185,6 @@ public sealed class AmazonDownloadTrackDto : EngineDownloadTrackDtoBase
 
 public sealed class AmazonPublicDownloadGrantRequest
 {
+    public bool DeferRetry { get; set; }
     public string Grant { get; set; } = string.Empty;
 }

@@ -162,11 +162,11 @@ public sealed class PublicApiProviderRenderingGuardrailTest
         // the all-platforms entry point calls that same implementation rather than repeating the fetch,
         // popup and grant handshake.
         Assert.Contains("await runPublicDownloadVerification(config);", singlePlatform, StringComparison.Ordinal);
-        Assert.Contains("async function runPublicDownloadVerification(config)", login, StringComparison.Ordinal);
-        Assert.Equal(1, CountOccurrences(login, "const response = await fetch(`${config.sessionEndpoint}/start`"));
+        Assert.Contains("async function runPublicDownloadVerification(config, options = {})", login, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(login, "const response = await fetch(`${config.sessionEndpoint}/start?deferRetry=${options.deferRetry === true}`"));
         Assert.Equal(1, CountOccurrences(login, "config.popupName,"));
-        Assert.Equal(1, CountOccurrences(login, "await waitForPublicDownloadGrant(verificationWindow, config);"));
-        Assert.Contains("await runPublicDownloadVerification(config);", allPlatforms, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(login, "await waitForPublicDownloadGrant(verificationWindow, config, options);"));
+        Assert.Contains("await runPublicDownloadVerification(config, { deferRetry: true });", allPlatforms, StringComparison.Ordinal);
 
         // Every configured platform is covered, in configuration order, strictly sequentially.
         Assert.Contains(

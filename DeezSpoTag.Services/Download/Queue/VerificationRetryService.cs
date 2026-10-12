@@ -1,29 +1,17 @@
+using System.Text.Json.Nodes;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
 /// <summary>
-/// Releases queue items that failed while a public download API had no verified session.
+/// Recovers failed public-API downloads after verification. Eligibility survives failed attempts;
+/// each verification can release a file once, and late failures are handled by the existing sweep.
 /// </summary>
-/// <remarks>
-/// <para>
-/// A file queued before its public API session is verified cannot download. It exhausts its
-/// <c>MaxRetries</c> budget against an API that was never going to work and ends up permanently
-/// failed, requiring a manual Retry click. This service reverses that: items are held as failed
-/// with a verification flag, and a completed session verification releases them.
-/// </para>
-/// <para>
-/// Releasing an item reuses the ordinary manual-retry path, so the item gets the same treatment as
-/// a user pressing Retry: the engine ladder restarts at its first step, the retry budget is reset,
-/// and the item keeps its original queue position.
-/// </para>
-/// <para>
-/// This service only acts on retry. It never gates enqueues and never blocks a running download.
-/// </para>
-/// </remarks>
 public sealed class VerificationRetryService
 {
+    private readonly SemaphoreSlim _releaseGate = new(1, 1);
     private readonly DownloadQueueRepository _queueRepository;
     private readonly PublicApiSessionVerificationStore _verificationStore;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -62,74 +50,76 @@ public sealed class VerificationRetryService
         _logger = logger;
     }
 
-    /// <summary>
-    /// Stamps a newly queued item with whether it was queued while a public API was unverified, and
-    /// when it was queued. Cheap and synchronous: it reads the persisted record only.
-    /// </summary>
-    public async Task<bool> StampQueuedItemAsync(
-        string queueUuid,
-        CancellationToken cancellationToken = default)
+    // The flag means eligible for verification recovery, including outages after a past
+    // verification. It is written centrally on enqueue and cleared only on success/cancellation.
+    public static IReadOnlyList<string> GetPublicApiSources(DownloadQueueItem item)
     {
-        if (string.IsNullOrWhiteSpace(queueUuid))
+        var sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (PublicApiSessionVerificationStore.TryNormalizeSlug(item.Engine, out var engine)) sources.Add(engine);
+        try
         {
-            return false;
+            if (JsonNode.Parse(item.PayloadJson ?? "{}") is JsonObject payload)
+                foreach (var step in DownloadExecutionPlan.Read(payload))
+                    if (PublicApiSessionVerificationStore.TryNormalizeSlug(step.Engine, out var source)) sources.Add(source);
         }
-
-        var unverified = _verificationStore.HasAnyUnverifiedPublicApi();
-        await _queueRepository.MarkPublicApiUnverifiedWhenQueuedAsync(
-            queueUuid,
-            unverified,
-            DateTimeOffset.UtcNow,
-            cancellationToken);
-        return unverified;
+        catch (System.Text.Json.JsonException) { /* A public engine still identifies an invalid legacy payload. */ }
+        return sources.ToArray();
     }
 
-    /// <summary>
-    /// Called when a public API session verification completes. Records the verification and releases
-    /// the failed items that were waiting on it.
-    /// </summary>
-    public async Task<int> OnSessionVerifiedAsync(
-        string slug,
-        Func<string, CancellationToken, Task<bool>> releaseItemAsync,
+    public Task<int> OnSessionVerifiedAsync(string slug, Func<string, CancellationToken, Task<bool>> releaseItemAsync,
+        CancellationToken cancellationToken = default)
+        => OnSessionsVerifiedAsync(new[] { slug }, releaseItemAsync, cancellationToken);
+
+    public async Task<int> OnSessionsVerifiedAsync(IEnumerable<string> slugs,
+        Func<string, CancellationToken, Task<bool>> releaseItemAsync, CancellationToken cancellationToken = default)
+    {
+        var providers = slugs.Where(slug => PublicApiSessionVerificationStore.TryNormalizeSlug(slug, out _)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (providers.Length == 0) return 0;
+        await _releaseGate.WaitAsync(cancellationToken);
+        try
+        {
+            var verifiedAt = DateTimeOffset.UtcNow;
+            foreach (var provider in providers) _verificationStore.RecordVerified(provider, verifiedAt);
+            return await ReleaseFailedAsync(verifiedAt, releaseItemAsync, initialSweep: !HasCompletedInitialSweep(), cancellationToken);
+        }
+        finally { _releaseGate.Release(); }
+    }
+
+    public async Task<int> RecoverPendingAsync(Func<string, CancellationToken, Task<bool>> releaseItemAsync,
         CancellationToken cancellationToken = default)
     {
-        if (!PublicApiSessionVerificationStore.TryNormalizeSlug(slug, out var normalized))
+        await _releaseGate.WaitAsync(cancellationToken);
+        try
         {
-            return 0;
+            var latest = PublicApiSessionVerificationStore.PublicApiSlugs.Select(_verificationStore.GetLastVerifiedAtUtc).Max();
+            return latest.HasValue ? await ReleaseFailedAsync(latest.Value, releaseItemAsync, initialSweep: false, cancellationToken) : 0;
         }
+        finally { _releaseGate.Release(); }
+    }
 
-        _verificationStore.RecordVerified(normalized);
-
-        // The initial sweep runs once and releases every failed item. Later verifications release
-        // only items that were explicitly stamped while unverified.
-        var requireFlag = HasCompletedInitialSweep();
-        var candidates = await _queueRepository.GetFailedForVerificationRetryAsync(
-            requireUnverifiedFlag: requireFlag,
-            cancellationToken);
-
-        if (candidates.Count == 0)
-        {
-            return 0;
-        }
-
+    private async Task<int> ReleaseFailedAsync(DateTimeOffset verifiedAt,
+        Func<string, CancellationToken, Task<bool>> releaseItemAsync, bool initialSweep, CancellationToken cancellationToken)
+    {
+        var candidates = await _queueRepository.GetFailedForVerificationRetryAsync(!initialSweep, cancellationToken, verifiedAt);
         var released = 0;
-        foreach (var queueUuid in candidates)
+        foreach (var uuid in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await releaseItemAsync(queueUuid, cancellationToken))
+            try
             {
+                if (!await releaseItemAsync(uuid, cancellationToken)) continue;
+                // Consume this verification, retaining eligibility for a later verification if
+                // the new attempt fails. A download that fails later is picked up by the sweep.
+                await _queueRepository.MarkPublicApiVerificationRetryAttemptAsync(uuid, verifiedAt, cancellationToken);
                 released++;
             }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Verification recovery failed for {QueueUuid}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(uuid));
+            }
         }
-
-        if (!requireFlag)
-        {
-            MarkInitialSweepCompleted();
-        }
-
-        _activityLog.Info(
-            $"Verification retry released {released} failed item(s) after {normalized} verification (initialSweep={!requireFlag}).");
+        if (initialSweep && candidates.Count > 0 && released == candidates.Count) MarkInitialSweepCompleted();
+        if (released > 0) _activityLog.Info($"Verification retry released {released} failed item(s).");
         return released;
     }
-
 }
