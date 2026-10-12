@@ -65,6 +65,23 @@
         }
     }
 
+    function setHomeTrendingPlaybackState(button, state) {
+        const playbackState = global.DeezerPlaybackState;
+        if (playbackState && typeof playbackState.transitionButtonState === 'function') {
+            playbackState.transitionButtonState(button, state, {
+                setPlaying: setHomeTrendingPreviewButtonState,
+                clear: () => clearHomeTrendingPlayingMarkers(null),
+                onTransition: (targetButton, nextState) => {
+                    if (nextState === 'requested') {
+                        setHomeTrendingPreviewButtonState(targetButton, true);
+                    }
+                }
+            });
+            return;
+        }
+        setHomeTrendingPreviewButtonState(button, String(state || '').toLowerCase() === 'playing');
+    }
+
     function normalizeHomeDeezerPlaybackContext(payload) {
         if (!global.DeezerPlaybackContext || typeof global.DeezerPlaybackContext.normalize !== 'function') {
             return null;
@@ -167,7 +184,7 @@
         }
         return `<div class="home-top-song-item" onclick="${click}">
             <div class="home-top-song-item__thumb"${canPreview ? ` onclick="event.preventDefault(); event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this.querySelector('.home-top-song-item__play'))"` : ''}><img src="${image}" alt="${appleAttribute(item.title)}" loading="lazy" />
-                ${canPreview ? `<button class="home-top-song-item__play" type="button" aria-label="Play preview" ${previewData} data-track-title="${appleAttribute(item.title)}" data-track-artist="${appleAttribute(item.subtitle)}" data-cover="${image}" onclick="event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this)">
+                ${canPreview ? `<button class="home-top-song-item__play" type="button" aria-label="Play preview" data-home-trending-track="true" ${previewData} data-track-title="${appleAttribute(item.title)}" data-track-artist="${appleAttribute(item.subtitle)}" data-cover="${image}" onclick="event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this)">
                 <span class="playback-glyph" aria-hidden="true"><svg class="playback-icon playback-icon--play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><svg class="playback-icon playback-icon--pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg></span></button>` : ''}
             </div><div class="home-top-song-item__info"><div class="home-top-song-item__title">${title}</div>${subtitle ? `<div class="home-top-song-item__album">${subtitle}</div>` : ''}</div>
         </div>`;
@@ -175,8 +192,8 @@
 
     async function playAppleBrowsePreview(button) {
         if (!button || button.disabled) return;
-        let url = button.dataset.preview;
-        if (!url) {
+        const resolvePreview = async () => {
+            if (button.dataset.preview) return button.dataset.preview;
             button.disabled = true;
             button.setAttribute('aria-busy', 'true');
             try {
@@ -184,29 +201,42 @@
                 const response = await global.fetch(`/api/apple/browse/preview?${params}`);
                 const data = await response.json();
                 if (!response.ok || !data.success || !data.previewUrl) throw new Error(data.error || 'Preview unavailable.');
-                url = data.previewUrl;
-                button.dataset.preview = url;
-            } catch (error) {
-                showToast(error.message || 'Preview unavailable.', 'error');
-                return;
+                button.dataset.preview = data.previewUrl;
+                return data.previewUrl;
             } finally {
                 button.disabled = false;
                 button.removeAttribute('aria-busy');
             }
-        }
+        };
         if (button.dataset.appleType === 'video') {
-            await global.DeezSpoTagVideoPreview?.play(url);
+            try {
+                await global.DeezSpoTagVideoPreview?.play(await resolvePreview());
+            } catch (error) {
+                showToast(error.message || 'Preview unavailable.', 'error');
+            }
             return;
         }
         if (!global.DeezerUnifiedPlayback?.play) return;
         const storedVolume = Number.parseInt(global.localStorage.getItem('previewVolume') || '', 10);
+        const sourceKey = button.dataset.appleId
+            ? `apple:${button.dataset.appleType}:${button.dataset.appleId}`
+            : `preview:${button.dataset.preview}`;
         await global.DeezerUnifiedPlayback.play({
-            page: 'home', source: 'apple', button, key: `preview:${url}`, sourceKey: `preview:${url}`,
+            page: 'home', source: 'apple', button,
+            key: button.dataset.preview ? `preview:${button.dataset.preview}` : sourceKey, sourceKey,
             volume: Number.isFinite(storedVolume) ? Math.max(0, Math.min(1, storedVolume / 100)) : 0.8,
             mediaMetadata: { title: button.dataset.trackTitle, artist: button.dataset.trackArtist, coverUrl: button.dataset.cover || '' },
             startFailedMessage: 'Playback failed for this track.', unavailableMessage: 'Preview unavailable.',
-            onStateChange: state => setHomeTrendingPreviewButtonState(button, state === 'playing'),
-            resolve: async () => ({ url, key: `preview:${url}` })
+            onStateChange: state => setHomeTrendingPlaybackState(button, state),
+            resolve: async () => {
+                try {
+                    const url = await resolvePreview();
+                    return { url, key: `preview:${url}` };
+                } catch (error) {
+                    showToast(error.message || 'Preview unavailable.', 'error');
+                    return { url: '', silentUnavailable: true };
+                }
+            }
         });
     }
 
@@ -249,7 +279,7 @@
             page: 'home', source: 'ytmusic', button, key: `youtube:${id}`, sourceKey: `youtube:${id}`,
             volume: Number.isFinite(volume) ? Math.max(0, Math.min(1, volume / 100)) : 0.8,
             mediaMetadata: { title: button.dataset.trackTitle, artist: button.dataset.trackArtist, coverUrl: button.dataset.cover || '' },
-            onStateChange: state => setHomeTrendingPreviewButtonState(button, state === 'playing'),
+            onStateChange: state => setHomeTrendingPlaybackState(button, state),
             startFailedMessage: 'YouTube playback failed.', unavailableMessage: 'YouTube stream unavailable.',
             resolve: async () => {
                 const response = await global.fetch(`/api/youtube/browse/playback?id=${encodeURIComponent(id)}`);
@@ -365,6 +395,7 @@
     global.HomeViewHelpers = {
         showToast: showToast,
         setHomeTrendingPreviewButtonState: setHomeTrendingPreviewButtonState,
+        setHomeTrendingPlaybackState: setHomeTrendingPlaybackState,
         clearHomeTrendingPlayingMarkers: clearHomeTrendingPlayingMarkers,
         normalizeHomeDeezerPlaybackContext: normalizeHomeDeezerPlaybackContext,
         buildHomeDeezerStreamUrl: buildHomeDeezerStreamUrl,

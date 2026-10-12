@@ -17,6 +17,88 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AppleBrowseTest
 {
+    [Fact]
+    public void HomeTrendingProvidersShareLoadingAnimationAndRestoreRedrawnButtons()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.Directory.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "Views"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+            const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+            const root = process.argv[1], home = fs.readFileSync(root + '/DeezSpoTag.Web/wwwroot/js/home-index.js', 'utf8');
+            const classList = () => {
+                const classes = new Set();
+                return { toggle(name, value) { if (value) classes.add(name); else classes.delete(name); }, remove(...names) { names.forEach(name => classes.delete(name)); }, contains: name => classes.has(name) };
+            };
+            class Button {
+                constructor(dataset) { this.dataset = dataset; this.classList = classList(); this.row = { classList: classList() }; this.isConnected = true; }
+                closest() { return this.row; }
+                matches() { return this.dataset.homeTrendingTrack === 'true'; }
+                setAttribute() {}
+                removeAttribute() {}
+            }
+            let buttons = [], request, releaseFetch;
+            const ctx = vm.createContext({ console, URLSearchParams, HTMLElement: Button, escapeHtml: value => String(value || ''),
+                document: { querySelectorAll: () => buttons }, localStorage: { getItem: () => null },
+                fetch: () => new Promise(resolve => releaseFetch = resolve)
+            });
+            vm.runInContext(fs.readFileSync(root + '/DeezSpoTag.Web/wwwroot/js/deezer-playback-state.js', 'utf8'), ctx);
+            vm.runInContext(fs.readFileSync(root + '/DeezSpoTag.Web/wwwroot/js/home-view-helpers.js', 'utf8'), ctx);
+            ctx.setHomeTrendingPreviewButtonState = ctx.HomeViewHelpers.setHomeTrendingPreviewButtonState;
+            vm.runInContext(home.slice(home.indexOf('function setHomeTrendingPlaybackState('), home.indexOf('function clearHomeTrendingPreviewButton(')), ctx);
+            vm.runInContext(home.slice(home.indexOf('function getHomeTrendingPlaybackButtons('), home.indexOf('function syncHomeTrendingPlaybackFromSession(')), ctx);
+            ctx.DeezerUnifiedPlayback = { play: async options => {
+                request = options;
+                options.onStateChange('requested');
+                await options.resolve();
+                options.onStateChange('playing');
+            } };
+            function state(button) {
+                return [button.classList.contains('is-starting'), button.classList.contains('is-playing'), button.row.classList.contains('is-playing'), button.dataset.playbackState];
+            }
+            (async () => {
+                const spotify = new Button({ homeTrendingTrack: 'true', spotifyUrl: 'https://open.spotify.com/track/test' });
+                buttons = [spotify];
+                ctx.setHomeTrendingPlaybackState(spotify, 'requested');
+                const requested = state(spotify);
+                ctx.setHomeTrendingPlaybackState(spotify, 'playing');
+                const playing = state(spotify);
+                for (const provider of ['apple', 'youtube']) {
+                    const markup = provider === 'apple' ? ctx.HomeViewHelpers.renderAppleBrowseItem({ type: 'track', id: '123', title: 'Song' }) : '';
+                    const dataset = provider === 'apple'
+                        ? { appleId: '123', appleType: 'track', homeTrendingTrack: markup.includes('data-home-trending-track="true"') ? 'true' : '' }
+                        : { youtubeId: 'dQw4w9WgXcQ', homeTrendingTrack: 'true' };
+                    const button = new Button(dataset);
+                    buttons = [button];
+                    request = null;
+                    const pending = provider === 'apple' ? ctx.HomeViewHelpers.playAppleBrowsePreview(button) : ctx.HomeViewHelpers.playYouTubeBrowse(button);
+                    await new Promise(resolve => setImmediate(resolve));
+                    assert.deepEqual(state(button), requested, provider + ' must animate before URL resolution finishes');
+                    releaseFetch({ ok: true, json: async () => provider === 'apple' ? { success: true, previewUrl: 'https://preview.test/audio' } : { success: true, url: '/api/youtube/browse/stream?id=dQw4w9WgXcQ' } });
+                    await pending;
+                    assert.deepEqual(state(button), playing);
+                    button.isConnected = false;
+                    const redrawn = new Button({ ...dataset });
+                    buttons = [redrawn];
+                    const restored = ctx.findHomeTrendingPlaybackButtonFromSession({ button, sourceKey: request.sourceKey });
+                    assert.equal(restored, redrawn, provider + ' must find its replacement after a redraw');
+                    ctx.setHomeTrendingPlaybackState(restored, 'playing');
+                    assert.deepEqual(state(redrawn), playing);
+                    for (const terminal of ['paused', 'ended', 'error']) {
+                        request.onStateChange(terminal);
+                        assert.equal(button.classList.contains('is-starting'), false);
+                        assert.equal(button.row.classList.contains('is-playing'), false);
+                    }
+                }
+            })().catch(error => { console.error(error); process.exitCode = 1; });
+            """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
     private static MethodInfo RequiredMethod(Type type, string name)
     {
         var method = type.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);

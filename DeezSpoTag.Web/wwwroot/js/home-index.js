@@ -151,28 +151,9 @@ async function openSpotifyBrowseCategory(item) {
 }
 
 const setHomeTrendingPreviewButtonState = globalThis.HomeViewHelpers.setHomeTrendingPreviewButtonState;
-const homePlaybackState = globalThis.DeezerPlaybackState;
 
 function setHomeTrendingPlaybackState(button, state) {
-    if (homePlaybackState && typeof homePlaybackState.transitionButtonState === 'function') {
-        homePlaybackState.transitionButtonState(button, state, {
-            setPlaying: setHomeTrendingPreviewButtonState,
-            clear: () => {
-                if (globalThis.HomeViewHelpers && typeof globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
-                    globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
-                }
-            },
-            onTransition: (targetButton, nextState) => {
-                if (nextState === 'requested') {
-                    setHomeTrendingPreviewButtonState(targetButton, true);
-                }
-            }
-        });
-        return;
-    }
-
-    const isPlaying = String(state || '').toLowerCase() === 'playing';
-    setHomeTrendingPreviewButtonState(button, isPlaying);
+    globalThis.HomeViewHelpers.setHomeTrendingPlaybackState(button, state);
 }
 
 function clearHomeTrendingPreviewButton() {
@@ -220,7 +201,17 @@ function findHomeTrendingButtonBySourceKey(buttons, sourceKey) {
 
     const lowerKey = key.toLowerCase();
     if (lowerKey.startsWith('preview:')) {
-        return findHomeTrendingButtonByDatasetValue(buttons, 'previewUrl', key.slice('preview:'.length));
+        return findHomeTrendingButtonByDatasetValue(buttons, 'previewUrl', key.slice('preview:'.length))
+            || findHomeTrendingButtonByDatasetValue(buttons, 'preview', key.slice('preview:'.length));
+    }
+
+    if (lowerKey.startsWith('apple:')) {
+        const [, type, id] = key.split(':');
+        return buttons.find(button => button.dataset.appleType === type && button.dataset.appleId === id) || null;
+    }
+
+    if (lowerKey.startsWith('youtube:')) {
+        return findHomeTrendingButtonByDatasetValue(buttons, 'youtubeId', key.slice('youtube:'.length));
     }
 
     if (lowerKey.startsWith('source:')) {
