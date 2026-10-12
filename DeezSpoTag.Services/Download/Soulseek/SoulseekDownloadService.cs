@@ -1230,9 +1230,14 @@ public sealed class SoulseekDownloadService : ISoulseekDownloadService
 
         var claims = await _repository.GetSourceClaimsForQueueAsync(queueUuid, cancellationToken).ConfigureAwait(false);
         var reservation = claims.FirstOrDefault(claim =>
-            (!pinned || (string.Equals(claim.Username, request.Username, StringComparison.OrdinalIgnoreCase)
-                && PathsEqual(claim.Filename, request.RemotePath)))
-            && (claim.TransferId is null || !recorded.Any(row => row.TransferId == claim.TransferId)));
+        {
+            var matchesPinnedSource = !pinned
+                || (string.Equals(claim.Username, request.Username, StringComparison.OrdinalIgnoreCase)
+                    && PathsEqual(claim.Filename, request.RemotePath));
+            var isUnrecorded = claim.TransferId is null
+                || !recorded.Any(row => row.TransferId == claim.TransferId);
+            return matchesPinnedSource && isUnrecorded;
+        });
         if (reservation is null)
         {
             return null;

@@ -246,7 +246,7 @@ PRAGMA busy_timeout=5000;";
     private readonly string _connectionString;
     private readonly ILogger<SoulseekRepository> _logger;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
-    private bool _schemaEnsured;
+    private volatile bool _schemaEnsured;
 
     /// <summary>Initializes a new instance of the <see cref="SoulseekRepository"/> class.</summary>
     public SoulseekRepository(IConfiguration configuration, ILogger<SoulseekRepository> logger)

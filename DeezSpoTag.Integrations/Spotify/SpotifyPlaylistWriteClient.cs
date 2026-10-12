@@ -425,7 +425,7 @@ public sealed class SpotifyPlaylistWriteClient
         string? body,
         CancellationToken cancellationToken)
     {
-        var request = new HttpRequestMessage(method, url);
+        using var request = new HttpRequestMessage(method, url);
         if (body is not null)
         {
             request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
@@ -921,7 +921,7 @@ public sealed class SpotifyPlaylistWriteClient
                     && errors.ValueKind == JsonValueKind.Array
                     && errors.GetArrayLength() > 0)
                 {
-                    return new SpotifyPayload(false, root, "Spotify refused the request: " + errors[0].ToString());
+                    return new SpotifyPayload(false, root, "Spotify refused the request: " + errors[0]);
                 }
 
                 if (!response.IsSuccessStatusCode)

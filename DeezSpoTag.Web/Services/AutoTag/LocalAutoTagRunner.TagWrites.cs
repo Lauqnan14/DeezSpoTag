@@ -421,12 +421,10 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         context.File.Tag.Genres = [];
         RemoveRawTagValues(context, "GENRE");
-        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
+            && context.File.GetTag(TagTypes.Id3v2, false) is TagLib.Id3v2.Tag id3)
         {
-            if (context.File.GetTag(TagTypes.Id3v2, false) is TagLib.Id3v2.Tag id3)
-            {
-                id3.RemoveFrames("TCON");
-            }
+            id3.RemoveFrames("TCON");
         }
     }
 
@@ -686,7 +684,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 track.Other[key] = RewriteCreditList(track.Other[key]);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex)
+            || ex is TagLib.CorruptFileException or TagLib.UnsupportedFormatException or KeyNotFoundException)
         {
             // Alias resolution must never break tagging.
         }

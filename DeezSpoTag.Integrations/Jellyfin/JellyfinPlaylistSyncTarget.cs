@@ -144,7 +144,7 @@ public sealed class JellyfinPlaylistSyncTarget : IPlaylistSyncTarget
                 "Jellyfin playlist could not be read, so nothing was written.");
         }
 
-        var (success, message, added) = write.AppendMissingOnly
+        var (success, message, _) = write.AppendMissingOnly
             ? await AppendMissingAsync(jellyfin, write, entries, cancellationToken)
             : await ReplaceAsync(jellyfin, write, entries, cancellationToken);
         if (!success)

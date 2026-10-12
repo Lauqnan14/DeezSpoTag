@@ -38,10 +38,11 @@ public static class AppleCatalogJsonHelper
                 var sourceItems = BrowseProperty(section, "items");
                 if (sourceItems.ValueKind != JsonValueKind.Array) continue;
                 var items = new JsonArray();
-                foreach (var item in sourceItems.EnumerateArray())
+                foreach (var mapped in sourceItems.EnumerateArray()
+                             .Select(item => MapBrowseItem(item, isCategories))
+                             .Where(mapped => mapped != null))
                 {
-                    var mapped = MapBrowseItem(item, isCategories);
-                    if (mapped != null) items.Add(mapped);
+                    items.Add(mapped);
                 }
                 if (items.Count == 0) continue;
                 var title = BrowseString(BrowseProperty(BrowseProperty(BrowseProperty(section, "header"), "item"), "titleLink"), "title");

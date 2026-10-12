@@ -53,10 +53,13 @@ public static class LyricsSettingsPolicy
         var formats = ParseOutputFormats(settings.LrcFormat);
         var types = ParseSelectedTypes(settings.LrcType);
         var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
+        var hasPlainTimedLyrics = types.Contains(LyricsType)
+            && !LrcTimingModes.RequiresWordTiming(timingPreference);
+        var hasSyllableLyrics = types.Contains(SyllableLyricsType)
+            && LrcTimingModes.ImpliesEnhanced(timingPreference);
+        var synthesizesTtml = settings.SynthesizeLrcFromTtml && types.Contains(TtmlLyricsType);
         return formats.Contains("lrc")
-            && ((types.Contains(LyricsType) && !LrcTimingModes.RequiresWordTiming(timingPreference))
-                || (types.Contains(SyllableLyricsType) && LrcTimingModes.ImpliesEnhanced(timingPreference))
-                || (settings.SynthesizeLrcFromTtml && types.Contains(TtmlLyricsType)));
+            && (hasPlainTimedLyrics || hasSyllableLyrics || synthesizesTtml);
     }
 
     public static bool WantsEnhancedLrc(DeezSpoTagSettings settings)

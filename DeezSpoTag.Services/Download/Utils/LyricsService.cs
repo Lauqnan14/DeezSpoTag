@@ -1222,12 +1222,16 @@ public class LyricsService
             target.TtmlLyricsSourceFormat = candidate.TtmlLyricsSourceFormat;
         }
 
-        if (HasLyricsLines(candidate.SyncedLyrics)
-            && (!HasLyricsLines(target.SyncedLyrics)
-                || (!target.HasEnhancedSynchronizedLyrics() && candidate.HasEnhancedSynchronizedLyrics())
-                || (target.HasEnhancedSynchronizedLyrics() == candidate.HasEnhancedSynchronizedLyrics()
-                    && target.SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml
-                    && candidate.SyncedLyricsSourceFormat != LyricsSourceFormat.ConvertedFromTtml)))
+        var candidateIsEnhanced = candidate.HasEnhancedSynchronizedLyrics();
+        var targetIsEnhanced = target.HasEnhancedSynchronizedLyrics();
+        var candidateHasPreferredFormat = targetIsEnhanced == candidateIsEnhanced
+            && target.SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml
+            && candidate.SyncedLyricsSourceFormat != LyricsSourceFormat.ConvertedFromTtml;
+        var shouldReplaceTarget = !HasLyricsLines(target.SyncedLyrics)
+            || (!targetIsEnhanced && candidateIsEnhanced)
+            || candidateHasPreferredFormat;
+
+        if (HasLyricsLines(candidate.SyncedLyrics) && shouldReplaceTarget)
         {
             target.SyncedLyrics = candidate.SyncedLyrics;
             target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
@@ -1908,7 +1912,7 @@ public class LyricsService
             {
                 File.Delete(temporaryPath);
             }
-            catch
+            catch (Exception cleanupEx) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(cleanupEx))
             {
                 // Cache writes are best effort and must not fail lyrics lookup.
             }
@@ -4516,13 +4520,16 @@ public class LyricsService
     {
         var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
         var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
-        return settings.SyncedLyrics
+        var hasPlainTimedLyrics = IsLyricsTypeSelected(settings, LyricsType)
+            && !LrcTimingModes.RequiresWordTiming(timingPreference);
+        var hasSyllableLyrics = IsLyricsTypeSelected(settings, SyllableLyricsType)
+            && LrcTimingModes.ImpliesEnhanced(timingPreference);
+        var synthesizesTtml = settings.SynthesizeLrcFromTtml
+            && IsLyricsTypeSelected(settings, TtmlLyricsType);
+        var wantsSyncedLrc = settings.SyncedLyrics
             && IsLyricsGateEnabled(settings)
-            && outputFormats.Contains("lrc")
-            && ((IsLyricsTypeSelected(settings, LyricsType) && !LrcTimingModes.RequiresWordTiming(timingPreference))
-                || (IsLyricsTypeSelected(settings, SyllableLyricsType) && LrcTimingModes.ImpliesEnhanced(timingPreference))
-                || (settings.SynthesizeLrcFromTtml
-                    && IsLyricsTypeSelected(settings, TtmlLyricsType)));
+            && outputFormats.Contains("lrc");
+        return wantsSyncedLrc && (hasPlainTimedLyrics || hasSyllableLyrics || synthesizesTtml);
     }
 
     private static bool ShouldSaveEnhancedSynchronizedLyrics(DeezSpoTagSettings settings)

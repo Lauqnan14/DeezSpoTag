@@ -107,12 +107,20 @@ public sealed class AppleMusicCatalogService
         var match = CreateRegex("<script\\b[^>]*\\bid=[\"']serialized-server-data[\"'][^>]*>(?<json>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Match(html);
         if (!match.Success) throw new JsonException("Apple Music structured browse data is unavailable.");
         var document = JsonDocument.Parse(match.Groups["json"].Value);
-        if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        try
+        {
+            if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            {
+                throw new JsonException("Apple Music browse data has an unsupported structure.");
+            }
+
+            return document;
+        }
+        catch
         {
             document.Dispose();
-            throw new JsonException("Apple Music browse data has an unsupported structure.");
+            throw;
         }
-        return document;
     }
 
     public Task<string> GetAuthorizationTokenAsync(CancellationToken cancellationToken)

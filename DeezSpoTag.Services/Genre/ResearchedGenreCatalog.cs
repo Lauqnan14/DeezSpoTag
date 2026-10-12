@@ -418,10 +418,10 @@ public sealed class ResearchedGenreCatalog
         foreach (var alias in aliases)
         {
             var aliasKey = Key(alias.Value);
-            if (keys.ContainsKey(aliasKey))
+            if (keys.TryGetValue(aliasKey, out var canonical))
             {
                 throw new InvalidOperationException(
-                    $"Researched taxonomy is corrupt: alias '{alias.Value}' shadows canonical term '{keys[aliasKey]}'.");
+                    $"Researched taxonomy is corrupt: alias '{alias.Value}' shadows canonical term '{canonical}'.");
             }
         }
 

@@ -1,3 +1,4 @@
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -47,7 +48,7 @@ public sealed class AppleBrowseApiController(
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            logger.LogWarning(exception, "Apple browse preview unavailable for {Id}", id);
+            logger.LogWarning(exception, "Apple browse preview unavailable for {Id}", LogSanitizer.OneLine(id));
             return StatusCode(502, new { success = false, error = "Apple Music preview is unavailable." });
         }
     }
@@ -88,7 +89,7 @@ public sealed class AppleBrowseApiController(
         catch (ArgumentException exception) { return BadRequest(new { success = false, error = exception.Message }); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            logger.LogWarning(exception, "Apple Music browse request failed for {Path}", path);
+            logger.LogWarning(exception, "Apple Music browse request failed for {Path}", LogSanitizer.OneLine(path));
             return StatusCode(502, new { success = false, error = "Apple Music browse content is unavailable." });
         }
     }

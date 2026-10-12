@@ -44,6 +44,9 @@ public sealed class SecurityHardeningGuardrailTest
     [InlineData("DeezSpoTag.Web/Services/PlatformTrackIdentityResolver.cs", "No identity search is wired for", "service")]
     [InlineData("DeezSpoTag.Web/Services/PlatformTrackIdentityResolver.cs", "Searching {Service} for {Track} failed.", "service", "track.Name")]
     [InlineData("DeezSpoTag.Web/Services/TrackIdentityResolver.cs", "Hydrated SoundCloud source", "SoundCloudUrlRedactor.Redact(sourceUrl)", "track.Urn", "track.Title", "track.PreferredArtist")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/AppleBrowseApiController.cs", "Apple browse preview unavailable for {Id}", "id")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/AppleBrowseApiController.cs", "Apple Music browse request failed for {Path}", "path")]
+    [InlineData("DeezSpoTag.Web/Controllers/Api/YouTubeBrowseApiController.cs", "YouTube non-music segments unavailable for {VideoId}", "id")]
     public void SecurityFlaggedLogCall_SanitizesEachUntrustedArgument(string path, string message, params string[] arguments)
     {
         var source = File.ReadAllText(Path.Combine(ResolveSrcRoot(), path));

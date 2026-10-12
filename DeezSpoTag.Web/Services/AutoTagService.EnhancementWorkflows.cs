@@ -1688,6 +1688,8 @@ public partial class AutoTagService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Identity metadata is optional enrichment; a failed lookup leaves title/artist
+                // null so the caller falls back to whatever the file's own tags already carry.
             }
         }
 

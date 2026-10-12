@@ -257,7 +257,6 @@ public sealed class PersonalGenreCatalog
 
         foreach (var builtIn in builtIns)
         {
-            var key = Normalize(builtIn.Name);
             PersonalGenreTaxon result = builtIn;
 
             // Only Genre and Style are researched, and only those two can have their

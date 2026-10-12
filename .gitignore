@@ -153,3 +153,7 @@ DeezSpoTag.Web/wwwroot/images/meloday/generated/
 **/appsettings.Local.json
 **/appsettings.local.json
 **/appsettings.Secrets.json
+
+# Local recommendation settings mockups
+/tmp/counter-checkbox-mockup.html
+/tmp/recommendations-section-mockup.html

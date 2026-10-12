@@ -2898,6 +2898,8 @@ public sealed class TidalDownloadService
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
+            // Killing a worker that already exited is expected during teardown; there is nothing
+            // left to clean up, so the failure is intentionally ignored.
         }
     }
 

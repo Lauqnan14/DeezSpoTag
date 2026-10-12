@@ -75,10 +75,10 @@ internal static class SlskdJson
         {
             JsonValueKind.True => true,
             JsonValueKind.False => false,
-            JsonValueKind.Number => value.TryGetDouble(out var number) && number != 0,
+            JsonValueKind.Number => value.TryGetDecimal(out var number) && number != 0,
             JsonValueKind.String => bool.TryParse(value.GetString(), out var parsed)
                 ? parsed
-                : double.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var text) && text != 0,
+                : decimal.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var text) && text != 0,
             _ => fallback
         };
     }

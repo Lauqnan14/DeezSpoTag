@@ -678,7 +678,7 @@ WHERE af.id IN (
 
         var conditions = new StringBuilder();
         var index = 0;
-        foreach (var alias in aliasNormalized)
+        foreach (var _ in aliasNormalized)
         {
             if (conditions.Length > 0)
             {
@@ -724,7 +724,7 @@ WHERE af.id IN (
 
         var conditions = new StringBuilder();
         var index = 0;
-        foreach (var alias in aliasNormalized)
+        foreach (var _ in aliasNormalized)
         {
             if (conditions.Length > 0)
             {

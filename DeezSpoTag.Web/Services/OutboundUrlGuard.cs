@@ -121,10 +121,13 @@ public static class OutboundUrlGuard
     }
 
     private static bool IsPrivateLanIpv4(byte[] bytes)
-        => bytes[0] == 10
-           || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-           || (bytes[0] == 192 && bytes[1] == 168)
-           || (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+    {
+        var isClassAPrivate = bytes[0] == 10;
+        var isClassBPrivate = bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31;
+        var isClassCPrivate = bytes[0] == 192 && bytes[1] == 168;
+        var isCarrierGradeNat = bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127;
+        return isClassAPrivate || isClassBPrivate || isClassCPrivate || isCarrierGradeNat;
+    }
 
     private static bool IsBlockedIpv6Address(IPAddress address, bool allowPrivateLan = false)
     {

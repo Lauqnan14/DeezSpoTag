@@ -106,11 +106,16 @@ public static class DownloadExecutionPlan
     }
 
     private static bool IsAtmosStep(string? engine, string? quality)
-        => (string.Equals(engine?.Trim(), "apple", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
-           || ((string.Equals(engine?.Trim(), "tidal", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(engine?.Trim(), "amazon", StringComparison.OrdinalIgnoreCase))
-                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
+    {
+        var normalizedEngine = engine?.Trim();
+        var normalizedQuality = quality?.Trim();
+        var isAppleAtmos = string.Equals(normalizedEngine, "apple", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(normalizedQuality, "ATMOS", StringComparison.OrdinalIgnoreCase);
+        var isPartnerAtmos = (string.Equals(normalizedEngine, "tidal", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedEngine, "amazon", StringComparison.OrdinalIgnoreCase))
+            && string.Equals(normalizedQuality, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase);
+        return isAppleAtmos || isPartnerAtmos;
+    }
 
     private static bool IsAtmosQuality(string? quality)
         => string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase)

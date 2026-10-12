@@ -190,14 +190,13 @@ public sealed class YouTubeMusicSearchClient
         if (hasDetails && (details.ValueKind != JsonValueKind.Object
             || !details.TryGetProperty("videoId", out var returnedId) || returnedId.GetString() != videoId))
             throw new JsonException("YouTube song identity unavailable.");
-        var title = hasDetails && details.TryGetProperty("title", out var titleNode) ? titleNode.GetString() ?? "" : "";
         var seconds = hasDetails && details.TryGetProperty("lengthSeconds", out var length) && int.TryParse(length.GetString(), out var duration) ? duration : (int?)null;
         // Exact Music queue credits identify the recording; video descriptions may
         // contain production staff rather than the recording artist.
         var queue = await GetQueueSongMetadataAsync(videoId, null, "en", cancellationToken);
         if (seconds is > 0 && queue.DurationSeconds is > 0 && Math.Abs(seconds.Value - queue.DurationSeconds.Value) > 2)
             throw new InvalidOperationException("YouTube recording duration could not be verified.");
-        title = queue.Title;
+        var title = queue.Title;
         var artist = queue.Artist;
         seconds = queue.DurationSeconds is > 0 ? queue.DurationSeconds : seconds;
         var album = queue.Album;
@@ -298,22 +297,42 @@ public sealed class YouTubeMusicSearchClient
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        if (!document.RootElement.TryGetProperty("contents", out _)) { document.Dispose(); throw new JsonException("YouTube Music browse content unavailable."); }
-        if (browseId == "FEmusic_charts")
+        try
         {
-            var selected = BrowseNodes(document.RootElement, "musicMultiSelectMenuItemRenderer")
-                .FirstOrDefault(item => !item.TryGetProperty("selectedCommand", out _) && item.TryGetProperty("formItemEntityKey", out _));
-            var selectedCountry = "";
-            if (selected.ValueKind == JsonValueKind.Object)
+            if (!document.RootElement.TryGetProperty("contents", out _))
             {
-                try {
-                    var entity = Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(selected.GetProperty("formItemEntityKey").GetString()!)));
-                    selectedCountry = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)).Groups[1].Value;
-                } catch (FormatException) { }
+                throw new JsonException("YouTube Music browse content unavailable.");
             }
-            if (selectedCountry != (chartSelection ?? country)) { document.Dispose(); throw new JsonException("YouTube Music charts are unavailable for the requested country."); }
+
+            if (browseId == "FEmusic_charts")
+            {
+                var selected = BrowseNodes(document.RootElement, "musicMultiSelectMenuItemRenderer")
+                    .FirstOrDefault(item => !item.TryGetProperty("selectedCommand", out _) && item.TryGetProperty("formItemEntityKey", out _));
+                var selectedCountry = "";
+                if (selected.ValueKind == JsonValueKind.Object)
+                {
+                    try {
+                        var entity = Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(selected.GetProperty("formItemEntityKey").GetString()!)));
+                        selectedCountry = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)).Groups[1].Value;
+                    } catch (FormatException)
+                    {
+                        // A malformed entity key just means the country cannot be read from the menu
+                        // label; selectedCountry stays empty and the comparison below reports it.
+                    }
+                }
+                if (selectedCountry != (chartSelection ?? country))
+                {
+                    throw new JsonException("YouTube Music charts are unavailable for the requested country.");
+                }
+            }
+
+            return document;
         }
-        return document;
+        catch
+        {
+            document.Dispose();
+            throw;
+        }
     }
 
     public static string NormalizeCollectionId(string id, string type)

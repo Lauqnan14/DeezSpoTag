@@ -963,6 +963,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
             catch (OperationCanceledException) when (activeTargetWorkCancellation.IsCancellationRequested)
             {
+                // Expected: this run's own token cancelled the target work, so there is nothing to report.
             }
             leaseRenewalCancellation.Cancel();
             try
@@ -971,6 +972,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
             catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
             {
+                // Expected: the lease renewal was cancelled on purpose while winding the run down.
             }
             if (queueAdmissionToken != 0)
             {

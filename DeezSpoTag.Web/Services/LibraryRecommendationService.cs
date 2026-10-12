@@ -2068,8 +2068,10 @@ public sealed class LibraryRecommendationService
         candidates = MergeDailyRecommendationProvenance(candidates);
         Removed("DUPLICATE", discoveries, candidates.Count);
         var selected = BuildAllocatedDailySelection(candidates, allocations, configuration.TrackCount, dayUtc, excluded);
-        foreach (var pair in allocations.Where(p => p.Value > 0))
-            if (selected.Count(t => t.RecommendationOrigin == pair.Key) < pair.Value) reasons.Add(pair.Key + "_allocation_incomplete");
+        reasons.AddRange(allocations
+            .Where(p => p.Value > 0)
+            .Where(p => selected.Count(t => t.RecommendationOrigin == p.Key) < p.Value)
+            .Select(p => p.Key + "_allocation_incomplete"));
         if (selected.Count == 0) return new(null, reasons.Distinct().ToList());
         var missing = allocations.ToDictionary(p => p.Key, p => Math.Max(0, p.Value - selected.Count(t => t.RecommendationOrigin == p.Key)));
         var partial = missing.Values.Any(n => n > 0);

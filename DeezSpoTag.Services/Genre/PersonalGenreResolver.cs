@@ -623,7 +623,6 @@ public static class PersonalGenreResolver
             .GroupBy(item => item.Taxon.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First()))
         {
-            var scope = NormalizeLockScope(item.Lock.ScopeType);
             output.Add(new PersonalGenreClassification(
                 item.Taxon.Id,
                 item.Taxon.Name,
@@ -766,14 +765,9 @@ public static class PersonalGenreResolver
             return keys;
         }
 
-        foreach (var value in blockedIdentities)
-        {
-            var key = PersonalGenreTaxonomy.Normalize(value);
-            if (key.Length > 0)
-            {
-                keys.Add(key);
-            }
-        }
+        keys.UnionWith(blockedIdentities
+            .Select(PersonalGenreTaxonomy.Normalize)
+            .Where(key => key.Length > 0));
 
         return keys;
     }

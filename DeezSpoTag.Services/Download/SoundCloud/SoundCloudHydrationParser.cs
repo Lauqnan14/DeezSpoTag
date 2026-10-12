@@ -392,15 +392,10 @@ public static partial class SoundCloudHydrationParser
             return [];
         }
 
-        var urls = new List<string>();
-        foreach (Match match in AssetUrlRegex().Matches(homepageHtml))
-        {
-            var url = match.Groups[1].Value;
-            if (!urls.Contains(url, StringComparer.Ordinal))
-            {
-                urls.Add(url);
-            }
-        }
+        var urls = AssetUrlRegex().Matches(homepageHtml)
+            .Select(match => match.Groups[1].Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
         return urls;
     }
@@ -874,14 +869,10 @@ public static partial class SoundCloudHydrationParser
         if (tags.ValueKind == JsonValueKind.String)
         {
             // SoundCloud also publishes this as a single space-separated string.
-            foreach (var part in (tags.GetString() ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var trimmed = part.Trim();
-                if (trimmed.Length > 0)
-                {
-                    values.Add(trimmed);
-                }
-            }
+            values.AddRange((tags.GetString() ?? string.Empty)
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Trim())
+                .Where(trimmed => trimmed.Length > 0));
         }
         else if (tags.ValueKind == JsonValueKind.Array)
         {
@@ -930,18 +921,9 @@ public static partial class SoundCloudHydrationParser
     ///     Returns the first of several properties that carries a non-empty string, or null when none does.
     /// </summary>
     private static string? ReadFirstNonEmptyString(JsonElement element, params string[] propertyNames)
-    {
-        foreach (var name in propertyNames)
-        {
-            var value = ReadString(element, name);
-            if (value.Length > 0)
-            {
-                return value;
-            }
-        }
-
-        return null;
-    }
+        => propertyNames
+            .Select(name => ReadString(element, name))
+            .FirstOrDefault(value => value.Length > 0);
 
     private static string? ReadFirstTag(JsonElement element)
     {

@@ -542,7 +542,7 @@ public static class AudiomackNextDataExtractor
                 RegexTimeout);
             File.WriteAllText(path, sanitized);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Diagnostics only: never let the dump break Vibe.
         }

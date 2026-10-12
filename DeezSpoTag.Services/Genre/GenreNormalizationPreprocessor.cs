@@ -182,12 +182,10 @@ public static class GenreNormalizationPreprocessor
                          [original.RawValue],
                          aliasMap,
                          splitComposite,
-                         isAtomic))
+                         isAtomic)
+                         .Where(surviving.Contains))
             {
-                if (surviving.Contains(token))
-                {
-                    lineage.TryAdd(token, original.RawValue);
-                }
+                lineage.TryAdd(token, original.RawValue);
             }
         }
 

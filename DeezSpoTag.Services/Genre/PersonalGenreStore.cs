@@ -284,7 +284,7 @@ ON CONFLICT(job_id, file_path) DO UPDATE SET write_status = 'snapshot_error';
     }
     private readonly string? _connectionString;
     private readonly SemaphoreSlim _schemaGate = new(1, 1);
-    private bool _schemaReady;
+    private volatile bool _schemaReady;
 
     public PersonalGenreStore(IConfiguration configuration)
     {
@@ -1711,9 +1711,9 @@ WHERE evidence_json IS NOT NULL AND evidence_json <> '[]';
         // DeezSpoTag ships means.
         foreach (var (key, owner) in ProtectedLookupKeys.Value)
         {
-            if (candidates.ContainsKey(key))
+            if (candidates.TryGetValue(key, out var protectedValue))
             {
-                ThrowCollision(candidates[key], owner, taxon.Id, "protected");
+                ThrowCollision(protectedValue, owner, taxon.Id, "protected");
             }
         }
 
@@ -1726,9 +1726,9 @@ WHERE evidence_json IS NOT NULL AND evidence_json <> '[]';
         {
             foreach (var (key, owner) in LookupKeys(other))
             {
-                if (candidates.ContainsKey(key))
+                if (candidates.TryGetValue(key, out var customValue))
                 {
-                    ThrowCollision(candidates[key], other, taxon.Id, "custom");
+                    ThrowCollision(customValue, other, taxon.Id, "custom");
                 }
             }
         }

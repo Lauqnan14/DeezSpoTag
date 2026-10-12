@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.YouTube;
 using DeezSpoTag.Services.Settings;
 using Microsoft.AspNetCore.Authorization;
@@ -43,7 +44,7 @@ public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, 
         catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(ex, "YouTube non-music segments unavailable for {VideoId}", id);
+            logger.LogWarning(ex, "YouTube non-music segments unavailable for {VideoId}", LogSanitizer.OneLine(id));
             return Ok(new { segments = Array.Empty<YouTubeNonMusicSegment>() });
         }
     }
@@ -186,7 +187,7 @@ public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, 
     private string[] MarketRegions(string country)
     {
         if (environment is null) return [];
-        var map = System.Xml.Linq.XDocument.Load(Path.Combine(environment.WebRootPath, "images", "world", "world-regions.svg"));
+        var map = System.Xml.Linq.XDocument.Load(Path.Join(environment.WebRootPath, "images", "world", "world-regions.svg"));
         var slugs = map.Descendants().FirstOrDefault(node => (string?)node.Attribute("data-country") == country)?
             .Attribute("data-regions")?.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
         return DeezSpoTag.Services.Genre.PersonalGenreRegions.All.Where(region => slugs.Contains(region.Slug)).Select(region => region.Name).ToArray();

@@ -2933,6 +2933,8 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // The marker is a best-effort budget note next to the output file; failing to remove
+            // it must not fail the download, so the cleanup error is deliberately ignored.
         }
     }
 

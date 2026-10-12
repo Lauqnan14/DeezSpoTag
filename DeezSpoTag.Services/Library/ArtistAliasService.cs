@@ -41,7 +41,7 @@ public sealed class ArtistAliasService
     private readonly IConfiguration _configuration;
     private readonly ILogger<ArtistAliasService> _logger;
     private readonly SemaphoreSlim _initLock = new(1, 1);
-    private bool _tableEnsured;
+    private volatile bool _tableEnsured;
 
     private volatile AliasSnapshot? _snapshot;
     private long _snapshotLoadedUtcTicks;
@@ -669,7 +669,7 @@ JOIN artist_alias_group g ON g.id = a.group_id;";
         {
             await GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Non-fatal; sync resolution falls back to the input name.
         }

@@ -209,7 +209,8 @@ public class AudioTagger
                     .ToList();
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex)
+            || ex is TagLib.CorruptFileException or TagLib.UnsupportedFormatException or KeyNotFoundException)
         {
             // Alias resolution must never break tagging.
         }

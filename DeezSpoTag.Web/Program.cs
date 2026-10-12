@@ -1031,7 +1031,7 @@ public partial class Program
     static void ConfigureStaticFiles(WebApplication app)
     {
         var manifestTemplate = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(
-            Path.Combine(app.Environment.WebRootPath, "manifest.webmanifest")))!;
+            Path.Join(app.Environment.WebRootPath, "manifest.webmanifest")))!;
         app.Use(async (context, next) =>
         {
             if (context.Request.Path != "/manifest.webmanifest"

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -125,9 +126,8 @@ public sealed class TidalCatalogClient
         {
             if (row.ValueKind != JsonValueKind.Object || !row.TryGetProperty("modules", out var modules) || modules.ValueKind != JsonValueKind.Array)
                 return new(TidalTrackRadioOutcome.Failed, [], "tidal_malformed_mix");
-            foreach (var module in modules.EnumerateArray())
+            foreach (var module in modules.EnumerateArray().Where(module => ReadString(module, "type") == "TRACK_LIST"))
             {
-                if (ReadString(module, "type") != "TRACK_LIST") continue;
                 foundModule = true;
                 if (!module.TryGetProperty("pagedList", out var list) || list.ValueKind != JsonValueKind.Object)
                     return new(TidalTrackRadioOutcome.Failed, [], "tidal_malformed_mix");
@@ -395,13 +395,13 @@ public sealed class TidalCatalogClient
         var minutes = 0d;
         var seconds = 0d;
         var parsed = false;
-        var digits = string.Empty;
+        var digits = new StringBuilder();
 
         foreach (var character in text)
         {
             if (char.IsDigit(character) || character == '.')
             {
-                digits += character;
+                digits.Append(character);
                 continue;
             }
 
@@ -409,22 +409,22 @@ public sealed class TidalCatalogClient
             {
                 case 'D':
                 case 'd':
-                    days = Number(digits);
+                    days = Number(digits.ToString());
                     parsed = true;
                     break;
                 case 'H':
                 case 'h':
-                    hours = Number(digits);
+                    hours = Number(digits.ToString());
                     parsed = true;
                     break;
                 case 'M':
                 case 'm':
-                    minutes = Number(digits);
+                    minutes = Number(digits.ToString());
                     parsed = true;
                     break;
                 case 'S':
                 case 's':
-                    seconds = Number(digits);
+                    seconds = Number(digits.ToString());
                     parsed = true;
                     break;
                 case 'P':
@@ -436,7 +436,7 @@ public sealed class TidalCatalogClient
                     return null;
             }
 
-            digits = string.Empty;
+            digits.Clear();
         }
 
         if (!parsed)

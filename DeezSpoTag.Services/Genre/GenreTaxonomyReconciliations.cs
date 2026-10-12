@@ -255,14 +255,8 @@ public static class GenreTaxonomyReconciliations
                 continue;
             }
 
-            foreach (var alias in taxon.Aliases)
+            foreach (var key in taxon.Aliases.Select(Key).Where(key => key.Length > 0))
             {
-                var key = Key(alias);
-                if (key.Length == 0)
-                {
-                    continue;
-                }
-
                 var owners = runtime.Taxa
                     .Where(item => !string.Equals(item.Id, taxon.Id, StringComparison.OrdinalIgnoreCase))
                     .Where(item => Key(item.Name) == key || Key(item.Id) == key)
