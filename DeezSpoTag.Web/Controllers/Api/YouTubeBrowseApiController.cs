@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Integrations.YouTube;
 using DeezSpoTag.Services.Settings;
@@ -13,10 +14,13 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/youtube/browse")]
 public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, DeezSpoTagSettingsService settingsService, IMemoryCache cache, ILogger<YouTubeBrowseApiController> logger, IWebHostEnvironment? environment = null) : ControllerBase
 {
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> BrowseRefreshGates = new();
     [HttpGet("categories")]
     public Task<IActionResult> Categories(CancellationToken cancellationToken) => RespondAsync("categories", null, cancellationToken);
     [HttpGet("sections")]
     public Task<IActionResult> Sections(CancellationToken cancellationToken) => RespondAsync("sections", null, cancellationToken);
+    [HttpGet("trending")]
+    public Task<IActionResult> Trending(CancellationToken cancellationToken) => RespondAsync("trending", null, cancellationToken);
     [HttpGet("page")]
     public Task<IActionResult> Page([FromQuery] string id, [FromQuery] string? parameters, CancellationToken cancellationToken) => RespondAsync(id, parameters, cancellationToken);
 
@@ -91,38 +95,86 @@ public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, 
     {
         var settings = settingsService.LoadSettings();
         var country = (string.IsNullOrWhiteSpace(settings.YouTubeMusicCountry) ? settings.DeezerCountry : settings.YouTubeMusicCountry).Trim().ToUpperInvariant();
+        var key = $"youtube:browse:market-v5:{country}:{settings.DeezerLanguage.Trim()}:{page}:{parameters}";
+        cache.TryGetValue(key, out JsonObject? observed);
+        if (!refresh && observed is not null) return (JsonObject)observed.DeepClone();
+        var gate = BrowseRefreshGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (cache.TryGetValue(key, out JsonObject? current) && current is not null
+                && (!refresh || !ReferenceEquals(current, observed))) return (JsonObject)current.DeepClone();
+            return await LoadCoreAsync(page, parameters, cancellationToken, refresh);
+        }
+        finally { gate.Release(); }
+    }
+
+    private async Task<JsonDocument> LoadChartsAsync(string country, string language, string? selection, CancellationToken cancellationToken, bool refresh = false)
+    {
+        var key = $"youtube:charts:{country}:{language}:{selection}";
+        cache.TryGetValue(key, out string? observed);
+        if (!refresh && observed is not null) return JsonDocument.Parse(observed);
+        var gate = BrowseRefreshGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (cache.TryGetValue(key, out string? current) && current is not null
+                && (!refresh || !ReferenceEquals(current, observed))) return JsonDocument.Parse(current);
+            using var charts = await client.BrowseAsync("FEmusic_charts", country, language, null, cancellationToken, selection);
+            var json = charts.RootElement.GetRawText();
+            cache.Set(key, json, TimeSpan.FromHours(4));
+            return JsonDocument.Parse(json);
+        }
+        finally { gate.Release(); }
+    }
+
+    private async Task<JsonObject> LoadCoreAsync(string page, string? parameters, CancellationToken cancellationToken, bool refresh)
+    {
+        var settings = settingsService.LoadSettings();
+        var country = (string.IsNullOrWhiteSpace(settings.YouTubeMusicCountry) ? settings.DeezerCountry : settings.YouTubeMusicCountry).Trim().ToUpperInvariant();
         var language = settings.DeezerLanguage.Trim();
         if (!Regex.IsMatch(country, "^[A-Z]{2}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)) || !Regex.IsMatch(language, "^[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))
             throw new ArgumentException("Set a valid YouTube Music country and content language.");
         var key = $"youtube:browse:market-v5:{country}:{language}:{page}:{parameters}";
-        if (!refresh && cache.TryGetValue(key, out JsonObject? cached) && cached is not null) return (JsonObject)cached.DeepClone();
-        using var document = await client.BrowseAsync(page == "categories" ? "FEmusic_moods_and_genres" : page == "sections" ? "FEmusic_explore" : page, country, language, parameters, cancellationToken);
-        var sections = YouTubeMusicSearchClient.MapBrowseSections(document.RootElement, page == "categories");
-        if (page == "sections")
+        if (page == "trending")
         {
-            // Explore's trending shelf is global. Use the provider's explicitly selected country chart.
-            foreach (var section in sections.Where(s => s?["role"]?.GetValue<string>() == "trending").ToArray()) sections.Remove(section);
-            using var charts = await client.BrowseAsync("FEmusic_charts", country, language, null, cancellationToken);
+            using var charts = await LoadChartsAsync(country, language, null, cancellationToken);
             var chartSections = YouTubeMusicSearchClient.MapBrowseSections(charts.RootElement);
-            var globalSelection = YouTubeMusicSearchClient.FindGlobalChartSelection(charts.RootElement);
-            var globalCharts = new JsonArray();
-            if (globalSelection is not null)
-            {
-                using var global = await client.BrowseAsync("FEmusic_charts", country, language, null, cancellationToken, globalSelection);
-                globalCharts = YouTubeMusicSearchClient.MapBrowseSections(global.RootElement);
-            }
-            var featured = await LoadFeaturedPlaylistsAsync(country, language, chartSections, globalCharts, globalSelection, cancellationToken);
-            if (featured.Count > 0) sections.Add(new JsonObject { ["title"] = "Featured playlists", ["role"] = "featured-playlists", ["items"] = featured });
             var trending = chartSections.SelectMany(s => (s?["items"] as JsonArray)?.OfType<JsonObject>() ?? [])
                 .FirstOrDefault(i => i["title"]?.GetValue<string>().StartsWith("Trending 20", StringComparison.OrdinalIgnoreCase) == true);
+            var trendingSections = new JsonArray();
             if (trending?["browseId"]?.GetValue<string>() is { } browseId)
             {
                 using var playlist = await client.BrowseAsync(browseId, country, language, null, cancellationToken);
                 var mapped = YouTubeMusicSearchClient.MapBrowseSections(playlist.RootElement);
                 var tracks = new JsonArray();
                 foreach (var item in mapped.SelectMany(s => (s?["items"] as JsonArray) ?? [])) tracks.Add(item!.DeepClone());
-                if (tracks.Count > 0) sections.Add(new JsonObject { ["title"] = trending["title"]!.DeepClone(), ["role"] = "trending", ["items"] = tracks });
+                if (tracks.Count > 0) trendingSections.Add(new JsonObject { ["title"] = trending["title"]!.DeepClone(), ["role"] = "trending", ["items"] = tracks });
             }
+            var trendingPayload = new JsonObject { ["success"] = true, ["country"] = country, ["language"] = language, ["sections"] = trendingSections };
+            cache.Set(key, trendingPayload.DeepClone(), TimeSpan.FromHours(4));
+            return trendingPayload;
+        }
+        using var document = await client.BrowseAsync(page == "categories" ? "FEmusic_moods_and_genres" : page == "sections" ? "FEmusic_explore" : page, country, language, parameters, cancellationToken);
+        var sections = YouTubeMusicSearchClient.MapBrowseSections(document.RootElement, page == "categories");
+        if (page == "sections")
+        {
+            // Explore's trending shelf is global. Use the provider's explicitly selected country chart.
+            foreach (var section in sections.Where(s => s?["role"]?.GetValue<string>() == "trending").ToArray()) sections.Remove(section);
+            using var charts = await LoadChartsAsync(country, language, null, cancellationToken, refresh);
+            var chartSections = YouTubeMusicSearchClient.MapBrowseSections(charts.RootElement);
+            var trendingTask = LoadAsync("trending", null, cancellationToken, refresh);
+            var globalSelection = YouTubeMusicSearchClient.FindGlobalChartSelection(charts.RootElement);
+            var globalCharts = new JsonArray();
+            if (globalSelection is not null)
+            {
+                using var global = await LoadChartsAsync(country, language, globalSelection, cancellationToken, refresh);
+                globalCharts = YouTubeMusicSearchClient.MapBrowseSections(global.RootElement);
+            }
+            var featured = await LoadFeaturedPlaylistsAsync(country, language, chartSections, globalCharts, globalSelection, cancellationToken);
+            if (featured.Count > 0) sections.Add(new JsonObject { ["title"] = "Featured playlists", ["role"] = "featured-playlists", ["items"] = featured });
+            var trendingResult = await trendingTask;
+            foreach (var section in trendingResult["sections"]!.AsArray()) sections.Add(section!.DeepClone());
         }
         var categories = new JsonArray();
         if (page == "categories") foreach (var item in sections.SelectMany(s => (s?["items"] as JsonArray) ?? [])) categories.Add(item!.DeepClone());

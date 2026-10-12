@@ -40,11 +40,16 @@ let homeLoadRequestSeq = 0;
 let spotifyHomeCategories = [];
 let homeYouTubeSections = [];
 let homeYouTubeStatus = 'loading';
+let homeYouTubeBrowseStatus = 'loading';
 let homeAppleSections = [];
 let homeAppleStatus = 'loading';
 let homeSpotifyStatus = 'loading';
 let homeTrendingProvider = 'spotify';
 let homeLatestSections = [];
+let homeTrendingRenderEntry = null;
+const homeDeferredRowRenders = new Map();
+let homeDeferredRowSeq = 0;
+let homeDeferredRowObserver;
 const homeTrendingPreviewState = {
     trackKey: null,
     button: null,
@@ -1297,6 +1302,7 @@ function renderHomeSectionsWithLazyImages(sections) {
     homeLatestSections = sections;
     renderHomeSections(sections);
     observeLazyImages(document.getElementById('home-sections'));
+    observeHomeDeferredRows(document.getElementById('home-sections'));
     syncHomeTrendingPlaybackFromSession();
 }
 
@@ -1314,6 +1320,7 @@ async function loadHomeData() {
             homeAppleStatus = 'loading';
             homeSpotifyStatus = 'loading';
             void loadAppleHomeSections(requestId);
+            void loadYouTubeHomeTrending(requestId);
             void loadYouTubeHomeSections(requestId);
         }
 
@@ -1338,20 +1345,39 @@ async function loadHomeData() {
 }
 
 async function loadYouTubeHomeSections(requestId) {
-    homeYouTubeStatus = 'loading';
+    homeYouTubeBrowseStatus = 'loading';
     try {
         const response = await fetch('/api/youtube/browse/sections');
         const data = await response.json();
         if (requestId !== homeLoadRequestSeq) return;
         if (!response.ok || !data.success) throw new Error(data.error || 'YouTube Music unavailable');
-        homeYouTubeSections = data.sections || [];
+        const trending = homeYouTubeSections.filter(section => section.role === 'trending');
+        homeYouTubeSections = [...(data.sections || []).filter(section => section.role !== 'trending'), ...trending];
+        if (!trending.length) homeYouTubeSections.push(...(data.sections || []).filter(section => section.role === 'trending'));
+        homeYouTubeBrowseStatus = 'ready';
+    } catch (error) {
+        if (requestId !== homeLoadRequestSeq) return;
+        // Featured discovery must not discard an already loaded trending chart.
+        homeYouTubeSections = homeYouTubeSections.filter(section => section.role === 'trending');
+        homeYouTubeBrowseStatus = 'error';
+    }
+    if (homeLatestSections.length) refreshHomeProviderSections('ytmusic');
+}
+
+async function loadYouTubeHomeTrending(requestId) {
+    homeYouTubeStatus = 'loading';
+    try {
+        const response = await fetch('/api/youtube/browse/trending');
+        const data = await response.json();
+        if (requestId !== homeLoadRequestSeq) return;
+        if (!response.ok || !data.success) throw new Error(data.error || 'YouTube Music trending unavailable');
+        homeYouTubeSections = [...homeYouTubeSections.filter(section => section.role !== 'trending'), ...(data.sections || [])];
         homeYouTubeStatus = 'ready';
     } catch (error) {
         if (requestId !== homeLoadRequestSeq) return;
-        homeYouTubeSections = [];
         homeYouTubeStatus = 'error';
     }
-    if (homeLatestSections.length) renderHomeSectionsWithLazyImages(homeLatestSections);
+    if (homeTrendingProvider === 'ytmusic' && homeLatestSections.length) refreshHomeTrendingSection();
 }
 
 function renderYouTubeHomeTrending() {
@@ -1362,8 +1388,8 @@ function renderYouTubeHomeTrending() {
 
 function renderYouTubeFeaturedPlaylists() {
     let content;
-    if (homeYouTubeStatus !== 'ready') {
-        content = `<div class="empty-section">${homeYouTubeStatus === 'loading' ? 'Loading YouTube Music...' : 'YouTube Music unavailable'}</div>`;
+    if (homeYouTubeBrowseStatus !== 'ready') {
+        content = `<div class="empty-section">${homeYouTubeBrowseStatus === 'loading' ? 'Loading YouTube Music...' : 'YouTube Music unavailable'}</div>`;
     } else {
         const seen = new Set();
         const playlists = homeYouTubeSections.filter(section => section.role !== 'trending' && section.role !== 'videos')
@@ -1373,19 +1399,19 @@ function renderYouTubeFeaturedPlaylists() {
                 seen.add(id);
                 return true;
             });
-        content = playlists.map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem)).join('')
-            || '<div class="empty-section">No YouTube Music featured playlists available</div>';
+        content = playlists.length ? renderDeferredHomeRow('home-row', playlists, item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem))
+            : '<div class="empty-section">No YouTube Music featured playlists available</div>';
     }
-    return `<section class="home-section" id="home-youtube-featured-playlists"><div class="home-section-title">Featured playlists · YouTube Music</div><div class="home-row">${content}</div></section>`;
+    return `<section class="home-section home-youtube-section" id="home-youtube-featured-playlists"><div class="home-section-title">Featured playlists · YouTube Music</div>${content.startsWith('<div class="home-row') ? content : `<div class="home-row">${content}</div>`}</section>`;
 }
 
 function renderYouTubeHomeRows() {
-    if (homeYouTubeStatus !== 'ready') return '';
+    if (homeYouTubeBrowseStatus !== 'ready') return '';
     return homeYouTubeSections.filter(section => section.role !== 'trending' && section.role !== 'videos'
         && String(section.title || '').trim().toLowerCase() !== 'new music videos')
         .map(section => ({ ...section, items: (section.items || []).filter(item => item.type !== 'playlist' && item.type !== 'video' && item.type !== 'browse-category') }))
         .filter(section => section.items.length)
-        .map(section => `<section class="home-section"><div class="home-section-title">${escapeHtml(section.title)} · YouTube Music</div><div class="home-row">${section.items.map(item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem)).join('')}</div></section>`).join('');
+        .map(section => `<section class="home-section home-youtube-section"><div class="home-section-title">${escapeHtml(section.title)} · YouTube Music</div>${renderDeferredHomeRow('home-row', section.items, item => HomeViewHelpers.renderYouTubeBrowseItem(item, renderHomeItem))}</section>`).join('');
 }
 
 function openYouTubeCategory(id, parameters) {
@@ -1406,7 +1432,7 @@ async function loadAppleHomeSections(requestId) {
         homeAppleStatus = 'error';
         console.warn('Apple Music home sections unavailable:', error);
     }
-    if (homeLatestSections.length) renderHomeSectionsWithLazyImages(homeLatestSections);
+    if (homeLatestSections.length) refreshHomeProviderSections('apple');
 }
 
 function renderHomeTrendingProviders() {
@@ -1418,7 +1444,7 @@ function renderHomeTrendingProviders() {
 function selectHomeTrendingProvider(provider) {
     if (provider !== 'spotify' && provider !== 'apple' && provider !== 'ytmusic') return;
     homeTrendingProvider = provider;
-    renderHomeSectionsWithLazyImages(homeLatestSections);
+    refreshHomeTrendingSection();
 }
 
 function renderAppleHomeTrending() {
@@ -1438,9 +1464,90 @@ function renderAppleHomeRows() {
         const video = role === 'videos';
         return `<section class="home-section home-apple-section" data-apple-role="${role}">
             <div class="home-section-title">${escapeHtml(section.title)} <span class="home-apple-provider">Apple Music</span></div>
-            <div class="${video ? 'home-apple-videos' : 'home-row'}">${section.items.map(video ? HomeViewHelpers.renderAppleBrowseItem : renderHomeItem).join('')}</div>
+            ${renderDeferredHomeRow(video ? 'home-apple-videos' : 'home-row', section.items, video ? HomeViewHelpers.renderAppleBrowseItem : renderHomeItem)}
         </section>`;
     }).join('');
+}
+
+function renderDeferredHomeRow(rowClass, items, renderItem) {
+    const key = String(++homeDeferredRowSeq);
+    homeDeferredRowRenders.set(key, () => items.map(renderItem).join(''));
+    return `<div class="${rowClass}" data-home-deferred-row="${key}" data-home-row-count="${items.length}" style="min-height:240px"></div>`;
+}
+
+function hydrateHomeDeferredRow(row) {
+    const key = row.dataset.homeDeferredRow;
+    const render = homeDeferredRowRenders.get(key);
+    if (!render) return;
+    homeDeferredRowRenders.delete(key);
+    homeDeferredRowObserver?.unobserve(row);
+    row.innerHTML = render();
+    row.style.minHeight = '';
+    delete row.dataset.homeDeferredRow;
+    observeLazyImages(row);
+    syncHomeTrendingPlaybackFromSession();
+}
+
+function observeHomeDeferredRows(container) {
+    if (!container) return;
+    if (!homeDeferredRowObserver) homeDeferredRowObserver = new IntersectionObserver(entries => {
+        entries.filter(entry => entry.isIntersecting).forEach(entry => hydrateHomeDeferredRow(entry.target));
+    }, { rootMargin: '400px' });
+    container.querySelectorAll('[data-home-deferred-row]').forEach(row => {
+        const cardSize = Number.parseFloat(getComputedStyle(row).getPropertyValue('--art-card-size')) || 200;
+        const columns = Math.max(1, Math.floor((row.clientWidth + 16) / (cardSize + 16)));
+        row.style.minHeight = `${Math.ceil(Number(row.dataset.homeRowCount) / columns) * (cardSize + 84)}px`;
+        homeDeferredRowObserver.observe(row);
+    });
+}
+
+function removeHomeProviderSections(container, selector) {
+    container.querySelectorAll(selector).forEach(section => {
+        section.querySelectorAll('[data-home-deferred-row]').forEach(row => {
+            homeDeferredRowRenders.delete(row.dataset.homeDeferredRow);
+            homeDeferredRowObserver?.unobserve(row);
+        });
+        section.querySelectorAll('[data-lazy-bg]').forEach(image => lazyImageObserver.unobserve(image));
+        section.remove();
+    });
+}
+
+function refreshHomeProviderSections(provider) {
+    const container = document.getElementById('home-sections');
+    if (!container) return;
+    if (provider === 'ytmusic') {
+        removeHomeProviderSections(container, '.home-youtube-section');
+        container.querySelector('#home-categories')?.insertAdjacentHTML('afterend', renderYouTubeFeaturedPlaylists());
+        const appleRows = container.querySelector('.home-apple-section:not([data-apple-role="updated-playlists"])');
+        if (appleRows) appleRows.insertAdjacentHTML('beforebegin', renderYouTubeHomeRows());
+        else container.insertAdjacentHTML('beforeend', renderYouTubeHomeRows());
+    } else {
+        removeHomeProviderSections(container, '.home-apple-section');
+        container.insertAdjacentHTML('beforeend', renderAppleHomeRows());
+        const updated = container.querySelector('[data-apple-role="updated-playlists"]');
+        if (updated) container.querySelector('#home-popular-radio')?.after(updated);
+    }
+    observeHomeDeferredRows(container);
+    observeLazyImages(container);
+    if (homeTrendingProvider === provider) refreshHomeTrendingSection();
+}
+
+function refreshHomeTrendingSection() {
+    const section = document.getElementById('home-trending');
+    if (!section) return;
+    const previousWatchKey = section.querySelector('[data-home-trending-tracklist]')?.dataset.homeTrendingTracklist;
+    if (previousWatchKey) homeTrendingWatchMetaCache.delete(previousWatchKey);
+    if (homeTrendingRenderEntry) {
+        section.outerHTML = renderHomeSectionEntry(homeTrendingRenderEntry.entry, homeTrendingRenderEntry.index, false);
+    } else {
+        const items = homeTrendingProvider === 'ytmusic' ? renderYouTubeHomeTrending() : homeTrendingProvider === 'apple' ? renderAppleHomeTrending()
+            : `<div class="empty-section">${homeSpotifyStatus === 'loading' ? 'Loading Spotify Trending Songs...' : 'Spotify Trending Songs unavailable'}</div>`;
+        section.innerHTML = `<div class="home-section-title">Trending Songs</div>${renderHomeTrendingProviders()}<div class="home-trending-grid">${items}</div>`;
+    }
+    const updated = document.getElementById('home-trending');
+    observeLazyImages(updated);
+    syncHomeTrendingPlaybackFromSession();
+    if (homeTrendingProvider === 'spotify') scheduleHomeTrendingTrackMappingWarmup();
 }
 
 async function fetchSpotifyHomeJson(path) {
@@ -2290,6 +2397,11 @@ function renderHomeSections(sections) {
     }
 
     homeTrendingWatchMetaCache.clear();
+    lazyImageObserver.disconnect();
+    homeDeferredRowObserver?.disconnect();
+    homeDeferredRowRenders.clear();
+    const trendingIndex = sectionsToRender.findIndex(entry => entry.meta.isTrendingSongs);
+    homeTrendingRenderEntry = trendingIndex < 0 || isChannelPage ? null : { entry: sectionsToRender[trendingIndex], index: trendingIndex };
     container.innerHTML = sectionsToRender
         .map((entry, index) => renderHomeSectionEntry(entry, index, isChannelPage))
         .join('');

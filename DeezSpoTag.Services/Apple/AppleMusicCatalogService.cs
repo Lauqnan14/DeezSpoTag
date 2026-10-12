@@ -53,6 +53,7 @@ public sealed class AppleMusicCatalogService
 
     private readonly object _tokenLock = new();
     private readonly SemaphoreSlim _tokenRefreshLock = new(1, 1);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _browseRefreshGates = new();
     private string? _cachedToken;
     private DateTimeOffset _cachedTokenExpiresAt = DateTimeOffset.MinValue;
 
@@ -78,16 +79,27 @@ public sealed class AppleMusicCatalogService
             throw new ArgumentException("Unsupported Apple Music browse path or storefront.");
         }
         storefront = storefront.ToLowerInvariant();
-        return await GetCachedJsonAsync($"apple:browse:{storefront}:{language}:{path}", path == "search" ? TimeSpan.FromHours(24) : path == "new" ? TimeSpan.FromHours(4) : TimeSpan.FromMinutes(15), async () =>
+        var cacheKey = $"apple:browse:{storefront}:{language}:{path}";
+        _cache.TryGetValue(cacheKey, out string? observed);
+        if (!refresh && !string.IsNullOrWhiteSpace(observed)) return JsonDocument.Parse(observed);
+        var gate = _browseRefreshGates.GetOrAdd($"{storefront}:{language}", _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://music.apple.com/{storefront}/{path}?l={Uri.EscapeDataString(language)}");
-            request.Headers.TryAddWithoutValidation(UserAgentHeader, GetRandomUserAgent());
-            request.Headers.TryAddWithoutValidation(AcceptLanguageHeader, language);
-            using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            using var document = ParseBrowsePage(await response.Content.ReadAsStringAsync(cancellationToken));
-            return document.RootElement.GetRawText();
-        }, refresh);
+            if (_cache.TryGetValue(cacheKey, out string? current) && !string.IsNullOrWhiteSpace(current)
+                && (!refresh || !ReferenceEquals(observed, current))) return JsonDocument.Parse(current);
+            return await GetCachedJsonAsync(cacheKey, path == "search" ? TimeSpan.FromHours(24) : path == "new" ? TimeSpan.FromHours(4) : TimeSpan.FromMinutes(15), async () =>
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"https://music.apple.com/{storefront}/{path}?l={Uri.EscapeDataString(language)}");
+                request.Headers.TryAddWithoutValidation(UserAgentHeader, GetRandomUserAgent());
+                request.Headers.TryAddWithoutValidation(AcceptLanguageHeader, language);
+                using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                using var document = ParseBrowsePage(await response.Content.ReadAsStringAsync(cancellationToken));
+                return document.RootElement.GetRawText();
+            }, refresh);
+        }
+        finally { gate.Release(); }
     }
 
     private static JsonDocument ParseBrowsePage(string html)

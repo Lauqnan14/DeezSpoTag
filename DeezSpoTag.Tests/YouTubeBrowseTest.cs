@@ -22,6 +22,38 @@ namespace DeezSpoTag.Tests;
 
 public sealed class YouTubeBrowseTest
 {
+    [Fact]
+    public async Task TrendingCompletesWhileFeaturedDiscoveryIsBlockedAndSharesConcurrentReads()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "yt-trending-" + Guid.NewGuid());
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+            var file = Path.Combine(directory, "config.json");
+            File.WriteAllText(file, "{\"youTubeMusicCountry\":\"KE\",\"deezerLanguage\":\"sw\"}");
+            typeof(DeezSpoTagSettingsService).GetField("_settingsFilePath", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(settings, file);
+            using var handler = new FeaturedHandler { HoldCategories = true, HoldTrending = true };
+            using var http = new HttpClient(handler);
+            using var cache = new MemoryCache(new MemoryCacheOptions());
+            var controller = new YouTubeBrowseApiController(new YouTubeMusicSearchClient(http), settings, cache, NullLogger<YouTubeBrowseApiController>.Instance);
+            var full = controller.LoadAsync("sections", null, CancellationToken.None);
+            await handler.CategoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var first = controller.LoadAsync("trending", null, CancellationToken.None);
+            var second = controller.LoadAsync("trending", null, CancellationToken.None);
+            await handler.TrendingStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            handler.TrendingRelease.TrySetResult();
+            var reads = await Task.WhenAll(first, second);
+            Assert.False(full.IsCompleted);
+            foreach (var result in reads)
+                Assert.Single(result["sections"]!.AsArray().Where(section => section?["role"]?.GetValue<string>() == "trending"));
+            Assert.Equal(1, handler.TrendingRequests);
+            handler.CategoryRelease.TrySetResult();
+            await full;
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     private const string Fixture = """
     {"contents":{"sectionListRenderer":{"contents":[{"musicCarouselShelfRenderer":{"header":{"musicCarouselShelfBasicHeaderRenderer":{"title":{"runs":[{"text":"New albums & singles"}]}}},"contents":[{"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"Album"}]},"navigationEndpoint":{"browseEndpoint":{"browseId":"MPREalbum123"}},"thumbnailRenderer":{"musicThumbnailRenderer":{"thumbnail":{"thumbnails":[{"url":"https://images.test/small"},{"url":"https://images.test/large"}]}}}}}]}},{"musicCarouselShelfRenderer":{"header":{"musicCarouselShelfBasicHeaderRenderer":{"title":{"runs":[{"text":"Moods & genres"}]}}},"contents":[{"musicNavigationButtonRenderer":{"buttonText":{"runs":[{"text":"Afrobeats"}]},"clickCommand":{"browseEndpoint":{"browseId":"FEmusic_moods_and_genres_category","params":"abc="}}}}]}},{"musicCarouselShelfRenderer":{"header":{"musicCarouselShelfBasicHeaderRenderer":{"title":{"runs":[{"text":"Trending"}]}}},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Song"}]}}}],"navigationEndpoint":{"watchEndpoint":{"videoId":"song123"}}}}]}},{"gridRenderer":{"header":{"gridHeaderRenderer":{"title":{"runs":[{"text":"Genres"}]}}},"items":[{"musicNavigationButtonRenderer":{"buttonText":{"runs":[{"text":"Afrobeats"}]},"clickCommand":{"browseEndpoint":{"browseId":"FEmusic_moods_and_genres_category","params":"abc="}}}}]}}]}}}
     """;
@@ -313,7 +345,7 @@ public sealed class YouTubeBrowseTest
         const home=fs.readFileSync(root+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
         function load(name){const a=home.indexOf('function '+name+'('),b=home.indexOf('\nfunction ',a+1);assert(a>=0);vm.runInContext(home.slice(a,b<0?undefined:b),ctx)};
         vm.runInContext("let homeTrendingProvider='spotify',homeLatestSections=[],homeYouTubeStatus='ready',homeYouTubeSections=[{role:'trending',title:'Trending 20 Kenya',items:[{title:'Song',url:'https://music.youtube.com/watch?v=123'}]}];",ctx);
-        ctx.renderHomeTrendingSongItem=item=>`<div class="home-top-song-item">${ctx.HomeViewHelpers.buildYouTubeBrowseClick(item)}</div>`;ctx.renderHomeSectionsWithLazyImages=()=>{};load('selectHomeTrendingProvider');load('renderHomeTrendingProviders');load('renderYouTubeHomeTrending');
+        ctx.renderHomeTrendingSongItem=item=>`<div class="home-top-song-item">${ctx.HomeViewHelpers.buildYouTubeBrowseClick(item)}</div>`;ctx.document={getElementById:()=>null};load('refreshHomeTrendingSection');load('selectHomeTrendingProvider');load('renderHomeTrendingProviders');load('renderYouTubeHomeTrending');
         ctx.selectHomeTrendingProvider('ytmusic');assert(ctx.renderHomeTrendingProviders().includes('YouTube Music'));assert(!ctx.renderYouTubeHomeTrending().includes('Trending 20 Kenya'));assert(ctx.renderYouTubeHomeTrending().includes('home-top-song-item'));
         assert(home.indexOf("container.insertAdjacentHTML('beforeend', renderYouTubeHomeRows())")<home.indexOf("container.insertAdjacentHTML('beforeend', renderAppleHomeRows())"));
         const categories=fs.readFileSync(root+'/DeezSpoTag.Web/Views/Categories/Index.cshtml','utf8'),elements={};
@@ -387,6 +419,13 @@ public sealed class YouTubeBrowseTest
 
     private sealed class FeaturedHandler : HttpMessageHandler
     {
+        public bool HoldCategories;
+        public TaskCompletionSource CategoryStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CategoryRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int TrendingRequests;
+        public bool HoldTrending;
+        public TaskCompletionSource TrendingStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource TrendingRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int CategoryRequests;
         public string Country = "KE";
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -395,6 +434,12 @@ public sealed class YouTubeBrowseTest
             Assert.Equal(Country, body["context"]!["client"]!["gl"]!.GetValue<string>());
             Assert.Equal("sw", body["context"]!["client"]!["hl"]!.GetValue<string>());
             var id = body["browseId"]!.GetValue<string>();
+            if (id.Contains("Trending20"))
+            {
+                Interlocked.Increment(ref TrendingRequests);
+                TrendingStarted.TrySetResult();
+                if (HoldTrending) await TrendingRelease.Task.WaitAsync(token);
+            }
             var payload = JsonNode.Parse(Fixture)!;
             if (id == "FEmusic_charts")
             {
@@ -421,6 +466,8 @@ public sealed class YouTubeBrowseTest
             }
             if (id == "FEmusic_moods_and_genres_category")
             {
+                CategoryStarted.TrySetResult();
+                if (HoldCategories) await CategoryRelease.Task.WaitAsync(token);
                 Interlocked.Increment(ref CategoryRequests);
                 var parameter = body["params"]!.GetValue<string>();
                 Assert.True(parameter.EndsWith("0") || parameter.EndsWith("1") || parameter.EndsWith("2") || parameter.EndsWith("3"));

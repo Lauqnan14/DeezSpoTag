@@ -18,6 +18,47 @@ namespace DeezSpoTag.Tests;
 public sealed class AppleBrowseTest
 {
     [Fact]
+    public void ProviderCompletionPreservesBaseSectionsAndDefersOffscreenCards()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        let fullRenders=0,insertions=0,cards=0,observer;
+        const container={querySelectorAll:()=>[],querySelector:()=>null,insertAdjacentHTML:()=>insertions++};
+        const ctx=vm.createContext({console,Map,URLSearchParams,escapeHtml:String,
+          document:{getElementById:()=>container},location:{search:''},
+          IntersectionObserver:class{constructor(callback){observer=callback}observe(){}unobserve(){}},
+          HomeViewHelpers:{renderAppleBrowseItem:()=>{cards++;return 'card'}},
+          renderHomeItem:()=>{cards++;return 'card'},renderHomeSectionsWithLazyImages:()=>fullRenders++,
+          observeLazyImages:()=>{},syncHomeTrendingPlaybackFromSession:()=>{},
+          fetch:async()=>({ok:true,json:async()=>({success:true,sections:[{role:'new-this-week',title:'New this week',items:[{title:'Album'}]}]})})});
+        vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{title:'Base'}],homeAppleSections=[],homeAppleStatus='loading',homeTrendingProvider='spotify';const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;let homeDeferredRowObserver;",ctx);
+        function load(name){const match=source.match(new RegExp('(?:async )?function '+name+'\\('));if(!match)return;const start=match.index,end=source.slice(start+match[0].length).search(/\n(?:async )?function /);vm.runInContext(source.slice(start,end<0?undefined:start+match[0].length+end),ctx)}
+        for(const name of ['loadAppleHomeSections','refreshHomeProviderSections','renderAppleHomeRows','renderDeferredHomeRow','observeHomeDeferredRows','hydrateHomeDeferredRow','removeHomeProviderSections'])load(name);
+        (async()=>{
+          await ctx.loadAppleHomeSections(1);
+          assert.equal(fullRenders,0,'Apple completion must not rebuild existing sections');
+          assert(insertions>0,'Apple completion must insert its own sections');
+          assert.equal(cards,0,'Cards outside the viewport must remain unrendered');
+          const key=vm.runInContext('[...homeDeferredRowRenders.keys()][0]',ctx);
+          const row={dataset:{homeDeferredRow:key},style:{},innerHTML:'',querySelectorAll:()=>[]};
+          ctx.hydrateHomeDeferredRow(row);
+          assert.equal(cards,1);assert.equal(row.innerHTML,'card');
+          ctx.hydrateHomeDeferredRow(row);assert.equal(cards,1,'Rows must hydrate only once');
+          await ctx.loadAppleHomeSections(0);assert.equal(fullRenders,0);assert.equal(insertions,1,'Obsolete responses must not update the page');
+        })().catch(error=>{console.error(error);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
     public void HomeTrendingProvidersShareLoadingAnimationAndRestoreRedrawnButtons()
     {
         var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
@@ -197,6 +238,31 @@ public sealed class AppleBrowseTest
         Assert.DoesNotContain(handler.AuthorizationPresent, value => value);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentBrowseReadsShareOneProviderRequest(bool refresh)
+    {
+        using var handler = new BrowseHandler();
+        using var client = new HttpClient(handler);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(client, cache);
+        if (refresh)
+        {
+            using var initial = await service.GetBrowsePageAsync("new", "ke", "en-US", CancellationToken.None);
+            handler.Requests.Clear();
+            handler.Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        handler.HoldResponse = true;
+        var first = service.GetBrowsePageAsync("new", "ke", "en-US", CancellationToken.None, refresh);
+        await handler.Started.Task;
+        var second = service.GetBrowsePageAsync("new", "ke", "en-US", CancellationToken.None, refresh);
+        handler.Release.TrySetResult();
+        using var a = await first;
+        using var b = await second;
+        Assert.Single(handler.Requests);
+    }
+
     [Fact]
     public async Task BrowseRefresh_ReplacesCacheBeforeNextForegroundRead()
     {
@@ -318,11 +384,11 @@ public sealed class AppleBrowseTest
         assert(video.includes('HomeViewHelpers.playAppleBrowsePreview'));assert(video.includes('data-apple-type="video"')); assert(video.includes('source=apple'));
         function load(name){const start=home.indexOf('function '+name+'(');assert(start>=0,name+' is missing'); let end=home.indexOf('\nfunction ',start+1);vm.runInContext(home.slice(start,end<0?undefined:end),ctx);}
         ctx.renderHomeItem=i=>i.title;ctx.renderHomeTrendingSongItem=i=>'spotify:'+i.title;ctx.renderHomeSectionCardItem=i=>i.title;
-        vm.runInContext("let homeAppleSections=[], homeAppleStatus='loading', homeTrendingProvider='spotify', homeLatestSections=[];",ctx);
-        load('renderHomeTrendingProviders'); load('renderAppleHomeRows'); load('renderAppleHomeTrending'); load('selectHomeTrendingProvider'); load('renderHomeSectionEntry');
+        vm.runInContext("let homeAppleSections=[], homeAppleStatus='loading', homeTrendingProvider='spotify', homeLatestSections=[];const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;",ctx);
+        load('renderDeferredHomeRow'); load('renderHomeTrendingProviders'); load('renderAppleHomeRows'); load('renderAppleHomeTrending'); load('selectHomeTrendingProvider'); load('renderHomeSectionEntry');
         vm.runInContext("homeAppleSections=[{role:'videos',title:'Videos',items:[{source:'apple',type:'video',title:'Video',id:'456'}]},{role:'updated-playlists',title:'Updated',items:[{title:'Playlist'}]},{role:'new-this-week',title:'New',items:[{title:'Album'}]},{role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',title:'Apple Song',id:'123'}]},{role:'recent-releases',title:'Recent',items:[{title:'Release'}]}];homeAppleStatus='ready';",ctx);
         const rows=ctx.renderAppleHomeRows(); assert(rows.indexOf('New')<rows.indexOf('Recent'));assert(rows.indexOf('Recent')<rows.indexOf('Updated'));assert(rows.indexOf('Updated')<rows.indexOf('Videos'));
-        let rerenders=0;ctx.renderHomeSectionsWithLazyImages=()=>rerenders++;
+        let rerenders=0;ctx.refreshHomeTrendingSection=()=>rerenders++;
         ctx.selectHomeTrendingProvider('apple');assert.equal(rerenders,1);assert(ctx.renderHomeTrendingProviders().includes('aria-pressed="true"'));
         assert(ctx.renderAppleHomeTrending().includes('Apple Song'));assert(!ctx.renderAppleHomeTrending().includes('data-spotify-url'));
         const previewMarkup=ctx.HomeViewHelpers.renderAppleBrowseItem({source:'apple',type:'track',id:'123',title:'Song',previewUrl:'https://preview.test/audio'});
@@ -375,7 +441,7 @@ public sealed class AppleBrowseTest
             vm.runInContext(home.slice(home.indexOf('async function loadAppleHomeSections('),home.indexOf('function renderHomeTrendingProviders(')),ctx);
             vm.runInContext("let homeLoadRequestSeq=7;homeLatestSections=[{title:'Latest Spotify enhancement'}];homeAppleStatus='loading';",ctx);
             ctx.fetch=async()=>({ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{source:'apple',type:'track',title:'Late Apple Song',id:'12'}]},{role:'videos',title:'Videos',items:[{source:'apple',type:'video',title:'Late Video',id:'13'}]}]})});
-            let latestBase;ctx.renderHomeSectionsWithLazyImages=sections=>latestBase=sections;await ctx.loadAppleHomeSections(7);
+            let latestBase;ctx.refreshHomeProviderSections=()=>latestBase=vm.runInContext('homeLatestSections',ctx);await ctx.loadAppleHomeSections(7);
             assert.equal(latestBase[0].title,'Latest Spotify enhancement');assert(ctx.renderAppleHomeTrending().includes('Late Apple Song'));assert(ctx.renderHomeTrendingProviders().includes('aria-pressed="true" onclick="selectHomeTrendingProvider(\'apple\')"'));
             assert(ctx.renderAppleHomeRows().includes('data-apple-role="videos"'));
         })().catch(e=>{console.error(e);process.exitCode=1});
@@ -401,17 +467,22 @@ public sealed class AppleBrowseTest
 
     private sealed class BrowseHandler : HttpMessageHandler
     {
+        public bool HoldResponse;
+        public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public List<string> Requests { get; } = [];
         public List<bool> AuthorizationPresent { get; } = [];
         public string? AccountResponse { get; init; }
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Requests.Add(request.RequestUri!.ToString());
             AuthorizationPresent.Add(request.Headers.Authorization != null);
+            Started.TrySetResult();
+            if (HoldResponse) await Release.Task.WaitAsync(token);
             var response = request.RequestUri.AbsolutePath.Contains("/me/account")
                 ? AccountResponse!
                 : "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) };
         }
     }
 }
