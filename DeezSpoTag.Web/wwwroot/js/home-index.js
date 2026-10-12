@@ -1746,7 +1746,7 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
     const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
         ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
         : '';
-    const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : meta.isTopGenres && !isChannelPage ? ' id="home-categories"' : '';
+    const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : meta.isPopularRadio && !isChannelPage ? ' id="home-popular-radio"' : meta.isTopGenres && !isChannelPage ? ' id="home-categories"' : '';
     const trendingWatchKey = meta.isTrendingSongs && (isChannelPage || homeTrendingProvider === 'spotify')
         ? cacheHomeTrendingWatchMeta(section, meta.filteredItems)
         : '';
@@ -1969,6 +1969,7 @@ function orderHomeSectionsForRender(sections, options) {
     pushPinned(section => options.isSpotifyHomeSection(section) && options.isMadeForYouSection(section));
     pushPinned(section => options.normalizeSectionTitle(section?.title) === 'discover');
     pushPinned(section => options.isPopularRadioSection(section));
+    pushPinned(section => options.normalizeSectionTitle(section?.title) === 'updated playlists');
     pushPinned(section => options.isRecommendedNewReleasesCombinedSection(section));
     pushPinned(section => options.normalizeTitle(section?.title) === 'categories' || options.normalizeTitle(section?.title) === 'your top genres');
 
@@ -2301,6 +2302,8 @@ function renderHomeSections(sections) {
         container.querySelector('#home-categories')?.insertAdjacentHTML('afterend', renderYouTubeFeaturedPlaylists());
         container.insertAdjacentHTML('beforeend', renderYouTubeHomeRows());
         container.insertAdjacentHTML('beforeend', renderAppleHomeRows());
+        const updated = container.querySelector('[data-apple-role="updated-playlists"]');
+        if (updated) container.querySelector('#home-popular-radio')?.after(updated);
     }
 
     setupHomeFilters(sectionsToRender.map(entry => entry.section));
