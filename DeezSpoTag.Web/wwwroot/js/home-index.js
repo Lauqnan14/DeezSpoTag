@@ -38,6 +38,9 @@ let spotifyHomeItemSeq = 0;
 let homeTrendingWatchSeq = 0;
 let homeLoadRequestSeq = 0;
 let spotifyHomeCategories = [];
+let homeAppleCategories = [];
+let homeYouTubeCategories = [];
+const homeCategoryStatus = { apple: 'loading', ytmusic: 'loading' };
 let homeYouTubeSections = [];
 let homeYouTubeStatus = 'loading';
 let homeYouTubeBrowseStatus = 'loading';
@@ -1319,6 +1322,11 @@ async function loadHomeData() {
         if (!channel) {
             homeAppleStatus = 'loading';
             homeSpotifyStatus = 'loading';
+            homeAppleCategories = [];
+            homeYouTubeCategories = [];
+            homeCategoryStatus.apple = homeCategoryStatus.ytmusic = 'loading';
+            void loadHomeCategories('apple', requestId);
+            void loadHomeCategories('ytmusic', requestId);
             void loadAppleHomeSections(requestId);
             void loadYouTubeHomeTrending(requestId);
             void loadYouTubeHomeSections(requestId);
@@ -1342,6 +1350,33 @@ async function loadHomeData() {
             container.innerHTML = '<div class="empty-section">Failed to load home sections</div>';
         }
     }
+}
+
+async function loadHomeCategories(provider, requestId) {
+    try {
+        const response = await fetch(`/api/${provider === 'apple' ? 'apple' : 'youtube'}/browse/categories`);
+        const data = await response.json();
+        if (requestId !== homeLoadRequestSeq) return;
+        if (!response.ok || !data.success) throw new Error('Categories unavailable');
+        const items = provider === 'apple' ? (data.categories || []) : (data.sections || []).flatMap(section => section.items || []);
+        if (provider === 'apple') homeAppleCategories = items;
+        else homeYouTubeCategories = items;
+        homeCategoryStatus[provider] = 'ready';
+    } catch {
+        if (requestId !== homeLoadRequestSeq) return;
+        homeCategoryStatus[provider] = 'error';
+    }
+    refreshHomeCategories();
+}
+
+function refreshHomeCategories() {
+    const row = document.querySelector('#home-categories [data-deezer-items]');
+    if (!row) return;
+    row.innerHTML = renderHomeCategoryRows(JSON.parse(decodeURIComponent(row.dataset.deezerItems)));
+}
+
+function openAppleCategory(path) {
+    globalThis.location.href = `/Categories?provider=apple&path=${path}`;
 }
 
 async function loadYouTubeHomeSections(requestId) {
@@ -1817,16 +1852,48 @@ function renderHomeSectionCardItem(item, meta) {
     return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
 }
 
+function homeCategoryKey(item) {
+    const title = String(item.title || item.name || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const key = title.replace(/[^a-z0-9]/g, '');
+    const aliases = { hiphoprap: 'hiphop', african: 'afro', afrobeats: 'afro', madeforyou: 'foryou', liveevents: 'concerts', rbsoul: 'rb', randb: 'rb', randbsoul: 'rb', christianandgospel: 'christian', christiangospel: 'christian', gospel: 'christian', danceelectronic: 'dance', danceandelectronic: 'dance', indiealternative: 'alternative', indieandalternative: 'alternative' };
+    return aliases[key] || key;
+}
+
+function selectHomeCategoryRows(deezerItems) {
+    const seen = new Set();
+    const take = (items, count) => items.filter(item => {
+        const key = homeCategoryKey(item);
+        if (!key || seen.has(key)) return false;
+        if (count <= 0) return false;
+        seen.add(key); count--; return true;
+    });
+    const deezer = take(deezerItems.filter(item => homeCategoryKey(item) !== 'spatialaudio'), 5);
+    const spotify = take(spotifyHomeCategories.filter(item => homeCategoryKey(item) !== 'spatialaudio' && !/podcast/i.test(item.title || item.name || '')), 5);
+    const appleCandidates = homeAppleCategories.filter(item => item.type === 'browse-category' && !/video/i.test(`${item.title || item.name || ''} ${item.target || ''}`));
+    const spatial = appleCandidates.find(item => homeCategoryKey(item) === 'spatialaudio');
+    const apple = take(spatial ? [spatial, ...appleCandidates.filter(item => item !== spatial)] : appleCandidates, 5);
+    const youtube = take(homeYouTubeCategories.filter(item => item.type === 'browse-category'), 4);
+    return [{ source: 'deezer', items: deezer }, { source: 'spotify', items: spotify }, { source: 'apple', items: apple }, { source: 'ytmusic', items: youtube }];
+}
+
+function renderHomeCategoryRows(deezerItems) {
+    const labels = { deezer: 'Deezer', spotify: 'Spotify', apple: 'Apple Music', ytmusic: 'YouTube Music' };
+    return selectHomeCategoryRows(deezerItems).map(({ source, items }) => {
+        const count = source === 'ytmusic' ? 4 : 5;
+        const status = source === 'spotify' ? homeSpotifyStatus : homeCategoryStatus[source];
+        let cards = items.map(item => renderTopGenresItem(item)).join('');
+        for (let index = items.length; index < count; index++) {
+            cards += `<div class="top-genres-card top-genres-card--more home-category-status">${status === 'loading' ? `Loading ${labels[source]}…` : `${labels[source]} category unavailable`}</div>`;
+        }
+        if (source === 'ytmusic') cards += '<a class="top-genres-card top-genres-card--more" href="/Categories">Show more</a>';
+        return `<div class="home-category-provider-row" data-category-provider="${source}" aria-label="${labels[source]} categories">${cards}</div>`;
+    }).join('');
+}
+
 function renderHomeTopGenresCards(meta, isChannelPage) {
-    const maxTopGenresSlots = isChannelPage ? meta.items.length : 14;
-    const baseTopGenresItems = meta.items.slice(0, maxTopGenresSlots);
-    const mergedItems = mergeSpotifyCategories(baseTopGenresItems, maxTopGenresSlots);
-    const sliced = mergedItems.map((item) => renderTopGenresItem(item)).join('');
-    const showMoreCard = isChannelPage
-        ? ''
-        : `<a class="top-genres-card top-genres-card--more" href="/Categories">See more</a>`;
+    const baseTopGenresItems = meta.items;
     return {
-        cards: `${sliced}${showMoreCard}`,
+        cards: isChannelPage ? mergeSpotifyCategories(baseTopGenresItems, baseTopGenresItems.length).map(item => renderTopGenresItem(item)).join('') : renderHomeCategoryRows(baseTopGenresItems),
         deezerItemsAttr: `data-deezer-items="${encodeURIComponent(JSON.stringify(baseTopGenresItems))}"`
     };
 }
@@ -1862,7 +1929,7 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
         : meta.isTrendingSongs
             ? `<a class="home-section-title home-section-title--action" href="/Tracklist?id=home-trending-songs&type=playlist&source=${encodeURIComponent(homeTrendingProvider)}">${escapeHtml(section.title || '')}</a>`
             : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
-    const topGenres = meta.isTopGenres ? renderHomeTopGenresCards(meta, isChannelPage) : null;
+    const topGenres = meta.isTopGenres ? renderHomeTopGenresCards(isChannelPage ? meta : { ...meta, items: section.items || [] }, isChannelPage) : null;
     let sectionItemsHtml = meta.isTrendingSongs ? '' : meta.filteredItems.map(item => renderHomeSectionCardItem(item, meta)).join('');
     if (meta.isTopGenres && topGenres) {
         sectionItemsHtml = topGenres.cards;
@@ -1872,7 +1939,7 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
             : meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('');
     }
     const isSpaceAware = meta.isSpaceAware && (isChannelPage || !meta.isTrendingSongs || homeTrendingProvider === 'spotify');
-    const rowClass = isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
+    const rowClass = meta.isTopGenres && !isChannelPage ? 'home-category-rows' : isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
     const rowStyle = isSpaceAware
         ? `style="--home-space-aware-count:${meta.filteredItems.length}; --home-space-aware-min:${resolveHomeSectionRowSpaceAwareMin(meta.rowClass)};"`
         : '';

@@ -18,6 +18,62 @@ namespace DeezSpoTag.Tests;
 public sealed class AppleBrowseTest
 {
     [Fact]
+    public void HomeCategoriesKeepProviderRowsUniqueAndIncludeSpatialAudio()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        const ctx=vm.createContext({console,URLSearchParams,escapeHtml:String,renderTopGenresItem:i=>`<article>${i.title}</article>`});
+        vm.runInContext("let spotifyHomeCategories=[],homeAppleCategories=[],homeYouTubeCategories=[],homeSpotifyStatus='ready';const homeCategoryStatus={apple:'ready',ytmusic:'ready'};",ctx);
+        for(const name of ['homeCategoryKey','selectHomeCategoryRows','renderHomeCategoryRows','loadHomeCategories','refreshHomeCategories']){
+          const match=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(match, name+' must exist');
+          const start=match.index,end=source.slice(start+match[0].length).search(/\n(?:async )?function /);
+          vm.runInContext(source.slice(start,end<0?undefined:start+match[0].length+end),ctx);
+        }
+        vm.runInContext(`
+          const item=(title,source)=>({title,source,type:'browse-category',target:'/category/'+title});
+          const deezer=['Hip-Hop','New releases','Podcasts','Charts','For you','Chill'].map(t=>item(t,'deezer'));
+          spotifyHomeCategories=['Hip Hop','New Releases','Made For You','Music','Live Events','Afro','Pop','Dance','Spatial Audio'].map(t=>item(t,'spotify'));
+          homeAppleCategories=['Hip-Hop/Rap','Music Videos','Spatial Audio','African','Afrobeats','Jazz','Family','Classical','Rock'].map(t=>item(t,'apple'));
+          homeYouTubeCategories=['Hip-hop','Pop','Jazz','Chill','Commute','Focus','Workout','Gaming'].map(t=>item(t,'ytmusic'));
+          globalThis.rows=selectHomeCategoryRows(deezer);globalThis.markup=renderHomeCategoryRows(deezer);
+        `,ctx);
+        assert.deepEqual(Array.from(ctx.rows,r=>r.items.length),[5,5,5,4]);
+        assert.deepEqual(Array.from(ctx.rows,r=>r.source),['deezer','spotify','apple','ytmusic']);
+        const items=Array.from(ctx.rows).flatMap(r=>Array.from(r.items));
+        assert.equal(new Set(items.map(ctx.homeCategoryKey)).size,19);
+        assert(ctx.rows[2].items.some(i=>i.title==='Spatial Audio'));
+        assert(!items.some(i=>/video/i.test(i.title)));
+        assert.equal((ctx.markup.match(/data-category-provider=/g)||[]).length,4);
+        assert.equal((ctx.markup.match(/href="\/Categories"/g)||[]).length,1);
+        assert(ctx.markup.lastIndexOf('Show more')>ctx.markup.lastIndexOf('<article>'));
+        vm.runInContext("homeAppleCategories=[];homeCategoryStatus.apple='loading';",ctx);
+        assert(ctx.renderHomeCategoryRows([]).includes('Loading Apple Music'));
+        let renders=0;
+        const row={dataset:{deezerItems:encodeURIComponent('[]')},set innerHTML(value){renders++;assert(value.includes('data-category-provider="apple"'))}};
+        ctx.document={querySelector:()=>row};
+        ctx.fetch=async()=>({ok:true,json:async()=>({success:true,categories:[{title:'Spatial Audio',type:'browse-category'}]})});
+        vm.runInContext('let homeLoadRequestSeq=1;',ctx);
+        (async()=>{
+          await ctx.loadHomeCategories('apple',0);assert.equal(renders,0,'Obsolete responses must not redraw categories');
+          await ctx.loadHomeCategories('apple',1);assert.equal(renders,1);
+          assert.equal(vm.runInContext('homeCategoryStatus.apple',ctx),'ready');
+          ctx.fetch=async()=>{throw Error('unavailable')};
+          await ctx.loadHomeCategories('ytmusic',1);assert.equal(renders,2);
+          assert.equal(vm.runInContext('homeCategoryStatus.ytmusic',ctx),'error');
+        })().catch(error=>{console.error(error);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
     public void ProviderCompletionPreservesBaseSectionsAndDefersOffscreenCards()
     {
         var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);

@@ -136,6 +136,7 @@
             ? upgradeSpotifyImageUrl(extractFirstUrl(item.coverUrl || item.imageUrl || item.image || item.picture || item.artwork || item.images || item.cover || ''))
             : ((item.image && (item.image.thumbUrl || item.image.thumb || item.image.fullUrl || item.image.full || item.image.url))
                 || item.image
+                || item.coverUrl
                 || item.picture
                 || item.cover
                 || item.artwork
@@ -144,10 +145,10 @@
                 || '');
         const click = source === 'spotify' ? buildSpotifyBrowseClick(item) : buildHomeClick(item);
         const artStyle = image ? "style=\"background-image: url('" + image + "');\"" : '';
-        const platformIcon = source === 'spotify' ? 'spotify' : 'deezer';
+        const platformIcon = source === 'ytmusic' ? '/images/icons/youtube-music.png' : `/images/availability/${source === 'spotify' || source === 'apple' ? source : 'deezer'}.svg`;
         const subtitleCandidate = (item.subtitle || item.artist || item.artists || item.owner || item.ownerName || '').toString().trim();
-        const subtitle = /^(spotify|deezer)$/i.test(subtitleCandidate) ? '' : escapeHtml(subtitleCandidate);
-        return "\n        <div class=\"top-genres-card top-genres-card--thumb\" onclick=\"" + click + "\" style=\"position: relative;\">\n            <div class=\"top-genres-platform\" style=\"--platform-icon: url('/images/availability/" + platformIcon + ".svg');\"></div>\n            <div class=\"top-genres-content\">\n                <div class=\"top-genres-title\">" + title + "</div>\n                " + (subtitle ? "<div class=\"top-genres-subtitle\">" + subtitle + "</div>" : '') + "\n            </div>\n            <div class=\"top-genres-art\" " + artStyle + "></div>\n        </div>\n    ";
+        const subtitle = /^(spotify|deezer|apple music|youtube music)$/i.test(subtitleCandidate) ? '' : escapeHtml(subtitleCandidate);
+        return "\n        <div class=\"top-genres-card top-genres-card--thumb\" onclick=\"" + click + "\" style=\"position: relative;\">\n            <div class=\"top-genres-platform\" style=\"--platform-icon: url('" + platformIcon + "');\"></div>\n            <div class=\"top-genres-content\">\n                <div class=\"top-genres-title\">" + title + "</div>\n                " + (subtitle ? "<div class=\"top-genres-subtitle\">" + subtitle + "</div>" : '') + "\n            </div>\n            <div class=\"top-genres-art\" " + artStyle + "></div>\n        </div>\n    ";
     }
 
     function buildAppleBrowseClick(item) {

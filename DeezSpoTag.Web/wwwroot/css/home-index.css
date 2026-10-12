@@ -866,3 +866,26 @@ body[data-home-layout='categories'] #home-trending {
     .home-apple-section .video-overlay-btn,
     #apple-categories .video-overlay-btn { opacity: 1; transform: none; }
 }
+
+/* Keep each home category provider on its own five-card row. */
+.home-category-rows {
+    display: grid;
+    gap: 12px;
+}
+.home-category-provider-row {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+}
+.home-category-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: default;
+}
+@media (max-width: 1200px) {
+    .home-category-provider-row {
+        grid-template-columns: repeat(5, minmax(220px, 1fr));
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+}

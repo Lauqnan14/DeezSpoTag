@@ -491,8 +491,12 @@ async function loadYouTubeCategoryPage(url, root) {
 document.addEventListener('DOMContentLoaded', () => {
     loadDeezerCategories();
     loadSpotifyCategories();
-    loadAppleCategories();
     const youtubeParams = new URLSearchParams(globalThis.location.search);
+    if (youtubeParams.get('provider') === 'apple') {
+        globalThis.bootstrap?.Tab.getOrCreateInstance(document.getElementById('categories-apple-tab')).show();
+        if (youtubeParams.get('path')) openAppleCategory(encodeURIComponent(youtubeParams.get('path')));
+        else loadAppleCategories();
+    } else loadAppleCategories();
     if (youtubeParams.get('provider') === 'ytmusic') {
         globalThis.bootstrap?.Tab.getOrCreateInstance(document.getElementById('categories-youtube-tab')).show();
         if (youtubeParams.get('id')) openYouTubeCategory(encodeURIComponent(youtubeParams.get('id')), encodeURIComponent(youtubeParams.get('parameters') || ''));
