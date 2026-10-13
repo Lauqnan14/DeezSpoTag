@@ -1,10 +1,12 @@
+using DeezSpoTag.Services.Genre;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Web.Services.Audiomack;
 
 namespace DeezSpoTag.Web.Services.Vibe;
 
 /// <summary>
 /// Source-aware Vibe resolution. Priority per semantic kind:
-/// Audiomack track metadata → Last.fm track tags → acoustic (Discogs genre head /
+/// Embedded tags → Audiomack track metadata → Last.fm track tags → acoustic (Discogs genre head /
 /// Essentia moods) → Last.fm artist fallback. Priority is not destructive
 /// replacement: every independent piece of evidence stays visible.
 /// </summary>
@@ -29,7 +31,8 @@ public static class VibeSemanticResolver
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? lastFmTrackTags,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? lastFmArtistTags,
         IReadOnlyList<AcousticGenreEvidence>? acousticGenres,
-        IReadOnlyList<AcousticMoodEvidence>? acousticMoods)
+        IReadOnlyList<AcousticMoodEvidence>? acousticMoods,
+        GenreNormalizationSnapshot? normalization = null)
     {
         var evidence = new List<VibeSemanticEvidence>();
 
@@ -121,11 +124,41 @@ public static class VibeSemanticResolver
             }
         }
 
+        if (normalization is not null)
+        {
+            evidence = evidence.SelectMany(item => NormalizeEvidence(item, normalization)).ToList();
+        }
+
         return new VibeResolution(
             ResolveKind(evidence, VibeSemanticKind.Genre),
             ResolveKind(evidence, VibeSemanticKind.Style),
             ResolveKind(evidence, VibeSemanticKind.Mood),
             evidence);
+    }
+
+    private static IEnumerable<VibeSemanticEvidence> NormalizeEvidence(
+        VibeSemanticEvidence item, GenreNormalizationSnapshot normalization)
+    {
+        if (item.Kind is not (VibeSemanticKind.Genre or VibeSemanticKind.Style))
+        {
+            return new[] { item };
+        }
+
+        var raw = item.RawValue;
+        var separator = item.Scope == VibeEvidenceScope.Audio ? raw.IndexOf("---", StringComparison.Ordinal) : -1;
+        if (separator > 0)
+            raw = item.Kind == VibeSemanticKind.Genre ? raw[..separator].Trim() : raw[(separator + 3)..].Trim();
+        var values = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            new[] { raw }, normalization.AliasMap,
+            splitComposite: item.Kind == VibeSemanticKind.Genre && normalization.Enabled,
+            blockedValues: normalization.BlockList,
+            isAtomic: value => GenreTermRecognizer.IsWholeValueRecognized(value, PersonalGenreCatalog.Default, normalization));
+        return values.Count == 0
+            ? new[] { item with { Eligible = false, ExclusionReason = "Removed by genre normalization preferences" } }
+            : values.Select(value => item with
+            {
+                CanonicalValue = normalization.Enabled ? value : VibeSemanticNormalizer.Canonicalize(value)
+            });
     }
 
     /// <summary>Derive the acoustic evidence source from the genre model that
@@ -204,7 +237,7 @@ public static class VibeSemanticResolver
         VibeSemanticKind kind)
     {
         var candidates = evidence
-            .Where(item => item.Kind == kind && item.CanonicalValue.Length > 0)
+            .Where(item => item.Eligible && item.Kind == kind && item.CanonicalValue.Length > 0)
             .GroupBy(item => item.CanonicalValue, StringComparer.OrdinalIgnoreCase)
             .Select((group, index) => new
             {

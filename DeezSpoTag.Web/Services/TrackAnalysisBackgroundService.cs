@@ -1,3 +1,6 @@
+using DeezSpoTag.Services.Genre;
+using DeezSpoTag.Core.Models.Settings;
+using System.Security.Cryptography;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services.AutoTag;
 using DeezSpoTag.Web.Services.Audiomack;
@@ -127,7 +130,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly EmbeddedVibeMetadataReader _embeddedVibeReader;
     private readonly SonicAnalysisSettingsStore _sonicSettingsStore;
     private int _sonicEnabled;
-    private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly TaggingProfileService _profileService;
+    private readonly AutoTagDefaultsStore _defaultsStore;
+    private readonly GenreNormalizationProvider _genreNormalizationProvider;
+    private Task<AutoTagProfileResolutionService.ResolvedState>? _vibeProfileState;
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
@@ -166,7 +172,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IAudiomackVibeMetadataService vibeMetadataService,
         EmbeddedVibeMetadataReader embeddedVibeReader,
         SonicAnalysisSettingsStore sonicSettingsStore,
-        AutoTagProfileResolutionService profileResolutionService,
+        TaggingProfileService profileService,
+        AutoTagDefaultsStore defaultsStore,
+        GenreNormalizationProvider genreNormalizationProvider,
         MoodBucketService moodBucketService,
         IConfiguration configuration)
     {
@@ -178,7 +186,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _vibeMetadataService = vibeMetadataService;
         _embeddedVibeReader = embeddedVibeReader;
         _sonicSettingsStore = sonicSettingsStore;
-        _profileResolutionService = profileResolutionService;
+        _profileService = profileService;
+        _defaultsStore = defaultsStore;
+        _genreNormalizationProvider = genreNormalizationProvider;
         _moodBucketService = moodBucketService;
         _configuration = configuration;
     }
@@ -383,6 +393,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private RuntimeRunScope BeginRuntimeRun(CancellationToken cancellationToken)
     {
         var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _vibeProfileState = null;
         lock (_runtimeLock)
         {
             _activeRunCancellation = linked;
@@ -1775,13 +1786,14 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         // Tier 0: read the semantic tags embedded in the file.
         EmbeddedVibeMetadata? embedded = null;
         string? fingerprint = null;
+        var normalization = _genreNormalizationProvider.Current;
         if (!string.IsNullOrWhiteSpace(filePath))
         {
             try
             {
                 var (id3, vorbis, mp4) = await ResolveStyleTagNamesAsync(filePath, cancellationToken).ConfigureAwait(false);
                 embedded = _embeddedVibeReader.Read(filePath, id3, vorbis, mp4);
-                fingerprint = embedded.ComputeFingerprint();
+                fingerprint = ComputeSemanticFingerprint(embedded, normalization, (id3, vorbis, mp4));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1789,11 +1801,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
         }
 
-        // Staleness: if AutoTag's embedded semantics are unchanged since the stored
-        // resolution, reuse it — no online lookups and no MAEST rerun.
-        if (stored is not null && fingerprint is not null && stored.EmbeddedSemanticFingerprint == fingerprint)
+        // Only reuse when no fresh audio evidence arrived and the tags, preferences
+        // and physical field policy are unchanged.
+        if (CanReuseVibeSemantics(stored, analysisOutput, fingerprint))
         {
-            return stored;
+            return stored!;
         }
 
         var artist = summary?.ArtistName?.Trim();
@@ -1843,7 +1855,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
         }
 
-        return BuildVibeSemanticsCore(analysisOutput, embedded, audiomack, trackTags, artistTags)
+        return BuildVibeSemanticsCore(analysisOutput, embedded, audiomack, trackTags, artistTags, normalization)
             with { EmbeddedSemanticFingerprint = fingerprint };
     }
 
@@ -1853,12 +1865,56 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         string filePath,
         CancellationToken cancellationToken)
     {
-        // The Core AutoTagSettings type does not expose stylesCustomTag, so the
-        // reader falls back to AutoTag's default STYLE field name (the value the
-        // stock profiles write). The reader accepts explicit overrides when the
-        // profile-level lookup is added.
-        await Task.CompletedTask.ConfigureAwait(false);
-        return (null, null, null);
+        var state = await (_vibeProfileState ??= LoadVibeProfileStateAsync(cancellationToken)).ConfigureAwait(false);
+        var folder = await _repository.ResolveFolderForPathAsync(filePath, cancellationToken).ConfigureAwait(false);
+        return GetStyleTagNames(state, folder?.Id);
+    }
+
+    private async Task<AutoTagProfileResolutionService.ResolvedState> LoadVibeProfileStateAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _profileService.LoadReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        var defaults = await _defaultsStore.LoadReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        var folders = await _repository.GetFoldersAsync(cancellationToken).ConfigureAwait(false);
+        return new AutoTagProfileResolutionService.ResolvedState(profiles, defaults,
+            profiles.FirstOrDefault(p => p.IsDefault) ?? profiles.FirstOrDefault(), folders.ToDictionary(f => f.Id));
+    }
+
+    internal static (string? Id3, string? Vorbis, string? Mp4) GetStyleTagNames(
+        AutoTagProfileResolutionService.ResolvedState state, long? folderId)
+    {
+        var profile = folderId.HasValue ? AutoTagProfileResolutionService.ResolveFolderProfile(state, folderId.Value) : null;
+        profile ??= AutoTagProfileResolutionService.ResolveProfileReference(state.Profiles, state.Defaults.DefaultFileProfile)
+            ?? state.DefaultProfile;
+        return GetStyleTagNames(profile);
+    }
+
+    internal static (string? Id3, string? Vorbis, string? Mp4) GetStyleTagNames(TaggingProfile? profile)
+    {
+        if (profile?.AutoTag.Data is not { } data
+            || !data.TryGetValue("stylesCustomTag", out var tags) || tags.ValueKind != JsonValueKind.Object)
+            return (null, null, null);
+        return (Read("id3"), Read("vorbis"), Read("mp4"));
+
+        string? Read(string key) => tags.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim() : null;
+    }
+
+    internal static bool CanReuseVibeSemantics(VibeSemantics? stored, AnalysisOutput? fresh, string? fingerprint)
+        => fresh is null && stored is not null && fingerprint is not null
+            && string.Equals(stored.EmbeddedSemanticFingerprint, fingerprint, StringComparison.Ordinal);
+
+    internal static string ComputeSemanticFingerprint(EmbeddedVibeMetadata embedded, GenreNormalizationSnapshot normalization,
+        (string? Id3, string? Vorbis, string? Mp4) fields)
+    {
+        var policy = JsonSerializer.Serialize(new
+        {
+            version = "vibe-semantics-2-three-30s-v1",
+            embedded = embedded.ComputeFingerprint(), normalization.Enabled,
+            aliases = normalization.AliasMap.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray(),
+            blocked = normalization.BlockList.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            fields = new[] { fields.Id3, fields.Vorbis, fields.Mp4 }
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(policy)));
     }
 
     internal static VibeSemantics BuildVibeSemanticsCore(
@@ -1866,7 +1922,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         EmbeddedVibeMetadata? embedded,
         AudiomackVibeMetadata? audiomack,
         IReadOnlyList<LastFmTagService.LastFmTagEvidence>? trackTags,
-        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags)
+        IReadOnlyList<LastFmTagService.LastFmTagEvidence>? artistTags,
+        GenreNormalizationSnapshot? normalization = null)
     {
         var acousticGenres = analysisOutput?.EssentiaGenreEvidence?
             .Select(item => new VibeSemanticResolver.AcousticGenreEvidence(item.Label, item.Score, item.Model))
@@ -1888,7 +1945,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             };
         }
 
-        var resolution = VibeSemanticResolver.Resolve(embedded, audiomack, trackTags, artistTags, acousticGenres, acousticMoods);
+        var resolution = VibeSemanticResolver.Resolve(embedded, audiomack, trackTags, artistTags, acousticGenres, acousticMoods, normalization);
 
         var evidenceJson = JsonSerializer.Serialize(
             resolution.SemanticEvidence.Select(item => new
@@ -1900,7 +1957,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 scope = item.Scope.ToString().ToLowerInvariant(),
                 strength = item.Strength,
                 matchConfidence = item.MatchConfidence,
-                finalWeight = item.FinalWeight
+                finalWeight = item.FinalWeight,
+                eligible = item.Eligible,
+                exclusionReason = item.ExclusionReason,
+                genreSamplingPolicy = item.Source == "essentia-discogs519" ? analysisOutput?.GenreSamplingPolicy : null,
+                genreAnalyzedSeconds = item.Source == "essentia-discogs519" ? analysisOutput?.GenreAnalyzedSeconds : null,
+                genreWindowStartSeconds = item.Source == "essentia-discogs519" ? analysisOutput?.GenreWindowStartSeconds : null
             }),
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
@@ -3337,7 +3399,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         // deserialized case-insensitively by property name, so renaming this
         // would silently stop the vector binding rather than fail to compile.
         SonicPayload? SonicEmbedding = null,
-        bool? SonicUnavailable = null)
+        bool? SonicUnavailable = null,
+        string? GenreSamplingPolicy = null,
+        double? GenreAnalyzedSeconds = null,
+        IReadOnlyList<double>? GenreWindowStartSeconds = null)
     {
         public MoodScores? MoodScores => Happy.HasValue
             ? new MoodScores(

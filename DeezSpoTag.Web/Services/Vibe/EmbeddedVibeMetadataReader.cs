@@ -1,3 +1,4 @@
+using DeezSpoTag.Web.Services.AutoTag;
 using System.Security.Cryptography;
 using System.Text;
 using TagLib;
@@ -47,7 +48,6 @@ public sealed record EmbeddedVibeMetadata(
 public sealed class EmbeddedVibeMetadataReader
 {
     private const string DefaultStyleTag = "STYLE";
-    private const string AppleFreeformBase = "----:com.apple.iTunes:";
 
     public EmbeddedVibeMetadata Read(
         string filePath,
@@ -60,11 +60,12 @@ public sealed class EmbeddedVibeMetadataReader
         var extension = Path.GetExtension(filePath);
 
         var genres = Normalize(tag.Genres ?? Array.Empty<string>(), SplitSeparator(extension));
-        var mood = ReadRawMultiValue(file, extension, "MOOD", mp4StyleTag == null ? null : "MOOD");
+        var mood = ReadRawMultiValue(file, extension, "MOOD", "MOOD");
         var moods = Normalize(mood, SplitSeparator(extension));
 
         var styleTag = ResolveStyleTag(extension, id3StyleTag, vorbisStyleTag, mp4StyleTag);
-        var styles = Normalize(ReadRawMultiValue(file, extension, styleTag, styleTag), SplitSeparator(extension));
+        var styles = Normalize(GenreSemanticTagIo.StylePhysicalFields.DiscoveryNames(styleTag)
+            .SelectMany(name => ReadRawMultiValue(file, extension, name, name)), SplitSeparator(extension));
 
         return new EmbeddedVibeMetadata(genres, styles, moods);
     }
@@ -95,9 +96,12 @@ public sealed class EmbeddedVibeMetadataReader
                 && file.GetTag(TagTypes.Id3v2) is TagLib.Id3v2.Tag id3)
             {
                 var values = new List<string>();
-                values.AddRange(id3.GetFrames<TagLib.Id3v2.TextInformationFrame>()
-                    .Where(frame => frame.FrameId.ToString().Equals("TMOO", StringComparison.OrdinalIgnoreCase))
-                    .SelectMany(frame => frame.Text ?? Array.Empty<string>()));
+                if (tag.Equals("MOOD", StringComparison.OrdinalIgnoreCase))
+                {
+                    values.AddRange(id3.GetFrames<TagLib.Id3v2.TextInformationFrame>()
+                        .Where(frame => frame.FrameId.ToString().Equals("TMOO", StringComparison.OrdinalIgnoreCase))
+                        .SelectMany(frame => frame.Text ?? Array.Empty<string>()));
+                }
 
                 values.AddRange(id3.GetFrames<TagLib.Id3v2.UserTextInformationFrame>()
                     .Where(frame => string.Equals(frame.Description, tag, StringComparison.OrdinalIgnoreCase))

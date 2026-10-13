@@ -29,6 +29,10 @@ public sealed class TaggingProfileService
         _legacyProfilesPath = Path.Join(dataDir, "profiles.json");
     }
 
+    /// <summary>Read the current primary store without migrations, repairs or writes.</summary>
+    public Task<List<TaggingProfile>> LoadReadOnlyAsync(CancellationToken cancellationToken = default)
+        => LoadPrimaryProfilesAsync().WaitAsync(cancellationToken);
+
     public async Task<List<TaggingProfile>> LoadAsync()
     {
         try

@@ -32,6 +32,10 @@ public sealed record VibeSemanticEvidence
 
     public required string CanonicalValue { get; init; }
 
+    public bool Eligible { get; init; } = true;
+
+    public string? ExclusionReason { get; init; }
+
     public double Strength { get; init; }
 
     public double MatchConfidence { get; init; }

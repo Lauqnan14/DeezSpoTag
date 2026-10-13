@@ -1,3 +1,5 @@
+using DeezSpoTag.Services.Genre;
+using System;
 using System.Linq;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.Audiomack;
@@ -13,6 +15,57 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class VibeSemanticResolverTest
 {
+    [Fact]
+    public void EmbeddedRegionalStyleRetainsPriorityAndAcousticDisagreement()
+    {
+        var result = VibeSemanticResolver.Resolve(
+            new EmbeddedVibeMetadata(new[] { "Gengetone" }, new[] { "Gengetone" }, Array.Empty<string>()),
+            null, null, null,
+            new[] { new VibeSemanticResolver.AcousticGenreEvidence("Hip-Hop---Trap", 0.8, "discogs519") }, null);
+        Assert.Equal(new[] { "Gengetone" }, result.ResolvedGenres);
+        Assert.Contains(result.SemanticEvidence, e => e.RawValue == "Hip-Hop---Trap" && e.Source == "essentia-discogs519");
+    }
+
+    [Fact]
+    public void PreferencesNormalizeGenresAndStylesButRetainBlockedEvidence()
+    {
+        var preferences = GenreNormalizationSnapshot.Create(true,
+            new[] { new PersonalGenreAliasRule("Local rap", "Gengetone") }, new[] { "Junk" });
+        var result = VibeSemanticResolver.Resolve(
+            new EmbeddedVibeMetadata(new[] { "Local rap", "Junk" }, new[] { "Local rap" }, new[] { "Happy" }),
+            null, null, null, null, null, preferences);
+        Assert.Equal(new[] { "Gengetone" }, result.ResolvedGenres);
+        Assert.Equal(new[] { "Gengetone" }, result.ResolvedStyles);
+        Assert.Equal(new[] { "Happy" }, result.ResolvedMoods);
+        Assert.Contains(result.SemanticEvidence, e => e.RawValue == "Local rap" && e.CanonicalValue == "Gengetone");
+        Assert.Contains(result.SemanticEvidence, e => e.RawValue == "Junk" && !e.Eligible && e.ExclusionReason != null);
+    }
+
+    [Fact]
+    public void UserSpellingWinsOverBuiltInVibeAliases()
+    {
+        var preferences = GenreNormalizationSnapshot.Create(true,
+            new[] { new PersonalGenreAliasRule("Hip Hop", "HipHop") }, Array.Empty<string>());
+        var result = VibeSemanticResolver.Resolve(
+            new EmbeddedVibeMetadata(new[] { "Hip Hop" }, Array.Empty<string>(), Array.Empty<string>()),
+            null, null, null, null, null, preferences);
+        Assert.Equal(new[] { "HipHop" }, result.ResolvedGenres);
+    }
+
+    [Fact]
+    public void PreferencesUseOriginalLabelsBeforeBuiltInSpellingAliases()
+    {
+        var preferences = GenreNormalizationSnapshot.Create(true,
+            new[] { new PersonalGenreAliasRule("Rhythm and blues", "Soul") }, Array.Empty<string>());
+        var result = VibeSemanticResolver.Resolve(
+            new EmbeddedVibeMetadata(new[] { "Rhythm and blues" }, Array.Empty<string>(), Array.Empty<string>()),
+            null, null, null,
+            new[] { new VibeSemanticResolver.AcousticGenreEvidence("Funk / Soul---Soul", 0.8, "discogs519") }, null, preferences);
+        Assert.Equal(new[] { "Soul" }, result.ResolvedGenres);
+        Assert.Contains(result.SemanticEvidence, e => e.RawValue == "Rhythm and blues" && e.CanonicalValue == "Soul");
+        Assert.Contains(result.SemanticEvidence, e => e.RawValue == "Funk / Soul---Soul" && e.Kind == VibeSemanticKind.Style && e.CanonicalValue == "Soul");
+    }
+
     private static readonly AudiomackVibeMetadata AmapianoTrack = new()
     {
         TrackId = "8526341",

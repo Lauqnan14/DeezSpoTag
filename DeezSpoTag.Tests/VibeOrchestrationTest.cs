@@ -1,3 +1,13 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Genre;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Linq;
 using System.Text.Json;
@@ -16,6 +26,126 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class VibeOrchestrationTest
 {
+    [Fact]
+    public async Task VibeProfileLoaders_DoNotNormalizeMigrateOrWriteSettings()
+    {
+        var directory = Directory.CreateTempSubdirectory("vibe-profiles-").FullName;
+        try
+        {
+            var env = new ReadOnlyEnvironment(directory);
+            var profileStore = new TaggingProfileService(env, NullLogger<TaggingProfileService>.Instance);
+            var defaultsStore = new AutoTagDefaultsStore(env, NullLogger<AutoTagDefaultsStore>.Instance);
+            var path = Path.Combine(directory, "autotag");
+            var profiles = "[{\"id\":\"p\",\"name\":\"custom\",\"autoTag\":{\"stylesCustomTag\":{\"id3\":\"MY_STYLE\"}}}]";
+            var defaults = "{\"defaultFileProfile\":\"p\",\"librarySchedules\":{}}";
+            File.WriteAllText(Path.Combine(path, "tagging-profiles.json"), profiles);
+            File.WriteAllText(Path.Combine(path, "defaults.json"), defaults);
+            File.WriteAllText(Path.Combine(path, "profiles.json"), "legacy data that must remain untouched");
+            var loaded = await profileStore.LoadReadOnlyAsync();
+            var loadedDefaults = await defaultsStore.LoadReadOnlyAsync();
+            Assert.Single(loaded);
+            Assert.Equal("p", loadedDefaults.DefaultFileProfile);
+            Assert.Equal(profiles, File.ReadAllText(Path.Combine(path, "tagging-profiles.json")));
+            Assert.Equal(defaults, File.ReadAllText(Path.Combine(path, "defaults.json")));
+            Assert.Equal("legacy data that must remain untouched", File.ReadAllText(Path.Combine(path, "profiles.json")));
+            var fields = TrackAnalysisBackgroundService.GetStyleTagNames(loaded[0]);
+            Assert.Equal("MY_STYLE", fields.Id3);
+            Assert.Null(fields.Vorbis);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public void AssignedFolderStyleFieldsTakePriorityOverDefaultProfile()
+    {
+        var assigned = new TaggingProfile { Id = "assigned" };
+        assigned.AutoTag.Data["stylesCustomTag"] = JsonSerializer.SerializeToElement(new { vorbis = "ASSIGNED_STYLE" });
+        var defaultProfile = new TaggingProfile { Id = "default", IsDefault = true };
+        defaultProfile.AutoTag.Data["stylesCustomTag"] = JsonSerializer.SerializeToElement(new { vorbis = "DEFAULT_STYLE" });
+        var folder = new FolderDto(1, "/music", "Music", true, 1, "Music", "flac", "assigned", true, false, null, null);
+        var state = new AutoTagProfileResolutionService.ResolvedState(new List<TaggingProfile> { defaultProfile, assigned },
+            new AutoTagDefaultsDto("default", new Dictionary<string, string>(), 24, true), defaultProfile,
+            new Dictionary<long, FolderDto> { [1] = folder });
+        Assert.Equal("ASSIGNED_STYLE", TrackAnalysisBackgroundService.GetStyleTagNames(state, 1).Vorbis);
+        Assert.Equal("DEFAULT_STYLE", TrackAnalysisBackgroundService.GetStyleTagNames(state, null).Vorbis);
+    }
+
+    [Fact]
+    public void FreshAcousticEvidenceAndChangedPreferencesPreventSemanticReuse()
+    {
+        var embedded = new EmbeddedVibeMetadata(new[] { "Hip Hop" }, new[] { "Drill" }, Array.Empty<string>());
+        var baseline = GenreNormalizationSnapshot.Create(false, null, Array.Empty<string>());
+        var fingerprint = TrackAnalysisBackgroundService.ComputeSemanticFingerprint(embedded, baseline, (null, null, null));
+        var stored = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(Output(), embedded, null, null, null)
+            with { EmbeddedSemanticFingerprint = fingerprint };
+        Assert.True(TrackAnalysisBackgroundService.CanReuseVibeSemantics(stored, null, fingerprint));
+        Assert.False(TrackAnalysisBackgroundService.CanReuseVibeSemantics(stored, Output(), fingerprint));
+        var changed = GenreNormalizationSnapshot.Create(true, new[] { new PersonalGenreAliasRule("Drill", "Trap") }, Array.Empty<string>());
+        var changedFingerprint = TrackAnalysisBackgroundService.ComputeSemanticFingerprint(embedded, changed, (null, null, null));
+        Assert.False(TrackAnalysisBackgroundService.CanReuseVibeSemantics(stored, null, changedFingerprint));
+        Assert.NotEqual(fingerprint, TrackAnalysisBackgroundService.ComputeSemanticFingerprint(embedded, baseline, ("CUSTOM", null, null)));
+        Assert.NotEqual(fingerprint, TrackAnalysisBackgroundService.ComputeSemanticFingerprint(embedded,
+            GenreNormalizationSnapshot.Create(false, null, new[] { "Drill" }), (null, null, null)));
+    }
+
+    [Fact]
+    public async Task SampledEnhancedResultCarriesEvidenceThroughCompletion()
+    {
+        var output = Output() with { AnalysisMode = "enhanced", GenreSamplingPolicy = "three-30s-v1",
+            GenreAnalyzedSeconds = 90, GenreWindowStartSeconds = new double[] { 0, 53.5, 107 } };
+        var embedded = new EmbeddedVibeMetadata(new[] { "Gengetone" }, new[] { "Gengetone" }, Array.Empty<string>());
+        var vibe = TrackAnalysisBackgroundService.BuildVibeSemanticsCore(output, embedded, null, null, null);
+        var track = new TrackAnalysisInputDto(1, 1, "/music/x.flac", 137000);
+        var result = TrackAnalysisBackgroundService.CreateCompletedAnalysisResult(track,
+            new TrackAnalysisBackgroundService.TrackSignalMetrics(0.5, 0.1, 0.2, 120, 480, 5, "C", 0.8, -8, 6, 0.5), output, null, vibe);
+        Assert.Equal("enhanced", result.AnalysisMode);
+        Assert.Equal(new[] { "Gengetone" }, result.ResolvedGenres);
+        using var document = JsonDocument.Parse(result.SemanticEvidenceJson!);
+        var acoustic = document.RootElement.EnumerateArray().First(e => e.GetProperty("source").GetString() == "essentia-discogs519");
+        Assert.Equal("three-30s-v1", acoustic.GetProperty("genreSamplingPolicy").GetString());
+        Assert.Equal(90, acoustic.GetProperty("genreAnalyzedSeconds").GetDouble());
+        Assert.Equal(3, acoustic.GetProperty("genreWindowStartSeconds").GetArrayLength());
+        var directory = Directory.CreateTempSubdirectory("vibe-persistence-").FullName;
+        var connectionString = "Data Source=" + Path.Combine(directory, "library.db");
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ConnectionStrings:Library"] = connectionString }).Build();
+            await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using (var connection = new SqliteConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                var command = connection.CreateCommand();
+                command.CommandText = "INSERT INTO artist(id,name) VALUES(1,'Artist'); INSERT INTO album(id,artist_id,title) VALUES(1,1,'Album'); INSERT INTO track(id,album_id,title) VALUES(1,1,'Song');";
+                await command.ExecuteNonQueryAsync();
+            }
+            var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+            await repository.UpsertTrackAnalysisAsync(result with { LibraryId = null });
+            var persisted = await repository.GetTrackAnalysisAsync(1);
+            Assert.NotNull(persisted);
+            Assert.Equal("enhanced", persisted.AnalysisMode);
+            Assert.Equal(result.GenreModel, persisted.GenreModel);
+            Assert.Equal(result.SemanticEvidenceJson, persisted.SemanticEvidenceJson);
+            Assert.Equal(result.ResolvedGenres, persisted.ResolvedGenres);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private sealed class ReadOnlyEnvironment(string root) : IWebHostEnvironment, IAppDataRootOverride
+    {
+        public string? AppDataRoot => root;
+        public string EnvironmentName { get; set; } = "Development";
+        public string ApplicationName { get; set; } = "Tests";
+        public string ContentRootPath { get; set; } = root;
+        public string WebRootPath { get; set; } = root;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
     private static readonly AudiomackVibeMetadata AfrosoundsTrack = new()
     {
         TrackId = "8526341",

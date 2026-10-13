@@ -260,6 +260,106 @@ print('true')
         Assert.True(result.GetBoolean());
     }
 
+    [Theory]
+    [InlineData(20)]
+    [InlineData(30)]
+    [InlineData(90)]
+    [InlineData(91)]
+    [InlineData(137)]
+    [InlineData(600)]
+    public void MaestWindows_BoundAudioAndPreserveOriginal(int seconds)
+    {
+        var result = RunPythonScript($@"
+import numpy as np
+audio = np.arange({seconds} * 16000, dtype=np.float32)
+before = audio.copy()
+windows = module.select_maest_windows(audio)
+assert np.array_equal(audio, before)
+if {seconds} <= 90:
+    assert len(windows) == 1 and windows[0] is audio
+else:
+    starts = [0, (len(audio) - 30 * 16000) // 2, len(audio) - 30 * 16000]
+    assert len(windows) == 3
+    for window, start in zip(windows, starts):
+        assert len(window) == 30 * 16000
+        assert np.array_equal(window, audio[start:start + 30 * 16000])
+assert sum(len(w) for w in windows) <= 90 * 16000
+print('true')");
+        Assert.True(result.GetBoolean());
+    }
+
+    [Fact]
+    public void MaestWindows_AverageClassScoresBeforeSelectingLabels()
+    {
+        var result = RunPythonScript(@"
+from types import SimpleNamespace
+import numpy as np
+class Pool(dict):
+    def set(self, key, value): self[key] = value
+module.EssentiaPool = Pool
+calls = []
+def extract(audio):
+    calls.append(float(audio[0]))
+    assert len(audio) == 30 * 16000
+    return len(calls) - 1
+vectors = [[0.9, 0.0], [0.0, 0.9], [0.0, 0.9]]
+def predict(pool): return {'PartitionedCall/Identity_1': np.array([vectors[pool['embeddings']]])}
+analyzer = SimpleNamespace(maest_genre_extractor=extract, genre519_predictor=predict,
+    genre519_labels=['Rock', 'Pop'], genre_model_name='discogs519-maest-30s-pw-519l')
+evidence = module.AudioAnalyzer._extract_essentia_genre_evidence(analyzer, np.arange(137 * 16000, dtype=np.float32))
+assert len(calls) == 3
+assert evidence[0]['label'] == 'Pop' and abs(evidence[0]['score'] - 0.6) < 0.0001
+assert evidence[1]['label'] == 'Rock' and abs(evidence[1]['score'] - 0.3) < 0.0001
+assert all(e['model'] == 'discogs519-maest-30s-pw-519l' for e in evidence)
+print('true')");
+        Assert.True(result.GetBoolean());
+    }
+
+    [Fact]
+    public void SamplingLeavesMoodCoreAndSonicAudioUnchangedAndReportsItsPolicy()
+    {
+        var result = RunPythonScript(@"
+import numpy as np
+module.ESSENTIA_AVAILABLE = True
+analyzer = object.__new__(module.AudioAnalyzer)
+analyzer.enhanced_mode = True
+analyzer.sonic_enabled = True
+analyzer.genre_model_name = 'discogs519-maest-30s-pw-519l'
+audio44 = np.zeros(137 * 44100, dtype=np.float32)
+audio16 = np.zeros(137 * 16000, dtype=np.float32)
+analyzer.load_audio_pair = lambda path: (audio44, audio16, None)
+def core(audio):
+    assert audio is audio44
+    return {'bpm': 120, 'keyScale': 'major'}
+def mood(audio):
+    assert audio is audio16
+    return {'valence': 0.8}
+def sonic(audio):
+    assert audio is audio16
+    return None
+def genre(audio):
+    assert audio is audio16
+    windows = module.select_maest_windows(audio)
+    analyzer.genre_sampling = {'genreSamplingPolicy': 'three-30s-v1',
+        'genreAnalyzedSeconds': sum(len(w) for w in windows) / 16000,
+        'genreWindowStartSeconds': [0, 53.5, 107]}
+    return [{'label': 'Hip-Hop', 'score': 0.8, 'model': analyzer.genre_model_name}]
+analyzer._extract_core_audio_metrics = core
+analyzer._extract_ml_features = mood
+analyzer._extract_essentia_genre_evidence = genre
+analyzer._extract_sonic_embedding = sonic
+analyzer._generate_mood_tags = lambda result: ['Happy']
+actual = analyzer.analyze('unused')
+assert actual['analysisMode'] == 'enhanced'
+payload = module.build_payload(actual)
+assert payload['GenreSamplingPolicy'] == 'three-30s-v1'
+assert payload['GenreAnalyzedSeconds'] == 90
+assert payload['GenreWindowStartSeconds'] == [0, 53.5, 107]
+assert payload['ValenceMl'] == 0.8
+print('true')");
+        Assert.True(result.GetBoolean());
+    }
+
     private static string BuildScoreLiteral(List<double> scores)
         => JsonSerializer.Serialize(scores);
 

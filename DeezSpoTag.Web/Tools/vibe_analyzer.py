@@ -346,12 +346,22 @@ def resolve_ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+def select_maest_windows(audio_16k):
+    """Bound only MAEST inference; keep passages separate to avoid artificial seams."""
+    window_samples = 30 * 16000
+    if len(audio_16k) <= 3 * window_samples:
+        return [audio_16k]
+    starts = [0, (len(audio_16k) - window_samples) // 2, len(audio_16k) - window_samples]
+    return [audio_16k[start:start + window_samples] for start in starts]
+
+
 class AudioAnalyzer:
     """Lidify audio analysis core (ported)."""
 
     def __init__(self, models_dir: str):
         self.models_dir = models_dir
         self.enhanced_mode = False
+        self.genre_sampling = {}
         self.musicnn_model = None
         self.prediction_models: Dict[str, Any] = {}
         self.effnet_extractor = None
@@ -420,12 +430,23 @@ class AudioAnalyzer:
             and EssentiaPool is not None
         ):
             try:
-                embeddings = self.maest_genre_extractor(audio_16k)
-                pool = EssentiaPool()
-                pool.set("embeddings", embeddings)
-                scores = np.array(self.genre519_predictor(pool)["PartitionedCall/Identity_1"])
+                windows = select_maest_windows(audio_16k)
+                window_scores = []
+                for window in windows:
+                    embeddings = self.maest_genre_extractor(window)
+                    pool = EssentiaPool()
+                    pool.set("embeddings", embeddings)
+                    scores = np.array(self.genre519_predictor(pool)["PartitionedCall/Identity_1"])
+                    window_scores.append(_mean_scores(scores, len(self.genre519_labels)))
+                self.genre_sampling = {
+                    "genreSamplingPolicy": "full" if len(windows) == 1 else "three-30s-v1",
+                    "genreAnalyzedSeconds": sum(len(window) for window in windows) / 16000,
+                    "genreWindowStartSeconds": [0.0] if len(windows) == 1 else
+                        [0.0, (len(audio_16k) - 30 * 16000) // 2 / 16000,
+                         (len(audio_16k) - 30 * 16000) / 16000],
+                }
                 return top_genre_evidence(
-                    _mean_scores(scores, len(self.genre519_labels)),
+                    np.mean(window_scores, axis=0).tolist(),
                     self.genre519_labels,
                     self.genre_model_name or GENRE_MODEL_DISCogs519,
                 )
@@ -848,6 +869,7 @@ class AudioAnalyzer:
 
     def analyze(self, file_path: str) -> Dict[str, Any]:
         result = self._default_analysis_result()
+        self.genre_sampling = {}
 
         if not ESSENTIA_AVAILABLE or np is None:
             result["_error"] = "Essentia library not installed"
@@ -881,6 +903,7 @@ class AudioAnalyzer:
 
             genre_evidence = self._extract_essentia_genre_evidence(audio_16k)
 
+            result.update(self.genre_sampling)
             result["essentiaGenreEvidence"] = genre_evidence
 
             # Report only the model that actually produced the evidence above.
@@ -1234,6 +1257,9 @@ def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "Genres": result.get("essentiaGenres", []),
         "EssentiaGenreEvidence": result.get("essentiaGenreEvidence", []),
         "GenreModel": result.get("genreModel"),
+        "GenreSamplingPolicy": result.get("genreSamplingPolicy"),
+        "GenreAnalyzedSeconds": result.get("genreAnalyzedSeconds"),
+        "GenreWindowStartSeconds": result.get("genreWindowStartSeconds"),
         "MoodTags": result.get("moodTags", []),
         "Happy": result.get("moodHappy"),
         "Sad": result.get("moodSad"),

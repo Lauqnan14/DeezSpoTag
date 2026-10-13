@@ -28,6 +28,19 @@ public sealed class AutoTagDefaultsStore
         _defaultsPath = Path.Join(dataDir, DefaultsFileName);
     }
 
+    /// <summary>Read current defaults without migrations, normalization writes or repairs.</summary>
+    public async Task<AutoTagDefaultsDto> LoadReadOnlyAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(_defaultsPath))
+            return new AutoTagDefaultsDto(null, new Dictionary<string, string>(),
+                AutoTagDefaultsDto.DefaultRecentDownloadWindowHours, true);
+        var json = await File.ReadAllTextAsync(_defaultsPath, cancellationToken);
+        var defaults = JsonSerializer.Deserialize<AutoTagDefaultsDto>(json, _jsonOptions)
+            ?? new AutoTagDefaultsDto(null, new Dictionary<string, string>(),
+                AutoTagDefaultsDto.DefaultRecentDownloadWindowHours, true);
+        return NormalizeDefaults(defaults, out _);
+    }
+
     public async Task<AutoTagDefaultsDto> LoadAsync()
     {
         try
