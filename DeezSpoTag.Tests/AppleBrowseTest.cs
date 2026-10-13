@@ -494,6 +494,17 @@ public sealed class AppleBrowseTest
             vm.runInContext('appleCategoryPages.clear()',ctx);ctx.fetch=async()=>({ok:true,json:async()=>({success:true,storefront:'us',categories:[]})});await ctx.loadAppleCategories();assert(elements['apple-status'].textContent.includes('No Apple Music'));
             vm.runInContext('appleCategoryPages.clear()',ctx);ctx.fetch=async()=>({ok:true,json:async()=>({success:true,storefront:'us',categories:[{source:'apple',type:'browse-category',title:'US Category',id:'4',target:'/curator/us-category/4'}]})});await ctx.loadAppleCategories();assert(elements['apple-status'].textContent.includes('US'));assert(elements['apple-categories'].innerHTML.includes('US Category'));assert(!elements['apple-categories'].innerHTML.includes('Afrobeats'));
             vm.runInContext('appleCategoryPages.clear()',ctx);ctx.fetch=async()=>({ok:false,json:async()=>({error:'unavailable'})});await ctx.loadAppleCategories();assert(elements['apple-status'].textContent.includes('unavailable'));
+            vm.runInContext('appleCategoryPages.clear()',ctx);
+            let parsedHtml=false;
+            ctx.fetch=async()=>({ok:false,status:502,headers:{get:()=> 'text/html'},json:async()=>{parsedHtml=true;throw new SyntaxError("Unexpected token '<'")}});
+            await ctx.loadAppleCategories();
+            assert.equal(parsedHtml,false,'HTML error pages must never be parsed as JSON');
+            assert(elements['apple-status'].textContent.includes('502'));
+            assert(elements['apple-categories'].innerHTML.includes('US Category'),'An error must preserve the currently rendered categories');
+            ctx.fetch=async()=>({ok:true,status:200,redirected:true,headers:{get:()=> 'text/html'},json:async()=>{parsedHtml=true;throw Error('login HTML')}});
+            await ctx.loadAppleCategories();
+            assert.equal(parsedHtml,false);
+            assert(elements['apple-status'].textContent.includes('Sign in'));
             vm.runInContext(home.slice(home.indexOf('async function loadAppleHomeSections('),home.indexOf('function renderHomeTrendingProviders(')),ctx);
             vm.runInContext("let homeLoadRequestSeq=7;homeLatestSections=[{title:'Latest Spotify enhancement'}];homeAppleStatus='loading';",ctx);
             ctx.fetch=async()=>({ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{source:'apple',type:'track',title:'Late Apple Song',id:'12'}]},{role:'videos',title:'Videos',items:[{source:'apple',type:'video',title:'Late Video',id:'13'}]}]})});
@@ -510,6 +521,51 @@ public sealed class AppleBrowseTest
         Assert.True(process.ExitCode == 0, error);
     }
 
+    [Theory]
+    [InlineData("categories")]
+    [InlineData("sections")]
+    [InlineData("page")]
+    public async Task BrowseTimeoutReturnsJsonAndTheNextRequestCanLoad(string route)
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-browse-timeout-").FullName;
+        try
+        {
+            var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(
+                NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+            foreach (var (field, value) in new[]
+            {
+                ("_configFolder", directory), ("_settingsFilePath", System.IO.Path.Join(directory, "config.json"))
+            })
+                typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService)
+                    .GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(settings, value);
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory, "config.json"),
+                "{\"appleMusic\":{\"storefront\":\"us\",\"mediaUserToken\":\"\"}}");
+            using var handler = new BrowseHandler { NextFailure = new TaskCanceledException("upstream timeout") };
+            using var client = new HttpClient(handler);
+            using var cache = new MemoryCache(new MemoryCacheOptions());
+            var service = new AppleMusicCatalogService(new ClientFactory(client), settings,
+                NullLogger<AppleMusicCatalogService>.Instance, cache);
+            var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service, settings,
+                NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance);
+            Task<Microsoft.AspNetCore.Mvc.IActionResult> Request(CancellationToken token) => route switch
+            {
+                "sections" => controller.Sections(token),
+                "page" => controller.Page("room/123", token),
+                _ => controller.Categories(token)
+            };
+            var timeout = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(await Request(CancellationToken.None));
+            Assert.Equal(504, timeout.StatusCode);
+            using var error = JsonDocument.Parse(JsonSerializer.Serialize(timeout.Value));
+            Assert.False(error.RootElement.GetProperty("success").GetBoolean());
+            Assert.Contains("timed out", error.RootElement.GetProperty("error").GetString());
+            Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await Request(CancellationToken.None));
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.Page("room/456", canceled.Token));
+        }
+        finally { System.IO.Directory.Delete(directory, true); }
+    }
+
     private static JsonArray Map(JsonElement root, bool categoriesOnly) =>
         Assert.IsType<JsonArray>(RequiredMethod(typeof(AppleCatalogJsonHelper), "MapBrowseSections").Invoke(null, [root, categoriesOnly]));
 
@@ -523,6 +579,7 @@ public sealed class AppleBrowseTest
 
     private sealed class BrowseHandler : HttpMessageHandler
     {
+        public Exception? NextFailure;
         public bool HoldResponse;
         public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -531,6 +588,7 @@ public sealed class AppleBrowseTest
         public string? AccountResponse { get; init; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            if (NextFailure is { } failure) { NextFailure = null; throw failure; }
             Requests.Add(request.RequestUri!.ToString());
             AuthorizationPresent.Add(request.Headers.Authorization != null);
             Started.TrySetResult();

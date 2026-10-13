@@ -86,6 +86,11 @@ public sealed class AppleBrowseApiController(
                 foreach (var item in sections.SelectMany(s => (s?["items"] as JsonArray) ?? [])) categories.Add(item!.DeepClone());
             return Ok(new { success = true, storefront, sections, categories });
         }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "Apple Music browse request timed out for {Path}", LogSanitizer.OneLine(path));
+            return StatusCode(504, new { success = false, error = "Apple Music browse request timed out. Please try again." });
+        }
         catch (ArgumentException exception) { return BadRequest(new { success = false, error = exception.Message }); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

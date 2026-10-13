@@ -435,7 +435,15 @@ async function loadAppleCategoryPage(url, root) {
         if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
             data = cached.data;
         } else {
-            const response = await fetch(url);
+            const response = await fetch(url, { headers: { Accept: 'application/json' } });
+            const contentType = response.headers?.get('content-type')?.toLowerCase();
+            const isJson = contentType?.includes('application/json') || contentType?.includes('+json');
+            if (response.status === 401 || (response.redirected && contentType && !isJson)) {
+                throw new Error('Sign in again to browse Apple Music categories.');
+            }
+            if (contentType && !isJson) {
+                throw new Error(`Apple Music categories unavailable (HTTP ${response.status}).`);
+            }
             data = await response.json();
             if (!response.ok || !data.success) throw new Error(data.error || 'Apple Music categories unavailable');
             appleCategoryPages.set(url, { data, loadedAt: Date.now() });
