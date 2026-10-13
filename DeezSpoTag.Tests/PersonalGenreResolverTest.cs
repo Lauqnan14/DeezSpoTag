@@ -16,6 +16,20 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class PersonalGenreResolverTest
 {
+    [Theory]
+    [InlineData("hip-hop", "Hip-Hop")]
+    [InlineData("trap", "Trap")]
+    public void AUserLockCannotRestoreABlockedMusicalIdentity(string taxonId, string blocked)
+    {
+        var resolution = PersonalGenreResolver.Resolve(
+            [new GenreTagObservation("Pop", PersonalGenreTaxonKind.Genre)],
+            locks: [new PersonalGenreLock(1, taxonId)],
+            blockedIdentities: [blocked]);
+        Assert.DoesNotContain(resolution.Classifications, item => item.TaxonId == taxonId);
+        Assert.DoesNotContain(blocked, resolution.Genres.Concat(resolution.Styles));
+        Assert.Contains("Pop", resolution.Genres);
+    }
+
     [Fact]
     public void BongoFlava_IsCanonicalGenre_NotHipHopOrAfropop()
     {

@@ -64,7 +64,7 @@ public static class GenreNormalizationPreprocessor
     {
         normalization ??= GenreNormalizationSnapshot.Default;
         catalog ??= PersonalGenreCatalog.Default;
-        var aliasMap = AliasesThatDoNotRetarget(normalization.AliasMap, catalog);
+        var aliasMap = GetSpellingAliases(normalization.AliasMap, catalog);
         Func<string, bool> isAtomic = value => GenreTermRecognizer.IsWholeValueRecognized(value, catalog, normalization);
 
         if (snapshot is null || snapshot.Observations.Count == 0)
@@ -197,7 +197,7 @@ public static class GenreNormalizationPreprocessor
     /// different one. Spelling preferences stay. A change of musical identity is
     /// a mapping, and it has to stay visible as a mapping.
     /// </summary>
-    private static IReadOnlyDictionary<string, string> AliasesThatDoNotRetarget(
+    public static IReadOnlyDictionary<string, string> GetSpellingAliases(
         IReadOnlyDictionary<string, string> aliasMap,
         PersonalGenreCatalog catalog)
     {

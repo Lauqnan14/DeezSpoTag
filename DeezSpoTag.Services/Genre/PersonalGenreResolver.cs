@@ -195,11 +195,11 @@ public static class PersonalGenreResolver
         }
 
         var classifications = Collect(candidates);
-        classifications = ApplyLocks(classifications, locks ?? Array.Empty<PersonalGenreLock>(), catalog);
+        classifications = ApplyLocks(classifications, locks ?? Array.Empty<PersonalGenreLock>(), catalog, blockedKeys);
         classifications = IncludeParentGenresIfRequested(
             classifications, locks ?? Array.Empty<PersonalGenreLock>(), settings, catalog, blockedKeys);
         classifications = classifications
-            .Where(item => item.UserLocked || !IsBlocked(item, catalog, blockedKeys))
+            .Where(item => !IsBlocked(item, catalog, blockedKeys))
             .ToList();
 
         var ordered = classifications
@@ -608,9 +608,12 @@ public static class PersonalGenreResolver
     private static List<PersonalGenreClassification> ApplyLocks(
         IReadOnlyList<PersonalGenreClassification> classifications,
         IReadOnlyList<PersonalGenreLock> locks,
-        PersonalGenreCatalog catalog)
+        PersonalGenreCatalog catalog,
+        HashSet<string> blockedKeys)
     {
-        var effectiveLocks = GetMostSpecificLocks(locks, catalog);
+        var effectiveLocks = GetMostSpecificLocks(locks, catalog)
+            .Where(item => !IsBlocked(item.Taxon, blockedKeys))
+            .ToList();
         if (effectiveLocks.Count == 0)
         {
             return classifications.ToList();
@@ -651,7 +654,8 @@ public static class PersonalGenreResolver
         }
 
         var hasGenreLock = GetMostSpecificLocks(locks, catalog)
-            .Any(item => item.Taxon.Kind == PersonalGenreTaxonKind.Genre);
+            .Any(item => item.Taxon.Kind == PersonalGenreTaxonKind.Genre
+                && !IsBlocked(item.Taxon, blockedKeys));
         if (hasGenreLock)
         {
             return classifications.ToList();

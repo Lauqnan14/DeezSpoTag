@@ -178,7 +178,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             // durable before any tag is touched, so a failure mid-write leaves a
             // full record of what was found rather than a half-written file.
             var plan = GenreSemanticTagIo.PlanFields(
-                resolution, context.Plan.Config.CapitalizeGenres, stylesTagName);
+                resolution, context.Plan.Config.CapitalizeGenres, stylesTagName,
+                resolved.Context.Normalization, catalog);
 
             // The proposed transformation is computed from the same plan the writer
             // consumes, and it is computed before the write. Describing the moves

@@ -984,6 +984,54 @@ public sealed class GenreIntelligenceAutoTagTest
         }
     }
 
+    [Theory]
+    [InlineData("flac", true, "hip hop", "TRAP")]
+    [InlineData("mp3", true, "hip hop", "TRAP")]
+    [InlineData("m4a", true, "hip hop", "TRAP")]
+    [InlineData("flac", false, "Hip-Hop", "Trap")]
+    public async Task TerminalWriteHonorsSavedSpellingForRecognizedTerms(
+        string extension, bool normalize, string expectedGenre, string expectedStyle)
+    {
+        var directory = Directory.CreateTempSubdirectory("genre-preferred-spelling-").FullName;
+        try
+        {
+            var path = Path.Join(directory, "track." + extension);
+            CreateSilentAudio(path);
+            using (var file = TagLib.File.Create(path))
+            {
+                file.Tag.Genres = ["Hip-Hop"];
+                file.Save();
+            }
+            LocalAutoTagRunner.SetSemanticRawTagForTest(path, "STYLE", ["Trap"]);
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = "Data Source=" + Path.Join(directory, "library.db")
+            }).Build();
+            await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            var store = new PersonalGenreStore(configuration);
+            await store.SaveSettingsAsync(new PersonalGenreSettings(
+                Enabled: true, NormalizeGenreTags: normalize,
+                GenreTagAliasRules: [new("Hip-Hop", "hip hop"), new("Trap", "TRAP")],
+                GenreTagBlockList: []));
+            using var services = new ServiceCollection().AddSingleton<IConfiguration>(configuration).AddLogging()
+                .AddSingleton(store).AddSingleton<LibraryRepository>()
+                .AddSingleton<GenreNormalizationProvider>().AddSingleton<PersonalGenreService>().BuildServiceProvider();
+            await store.SaveSnapshotAsync("job", path, GenreSnapshotStage.PreAutoTag,
+                PersonalGenreService.ReadFileSnapshot(path), null);
+            var result = await RunTerminalStageAsync(services, path, directory, false, false);
+            using var verify = TagLib.File.Create(path);
+            Assert.Equal(expectedGenre, Assert.Single(ReadGenres(verify, extension)));
+            Assert.Equal(expectedStyle, Assert.Single(LocalAutoTagRunner.ReadRawTagValues(verify, "." + extension, "STYLE")));
+            Assert.Contains(result.Resolution.Classifications, item => item.TaxonId == "hip-hop");
+            Assert.Contains(result.Resolution.Classifications, item => item.TaxonId == "trap");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, true);
+        }
+    }
+
     /// <summary>
     /// The terminal stage preprocesses through the shared Genre Normalization
     /// authority, so a user's alias preference is applied to the file's values

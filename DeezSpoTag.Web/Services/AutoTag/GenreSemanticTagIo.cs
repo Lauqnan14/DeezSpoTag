@@ -146,7 +146,8 @@ internal static class GenreSemanticTagIo
     /// <summary>
     /// Builds the final semantic payload: what each field should contain once
     /// Genre Intelligence is done. Genre and Style honor the run capitalization
-    /// preference; standalone previews use the default display spelling.
+    /// preference, followed by the supplied saved spelling preferences.
+    /// Standalone callers without normalization use the default display spelling.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -154,8 +155,8 @@ internal static class GenreSemanticTagIo
     /// spelling DeezSpoTag already applies to genres. The researched master stays the
     /// semantic authority: it decides what a value <em>is</em>, and this step decides
     /// only how it is written, so a term the master publishes in lowercase does not
-    /// reach a file in lowercase. A term with an established built-in spelling keeps
-    /// it, because the catalog prefers that name.
+    /// reach a file in lowercase by default. Explicit saved spelling rules take
+    /// precedence over display formatting without changing the classified identity.
     /// </para>
     /// <para>
     /// A preserved unmapped value is merged back into the field it was originally
@@ -173,11 +174,17 @@ internal static class GenreSemanticTagIo
     internal static IReadOnlyDictionary<PersonalGenreTaxonKind, List<string>> PlanFields(
         PersonalGenreResolution resolution,
         bool capitalizeGenres = true,
-        string? canonicalStyleField = null)
+        string? canonicalStyleField = null,
+        GenreNormalizationSnapshot? normalization = null,
+        PersonalGenreCatalog? catalog = null)
     {
         var plan = new Dictionary<PersonalGenreTaxonKind, List<string>>();
         var seen = new Dictionary<PersonalGenreTaxonKind, HashSet<string>>();
         canonicalStyleField = string.IsNullOrWhiteSpace(canonicalStyleField) ? "STYLE" : canonicalStyleField.Trim();
+        var spellingAliases = normalization?.Enabled == true
+            ? GenreNormalizationPreprocessor.GetSpellingAliases(
+                normalization.AliasMap, catalog ?? PersonalGenreCatalog.Default)
+            : null;
 
         Add(PersonalGenreTaxonKind.Genre, resolution.Genres);
         Add(PersonalGenreTaxonKind.Style, resolution.Styles);
@@ -220,6 +227,20 @@ internal static class GenreSemanticTagIo
                 var output = shouldCapitalize
                     ? LocalAutoTagRunner.CapitalizeGenre(value.Trim())
                     : value.Trim();
+
+                // Classification owns the identity; saved normalization owns its
+                // spelling. Apply spelling last so capitalization cannot undo it.
+                // Preserved unknowns have already been normalized before resolving.
+                if (format && spellingAliases is not null)
+                {
+                    output = GenreTagAliasNormalizer.NormalizeValue(output, spellingAliases);
+                }
+                if (normalization is not null
+                    && field is PersonalGenreTaxonKind.Genre or PersonalGenreTaxonKind.Style
+                    && GenreTagAliasNormalizer.DedupeValues([output], normalization.BlockList).Count == 0)
+                {
+                    continue;
+                }
 
                 if (!seen.TryGetValue(field, out var keys))
                 {
