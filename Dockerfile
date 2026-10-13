@@ -19,8 +19,17 @@ FROM docker:cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a98
 
 FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS youtube-node
 
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-proof-runtime
+COPY --from=youtube-node /usr/local/ /usr/local/
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 make g++ pkg-config libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev && rm -rf /var/lib/apt/lists/*
+COPY scripts/setup-youtube-playback-runtime.sh /setup/setup-youtube-playback-runtime.sh
+RUN bash /setup/setup-youtube-playback-runtime.sh /opt/youtube-playback-runtime \
+    && cd /opt/youtube-playback-runtime/server && npm prune --omit=dev --no-audit --no-fund
+
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-tools
 COPY --from=youtube-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=youtube-proof-runtime /opt/youtube-playback-runtime /app/Tools/youtube_playback_runtime
+RUN apt-get update && apt-get install -y --no-install-recommends libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libjpeg8 libgif7 librsvg2-2 && rm -rf /var/lib/apt/lists/*
 RUN apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends python3 python3-venv \
     && python3 -m venv /opt/youtube-venv \
@@ -69,6 +78,7 @@ RUN apt-get update -o Acquire::Retries=5 \
        aria2 \
        ffmpeg \
        libchromaprint-tools \
+       libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libjpeg8 libgif7 librsvg2-2 \
        unzip \
     && if ! apt-get install -y --no-install-recommends gpac; then \
          os_id="$(. /etc/os-release && echo "${ID}")"; \
@@ -149,6 +159,7 @@ RUN apt-get update -o Acquire::Retries=5 \
 COPY scripts/vibe-runtime-requirements.txt /app/scripts/vibe-runtime-requirements.txt
 
 COPY --from=youtube-tools /opt/youtube-venv /opt/youtube-venv
+COPY --from=youtube-tools /app/Tools/youtube_playback_runtime /app/Tools/youtube_playback_runtime
 COPY --from=youtube-node /usr/local/bin/node /usr/local/bin/node
 RUN ln -s /opt/youtube-venv/bin/yt-dlp /usr/local/bin/yt-dlp \
     && yt-dlp --version \

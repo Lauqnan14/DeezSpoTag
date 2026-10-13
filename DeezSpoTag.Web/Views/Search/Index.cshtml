@@ -2003,6 +2003,14 @@ async function routeSearchUrlDirectly(input) {
     }
 
     const parsedUrl = new URL(normalizedInput);
+    if (['music.youtube.com', 'www.youtube.com', 'youtube.com', 'youtu.be'].includes(parsedUrl.hostname.toLowerCase())) {
+        const response = await fetch(`/api/youtube/tracklist/parse-link?url=${encodeURIComponent(normalizedInput)}`);
+        const route = await response.json();
+        if (!response.ok || !route.id || !route.type) throw new Error(route.error || 'Invalid YouTube Music link.');
+        navigateToTracklist(route.id, route.type, 'ytmusic');
+        return true;
+    }
+
     if (classifyExternalSource(normalizedInput) === 'boomplay') {
         const response = await fetch(`/api/boomplay/parse-link?url=${encodeURIComponent(normalizedInput)}`);
         if (!response.ok) {

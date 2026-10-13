@@ -1068,6 +1068,14 @@ function setUnifiedSearchButtonState(isLoading) {
 async function handleUnifiedSearchUrlInput(input, parsedUrl) {
     const source = classifyExternalSource(parsedUrl);
 
+    if (source === 'youtube') {
+        const response = await fetch(`/api/youtube/tracklist/parse-link?url=${encodeURIComponent(input)}`);
+        const route = await response.json();
+        if (!response.ok || !route.id || !route.type) throw new Error(route.error || 'Invalid YouTube Music link.');
+        globalThis.location.href = `/Tracklist?id=${encodeURIComponent(route.id)}&type=${encodeURIComponent(route.type)}&source=ytmusic`;
+        return true;
+    }
+
     if (source === 'spotify') {
         const parsedSpotify = spotifyUrlHelpers.parseSpotifyUrl(input) || spotifyUrlHelpers.parseSpotifyUrl(parsedUrl.toString());
         if (!parsedSpotify?.type || !parsedSpotify?.id) {

@@ -22,6 +22,93 @@ namespace DeezSpoTag.Tests;
 
 public sealed class YouTubeBrowseTest
 {
+    [Theory]
+    [InlineData("https://music.youtube.com/watch?v=_POKM8PhWrA&list=PLabcdefghij&si=share", "_POKM8PhWrA", "track")]
+    [InlineData("https://music.youtube.com/playlist?list=PLabcdefghij&si=share", "PLabcdefghij", "playlist")]
+    [InlineData("https://music.youtube.com/browse/MPREb_album123", "MPREb_album123", "album")]
+    public void PastedLinksRetainNativeRecordingAndCollectionIdentity(string url, string id, string type)
+    {
+        var controller = new DeezSpoTag.Web.Controllers.Api.YouTubeTracklistApiController(null!, null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Web.Controllers.Api.YouTubeTracklistApiController>.Instance);
+        var result = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(controller.ParseLink(url));
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
+        Assert.Equal(id, json.RootElement.GetProperty("id").GetString());
+        Assert.Equal(type, json.RootElement.GetProperty("type").GetString());
+    }
+
+    [Theory]
+    [InlineData("https://music.youtube.com.evil.test/watch?v=_POKM8PhWrA")]
+    [InlineData("https://music.youtube.com/watch?v=invalid")]
+    [InlineData("https://music.youtube.com/watch?list=PLabcdefghij")]
+    [InlineData("https://music.youtube.com/browse/not-an-album")]
+    [InlineData("https://user:pass@music.youtube.com/watch?v=_POKM8PhWrA")]
+    public void PastedLinksRejectUntrustedOrUnsupportedDestinations(string url)
+    {
+        var controller = new DeezSpoTag.Web.Controllers.Api.YouTubeTracklistApiController(null!, null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Web.Controllers.Api.YouTubeTracklistApiController>.Instance);
+        Assert.IsType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>(controller.ParseLink(url));
+    }
+
+    [Fact]
+    public void NativeTracklistPlaybackUsesTheSelectedYouTubeRecordingEvenWithADeezerMatch()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Join(root.FullName, "DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/Views/Tracklist/Index.cshtml','utf8');
+        const start=source.indexOf('function buildTracklistPlaybackRequest('),end=source.indexOf('\nfunction ',start+1);
+        const row={dataset:{},querySelector:()=>({dataset:{trackId:'12345'}})};
+        const control={getAttribute:name=>name==='data-preview'?'/api/youtube/browse/stream?id=_POKM8PhWrA':'',closest:()=>row,setAttribute:()=>{}};
+        let calls=0;
+        const ctx=vm.createContext({assert,URL,encodeURIComponent,String,Number,console,process,location:{origin:'https://app.test'},
+          getPreviewVolume:()=>0.8,buildTracklistMediaMetadata:()=>({title:'Native song'}),
+          fetch:async url=>{calls++;assert.equal(url,'/api/youtube/browse/playback?id=_POKM8PhWrA');return {ok:true,json:async()=>({success:true,url:'/api/youtube/browse/stream?id=_POKM8PhWrA'})}}});
+        vm.runInContext(source.slice(start,end),ctx);ctx.control=control;
+        vm.runInContext(`(async()=>{const request=buildTracklistPlaybackRequest(control);assert.equal(request.source,'youtube');assert.equal(request.key,'youtube:_POKM8PhWrA');const result=await request.resolve();assert.equal(result.key,'youtube:_POKM8PhWrA');assert.equal(result.deezerId,'');assert.equal(result.url,'/api/youtube/browse/stream?id=_POKM8PhWrA');const again=await request.resolve();assert.equal(again.key,result.key)})().catch(e=>{console.error(e);process.exitCode=1})`,ctx);
+        """;
+        var startInfo = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        startInfo.ArgumentList.Add("-e"); startInfo.ArgumentList.Add(script); startInfo.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public void PastedYouTubeMusicLinksUseNativeRoutingInBothSearchInputs()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const root=process.argv[1];
+        const cases=[['https://music.youtube.com/watch?v=_POKM8PhWrA&si=share','_POKM8PhWrA','track'],['https://music.youtube.com/watch?v=_POKM8PhWrA&list=PLabcdefghij','_POKM8PhWrA','track'],['https://music.youtube.com/playlist?list=PLabcdefghij','PLabcdefghij','playlist'],['https://music.youtube.com/browse/MPREb_album123','MPREb_album123','album']];
+        for(const [file,name] of [['wwwroot/js/home-index.js','handleUnifiedSearchUrlInput'],['Views/Search/Index.cshtml','routeSearchUrlDirectly']]){
+          const source=fs.readFileSync(root+'/DeezSpoTag.Web/'+file,'utf8');
+          const start=source.indexOf('async function '+name+'('),tail=source.slice(start+1),end=tail.search(/\n(?:async )?function /);
+          let expected,navigation;
+          const ctx=vm.createContext({URL,URLSearchParams,encodeURIComponent,String,console,
+            isValidURL:()=>true,classifyExternalSource:()=> 'youtube',isSpotifyHostname:()=>false,
+            shouldUseLinkMap:()=>true,tryBuildExternalPlaylistRoute:()=>null,
+            navigateToTracklist:(id,type,provider)=>navigation={id,type,provider},
+            mapInputLinkToDeezer:()=>{throw Error('Native playback must not require a Deezer match')},
+            fetch:async url=>{assert(url.startsWith('/api/youtube/tracklist/parse-link?url='),'Native links must bypass Deezer resolution');return {ok:true,json:async()=>({id:expected[1],type:expected[2]})}},location:{href:''}});
+          vm.runInContext(source.slice(start,end<0?undefined:start+1+end),ctx);
+          ctx.cases=cases;ctx.setExpected=value=>expected=value;
+          ctx.verify=()=>{if(navigation){assert.equal(navigation.provider,'ytmusic');assert.equal(navigation.id,expected[1]);assert.equal(navigation.type,expected[2]);}else{const url=new URL(ctx.location.href,'https://app.test');assert.equal(url.searchParams.get('source'),'ytmusic');assert.equal(url.searchParams.get('id'),expected[1]);assert.equal(url.searchParams.get('type'),expected[2]);}};
+          ctx.runName=name;
+          vm.runInContext(`(async()=>{for(const item of cases){setExpected(item);await globalThis[runName](item[0],new URL(item[0]));verify()}})().catch(e=>{console.error(e);process.exitCode=1})`,vm.createContext({...ctx,process}));
+        }
+        """;
+        var startInfo = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        startInfo.ArgumentList.Add("-e"); startInfo.ArgumentList.Add(script); startInfo.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
     [Fact]
     public async Task TrendingCompletesWhileFeaturedDiscoveryIsBlockedAndSharesConcurrentReads()
     {

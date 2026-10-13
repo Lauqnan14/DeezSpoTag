@@ -7258,18 +7258,21 @@ function buildTracklistPlaybackRequest(control) {
 	    const row = control.closest('tr');
 	    const deezerId = String(row?.querySelector('.track-checkbox')?.dataset.trackId || row?.dataset.availabilityDeezerId || '').trim();
 	    const previewUrl = String(control.getAttribute('data-preview') || '').trim();
+    const youtubeVideoId = /^\/api\/youtube\/browse\/stream\?id=([A-Za-z0-9_-]{11})$/.exec(previewUrl)?.[1] || '';
+    const youtubeKey = youtubeVideoId ? `youtube:${youtubeVideoId}` : '';
 	    const localTrackId = String(row?.dataset.localTrackId || '').trim();
 	    const localVariantKey = String(row?.dataset.localVariantKey || '').trim();
 	    const localAudioFileId = String(row?.dataset.localAudioFileId || '').trim();
 	    const localKey = localTrackId
 	        ? `library:${localTrackId}:${localVariantKey || (localAudioFileId ? `audio:${localAudioFileId}` : previewUrl)}`
 	        : '';
-	    const initialKey = localKey || (deezerId
+	    const initialKey = youtubeKey || localKey || (deezerId
 	        ? `deezer:${deezerId}`
 	        : (previewUrl ? `preview:${previewUrl}` : `tracklist:${row?.dataset?.availabilityKey || ''}`));
 
     return {
         page: 'tracklist',
+        source: youtubeVideoId ? 'youtube' : undefined,
         button: control,
         key: initialKey,
         volume: getPreviewVolume(),
@@ -7287,6 +7290,15 @@ function buildTracklistPlaybackRequest(control) {
             const currentRow = control.closest('tr');
             if (!currentRow) {
                 return { url: '', silentUnavailable: true };
+            }
+
+            if (resolvedPreviewUrl.startsWith('/api/youtube/browse/stream?')) {
+                const id = new URL(resolvedPreviewUrl, globalThis.location.origin).searchParams.get('id');
+                if (!/^[A-Za-z0-9_-]{11}$/.test(id || '')) throw new Error('Invalid YouTube recording ID.');
+                const response = await fetch(`/api/youtube/browse/playback?id=${encodeURIComponent(id)}`);
+                const data = await response.json();
+                if (!response.ok || !data.success || !data.url) throw new Error(data.error || 'YouTube playback unavailable.');
+                resolvedPreviewUrl = data.url;
             }
 
             if (resolvedPreviewUrl.startsWith('apple-browse:')) {
@@ -7333,8 +7345,8 @@ function buildTracklistPlaybackRequest(control) {
 	                : '';
 	            return {
 	                url: resolvedPreviewUrl,
-	                deezerId: resolvedDeezerId,
-	                key: currentLocalKey || (resolvedDeezerId ? `deezer:${resolvedDeezerId}` : `preview:${resolvedPreviewUrl}`)
+	                deezerId: youtubeVideoId ? '' : resolvedDeezerId,
+	                key: youtubeKey || currentLocalKey || (resolvedDeezerId ? `deezer:${resolvedDeezerId}` : `preview:${resolvedPreviewUrl}`)
 	            };
         },
         getNextRequest: () => {

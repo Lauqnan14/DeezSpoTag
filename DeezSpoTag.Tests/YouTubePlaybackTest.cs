@@ -101,7 +101,7 @@ public sealed class YouTubePlaybackTest
     {
         using var fixture = new Fixture();
         fixture.Cache.Set("youtube:stream:yt-dlp:" + Id, new YouTubePlaybackResolver.StreamInfo("https://rr1.googlevideo.com/videoplayback", "audio/mp4", DateTimeOffset.UtcNow.AddMinutes(5)));
-        var resolver = new YouTubePlaybackResolver(fixture.Settings, fixture.Cache);
+        var resolver = fixture.CreateResolver();
         using var handler = new Handler();
         var api = fixture.Controller;
         api.ControllerContext = new() { HttpContext = new DefaultHttpContext() };
@@ -123,7 +123,7 @@ public sealed class YouTubePlaybackTest
     public async Task MissingExtractorAndCancelledRequest_AreExplicitFailures()
     {
         using var fixture = new Fixture("/missing/youtube-stream-extractor");
-        var resolver = new YouTubePlaybackResolver(fixture.Settings, fixture.Cache);
+        var resolver = fixture.CreateResolver();
         await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync(Id, CancellationToken.None));
         using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resolver.ResolveAsync(Id, cancelled.Token));
@@ -143,7 +143,7 @@ public sealed class YouTubePlaybackTest
             File.WriteAllText(executable, "#!/bin/sh\necho call >> '" + counter + "'\nprintf '%s' '" + json + "'\n");
             File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             using var fixture = new Fixture(executable);
-            var resolver = new YouTubePlaybackResolver(fixture.Settings, fixture.Cache);
+            var resolver = fixture.CreateResolver();
             await Task.WhenAll(resolver.ResolveAsync(Id, CancellationToken.None), resolver.ResolveAsync(Id, CancellationToken.None));
             Assert.Single(File.ReadAllLines(counter));
             File.WriteAllText(executable, "#!/bin/sh\nexec sleep 30\n");
@@ -153,15 +153,226 @@ public sealed class YouTubePlaybackTest
         finally { Directory.Delete(directory, true); }
     }
 
+    [Fact]
+    public async Task ExtractorThrottlingIsReportedWithoutLeakingDiagnostics()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var directory = Directory.CreateTempSubdirectory("yt-throttle-").FullName;
+        try
+        {
+            var executable = Path.Join(directory, "extractor");
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\necho 'HTTP Error 429 https://secret.test/signed?token=private' >&2\nexit 1\n");
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var fixture = new Fixture(executable);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None));
+            Assert.Contains("throttled", error.Message);
+            Assert.DoesNotContain("secret.test", error.Message);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task GuestSessionPersistsAcrossResolverRestartAndRefreshesOnceOnRejection()
+    {
+        var directory = Directory.CreateTempSubdirectory("yt-session-test-").FullName;
+        try
+        {
+            var executable = Path.Join(directory, "extractor");
+            var scopes = Path.Join(directory, "token-scopes");
+            var json = JsonSerializer.Serialize(new { id = Id, vcodec = "none", acodec = "mp4a", ext = "m4a", url = "https://rr1.googlevideo.com/file?expire=" + DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds() });
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\necho \"$XDG_CACHE_HOME\" >> '" + scopes + "'\nprintf '%s' '" + json + "'\n");
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var fixture = new Fixture(executable);
+            await fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None);
+            Assert.Equal(1, fixture.Bootstrap.Calls);
+            Assert.True(File.Exists(fixture.SessionFile));
+            fixture.Cache.Remove("youtube:stream:" + executable + ":" + Id);
+            await fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None);
+            Assert.Equal(1, fixture.Bootstrap.Calls);
+            fixture.Cache.Remove("youtube:stream:" + executable + ":" + Id);
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\necho \"$XDG_CACHE_HOME\" >> '" + scopes + "'\ncase \"$*\" in *fixture-visitor-1*) echo 'Sign in to confirm you are not a bot' >&2; exit 1;; esac\nprintf '%s' '" + json + "'\n");
+            await fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None);
+            Assert.Equal(2, fixture.Bootstrap.Calls);
+            Assert.Contains("fixture-visitor-2", await File.ReadAllTextAsync(fixture.SessionFile));
+            var tokenScopes = File.ReadAllLines(scopes);
+            Assert.Equal(tokenScopes[0], tokenScopes[1]);
+            Assert.Equal(tokenScopes[1], tokenScopes[2]);
+            Assert.NotEqual(tokenScopes[2], tokenScopes[3]);
+            Assert.All(tokenScopes, scope => Assert.DoesNotContain("fixture-visitor", scope));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task MissingProviderAndInvalidBootstrapFailWithoutFabricatingIdentity()
+    {
+        using var fixture = new Fixture();
+        fixture.Bootstrap.BodyOverride = "{}";
+        var invalid = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None));
+        Assert.Contains("invalid data", invalid.Message);
+        Assert.False(File.Exists(fixture.SessionFile));
+        File.Delete(Path.Join(fixture.DirectoryPath, "runtime", "plugins", "bgutil-ytdlp-pot-provider.zip"));
+        var missing = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None));
+        Assert.Contains("runtime is missing", missing.Message);
+        Assert.Equal(1, fixture.Bootstrap.Calls);
+    }
+
+    [Theory]
+    [InlineData("HTTP Error 429", "throttled")]
+    [InlineData("Video unavailable at https://secret.test/?signature=429abc", "unavailable")]
+    [InlineData("not available in your country", "geographic")]
+    [InlineData("Sign in to confirm you are not a bot", "session")]
+    [InlineData("PO Token provider failed", "provider")]
+    public void SafeDiagnosticsHaveDistinctCategories(string text, string category)
+    {
+        var failure = YouTubePlaybackResolver.ClassifyFailure(text + " https://secret.test/token");
+        Assert.Equal(category, failure.Category);
+        Assert.DoesNotContain("secret.test", failure.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectedStreamRefreshesOnceAndPreservesTheRange(bool rejectAgain)
+    {
+        var directory = Directory.CreateTempSubdirectory("yt-proxy-refresh-").FullName;
+        try
+        {
+            var executable = Path.Join(directory, "extractor");
+            var json = JsonSerializer.Serialize(new { id = Id, vcodec = "none", acodec = "mp4a", ext = "m4a", url = "https://rr2.googlevideo.com/file?expire=" + DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds() });
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\nprintf '%s' '" + json + "'\n");
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var fixture = new Fixture(executable);
+            fixture.Cache.Set("youtube:stream:" + executable + ":" + Id,
+                new YouTubePlaybackResolver.StreamInfo("https://rr1.googlevideo.com/old", "audio/mp4", DateTimeOffset.UtcNow.AddMinutes(5)));
+            using var handler = new Handler { RejectFirst = true, RejectAgain = rejectAgain };
+            var api = fixture.Controller;
+            api.ControllerContext = new() { HttpContext = new DefaultHttpContext() };
+            api.Response.Body = new MemoryStream(); api.Request.Headers.Range = "bytes=0-3";
+            var result = await api.Stream(Id, fixture.CreateResolver(), new Factory(handler), CancellationToken.None);
+            Assert.Equal(2, handler.Calls);
+            Assert.Equal("bytes=0-3", handler.Range);
+            if (rejectAgain)
+            {
+                Assert.Equal(502, Assert.IsType<ObjectResult>(result).StatusCode);
+                Assert.Equal(0, api.Response.Body.Length);
+            }
+            else
+            {
+                Assert.IsType<EmptyResult>(result);
+                Assert.Equal(206, api.Response.StatusCode); Assert.Equal(4, api.Response.Body.Length);
+            }
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Theory]
+    [InlineData("HTTP Error 429", 1)]
+    [InlineData("not available in your country", 1)]
+    [InlineData("Sign in to confirm you are not a bot", 2)]
+    [InlineData("PO Token provider failed", 1)]
+    public async Task RecoveryLimitsAttemptsAndCoalescesRepeatedFailures(string diagnostic, int attempts)
+    {
+        var directory = Directory.CreateTempSubdirectory("yt-recovery-limit-").FullName;
+        try
+        {
+            var executable = Path.Join(directory, "extractor"); var counter = Path.Join(directory, "calls");
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\necho call >> '" + counter + "'\necho '" + diagnostic + "' >&2\nexit 1\n");
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var fixture = new Fixture(executable); var resolver = fixture.CreateResolver();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync(Id, CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync(Id, CancellationToken.None));
+            Assert.Equal(attempts, File.ReadAllLines(counter).Length);
+            Assert.Equal(attempts, fixture.Bootstrap.Calls);
+            if (diagnostic.Contains("429", StringComparison.Ordinal))
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync("aaaaaaaaaaa", CancellationToken.None));
+                Assert.Equal(1, File.ReadAllLines(counter).Length);
+            }
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task CallerCancellationInterruptsSessionRecovery()
+    {
+        var directory = Directory.CreateTempSubdirectory("yt-recovery-cancel-").FullName;
+        try
+        {
+            var executable = Path.Join(directory, "extractor");
+            await File.WriteAllTextAsync(executable, "#!/bin/sh\necho 'Sign in to confirm you are not a bot' >&2\nexit 1\n");
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var fixture = new Fixture(executable); fixture.Bootstrap.HoldSecond = true;
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.CreateResolver().ResolveAsync(Id, cancellation.Token));
+            Assert.Equal(2, fixture.Bootstrap.Calls);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task UnsatisfiableRangeIsForwardedWithoutRefreshingTheStream()
+    {
+        using var fixture = new Fixture();
+        fixture.Cache.Set("youtube:stream:yt-dlp:" + Id, new YouTubePlaybackResolver.StreamInfo("https://rr1.googlevideo.com/file", "audio/mp4", DateTimeOffset.UtcNow.AddMinutes(5)));
+        using var handler = new Handler { StatusOverride = HttpStatusCode.RequestedRangeNotSatisfiable };
+        fixture.Controller.ControllerContext = new() { HttpContext = new DefaultHttpContext() };
+        fixture.Controller.Response.Body = new MemoryStream(); fixture.Controller.Request.Headers.Range = "bytes=99-";
+        await fixture.Controller.Stream(Id, fixture.CreateResolver(), new Factory(handler), CancellationToken.None);
+        Assert.Equal(416, fixture.Controller.Response.StatusCode); Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task MalformedPersistedGuestIdentityIsReplacedByBootstrap()
+    {
+        using var fixture = new Fixture("/missing/extractor");
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.SessionFile)!);
+        await File.WriteAllTextAsync(fixture.SessionFile, "{broken");
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.CreateResolver().ResolveAsync(Id, CancellationToken.None));
+        Assert.Contains("extractor is missing", failure.Message);
+        using var persisted = JsonDocument.Parse(await File.ReadAllTextAsync(fixture.SessionFile));
+        Assert.Equal("fixture-visitor-1", persisted.RootElement.GetProperty("VisitorData").GetString());
+        Assert.Equal(1, fixture.Bootstrap.Calls);
+    }
+
+    [Fact]
+    public async Task AStartedResponseIsNeverRefreshedOrOverwritten()
+    {
+        using var fixture = new Fixture();
+        fixture.Cache.Set("youtube:stream:yt-dlp:" + Id, new YouTubePlaybackResolver.StreamInfo("https://rr1.googlevideo.com/file", "audio/mp4", DateTimeOffset.UtcNow.AddMinutes(5)));
+        using var handler = new Handler { RejectFirst = true };
+        var context = new DefaultHttpContext();
+        context.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpResponseFeature>(new StartedResponseFeature());
+        fixture.Controller.ControllerContext = new() { HttpContext = context };
+        fixture.Controller.Response.Body = new MemoryStream();
+        await fixture.Controller.Response.Body.WriteAsync(new byte[] { 1, 2, 3 });
+        await Assert.ThrowsAsync<HttpRequestException>(() => fixture.Controller.Stream(Id, fixture.CreateResolver(), new Factory(handler), CancellationToken.None));
+        Assert.Equal(1, handler.Calls); Assert.Equal(3, fixture.Controller.Response.Body.Length);
+        Assert.True(fixture.Cache.TryGetValue("youtube:stream:yt-dlp:" + Id, out object? _));
+    }
+
+    private sealed class StartedResponseFeature : Microsoft.AspNetCore.Http.Features.HttpResponseFeature
+    {
+        public override bool HasStarted => true;
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string directory = Path.Combine(Path.GetTempPath(), "yt-playback-" + Guid.NewGuid());
         public readonly DeezSpoTagSettingsService Settings = new(NullLogger<DeezSpoTagSettingsService>.Instance);
         public readonly MemoryCache Cache = new(new MemoryCacheOptions());
         public readonly YouTubeBrowseApiController Controller;
+        public readonly BootstrapHandler Bootstrap = new();
+        public string DirectoryPath => directory;
+        public string SessionFile => Path.Join(directory, "cache", "youtube-playback", "session.json");
+        public YouTubePlaybackResolver CreateResolver() => new(Settings, Cache, new Factory(Bootstrap), directory, Path.Join(directory, "runtime"));
         public Fixture(string executable = "yt-dlp")
         {
-            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(Path.Join(directory, "runtime", "server", "build"));
+            Directory.CreateDirectory(Path.Join(directory, "runtime", "plugins"));
+            File.WriteAllText(Path.Join(directory, "runtime", "server", "build", "generate_once.js"), "fixture");
+            File.WriteAllText(Path.Join(directory, "runtime", "plugins", "bgutil-ytdlp-pot-provider.zip"), "fixture");
             var file = Path.Combine(directory, "config.json");
             typeof(DeezSpoTagSettingsService).GetField("_configFolder", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(Settings, directory);
             typeof(DeezSpoTagSettingsService).GetField("_settingsFilePath", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(Settings, file);
@@ -170,16 +381,36 @@ public sealed class YouTubePlaybackTest
         }
         public void Dispose() { Cache.Dispose(); Directory.Delete(directory, true); }
     }
+    private sealed class BootstrapHandler : HttpMessageHandler
+    {
+        public int Calls;
+        public string? BodyOverride;
+        public bool HoldSecond;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            Calls++;
+            if (HoldSecond && Calls == 2) await Task.Delay(Timeout.Infinite, token);
+            object?[] device = new object?[14]; device[13] = "fixture-visitor-" + Calls;
+            var json = JsonSerializer.Serialize(new object?[] { new object?[] { null, null, new object?[] { new object?[] { device }, null } } });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(BodyOverride ?? json) };
+        }
+    }
     private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
     { public HttpClient CreateClient(string name) => new(handler, false); }
     private sealed class Handler : HttpMessageHandler
     {
         public string? Range;
         public bool Redirect;
+        public HttpStatusCode? StatusOverride;
+        public bool RejectFirst;
+        public bool RejectAgain;
+        public int Calls;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            Calls++;
             Range = request.Headers.Range?.ToString();
-            var response = new HttpResponseMessage(Redirect ? HttpStatusCode.Redirect : HttpStatusCode.PartialContent) { Content = new ByteArrayContent([1, 2, 3, 4]) };
+            var response = new HttpResponseMessage(StatusOverride ?? (RejectFirst && (Calls == 1 || RejectAgain) ? HttpStatusCode.Forbidden : Redirect ? HttpStatusCode.Redirect : HttpStatusCode.PartialContent)) { Content = new ByteArrayContent([1, 2, 3, 4]) };
             response.Content.Headers.ContentRange = new(0, 3, 20);
             return Task.FromResult(response);
         }

@@ -69,22 +69,34 @@ public sealed class YouTubeBrowseApiController(YouTubeMusicSearchClient client, 
         {
             var range = Request.Headers.Range.ToString();
             if (range.Length > 80 || (range.Length > 0 && !Regex.IsMatch(range, "^bytes=(?:[0-9]{1,16}-[0-9]{0,16}|-[0-9]{1,16})$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))) return BadRequest("Unsupported media range.");
-            var media = await resolver.ResolveAsync(id, cancellationToken);
-            using var request = new HttpRequestMessage(HttpMethod.Get, media.Url);
-            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
-            if (range.Length > 0) request.Headers.TryAddWithoutValidation("Range", range);
             using var http = httpFactory.CreateClient("YouTubeStreaming");
-            using var upstream = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if ((int)upstream.StatusCode is not 200 and not 206 and not 416) return StatusCode(502, new { success = false, error = "YouTube stream unavailable." });
-            Response.StatusCode = (int)upstream.StatusCode;
-            Response.ContentType = media.ContentType;
-            Response.Headers.CacheControl = "private, no-store";
-            Response.Headers.AcceptRanges = "bytes";
-            if (upstream.Content.Headers.ContentRange is { } contentRange) Response.Headers.ContentRange = contentRange.ToString();
-            if (upstream.Content.Headers.ContentLength is { } contentLength) Response.ContentLength = contentLength;
-            await using var body = await upstream.Content.ReadAsStreamAsync(cancellationToken);
-            await body.CopyToAsync(Response.Body, 64 * 1024, cancellationToken);
-            return new EmptyResult();
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var media = await resolver.ResolveAsync(id, cancellationToken);
+                using var request = new HttpRequestMessage(HttpMethod.Get, media.Url);
+                request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+                if (range.Length > 0) request.Headers.TryAddWithoutValidation("Range", range);
+                using var upstream = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (upstream.StatusCode == System.Net.HttpStatusCode.Forbidden && attempt == 0)
+                {
+                    if (Response.HasStarted) throw new HttpRequestException("YouTube rejected a started stream.");
+                    upstream.Dispose();
+                    resolver.Invalidate(id);
+                    continue;
+                }
+                if ((int)upstream.StatusCode is not 200 and not 206 and not 416)
+                    return StatusCode(502, new { success = false, error = "YouTube stream unavailable." });
+                Response.StatusCode = (int)upstream.StatusCode;
+                Response.ContentType = media.ContentType;
+                Response.Headers.CacheControl = "private, no-store";
+                Response.Headers.AcceptRanges = "bytes";
+                if (upstream.Content.Headers.ContentRange is { } contentRange) Response.Headers.ContentRange = contentRange.ToString();
+                if (upstream.Content.Headers.ContentLength is { } contentLength) Response.ContentLength = contentLength;
+                await using var body = await upstream.Content.ReadAsStreamAsync(cancellationToken);
+                await body.CopyToAsync(Response.Body, 64 * 1024, cancellationToken);
+                return new EmptyResult();
+            }
+            return StatusCode(502, new { success = false, error = "YouTube stream unavailable." });
         }
         catch (ArgumentException ex) { return BadRequest(ex.Message); }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { if (Response.HasStarted) throw; return StatusCode(504); }

@@ -581,7 +581,12 @@ public partial class Program
         // unauthenticated, never touches the user's YouTube account, and costs no Data API quota,
         // so it must not inherit an OAuth token the Data API client would attach.
         services.AddHttpClient<DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient>();
-        services.AddSingleton<DeezSpoTag.Web.Services.YouTubePlaybackResolver>();
+        services.AddSingleton<DeezSpoTag.Web.Services.YouTubePlaybackResolver>(sp => new(
+            sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
+            sp.GetRequiredService<IHttpClientFactory>(), AppDataPaths.GetDataRoot(sp.GetRequiredService<IWebHostEnvironment>()),
+            Path.Join(sp.GetRequiredService<IWebHostEnvironment>().ContentRootPath, "Tools", "youtube_playback_runtime")));
+        services.AddHttpClient("YouTubePlaybackBootstrap", client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
         services.AddHttpClient("YouTubeStreaming", client => client.Timeout = TimeSpan.FromSeconds(30))
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
           services.AddSingleton<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>();

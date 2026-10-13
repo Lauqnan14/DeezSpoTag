@@ -4,6 +4,7 @@ using System.Linq;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -340,6 +341,24 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.Contains("AmazonMusicMetadataApiGuardrailTest", fixture.Calls[1]);
     }
 
+    [Fact]
+    public async Task TemporaryRepository_CommitsDoNotStartAutomaticMaintenance()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        fixture.WriteFile("fixture.txt", "maintenance regression");
+        await fixture.GitAsync("add", "fixture.txt");
+        var trace = await fixture.TraceGitAsync("commit", "-m", "fixture change");
+        foreach (var line in trace.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var entry = JsonDocument.Parse(line);
+            if (entry.RootElement.GetProperty("event").GetString() == "child_start")
+            {
+                Assert.DoesNotContain("maintenance", entry.RootElement.GetProperty("argv")
+                    .EnumerateArray().Select(argument => argument.GetString()));
+            }
+        }
+    }
+
     private sealed class GuardrailFixture : IDisposable
     {
         private readonly string directory = Path.Join(Path.GetTempPath(), "guardrail-selection-" + Guid.NewGuid());
@@ -366,6 +385,10 @@ public sealed class PublishingWorkflowGuardrailTest
             WriteFile("bin/dotnet", "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$TEST_CALLS\"\nif [[ \"$1\" == test ]]; then exit \"${TEST_EXIT:-0}\"; fi\n");
             await ExecuteAsync("chmod", ["+x", "bin/dotnet", "scripts/guardrails.sh"], []);
             await GitAsync("init", "-b", "main");
+            // Disposable repositories must not outlive their awaited Git commands
+            // through background maintenance that races recursive cleanup.
+            await GitAsync("config", "maintenance.auto", "false");
+            await GitAsync("config", "gc.auto", "0");
             await GitAsync("config", "user.email", "fixture@example.invalid");
             await GitAsync("config", "user.name", "Guardrail fixture");
             await GitAsync("add", ".");
@@ -393,6 +416,15 @@ public sealed class PublishingWorkflowGuardrailTest
             var result = await ExecuteAsync("git", args, []);
             Assert.Equal(0, result.ExitCode);
             return result.Output.Trim();
+        }
+
+        public async Task<string> TraceGitAsync(params string[] args)
+        {
+            var tracePath = Path.Join(directory, ".git", "process-trace.json");
+            var result = await ExecuteAsync("git", args,
+                new Dictionary<string, string> { ["GIT_TRACE2_EVENT"] = tracePath });
+            Assert.Equal(0, result.ExitCode);
+            return await File.ReadAllTextAsync(tracePath);
         }
 
         public Task<(int ExitCode, string Output)> RunAsync(string mode = "changed", string testExit = "0")

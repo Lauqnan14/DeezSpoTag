@@ -157,3 +157,5 @@ DeezSpoTag.Web/wwwroot/images/meloday/generated/
 # Local recommendation settings mockups
 /tmp/counter-checkbox-mockup.html
 /tmp/recommendations-section-mockup.html
+# Prepared proof-token dependencies; installed only during setup/build.
+DeezSpoTag.Web/Tools/youtube_playback_runtime/

@@ -2,34 +2,6 @@
     <div class="helper mb-3" id="pgStatus" role="status" aria-live="polite">Loading Personal Genre…</div>
 
     <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
-        <div class="card-header"><h5 class="mb-0"><i class="fas fa-spell-check me-2"></i>Genre Normalization</h5></div>
-        <div class="card-body autotag-card-body">
-            <div class="download-section">
-                <div class="download-section-title">Normalize equivalent names</div>
-                <p class="helper mb-3">Use one spelling for equivalent names, such as <em>Hip-Hop</em> and <em>Hip Hop</em>. Cleanup runs before classification for downloads, QuickTag and AutoTag.</p>
-                <div class="download-grid download-grid-2 genre-intelligence-checkbox-grid">
-                    <div class="checkbox-group"><input id="pgNormalizeGenreTags" type="checkbox" /><label for="pgNormalizeGenreTags">Normalize genre tags with alias list</label></div>
-                </div>
-            </div>
-            <div class="download-section" id="pgAliasRulesGroup">
-                <div class="download-section-title">Alias rules</div>
-                <p class="helper mb-3">Choose the spelling to write for each value. These editable replacements are separate from aliases that define vocabulary terms.</p>
-                <div class="autotag-diff-table-wrap"><table class="autotag-diff-table"><thead><tr><th>Value found</th><th>Replace with</th><th></th></tr></thead><tbody id="pgAliasRulesBody"></tbody></table></div>
-                <p class="pg-muted" id="pgAliasRulesEmpty">No alias rules yet.</p>
-                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgAliasRuleAdd">Add rule</button></div>
-            </div>
-            <div class="download-section" id="pgBlockListGroup">
-                <div class="download-section-title">Blocked genres</div>
-                <p class="helper mb-3">Blocked values are removed before genre tags are written. <em>other</em>, <em>others</em> and <em>Worldwide</em> are blocked by default.</p>
-                <div class="form-group"><label for="pgGenreBlockList">One genre per line, or comma-separated</label><textarea id="pgGenreBlockList" rows="4"></textarea></div>
-            </div>
-            <div class="download-section">
-                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgSaveNormalization">Save Genre Normalization</button></div>
-            </div>
-        </div>
-    </article>
-
-    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
         <div class="card-header"><h5 class="mb-0"><i class="fas fa-sitemap me-2"></i>Genre vocabulary</h5></div>
         <div class="card-body autotag-card-body">
             <div class="download-section">
@@ -139,6 +111,34 @@
                         <button class="action-btn action-btn-sm" type="button" id="pgTaxonomyNext">Next</button>
                     </div>
                 </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="card bg-darker border-secondary mb-4 autotag-quality-background">
+        <div class="card-header"><h5 class="mb-0"><i class="fas fa-spell-check me-2"></i>Genre Normalization</h5></div>
+        <div class="card-body autotag-card-body">
+            <div class="download-section">
+                <div class="download-section-title">Normalize equivalent names</div>
+                <p class="helper mb-3">Use one spelling for equivalent names, such as <em>Hip-Hop</em> and <em>Hip Hop</em>. Cleanup runs before classification for downloads, QuickTag and AutoTag.</p>
+                <div class="download-grid download-grid-2 genre-intelligence-checkbox-grid">
+                    <div class="checkbox-group"><input id="pgNormalizeGenreTags" type="checkbox" /><label for="pgNormalizeGenreTags">Normalize genre tags with alias list</label></div>
+                </div>
+            </div>
+            <div class="download-section" id="pgAliasRulesGroup">
+                <div class="download-section-title">Alias rules</div>
+                <p class="helper mb-3">Choose the spelling to write for each value. These editable replacements are separate from aliases that define vocabulary terms.</p>
+                <div class="autotag-diff-table-wrap"><table class="autotag-diff-table"><thead><tr><th>Value found</th><th>Replace with</th><th></th></tr></thead><tbody id="pgAliasRulesBody"></tbody></table></div>
+                <p class="pg-muted" id="pgAliasRulesEmpty">No alias rules yet.</p>
+                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgAliasRuleAdd">Add rule</button></div>
+            </div>
+            <div class="download-section" id="pgBlockListGroup">
+                <div class="download-section-title">Blocked genres</div>
+                <p class="helper mb-3">Blocked values are removed before genre tags are written. <em>other</em>, <em>others</em> and <em>Worldwide</em> are blocked by default.</p>
+                <div class="form-group"><label for="pgGenreBlockList">One genre per line, or comma-separated</label><textarea id="pgGenreBlockList" rows="4"></textarea></div>
+            </div>
+            <div class="download-section">
+                <div class="autotag-actions genre-intelligence-actions"><button class="action-btn action-btn-sm" type="button" id="pgSaveNormalization">Save Genre Normalization</button></div>
             </div>
         </div>
     </article>

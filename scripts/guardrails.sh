@@ -118,12 +118,20 @@ if [[ "$MODE" == "changed" ]]; then
       *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
       scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      scripts/setup-youtube-playback-runtime.sh|DeezSpoTag.Web/DeezSpoTag.Web.csproj)
+        add_tests_matching '^(YouTubePlaybackTest|PublishingWorkflowGuardrailTest)$' ;;
+      DeezSpoTag.Web/Views/Search/Index.cshtml)
+        add_tests_matching '^(YouTubeBrowseTest|AppleTracklistNativePlaybackGuardrailTest)$' ;;
+      DeezSpoTag.Web/Views/Tracklist/Index.cshtml)
+        add_tests_matching '^(YouTubeBrowseTest|AppleTracklistNativePlaybackGuardrailTest|SpotifyIncrementalPlaybackGuardrailTest|MediaSessionGuardrailTest)$' ;;
       *Amazon*) add_tests_matching '^(Amazon|DownloadIntentFallbackParity|EngineFallbackCoordinator)' ;;
       *YouTube*) add_tests_matching '^(YouTube|FavoritesProvider|PublicDownloadProviderBoundary)' ;;
       *Apple*Browse*|*AppleMusicCatalog*|*AppleCatalogJson*) add_tests_matching '^(AppleBrowse|ApplePlaylistPagination|AppleTracklistNativePlayback)' ;;
       *Security*|*LogSanitizer*|*OutboundUrlGuard*) add_tests_matching '(Security|Secret|CodeQlCleanup)' ;;
       *Recommendation*|*Pathfinder*) add_tests_matching '(Recommendation|WeeklyPathfinder)' ;;
       DeezSpoTag.Services/Genre/*) add_tests_matching '(Genre|PersonalGenre|ResearchedGenre)' ;;
+      DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)
+        add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
       *ArtistAlias*) add_tests_matching '(ArtistAlias|AliasGroup|ArtistMetadataAlias)' ;;
       DeezSpoTag.Services/Library/*|DeezSpoTag.Web/Services/Library*|DeezSpoTag.Web/Controllers/Api/Library*)
