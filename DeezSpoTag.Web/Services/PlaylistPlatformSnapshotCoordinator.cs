@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
@@ -58,7 +59,8 @@ public sealed record PlaylistHeadDiscovery(
     bool RequiresExpansion,
     PlaylistHeadSnapshot? Head,
     string? Error,
-    long DurationMs)
+    long DurationMs,
+    long? PlatformHeadElapsedMs = null)
 {
     public static PlaylistHeadDiscovery Failed(string source, string sourceId, string error, long durationMs)
         => new(source, sourceId, PlaylistHeadChangeState.Failed, false, null, error, durationMs);
@@ -209,7 +211,7 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         IReadOnlyList<PlaylistWatchlistDto> batch,
         CancellationToken cancellationToken)
     {
-        var platformStartedUtc = DateTimeOffset.UtcNow;
+        var platformTimer = Stopwatch.StartNew();
         var limit = PlaylistPlatformSnapshotPolicy.HeadConcurrencyFor(source);
 
         _logger.LogInformation(
@@ -219,12 +221,19 @@ public sealed class PlaylistPlatformSnapshotCoordinator
             limit);
 
         using var gate = new SemaphoreSlim(limit, limit);
-        var tasks = batch.Select(playlist => DiscoverOneAsync(source, playlist, gate, cancellationToken)).ToList();
+        long cacheLookupWorkMs = 0, cacheDeserializeWorkMs = 0;
+        void RecordCacheTiming(string stage, long elapsed)
+        {
+            if (stage == "lookup") Interlocked.Add(ref cacheLookupWorkMs, elapsed);
+            else Interlocked.Add(ref cacheDeserializeWorkMs, elapsed);
+        }
+        var tasks = batch.Select(playlist => DiscoverOneAsync(source, playlist, gate, cancellationToken, RecordCacheTiming)).ToList();
 
         // Faults are contained per playlist inside DiscoverOneAsync, so awaiting them together
         // cannot fail the batch and cannot cancel unrelated playlists.
         var results = await Task.WhenAll(tasks);
-        var totalMs = (long)(DateTimeOffset.UtcNow - platformStartedUtc).TotalMilliseconds;
+        var totalMs = platformTimer.ElapsedMilliseconds;
+        results = results.Select(result => result with { PlatformHeadElapsedMs = totalMs }).ToArray();
         var headMs = results.Sum(static result => result.DurationMs);
 
         var unchangedCount = results.Count(static result => result.ChangeState == PlaylistHeadChangeState.Unchanged);
@@ -232,9 +241,14 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         var newCount = results.Count(static result => result.ChangeState == PlaylistHeadChangeState.New);
         var expansionCount = results.Count(static result => result.ChangeState == PlaylistHeadChangeState.RequiresExpansion);
         var failedCount = results.Count(static result => result.ChangeState == PlaylistHeadChangeState.Failed);
+        WatchlistPerformanceMeasurement.Current?.Increment("heads_unchanged", unchangedCount);
+        WatchlistPerformanceMeasurement.Current?.Increment("heads_changed", changedCount);
+        WatchlistPerformanceMeasurement.Current?.Increment("heads_new", newCount);
+        WatchlistPerformanceMeasurement.Current?.Increment("heads_requires_expansion", expansionCount);
+        WatchlistPerformanceMeasurement.Current?.Increment("heads_failed", failedCount);
 
         _logger.LogInformation(
-            "Playlist platform snapshot discovery completed for {Source}. Playlists={PlaylistCount} Unchanged={Unchanged} Changed={Changed} New={New} RequiresExpansion={RequiresExpansion} Failed={Failed} HeadPhaseMs={HeadPhaseMs} TotalMs={TotalMs}",
+            "Playlist platform snapshot discovery completed for {Source}. Playlists={PlaylistCount} Unchanged={Unchanged} Changed={Changed} New={New} RequiresExpansion={RequiresExpansion} Failed={Failed} HeadPhaseMs={HeadPhaseMs} TotalMs={TotalMs} CacheLookupWorkMs={CacheLookupWorkMs} CacheDeserializeWorkMs={CacheDeserializeWorkMs}",
             new object?[]
             {
                 source,
@@ -245,7 +259,9 @@ public sealed class PlaylistPlatformSnapshotCoordinator
                 expansionCount,
                 failedCount,
                 headMs,
-                totalMs
+                totalMs,
+                cacheLookupWorkMs,
+                cacheDeserializeWorkMs
             });
 
         return results;
@@ -255,10 +271,11 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         string source,
         PlaylistWatchlistDto playlist,
         SemaphoreSlim gate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string, long> recordCacheTiming)
     {
         var sourceId = (playlist.SourceId ?? string.Empty).Trim();
-        var startedUtc = DateTimeOffset.UtcNow;
+        var requestTimer = Stopwatch.StartNew();
 
         // One playlist's cancellation or failure must never take down the batch. Host shutdown
         // still propagates so a stopping app is not reported as a per-playlist provider failure.
@@ -267,18 +284,20 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         {
             await gate.WaitAsync(cancellationToken);
             acquired = true;
+            WatchlistPerformanceMeasurement.Current?.Increment("head_gate_wait_work_ms", requestTimer.ElapsedMilliseconds);
+            requestTimer.Restart();
 
             using var scope = _serviceProvider.CreateScope();
             var engine = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
             var head = await engine.FetchPlaylistHeadAsync(source, sourceId, cancellationToken);
-            var durationMs = (long)(DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
+            var durationMs = requestTimer.ElapsedMilliseconds;
 
             if (head.IsFailed)
             {
                 return PlaylistHeadDiscovery.Failed(source, sourceId, head.FailureCode ?? "head_fetch_failed", durationMs);
             }
 
-            var state = await ClassifyAsync(source, sourceId, head, cancellationToken);
+            var state = await ClassifyAsync(source, sourceId, head, cancellationToken, recordCacheTiming);
             return new PlaylistHeadDiscovery(
                 source,
                 sourceId,
@@ -304,7 +323,7 @@ public sealed class PlaylistPlatformSnapshotCoordinator
                 source,
                 sourceId,
                 ex.Message,
-                (long)(DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds);
+                requestTimer.ElapsedMilliseconds);
         }
         finally
         {
@@ -324,7 +343,8 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         string source,
         string sourceId,
         PlaylistHeadSnapshot head,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string, long> recordCacheTiming)
     {
         if (!head.HasUsableMetadata)
         {
@@ -338,7 +358,10 @@ public sealed class PlaylistPlatformSnapshotCoordinator
             return PlaylistHeadChangeState.Deferred;
         }
 
-        var cache = await repository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
+        var cacheTimer = Stopwatch.StartNew();
+        PlaylistTrackCandidateCacheDto? cache;
+        try { cache = await repository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken); }
+        finally { recordCacheTiming("lookup", cacheTimer.ElapsedMilliseconds); }
         if (cache is null)
         {
             return PlaylistHeadChangeState.New;
@@ -350,7 +373,7 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         if (!PlaylistCandidateContract.IsReusableCache(
                 source,
                 cache.SchemaVersion,
-                SafeParseCandidates(cache.CandidatesJson),
+                ParseForClassification(cache.CandidatesJson),
                 head.TrackCount,
                 cache.IsComplete))
         {
@@ -368,6 +391,13 @@ public sealed class PlaylistPlatformSnapshotCoordinator
             return string.Equals(cache.SnapshotId, head.SnapshotId, StringComparison.Ordinal)
                 ? PlaylistHeadChangeState.Unchanged
                 : PlaylistHeadChangeState.Changed;
+        }
+
+        IReadOnlyList<PlaylistTrackCandidate>? ParseForClassification(string json)
+        {
+            var parsingTimer = Stopwatch.StartNew();
+            try { return SafeParseCandidates(json); }
+            finally { recordCacheTiming("parse", parsingTimer.ElapsedMilliseconds); }
         }
 
         // Without a trustworthy change token, the playlist has to be re-examined.

@@ -207,6 +207,20 @@ public sealed class PublishingWorkflowGuardrailTest
     }
 
     [Fact]
+    public async Task SnapshotCoordinatorChange_SelectsOnlySnapshotAndProgressTests()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        await fixture.CommitFileAsync("DeezSpoTag.Web/Services/PlaylistPlatformSnapshotCoordinator.cs", "// measurement change");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("PlaylistPlatformSnapshotTest", fixture.Calls[1]);
+        Assert.Contains("WatchlistPlatformProgressTest", fixture.Calls[1]);
+        Assert.DoesNotContain("AutoTag", fixture.Calls[1]);
+        Assert.DoesNotContain("PlaylistSync", fixture.Calls[1]);
+    }
+
+    [Fact]
     public async Task ChangedTest_SelectsOnlyItsClassAndBuildsAndRunsOnce()
     {
         using var fixture = await GuardrailFixture.CreateAsync();

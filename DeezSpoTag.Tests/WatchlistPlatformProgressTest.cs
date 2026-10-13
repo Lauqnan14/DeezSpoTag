@@ -48,6 +48,21 @@ public sealed class WatchlistPlatformProgressTest
             "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
     [Fact]
+    public void PlatformProgress_UsesProviderWallTimeRatherThanConcurrentRequestSum()
+    {
+        var property = typeof(PlaylistHeadDiscovery).GetProperty("PlatformHeadElapsedMs");
+        Assert.NotNull(property);
+        var first = new PlaylistHeadDiscovery("spotify", "one", PlaylistHeadChangeState.Unchanged, false, null, null, 100);
+        var second = first with { SourceId = "two", DurationMs = 100 };
+        property!.SetValue(first, (long?)120);
+        property.SetValue(second, (long?)120);
+        var build = typeof(WatchlistRunCoordinator).GetMethod("BuildPlatformProgress", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var progress = (IReadOnlyList<WatchlistPlatformProgress>)build.Invoke(null, new object[] { new[] { first, second } })!;
+        Assert.Equal(200, progress[0].HeadPhaseMs);
+        Assert.Equal(120, progress[0].TotalMs);
+    }
+
+    [Fact]
     public void ProgressIsStructuredRatherThanFreeText()
     {
         var progress = typeof(WatchlistPlatformProgress);

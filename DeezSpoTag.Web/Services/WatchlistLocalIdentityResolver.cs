@@ -52,6 +52,7 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
             return initial;
         }
 
+        WatchlistPerformanceMeasurement.Current?.Increment("ambiguous_track_count");
         var candidates = (await _repository.GetLocalTrackResolutionCandidatesAsync(
                 initial.CandidateTrackIds,
                 cancellationToken))
@@ -72,6 +73,7 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
         }
 
         var profileState = await _profileResolution.LoadNormalizedStateAsync(cancellationToken: cancellationToken);
+        WatchlistPerformanceMeasurement.Current?.Increment("shazam_cache_lookup_count");
         var cached = await _repository.GetShazamTrackCacheByTrackIdsAsync(
             candidates.Select(static candidate => candidate.TrackId).ToArray(),
             cancellationToken);
@@ -148,11 +150,13 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
             try
             {
                 var sourcePath = duplicate.Candidate.FilePath;
+                WatchlistPerformanceMeasurement.Current?.Increment("quarantine_attempt_count");
                 var destinationPath = await _libraryOrganizer.QuarantineConfirmedDuplicateAsync(
                     duplicate.Candidate.RootPath,
                     sourcePath,
                     ResolveDuplicatesFolderName(profileState, duplicate.Candidate.FolderId),
                     cancellationToken);
+                if (destinationPath is not null) WatchlistPerformanceMeasurement.Current?.Increment("quarantine_move_count");
                 await _repository.AddLocalDuplicateResolutionEventAsync(
                     winner.Candidate.TrackId,
                     duplicate.Candidate.TrackId,
@@ -227,6 +231,7 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
         ShazamTrackCacheDto? cache,
         CancellationToken cancellationToken)
     {
+        WatchlistPerformanceMeasurement.Current?.Increment("shazam_cache_entries_checked");
         var file = new FileInfo(candidate.FilePath);
         var cacheMatchesFile = CacheMatchesFile(cache, file);
         if (cacheMatchesFile
@@ -259,8 +264,10 @@ public sealed class WatchlistLocalIdentityResolver : ILocalTrackAmbiguityResolve
 
         try
         {
+            WatchlistPerformanceMeasurement.Current?.Increment("shazam_recognition_count");
             var recognition = await _shazam.RecognizeAsync(candidate.FilePath, cancellationToken);
             var evidence = recognition == null ? null : BuildEvidence(recognition);
+            WatchlistPerformanceMeasurement.Current?.Increment("shazam_cache_write_count");
             await _repository.UpsertTrackShazamCacheAsync(
                 new LibraryRepository.TrackShazamCacheUpsertInput(
                     candidate.TrackId,

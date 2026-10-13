@@ -14,6 +14,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.DataProtection;
 using System.Net.Http;
 using Xunit;
@@ -28,6 +29,83 @@ public sealed class WatchlistApiContractTest : IAsyncLifetime
     private LibraryRepository _repository = default!;
     private LibraryConfigStore _configStore = default!;
     private PlaylistVisualService _playlistVisualService = default!;
+
+    [Fact]
+    public async Task QueuePresentationMeasurement_EmptyEndpointKeepsResponseAndReportsElapsedTime()
+    {
+        var logger = new PerformanceLogger();
+        var controller = CreatePlaylistWatchlistController();
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+            {
+                RequestServices = new Microsoft.Extensions.DependencyInjection.ServiceCollection()
+                    .AddSingleton<Microsoft.Extensions.Logging.ILogger<WatchlistApiController>>(logger).BuildServiceProvider()
+            }
+        };
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<PlaylistWatchlistDto>>(Assert.IsType<OkObjectResult>(await controller.GetAll(CancellationToken.None)).Value));
+        var summary = Assert.Single(logger.Summaries);
+        Assert.Equal("completed", summary["outcome"]);
+        Assert.True(Convert.ToInt64(summary["total_elapsed_ms"]) >= 0);
+        Assert.False(summary.ContainsKey("queue_tasks_read"));
+    }
+
+    [Fact]
+    public async Task QueuePresentationMeasurement_SeparateQueueDatabaseReportsActualRowsAndPreservesCancellation()
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:Queue"] = $"Data Source={Path.Combine(_tempRoot, "queue-measurement.db")}" }).Build();
+        var queue = new DeezSpoTag.Services.Download.Queue.DownloadQueueRepository(config,
+            NullLogger<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>.Instance);
+        var now = DateTimeOffset.UtcNow;
+        var item = new DeezSpoTag.Services.Download.Queue.DownloadQueueItem(
+            Id: 0, QueueUuid: "measurement-queue", Engine: "test", ArtistName: "Fixture", TrackTitle: "Synthetic",
+            Isrc: null, DeezerTrackId: null, DeezerAlbumId: null, DeezerArtistId: null, SpotifyTrackId: null,
+            SpotifyAlbumId: null, SpotifyArtistId: null, AppleTrackId: null, AppleAlbumId: null, AppleArtistId: null,
+            DurationMs: null, DestinationFolderId: null, QualityRank: null, QueueOrder: null, Status: "queued",
+            PayloadJson: "{}", Progress: 0, Downloaded: 0, Failed: 0, Error: null, CreatedAt: now, UpdatedAt: now);
+        await queue.EnqueueAsync(item, skipDuplicateCheck: true);
+        await _repository.AddPlaylistWatchlistAsync("spotify", "measurement-playlist", new PlaylistWatchlistMetadataInput("Synthetic", null, null, null));
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync("spotify", "measurement-playlist", "track", new[] { item.QueueUuid }, null);
+        var logger = new PerformanceLogger();
+        var controller = CreatePlaylistWatchlistController(queueRepository: queue);
+        using var services = new ServiceCollection().AddSingleton<Microsoft.Extensions.Logging.ILogger<WatchlistApiController>>(logger).BuildServiceProvider();
+        controller.ControllerContext = new ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext { RequestServices = services } };
+        var response = Assert.IsType<OkObjectResult>(await controller.GetAll(CancellationToken.None));
+        Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<PlaylistWatchlistDto>>(response.Value));
+        var fields = Assert.Single(logger.Summaries);
+        Assert.Equal(1L, fields["queue_tasks_read"]);
+        Assert.Equal(1L, fields["claims_read"]);
+        Assert.True(Convert.ToInt64(fields["queue_lookup_ms"]) >= 0);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.GetAll(cancellation.Token));
+        Assert.Equal("cancelled", logger.Summaries.Last()["outcome"]);
+    }
+
+    [Fact]
+    public async Task QueuePresentationMeasurement_LoggerResolutionFailureCannotBreakEndpoint()
+    {
+        var controller = CreatePlaylistWatchlistController();
+        controller.ControllerContext = new ControllerContext
+        { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext { RequestServices = new UnavailableDiagnosticServices() } };
+        Assert.IsType<OkObjectResult>(await controller.GetAll(CancellationToken.None));
+    }
+    private sealed class UnavailableDiagnosticServices : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => throw new InvalidOperationException("Diagnostic logger unavailable.");
+    }
+
+    private sealed class PerformanceLogger : Microsoft.Extensions.Logging.ILogger<WatchlistApiController>
+    {
+        public List<IReadOnlyDictionary<string, object?>> Summaries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel level) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel level, Microsoft.Extensions.Logging.EventId id, TState state, Exception? error, Func<TState, Exception?, string> format)
+        {
+            if (state is IReadOnlyDictionary<string, object?> fields && fields.ContainsKey("outcome")) Summaries.Add(fields);
+        }
+    }
 
     public async Task InitializeAsync()
     {
@@ -632,7 +710,7 @@ public sealed class WatchlistApiContractTest : IAsyncLifetime
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
-    private WatchlistApiController CreatePlaylistWatchlistController(BoomplayMetadataService? boomplayMetadataService = null)
+    private WatchlistApiController CreatePlaylistWatchlistController(BoomplayMetadataService? boomplayMetadataService = null, DeezSpoTag.Services.Download.Queue.DownloadQueueRepository? queueRepository = null)
         => new(new LibraryPlaylistWatchlistDependencies
         {
             Repository = _repository,
@@ -640,7 +718,7 @@ public sealed class WatchlistApiContractTest : IAsyncLifetime
             PlaylistWatchReconciler = null!,
             PlaylistSyncService = null!,
             PlaylistVisualService = _playlistVisualService,
-            QueueRepository = null!,
+            QueueRepository = queueRepository!,
             ProfileResolutionService = CreateProfileResolutionService(),
             BoomplayMetadataService = boomplayMetadataService!
         });

@@ -128,6 +128,8 @@ if [[ "$MODE" == "changed" ]]; then
       *YouTube*) add_tests_matching '^(YouTube|FavoritesProvider|PublicDownloadProviderBoundary)' ;;
       *Apple*Browse*|*AppleMusicCatalog*|*AppleCatalogJson*) add_tests_matching '^(AppleBrowse|ApplePlaylistPagination|AppleTracklistNativePlayback)' ;;
       *Security*|*LogSanitizer*|*OutboundUrlGuard*) add_tests_matching '(Security|Secret|CodeQlCleanup)' ;;
+      DeezSpoTag.Web/Services/PlaylistPlatformSnapshotCoordinator.cs)
+        add_tests_matching '^(PlaylistPlatformSnapshotTest|WatchlistPlatformProgressTest)$' ;;
       *Recommendation*|*Pathfinder*) add_tests_matching '(Recommendation|WeeklyPathfinder)' ;;
       DeezSpoTag.Services/Genre/*) add_tests_matching '(Genre|PersonalGenre|ResearchedGenre)' ;;
       DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)

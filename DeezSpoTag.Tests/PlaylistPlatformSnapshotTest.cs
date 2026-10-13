@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using DeezSpoTag.Services.Settings;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -18,6 +20,7 @@ namespace DeezSpoTag.Tests;
 /// ordered. Discovery is an optimisation of ordering and concurrency, never a correctness
 /// requirement, so a missing or failing discovery must degrade to the previous behaviour.
 /// </summary>
+[Xunit.Collection("Settings Config Isolation")]
 public sealed class PlaylistPlatformSnapshotTest
 {
     private static string CoordinatorSource()
@@ -37,6 +40,45 @@ public sealed class PlaylistPlatformSnapshotTest
             AppContext.BaseDirectory,
             "..", "..", "..", "..",
             "DeezSpoTag.Web", "Services", "PlaylistPlatformSnapshotCoordinator.cs"));
+
+    [Fact]
+    public async System.Threading.Tasks.Task ConcurrentHeadDiscovery_CarriesMeasuredBatchTimeAndKeepsRequestsBounded()
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var ready = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            var active = 0;
+            fixture.SetHeadResponse(async (request, token) =>
+            {
+                if (System.Threading.Interlocked.Increment(ref active) == 2) ready.SetResult();
+                await release.Task.WaitAsync(token);
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new System.Net.Http.StringContent("{\"title\":\"Synthetic\",\"numberOfTracks\":100}") };
+            });
+            var logger = new WatchlistRunCoordinatorHardeningTest.ListLogger<PlaylistPlatformSnapshotCoordinator>();
+            var settings = fixture.MeasurementTestServices.GetRequiredService<DeezSpoTagSettingsService>();
+            var coordinator = new PlaylistPlatformSnapshotCoordinator(fixture.MeasurementTestServices, settings, logger);
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var first = await repository.AddPlaylistWatchlistAsync("tidal", "12345678-1234-1234-1234-123456789abc", new PlaylistWatchlistMetadataInput("One", null, null, null));
+            var second = await repository.AddPlaylistWatchlistAsync("tidal", "12345678-1234-1234-1234-123456789abd", new PlaylistWatchlistMetadataInput("Two", null, null, null));
+            using var cancellation = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(10));
+            var discovery = coordinator.DiscoverHeadsAsync(new[] { first, second }, null, cancellation.Token);
+            await ready.Task.WaitAsync(cancellation.Token);
+            Assert.Equal(2, active);
+            release.SetResult();
+            var results = await discovery;
+            Assert.Equal(2, results.Count);
+            Assert.All(results, result => Assert.False(result.ChangeState == PlaylistHeadChangeState.Failed));
+            Assert.All(results, result => Assert.NotNull(result.PlatformHeadElapsedMs));
+            Assert.Equal(results[0].PlatformHeadElapsedMs, results[1].PlatformHeadElapsedMs);
+            var completion = Assert.Single(logger.Entries.Where(entry => entry.Fields?.ContainsKey("TotalMs") == true));
+            Assert.Equal(results[0].PlatformHeadElapsedMs, completion.Fields!["TotalMs"]);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
 
     [Fact]
     public void AllSixStreamingPlatformsHaveAnExplicitConcurrencyLimit()

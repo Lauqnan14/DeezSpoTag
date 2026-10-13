@@ -24,6 +24,19 @@ public sealed class PlaylistSnapshotLimitTest
             "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
     [Fact]
+    public void SyntheticTruncatedSnapshot_PreservesFullProviderCountAndObservedWindow()
+    {
+        var candidates = Enumerable.Range(1, 3000).Select(id => new DeezSpoTag.Web.Services.PlaylistTrackCandidate(
+            id.ToString(), null, "Synthetic", "Fixture", "Album", null, 180000, null, Array.Empty<string>())).ToList();
+        var method = typeof(DeezSpoTag.Web.Services.WatchlistEngine).GetMethod("BuildPlaylistSnapshot",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var result = method.Invoke(null, new object?[] { candidates, 3100, null, 3000 })!;
+        Assert.Equal(3100, result.GetType().GetProperty("TrackCount")!.GetValue(result));
+        Assert.Equal(3000, result.GetType().GetProperty("SourceItemsObserved")!.GetValue(result));
+        Assert.Equal(false, result.GetType().GetProperty("IsComplete")!.GetValue(result));
+    }
+
+    [Fact]
     public void DefaultLimit_IsThreeThousand()
     {
         Assert.Equal(3000, DeezSpoTagSettings.DefaultPlaylistSnapshotTrackLimit);

@@ -12,6 +12,9 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -116,7 +119,10 @@ public partial class WatchlistApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken cancellationToken, [FromQuery] bool refreshFromSource = false)
+    public Task<IActionResult> GetAll(CancellationToken cancellationToken, [FromQuery] bool refreshFromSource = false)
+        => MeasureEndpointAsync("GetAll", () => GetAllMeasuredCore(cancellationToken, refreshFromSource));
+
+    private async Task<IActionResult> GetAllMeasuredCore(CancellationToken cancellationToken, bool refreshFromSource = false)
     {
         if (!_repository.IsConfigured)
         {
@@ -134,10 +140,31 @@ public partial class WatchlistApiController : ControllerBase
         return Ok(hydrated);
     }
 
+    private async Task<IActionResult> MeasureEndpointAsync(string endpoint, Func<Task<IActionResult>> action)
+    {
+        ILogger<WatchlistApiController> logger = NullLogger<WatchlistApiController>.Instance;
+        try { logger = HttpContext?.RequestServices?.GetService<ILogger<WatchlistApiController>>() ?? logger; }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // Diagnostic service resolution must never affect the endpoint's operational result.
+            System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
+        }
+        using var measurement = WatchlistPerformanceMeasurement.Start(logger, "endpoint/" + endpoint, endpoint);
+        try
+        {
+            var result = await action();
+            measurement.SetOutcome(result is ObjectResult { StatusCode: >= 400 } ? "rejected" : "completed");
+            return result;
+        }
+        catch (OperationCanceledException ex) { measurement.SetOutcome("cancelled"); measurement.SetFailure(ex); throw; }
+        catch (Exception ex) { measurement.SetOutcome("failed"); measurement.SetFailure(ex); throw; }
+    }
+
     private async Task<IReadOnlyList<PlaylistWatchlistDto>> HydrateQueuePresentationSummaryAsync(
         IReadOnlyList<PlaylistWatchlistDto> playlists,
         CancellationToken cancellationToken)
     {
+        using var hydrationTimer = WatchlistPerformanceMeasurement.Current?.Measure("queue_presentation");
         if (playlists.Count == 0)
         {
             return playlists;
@@ -148,8 +175,10 @@ public partial class WatchlistApiController : ControllerBase
             return playlists;
         }
 
-        var claims = await _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
-        var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var claims = await WatchlistPerformanceMeasurement.TimeAsync("claims_lookup", () => _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken));
+        WatchlistPerformanceMeasurement.Current?.Increment("claims_read", claims.Count);
+        var queueItems = await WatchlistPerformanceMeasurement.TimeAsync("queue_lookup", () => _queueRepository.GetTasksAsync(cancellationToken: cancellationToken));
+        if (_queueRepository != null) WatchlistPerformanceMeasurement.Current?.Increment("queue_tasks_read", queueItems.Count);
         var queueByUuid = queueItems.ToDictionary(item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
         var claimsByPlaylist = claims.GroupBy(
             claim => $"{claim.Source}:{claim.SourceId}",
@@ -184,7 +213,10 @@ public partial class WatchlistApiController : ControllerBase
     }
 
     [HttpGet("watch-runtime")]
-    public async Task<IActionResult> GetWatchRuntime(CancellationToken cancellationToken)
+    public Task<IActionResult> GetWatchRuntime(CancellationToken cancellationToken)
+        => MeasureEndpointAsync("GetWatchRuntime", () => GetWatchRuntimeMeasuredCore(cancellationToken));
+
+    private async Task<IActionResult> GetWatchRuntimeMeasuredCore(CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -192,10 +224,12 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var scheduler = await _repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
-        var pendingClaims = await _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
+        var pendingClaims = await WatchlistPerformanceMeasurement.TimeAsync("claims_lookup", () => _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken));
+        WatchlistPerformanceMeasurement.Current?.Increment("claims_read", pendingClaims.Count);
         var queueItems = _queueRepository == null
             ? []
-            : await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+            : await WatchlistPerformanceMeasurement.TimeAsync("queue_lookup", () => _queueRepository.GetTasksAsync(cancellationToken: cancellationToken));
+        if (_queueRepository != null) WatchlistPerformanceMeasurement.Current?.Increment("queue_tasks_read", queueItems.Count);
         var queueByUuid = queueItems.ToDictionary(item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
         var orphanedPendingClaims = pendingClaims.Count(claim =>
             !queueByUuid.TryGetValue(claim.QueueUuid, out var queueItem)
@@ -1749,7 +1783,7 @@ public partial class WatchlistApiController : ControllerBase
             .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
             .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(static group => group.Key, static group => group.ToList(), StringComparer.OrdinalIgnoreCase);
-        var queueTasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var queueTasks = await WatchlistPerformanceMeasurement.TimeAsync("queue_lookup", () => _queueRepository.GetTasksAsync(cancellationToken: cancellationToken));
         var queueTasksByUuid = queueTasks.ToDictionary(static item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
 
         return Ok(candidates.Select(candidate =>

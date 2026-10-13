@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8,8 +9,56 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Xunit.Collection("Settings Config Isolation")]
 public sealed class WatchlistIdentityResolverGuardrailTest
 {
+    [Fact]
+    public async System.Threading.Tasks.Task AmbiguousMissingFiles_CountsInputWithoutInventingShazamOrQuarantineEffects()
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var resolver = new WatchlistLocalIdentityResolver(repository, null!, null!, null!,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<WatchlistLocalIdentityResolver>.Instance);
+            var input = new LibraryRepository.LibraryExistenceInput(null, "Synthetic", "Fixture", 180000);
+            var initial = new LibraryRepository.LocalTrackIdentityResult(null, "ambiguous", "review", new long[] { 991, 992 });
+            var logger = new WatchlistRunCoordinatorHardeningTest.ListLogger<WatchlistLocalIdentityResolver>();
+            using (var measurement = WatchlistPerformanceMeasurement.Start(logger, "spotify", "ambiguous"))
+            {
+                var result = await resolver.ResolveAsync(input, initial, System.Threading.CancellationToken.None);
+                Assert.True(result.IsAmbiguous);
+                measurement.SetOutcome("completed");
+            }
+            var fields = Assert.Single(logger.Entries).Fields!;
+            Assert.Equal(1L, fields["ambiguous_track_count"]);
+            Assert.Equal(0L, fields["shazam_recognition_count"]);
+            Assert.Equal(0L, fields["quarantine_attempt_count"]);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task UnambiguousIdentity_LeavesEffectCountersZeroAndDoesNotNeedDiagnosticScope()
+    {
+        var resolver = new WatchlistLocalIdentityResolver(null!, null!, null!, null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<WatchlistLocalIdentityResolver>.Instance);
+        var input = new LibraryRepository.LibraryExistenceInput(null, "Synthetic", "Fixture", 180000);
+        var initial = new LibraryRepository.LocalTrackIdentityResult(1, "exact", "verified", new long[] { 1 });
+        var logger = new WatchlistRunCoordinatorHardeningTest.ListLogger<WatchlistLocalIdentityResolver>();
+        using (var measurement = WatchlistPerformanceMeasurement.Start(logger, "spotify", "identity"))
+        {
+            Assert.Same(initial, await resolver.ResolveAsync(input, initial, System.Threading.CancellationToken.None));
+            measurement.SetOutcome("completed");
+        }
+        var fields = Assert.Single(logger.Entries).Fields!;
+        Assert.Equal(0L, fields["ambiguous_track_count"]);
+        Assert.Equal(0L, fields["shazam_recognition_count"]);
+        Assert.Equal(0L, fields["quarantine_attempt_count"]);
+        Assert.Same(initial, await resolver.ResolveAsync(input, initial, System.Threading.CancellationToken.None));
+    }
+
     [Fact]
     public void YouTubeMembership_RequiresExactVideoUrlAndUsesExistingIntent()
     {

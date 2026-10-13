@@ -38,6 +38,238 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
     private DownloadQueueRepository _queueRepository = default!;
     private ServiceProvider _provider = default!;
     private long _destinationFolderId;
+    private readonly ListLogger<WatchlistEngine> _engineLogger = new();
+    private readonly StubHttpClientFactory _snapshotHttp = new();
+    internal ServiceProvider MeasurementTestServices => _provider;
+    internal void SetHeadResponse(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> response)
+        => _snapshotHttp.AsyncResponse = response;
+
+    [Fact]
+    public async Task PerformanceScopes_IsolateConcurrentOperationsAndRestoreNestedScope()
+    {
+        var logger = new ListLogger<WatchlistEngine>();
+        var firstReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task Run(string source, long count, TaskCompletionSource ready, Task wait)
+        {
+            using var measurement = WatchlistPerformanceMeasurement.Start(logger, source, "synthetic");
+            ready.SetResult();
+            await wait;
+            Assert.Same(measurement, WatchlistPerformanceMeasurement.Current);
+            measurement.Increment("tracks_examined", count);
+            using (var nested = WatchlistPerformanceMeasurement.Start(logger, source, "nested"))
+                Assert.Same(nested, WatchlistPerformanceMeasurement.Current);
+            Assert.Same(measurement, WatchlistPerformanceMeasurement.Current);
+            using (measurement.Measure("cache_lookup")) { }
+            measurement.SetOutcome("completed");
+        }
+        await Task.WhenAll(
+            Run("spotify", 100, firstReady, secondReady.Task),
+            Run("deezer", 3000, secondReady, firstReady.Task));
+        Assert.Null(WatchlistPerformanceMeasurement.Current);
+        var summaries = logger.Entries.Where(entry => entry.Fields?.ContainsKey("tracks_examined") == true).ToList();
+        Assert.Equal(2, summaries.Count);
+        Assert.Contains(summaries, entry => Equals(entry.Fields!["tracks_examined"], 100L));
+        Assert.Contains(summaries, entry => Equals(entry.Fields!["tracks_examined"], 3000L));
+        Assert.All(summaries, entry => Assert.True(Convert.ToInt64(entry.Fields!["cache_lookup_ms"]) >= 0));
+        Assert.All(summaries, entry => Assert.False(entry.Fields!.ContainsKey("snapshot_expand_ms")));
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    public void PerformanceScope_EmitsOneTerminalSummaryAndPreservesOriginalFailure(string outcome)
+    {
+        var logger = new ListLogger<WatchlistEngine>();
+        var measurement = WatchlistPerformanceMeasurement.Start(logger, "spotify", "test");
+        var original = new OperationCanceledException("original");
+        var caught = Assert.Throws<OperationCanceledException>((Action)(() =>
+        {
+            using (measurement)
+            {
+                measurement.SetOutcome(outcome);
+                throw original;
+            }
+        }));
+        measurement.Dispose();
+        Assert.Same(original, caught);
+        Assert.Single(logger.Entries);
+        Assert.Equal(outcome, logger.Entries[0].Fields!["outcome"]);
+        Assert.Null(WatchlistPerformanceMeasurement.Current);
+    }
+
+    [Fact]
+    public async Task ReconciliationMeasurement_ReportsEarlyRejectedPlaylistOnce()
+    {
+        var result = await _provider.GetRequiredService<WatchlistEngine>().ReconcilePlaylistAsync(null!, CancellationToken.None);
+        Assert.False(result.Success);
+        var summary = Assert.Single(_engineLogger.Entries.Where(entry => entry.Fields?.ContainsKey("outcome") == true));
+        Assert.Equal("failed", summary.Fields!["outcome"]);
+        Assert.Equal(0L, summary.Fields["queue_deferred_tracks"]);
+        Assert.Equal(0L, summary.Fields["attempted_tracks"]);
+        Assert.False(summary.Fields.ContainsKey("snapshot_expand_ms"));
+    }
+
+    [Theory]
+    [InlineData(100, 100)]
+    [InlineData(100, 3000)]
+    [InlineData(1000, 3000)]
+    [InlineData(1000, 1000)]
+    [InlineData(3000, 3000)]
+    [InlineData(3100, 3000)]
+    public async Task SyntheticTidalExpansion_ReportsRealPagesAndPreservesOrderAndLimit(int total, int limit)
+    {
+        var offsets = new List<int>();
+        _snapshotHttp.Response = request =>
+        {
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri!.Query);
+            Assert.Equal("100", query["limit"]);
+            var offset = int.Parse(query["offset"].ToString());
+            offsets.Add(offset);
+            var items = Enumerable.Range(offset + 1, Math.Min(100, total - offset)).Select(id => new
+            {
+                item = new { id, title = "Synthetic " + id, artist = new { name = "Fixture Artist" }, album = new { title = "Fixture Album" }, duration = 180 }
+            });
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { totalNumberOfItems = total, items })) };
+        };
+        var logger = new ListLogger<WatchlistEngine>();
+        object snapshot;
+        long processAllocationDelta;
+        using (var measurement = WatchlistPerformanceMeasurement.Start(logger, "tidal", "synthetic"))
+        {
+            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            var method = typeof(WatchlistEngine).GetMethod("GetTidalSnapshotAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var task = (Task)method.Invoke(_provider.GetRequiredService<WatchlistEngine>(), new object[] { "12345678-1234-1234-1234-123456789abc", limit, CancellationToken.None })!;
+            await task;
+            snapshot = task.GetType().GetProperty("Result")!.GetValue(task)!;
+            processAllocationDelta = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+            measurement.SetOutcome("completed");
+        }
+        var candidates = (IReadOnlyList<PlaylistTrackCandidate>)snapshot.GetType().GetProperty("Candidates")!.GetValue(snapshot)!;
+        var collected = Math.Min(total, limit);
+        Assert.Equal(collected, candidates.Count);
+        Assert.Equal(Enumerable.Range(1, collected).Select(id => id.ToString()), candidates.Select(candidate => candidate.TrackSourceId));
+        Assert.Equal(Enumerable.Range(0, (collected + 99) / 100).Select(page => page * 100), offsets);
+        var fields = Assert.Single(logger.Entries).Fields!;
+        Assert.Equal((long)offsets.Count, fields["snapshot_pages_attempted"]);
+        Assert.Equal((long)offsets.Count, fields["snapshot_pages_succeeded"]);
+        Assert.Equal(total < limit, (bool)snapshot.GetType().GetProperty("IsComplete")!.GetValue(snapshot)!);
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+        File.AppendAllText(Path.Combine(Path.GetTempPath(), "watchlist-synthetic-observations.jsonl"),
+            System.Text.Json.JsonSerializer.Serialize(new { provider = "tidal", total, collected, pages = offsets.Count,
+                elapsedMs = fields["total_elapsed_ms"], processAllocationDeltaBytes = processAllocationDelta,
+                dotnet = Environment.Version.ToString(), kind = "synthetic-fake-http" }) + Environment.NewLine);
+    }
+
+    [Theory]
+    [InlineData(100)]
+    [InlineData(1000)]
+    [InlineData(3000)]
+    public async Task SyntheticCandidateCache_ReusesValidatedRowsAndInvalidatesChangedReadiness(int count)
+    {
+        var engine = _provider.GetRequiredService<WatchlistEngine>();
+        var revisionMethod = typeof(WatchlistEngine).GetMethod("BuildProviderReadinessRevisionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var revision = await (Task<string>)revisionMethod.Invoke(engine, new object[] { "spotify" })!;
+        var candidates = Enumerable.Range(1, count).Select(id => new PlaylistTrackCandidate(
+            id.ToString(), null, "Synthetic " + id, "Fixture Artist", "Fixture Album", null, 180000, null, Array.Empty<string>())).ToList();
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("spotify", "measurement-cache", "revision-one",
+            System.Text.Json.JsonSerializer.Serialize(candidates), PlaylistCandidateContract.CurrentCacheSchemaVersion,
+            PlaylistCandidateContract.BuildIdentityRevision("spotify", candidates), revision, true);
+        var logger = new ListLogger<WatchlistEngine>();
+        using (var measurement = WatchlistPerformanceMeasurement.Start(logger, "spotify", "measurement-cache"))
+        {
+            var cached = await engine.GetCachedPlaylistTrackCandidatesAsync("spotify", "measurement-cache", CancellationToken.None);
+            Assert.Equal(candidates.Select(candidate => candidate.TrackSourceId), cached.Select(candidate => candidate.TrackSourceId));
+            measurement.SetOutcome("completed");
+        }
+        var fields = Assert.Single(logger.Entries).Fields!;
+        Assert.True(Convert.ToInt64(fields["cache_lookup_ms"]) >= 0);
+        Assert.True(Convert.ToInt64(fields["cache_deserialize_ms"]) >= 0);
+        Assert.Equal(0L, fields["snapshot_pages_attempted"]);
+        candidates[0] = candidates[0] with { Title = "Updated Synthetic" };
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("spotify", "measurement-cache", "revision-two",
+            System.Text.Json.JsonSerializer.Serialize(candidates), PlaylistCandidateContract.CurrentCacheSchemaVersion,
+            PlaylistCandidateContract.BuildIdentityRevision("spotify", candidates), revision, true);
+        var updated = await engine.GetCachedPlaylistTrackCandidatesAsync("spotify", "measurement-cache", CancellationToken.None);
+        Assert.Equal("Updated Synthetic", updated[0].Title);
+        Assert.Equal(count, updated.Count);
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("spotify", "measurement-cache", "revision-three",
+            System.Text.Json.JsonSerializer.Serialize(candidates), PlaylistCandidateContract.CurrentCacheSchemaVersion,
+            PlaylistCandidateContract.BuildIdentityRevision("spotify", candidates), "changed-readiness", true);
+        Assert.Empty(await engine.GetCachedPlaylistTrackCandidatesAsync("spotify", "measurement-cache", CancellationToken.None));
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+    }
+
+    [Fact]
+    public void PerformanceScope_LoggerFailureCannotReplaceOperationalError()
+    {
+        var logger = new ListLogger<WatchlistEngine>(failLogging: true);
+        var original = new InvalidOperationException("original operation failed");
+        var caught = Assert.Throws<InvalidOperationException>((Action)(() =>
+        {
+            using var measurement = WatchlistPerformanceMeasurement.Start(logger, "spotify", "test");
+            measurement.SetOutcome("failed");
+            throw original;
+        }));
+        Assert.Same(original, caught);
+        Assert.Null(WatchlistPerformanceMeasurement.Current);
+    }
+
+    [Fact]
+    public async Task CancelledRun_ReportsCancellationWhileWaitingForCycleGate()
+    {
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var coordinator = new WatchlistRunCoordinator(_provider, logger);
+        var run = typeof(WatchlistRunCoordinator).GetMethod("RunOnceAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var task = (Task)run.Invoke(coordinator, new object[] { cancellation.Token })!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        var summary = Assert.Single(logger.Entries.Where(entry => entry.Fields?.ContainsKey("outcome") == true));
+        Assert.Equal("cancelled", summary.Fields!["outcome"]);
+        Assert.True(summary.Fields.ContainsKey("cycle_gate_wait_ms"));
+    }
+
+    [Fact]
+    public async Task ReconciliationMeasurement_ReportsRealProviderFailureWithoutReplacingException()
+    {
+        var id = "12345678-1234-1234-1234-123456789abc";
+        var playlist = await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Synthetic", null, null, null));
+        var original = new HttpRequestException("synthetic transport failure");
+        _snapshotHttp.Response = _ => throw original;
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => _provider.GetRequiredService<WatchlistEngine>()
+            .ReconcilePlaylistAsync(playlist!, CancellationToken.None, prefetchedHead: new PlaylistHeadSnapshot("tidal", id, Name: "Synthetic", TrackCount: 100)));
+        Assert.Same(original, exception);
+        var fields = Assert.Single(_engineLogger.Entries.Where(entry => entry.Fields?.ContainsKey("outcome") == true)).Fields!;
+        Assert.Equal("failed", fields["outcome"]);
+        Assert.Equal("provider_io", fields["failure_category"]);
+        Assert.Equal(1L, fields["snapshot_pages_attempted"]);
+        Assert.Equal(0L, fields["snapshot_pages_succeeded"]);
+        Assert.True(fields.ContainsKey("snapshot_expand_ms"));
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+    }
+
+    [Fact]
+    public async Task ReconciliationMeasurement_ReportsCancellationDuringProviderExpansion()
+    {
+        var id = "12345678-1234-1234-1234-123456789abc";
+        var playlist = await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Synthetic", null, null, null));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var never = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _snapshotHttp.AsyncResponse = async (_, token) => { entered.SetResult(); return await never.Task.WaitAsync(token); };
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var task = _provider.GetRequiredService<WatchlistEngine>().ReconcilePlaylistAsync(playlist!, cancellation.Token,
+            prefetchedHead: new PlaylistHeadSnapshot("tidal", id, Name: "Synthetic", TrackCount: 100));
+        await entered.Task.WaitAsync(cancellation.Token);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        var fields = Assert.Single(_engineLogger.Entries.Where(entry => entry.Fields?.ContainsKey("outcome") == true)).Fields!;
+        Assert.Equal("cancelled", fields["outcome"]);
+        Assert.Equal(1L, fields["snapshot_pages_attempted"]);
+        Assert.Equal(0L, fields["snapshot_pages_succeeded"]);
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+    }
 
     public async Task InitializeAsync()
     {
@@ -116,7 +348,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
                 BoomplayMetadataService = null!,
                 BoomplayWatchlistMappingService = null!,
                 LibraryRecommendationService = null!,
-                HttpClientFactory = new StubHttpClientFactory(),
+                HttpClientFactory = _snapshotHttp,
                 TidalAccessTokenProvider = new StubTidalAccessTokenProvider()
             },
             new WatchlistEngine.PlaylistWatchRuntimeServices
@@ -128,7 +360,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             _settingsService,
             serviceProvider: null!,
             localIdentityResolver: new PassthroughLocalTrackAmbiguityResolver(),
-            logger: NullLogger<WatchlistEngine>.Instance);
+            logger: _engineLogger);
 
         var artistWatchService = new ArtistWatchService(
             _repository,
@@ -1415,7 +1647,23 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
 
     private sealed class StubHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new();
+        public Func<HttpRequestMessage, HttpResponseMessage>? Response { get; set; }
+        public Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? AsyncResponse { get; set; }
+        public HttpClient CreateClient(string name) => AsyncResponse is not null ? new(new AsyncSnapshotHandler(AsyncResponse))
+            : Response is null ? new() : new(new SnapshotHandler(Response));
+        private sealed class AsyncSnapshotHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> response) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                => response(request, cancellationToken);
+        }
+        private sealed class SnapshotHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(response(request));
+            }
+        }
     }
 
     private sealed class StubTidalAccessTokenProvider : ITidalAccessTokenProvider
@@ -1437,7 +1685,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         }
     }
 
-    private sealed class ListLogger<T> : ILogger<T>
+    internal sealed class ListLogger<T>(bool failLogging = false) : ILogger<T>
     {
         public List<LogEntry> Entries { get; } = new();
 
@@ -1452,11 +1700,15 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+            if (failLogging) throw new InvalidOperationException("Diagnostic logger failed.");
+            lock (Entries)
+                Entries.Add(new LogEntry(logLevel, formatter(state, exception),
+                    state is IEnumerable<KeyValuePair<string, object?>> fields
+                        ? fields.ToDictionary(pair => pair.Key, pair => pair.Value) : null));
         }
     }
 
-    private sealed record LogEntry(LogLevel Level, string Message);
+    internal sealed record LogEntry(LogLevel Level, string Message, IReadOnlyDictionary<string, object?>? Fields = null);
 
     private sealed class NullScope : IDisposable
     {
