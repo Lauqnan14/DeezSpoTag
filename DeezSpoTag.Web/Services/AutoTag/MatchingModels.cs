@@ -52,7 +52,10 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public string? ReleaseId { get; set; }
     public string? RecordingId { get; set; }
     public string? ArtistId { get; set; }
+    public List<string> ArtistIds { get; set; } = new();
     public string? AlbumArtistId { get; set; }
+    public List<string> AlbumArtistIds { get; set; } = new();
+    public string? MediumTrackId { get; set; }
     public string? ReleaseGroupId { get; set; }
     public string? AlbumId { get; set; }
     public string? ReleaseStatus { get; set; }
@@ -66,8 +69,11 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public int? DiscNumber { get; set; }
     public int? DiscTotal { get; set; }
     public string? Isrc { get; set; }
+    public List<string> Isrcs { get; set; } = new();
     public string? Label { get; set; }
+    public List<string> Labels { get; set; } = new();
     public string? CatalogNumber { get; set; }
+    public List<string> CatalogNumbers { get; set; } = new();
     public string? Lyricist { get; set; }
     public string? Publisher { get; set; }
     public string? Description { get; set; }

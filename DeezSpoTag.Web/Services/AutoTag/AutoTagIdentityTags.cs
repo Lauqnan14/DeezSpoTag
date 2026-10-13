@@ -98,6 +98,7 @@ internal static class AutoTagIdentityTags
         "spotify",
         "deezer",
         "boomplay",
+        "bpmsupreme",
         "audiomack",
         "shazam",
         "qobuz",
@@ -173,8 +174,8 @@ internal static class AutoTagIdentityTags
     {
         ProviderIdentityField.TrackId => Family(
             SupportedTag.TrackId,
-            ["MUSICBRAINZ_TRACK_ID"],
-            ["MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_TRACKID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_RECORDING_ID"]),
+            ["MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_RECORDING_ID"],
+            ["MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_RECORDING_ID"]),
         ProviderIdentityField.AlbumId => Family(
             SupportedTag.AlbumId,
             ["MUSICBRAINZ_ALBUMID"],

@@ -105,7 +105,8 @@ public sealed class AutoTagSpotifyUrlIsolationTest
         var writer = source[writerStart..writerEnd];
 
         Assert.Contains("AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field)", writer, StringComparison.Ordinal);
-        Assert.Contains("ShouldOverwriteTag(config, family.SupportedTag)", writer, StringComparison.Ordinal);
+        Assert.Contains("ShouldOverwriteIdentityField(config, field, family.SupportedTag)", writer, StringComparison.Ordinal);
+        Assert.Contains("ShouldOverwriteTag(config, supportedTag)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private static void WriteUrlTag", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private static void WriteTrackIdTag", source, StringComparison.Ordinal);
         Assert.DoesNotContain("WwwAudioFileTag, track.Url", source, StringComparison.Ordinal);

@@ -117,6 +117,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private static bool HasReleaseTypeTagEnabled(HashSet<string> enabledTags)
         => enabledTags.Contains(ReleaseTypeTag) || enabledTags.Contains(OtherTagsTag);
 
+    /// <summary>Recording ID is present when this provider's own track id is present.
+    /// A Shazam id does not satisfy Spotify, and generic RECORDINGID is checked separately.</summary>
+    private static bool HasProviderRecordingId(string? platformId, Func<string, bool> hasRawName)
+        => IdentityRawNames(platformId, ProviderIdentityField.TrackId).Any(hasRawName);
+
     private static bool HasTag(TagLib.File file, string extension, SupportedTag tag, AutoTagRunnerConfig config, string platformId)
     {
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
@@ -195,7 +200,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => IdentityRawNames(platformId, ProviderIdentityField.Url).Any(rawName => TagRawProbe.HasId3Raw(tag, rawName)),
             SupportedTag.TrackId => IdentityRawNames(platformId, ProviderIdentityField.TrackId).Any(rawName => TagRawProbe.HasId3Raw(tag, rawName)),
             SupportedTag.ReleaseId => IdentityRawNames(platformId, ProviderIdentityField.ReleaseId).Any(rawName => TagRawProbe.HasId3Raw(tag, rawName)),
-            SupportedTag.RecordingId => TagRawProbe.HasId3Raw(tag, RecordingIdRawTag),
+            SupportedTag.RecordingId => HasProviderRecordingId(platformId, rawName => TagRawProbe.HasId3Raw(tag, rawName))
+                || TagRawProbe.HasId3Raw(tag, RecordingIdRawTag),
             SupportedTag.ArtistId => IdentityRawNames(platformId, ProviderIdentityField.ArtistId).Any(rawName => TagRawProbe.HasId3Raw(tag, rawName)),
             SupportedTag.AlbumArtistId => IdentityRawNames(platformId, ProviderIdentityField.AlbumArtistId).Any(rawName => TagRawProbe.HasId3Raw(tag, rawName)),
             SupportedTag.ReleaseGroupId => TagRawProbe.HasId3Raw(tag, ReleaseGroupIdRawTag),
@@ -268,7 +274,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => IdentityRawNames(platformId, ProviderIdentityField.Url).Any(rawName => tag.GetField(rawName).Length > 0),
             SupportedTag.TrackId => IdentityRawNames(platformId, ProviderIdentityField.TrackId).Any(rawName => tag.GetField(rawName).Length > 0),
             SupportedTag.ReleaseId => IdentityRawNames(platformId, ProviderIdentityField.ReleaseId).Any(rawName => tag.GetField(rawName).Length > 0),
-            SupportedTag.RecordingId => tag.GetField(RecordingIdRawTag).Length > 0,
+            SupportedTag.RecordingId => HasProviderRecordingId(platformId, rawName => tag.GetField(rawName).Length > 0)
+                || tag.GetField(RecordingIdRawTag).Length > 0,
             SupportedTag.ArtistId => IdentityRawNames(platformId, ProviderIdentityField.ArtistId).Any(rawName => tag.GetField(rawName).Length > 0),
             SupportedTag.AlbumArtistId => IdentityRawNames(platformId, ProviderIdentityField.AlbumArtistId).Any(rawName => tag.GetField(rawName).Length > 0),
             SupportedTag.ReleaseGroupId => tag.GetField(ReleaseGroupIdRawTag).Length > 0,
@@ -345,7 +352,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => IdentityRawNames(platformId, ProviderIdentityField.Url).Any(rawName => Mp4TagHelper.HasRaw(file, rawName)),
             SupportedTag.TrackId => IdentityRawNames(platformId, ProviderIdentityField.TrackId).Any(rawName => Mp4TagHelper.HasRaw(file, rawName)),
             SupportedTag.ReleaseId => IdentityRawNames(platformId, ProviderIdentityField.ReleaseId).Any(rawName => Mp4TagHelper.HasRaw(file, rawName)),
-            SupportedTag.RecordingId => Mp4TagHelper.HasRaw(file, RecordingIdRawTag),
+            SupportedTag.RecordingId => HasProviderRecordingId(platformId, rawName => Mp4TagHelper.HasRaw(file, rawName))
+                || Mp4TagHelper.HasRaw(file, RecordingIdRawTag),
             SupportedTag.ArtistId => IdentityRawNames(platformId, ProviderIdentityField.ArtistId).Any(rawName => Mp4TagHelper.HasRaw(file, rawName)),
             SupportedTag.AlbumArtistId => IdentityRawNames(platformId, ProviderIdentityField.AlbumArtistId).Any(rawName => Mp4TagHelper.HasRaw(file, rawName)),
             SupportedTag.ReleaseGroupId => Mp4TagHelper.HasRaw(file, ReleaseGroupIdRawTag),

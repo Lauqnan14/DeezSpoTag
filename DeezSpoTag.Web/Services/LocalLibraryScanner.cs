@@ -693,7 +693,13 @@ public sealed class LocalLibraryScanner
         trackData.TagPublishDate = NormalizeTagValue(GetCustomValue(tagFile, "PUBLISHDATE") ?? GetCustomValue(tagFile, "PUBLISH_DATE"));
         trackData.TagUrl = NormalizeTagValue(GetCustomValue(tagFile, "URL"));
         trackData.TagReleaseId = NormalizeTagValue(GetCustomValue(tagFile, "RELEASE_ID") ?? GetCustomValue(tagFile, "RELEASEID") ?? GetCustomValue(tagFile, "MUSICBRAINZ_RELEASEID") ?? GetCustomValue(tagFile, "MUSICBRAINZ_RELEASE_ID"));
-        trackData.TagTrackId = NormalizeTagValue(GetCustomValue(tagFile, "TRACK_ID") ?? GetCustomValue(tagFile, "TRACKID") ?? GetCustomValue(tagFile, "MUSICBRAINZ_TRACKID") ?? GetCustomValue(tagFile, "MUSICBRAINZ_TRACK_ID"));
+        trackData.TagTrackId = NormalizeTagValue(
+            GetCustomValue(tagFile, "TRACK_ID")
+            ?? GetCustomValue(tagFile, "TRACKID")
+            ?? GetCustomValue(tagFile, "MUSICBRAINZ_TRACK_ID")
+            ?? GetCustomValue(tagFile, "MUSICBRAINZ_RECORDING_ID")
+            ?? GetCustomValue(tagFile, "MUSICBRAINZ_RECORDINGID")
+            ?? GetCustomValue(tagFile, "MUSICBRAINZ_TRACKID"));
         trackData.TagMetaTaggedDate = NormalizeTagValue(GetCustomValue(tagFile, "1T_TAGGEDDATE"));
 
         if (tag.Track > 0)

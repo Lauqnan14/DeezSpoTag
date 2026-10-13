@@ -1068,7 +1068,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteCatalogNumberTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(CatalogNumberTag) || string.IsNullOrWhiteSpace(context.SourceTrack.CatalogNumber))
+        var values = ResolveRepeatedTagValues(context.SourceTrack.CatalogNumbers, context.SourceTrack.CatalogNumber);
+        if (!context.EnabledTags.Contains(CatalogNumberTag) || values.Count == 0)
         {
             return;
         }
@@ -1076,7 +1077,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         SetField(
             tagWriteContext,
             new TagFieldBinding(CatalogNumberUpperTag, CatalogNumberUpperTag, CatalogNumberUpperTag, SupportedTag.CatalogNumber),
-            new List<string> { context.SourceTrack.CatalogNumber });
+            values);
     }
 
     private static void EnsureReleaseCategory(AutoTagTrack track)

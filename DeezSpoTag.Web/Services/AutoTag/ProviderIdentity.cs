@@ -34,6 +34,15 @@ internal sealed record ProviderIdentityPayload(
 {
     public bool ForceOverwrite { get; init; }
 
+    /// <summary>Every track-artist MBID, first credit first. Empty keeps the single <see cref="ArtistId"/>.</summary>
+    public IReadOnlyList<string> ArtistIds { get; init; } = [];
+
+    /// <summary>Every album-artist MBID, first credit first. Empty keeps the single <see cref="AlbumArtistId"/>.</summary>
+    public IReadOnlyList<string> AlbumArtistIds { get; init; } = [];
+
+    /// <summary>MusicBrainz medium-track UUID. Written as MUSICBRAINZ_TRACKID, never used as the recording id.</summary>
+    public string? MediumTrackId { get; init; }
+
     public string? ValueFor(ProviderIdentityField field) => field switch
     {
         ProviderIdentityField.TrackId => TrackId,

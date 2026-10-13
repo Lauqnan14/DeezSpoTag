@@ -78,6 +78,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     returned.Add(family.SupportedTag);
                 }
             }
+
+            if (!string.IsNullOrWhiteSpace(providerIdentity.TrackId)
+                && plan.Eligible.Contains(SupportedTag.RecordingId))
+            {
+                returned.Add(SupportedTag.RecordingId);
+            }
         }
 
         return returned;
@@ -271,12 +277,30 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteLabelTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(LabelTag) || string.IsNullOrWhiteSpace(context.SourceTrack.Label))
+        var values = ResolveRepeatedTagValues(context.SourceTrack.Labels, context.SourceTrack.Label);
+        if (!context.EnabledTags.Contains(LabelTag) || values.Count == 0)
         {
             return;
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TPUB", LabelUpperTag, LabelUpperTag, SupportedTag.Label), new List<string> { context.SourceTrack.Label });
+        SetField(tagWriteContext, new TagFieldBinding("TPUB", LabelUpperTag, LabelUpperTag, SupportedTag.Label), values);
+    }
+
+    /// <summary>
+    /// A populated list is the full set of values. An empty list keeps the single-value
+    /// field, which is all a non-MusicBrainz platform supplies.
+    /// </summary>
+    private static List<string> ResolveRepeatedTagValues(IReadOnlyList<string>? listed, string? single)
+    {
+        if (listed is { Count: > 0 })
+        {
+            return listed
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .ToList();
+        }
+
+        return string.IsNullOrWhiteSpace(single) ? [] : [single.Trim()];
     }
 
     private static void WriteAudioFeatureTag(

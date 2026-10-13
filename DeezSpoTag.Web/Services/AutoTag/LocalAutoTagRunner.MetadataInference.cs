@@ -226,7 +226,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         AddTagIfAny(tags, SpotifyUrlTag, NormalizeSpotifyTrackUrls(ReadRawTagValuesAny(file, extension, SpotifyUrlTag, "SPOTIFYURI", "SPOTIFY_URI")));
         AddTagIfAny(tags, "URL", ReadRawTagValuesAny(file, extension, "URL"));
         AddTagIfAny(tags, WwwAudioFileTag, ReadRawTagValuesAny(file, extension, WwwAudioFileTag));
-        AddTagIfAny(tags, "MUSICBRAINZ_RECORDING_ID", ReadRawTagValuesAny(file, extension, "MUSICBRAINZ_RECORDING_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_TRACKID"));
+        AddTagIfAny(tags, "MUSICBRAINZ_RECORDING_ID", ReadRawTagValuesAny(file, extension, "MUSICBRAINZ_RECORDING_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_TRACK_ID"));
         AddTagIfAny(tags, RecordingIdRawTag, ReadRawTagValuesAny(file, extension, RecordingIdRawTag));
         AddTagIfAny(tags, ArtistIdRawTag, ReadRawTagValuesAny(file, extension, ArtistIdRawTag));
         AddTagIfAny(tags, AlbumArtistIdRawTag, ReadRawTagValuesAny(file, extension, AlbumArtistIdRawTag));

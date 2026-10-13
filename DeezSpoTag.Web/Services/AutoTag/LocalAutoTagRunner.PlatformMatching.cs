@@ -41,17 +41,69 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         var provider = AutoTagIdentityTags.NormalizeProviderId(platformId);
         var native = !IsForeignFallbackResult(provider, match.Track.Other);
-        return native
-            ? new ProviderIdentityPayload(
-                provider,
-                NullIfBlank(match.Track.TrackId),
-                NullIfBlank(match.Track.AlbumId),
-                NullIfBlank(match.Track.ReleaseId),
-                NullIfBlank(match.Track.ArtistId),
-                NullIfBlank(match.Track.AlbumArtistId),
-                NormalizeProviderUrl(provider, match.Track.Url),
-                true)
-            : new ProviderIdentityPayload(provider, null, null, null, null, null, null, false);
+        if (!native)
+        {
+            // Id-first Shazam keeps metadata from Deezer or Spotify, then replaces the
+            // track id with Shazam's own id when the file already has one. That id is
+            // Shazam's. The resolver's album, artist, and release ids are not.
+            var shazamTrackId = ShazamOwnedTrackId(match.Track);
+            return shazamTrackId != null && provider == ShazamPlatform
+                ? new ProviderIdentityPayload(
+                    provider,
+                    shazamTrackId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    ShazamOwnedUrl(match.Track.Url),
+                    true)
+                : new ProviderIdentityPayload(provider, null, null, null, null, null, null, false);
+        }
+
+        return new ProviderIdentityPayload(
+            provider,
+            NullIfBlank(match.Track.TrackId),
+            NullIfBlank(match.Track.AlbumId),
+            NullIfBlank(match.Track.ReleaseId),
+            NullIfBlank(match.Track.ArtistId),
+            NullIfBlank(match.Track.AlbumArtistId),
+            NormalizeProviderUrl(provider, match.Track.Url),
+            true)
+        {
+            ArtistIds = NormalizeIdentityList(match.Track.ArtistIds),
+            AlbumArtistIds = NormalizeIdentityList(match.Track.AlbumArtistIds),
+            MediumTrackId = NullIfBlank(match.Track.MediumTrackId)
+        };
+    }
+
+    /// <summary>The track id is Shazam's only when the match says so and the same value
+    /// is the track id that will be written. A resolver id left on the track is not.</summary>
+    private static string? ShazamOwnedTrackId(AutoTagTrack track)
+    {
+        var trackId = NullIfBlank(track.TrackId);
+        if (trackId == null
+            || !track.Other.TryGetValue("SHAZAM_TRACK_ID", out var values)
+            || values == null)
+        {
+            return null;
+        }
+
+        var tagged = values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+        return string.Equals(tagged, trackId, StringComparison.Ordinal) ? trackId : null;
+    }
+
+    private static string? ShazamOwnedUrl(string? url)
+    {
+        var trimmed = NullIfBlank(url);
+        if (trimmed == null)
+        {
+            return null;
+        }
+
+        return Uri.TryCreate(trimmed, UriKind.Absolute, out var parsed)
+            && parsed.Host.Contains("shazam.com", StringComparison.OrdinalIgnoreCase)
+            ? trimmed
+            : null;
     }
 
     /// <summary>
@@ -1209,6 +1261,19 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     private static string? ToMusicBrainzShapedId(string? value)
         => Guid.TryParse(value, out _) ? value : null;
 
+    private static IReadOnlyList<string> NormalizeIdentityList(IReadOnlyList<string>? values)
+    {
+        if (values is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        return values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .ToList();
+    }
+
     private static void WriteDurationTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
         if (!context.EnabledTags.Contains(DurationTag) || !context.SourceTrack.Duration.HasValue)
@@ -1225,12 +1290,13 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteIsrcTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains("isrc") || string.IsNullOrWhiteSpace(context.SourceTrack.Isrc))
+        var values = ResolveRepeatedTagValues(context.SourceTrack.Isrcs, context.SourceTrack.Isrc);
+        if (!context.EnabledTags.Contains("isrc") || values.Count == 0)
         {
             return;
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TSRC", "ISRC", "ISRC", SupportedTag.ISRC), new List<string> { context.SourceTrack.Isrc });
+        SetField(tagWriteContext, new TagFieldBinding("TSRC", "ISRC", "ISRC", SupportedTag.ISRC), values);
     }
 
     private static bool IsRuntimeMatchMetadataKey(string key)

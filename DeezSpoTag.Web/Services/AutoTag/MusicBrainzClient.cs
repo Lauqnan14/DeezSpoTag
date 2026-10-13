@@ -52,13 +52,122 @@ public sealed class MusicBrainzClient
 
     public async Task<BrowseReleases?> GetReleasesAsync(string recordingId, CancellationToken cancellationToken)
     {
-        var response = await GetAsync($"release?recording={Uri.EscapeDataString(recordingId)}&inc=labels+isrcs+recordings+genres+tags+release-groups+media&fmt=json", cancellationToken);
-        if (response == null)
+        const int pageSize = 100;
+        const int maxPages = 3;
+        BrowseReleases? combined = null;
+        for (var page = 0; page < maxPages; page++)
+        {
+            var offset = page * pageSize;
+            var path = $"release?recording={Uri.EscapeDataString(recordingId)}&inc=labels+isrcs+recordings+genres+tags+release-groups+media+release-events&limit={pageSize}&offset={offset}&fmt=json";
+            var response = await GetAsync(path, cancellationToken);
+            if (response == null)
+            {
+                break;
+            }
+
+            var pageResult = await DeserializeAsync<BrowseReleases>(response, cancellationToken);
+            if (pageResult == null)
+            {
+                break;
+            }
+
+            combined ??= new BrowseReleases();
+            combined.ReleaseCount = pageResult.ReleaseCount;
+            combined.ReleaseOffset = offset;
+            combined.Releases.AddRange(pageResult.Releases);
+            if (pageResult.Releases.Count == 0
+                || pageResult.Releases.Count < pageSize
+                || combined.Releases.Count >= pageResult.ReleaseCount)
+            {
+                return combined;
+            }
+        }
+
+        if (combined != null && combined.ReleaseCount > combined.Releases.Count)
+        {
+            _logger.LogInformation(
+                "MusicBrainz release browse stopped after {Pages} pages ({Loaded} of {Total}) for recording {RecordingId}. Ranking the loaded releases.",
+                maxPages,
+                combined.Releases.Count,
+                combined.ReleaseCount,
+                recordingId);
+        }
+
+        return combined;
+    }
+
+    /// <summary>
+    /// One Cover Art Archive lookup for a release whose <c>front</c> flag is false
+    /// but whose archive still has images. Returns the URL of an image typed Front.
+    /// Failure and a miss both return null so the caller leaves art empty.
+    /// </summary>
+    public async Task<string?> TryGetFrontCoverImageUrlAsync(string releaseId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(releaseId))
         {
             return null;
         }
 
-        return await DeserializeAsync<BrowseReleases>(response, cancellationToken);
+        try
+        {
+            using var response = await _httpClient.GetAsync(
+                $"https://coverartarchive.org/release/{Uri.EscapeDataString(releaseId.Trim())}",
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("images", out var images)
+                || images.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var image in images.EnumerateArray())
+            {
+                if (!ImageTypesIncludeFront(image)
+                    || !image.TryGetProperty("image", out var imageUrl)
+                    || imageUrl.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var url = imageUrl.GetString();
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    return url;
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Cover Art Archive front lookup failed for {ReleaseId}.", releaseId);
+            return null;
+        }
+    }
+
+    private static bool ImageTypesIncludeFront(JsonElement image)
+    {
+        if (!image.TryGetProperty("types", out var types) || types.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var type in types.EnumerateArray())
+        {
+            if (type.ValueKind == JsonValueKind.String
+                && string.Equals(type.GetString(), "Front", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public async Task<Recording?> GetRecordingAsync(string recordingId, CancellationToken cancellationToken)
@@ -67,7 +176,7 @@ public sealed class MusicBrainzClient
         // the recording: composer, lyricist, performer (with instruments), conductor,
         // producer, engineer, mixer, remixer, arranger — the tags Picard derives too.
         // Aliases bring localized titles/names and alias-based title tolerance.
-        var response = await GetAsync($"recording/{Uri.EscapeDataString(recordingId)}?inc=artists+releases+isrcs+artist-credits+artist-rels+work-rels+work-level-rels+aliases&fmt=json", cancellationToken);
+        var response = await GetAsync($"recording/{Uri.EscapeDataString(recordingId)}?inc=artists+releases+isrcs+artist-credits+artist-rels+work-rels+work-level-rels+aliases+genres&fmt=json", cancellationToken);
         if (response == null)
         {
             return null;

@@ -143,7 +143,7 @@ public sealed class ProviderIdentityContractTest
         string[] expected =
         [
             "musicbrainz", "beatport", "discogs", "traxsource", "bandcamp", "itunes",
-            "spotify", "deezer", "boomplay", "audiomack", "shazam", "qobuz", "tidal", "amazon",
+            "spotify", "deezer", "boomplay", "bpmsupreme", "audiomack", "shazam", "qobuz", "tidal", "amazon",
             "soundcloud"
         ];
 
@@ -153,6 +153,7 @@ public sealed class ProviderIdentityContractTest
         }
 
         Assert.DoesNotContain("lyrics", AutoTagIdentityTags.KnownProviders);
+        Assert.Equal("bpmsupreme", AutoTagIdentityTags.ResolveOwningProvider("BPMSUPREME_TRACK_ID"));
     }
 
     [Fact]

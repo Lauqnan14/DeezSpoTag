@@ -143,6 +143,15 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         return merged;
     }
 
+    /// <summary>Track ID and Recording ID share one stored value. Overwrite on either
+    /// selection replaces that provider track id. It never touches generic RECORDINGID.</summary>
+    private static bool ShouldOverwriteIdentityField(
+        AutoTagRunnerConfig config,
+        ProviderIdentityField field,
+        SupportedTag supportedTag)
+        => ShouldOverwriteTag(config, supportedTag)
+            || (field == ProviderIdentityField.TrackId && ShouldOverwriteTag(config, SupportedTag.RecordingId));
+
     /// <summary>The exact provider+field alias family used for presence checks: an
     /// identity tag "exists" only inside its own provider namespace.</summary>
     internal static IReadOnlyList<string> IdentityRawNames(string? platformId, ProviderIdentityField field)
@@ -154,7 +163,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
     {
         var configured = BuildConfiguredTagSet(config.Tags);
         var fields = new HashSet<ProviderIdentityField>();
-        if (configured.Contains(TrackIdTag))
+        // Recording ID is the provider's own track id. Shazam, Spotify, Deezer, and
+        // the other platforms store that value in {PROVIDER}_TRACK_ID. MusicBrainz
+        // writes the same recording MBID to MUSICBRAINZ_TRACK_ID and
+        // MUSICBRAINZ_RECORDING_ID. The generic RECORDINGID field stays untouched.
+        if (configured.Contains(TrackIdTag) || configured.Contains(RecordingIdTag))
         {
             fields.Add(ProviderIdentityField.TrackId);
         }
@@ -276,8 +289,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         continue;
                     }
 
-                    var value = payload.ValueFor(field);
-                    if (string.IsNullOrWhiteSpace(value))
+                    var values = IdentityValuesFor(payload, field);
+                    if (values.Count == 0)
                     {
                         continue;
                     }
@@ -285,7 +298,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     var family = AutoTagIdentityTags.ResolveFamily(payload.ProviderId, field);
                     try
                     {
-                        if (payload.ForceOverwrite || ShouldOverwriteTag(config, family.SupportedTag))
+                        if (payload.ForceOverwrite || ShouldOverwriteIdentityField(config, field, family.SupportedTag))
                         {
                             foreach (var alias in family.CleanupNames)
                             {
@@ -302,7 +315,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                         var persisted = true;
                         foreach (var writeName in family.WriteNames)
                         {
-                            persisted &= session.Write(writeName, value.Trim());
+                            persisted &= values.Count == 1
+                                ? session.Write(writeName, values[0])
+                                : session.WriteValues(writeName, values);
+                        }
+
+                        if (persisted
+                            && field == ProviderIdentityField.TrackId
+                            && string.Equals(payload.ProviderId, "musicbrainz", StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(payload.MediumTrackId))
+                        {
+                            persisted &= session.Write("MUSICBRAINZ_TRACKID", payload.MediumTrackId.Trim());
                         }
 
                         if (!persisted)
@@ -315,7 +338,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                             continue;
                         }
 
-                        written.Add((field, value.Trim()));
+                        written.Add((field, values[0]));
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -357,6 +380,11 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             }
 
             attempted.Add(family.SupportedTag);
+            if (field == ProviderIdentityField.TrackId
+                && BuildConfiguredTagSet(config.Tags).Contains(RecordingIdTag))
+            {
+                attempted.Add(SupportedTag.RecordingId);
+            }
         }
 
         var genericAfter = CaptureGenericIdentityCompatibilityFields(filePath);
@@ -374,6 +402,38 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return Task.FromResult(new ProviderIdentityWriteResult(attempted, failures));
+    }
+
+    /// <summary>
+    /// The identity slot stays the first value. MusicBrainz artist fields may carry every
+    /// credited MBID after that first one. Other fields stay a single value.
+    /// </summary>
+    private static IReadOnlyList<string> IdentityValuesFor(ProviderIdentityPayload payload, ProviderIdentityField field)
+    {
+        var single = payload.ValueFor(field)?.Trim();
+        IReadOnlyList<string>? listed = field switch
+        {
+            ProviderIdentityField.ArtistId => payload.ArtistIds,
+            ProviderIdentityField.AlbumArtistId => payload.AlbumArtistIds,
+            _ => null
+        };
+        if (listed is not { Count: > 0 })
+        {
+            return string.IsNullOrWhiteSpace(single) ? [] : [single];
+        }
+
+        var values = listed
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (!string.IsNullOrWhiteSpace(single))
+        {
+            values.RemoveAll(value => string.Equals(value, single, StringComparison.OrdinalIgnoreCase));
+            values.Insert(0, single);
+        }
+
+        return values;
     }
 
     /// <summary>
@@ -451,7 +511,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
                 }
                 default:
-                    return AtlTagHelper.ReadNativeField(_atl!, name);
+                {
+                    var native = AtlTagHelper.ReadNativeField(_atl!, name);
+                    if (string.IsNullOrWhiteSpace(native))
+                    {
+                        return null;
+                    }
+
+                    var line = native.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    return line.Length == 0 ? null : line[0];
+                }
             }
         }
 
@@ -490,6 +559,58 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                 }
                 default:
                     return AtlTagHelper.SetNativeField(_atl!, name, value);
+            }
+        }
+
+        public bool WriteValues(string name, IReadOnlyList<string> values)
+        {
+            var normalized = values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .ToList();
+            if (normalized.Count == 0)
+            {
+                return false;
+            }
+
+            if (normalized.Count == 1)
+            {
+                return Write(name, normalized[0]);
+            }
+
+            switch (_backend)
+            {
+                case ProviderIdentityPersistenceBackend.Id3:
+                {
+                    var id3 = Id3Tag(create: true)!;
+                    if (name.Length == 4)
+                    {
+                        TagLib.Id3v2.TextInformationFrame.Get(id3, name, true).Text = normalized.ToArray();
+                    }
+                    else
+                    {
+                        TagLib.Id3v2.UserTextInformationFrame.Get(id3, name, true).Text = normalized.ToArray();
+                    }
+
+                    return true;
+                }
+                case ProviderIdentityPersistenceBackend.Xiph:
+                {
+                    var xiph = XiphTag(create: true)!;
+                    xiph.SetField(name, normalized.ToArray());
+                    return true;
+                }
+                case ProviderIdentityPersistenceBackend.Mp4:
+                {
+                    var apple = AppleTag(create: true);
+                    return apple is not null
+                        && AppleDashBoxReflectionHelper.TrySetValues(
+                            apple,
+                            Mp4RawTagNameNormalizer.Normalize(name),
+                            normalized.ToArray());
+                }
+                default:
+                    return AtlTagHelper.SetNativeField(_atl!, name, string.Join("\n", normalized));
             }
         }
 

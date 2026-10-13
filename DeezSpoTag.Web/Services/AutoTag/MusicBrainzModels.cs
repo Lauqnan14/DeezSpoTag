@@ -20,6 +20,7 @@ public sealed class Recording
     public string? FirstReleaseDate { get; set; }
     public List<ReleaseSmall>? Releases { get; set; }
     public List<string>? Isrcs { get; set; }
+    public List<Genre> Genres { get; set; } = new();
     [JsonPropertyName("relations")]
     public List<Relation>? Relations { get; set; }
     [JsonPropertyName("aliases")]
@@ -40,14 +41,19 @@ public sealed class Relation
     public string? Type { get; set; }
     public Artist? Artist { get; set; }
     public Work? Work { get; set; }
-    [JsonPropertyName("attribute-list")]
+    [JsonPropertyName("attributes")]
     public List<string>? Attributes { get; set; }
+    [JsonPropertyName("attribute-credits")]
+    public Dictionary<string, string>? AttributeCredits { get; set; }
 }
 
 public sealed class Work
 {
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
+    public string? Language { get; set; }
+    public List<string>? Languages { get; set; }
+    public List<string>? Iswcs { get; set; }
     [JsonPropertyName("relations")]
     public List<Relation>? Relations { get; set; }
 }
@@ -84,6 +90,23 @@ public sealed class Release
     [JsonPropertyName("release-group")]
     public ReleaseGroup? ReleaseGroup { get; set; }
     public string? Country { get; set; }
+    [JsonPropertyName("release-events")]
+    public List<ReleaseEvent>? ReleaseEvents { get; set; }
+    [JsonPropertyName("text-representation")]
+    public TextRepresentation? TextRepresentation { get; set; }
+}
+
+public sealed class ReleaseEvent
+{
+    public string? Date { get; set; }
+    public string? Country { get; set; }
+    public Area? Area { get; set; }
+}
+
+public sealed class TextRepresentation
+{
+    public string? Language { get; set; }
+    public string? Script { get; set; }
 }
 
 public sealed class CoverArtArchive
@@ -96,6 +119,7 @@ public sealed class CoverArtArchive
 
 public sealed class ReleaseMedia
 {
+    public string? Title { get; set; }
     public int? Position { get; set; }
     public string? Format { get; set; }
     [JsonPropertyName("track-count")]
@@ -121,7 +145,10 @@ public sealed class MusicBrainzTrack
     public string ReleaseId { get; set; } = "";
     public string? RecordingId { get; set; }
     public string? ArtistId { get; set; }
+    public List<string> ArtistIds { get; set; } = new();
     public string? AlbumArtistId { get; set; }
+    public List<string> AlbumArtistIds { get; set; } = new();
+    public string? MediumTrackId { get; set; }
     public string? ReleaseGroupId { get; set; }
     public string? AlbumId { get; set; }
     public string? ReleaseStatus { get; set; }
@@ -132,6 +159,7 @@ public sealed class MusicBrainzTrack
     public int? ReleaseYear { get; set; }
     public DateTime? ReleaseDate { get; set; }
     public string? Isrc { get; set; }
+    public List<string> Isrcs { get; set; } = new();
     public string? Lyricist { get; set; }
     public List<string> Remixers { get; set; } = new();
     [JsonPropertyName("relations")]
@@ -140,7 +168,10 @@ public sealed class MusicBrainzTrack
     public List<Alias>? Aliases { get; set; }
     public List<ArtistCredit>? ArtistCredits { get; set; }
     public string? Label { get; set; }
+    public List<string> Labels { get; set; } = new();
     public string? CatalogNumber { get; set; }
+    public List<string> CatalogNumbers { get; set; } = new();
+    public List<string> RecordingGenres { get; set; } = new();
     public int? TrackNumber { get; set; }
     public int? TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
@@ -183,6 +214,9 @@ public sealed class ReleaseGroup
     public string? PrimaryType { get; set; }
     [JsonPropertyName("secondary-types")]
     public List<string>? SecondaryTypes { get; set; }
+    [JsonPropertyName("first-release-date")]
+    public string? FirstReleaseDate { get; set; }
+    public List<Genre> Genres { get; set; } = new();
 }
 
 
