@@ -12,6 +12,31 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ArtistMetadataProviderGateTest
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelledOrTimedOutWorkRetainsProviderSlotUntilItFinishes(bool timeout)
+    {
+        var gate = CreateGate(operationTimeout: TimeSpan.FromMilliseconds(40));
+        using var parent = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = gate.RunAsync("spotify", token => { entered.SetResult(); return finish.Task; }, parent.Token);
+        await entered.Task;
+        if (!timeout) parent.Cancel();
+        if (timeout) Assert.Equal(0, await first.WaitAsync(TimeSpan.FromSeconds(2)));
+        else await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.WaitAsync(TimeSpan.FromSeconds(2)));
+        var second = gate.RunAsync("spotify", token => { nextEntered.SetResult(); return Task.FromResult(2); }, CancellationToken.None);
+        try
+        {
+            Assert.False(nextEntered.Task.IsCompleted);
+            Assert.Equal(3, await gate.RunAsync("qobuz", token => Task.FromResult(3), CancellationToken.None));
+        }
+        finally { finish.TrySetResult(1); await second.WaitAsync(TimeSpan.FromSeconds(2)); }
+        Assert.True(nextEntered.Task.IsCompleted);
+    }
+
     [Fact]
     public async Task EmptyOrFailedLookupDoesNotOpenTheProviderCircuit()
     {

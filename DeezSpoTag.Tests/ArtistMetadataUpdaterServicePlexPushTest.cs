@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net;
 using System.Reflection;
@@ -29,6 +30,70 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
 {
     private static readonly SemaphoreSlim DataRootEnvironmentGate = new(1, 1);
     private readonly List<string> _tempPaths = new();
+
+    [Fact]
+    public async Task CompletingOlderRunPreservesNewerManualRegistrationsAndPreferences()
+    {
+        var path = Path.Join(CreateTempDirectory(), "metadata-updater-state.json");
+        var service = CreateServiceForManualRegistration(path);
+        var older = new MetadataUpdaterState { Artists = new() {
+            new MetadataUpdaterTrackedArtist { ArtistId = 1, ArtistName = "Old", IncludeBio = false, UpdatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1) } } };
+        await service.RegisterFromManualPushAsync(new ManualPushRegistrationRequest { ArtistId = 1, ArtistName = "New", IncludeBio = true }, CancellationToken.None);
+        await service.RegisterFromManualPushAsync(new ManualPushRegistrationRequest { ArtistId = 2, ArtistName = "Added during run" }, CancellationToken.None);
+        await (Task)typeof(ArtistMetadataUpdaterService).GetMethod("SaveStateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, new object[] { older, CancellationToken.None })!;
+        var saved = JsonSerializer.Deserialize<MetadataUpdaterState>(await File.ReadAllTextAsync(path))!;
+        Assert.Equal(2, saved.Artists.Count);
+        Assert.True(saved.Artists.Single(artist => artist.ArtistId == 1).IncludeBio);
+        Assert.Equal("New", saved.Artists.Single(artist => artist.ArtistId == 1).ArtistName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AutomaticPushFinishingAfterManualEditPreservesPreferencesAndPushProgress(bool legacy)
+    {
+        var path = Path.Join(CreateTempDirectory(), "metadata-updater-state.json");
+        var service = CreateServiceForManualRegistration(path);
+        if (legacy)
+            await File.WriteAllTextAsync(path, "{\"Artists\":[{\"ArtistId\":7,\"ArtistName\":\"Before\",\"IncludeBio\":false,\"UpdatedAtUtc\":\"2026-10-01T00:00:00Z\"}]}");
+        else
+            await service.RegisterFromManualPushAsync(new ManualPushRegistrationRequest
+                { ArtistId = 7, ArtistName = "Before", IncludeBio = false, Target = "plex" }, CancellationToken.None);
+        var active = await (Task<MetadataUpdaterState>)typeof(ArtistMetadataUpdaterService)
+            .GetMethod("LoadStateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, new object[] { CancellationToken.None })!;
+        await service.RegisterFromManualPushAsync(new ManualPushRegistrationRequest
+            { ArtistId = 7, ArtistName = "Manual", IncludeBio = true, Target = "jellyfin", IntervalDays = 17 }, CancellationToken.None);
+        var artist = Assert.Single(active.Artists);
+        artist.LastPushedAtUtc = DateTimeOffset.UtcNow.AddSeconds(1);
+        artist.UpdatedAtUtc = artist.LastPushedAtUtc.Value;
+        artist.AvatarRotationIndex = 3;
+        await (Task)typeof(ArtistMetadataUpdaterService).GetMethod("SaveStateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, new object[] { active, CancellationToken.None })!;
+        var saved = Assert.Single(JsonSerializer.Deserialize<MetadataUpdaterState>(await File.ReadAllTextAsync(path))!.Artists);
+        Assert.True(saved.IncludeBio);
+        Assert.Equal("Manual", saved.ArtistName);
+        Assert.Equal("jellyfin", saved.Target);
+        Assert.Equal(17, saved.IntervalDays);
+        Assert.Equal(artist.LastPushedAtUtc, saved.LastPushedAtUtc);
+        Assert.Equal(3, saved.AvatarRotationIndex);
+        var journalState = new MetadataUpdaterState { Artists = new() { saved } };
+        ArtistMetadataUpdaterService.RestoreTrackingSnapshots(journalState,
+            new[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Succeeded, TrackingState: artist) });
+        Assert.True(Assert.Single(journalState.Artists).IncludeBio);
+    }
+
+    [Fact]
+    public async Task ConcurrentManualRegistrationsPreserveEveryArtist()
+    {
+        var path = Path.Join(CreateTempDirectory(), "metadata-updater-state.json");
+        var service = CreateServiceForManualRegistration(path);
+        await Task.WhenAll(System.Linq.Enumerable.Range(1, 30).Select(id => service.RegisterFromManualPushAsync(
+            new ManualPushRegistrationRequest { ArtistId = id, ArtistName = "Artist " + id, Target = "plex" }, CancellationToken.None)));
+        var state = JsonSerializer.Deserialize<MetadataUpdaterState>(await File.ReadAllTextAsync(path));
+        Assert.Equal(30, state!.Artists.Count);
+    }
 
     [Fact]
     public async Task PushToPlexAsync_ReportsNotConfigured_SoASelectedTargetIsNeverSilentlyIgnored()
@@ -540,6 +605,7 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTest : IDisposable
     {
         var instance = (ArtistMetadataUpdaterService)RuntimeHelpers.GetUninitializedObject(typeof(ArtistMetadataUpdaterService));
         SetPrivateField(instance, "_statePath", statePath);
+        SetPrivateField(instance, "_trackingWriteGate", new SemaphoreSlim(1, 1));
         SetPrivateField(instance, "_logger", NullLogger<ArtistMetadataUpdaterService>.Instance);
         return instance;
     }

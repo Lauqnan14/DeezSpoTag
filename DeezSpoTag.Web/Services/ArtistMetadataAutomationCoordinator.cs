@@ -735,6 +735,13 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Artist metadata {Operation} failed.", operation);
+            if (_userCancelCts?.IsCancellationRequested == true)
+            {
+                // Provider/final-save cleanup may throw after user cancellation.
+                // The user's stop instruction takes precedence over resuming that failure.
+                await ClearActiveRunWithoutStampingAsync();
+                return;
+            }
             RecordOperationFailure(operation, ex.Message);
             await FlushCheckpointAsync();
 
@@ -766,34 +773,46 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 return;
             }
 
+            try
+            {
+                await PersistCheckpointAsync(requireDurable: true);
+            }
+            catch (Exception persistenceError) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(persistenceError))
+            {
+                _logger.LogWarning(persistenceError, "Artist metadata failure checkpoint could not be saved.");
+            }
             Interlocked.Increment(ref _checkpointEpoch);
         }
         finally
         {
-            await FlushCheckpointAsync();
-            await StopCheckpointWritesAsync();
-            var retained = await LoadStateAsync(CancellationToken.None);
-            CancellationTokenSource? userCts;
-            lock (_statusLock)
+            ArtistMetadataAutomationState? retained = null;
+            try
             {
-                userCts = _userCancelCts;
-                _userCancelCts = null;
-                _activeCts = null;
-                _status = FinalizeOperationStatus(
-                    _status,
-                    operation,
-                    _shutdownRequested || _shutdownToken.IsCancellationRequested,
-                    DateTimeOffset.UtcNow);
+                await FlushCheckpointAsync();
+                await StopCheckpointWritesAsync();
+                retained = await LoadStateAsync(CancellationToken.None);
             }
-            cts.Dispose();
-            if (userCts is not null && !ReferenceEquals(userCts, cts))
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                userCts.Dispose();
+                _logger.LogWarning(ex, "Artist metadata cleanup could not read or flush persisted state.");
             }
-            if (retained.ActiveRun?.Paused == true) RestorePausedStatus(retained.ActiveRun);
-            else lock (_statusLock) _status = _status with
-            { RunState = "idle", RunId = null, RunOperation = null };
-            _operationGate.Release();
+            finally
+            {
+                CancellationTokenSource? userCts;
+                lock (_statusLock)
+                {
+                    userCts = _userCancelCts;
+                    _userCancelCts = null;
+                    _activeCts = null;
+                    _status = FinalizeOperationStatus(_status, operation,
+                        _shutdownRequested || _shutdownToken.IsCancellationRequested, DateTimeOffset.UtcNow);
+                    _status = _status with { RunState = "idle", RunId = null, RunOperation = null };
+                }
+                cts.Dispose();
+                if (userCts is not null && !ReferenceEquals(userCts, cts)) userCts.Dispose();
+                _operationGate.Release();
+            }
+            if (retained?.ActiveRun?.Paused == true) RestorePausedStatus(retained.ActiveRun);
         }
     }
 
@@ -1010,7 +1029,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         var resume = BuildResumeContext(_checkpoint);
         var outcomes = resume?.Outcomes ?? Array.Empty<ArtistRunOutcomeRecord>();
         UpdateCacheStatus(new ArtistMetadataCacheStatus(true, automatic, "Refreshing artist metadata cache", null,
-            outcomes.Count, resume?.TargetArtistIds.Count ?? 0, null, _checkpoint?.StartedAtUtc ?? DateTimeOffset.UtcNow, null,
+            outcomes.Count, resume?.TargetArtistIds?.Count ?? 0, null, _checkpoint?.StartedAtUtc ?? DateTimeOffset.UtcNow, null,
             outcomes.Count(o => o.Outcome is ArtistRunOutcomes.Succeeded or ArtistRunOutcomes.Partial),
             outcomes.Count(o => o.Outcome == ArtistRunOutcomes.Failed)));
         var progress = new Progress<ArtistMetadataOperationProgress>(UpdateCacheProgress);
@@ -1074,7 +1093,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             automatic,
             progress,
             resume,
-            NoteArtistOutcome,
+            RecordArtistOutcomeAsync,
             NoteRunTargets,
             cancellationToken);
     }
@@ -1095,20 +1114,13 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         await PersistCheckpointAsync(requireDurable: true);
     }
 
-    private void NoteRunTargets(IReadOnlyList<long> targetArtistIds)
+    private Task NoteRunTargets(IReadOnlyList<long> targetArtistIds)
+        => PersistRunTargetsAsync(targetArtistIds);
+
+    private async Task RecordArtistOutcomeAsync(ArtistRunOutcomeRecord record)
     {
-        lock (_checkpointLock)
-        {
-            if (_checkpoint is not { } checkpoint)
-            {
-                return;
-            }
-
-            if (checkpoint.TargetArtistIds.Count == 0)
-                checkpoint.TargetArtistIds = targetArtistIds.ToList();
-        }
-
-        _ = PersistCheckpointAsync();
+        NoteArtistOutcome(record);
+        await FlushCheckpointAsync(requireDurable: true);
     }
 
     /// <summary>
@@ -1491,7 +1503,8 @@ public sealed record ArtistRunOutcomeRecord(
     long ArtistId,
     string Outcome,
     string? Reason = null,
-    IReadOnlyList<ArtistTargetResult>? Targets = null)
+    IReadOnlyList<ArtistTargetResult>? Targets = null,
+    MetadataUpdaterTrackedArtist? TrackingState = null)
 {
     /// <summary>Never-null view over <see cref="Targets"/> for consumers walking the graph.</summary>
     public IReadOnlyList<ArtistTargetResult> TargetResults => Targets ?? Array.Empty<ArtistTargetResult>();

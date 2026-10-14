@@ -165,7 +165,7 @@ public sealed class ArtistLocationResolver
         {
             return await resolve().ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Artist location source {Source} failed; trying the next one.", sourceName);
             return null;

@@ -3,7 +3,7 @@ using System.Net;
 namespace DeezSpoTag.Web.Services;
 
 /// <summary>
-/// Per-run provider pacing for artist metadata: one in-flight request per provider
+/// Provider pacing for artist metadata: one in-flight request per provider
 /// and minimum spacing. HTTP 429 puts the provider into a time-based backoff window
 /// instead of disabling it for the rest of the run, so later artists still reach the
 /// platform once the window expires. An empty or failed lookup is "no metadata for
@@ -63,6 +63,8 @@ public sealed class ArtistMetadataProviderGate
 
         var inflight = GetInflight(provider);
         await inflight.WaitAsync(cancellationToken);
+        CancellationTokenSource? operationCancellation = null;
+        Task<T>? operation = null;
         try
         {
             if (IsUnavailable(provider))
@@ -71,8 +73,7 @@ public sealed class ArtistMetadataProviderGate
             }
 
             await WaitSpacingAsync(provider, cancellationToken);
-            using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            Task<T>? operation = null;
+            operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
                 operation = work(operationCancellation.Token);
@@ -88,17 +89,9 @@ public sealed class ArtistMetadataProviderGate
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // Cancel synchronously so the abandoned provider is actually torn down. This must not
-                // be CancelAfter(TimeSpan.Zero): that only schedules delivery on the timer queue, and
-                // the 'using' scope below disposes this source as soon as we return. Disposal cancels
-                // a pending timer, so the cancellation was silently dropped and the timed-out
-                // operation kept running. Cancel() completes delivery before Dispose can race it.
-                // The cancellation is still not awaited, so a slow callback cannot stall the gate.
+                // Deliver cancellation before returning. Keep the provider slot and cancellation
+                // source alive until the underlying task has finished unwinding.
                 operationCancellation.Cancel();
-                if (operation is not null)
-                {
-                    ObserveLateCompletion(operation);
-                }
                 RecordRequest(provider);
                 _logger.LogWarning(
                     "Artist metadata provider {Provider} timed out after {TimeoutSeconds} seconds.",
@@ -115,19 +108,32 @@ public sealed class ArtistMetadataProviderGate
         }
         finally
         {
-            inflight.Release();
+            if (operation is { IsCompleted: false } && operationCancellation is not null)
+            {
+                // Return promptly on cancellation/timeout, but keep this provider occupied
+                // until its actual work exits. Other providers retain independent slots.
+                _ = ReleaseAfterCompletionAsync(operation, inflight, operationCancellation, provider);
+            }
+            else
+            {
+                // Cancellation can win WaitAsync just as the provider faults.
+                if (operation?.IsFaulted == true) _ = operation.Exception;
+                operationCancellation?.Dispose();
+                inflight.Release();
+            }
         }
     }
 
-    private static void ObserveLateCompletion(Task operation)
+    private async Task ReleaseAfterCompletionAsync(
+        Task operation, SemaphoreSlim inflight, CancellationTokenSource cancellation, string provider)
     {
-        if (!operation.IsCompletedSuccessfully)
+        try { await operation; }
+        catch (Exception) { /* Observe abandoned provider failure; the caller already completed. */ }
+        finally
         {
-            _ = operation.ContinueWith(
-                static completed => _ = completed.Exception,
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            RecordRequest(provider);
+            cancellation.Dispose();
+            inflight.Release();
         }
     }
 

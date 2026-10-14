@@ -57,6 +57,12 @@ internal sealed class ArtistMetadataOutcomeJournal : IAsyncDisposable
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var existed = File.Exists(path);
+        if (!truncate && existed)
+        {
+            using var reader = new StreamReader(path, Encoding.UTF8);
+            var header = reader.ReadLine();
+            truncate = header is null || !HeaderMatches(header, runId);
+        }
         if (truncate && existed)
         {
             File.Delete(path);
@@ -78,24 +84,39 @@ internal sealed class ArtistMetadataOutcomeJournal : IAsyncDisposable
             stream,
             Math.Max(recovered, seedCount));
 
-        // The header must exist before any record, otherwise the first record would be mistaken for
-        // one. FileMode.Append creates the file, so existence has to be checked before opening it.
-        if (truncate || !existed)
+        try
         {
-            await journal.WriteLineAsync(
-                $"{{\"kind\":\"{HeaderKind}\",\"runId\":{JsonSerializer.Serialize(runId, JsonOptions)}}}",
-                cancellationToken);
-        }
-
-        if (seed is { Count: > 0 })
-        {
-            foreach (var record in seed)
+            // Separate a torn final line from new records. A malformed tail stays ignorable on read.
+            if (!truncate && existed && new FileInfo(path).Length > 0)
             {
-                await journal.AppendAsync(record, cancellationToken);
+                using var tail = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                tail.Seek(-1, SeekOrigin.End);
+                if (tail.ReadByte() != '\n') await stream.WriteAsync(new byte[] { (byte)'\n' }, cancellationToken);
             }
-        }
+            // The header must exist before any record, otherwise the first record would be mistaken for
+            // one. FileMode.Append creates the file, so existence has to be checked before opening it.
+            if (truncate || !existed)
+            {
+                await journal.WriteLineAsync(
+                    $"{{\"kind\":\"{HeaderKind}\",\"runId\":{JsonSerializer.Serialize(runId, JsonOptions)}}}",
+                    cancellationToken);
+            }
 
-        return journal;
+            if (seed is { Count: > 0 })
+            {
+                foreach (var record in seed)
+                {
+                    await journal.AppendAsync(record, cancellationToken);
+                }
+            }
+
+            return journal;
+        }
+        catch
+        {
+            await journal.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -183,7 +204,9 @@ internal sealed class ArtistMetadataOutcomeJournal : IAsyncDisposable
             return records;
         }
 
-        return records;
+        // Retries supersede the previous outcome for the same artist, rather than inflating
+        // progress and treating a later failure as a previously successful terminal outcome.
+        return records.GroupBy(record => record.ArtistId).Select(group => group.Last()).ToList();
     }
 
     public void Delete()
@@ -245,7 +268,7 @@ internal sealed class ArtistMetadataOutcomeJournal : IAsyncDisposable
                 && root.TryGetProperty("runId", out var id)
                 && string.Equals(id.GetString(), runId, StringComparison.Ordinal);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return false;
         }
@@ -272,7 +295,7 @@ internal sealed class ArtistMetadataOutcomeJournal : IAsyncDisposable
                 ?? throw new JsonException("Empty outcome record.");
             return true;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return false;
         }

@@ -64,6 +64,7 @@ public sealed class ArtistMetadataCacheRefreshService
     private readonly ArtistAliasService? _artistAliasService;
     private readonly DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver? _locationResolver;
     private readonly ArtistPageCacheRepository? _artistPageCache;
+    private readonly ArtistMetadataProviderGate _providerGate;
 
     public ArtistMetadataCacheRefreshService(
         LibraryRepository repository,
@@ -96,6 +97,7 @@ public sealed class ArtistMetadataCacheRefreshService
         _preferences = preferences;
         _httpClients = httpClients;
         _logger = logger;
+        _providerGate = new ArtistMetadataProviderGate(_logger);
         _artistAliasService = artistAliasService;
         _locationResolver = locationResolver;
         _artistPageCache = artistPageCache;
@@ -132,13 +134,15 @@ public sealed class ArtistMetadataCacheRefreshService
         // full artist list.
         var priorOutcomes = resumedRun?.Outcomes;
         var prior = CountOutcomes(priorOutcomes);
+        var priorFailures = (priorOutcomes ?? Array.Empty<ArtistRunOutcomeRecord>())
+            .Where(outcome => outcome.Outcome == ArtistRunOutcomes.Failed).Select(outcome => outcome.ArtistId).ToHashSet();
         var completed = resumedRun?.Outcomes is { Count: > 0 }
             ? ArtistRunOutcomes.BuildResumeSkipSet(priorOutcomes!)
             : new HashSet<long>();
         var processed = completed.Intersect(targetArtistIds).Count();
         var succeeded = prior.Succeeded;
         var failed = prior.Failed;
-        var gate = new ArtistMetadataProviderGate(_logger);
+        var gate = _providerGate;
         foreach (var artist in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -147,6 +151,7 @@ public sealed class ArtistMetadataCacheRefreshService
                 continue;
             }
 
+            if (priorFailures.Remove(artist.Id)) failed--;
             processed++;
             progress?.Report(new ArtistMetadataOperationProgress(
                 processed, total, artist.Name, null, succeeded, failed));
@@ -163,8 +168,10 @@ public sealed class ArtistMetadataCacheRefreshService
                     artistCancellation.Token,
                     gate,
                     request.ForceProviderRefresh,
-                    request.OcrTextArtBlockingEnabled);
-                await refreshTask.WaitAsync(ArtistRefreshTimeout, cancellationToken);
+                    request.OcrTextArtBlockingEnabled,
+                    retainEnrichment: true);
+                var refreshed = await refreshTask.WaitAsync(ArtistRefreshTimeout, cancellationToken);
+                if (!refreshed) throw new InvalidOperationException("Artist row is unavailable for metadata refresh.");
                 succeeded++;
                 outcomeSink?.Invoke(new ArtistRunOutcomeRecord(artist.Id, ArtistRunOutcomes.Succeeded));
                 progress?.Report(new ArtistMetadataOperationProgress(
@@ -177,7 +184,7 @@ public sealed class ArtistMetadataCacheRefreshService
             catch (TimeoutException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                artistCancellation.CancelAfter(TimeSpan.Zero);
+                artistCancellation.Cancel();
                 ObserveLateCompletion(refreshTask);
                 failed++;
                 outcomeSink?.Invoke(new ArtistRunOutcomeRecord(
@@ -190,22 +197,13 @@ public sealed class ArtistMetadataCacheRefreshService
                     artist.Name,
                     ArtistRefreshTimeout.TotalMinutes);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
                 failed++;
                 outcomeSink?.Invoke(new ArtistRunOutcomeRecord(artist.Id, ArtistRunOutcomes.Failed));
                 progress?.Report(new ArtistMetadataOperationProgress(
                     processed, total, artist.Name, artist.Id, succeeded, failed));
                 _logger.LogWarning(ex, "Artist metadata cache refresh failed for artist {ArtistId}.", artist.Id);
-            }
-
-            try
-            {
-                await RetainArtistEnrichmentAsync(artist.Id, artist.Name, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Could not retain artist enrichment metadata for artist {ArtistId}.", artist.Id);
             }
 
             await Task.Delay(ArtistYield, cancellationToken);
@@ -339,14 +337,15 @@ public sealed class ArtistMetadataCacheRefreshService
         CancellationToken cancellationToken,
         ArtistMetadataProviderGate? providerGate,
         bool forceProviderRefresh = false,
-        bool? ocrTextArtBlockingEnabled = null)
+        bool? ocrTextArtBlockingEnabled = null,
+        bool retainEnrichment = false)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
         {
             return false;
         }
 
-        var gate = providerGate ?? new ArtistMetadataProviderGate(_logger);
+        var gate = providerGate ?? _providerGate;
         var selectedProvider = ParseProvider(source);
         var normalizedSource = selectedProvider.HasValue
             ? ProviderName(selectedProvider.Value)
@@ -474,6 +473,19 @@ public sealed class ArtistMetadataCacheRefreshService
             await RefreshMediaExtrasAsync(TidalSource, artistId, canonicalArtistName, _mediaExtras.RefreshTidalAsync, gate, cancellationToken);
         }
 
+        // Only bulk refresh previously retained enrichment. Keep direct artwork/page callers
+        // unchanged while placing bulk enrichment within the same per-artist deadline.
+        if (retainEnrichment)
+        {
+            try
+            {
+                await RetainArtistEnrichmentAsync(artistId, canonicalArtistName, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "Could not retain artist enrichment metadata for artist {ArtistId}.", artistId);
+            }
+        }
         return true;
     }
 
@@ -514,7 +526,7 @@ public sealed class ArtistMetadataCacheRefreshService
 
             return ordered;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Artist alias lookup names unavailable for {ArtistName}; using the canonical name only.", canonicalArtistName);
             return single;
@@ -552,7 +564,7 @@ public sealed class ArtistMetadataCacheRefreshService
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             // Discovery is best-effort: the refresh continues with whatever identities are
             // already stored rather than failing the artist.

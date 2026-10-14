@@ -14,6 +14,17 @@ namespace DeezSpoTag.Tests;
 public class ArtistMetadataRunOutcomeTest
 {
     [Fact]
+    public void RetryingAnArtistReplacesItsFailureInsteadOfInflatingProgress()
+    {
+        var counters = InvokeCounters("FromOutcomes", 1, new[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Failed) });
+        counters.GetType().GetMethod("Apply", new[] { typeof(ArtistRunOutcomeRecord) })!
+            .Invoke(counters, new object[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Succeeded) });
+        Assert.Equal(1, ReadCounter(counters, "ProcessedArtists"));
+        Assert.Equal(0, ReadCounter(counters, "FailedArtists"));
+        Assert.Equal(1, ReadCounter(counters, "SuccessfulArtists"));
+    }
+
+    [Fact]
     public void PausedRun_ResumedCountsKeepTheFrozenDenominatorAndRetryableOutcomes()
     {
         var run = new ArtistMetadataActiveRun { Paused = true, TargetArtistIds = new() { 1, 2, 3, 4 } };

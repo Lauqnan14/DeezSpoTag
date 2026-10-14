@@ -1059,6 +1059,50 @@ public sealed class AudiomackArtistLocationTest
     /// </summary>
     public sealed class ArtistProfileService
     {
+        [Fact]
+        public async Task ProfileRequestTimeoutReturnsNoMetadataWithoutCachingFailure()
+        {
+            var factory = new TimedOutHttpClientFactory();
+            var cache = new ArtistPageCacheRepository(new ConfigurationBuilder().Build(), NullLogger<ArtistPageCacheRepository>.Instance);
+            var service = new AudiomackArtistLocationService(factory, cache, null!, NullLogger<AudiomackArtistLocationService>.Instance);
+            var method = typeof(AudiomackArtistLocationService).GetMethod("ResolveProfileBySlugAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var task = (Task)method.Invoke(service, new object?[] { "artist", "Artist", null, CancellationToken.None })!;
+                await task;
+                var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+                Assert.Null(result.GetType().GetProperty("Profile")!.GetValue(result));
+            }
+            Assert.Equal(2, factory.Requests);
+        }
+
+        [Fact]
+        public async Task ProfileUserCancellationStillPropagates()
+        {
+            var factory = new TimedOutHttpClientFactory();
+            var cache = new ArtistPageCacheRepository(new ConfigurationBuilder().Build(), NullLogger<ArtistPageCacheRepository>.Instance);
+            var service = new AudiomackArtistLocationService(factory, cache, null!, NullLogger<AudiomackArtistLocationService>.Instance);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            var method = typeof(AudiomackArtistLocationService).GetMethod("ResolveProfileBySlugAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var task = (Task)method.Invoke(service, new object?[] { "artist", "Artist", null, cancellation.Token })!;
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        }
+
+        private sealed class TimedOutHttpClientFactory : IHttpClientFactory
+        {
+            public int Requests { get; private set; }
+            public HttpClient CreateClient(string name) => new(new TimeoutHandler(this));
+            private sealed class TimeoutHandler(TimedOutHttpClientFactory owner) : HttpMessageHandler
+            {
+                protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+                {
+                    owner.Requests++;
+                    return Task.FromException<HttpResponseMessage>(new TaskCanceledException("Provider deadline expired"));
+                }
+            }
+        }
+
         [Theory]
         [InlineData(null, null)]
         [InlineData("unitedstatesgeorgiasavannah", "US")]

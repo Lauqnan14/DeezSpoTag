@@ -43,6 +43,26 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
+    public async Task ExplicitCancellationClearsRunEvenWhenWorkThrowsDuringCleanup()
+    {
+        var coordinator = CreateCoordinator();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<CancellationToken, Task<bool>> work = async token =>
+        {
+            started.SetResult();
+            try { await Task.Delay(Timeout.Infinite, token); }
+            finally { throw new IOException("Tracking save failed after cancellation"); }
+        };
+        Assert.True(await EnqueueTestWork(coordinator, work, operation: "target-update"));
+        await started.Task;
+        Assert.True(await coordinator.CancelAsync(CancellationToken.None));
+        await (Task)typeof(ArtistMetadataAutomationCoordinator)
+            .GetField("_activeOperation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
+        Assert.Null((await ReadState()).ActiveRun);
+        Assert.Null((await ReadState()).LastTargetUpdateUtc);
+    }
+
+    [Fact]
     public void PausedCheckpoint_RetainsRequestsIdentityAndScheduleClocks()
     {
         var timestamp = DateTimeOffset.Parse("2026-10-01T12:00:00Z");
@@ -208,8 +228,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.False((await ReadState()).ActiveRun!.Paused);
         Assert.Equal("retained", coordinator.GetStatus().RunId);
         await Invoke(coordinator, "PersistRunTargetsAsync", new long[] { 1 });
-        typeof(ArtistMetadataAutomationCoordinator).GetMethod("NoteRunTargets", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(coordinator, new object[] { new long[] { 1 } });
+        await Invoke(coordinator, "NoteRunTargets", new long[] { 1 });
         await Invoke(coordinator, "PersistCheckpointAsync", false);
         Assert.Equal(new long[] { 1, 2 }, (await ReadState()).ActiveRun!.TargetArtistIds);
 
@@ -250,8 +269,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(await EnqueueTestWork(coordinator, async token =>
         {
-            typeof(ArtistMetadataAutomationCoordinator).GetMethod("NoteRunTargets", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(coordinator, new object[] { new long[] { 1, 2, 3 } });
+            await Invoke(coordinator, "NoteRunTargets", new long[] { 1, 2, 3 });
             typeof(ArtistMetadataAutomationCoordinator).GetMethod("NoteArtistOutcome", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(coordinator, new object[] { new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded,
                     Targets: new[] { new ArtistTargetResult("navidrome", ArtistTargetOutcome.Updated, new[] { ArtistTargetFields.Avatar }) }) });
@@ -377,6 +395,127 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         await WaitUntil(() => coordinator.GetStatus().RunState == "idle");
         Assert.Null((await ReadState()).ActiveRun);
     }
+
+    [Fact]
+    public async Task RepeatedRunFailuresPersistAndAbandonAfterThreeAttempts()
+    {
+        var coordinator = CreateCoordinator();
+        ArtistMetadataActiveRun? resume = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Assert.True(await EnqueueTestWork(coordinator,
+                _ => Task.FromException<bool>(new IOException("Preparation failed")), resume));
+            await ActiveTask(coordinator);
+            var state = await ReadState();
+            if (attempt < 3)
+            {
+                Assert.Equal(attempt, state.ActiveRun!.ConsecutiveFailures);
+                resume = state.ActiveRun;
+            }
+            else Assert.Null(state.ActiveRun);
+            Assert.Null(state.LastCacheRefreshUtc);
+        }
+    }
+
+    [Fact]
+    public async Task CleanupReadFailureStillReleasesOperationGate()
+    {
+        var coordinator = CreateCoordinator();
+        Assert.True(await EnqueueTestWork(coordinator, async _ =>
+        {
+            await File.WriteAllTextAsync(StatePath, "broken JSON");
+            throw new IOException("Storage failure");
+        }));
+        try { await ActiveTask(coordinator); } catch (JsonException) { }
+        var gate = (SemaphoreSlim)typeof(ArtistMetadataAutomationCoordinator)
+            .GetField("_operationGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
+        Assert.Equal(1, gate.CurrentCount);
+        Assert.Null(coordinator.GetStatus().ActiveOperation);
+    }
+
+    [Theory]
+    [InlineData("{invalid header}")]
+    [InlineData("{\"kind\":\"header\",\"runId\":\"old-run\"}")]
+    public async Task ResumeReplacesUnusableJournalHeader(string header)
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "outcomes.ndjson");
+        await File.WriteAllTextAsync(path, header + "\n");
+        await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(path, "current", false, null, CancellationToken.None))
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Succeeded), CancellationToken.None);
+        Assert.Equal(7, Assert.Single(ArtistMetadataOutcomeJournal.Read(path, "current")).ArtistId);
+    }
+
+    [Fact]
+    public async Task ResumeSeparatesTornTailFromNewOutcome()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "outcomes.ndjson");
+        await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(path, "current", true, null, CancellationToken.None))
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded), CancellationToken.None);
+        await File.AppendAllTextAsync(path, "{\"kind\":\"record\",\"record\":");
+        await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(path, "current", false, null, CancellationToken.None))
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(2, ArtistRunOutcomes.Succeeded), CancellationToken.None);
+        Assert.Equal(new long[] { 1, 2 }, ArtistMetadataOutcomeJournal.Read(path, "current").Select(r => r.ArtistId));
+    }
+
+    [Fact]
+    public async Task JournalTrackingSnapshotsRecoverPushTimesRotationAndTargetResults()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "outcomes.ndjson");
+        var pushedAt = DateTimeOffset.UtcNow;
+        var tracked = new MetadataUpdaterTrackedArtist { ArtistId = 7, ArtistName = "Artist",
+            LastPushedAtUtc = pushedAt, UpdatedAtUtc = pushedAt, AvatarRotationIndex = 3, BackgroundRotationIndex = 4 };
+        await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(path, "current", true, null, CancellationToken.None))
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Partial,
+                Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Failed, Error: "Server unavailable") },
+                TrackingState: tracked), CancellationToken.None);
+        var restored = ArtistMetadataOutcomeJournal.Read(path, "current");
+        var state = new MetadataUpdaterState();
+        ArtistMetadataUpdaterService.RestoreTrackingSnapshots(state, restored);
+        var artist = Assert.Single(state.Artists);
+        Assert.Equal(pushedAt, artist.LastPushedAtUtc);
+        Assert.Equal(3, artist.AvatarRotationIndex);
+        Assert.Equal(4, artist.BackgroundRotationIndex);
+        Assert.Equal("Server unavailable", Assert.Single(Assert.Single(restored).TargetResults).Error);
+        var newer = new MetadataUpdaterTrackedArtist { ArtistId = 7, ArtistName = "Manual edit", UpdatedAtUtc = pushedAt.AddSeconds(1) };
+        state.Artists[0] = newer;
+        ArtistMetadataUpdaterService.RestoreTrackingSnapshots(state, restored);
+        Assert.Same(newer, Assert.Single(state.Artists));
+    }
+
+    [Fact]
+    public async Task JournalKeepsLatestOutcomeWhenAnArtistIsRetried()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "outcomes.ndjson");
+        await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(path, "current", true, null, CancellationToken.None))
+        {
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Failed), CancellationToken.None);
+            await journal.AppendAsync(new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded), CancellationToken.None);
+        }
+        Assert.Equal(ArtistRunOutcomes.Succeeded, Assert.Single(ArtistMetadataOutcomeJournal.Read(path, "current")).Outcome);
+    }
+
+    [Fact]
+    public async Task TargetSetPersistenceFailureIsAwaitedBeforeArtistProcessing()
+    {
+        var coordinator = CreateCoordinator();
+        var processed = false;
+        Assert.True(await EnqueueTestWork(coordinator, async _ =>
+        {
+            await File.WriteAllTextAsync(StatePath, "broken JSON");
+            await Invoke(coordinator, "NoteRunTargets", new long[] { 1, 2 });
+            processed = true;
+            return true;
+        }));
+        await ActiveTask(coordinator);
+        Assert.False(processed);
+    }
+
+    private static Task ActiveTask(ArtistMetadataAutomationCoordinator coordinator)
+        => (Task)typeof(ArtistMetadataAutomationCoordinator).GetField("_activeOperation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
 
     private string StatePath => Path.Combine(_root, "library-artist-images", "metadata-automation-state.json");
     private async Task<ArtistMetadataAutomationState> ReadState()

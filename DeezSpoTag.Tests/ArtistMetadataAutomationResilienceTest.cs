@@ -10,6 +10,23 @@ namespace DeezSpoTag.Tests;
 public sealed class ArtistMetadataAutomationResilienceTest
 {
     [Fact]
+    public void ArtistTrackingWritesStayOutsideThePerArtistLoopAndEnrichmentInsideItsDeadline()
+    {
+        var updater = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
+        var loop = updater.Substring(updater.IndexOf("foreach (var tracked in allCandidates)", StringComparison.Ordinal));
+        loop = loop.Substring(0, loop.IndexOf("Phase = \"Metadata update completed\"", StringComparison.Ordinal));
+        Assert.DoesNotContain("SaveStateAsync", loop, StringComparison.Ordinal);
+        Assert.Contains("result.Targets", loop, StringComparison.Ordinal);
+        Assert.Contains("await outcomeSink(record)", loop, StringComparison.Ordinal);
+        var cache = ReadCacheRefresh();
+        var enrich = cache.IndexOf("await RetainArtistEnrichmentAsync", StringComparison.Ordinal);
+        Assert.True(enrich > cache.IndexOf("public async Task<bool> RefreshArtistAsync", StringComparison.Ordinal));
+        Assert.DoesNotContain("artistCancellation.CancelAfter", cache, StringComparison.Ordinal);
+        Assert.Contains("retainEnrichment: true", cache, StringComparison.Ordinal);
+        Assert.Contains("bool retainEnrichment = false", cache, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ArtistPageRefresh_ReportsQueueAcceptanceAndRestoresButton()
     {
         var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
@@ -362,7 +379,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         // so a shutdown cannot leave the durable record lagging behind work already performed.
         Assert.Contains("NoteArtistOutcome(ArtistRunOutcomeRecord record)", coordinator, StringComparison.Ordinal);
         Assert.Contains("outcomeSink: NoteArtistOutcome", coordinator, StringComparison.Ordinal);
-        Assert.Contains("outcomeSink?.Invoke(record)", updater, StringComparison.Ordinal);
+        Assert.Contains("await outcomeSink(record)", updater, StringComparison.Ordinal);
 
         // Outcomes are appended to a journal rather than re-serialised into the state file after every
         // artist, which is what keeps the per-artist cost independent of the number already processed.
@@ -394,9 +411,9 @@ public sealed class ArtistMetadataAutomationResilienceTest
         // field merely round trips would miss a run that never populates it, which silently disables
         // the whole behaviour: the resume would re-probe the live servers and could select a
         // different set than the recorded outcomes belong to.
-        Assert.Contains("targetSink?.Invoke(allCandidates.Select(candidate => candidate.ArtistId).ToList())", updater, StringComparison.Ordinal);
-        Assert.Contains("Action<IReadOnlyList<long>>? targetSink", updater, StringComparison.Ordinal);
-        Assert.Contains("private void NoteRunTargets(IReadOnlyList<long> targetArtistIds)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await targetSink(allCandidates.Select(candidate => candidate.ArtistId).ToList())", updater, StringComparison.Ordinal);
+        Assert.Contains("Func<IReadOnlyList<long>, Task>? targetSink", updater, StringComparison.Ordinal);
+        Assert.Contains("private Task NoteRunTargets(IReadOnlyList<long> targetArtistIds)", coordinator, StringComparison.Ordinal);
         Assert.Contains("checkpoint.TargetArtistIds = targetArtistIds.ToList();", coordinator, StringComparison.Ordinal);
         Assert.Contains("NoteRunTargets,", coordinator, StringComparison.Ordinal);
 
@@ -599,7 +616,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
         Assert.Contains("catch (TimeoutException)", cache, StringComparison.Ordinal);
         Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", cache, StringComparison.Ordinal);
-        Assert.Contains("artistCancellation.CancelAfter(TimeSpan.Zero);", cache, StringComparison.Ordinal);
+        Assert.Contains("artistCancellation.Cancel();", cache, StringComparison.Ordinal);
         Assert.Contains("Artist metadata cache refresh timed out for artist {ArtistId} ({ArtistName})", cache, StringComparison.Ordinal);
     }
 

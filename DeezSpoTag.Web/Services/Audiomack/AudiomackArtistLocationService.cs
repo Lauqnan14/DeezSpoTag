@@ -334,7 +334,7 @@ public sealed class AudiomackArtistLocationService
         {
             (fetched, resolved, info) = await TryFetchProfileAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 ex,

@@ -41,6 +41,28 @@ public sealed class ArtistLocationResolverTest : IDisposable
     }
 
     [Fact]
+    public async Task ProviderTimeoutDoesNotCancelLocationResolution()
+    {
+        var resolver = new ArtistLocationResolver(NullLogger<ArtistLocationResolver>.Instance);
+        var method = typeof(ArtistLocationResolver).GetMethod("SafeResolveAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        Func<Task<ArtistLocationResult?>> work = () => Task.FromException<ArtistLocationResult?>(new TaskCanceledException("Provider timeout"));
+        var task = (Task<ArtistLocationResult?>)method.Invoke(resolver, new object[] { "audiomack", work, CancellationToken.None })!;
+        Assert.Null(await task);
+    }
+
+    [Fact]
+    public async Task UserCancellationStillPropagatesFromLocationResolution()
+    {
+        var resolver = new ArtistLocationResolver(NullLogger<ArtistLocationResolver>.Instance);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var method = typeof(ArtistLocationResolver).GetMethod("SafeResolveAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        Func<Task<ArtistLocationResult?>> work = () => Task.FromCanceled<ArtistLocationResult?>(cts.Token);
+        var task = (Task<ArtistLocationResult?>)method.Invoke(resolver, new object[] { "audiomack", work, cts.Token })!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+    }
+
+    [Fact]
     public async Task MusicBrainzWinsWhenItHasAnAnswerAndNoOverrideExists()
     {
         var mb = StubSource.WithAnswer("musicbrainz", "Dar es Salaam", "Tanzania", "TZ");

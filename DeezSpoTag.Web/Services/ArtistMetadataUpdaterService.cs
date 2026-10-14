@@ -55,6 +55,7 @@ public sealed partial class ArtistMetadataUpdaterService
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<ArtistMetadataUpdaterService> _logger;
     private readonly SemaphoreSlim _runGate = new(1, 1);
+    private readonly SemaphoreSlim _trackingWriteGate = new(1, 1);
     private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
 
     /// <summary>
@@ -152,37 +153,43 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
-        var state = await LoadStateAsync(cancellationToken);
-        var normalizedTargets = NormalizeTargets(request.Targets, request.Target);
-        var normalizedInterval = NormalizeIntervalDays(request.IntervalDays ?? 30);
-        var tracked = state.Artists.FirstOrDefault(item => item.ArtistId == artistId);
-        if (tracked is null)
+        await _trackingWriteGate.WaitAsync(cancellationToken);
+        try
         {
-            tracked = new MetadataUpdaterTrackedArtist
+            var state = await LoadStateAsync(cancellationToken);
+            var normalizedTargets = NormalizeTargets(request.Targets, request.Target);
+            var normalizedInterval = NormalizeIntervalDays(request.IntervalDays ?? 30);
+            var tracked = state.Artists.FirstOrDefault(item => item.ArtistId == artistId);
+            if (tracked is null)
             {
-                ArtistId = artistId
-            };
-            state.Artists.Add(tracked);
-        }
+                tracked = new MetadataUpdaterTrackedArtist
+                {
+                    ArtistId = artistId
+                };
+                state.Artists.Add(tracked);
+            }
 
-        tracked.ArtistName = artistName.Trim();
-        tracked.Target = ToLegacyTarget(normalizedTargets);
-        tracked.Targets = normalizedTargets.ToList();
-        tracked.IncludeAvatar = request.IncludeAvatar;
-        tracked.IncludeBackground = request.IncludeBackground;
-        tracked.IncludeBio = request.IncludeBio;
-        tracked.IncludePopularSongs = request.IncludePopularSongs;
-        tracked.IntervalDays = normalizedInterval;
-        if (!string.IsNullOrWhiteSpace(request.Source))
-        {
-            tracked.Source = NormalizeMetadataSource(request.Source);
+            tracked.ArtistName = artistName.Trim();
+            tracked.Target = ToLegacyTarget(normalizedTargets);
+            tracked.Targets = normalizedTargets.ToList();
+            tracked.IncludeAvatar = request.IncludeAvatar;
+            tracked.IncludeBackground = request.IncludeBackground;
+            tracked.IncludeBio = request.IncludeBio;
+            tracked.IncludePopularSongs = request.IncludePopularSongs;
+            tracked.IntervalDays = normalizedInterval;
+            if (!string.IsNullOrWhiteSpace(request.Source))
+            {
+                tracked.Source = NormalizeMetadataSource(request.Source);
+            }
+            var nowUtc = DateTimeOffset.UtcNow;
+            tracked.LastPushedAtUtc = nowUtc;
+            tracked.UpdatedAtUtc = nowUtc;
+            tracked.PreferencesUpdatedAtUtc = nowUtc;
+            tracked.AvatarRotationIndex = 0;
+            tracked.BackgroundRotationIndex = 0;
+            await WriteStateAsync(state, cancellationToken);
         }
-        var nowUtc = DateTimeOffset.UtcNow;
-        tracked.LastPushedAtUtc = nowUtc;
-        tracked.UpdatedAtUtc = nowUtc;
-        tracked.AvatarRotationIndex = 0;
-        tracked.BackgroundRotationIndex = 0;
-        await SaveStateAsync(state, cancellationToken);
+        finally { _trackingWriteGate.Release(); }
     }
 
     public Task<bool> RunAndWaitAsync(
@@ -196,8 +203,8 @@ public sealed partial class ArtistMetadataUpdaterService
         bool isAutomatic,
         IProgress<ArtistMetadataOperationProgress>? progress,
         ArtistRunResumeContext? resumedRun,
-        Action<ArtistRunOutcomeRecord>? outcomeSink,
-        Action<IReadOnlyList<long>>? targetSink,
+        Func<ArtistRunOutcomeRecord, Task>? outcomeSink,
+        Func<IReadOnlyList<long>, Task>? targetSink,
         CancellationToken cancellationToken)
     {
         Task run;
@@ -267,12 +274,14 @@ public sealed partial class ArtistMetadataUpdaterService
         bool isAutomatic,
         IProgress<ArtistMetadataOperationProgress>? progress,
         ArtistRunResumeContext? resumedRun,
-        Action<ArtistRunOutcomeRecord>? outcomeSink,
-        Action<IReadOnlyList<long>>? targetSink,
+        Func<ArtistRunOutcomeRecord, Task>? outcomeSink,
+        Func<IReadOnlyList<long>, Task>? targetSink,
         CancellationToken cancellationToken)
     {
         var startedAtUtc = DateTimeOffset.UtcNow;
         BeginRunStatus(isAutomatic, startedAtUtc);
+        MetadataUpdaterState? completedState = null;
+        Exception? runFailure = null;
 
         try
         {
@@ -289,12 +298,14 @@ public sealed partial class ArtistMetadataUpdaterService
             }
 
             var state = runPreparation.State;
+            completedState = state;
             var allCandidates = runPreparation.Candidates;
 
             // Publish the resolved artist set so a resume reuses exactly these targets instead of
             // re-deriving them, which for the missing-artwork mode means re-probing the live servers
             // and potentially selecting a different set than the recorded outcomes belong to.
-            targetSink?.Invoke(allCandidates.Select(candidate => candidate.ArtistId).ToList());
+            if (targetSink is not null)
+                await targetSink(allCandidates.Select(candidate => candidate.ArtistId).ToList());
 
             // Counters are rebuilt from the persisted outcomes of the interrupted run, so the bucket
             // totals always add up to Processed instead of being inferred from an id count.
@@ -305,6 +316,8 @@ public sealed partial class ArtistMetadataUpdaterService
                 ? ArtistRunOutcomes.BuildResumeSkipSet(resumedRun.Outcomes)
                 : new HashSet<long>();
             var targetSummaries = new Dictionary<string, TargetAccumulator>(StringComparer.OrdinalIgnoreCase);
+            var latestOutcomes = (resumedRun?.Outcomes ?? Array.Empty<ArtistRunOutcomeRecord>())
+                .GroupBy(record => record.ArtistId).ToDictionary(group => group.Key, group => group.Last());
 
             foreach (var tracked in allCandidates)
             {
@@ -325,15 +338,15 @@ public sealed partial class ArtistMetadataUpdaterService
                 var record = new ArtistRunOutcomeRecord(
                     tracked.ArtistId,
                     DescribeRunOutcome(result.Outcome),
-                    result.Reason);
+                    result.Reason,
+                    result.Targets,
+                    JsonSerializer.Deserialize<MetadataUpdaterTrackedArtist>(JsonSerializer.Serialize(tracked, _jsonOptions), _jsonOptions));
                 counters.Apply(record);
-                AccumulateTargetResults(targetSummaries, record.Targets);
+                latestOutcomes[record.ArtistId] = record;
                 UpdateCounterStatus(counters);
-                // Deliberately not cancellable: the artist's push record must survive an interrupt that
-                // lands immediately after the push, otherwise a resumed run skips an unpushed artist.
-                await SaveStateAsync(state, CancellationToken.None);
-                // Reported synchronously so the durable checkpoint is not left lagging the work.
-                outcomeSink?.Invoke(record);
+                // The existing outcome journal preserves this artist's tracking snapshot in O(1)
+                // writes. The complete tracking file is merged once as the run unwinds.
+                if (outcomeSink is not null) await outcomeSink(record);
                 progress?.Report(new ArtistMetadataOperationProgress(
                     counters.ProcessedArtists,
                     counters.TotalArtists,
@@ -342,6 +355,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 await Task.Delay(ArtistYield, cancellationToken);
             }
 
+            foreach (var record in latestOutcomes.Values) AccumulateTargetResults(targetSummaries, record.Targets);
             UpdateStatus(_status with
             {
                 Running = false,
@@ -356,8 +370,9 @@ public sealed partial class ArtistMetadataUpdaterService
                 Targets = BuildTargetSummaries(targetSummaries)
             });
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            runFailure = ex;
             UpdateStatus(_status with
             {
                 Running = false,
@@ -370,6 +385,7 @@ public sealed partial class ArtistMetadataUpdaterService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            runFailure = ex;
             _logger.LogWarning(ex, "Metadata updater run failed.");
             UpdateStatus(_status with
             {
@@ -380,6 +396,18 @@ public sealed partial class ArtistMetadataUpdaterService
                 Message = ex.Message
             });
             throw;
+        }
+        finally
+        {
+            if (completedState is not null)
+            {
+                try { await SaveStateAsync(completedState, CancellationToken.None); }
+                catch (Exception ex) when (runFailure is not null && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                {
+                    // Preserve the original failure, particularly explicit cancellation.
+                    _logger.LogWarning(ex, "Final metadata tracking save failed while unwinding the run.");
+                }
+            }
         }
     }
 
@@ -441,6 +469,7 @@ public sealed partial class ArtistMetadataUpdaterService
         CancellationToken cancellationToken)
     {
         var state = await LoadStateAsync(cancellationToken);
+        RestoreTrackingSnapshots(state, resumedRun?.Outcomes);
         IReadOnlySet<long>? missingArtistIds = null;
         if (resumedRun is { TargetArtistIds.Count: > 0 })
         {
@@ -505,6 +534,19 @@ public sealed partial class ArtistMetadataUpdaterService
         return new PreparedRunState(state, allCandidates, DateTimeOffset.UtcNow);
     }
 
+    internal static void RestoreTrackingSnapshots(MetadataUpdaterState state, IReadOnlyList<ArtistRunOutcomeRecord>? records)
+    {
+        if (records is null) return;
+        var byId = state.Artists.GroupBy(artist => artist.ArtistId).ToDictionary(group => group.Key, group => group.Last());
+        foreach (var record in records)
+        {
+            if (record.TrackingState is not { } tracked || tracked.ArtistId != record.ArtistId) continue;
+            byId[tracked.ArtistId] = byId.TryGetValue(tracked.ArtistId, out var current)
+                ? MergeTrackedArtist(current, tracked) : tracked;
+        }
+        state.Artists = byId.Values.ToList();
+    }
+
     private static List<MetadataUpdaterTrackedArtist> BuildRunCandidates(
         IReadOnlyCollection<MetadataUpdaterTrackedArtist> artists,
         MetadataUpdaterRunRequest request,
@@ -555,10 +597,11 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             var outcome = await PushTrackedArtistMetadataWithTimeoutAsync(tracked, auth, request.FolderId, cancellationToken);
             return new ArtistProcessingResult(
-                ClassifyProcessingOutcome(outcome),
-                DescribePushSkipReason(outcome));
+                ClassifyProcessingOutcome(outcome.Outcome),
+                DescribePushSkipReason(outcome.Outcome),
+                outcome.Targets);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Metadata updater failed for artist {ArtistId}", tracked.ArtistId);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -570,13 +613,16 @@ public sealed partial class ArtistMetadataUpdaterService
     }
 
     /// <summary>An artist's run outcome plus the reason it was skipped, when it was.</summary>
-    private readonly record struct ArtistProcessingResult(ArtistProcessingOutcome Outcome, string? Reason);
+    private readonly record struct ArtistProcessingResult(ArtistProcessingOutcome Outcome, string? Reason,
+        IReadOnlyList<ArtistTargetResult>? Targets = null);
+
+    private readonly record struct ArtistPushResult(ArtistPushOutcome Outcome, IReadOnlyList<ArtistTargetResult>? Targets = null);
 
     /// <summary>
     /// Bounds one artist so a stalled media server cannot hold the whole run open. The parent token
     /// still wins: a shutdown or user cancel propagates rather than being reported as a timeout.
     /// </summary>
-    private async Task<ArtistPushOutcome> PushTrackedArtistMetadataWithTimeoutAsync(
+    private async Task<ArtistPushResult> PushTrackedArtistMetadataWithTimeoutAsync(
         MetadataUpdaterTrackedArtist tracked,
         PlatformAuthState auth,
         long? folderId,
@@ -597,7 +643,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 "Metadata updater timed out after {TimeoutSeconds}s for artist {ArtistId}.",
                 ArtistPushTimeout.TotalSeconds,
                 tracked.ArtistId);
-            return ArtistPushOutcome.Failed;
+            return new ArtistPushResult(ArtistPushOutcome.Failed);
         }
     }
 
@@ -729,7 +775,7 @@ public sealed partial class ArtistMetadataUpdaterService
         }
     }
 
-    private async Task<ArtistPushOutcome> PushTrackedArtistMetadataAsync(
+    private async Task<ArtistPushResult> PushTrackedArtistMetadataAsync(
         MetadataUpdaterTrackedArtist tracked,
         PlatformAuthState auth,
         long? folderId,
@@ -742,7 +788,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 DateTimeOffset.UtcNow,
                 "warn",
                 $"Metadata updater skipped artist {tracked.ArtistId}: artist missing."));
-            return ArtistPushOutcome.ArtistRowMissing;
+            return new ArtistPushResult(ArtistPushOutcome.ArtistRowMissing);
         }
 
         tracked.ArtistName = artist.Name;
@@ -778,7 +824,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 popularSongsSynced
                     ? $"Metadata updater found no {source} metadata for {artist.Name}; synced popular songs only."
                     : $"Metadata updater found no {source} metadata for {artist.Name}."));
-            return ArtistPushOutcome.NoMetadata;
+            return new ArtistPushResult(ArtistPushOutcome.NoMetadata);
         }
 
         var prepared = await PrepareVisualsAsync(
@@ -796,7 +842,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 "info",
                 $"Metadata updater skipped server sync for {artist.Name} because artist sync is blocked."));
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
-            return ArtistPushOutcome.SyncBlocked;
+            return new ArtistPushResult(ArtistPushOutcome.SyncBlocked);
         }
 
         if (tracked.SaveArtistFolderImage
@@ -834,7 +880,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 DateTimeOffset.UtcNow,
                 "warn",
                 $"Metadata updater could not push {artist.Name}: {warningText}"));
-            return outcome;
+            return new ArtistPushResult(outcome, pushed.Targets);
         }
 
         tracked.LastPushedAtUtc = DateTimeOffset.UtcNow;
@@ -872,7 +918,7 @@ public sealed partial class ArtistMetadataUpdaterService
             popularSongsSynced
                 ? $"Metadata updater pushed {artist.Name} and synced popular songs to {string.Join(", ", ResolveTrackedTargets(tracked))}."
                 : $"Metadata updater pushed {artist.Name} to {string.Join(", ", ResolveTrackedTargets(tracked))}."));
-        return outcome;
+        return new ArtistPushResult(outcome, pushed.Targets);
     }
 
     /// <summary>
@@ -1692,6 +1738,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 tracked.SaveArtistFolderImage = request.SaveArtistFolderImage.Value;
             }
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            tracked.PreferencesUpdatedAtUtc = tracked.UpdatedAtUtc;
         }
     }
 
@@ -2965,7 +3012,11 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             await using var stream = File.OpenRead(_statePath);
             var state = await JsonSerializer.DeserializeAsync<MetadataUpdaterState>(stream, _jsonOptions, cancellationToken);
-            return state ?? new MetadataUpdaterState();
+            if (state is null) return new MetadataUpdaterState();
+            // Freeze legacy preference timestamps before automatic pushes advance UpdatedAtUtc.
+            foreach (var artist in state.Artists)
+                artist.PreferencesUpdatedAtUtc ??= artist.UpdatedAtUtc;
+            return state;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2975,6 +3026,46 @@ public sealed partial class ArtistMetadataUpdaterService
     }
 
     private async Task SaveStateAsync(MetadataUpdaterState state, CancellationToken cancellationToken)
+    {
+        await _trackingWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            var latest = await LoadStateAsync(cancellationToken);
+            var merged = latest.Artists.GroupBy(artist => artist.ArtistId).ToDictionary(group => group.Key, group => group.Last());
+            foreach (var artist in state.Artists)
+                merged[artist.ArtistId] = merged.TryGetValue(artist.ArtistId, out var current)
+                    ? MergeTrackedArtist(current, artist) : artist;
+            if (_libraryRepository?.IsConfigured == true)
+            {
+                var existingIds = (await _libraryRepository.GetExistingArtistIdsAsync(cancellationToken)).ToHashSet();
+                latest.Artists = merged.Values.Where(artist => existingIds.Contains(artist.ArtistId)).ToList();
+            }
+            else latest.Artists = merged.Values.ToList();
+            await WriteStateAsync(latest, cancellationToken);
+        }
+        finally { _trackingWriteGate.Release(); }
+    }
+
+    private static MetadataUpdaterTrackedArtist MergeTrackedArtist(
+        MetadataUpdaterTrackedArtist current, MetadataUpdaterTrackedArtist incoming)
+    {
+        // Journal records without the new clock must not overwrite explicit preferences.
+        var preferences = incoming.PreferencesUpdatedAtUtc is null && current.PreferencesUpdatedAtUtc is not null
+            ? current
+            : current.PreferencesUpdatedAtUtc is null && incoming.PreferencesUpdatedAtUtc is not null
+                ? incoming
+                : (incoming.PreferencesUpdatedAtUtc ?? incoming.UpdatedAtUtc) >= (current.PreferencesUpdatedAtUtc ?? current.UpdatedAtUtc)
+                    ? incoming : current;
+        var progress = incoming.UpdatedAtUtc >= current.UpdatedAtUtc ? incoming : current;
+        preferences.PreferencesUpdatedAtUtc ??= preferences.UpdatedAtUtc;
+        preferences.LastPushedAtUtc = progress.LastPushedAtUtc;
+        preferences.AvatarRotationIndex = progress.AvatarRotationIndex;
+        preferences.BackgroundRotationIndex = progress.BackgroundRotationIndex;
+        preferences.UpdatedAtUtc = progress.UpdatedAtUtc;
+        return preferences;
+    }
+
+    private async Task WriteStateAsync(MetadataUpdaterState state, CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(_statePath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -3254,6 +3345,7 @@ public sealed partial class ArtistMetadataUpdaterService
     private sealed class MetadataRunCounters
     {
         private readonly Dictionary<string, int> _skipReasons = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<long, ArtistRunOutcomeRecord> _outcomes = new();
 
         public MetadataRunCounters(int totalArtists)
         {
@@ -3298,30 +3390,28 @@ public sealed partial class ArtistMetadataUpdaterService
 
         public void Apply(ArtistRunOutcomeRecord record)
         {
-            ProcessedArtists++;
+            if (record.ArtistId > 0)
+            {
+                if (_outcomes.TryGetValue(record.ArtistId, out var previous)) AdjustOutcome(previous, -1);
+                _outcomes[record.ArtistId] = record;
+            }
+            AdjustOutcome(record, 1);
+        }
+
+        private void AdjustOutcome(ArtistRunOutcomeRecord record, int delta)
+        {
+            ProcessedArtists += delta;
             switch (record.Outcome)
             {
-                case ArtistRunOutcomes.Succeeded:
-                    SuccessfulArtists++;
-                    return;
-                case ArtistRunOutcomes.Partial:
-                    PartialArtists++;
-                    return;
-                case ArtistRunOutcomes.NoMetadata:
-                    NoMetadataArtists++;
-                    return;
-                case ArtistRunOutcomes.Failed:
-                    FailedArtists++;
-                    return;
+                case ArtistRunOutcomes.Succeeded: SuccessfulArtists += delta; return;
+                case ArtistRunOutcomes.Partial: PartialArtists += delta; return;
+                case ArtistRunOutcomes.NoMetadata: NoMetadataArtists += delta; return;
+                case ArtistRunOutcomes.Failed: FailedArtists += delta; return;
                 case ArtistRunOutcomes.Skipped:
-                    SkippedArtists++;
-                    AddSkipReason(string.IsNullOrWhiteSpace(record.Reason)
-                        ? MetadataSkipReasons.NotDue
-                        : record.Reason);
+                    SkippedArtists += delta;
+                    AddSkipReason(string.IsNullOrWhiteSpace(record.Reason) ? MetadataSkipReasons.NotDue : record.Reason, delta);
                     return;
-                default:
-                    ProcessedArtists--;
-                    return;
+                default: ProcessedArtists -= delta; return;
             }
         }
 
@@ -3355,10 +3445,11 @@ public sealed partial class ArtistMetadataUpdaterService
         public Dictionary<string, int> SkipReasonsSnapshot()
             => new(_skipReasons, StringComparer.OrdinalIgnoreCase);
 
-        private void AddSkipReason(string reason)
+        private void AddSkipReason(string reason, int delta)
         {
             _skipReasons.TryGetValue(reason, out var count);
-            _skipReasons[reason] = count + 1;
+            if (count + delta <= 0) _skipReasons.Remove(reason);
+            else _skipReasons[reason] = count + delta;
         }
     }
 
@@ -3498,6 +3589,7 @@ public sealed class MetadataUpdaterTrackedArtist
     public int IntervalDays { get; set; } = 30;
     public DateTimeOffset? LastPushedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? PreferencesUpdatedAtUtc { get; set; }
     public int AvatarRotationIndex { get; set; }
     public int BackgroundRotationIndex { get; set; }
 }
