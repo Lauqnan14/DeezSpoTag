@@ -88,7 +88,9 @@ public sealed class AutoTagReleaseCategoryTest
             BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("MusicBrainz release mapper not found.");
 
-        applyReleaseMetadata.Invoke(null, [track, release]);
+        var preferences = Activator.CreateInstance(
+            applyReleaseMetadata.GetParameters()[2].ParameterType, nonPublic: true);
+        applyReleaseMetadata.Invoke(null, [track, release, preferences]);
 
         Assert.Equal("compilation", track.ReleaseType);
         var releaseTypeTag = Assert.Single(track.Other, value => value.Key == "RELEASETYPE");

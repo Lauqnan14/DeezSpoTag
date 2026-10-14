@@ -202,7 +202,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTest
             "if (!libraryDecision.LocalTrackId.HasValue)",
             StringComparison.Ordinal);
         var nextBranch = engine.IndexOf(
-            "await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(",
+            "_libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(",
             localIdBranch,
             StringComparison.Ordinal);
 

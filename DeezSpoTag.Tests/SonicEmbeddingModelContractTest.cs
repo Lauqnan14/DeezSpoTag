@@ -285,7 +285,8 @@ public sealed class SonicEmbeddingModelContractTest
 
         var start = analyzer.IndexOf("def build_payload", StringComparison.Ordinal);
         Assert.True(start > 0, "build_payload not found in vibe_analyzer.py.");
-        var body = analyzer.Substring(start, Math.Min(2600, analyzer.Length - start));
+        var end = analyzer.IndexOf("\ndef ", start + 1, StringComparison.Ordinal);
+        var body = end < 0 ? analyzer[start..] : analyzer[start..end];
 
         Assert.Contains("SonicEmbedding", body, StringComparison.Ordinal);
         Assert.Contains("VectorBase64", body, StringComparison.Ordinal);
