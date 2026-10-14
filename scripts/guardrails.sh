@@ -110,6 +110,10 @@ if [[ "$MODE" == "changed" ]]; then
     # Browser security tests cover escaping, URL validation, safe SVGs and handlers.
     # Keep the existing feature mappings below as well.
     case "$file" in
+      DeezSpoTag.Web/Services/WatchlistEngine.cs)
+        add_tests_matching '^PlaylistSyncTargetAggregationTest$' ;;
+    esac
+    case "$file" in
       DeezSpoTag.Web/wwwroot/js/auto-playlists.js|DeezSpoTag.Web/wwwroot/js/home-index.js|DeezSpoTag.Web/wwwroot/js/home-view-helpers.js|DeezSpoTag.Web/wwwroot/js/library-artist-hero.js|DeezSpoTag.Web/wwwroot/js/library-watchlists.js|DeezSpoTag.Web/wwwroot/js/library.js|DeezSpoTag.Web/wwwroot/js/lrc-editor.js|DeezSpoTag.Web/wwwroot/js/personal-genre.js|DeezSpoTag.Web/wwwroot/js/site.js)
         add_tests_matching '^SecurityHardeningGuardrailTest$' ;;
     esac
@@ -130,6 +134,16 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(YouTubeBrowseTest|AppleTracklistNativePlaybackGuardrailTest)$' ;;
       DeezSpoTag.Web/Views/Tracklist/Index.cshtml)
         add_tests_matching '^(YouTubeBrowseTest|AppleTracklistNativePlaybackGuardrailTest|SpotifyIncrementalPlaybackGuardrailTest|MediaSessionGuardrailTest)$' ;;
+      DeezSpoTag.Integrations/Plex/PlexApiClient.cs)
+        add_tests_matching '^(Plex|PlaylistSyncReadiness|NavidromeIdentityReconciliation|LibraryScanTriggerGuardrail)' ;;
+      DeezSpoTag.Integrations/Jellyfin/JellyfinApiClient.cs)
+        add_tests_matching '^(Jellyfin|PlaylistSyncReadiness|NavidromeIdentityReconciliation|LibraryScanTriggerGuardrail)' ;;
+      DeezSpoTag.Integrations/Navidrome/NavidromeApiClient.cs)
+        add_tests_matching '^(Navidrome|PlaylistSyncReadiness|LibraryScanTriggerGuardrail)' ;;
+      DeezSpoTag.Web/Services/MediaServerLibraryRefreshService.cs|DeezSpoTag.Web/Services/MediaServerRefreshOutboxService.cs)
+        add_tests_matching '^(NavidromeIdentityReconciliation|LibraryScanTriggerGuardrail|LibraryRepositoryCoverage|PlaylistSyncReadiness)Test$' ;;
+      DeezSpoTag.Web/wwwroot/js/library-apple-extras.js)
+        add_tests_matching '^(LibraryScanTriggerGuardrail|SecurityHardeningGuardrail)Test$' ;;
       *Amazon*) add_tests_matching '^(Amazon|DownloadIntentFallbackParity|EngineFallbackCoordinator)' ;;
       *YouTube*) add_tests_matching '^(YouTube|FavoritesProvider|PublicDownloadProviderBoundary)' ;;
       *Apple*Browse*|*AppleMusicCatalog*|*AppleCatalogJson*) add_tests_matching '^(AppleBrowse|ApplePlaylistPagination|AppleTracklistNativePlayback)' ;;
@@ -187,6 +201,11 @@ if [[ "$MODE" == "changed" ]]; then
       add_tests_matching "^${stem}(Test|.*GuardrailTest)$"
     fi
     if [[ ${#selected[@]} -eq "$before" ]]; then unmapped+=("$file"); fi
+    # Supplement mapped areas without treating global security checks as feature coverage.
+    case "$file" in
+      DeezSpoTag.Web/*.cs|DeezSpoTag.Services/*.cs)
+        add_tests_matching '^CodeQlCleanupRegressionGuardrailTest$' ;;
+    esac
   done <<< "$CHANGED_FILES"
 
   if [[ ${#unmapped[@]} -gt 0 ]]; then
