@@ -44,6 +44,68 @@ public sealed class VerificationRetryServiceTest : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("payload")]
+    [InlineData("engine")]
+    [InlineData("combined")]
+    [InlineData("conditional-payload")]
+    [InlineData("conditional-identity")]
+    [InlineData("identity")]
+    [InlineData("destinations")]
+    public async Task PublicPlanAddedAfterEnqueueBecomesEligibleWithoutRestart(string update)
+    {
+        using var scope = new TestConfigRootScope(Path.Join(_tempRoot, "plan-update"));
+        var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var configuration = settings.LoadSettings();
+        configuration.VerificationRetryInitialSweepCompleted = true;
+        settings.SaveSettings(configuration);
+        var repository = CreateRepository();
+        var item = CreateItem("changed-plan") with { Engine = "deezer" };
+        await repository.EnqueueAsync(item);
+        var before = await ReadStampAsync(repository, item.QueueUuid);
+        Assert.False(before.Flag);
+        const string plan = "{\"fallbackPlan\":[{\"engine\":\"tidal\",\"quality\":\"LOSSLESS\"}]}";
+        var changed = item with { Engine = "tidal", PayloadJson = "{}" };
+        switch (update)
+        {
+            case "payload": await repository.UpdatePayloadAsync(item.QueueUuid, plan); break;
+            case "engine": await repository.UpdateEngineAsync(item.QueueUuid, "tidal"); break;
+            case "combined": await repository.UpdatePayloadAndEngineAsync(item.QueueUuid, "deezer", plan); break;
+            case "conditional-payload": Assert.True(await repository.TryUpdateQueuedPayloadIfCurrentAsync(item.QueueUuid, "{}", plan)); break;
+            case "conditional-identity": Assert.True(await repository.TryUpdateQueuedIdentityIfCurrentAsync(changed, "{}")); break;
+            case "identity": await repository.UpdateQueueIdentityAsync(changed); break;
+            case "destinations": await repository.UpdateFinalDestinationsAsync(item.QueueUuid, "{}", plan); break;
+        }
+        var after = await ReadStampAsync(repository, item.QueueUuid);
+        Assert.True(after.Flag);
+        Assert.Equal(before.QueuedAt, after.QueuedAt);
+        await repository.UpdateStatusAsync(item.QueueUuid, "failed");
+        var service = new VerificationRetryService(repository, new PublicApiSessionVerificationStore(settings), settings,
+            new NullActivityLogWriter(), NullLogger<VerificationRetryService>.Instance);
+        Assert.Equal(1, await service.OnSessionVerifiedAsync("tidal", async (uuid, token) =>
+        {
+            await repository.UpdateStatusAsync(uuid, "queued", cancellationToken: token);
+            return true;
+        }));
+        await repository.UpdateStatusAsync(item.QueueUuid, "failed");
+        await repository.UpdateEngineAsync(item.QueueUuid, "qobuz");
+        Assert.Equal(0, await service.RecoverPendingAsync((_, _) => throw new Exception("Verification already consumed")));
+    }
+
+    [Theory]
+    [InlineData("completed")]
+    [InlineData("cancelled")]
+    [InlineData("canceled")]
+    public async Task ChangingTerminalItemEngineDoesNotRestoreRecoveryEligibility(string status)
+    {
+        var repository = CreateRepository();
+        await repository.EnqueueAsync(CreateItem("terminal") with { Engine = "deezer" });
+        await repository.UpdateStatusAsync("terminal", status);
+        await repository.UpdateEngineAsync("terminal", "tidal");
+        Assert.False((await ReadStampAsync(repository, "terminal")).Flag);
+        Assert.Empty(await repository.GetFailedForVerificationRetryAsync(true));
+    }
+
     [Fact]
     public void VerifyAllDefersRecoveryUntilAllPlatformsHaveBeenAttempted()
     {

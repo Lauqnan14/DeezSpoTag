@@ -1368,6 +1368,23 @@ WHERE status = 'running'
   AND lower(engine) IN ({placeholders})
 LIMIT 1;";
 
+    // SQL expressions passed here are fixed repository identifiers/parameters, never user input.
+    private static string BuildPublicApiDependencySql(string engine, string payload)
+        => $@"(lower(trim({engine})) IN ('qobuz', 'tidal', 'amazon') OR EXISTS (
+            SELECT 1 FROM json_each(CASE WHEN json_valid({payload})
+                THEN COALESCE(json_extract({payload}, '$.FallbackPlan'), json_extract({payload}, '$.fallbackPlan'), '[]')
+                ELSE '[]' END) step
+            WHERE CASE WHEN json_valid(step.value)
+                THEN lower(trim(COALESCE(json_extract(step.value, '$.Engine'), json_extract(step.value, '$.engine'))))
+                ELSE '' END IN ('qobuz', 'tidal', 'amazon')))";
+
+    private static string BuildPublicApiRetryEligibilityAssignment(
+        string engine, string payload, string status = "status")
+        => $@"public_api_unverified_when_queued = CASE
+            WHEN lower(COALESCE({status}, '')) IN ('completed', 'complete', 'finished', 'canceled', 'cancelled') THEN 0
+            WHEN {BuildPublicApiDependencySql(engine, payload)} THEN 1
+            ELSE public_api_unverified_when_queued END";
+
     private static string BuildFailedForVerificationRetrySql(bool requireUnverifiedFlag, bool verifiedEpoch = false)
     {
         const string baseSql = @"
@@ -1480,7 +1497,7 @@ WHERE id = @id;";
             queueUuid,
             payloadJson,
             cancellationToken);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET payload = @payload,
     qobuz_track_id = CASE
@@ -1495,6 +1512,7 @@ SET payload = @payload,
         WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
         ELSE amazon_track_id
     END,
+    " + BuildPublicApiRetryEligibilityAssignment("engine", "@payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection, transaction);
@@ -1734,7 +1752,7 @@ WHERE queue_uuid = @queueUuid;";
             queueUuid,
             payloadJson,
             cancellationToken);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET engine = @engine,
     payload = @payload,
@@ -1750,6 +1768,7 @@ SET engine = @engine,
         WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
         ELSE amazon_track_id
     END,
+    " + BuildPublicApiRetryEligibilityAssignment("@engine", "@payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection, transaction);
@@ -1778,7 +1797,7 @@ WHERE queue_uuid = @queueUuid;";
             queueUuid,
             payloadJson,
             cancellationToken);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET payload = @payload,
     engine = COALESCE(@engine, engine),
@@ -1788,6 +1807,7 @@ SET payload = @payload,
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
+    " + BuildPublicApiRetryEligibilityAssignment("COALESCE(@engine, engine)", "@payload", "COALESCE(@status, status)") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
   AND status IN ('queued', 'resolving', 'running')
@@ -1825,7 +1845,7 @@ WHERE queue_uuid = @queueUuid
             item.QueueUuid,
             item.PayloadJson ?? "{}",
             cancellationToken);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET payload = @payload,
     engine = @engine,
@@ -1860,6 +1880,7 @@ SET payload = @payload,
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
+    " + BuildPublicApiRetryEligibilityAssignment("@engine", "@payload", "COALESCE(@status, status)") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
   AND status IN ('queued', 'resolving')
@@ -1902,10 +1923,11 @@ WHERE queue_uuid = @queueUuid
             ? currentPayloadJson
             : await MergeCurrentPrefetchStateAsync(connection, transaction, queueUuid, payloadJson, cancellationToken);
         effectivePayloadJson = RebaseLyricsArtifacts(effectivePayloadJson, finalDestinationsJson);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET final_destinations_json = @finalDestinationsJson,
     payload = COALESCE(@payload, payload),
+    " + BuildPublicApiRetryEligibilityAssignment("engine", "COALESCE(@payload, payload)", "status") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection, transaction);
@@ -2148,9 +2170,10 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        var sql = @"
 UPDATE download_task
 SET engine = @engine,
+    " + BuildPublicApiRetryEligibilityAssignment("@engine", "payload", "status") + @",
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
@@ -2229,6 +2252,7 @@ WHERE queue_uuid = @queueUuid;";
         string sql = @$"
 	UPDATE download_task
 	SET engine = @engine,
+    {BuildPublicApiRetryEligibilityAssignment("@engine", "@payload")},
     artist_name = @artistName,
     track_title = @trackTitle,
     isrc = @isrc,
@@ -3146,11 +3170,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await using (var recoveryMigration = new SqliteCommand(@"
 UPDATE download_task SET public_api_unverified_when_queued = 1
 WHERE lower(status) NOT IN ('completed', 'complete', 'finished', 'canceled', 'cancelled')
- AND (lower(engine) IN ('qobuz', 'tidal', 'amazon') OR EXISTS (
-     SELECT 1 FROM json_each(CASE WHEN json_valid(payload)
-        THEN COALESCE(json_extract(payload, '$.FallbackPlan'), json_extract(payload, '$.fallbackPlan'), '[]') ELSE '[]' END) step
-     WHERE CASE WHEN json_valid(step.value) THEN lower(COALESCE(json_extract(step.value, '$.Engine'), json_extract(step.value, '$.engine'))) ELSE '' END
-           IN ('qobuz', 'tidal', 'amazon')));", connection))
+ AND " + BuildPublicApiDependencySql("engine", "payload") + ";", connection))
             await recoveryMigration.ExecuteNonQueryAsync(cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "last_queued_at_utc", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
