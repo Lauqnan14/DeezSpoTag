@@ -439,7 +439,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
 
         Assert.Contains("PlaylistSyncDisabledDownloadMonitoringMessage", source, StringComparison.Ordinal);
         Assert.Contains("\"Playlist sync disabled; continuing with download monitoring.\"", source, StringComparison.Ordinal);
-        Assert.Contains("? await ApplyKnownTargetMembershipInlineAsync", source, StringComparison.Ordinal);
+        Assert.Contains("? await WatchlistPerformanceMeasurement.TimeAsync(\"target_membership\", () => ApplyKnownTargetMembershipInlineAsync(", source, StringComparison.Ordinal);
         Assert.Contains("var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;", source, StringComparison.Ordinal);
         Assert.Contains("NoTargetServerSelectedMessage", source, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobAsync", source, StringComparison.Ordinal);
@@ -776,7 +776,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.DoesNotContain("HasPlaylistImageAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("ApplyArtworkInlineForTargetAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("IsStreamingPlaylistArtworkSource(source)", watchSource, StringComparison.Ordinal);
-        Assert.Contains("fullSnapshotForArtwork = await FetchLivePlaylistSnapshotAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("fullSnapshotForArtwork = await WatchlistPerformanceMeasurement.TimeAsync(\"snapshot_expand\", () => FetchLivePlaylistSnapshotAsync(", watchSource, StringComparison.Ordinal);
         Assert.Contains("fullSnapshotForArtwork?.IsComplete == true", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetQobuzSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetTidalSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
@@ -1103,7 +1103,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.Contains("void loadPlaylistBlockedRules();", tabHydration, StringComparison.Ordinal);
         Assert.Contains("!isWatchlistParentActive()", tabHydration, StringComparison.Ordinal);
 
-        var getAll = ExtractMethodBody(playlistController, "public async Task<IActionResult> GetAll");
+        var getAll = ExtractMethodBody(playlistController, "private async Task<IActionResult> GetAllMeasuredCore");
         Assert.DoesNotContain("BuildPlaylistPresentationSummaryAsync", getAll, StringComparison.Ordinal);
         Assert.DoesNotContain("[HttpGet(\"presentation-summaries\")]", playlistController, StringComparison.Ordinal);
         Assert.DoesNotContain("fetchJson('/api/library/playlists/presentation-summaries')", watchlistScript, StringComparison.Ordinal);
