@@ -156,13 +156,13 @@ public sealed class LibraryScanTriggerGuardrailTest
         var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
 
         Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
-        Assert.Contains("UpdateTrackMetadataIndexAsync(\n                    normalizedService,\n                    folderId,\n                    requestedTrackIds,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
-        Assert.Contains("RebuildTrackMetadataIndexAsync(normalizedService, folderId", service, StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexCoreAsync(\n                    normalizedService,\n                    folderId,\n                    requestedTrackIds,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexCoreAsync(normalizedService, folderId, requestedTrackIds: null", service, StringComparison.Ordinal);
         Assert.Contains("Task.WhenAll(resultTasks)", controller, StringComparison.Ordinal);
         Assert.Contains("GetTargetServerIdentityLocalTracksAsync", repository, StringComparison.Ordinal);
         Assert.Contains("TargetServerIdentityLocalTrackDto", repository, StringComparison.Ordinal);
         Assert.Contains("TargetIdentityLocalIndex.Build", service, StringComparison.Ordinal);
-        Assert.Contains("localIndex.MissingTrackIds.Count == 0", service, StringComparison.Ordinal);
+        Assert.Contains("localIndex.PendingTrackIds.Count == 0", service, StringComparison.Ordinal);
         Assert.Contains("ResolveCandidate", service, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetIdentitySearchLimit", service, StringComparison.Ordinal);
         Assert.Contains("DeleteOrphanedMediaServerTrackMetadataAsync", service, StringComparison.Ordinal);
@@ -502,7 +502,7 @@ public sealed class LibraryScanTriggerGuardrailTest
         Assert.Contains("job.RequestedTrackIds", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("if (unresolvedPaths.Count > 0 || trackIds.Count == 0)", outbox, StringComparison.Ordinal);
         Assert.Contains("QueueMissingFolderIdentitiesAsync", outbox, StringComparison.Ordinal);
-        Assert.Contains("still missing {coverage.MissingTracks} library track IDs", outbox, StringComparison.Ordinal);
+        Assert.DoesNotContain("still missing {coverage.MissingTracks} library track IDs", outbox, StringComparison.Ordinal);
         Assert.Contains("job.ScanSubmittedUtc is null", outbox, StringComparison.Ordinal);
         Assert.Contains("waiting for the server to finish indexing", outbox, StringComparison.Ordinal);
         Assert.Contains("IsLibraryScanRunningAsync", outbox, StringComparison.Ordinal);
@@ -524,6 +524,20 @@ public sealed class LibraryScanTriggerGuardrailTest
         Assert.DoesNotContain("attempt == 1 ? 5 : Math.Min(30, attempt * 5)", outbox, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TargetIdentityMaintenance_RecoversFailuresAndReconcilesExistingIds()
+    {
+        var outbox = ReadSource("DeezSpoTag.Web", "Services", "MediaServerRefreshOutboxService.cs");
+        var ui = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");
+        Assert.Contains("row.UpdatedAt.Add(IdentityImportDeadline)", outbox, StringComparison.Ordinal);
+        Assert.Contains("IngestConfiguredTargetIdentitiesAsync(cancellationToken)", outbox, StringComparison.Ordinal);
+        Assert.Contains("_nextIdentityReconciliationUtc", outbox, StringComparison.Ordinal);
+        var updateBody = ExtractMethodBody(ui, "async function refreshLibraryViewsAfterLibraryUpdate");
+        Assert.Contains("loadTargetIdentityStatus()", updateBody, StringComparison.Ordinal);
+        Assert.Contains("document.hidden || targetIdentityStatusPollingInProgress", ui, StringComparison.Ordinal);
+        Assert.Contains("startTargetIdentityRefreshPolling(getLibraryRefreshPolicy().scanStatusIdleMs)", ui, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(4)]
@@ -540,7 +554,7 @@ public sealed class LibraryScanTriggerGuardrailTest
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
         var ingestBody = ExtractMethodBody(source, "public async Task<MediaServerIdentityIngestSummary> IngestConfiguredTargetIdentitiesAsync");
-        var indexBody = ExtractMethodBody(source, "public async Task UpdateTrackMetadataIndexAsync");
+        var indexBody = ExtractMethodBody(source, "private async Task<IReadOnlyList<long>> UpdateTrackMetadataIndexCoreAsync");
 
         Assert.Contains("UpdateTrackMetadataIndexAsync(service, cancellationToken)", ingestBody, StringComparison.Ordinal);
         Assert.Contains("case PlexService", indexBody, StringComparison.Ordinal);

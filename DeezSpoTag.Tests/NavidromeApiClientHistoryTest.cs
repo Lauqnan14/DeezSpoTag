@@ -14,6 +14,17 @@ namespace DeezSpoTag.Tests;
 public sealed class NavidromeApiClientHistoryTest
 {
     [Fact]
+    public async Task GetLibraryTracksAsync_DoesNotTreatUnavailableAsAnEmptyLibrary()
+    {
+        using var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetLibraryTracksAsync("http://navidrome.local", "native-token", 0, 500));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, error.StatusCode);
+    }
+
+    [Fact]
     public async Task GetPlayHistoryAsync_AuthenticatesPagesAndStopsAtIncrementalBoundary()
     {
         using var handler = new HistoryHandler();

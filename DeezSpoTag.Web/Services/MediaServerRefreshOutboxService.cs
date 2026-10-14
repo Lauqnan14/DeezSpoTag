@@ -32,6 +32,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         _watchlistRunSignal = watchlistRunSignal;
     }
 
+    private DateTimeOffset _nextIdentityReconciliationUtc;
+
     public async Task EnqueueAsync(
         long destinationFolderId,
         IReadOnlyCollection<string> changedFilePaths,
@@ -117,7 +119,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             {
                 break;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
             {
                 _logger.LogError(ex, "Media-server refresh outbox cycle failed; pending jobs will be retried.");
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
@@ -132,6 +134,17 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             return;
         }
 
+        if (DateTimeOffset.UtcNow >= _nextIdentityReconciliationUtc)
+        {
+            try
+            {
+                await _refreshService.IngestConfiguredTargetIdentitiesAsync(cancellationToken);
+            }
+            finally
+            {
+                _nextIdentityReconciliationUtc = DateTimeOffset.UtcNow.Add(IdentityImportDeadline);
+            }
+        }
         await QueueMissingFolderIdentitiesAsync(cancellationToken);
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -164,7 +177,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             .Select(static row => $"{row.FolderId}:{row.Service}")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var failed = existing
-            .Where(static row => row.Status == "failed")
+            .Where(row => row.Status == "failed" && DateTimeOffset.UtcNow < row.UpdatedAt.Add(IdentityImportDeadline))
             .Select(static row => $"{row.FolderId}:{row.Service}")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -302,22 +315,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
 
             if (verification.IsComplete)
             {
-                var coverage = (await _repository.GetTargetServerIdentityCoverageAsync(
-                    [job.TargetService],
-                    job.DestinationFolderId,
-                    cancellationToken)).FirstOrDefault();
-                if (coverage is { MissingTracks: > 0 })
-                {
-                    await RetryAsync(
-                        job,
-                        $"{job.TargetService} still missing {coverage.MissingTracks} library track IDs.",
-                        job.ChangedFilePaths,
-                        job.RequestedTrackIds,
-                        cancellationToken);
-                    return;
-                }
-
-                await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken, job.ChangedFilePaths, job.RequestedTrackIds);
                 return;
             }
 
@@ -328,7 +326,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 verification.RemainingTrackIds,
                 cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 "Media-server refresh job {JobId} for {Service} was interrupted; it will resume.",
@@ -350,7 +348,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
 
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 ex,
@@ -433,8 +431,9 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             job.TargetService,
             trackIds.ToList(),
             cancellationToken);
+        var verifiedTrackIds = (fetch.VerifiedTrackIds ?? []).ToHashSet();
         var remainingTrackIds = trackIds
-            .Where(trackId => !mapped.ContainsKey(trackId))
+            .Where(trackId => !mapped.ContainsKey(trackId) || !verifiedTrackIds.Contains(trackId))
             .Order()
             .ToList();
         var remainingSet = remainingTrackIds.ToHashSet();
@@ -489,7 +488,9 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             error,
             remainingPaths,
             remainingTrackIds,
-            cancellationToken);
+            cancellationToken,
+            job.ChangedFilePaths,
+            job.RequestedTrackIds);
     }
 
     private async Task RetryScanSubmissionAsync(
@@ -505,7 +506,9 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             error,
             job.ChangedFilePaths,
             job.RequestedTrackIds,
-            cancellationToken);
+            cancellationToken,
+            job.ChangedFilePaths,
+            job.RequestedTrackIds);
     }
 
     internal static TimeSpan ResolveIdentityImportRetryDelay(int attempt)

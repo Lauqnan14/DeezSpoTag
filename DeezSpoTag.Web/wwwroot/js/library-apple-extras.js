@@ -1413,6 +1413,9 @@ function bindBootstrapScanActions(elements) {
     document.querySelectorAll('[data-target-identity-service]').forEach(input => {
         input.addEventListener('change', syncTargetIdentityActionState);
     });
+    if (document.getElementById('library-target-identities-panel')) {
+        startTargetIdentityRefreshPolling(getLibraryRefreshPolicy().scanStatusIdleMs);
+    }
     void loadTargetIdentityStatus().catch(error => {
         const status = document.getElementById('libraryTargetIdentityStatus');
         if (status) {

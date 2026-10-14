@@ -12,6 +12,15 @@ namespace DeezSpoTag.Tests;
 public sealed class PlexApiClientTimeoutHandlingTest
 {
     [Fact]
+    public async Task GetLibraryTracksAsync_DoesNotTreatTimeoutAsAnEmptyLibrary()
+    {
+        using var httpClient = new HttpClient(new TimeoutHandler());
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.GetLibraryTracksAsync("http://plex.local", "token", "1"));
+    }
+
+    [Fact]
     public async Task SearchTracksAsync_ReturnsEmpty_WhenRequestTimesOut()
     {
         using var httpClient = new HttpClient(new TimeoutHandler());

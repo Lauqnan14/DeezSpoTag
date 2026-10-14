@@ -12,7 +12,8 @@ public sealed record TargetIdentityFetchResult(
     bool Success,
     int DeletedRows,
     TargetServerIdentityCoverageDto? Coverage,
-    string? Error);
+    string? Error,
+    IReadOnlyList<long>? VerifiedTrackIds = null);
 
 public sealed class MediaServerLibraryRefreshService
 {
@@ -40,6 +41,7 @@ public sealed class MediaServerLibraryRefreshService
     private readonly NavidromeApiClient _navidromeApiClient;
     private readonly LibraryRepository _libraryRepository;
     private readonly ILogger<MediaServerLibraryRefreshService> _logger;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _identityRefreshGates = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record TargetTrackIdentityCandidate(
         string TargetItemId,
@@ -98,6 +100,9 @@ public sealed class MediaServerLibraryRefreshService
         public IReadOnlyList<TargetServerIdentityLocalTrackDto> Tracks { get; }
         public HashSet<long> MissingTrackIds { get; }
         public HashSet<long> PendingTrackIds { get; }
+        public HashSet<string> ObservedTargetItemIds { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<long> AmbiguousTrackIds { get; } = [];
+
         public IReadOnlyDictionary<string, string> PathMappings => _pathMappings;
 
         public bool HasSameTargetId(long trackId, string targetItemId)
@@ -706,6 +711,9 @@ public sealed class MediaServerLibraryRefreshService
     {
         var normalizedService = (service ?? string.Empty).Trim().ToLowerInvariant();
         var deleted = 0;
+        IReadOnlyList<long> verifiedTrackIds = [];
+        var gate = _identityRefreshGates.GetOrAdd(normalizedService, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
         try
         {
             if (resetFirst)
@@ -723,11 +731,11 @@ public sealed class MediaServerLibraryRefreshService
                     folderId,
                     resetCoverage.FirstOrDefault()
                     ?? new TargetServerIdentityCoverageDto(normalizedService, 0, 0, 0));
-                await RebuildTrackMetadataIndexAsync(normalizedService, folderId, cancellationToken);
+                verifiedTrackIds = await UpdateTrackMetadataIndexCoreAsync(normalizedService, folderId, requestedTrackIds: null, cancellationToken);
             }
             else
             {
-                await UpdateTrackMetadataIndexAsync(
+                verifiedTrackIds = await UpdateTrackMetadataIndexCoreAsync(
                     normalizedService,
                     folderId,
                     requestedTrackIds,
@@ -743,9 +751,10 @@ public sealed class MediaServerLibraryRefreshService
                 Success: true,
                 deleted,
                 coverage.FirstOrDefault(),
-                Error: null);
+                Error: null,
+                VerifiedTrackIds: verifiedTrackIds);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -757,6 +766,10 @@ public sealed class MediaServerLibraryRefreshService
                 deleted,
                 Coverage: null,
                 ex.Message);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -809,7 +822,7 @@ public sealed class MediaServerLibraryRefreshService
                 await UpdateTrackMetadataIndexAsync(service, cancellationToken);
                 ingestedServers++;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Target identity ingest failed independently for {Service}.", service);
                 failures.Add(service);
@@ -840,44 +853,24 @@ public sealed class MediaServerLibraryRefreshService
         IReadOnlyCollection<long>? requestedTrackIds,
         CancellationToken cancellationToken)
     {
-        var state = await _authService.LoadAsync();
         var normalizedService = service.Trim().ToLowerInvariant();
-        switch (normalizedService)
+        var gate = _identityRefreshGates.GetOrAdd(normalizedService, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
         {
-            case PlexService when HasPlexConfiguration(state.Plex):
-                var sections = await GetPlexLibrarySectionsWithRetryAsync(state.Plex!, cancellationToken);
-                var musicSections = sections
-                    .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
-                    .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                await UpdatePlexTrackMetadataIndexAsync(
-                    state.Plex!,
-                    musicSections,
-                    folderId,
-                    requestedTrackIds,
-                    cancellationToken);
-                break;
-            case JellyfinService when HasJellyfinConfiguration(state.Jellyfin):
-                await UpdateJellyfinTrackMetadataIndexAsync(
-                    state.Jellyfin!,
-                    folderId,
-                    requestedTrackIds,
-                    cancellationToken);
-                break;
-            case NavidromeService when HasNavidromeConfiguration(state.Navidrome):
-                await UpdateNavidromeTrackMetadataIndexAsync(
-                    state.Navidrome!,
-                    folderId,
-                    requestedTrackIds,
-                    cancellationToken);
-                break;
+            await UpdateTrackMetadataIndexCoreAsync(normalizedService, folderId, requestedTrackIds, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
-    public async Task RebuildTrackMetadataIndexAsync(string service, long? folderId, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<long>> UpdateTrackMetadataIndexCoreAsync(
+        string normalizedService, long? folderId, IReadOnlyCollection<long>? requestedTrackIds,
+        CancellationToken cancellationToken)
     {
         var state = await _authService.LoadAsync();
-        var normalizedService = service.Trim().ToLowerInvariant();
         switch (normalizedService)
         {
             case PlexService when HasPlexConfiguration(state.Plex):
@@ -886,32 +879,31 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
                     .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                await UpdatePlexTrackMetadataIndexAsync(
+                if (musicSections.Count == 0)
+                    throw new InvalidOperationException("Plex track ID fetch found no accessible music libraries.");
+                return await UpdatePlexTrackMetadataIndexAsync(
                     state.Plex!,
                     musicSections,
                     folderId,
-                    requestedTrackIds: null,
+                    requestedTrackIds,
                     cancellationToken);
-                break;
             case JellyfinService when HasJellyfinConfiguration(state.Jellyfin):
-                await UpdateJellyfinTrackMetadataIndexAsync(
+                return await UpdateJellyfinTrackMetadataIndexAsync(
                     state.Jellyfin!,
                     folderId,
-                    requestedTrackIds: null,
+                    requestedTrackIds,
                     cancellationToken);
-                break;
             case NavidromeService when HasNavidromeConfiguration(state.Navidrome):
-                await UpdateNavidromeTrackMetadataIndexAsync(
+                return await UpdateNavidromeTrackMetadataIndexAsync(
                     state.Navidrome!,
                     folderId,
-                    requestedTrackIds: null,
+                    requestedTrackIds,
                     cancellationToken);
-                break;
             default:
-                return;
+                throw new InvalidOperationException($"{normalizedService} track ID fetch requires a configured target server.");
         }
-
     }
+
     private Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
         => RefreshPlexAsync(plex, updateTrackIndex: true, cancellationToken: cancellationToken);
 
@@ -964,9 +956,8 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdatePlexTrackMetadataIndexAsync(
-                    configuredPlex,
-                    musicSections,
+                await UpdateTrackMetadataIndexAsync(
+                    PlexService,
                     folderId: null,
                     requestedTrackIds: null,
                     cancellationToken);
@@ -1011,7 +1002,7 @@ public sealed class MediaServerLibraryRefreshService
         return [];
     }
 
-    private async Task UpdatePlexTrackMetadataIndexAsync(
+    private async Task<IReadOnlyList<long>> UpdatePlexTrackMetadataIndexAsync(
         PlexAuth plex,
         List<PlexLibrarySection> musicSections,
         long? folderId,
@@ -1020,19 +1011,21 @@ public sealed class MediaServerLibraryRefreshService
     {
         if (!_libraryRepository.IsConfigured || musicSections.Count == 0)
         {
-            return;
+            return [];
         }
 
         var localIndex = await LoadTargetIdentityLocalIndexAsync(
             PlexService,
             folderId,
             requestedTrackIds,
-            cancellationToken);
-        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+            cancellationToken,
+            reconcileExisting: true);
+        if (localIndex.Tracks.Count == 0 || localIndex.PendingTrackIds.Count == 0)
         {
-            return;
+            return [];
         }
 
+        var scanWasIdle = await _plexApiClient.IsMusicLibraryRefreshingAsync(plex.Url!, plex.Token!, cancellationToken) == false;
         StartTargetIdentityProgress(PlexService, folderId, localIndex);
         try
         {
@@ -1041,7 +1034,8 @@ public sealed class MediaServerLibraryRefreshService
             foreach (var section in musicSections)
             {
                 var offset = 0;
-                while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
+                var pageIdsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                while (!cancellationToken.IsCancellationRequested && localIndex.PendingTrackIds.Count > 0)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var page = await _plexApiClient.GetLibraryTracksAsync(
@@ -1064,6 +1058,12 @@ public sealed class MediaServerLibraryRefreshService
                         break;
                     }
 
+                    var pageIds = page.Select(track => track.RatingKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    if (pageIds.All(pageIdsSeen.Contains))
+                        throw new InvalidOperationException("Plex track listing repeated a page without advancing.");
+                    pageIdsSeen.UnionWith(pageIds);
+                    localIndex.ObservedTargetItemIds.UnionWith(page.Select(track => track.RatingKey).Where(static id => !string.IsNullOrWhiteSpace(id))!);
+
                     var tracks = page
                         .Where(track => !string.IsNullOrWhiteSpace(track.RatingKey)
                                         && !string.IsNullOrWhiteSpace(track.FilePath)
@@ -1080,26 +1080,25 @@ public sealed class MediaServerLibraryRefreshService
                     var ingest = await IngestTargetTracksAsync(PlexService, folderId, tracks, localIndex, cancellationToken);
                     mappedCount += ingest.Mapped;
 
-                    if (page.Count < PlexTrackPageSize)
-                    {
-                        break;
-                    }
-
-                    offset += PlexTrackPageSize;
+                    offset += page.Count;
                 }
 
-                if (localIndex.MissingTrackIds.Count == 0)
+                if (localIndex.PendingTrackIds.Count == 0)
                 {
                     break;
                 }
             }
 
-            LogIdentityIngest(PlexService, mappedCount, localIndex.MissingTrackIds.Count);
+            if (scanWasIdle && await _plexApiClient.IsMusicLibraryRefreshingAsync(plex.Url!, plex.Token!, cancellationToken) == false)
+                await RemoveStaleTargetIdentitiesAsync(PlexService, localIndex, cancellationToken);
+            LogIdentityIngest(PlexService, mappedCount, localIndex.PendingTrackIds.Count);
         }
         finally
         {
             CompleteTargetIdentityProgress(PlexService, folderId, localIndex);
         }
+        return localIndex.Tracks.Where(track => !localIndex.PendingTrackIds.Contains(track.TrackId))
+            .Select(static track => track.TrackId).ToList();
     }
 
     private Task<bool> RefreshJellyfinAsync(JellyfinAuth? jellyfin, CancellationToken cancellationToken)
@@ -1133,8 +1132,8 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdateJellyfinTrackMetadataIndexAsync(
-                    jellyfin!,
+                await UpdateTrackMetadataIndexAsync(
+                    JellyfinService,
                     folderId: null,
                     requestedTrackIds: null,
                     cancellationToken);
@@ -1150,7 +1149,7 @@ public sealed class MediaServerLibraryRefreshService
         return refreshed;
     }
 
-    private async Task UpdateJellyfinTrackMetadataIndexAsync(
+    private async Task<IReadOnlyList<long>> UpdateJellyfinTrackMetadataIndexAsync(
         JellyfinAuth jellyfin,
         long? folderId,
         IReadOnlyCollection<long>? requestedTrackIds,
@@ -1158,17 +1157,18 @@ public sealed class MediaServerLibraryRefreshService
     {
         if (!_libraryRepository.IsConfigured)
         {
-            return;
+            return [];
         }
 
         var localIndex = await LoadTargetIdentityLocalIndexAsync(
             JellyfinService,
             folderId,
             requestedTrackIds,
-            cancellationToken);
-        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+            cancellationToken,
+            reconcileExisting: true);
+        if (localIndex.Tracks.Count == 0 || localIndex.PendingTrackIds.Count == 0)
         {
-            return;
+            return [];
         }
 
         var userId = jellyfin.UserId;
@@ -1183,8 +1183,7 @@ public sealed class MediaServerLibraryRefreshService
 
         if (string.IsNullOrWhiteSpace(userId))
         {
-            _logger.LogWarning("Jellyfin identity ingest skipped because Jellyfin user id is missing.");
-            return;
+            throw new InvalidOperationException("Jellyfin track ID fetch requires a resolvable user ID.");
         }
 
         var libraries = await _jellyfinApiClient.GetLibrariesAsync(
@@ -1203,6 +1202,7 @@ public sealed class MediaServerLibraryRefreshService
             musicLibraries.Add((Id: null, Name: "all-audio"));
         }
 
+        var scanWasIdle = await _jellyfinApiClient.IsLibraryRefreshRunningAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken) == false;
         StartTargetIdentityProgress(JellyfinService, folderId, localIndex);
         try
         {
@@ -1211,7 +1211,8 @@ public sealed class MediaServerLibraryRefreshService
             foreach (var library in musicLibraries)
             {
                 var offset = 0;
-                while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
+                var pageIdsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                while (!cancellationToken.IsCancellationRequested && localIndex.PendingTrackIds.Count > 0)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var page = await _jellyfinApiClient.GetAudioTracksAsync(
@@ -1235,6 +1236,12 @@ public sealed class MediaServerLibraryRefreshService
                         break;
                     }
 
+                    var pageIds = page.Select(track => track.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    if (pageIds.All(pageIdsSeen.Contains))
+                        throw new InvalidOperationException("Jellyfin track listing repeated a page without advancing.");
+                    pageIdsSeen.UnionWith(pageIds);
+                    localIndex.ObservedTargetItemIds.UnionWith(page.Select(track => track.Id).Where(static id => !string.IsNullOrWhiteSpace(id))!);
+
                     var tracks = page
                         .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                                         && !string.IsNullOrWhiteSpace(track.FilePath)
@@ -1251,29 +1258,28 @@ public sealed class MediaServerLibraryRefreshService
                     var ingest = await IngestTargetTracksAsync(JellyfinService, folderId, tracks, localIndex, cancellationToken);
                     mappedCount += ingest.Mapped;
 
-                    if (page.Count < PlexTrackPageSize)
-                    {
-                        break;
-                    }
-
-                    offset += PlexTrackPageSize;
+                    offset += page.Count;
                 }
 
-                if (localIndex.MissingTrackIds.Count == 0)
+                if (localIndex.PendingTrackIds.Count == 0)
                 {
                     break;
                 }
             }
 
-            LogIdentityIngest(JellyfinService, mappedCount, localIndex.MissingTrackIds.Count);
+            if (scanWasIdle && await _jellyfinApiClient.IsLibraryRefreshRunningAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken) == false)
+                await RemoveStaleTargetIdentitiesAsync(JellyfinService, localIndex, cancellationToken);
+            LogIdentityIngest(JellyfinService, mappedCount, localIndex.PendingTrackIds.Count);
         }
         finally
         {
             CompleteTargetIdentityProgress(JellyfinService, folderId, localIndex);
         }
+        return localIndex.Tracks.Where(track => !localIndex.PendingTrackIds.Contains(track.TrackId))
+            .Select(static track => track.TrackId).ToList();
     }
 
-    private async Task UpdateNavidromeTrackMetadataIndexAsync(
+    private async Task<IReadOnlyList<long>> UpdateNavidromeTrackMetadataIndexAsync(
         NavidromeAuth navidrome,
         long? folderId,
         IReadOnlyCollection<long>? requestedTrackIds,
@@ -1281,7 +1287,7 @@ public sealed class MediaServerLibraryRefreshService
     {
         if (!_libraryRepository.IsConfigured)
         {
-            return;
+            return [];
         }
 
         var localIndex = await LoadTargetIdentityLocalIndexAsync(
@@ -1292,7 +1298,7 @@ public sealed class MediaServerLibraryRefreshService
             reconcileExisting: true);
         if (localIndex.Tracks.Count == 0 || localIndex.PendingTrackIds.Count == 0)
         {
-            return;
+            return [];
         }
 
         var sessionToken = await _navidromeApiClient.LoginNativeApiAsync(
@@ -1302,16 +1308,17 @@ public sealed class MediaServerLibraryRefreshService
             cancellationToken);
         if (string.IsNullOrWhiteSpace(sessionToken))
         {
-            _logger.LogWarning("Navidrome identity ingest skipped because native API login failed.");
-            return;
+            throw new InvalidOperationException("Navidrome track ID fetch failed: native API login was rejected.");
         }
 
+        var scanWasIdle = await _navidromeApiClient.IsScanRunningAsync(navidrome.Url!, navidrome.Username!, navidrome.Password!, cancellationToken) == false;
         StartTargetIdentityProgress(NavidromeService, folderId, localIndex);
         try
         {
             var mappedCount = 0;
             var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var offset = 0;
+            var pageIdsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             while (!cancellationToken.IsCancellationRequested && localIndex.PendingTrackIds.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1332,6 +1339,12 @@ public sealed class MediaServerLibraryRefreshService
                     break;
                 }
 
+                var pageIds = page.Select(track => track.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (pageIds.All(pageIdsSeen.Contains))
+                    throw new InvalidOperationException("Navidrome track listing repeated a page without advancing.");
+                pageIdsSeen.UnionWith(pageIds);
+                localIndex.ObservedTargetItemIds.UnionWith(page.Select(track => track.Id).Where(static id => !string.IsNullOrWhiteSpace(id))!);
+
                 var tracks = page
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                                     && !string.IsNullOrWhiteSpace(track.FilePath)
@@ -1348,20 +1361,19 @@ public sealed class MediaServerLibraryRefreshService
                 var ingest = await IngestTargetTracksAsync(NavidromeService, folderId, tracks, localIndex, cancellationToken);
                 mappedCount += ingest.Mapped;
 
-                if (page.Count < PlexTrackPageSize)
-                {
-                    break;
-                }
-
-                offset += PlexTrackPageSize;
+                offset += page.Count;
             }
 
+            if (scanWasIdle && await _navidromeApiClient.IsScanRunningAsync(navidrome.Url!, navidrome.Username!, navidrome.Password!, cancellationToken) == false)
+                await RemoveStaleTargetIdentitiesAsync(NavidromeService, localIndex, cancellationToken);
             LogIdentityIngest(NavidromeService, mappedCount, localIndex.MissingTrackIds.Count);
         }
         finally
         {
             CompleteTargetIdentityProgress(NavidromeService, folderId, localIndex);
         }
+        return localIndex.Tracks.Where(track => !localIndex.PendingTrackIds.Contains(track.TrackId))
+            .Select(static track => track.TrackId).ToList();
     }
 
     private async Task<(int Mapped, int Unmapped, int Ambiguous)> IngestTargetTracksAsync(
@@ -1413,6 +1425,7 @@ public sealed class MediaServerLibraryRefreshService
             }
             else if (resolution.Ambiguous)
             {
+                localIndex.AmbiguousTrackIds.UnionWith(resolution.TiedTrackIds);
                 ambiguous.Add((track.TargetItemId, track.FilePath, resolution.TiedTrackIds));
             }
         }
@@ -1427,6 +1440,20 @@ public sealed class MediaServerLibraryRefreshService
 
         await PersistTargetIdentityMappingsAsync(service, mappedTracks, now, cancellationToken);
         return (mappedTracks.Count, tracks.Count - mappedTracks.Count, ambiguous.Count);
+    }
+
+    private async Task RemoveStaleTargetIdentitiesAsync(
+        string service, TargetIdentityLocalIndex localIndex, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var staleIds = localIndex.Tracks
+            .Where(track => localIndex.PendingTrackIds.Contains(track.TrackId)
+                && !string.IsNullOrWhiteSpace(track.TargetItemId)
+                && !localIndex.ObservedTargetItemIds.Contains(track.TargetItemId)
+                && !localIndex.AmbiguousTrackIds.Contains(track.TrackId))
+            .Select(static track => track.TrackId).ToList();
+        await _libraryRepository.DeleteMediaServerTrackMetadataAsync(service, staleIds, cancellationToken);
+        localIndex.MissingTrackIds.UnionWith(staleIds);
     }
 
     private void LogIdentityIngest(string service, int mappedCount, int unmappedCount)
@@ -1566,8 +1593,8 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdateNavidromeTrackMetadataIndexAsync(
-                    navidrome!,
+                await UpdateTrackMetadataIndexAsync(
+                    NavidromeService,
                     folderId: null,
                     requestedTrackIds: null,
                     cancellationToken);

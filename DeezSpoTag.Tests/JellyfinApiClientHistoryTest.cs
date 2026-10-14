@@ -12,6 +12,17 @@ namespace DeezSpoTag.Tests;
 public sealed class JellyfinApiClientHistoryTest
 {
     [Fact]
+    public async Task GetAudioTracksAsync_DoesNotTreatUnauthorizedAsAnEmptyLibrary()
+    {
+        using var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        using var httpClient = new HttpClient(handler);
+        var client = new JellyfinApiClient(httpClient);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetAudioTracksAsync("http://jellyfin.local", "token", "user"));
+        Assert.Equal(HttpStatusCode.Unauthorized, error.StatusCode);
+    }
+
+    [Fact]
     public async Task GetAudioPlayHistoryAsync_WithLibraryId_AddsParentIdScope()
     {
         Uri? requestUri = null;

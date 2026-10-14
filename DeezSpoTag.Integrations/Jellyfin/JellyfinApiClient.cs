@@ -505,14 +505,14 @@ public class JellyfinApiClient
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
         ApplyAuthorization(request, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return new List<JellyfinAudioTrack>();
-        }
+        response.EnsureSuccessStatusCode();
 
         var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        return payload?.Items?
-            .Where(static item => !string.IsNullOrWhiteSpace(item.Id))
+        if (payload?.Items is null)
+            throw new JsonException("Jellyfin track listing did not contain an Items array.");
+        if (payload.Items.Any(static item => string.IsNullOrWhiteSpace(item.Id)))
+            throw new JsonException("Jellyfin track listing contained an item without a track ID.");
+        return payload.Items
             .Select(static item => new JellyfinAudioTrack(
                 item.Id!,
                 item.Name ?? string.Empty,

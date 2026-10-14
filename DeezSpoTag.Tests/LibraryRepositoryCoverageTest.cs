@@ -722,6 +722,26 @@ ORDER BY service;";
         Assert.Equal(1, status.Retry);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MediaServerRefreshOutbox_RestartsTerminalWorkWithOnlyCurrentPaths(bool failed)
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(31,"plex",["/music/removed.flac"],[101],TimeSpan.Zero);
+        var old = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(1,TimeSpan.FromMinutes(5),"worker"));
+        if (failed) Assert.True(await _repository.FailMediaServerRefreshAsync(old.Id,"worker","offline"));
+        else Assert.True(await _repository.CompleteMediaServerRefreshAsync(old.Id,"worker"));
+        var summary = Assert.Single(await _repository.GetMediaServerRefreshOutboxSummariesAsync());
+        Assert.Equal(TimeSpan.Zero, summary.UpdatedAt.Offset);
+        Assert.True(summary.UpdatedAt > DateTimeOffset.UtcNow.AddMinutes(-1));
+        await _repository.EnqueueMediaServerRefreshAsync(31,"plex",["/music/new.flac"],[102],TimeSpan.Zero);
+        var restarted = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(1,TimeSpan.FromMinutes(5),"worker"));
+        Assert.Equal("/music/new.flac", Assert.Single(restarted.ChangedFilePaths));
+        Assert.Equal(102L, Assert.Single(restarted.RequestedTrackIds));
+        Assert.Null(restarted.ScanSubmittedUtc);
+        Assert.True(restarted.DeadlineUtc > DateTimeOffset.UtcNow);
+    }
+
     [Fact]
     public async Task MediaServerRefreshOutbox_RetryPersistsOnlyRemainingIdentityWork()
     {

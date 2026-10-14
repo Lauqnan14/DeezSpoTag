@@ -1147,7 +1147,8 @@ public sealed record WatchlistFinalizationOutboxDto(
 public sealed record MediaServerRefreshOutboxSummary(
     long FolderId,
     string Service,
-    string Status);
+    string Status,
+    DateTimeOffset UpdatedAt = default);
 
 public sealed record MediaServerRefreshOutboxDto(
     long Id,

@@ -840,24 +840,27 @@ public class PlexApiClient
                     "Failed to load Plex tracks for section {SectionKey}: {StatusCode}",
                     sectionKey,
                     response.StatusCode);
-                return new List<PlexTrack>();
+                response.EnsureSuccessStatusCode();
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             if (string.IsNullOrWhiteSpace(content))
             {
-                return new List<PlexTrack>();
+                throw new InvalidOperationException("Plex track listing returned an empty response.");
             }
 
             var doc = XDocument.Parse(content);
-            var tracksByRatingKey = new Dictionary<string, PlexTrack>(StringComparer.OrdinalIgnoreCase);
-            AddSearchTracks(doc, tracksByRatingKey);
-            return tracksByRatingKey.Values.ToList();
+            if (doc.Root?.Name.LocalName != "MediaContainer")
+                throw new InvalidOperationException("Plex track listing did not contain a MediaContainer.");
+            var tracks = doc.Descendants(TrackElementName).Select(MapTrack).ToList();
+            if (tracks.Any(static track => string.IsNullOrWhiteSpace(track.RatingKey)))
+                throw new InvalidOperationException("Plex track listing contained an item without a track ID.");
+            return tracks;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed reading Plex tracks for section {SectionKey}", sectionKey);
-            return new List<PlexTrack>();
+            throw;
         }
     }
 

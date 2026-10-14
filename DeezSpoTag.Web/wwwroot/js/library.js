@@ -3870,17 +3870,21 @@ function resolveLibraryScanSuccessMessage(refreshImages, reset) {
 
 let targetIdentityRefreshInProgress = false;
 let targetIdentityRefreshPollingTimer = null;
+let targetIdentityStatusPollingInProgress = false;
+let targetIdentityStatusRequestSequence = 0;
 
-function startTargetIdentityRefreshPolling() {
+function startTargetIdentityRefreshPolling(intervalMs = 1500) {
     stopTargetIdentityRefreshPolling();
     targetIdentityRefreshPollingTimer = window.setInterval(() => {
+        if (document.hidden || targetIdentityStatusPollingInProgress) return;
+        targetIdentityStatusPollingInProgress = true;
         void loadTargetIdentityStatus().catch(error => {
             const status = document.getElementById('libraryTargetIdentityStatus');
             if (status) {
                 status.textContent = `Target ID status unavailable: ${error.message}`;
             }
-        });
-    }, 1500);
+        }).finally(() => { targetIdentityStatusPollingInProgress = false; });
+    }, intervalMs);
 }
 
 function stopTargetIdentityRefreshPolling() {
@@ -3897,13 +3901,17 @@ async function loadTargetIdentityStatus() {
     }
 
     const scopedFolderId = getSelectedLibraryViewFolderId();
+    const requestSequence = ++targetIdentityStatusRequestSequence;
     const params = new URLSearchParams();
     if (scopedFolderId !== null) {
         params.set('folderId', String(scopedFolderId));
     }
     const suffix = params.toString();
     const payload = await fetchJson(`/api/library/target-identities/status${suffix ? `?${suffix}` : ''}`);
-    renderTargetIdentityStatus(payload);
+    if (requestSequence === targetIdentityStatusRequestSequence
+        && scopedFolderId === getSelectedLibraryViewFolderId()) {
+        renderTargetIdentityStatus(payload);
+    }
     return payload;
 }
 
@@ -3917,22 +3925,23 @@ function renderTargetIdentityStatus(payload) {
         const service = String(input.value || input.dataset.targetIdentityService || '').toLowerCase();
         const state = serviceMap.get(service);
         const connected = state?.connected === true;
+        const wasDisabled = input.disabled;
         input.disabled = !connected;
-        input.checked = connected;
+        if (!connected || wasDisabled) input.checked = connected;
         input.closest('.dropdown-setting-row')?.classList.toggle('is-disabled', !connected);
         const coverage = state?.coverage;
         const progress = state?.progress?.running === true ? state.progress : null;
         const label = input.closest('label')?.querySelector('span');
         if (label) {
             const baseLabel = state?.label || service;
-            const counter = progress || coverage;
+            const counter = coverage || progress;
             label.textContent = counter
                 ? `${baseLabel} (${Number(counter.mappedTracks || 0)}/${Number(counter.totalTracks || 0)})`
                 : baseLabel;
         }
         if (connected) {
             connectedCount += 1;
-            const counter = progress || coverage;
+            const counter = coverage || progress;
             const totalTracks = Number(counter?.totalTracks || 0);
             const mappedTracks = Number(counter?.mappedTracks || 0);
             if (progress) {
@@ -3974,6 +3983,8 @@ function syncTargetIdentityActionState(statusState = null) {
 
     if (selected.length === 0) {
         status.textContent = 'Connect a target server to fetch track IDs.';
+    } else if (Number(statusState?.connectedCount || 0) > 0) {
+        status.textContent = 'Target track IDs update automatically; some tracks remain unmapped.';
     }
 }
 
@@ -4025,7 +4036,7 @@ async function runTargetIdentityRefresh(resetFirst) {
             failed > 0);
     } finally {
         targetIdentityRefreshInProgress = false;
-        stopTargetIdentityRefreshPolling();
+        startTargetIdentityRefreshPolling(getLibraryRefreshPolicy().scanStatusIdleMs);
         if (!statusRefreshed && document.getElementById('libraryTargetIdentityStatus')) {
             void loadTargetIdentityStatus().catch(() => syncTargetIdentityActionState());
         }
@@ -5149,6 +5160,11 @@ async function refreshLibraryViewsAfterLibraryUpdate() {
     libraryState.libraryUpdateRefreshPromise = (async () => {
         const artistId = document.querySelector('[data-artist-id]')?.dataset.artistId;
         const tasks = [];
+        if (document.getElementById('library-target-identities-panel')) {
+            tasks.push(loadTargetIdentityStatus().catch(error => {
+                console.warn('Failed to refresh target ID coverage after library update.', error);
+            }));
+        }
         if (document.getElementById('libraryLastScan') || document.getElementById('libraryTrackCount')) {
             tasks.push(loadLibraryScanStatus().catch(error => {
                 console.warn('Failed to refresh library scan status after library update.', error);

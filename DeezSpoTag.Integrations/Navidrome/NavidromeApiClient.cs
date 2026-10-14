@@ -139,7 +139,8 @@ public sealed class NavidromeApiClient
             sort: "id",
             order: "ASC",
             libraryId: null,
-            cancellationToken);
+            cancellationToken,
+            throwOnFailure: true);
         return page
             .Where(static song => !string.IsNullOrWhiteSpace(song.Id))
             .Select(song => new NavidromeAudioTrack(
@@ -176,7 +177,8 @@ public sealed class NavidromeApiClient
             sort: "id",
             order: "ASC",
             libraryId: null,
-            cancellationToken);
+            cancellationToken,
+            throwOnFailure: true);
         return page
             .Where(static song => !string.IsNullOrWhiteSpace(song.Id))
             .Select(song => new NavidromeAudioTrack(
@@ -1333,7 +1335,8 @@ public sealed class NavidromeApiClient
         string sort,
         string order,
         string? libraryId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool throwOnFailure = false)
     {
         var queryParts = new List<string>
         {
@@ -1359,21 +1362,27 @@ public sealed class NavidromeApiClient
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
+                if (throwOnFailure) response.EnsureSuccessStatusCode();
                 return new List<NavidromeNativeSong>();
             }
 
-            return await response.Content.ReadFromJsonAsync<List<NavidromeNativeSong>>(
-                cancellationToken: cancellationToken) ?? new List<NavidromeNativeSong>();
+            var page = await response.Content.ReadFromJsonAsync<List<NavidromeNativeSong>>(
+                cancellationToken: cancellationToken);
+            if (throwOnFailure && page is null)
+                throw new JsonException("Navidrome track listing did not contain a song array.");
+            if (throwOnFailure && page!.Any(static song => string.IsNullOrWhiteSpace(song.Id)))
+                throw new JsonException("Navidrome track listing contained an item without a track ID.");
+            return page ?? new List<NavidromeNativeSong>();
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!throwOnFailure && !cancellationToken.IsCancellationRequested)
         {
             return new List<NavidromeNativeSong>();
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException) when (!throwOnFailure)
         {
             return new List<NavidromeNativeSong>();
         }
-        catch (JsonException)
+        catch (JsonException) when (!throwOnFailure)
         {
             return new List<NavidromeNativeSong>();
         }

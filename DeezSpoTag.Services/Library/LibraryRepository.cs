@@ -15127,10 +15127,14 @@ WHERE destination_folder_id=@destinationFolderId AND target_service=@targetServi
             {
                 try
                 {
-                    paths.AddRange(JsonSerializer.Deserialize<List<string>>(reader.GetString(0)) ?? []);
-                    paths = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                    trackIds.AddRange(JsonSerializer.Deserialize<List<long>>(reader.GetString(1)) ?? []);
-                    trackIds = trackIds.Where(static id => id > 0).Distinct().ToList();
+                    var persistedStatus = reader.GetString(2);
+                    if (persistedStatus is not ("completed" or "failed"))
+                    {
+                        paths.AddRange(JsonSerializer.Deserialize<List<string>>(reader.GetString(0)) ?? []);
+                        paths = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        trackIds.AddRange(JsonSerializer.Deserialize<List<long>>(reader.GetString(1)) ?? []);
+                        trackIds = trackIds.Where(static id => id > 0).Distinct().ToList();
+                    }
                 }
                 catch (JsonException)
                 {
@@ -15306,16 +15310,34 @@ RETURNING id,destination_folder_id,target_service,changed_file_paths_json,reques
     public async Task<bool> CompleteMediaServerRefreshAsync(
         long id,
         string leaseOwner,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? processedPaths = null,
+        IReadOnlyCollection<long>? processedTrackIds = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
+WITH remaining AS (
+    SELECT id,
+      (SELECT json_group_array(value) FROM json_each(changed_file_paths_json)
+       WHERE @processedPaths IS NOT NULL AND lower(value) NOT IN
+         (SELECT lower(value) FROM json_each(@processedPaths))) AS paths,
+      (SELECT json_group_array(value) FROM json_each(requested_track_ids_json)
+       WHERE @processedTrackIds IS NOT NULL AND value NOT IN
+         (SELECT value FROM json_each(@processedTrackIds))) AS track_ids
+    FROM media_server_refresh_outbox WHERE id=@id AND lease_owner=@leaseOwner
+)
 UPDATE media_server_refresh_outbox
-SET status='completed',changed_file_paths_json='[]',requested_track_ids_json='[]',lease_owner=NULL,lease_until_utc=NULL,
-    last_error=NULL,updated_at=CURRENT_TIMESTAMP
-WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+SET status=CASE WHEN json_array_length(r.paths)>0 OR json_array_length(r.track_ids)>0 THEN 'pending' ELSE 'completed' END,
+    changed_file_paths_json=r.paths,requested_track_ids_json=r.track_ids,
+    attempt_count=0,scan_submitted_utc=NULL,next_attempt_utc=@nextAttemptUtc,deadline_utc=@deadlineUtc,
+    lease_owner=NULL,lease_until_utc=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+FROM remaining r WHERE media_server_refresh_outbox.id=r.id;", connection);
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner);
+        command.Parameters.AddWithValue("processedPaths", processedPaths is null ? DBNull.Value : JsonSerializer.Serialize(processedPaths));
+        command.Parameters.AddWithValue("processedTrackIds", processedTrackIds is null ? DBNull.Value : JsonSerializer.Serialize(processedTrackIds));
+        command.Parameters.AddWithValue("nextAttemptUtc", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("deadlineUtc", DateTimeOffset.UtcNow.AddMinutes(10).ToString("O"));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
@@ -15344,14 +15366,26 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         string error,
         IReadOnlyCollection<string>? changedFilePaths,
         IReadOnlyCollection<long>? requestedTrackIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? processedPaths = null,
+        IReadOnlyCollection<long>? processedTrackIds = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 UPDATE media_server_refresh_outbox
 SET status='retry',attempt_count=@attemptCount,next_attempt_utc=@nextAttemptUtc,
-    changed_file_paths_json=COALESCE(@paths,changed_file_paths_json),
-    requested_track_ids_json=COALESCE(@trackIds,requested_track_ids_json),
+    scan_submitted_utc=CASE WHEN
+      (@processedPaths IS NOT NULL AND EXISTS(SELECT 1 FROM json_each(changed_file_paths_json) WHERE lower(value) NOT IN (SELECT lower(value) FROM json_each(@processedPaths))))
+      OR (@processedTrackIds IS NOT NULL AND EXISTS(SELECT 1 FROM json_each(requested_track_ids_json) WHERE value NOT IN (SELECT value FROM json_each(@processedTrackIds))))
+      THEN NULL ELSE scan_submitted_utc END,
+    changed_file_paths_json=CASE WHEN @processedPaths IS NULL THEN COALESCE(@paths,changed_file_paths_json)
+      ELSE (SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(changed_file_paths_json) WHERE lower(value) NOT IN (SELECT lower(value) FROM json_each(@processedPaths))
+        UNION SELECT value FROM json_each(@paths))) END,
+    requested_track_ids_json=CASE WHEN @processedTrackIds IS NULL THEN COALESCE(@trackIds,requested_track_ids_json)
+      ELSE (SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(requested_track_ids_json) WHERE value NOT IN (SELECT value FROM json_each(@processedTrackIds))
+        UNION SELECT value FROM json_each(@trackIds))) END,
     lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
 WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         command.Parameters.AddWithValue("id", id);
@@ -15372,6 +15406,8 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
             requestedTrackIds == null
                 ? DBNull.Value
                 : JsonSerializer.Serialize(requestedTrackIds.Where(static trackId => trackId > 0).Distinct()));
+        command.Parameters.AddWithValue("processedPaths", processedPaths is null ? DBNull.Value : JsonSerializer.Serialize(processedPaths));
+        command.Parameters.AddWithValue("processedTrackIds", processedTrackIds is null ? DBNull.Value : JsonSerializer.Serialize(processedTrackIds));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
     public async Task<bool> FailMediaServerRefreshAsync(
@@ -15397,7 +15433,7 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
-SELECT destination_folder_id, lower(target_service), lower(status)
+SELECT destination_folder_id, lower(target_service), lower(status), updated_at
 FROM media_server_refresh_outbox;", connection);
         var rows = new List<MediaServerRefreshOutboxSummary>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -15406,7 +15442,8 @@ FROM media_server_refresh_outbox;", connection);
             rows.Add(new MediaServerRefreshOutboxSummary(
                 reader.GetInt64(0),
                 reader.GetString(1),
-                reader.GetString(2)));
+                reader.GetString(2),
+                ParseUtcDateTimeOffsetInvariant(reader.GetString(3))));
         }
 
         return rows;
