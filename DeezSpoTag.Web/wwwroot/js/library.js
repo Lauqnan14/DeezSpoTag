@@ -830,8 +830,20 @@ function buildLibraryImageUrl(path, size) {
     return `/api/library/image?${params.toString()}`;
 }
 
+function resolveLibraryApiUrl(rawUrl) {
+    const url = new URL(String(rawUrl), globalThis.location.origin);
+    if (url.origin !== globalThis.location.origin || !url.pathname.startsWith('/api/')) {
+        throw new Error('Invalid application API URL.');
+    }
+    const path = url.pathname.slice('/api/'.length).split('/')
+        .map(part => encodeURIComponent(decodeURIComponent(part))).join('/');
+    const query = [...url.searchParams].map(([key, value]) =>
+        encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+    return '/api/' + path + (query ? '?' + query : '');
+}
+
 async function fetchJson(url, options) {
-    const response = await fetch(url, {
+    const response = await fetch(resolveLibraryApiUrl(url), {
         cache: options?.cache ?? 'no-store',
         ...options
     });
@@ -839,7 +851,7 @@ async function fetchJson(url, options) {
 }
 
 async function fetchJsonOptional(url, options) {
-    const response = await fetch(url, {
+    const response = await fetch(resolveLibraryApiUrl(url), {
         cache: options?.cache ?? 'no-store',
         ...options
     });
@@ -4091,8 +4103,8 @@ function createArtistCardElement(artist, anchorId = '', options = {}) {
     const coverUrl = coverPath ? appendCacheKey(coverPath) : '';
     const imageLoading = options.imageLoading === 'eager' ? 'eager' : 'lazy';
     const imageMarkup = artist?.preferredImagePath
-        ? `<img src="${coverUrl}" alt="${escapeHtml(artist?.name || 'Artist')}" loading="${imageLoading}" decoding="async" />`
-        : `<div class="artist-initials">${initials || '?'}</div>`;
+        ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(artist?.name || 'Artist')}" loading="${imageLoading}" decoding="async" />`
+        : `<div class="artist-initials">${escapeHtml(initials || '?')}</div>`;
     card.innerHTML = `
         ${imageMarkup}
         <strong>${escapeHtml(artist?.name || 'Unknown Artist')}</strong>
@@ -6603,9 +6615,17 @@ function normalizeArtistBiographyForSync(value) {
         return '';
     }
 
-    const temp = document.createElement('div');
-    temp.innerHTML = raw;
-    return (temp.textContent || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
+    // Strip tag tokens (including quoted attributes), then decode only escaped
+    // text in an inert textarea. Untrusted markup never reaches an HTML parser.
+    let text = raw;
+    let previous;
+    do {
+        previous = text;
+        text = text.replace(/<!--[\s\S]*?-->|<(?:"[^"]*"|'[^']*'|[^'">])*?>/g, '');
+    } while (text !== previous);
+    const decoder = document.createElement('textarea');
+    decoder.innerHTML = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return (decoder.value || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
 }
 
 function getSelectedArtistBiographySource() {
@@ -8992,7 +9012,7 @@ function createFavoritesProviderSection(provider) {
     brand.className = 'favorites-brand';
     if (provider.iconPath) {
         const icon = document.createElement('img');
-        icon.src = provider.iconPath;
+        icon.src = toSafeHttpUrl(provider.iconPath);
         icon.alt = provider.displayName || provider.key || '';
         icon.className = 'favorites-icon';
         brand.appendChild(icon);

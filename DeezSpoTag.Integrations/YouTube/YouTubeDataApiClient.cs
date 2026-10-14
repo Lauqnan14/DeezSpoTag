@@ -1,3 +1,4 @@
+using DeezSpoTag.Core.Security;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -505,7 +506,7 @@ public sealed class YouTubeDataApiClient
             {
                 _logger?.LogWarning(
                     "YouTube playlistItems for {PlaylistId} returned a repeating nextPageToken; the read is truncated.",
-                    playlistId);
+                    LogSanitizer.OneLine(playlistId));
                 return null;
             }
 
@@ -514,7 +515,7 @@ public sealed class YouTubeDataApiClient
 
         _logger?.LogWarning(
             "YouTube playlistItems for {PlaylistId} exceeded {Pages} pages; the read is truncated.",
-            playlistId,
+            LogSanitizer.OneLine(playlistId),
             MaxPlaylistPages);
         return null;
     }
@@ -569,7 +570,7 @@ public sealed class YouTubeDataApiClient
             {
                 _logger?.LogWarning(
                     "YouTube failed to add a video to {PlaylistId} with HTTP {StatusCode}.",
-                    playlistId,
+                    LogSanitizer.OneLine(playlistId),
                     (int)response.StatusCode);
                 return false;
             }

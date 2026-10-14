@@ -300,10 +300,38 @@
     const regionMapUrl = '/images/world/world-regions.svg';
     let regionMapRequest = null;
 
+    function sanitizeRegionSvg(markup) {
+        // The generated asset contains only an SVG header and country paths.
+        // Rebuild those primitives; never parse a network response as XML/HTML.
+        if (typeof markup !== 'string' || markup.length > 2 * 1024 * 1024 || /<!DOCTYPE/i.test(markup)) return null;
+        const header = markup.match(/<svg\b([^>]*)>/);
+        if (!header) return null;
+        const namespace = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(namespace, 'svg');
+        const rootAttributes = new Set(['viewBox', 'preserveAspectRatio', 'aria-hidden', 'focusable', 'role']);
+        const pathAttributes = new Set(['d', 'data-country', 'data-regions']);
+        function copyAttributes(attributes, target, allowed) {
+            for (const match of attributes.matchAll(/([a-zA-Z][a-zA-Z-]*)="([^"]*)"/g)) {
+                const name = match[1], value = match[2];
+                if (!allowed.has(name) || /[&<>]/.test(value)) continue;
+                target.setAttribute(name, value);
+            }
+        }
+        copyAttributes(header[1], svg, rootAttributes);
+        let count = 0;
+        for (const match of markup.matchAll(/<path\b([^>]*?)\/?>/g)) {
+            if (++count > 1000) return null;
+            const path = document.createElementNS(namespace, 'path');
+            copyAttributes(match[1], path, pathAttributes);
+            svg.appendChild(path);
+        }
+        return count ? svg : null;
+    }
+
     function ensureRegionMap() {
         const host = byId('pgRegionMap');
         if (!host || typeof fetch !== 'function') return;
-        if (typeof host.querySelector !== 'function' || typeof host.insertAdjacentHTML !== 'function') return;
+        if (typeof host.querySelector !== 'function' || typeof host.prepend !== 'function') return;
 
         if (host.querySelector('svg')) return;
         if (!regionMapRequest) {
@@ -312,8 +340,8 @@
                 .then(markup => {
                     // The map is decoration. If it cannot be fetched the feature is
                     // unaffected, so the failure is contained here.
-                    if (!markup || !/<svg/i.test(markup)) return;
-                    host.insertAdjacentHTML('afterbegin', markup);
+                    const svg = sanitizeRegionSvg(markup);
+                    if (svg) host.prepend(svg);
                 })
                 .catch(() => { regionMapRequest = null; });
         }
@@ -740,8 +768,8 @@
             '<td>' + escapeHtml(String(item.priority)) + '</td>' +
             '<td><span class="' + (item.enabled ? 'text-success' : '') + '">' + (item.enabled ? 'Enabled' : 'Disabled') + '</span></td>' +
             '<td><div class="genre-intelligence-row-actions">' +
-            '<button class="action-btn action-btn-sm" type="button" data-pg-edit-mapping="' + item.id + '">Edit</button>' +
-            '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-delete-mapping="' + item.id + '">Delete</button>' +
+            '<button class="action-btn action-btn-sm" type="button" data-pg-edit-mapping="' + escapeAttribute(item.id) + '">Edit</button>' +
+            '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-delete-mapping="' + escapeAttribute(item.id) + '">Delete</button>' +
             '</div></td></tr>'
         ).join('');
     }
@@ -831,8 +859,8 @@
             '<td>' + escapeHtml(String(item.priority)) + '</td>' +
             '<td><span class="' + (item.enabled ? 'text-success' : '') + '">' + (item.enabled ? 'Enabled' : 'Disabled') + '</span></td>' +
             '<td><div class="genre-intelligence-row-actions">' +
-            '<button class="action-btn action-btn-sm" type="button" data-pg-edit-rule="' + item.id + '">Edit</button>' +
-            '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-delete-rule="' + item.id + '">Delete</button>' +
+            '<button class="action-btn action-btn-sm" type="button" data-pg-edit-rule="' + escapeAttribute(item.id) + '">Edit</button>' +
+            '<button class="action-btn action-btn-sm btn-danger" type="button" data-pg-delete-rule="' + escapeAttribute(item.id) + '">Delete</button>' +
             '</div></td></tr>'
         ).join('');
     }
@@ -1067,11 +1095,11 @@
 
     function escapeHtml(value) {
         return String(value ?? '')
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&#39;');
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function escapeAttribute(value) {

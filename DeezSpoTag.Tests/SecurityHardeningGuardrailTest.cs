@@ -26,6 +26,11 @@ namespace DeezSpoTag.Tests;
 public sealed class SecurityHardeningGuardrailTest
 {
     [Theory]
+    [InlineData("DeezSpoTag.Integrations/YouTube/YouTubeDataApiClient.cs", "YouTube playlistItems for {PlaylistId} returned a repeating", "playlistId")]
+    [InlineData("DeezSpoTag.Integrations/YouTube/YouTubeDataApiClient.cs", "YouTube playlistItems for {PlaylistId} exceeded", "playlistId")]
+    [InlineData("DeezSpoTag.Integrations/YouTube/YouTubeDataApiClient.cs", "YouTube failed to add a video to", "playlistId")]
+    [InlineData("DeezSpoTag.Services/Download/Shared/ZarzSignedSessionCoordinator.cs", "{Provider} signed-session peek failed.", "provider")]
+    [InlineData("DeezSpoTag.Services/Download/Shared/ZarzSignedSessionCoordinator.cs", "Failed to load {Provider} Zarz signed session.", "provider")]
     [InlineData("DeezSpoTag.Integrations/Soulseek/SlskdClient.cs", "slskd request to {ApiPath}", "apiPath")]
     [InlineData("DeezSpoTag.Services/Download/Utils/EnhancedPathTemplateProcessor.cs", "Creating artist folder - Track:", "track.Title", "track.Album?.MainArtist?.Name ?? \"NULL\"", "track.MainArtist?.Name ?? \"NULL\"", "artistToUse?.Name ?? \"NULL\"")]
     [InlineData("DeezSpoTag.Services/Download/Utils/EnhancedPathTemplateProcessor.cs", "GenerateArtistName called with artist:", "artist?.Name ?? \"NULL\"", "normalizedArtistName", "artist?.Id ?? \"NULL\"", "template")]
@@ -375,6 +380,165 @@ public sealed class SecurityHardeningGuardrailTest
         Assert.Contains("app.MapControllers().RequireRateLimiting(\"DefaultApi\")", webProgramSource, StringComparison.Ordinal);
         Assert.Contains("[DisableRateLimiting]", libraryControllerSource, StringComparison.Ordinal);
         Assert.Contains("[DisableRateLimiting]", libraryImagesControllerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SecurityBrowserTextEscaping_ProtectsAttributeBoundaries()
+    {
+        await RunSecurityNodeTest("""
+        for (const file of ['home-index.js', 'library.js', 'personal-genre.js']) {
+            const escape = readFunction(file, 'escapeHtml');
+            const escaped = escape(`<img src=x onerror=alert(1)>"'&`);
+            assert(!/[<>"']/.test(escaped), file + ': HTML attribute boundary remains unescaped');
+            assert(escaped.includes('&quot;') && escaped.includes('&#39;'));
+        }
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityBrowserApiRequests_RejectExternalAndUnexpectedEndpoints()
+    {
+        await RunSecurityNodeTest("""
+        const api = readFunction('library.js', 'resolveLibraryApiUrl');
+        for (const value of ['https://evil.example/api/library', '//evil.example/api/library', 'javascript:alert(1)', '/Identity/Account/Logout'])
+            assert.throws(() => api(value));
+        assert(api('/api/library/artists?id=1').endsWith('/api/library/artists?id=1'));
+        const lyrics = readFunction('lrc-editor.js', 'resolveLyricsFileUrl');
+        for (const value of ['https://evil.example/api/lrc/track/1/lrc', '//evil.example/api/lrc/file/lrc', '/api/library/artists'])
+            assert.throws(() => lyrics(value, 'lrc'));
+        assert(lyrics('/api/lrc/track/42/lrc', 'lrc').endsWith('/api/lrc/track/42/lrc'));
+        assert(lyrics('/api/lrc/file/txt?path=abc%2Fdef', 'txt').includes('path=abc%2Fdef'));
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityBrowserMediaUrls_RejectExecutableSchemes()
+    {
+        await RunSecurityNodeTest("""
+        const media = readFunction('library-artist-hero.js', 'sanitizeMediaUrl');
+        for (const value of ['javascript:alert(1)', 'data:image/svg+xml,<svg onload=alert(1)>', 'file:///etc/passwd', '/images/x\n'])
+            assert.strictEqual(media(value), '');
+        assert(media('/images/avatar.png').endsWith('/images/avatar.png'));
+        assert(media('https://cdn.example/cover.jpg').startsWith('https://cdn.example/'));
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityHomeClickBuilders_KeepUntrustedValuesAsData()
+    {
+        await RunSecurityNodeTest("""
+        let executed = 0;
+        const context = {URLSearchParams, URL, encodeURIComponent, pwn: () => executed++,
+            openTracklist(){}, openHomeChannel(){}, openArtist(){}, openSpotifyTracklist(){}, openSpotifyArtist(){}};
+        vm.createContext(context);
+        vm.runInContext(fs.readFileSync(path.join(root, 'DeezSpoTag.Web/wwwroot/js/home-view-helpers.js'), 'utf8'), context);
+        for (const item of [{id:"'-pwn()-'",type:'playlist'}, {id:'x',target:"/channels/'-pwn()-'"},
+            {id:'x',source:'spotify',type:'artist',name:"'-pwn()-'"},
+            {id:'x',source:'spotify',type:"'-pwn()-'"}]) {
+            const code = context.HomeViewHelpers.buildHomeClick(item);
+            vm.runInContext(code, context);
+            assert.equal(executed, 0, 'Untrusted catalogue value executed as JavaScript');
+        }
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityRegionSvg_PreservesGeometryWithoutActiveContent()
+    {
+        await RunSecurityNodeTest("""
+        const namespace = 'http://www.w3.org/2000/svg';
+        class Element {
+            constructor(name, attributes = {}, children = []) {this.localName=name; this.namespaceURI=namespace;
+                this.attributes=Object.entries(attributes).map(([name,value]) => ({name,value})); this.children=children;}
+            setAttribute(name,value) {this.attributes.push({name,value});}
+            appendChild(child) {this.children.push(child);}
+        }
+        const document = {createElementNS(ns,name) {assert.equal(ns, namespace); return new Element(name);}};
+        const sanitize = readFunction('personal-genre.js', 'sanitizeRegionSvg', {document});
+        const result = sanitize('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="pwn()"><script>pwn()</script><foreignObject/><path d="M 0.001 2.002 L 3.003 4.004" data-country="KE" data-regions="east-africa" onclick="pwn()" style="fill:url(https://evil.example)"/></svg>');
+        assert(result);
+        assert.equal(result.children.length, 1);
+        assert.equal(result.children[0].localName, 'path');
+        assert(result.children[0].attributes.some(a => a.name==='d' && a.value==='M 0.001 2.002 L 3.003 4.004'));
+        assert(result.children[0].attributes.some(a => a.name==='data-regions' && a.value==='east-africa'));
+        for (const node of [result,...result.children])
+            assert(node.attributes.every(a => !a.name.startsWith('on') && a.name!=='style'));
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityManagedArtworkAndIcons_PreserveExistingRoutes()
+    {
+        await RunSecurityNodeTest("""
+        const managed = readFunction('library-watchlists.js', 'isManagedPlaylistVisualUrl');
+        assert(managed('/api/library/playlists/spotify/playlist-123/visual?v=1'));
+        assert(!managed('https://evil.example/api/library/playlists/spotify/playlist-123/visual'));
+        assert(!managed('/api/library/playlists/spotify/playlist-123/visual/other'));
+        const source = fs.readFileSync(path.join(root, 'DeezSpoTag.Web/wwwroot/js/site.js'), 'utf8');
+        const method = source.match(/    resolvePlatformIcon\([^]*?\n    },/)[0];
+        const resolve = vm.runInNewContext('({' + method + '})').resolvePlatformIcon;
+        const instance = {normalizePlatformId: x => x, platformIconMap:{}, isCurrentThemeLightSurface:()=>false};
+        assert.equal(resolve.call(instance, 'youly', '/images/icons/youly+.png'), '/images/icons/youly+.png');
+        assert.equal(resolve.call(instance, 'other', 'javascript:alert(1)'), '');
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityHomeCategoryMarkup_PreservesQuotedHandlersAndRejectsActiveArtwork()
+    {
+        await RunSecurityNodeTest("""
+        const context = {URL, URLSearchParams, encodeURIComponent, location:{origin:'https://app.example'},
+            escapeHtml:readFunction('home-index.js','escapeHtml'),
+            upgradeSpotifyImageUrl:x=>x, extractFirstUrl:x=>x, buildDeezerImageUrlWithSize:()=>'', buildDeezerImageUrl:()=>''};
+        vm.createContext(context);
+        vm.runInContext(fs.readFileSync(path.join(root, 'DeezSpoTag.Web/wwwroot/js/home-view-helpers.js'), 'utf8'), context);
+        const markup = context.HomeViewHelpers.renderTopGenresItem({id:'x',type:'channel',target:'/channels/valid',image:'javascript:alert(1)'});
+        const handler = markup.match(/onclick="([^"]*)"/)[1];
+        assert(handler.includes('&quot;channels/valid&quot;'), 'Handler literal broke its HTML attribute');
+        assert(!markup.includes('javascript:'), 'Executable image scheme survived');
+        """);
+    }
+
+    [Fact]
+    public async Task SecurityBiographyText_StripsFormattingBeforeDecodingEntities()
+    {
+        await RunSecurityNodeTest("""
+        const document = {createElement(name) {
+            assert.equal(name, 'textarea');
+            return {set innerHTML(value) {assert(!/[<>]/.test(value)); this.encoded=value;},
+                get value() {return this.encoded.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');}};
+        }};
+        const normalize = readFunction('library.js', 'normalizeArtistBiographyForSync', {document});
+        assert.equal(normalize('<a title="a>b">Rock &amp; Roll</a>'), 'Rock & Roll');
+        assert.equal(normalize('<!-- x > y -->Music'), 'Music');
+        assert.equal(normalize('<img src=x onerror=alert(1)>Music'), 'Music');
+        assert.equal(normalize('1 < 2'), '1 < 2');
+        """);
+    }
+
+    private static async Task RunSecurityNodeTest(string body)
+    {
+        var script = """
+        const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path'), assert = require('node:assert/strict');
+        const root = process.argv[1];
+        function readFunction(file, name, extra = {}) {
+            const source = fs.readFileSync(path.join(root, 'DeezSpoTag.Web/wwwroot/js', file), 'utf8');
+            const re = new RegExp(String.raw`(?:^|\n)([ \t]*)function ${name}\([^]*?\n\1}`, 'm');
+            const match = source.match(re);
+            assert(match, 'Missing production function ' + name);
+            const document = {createElement() { return {textContent:'', get innerHTML() {return this.textContent.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}};}};
+            return vm.runInNewContext('(' + match[0].trim() + ')', {URL, URLSearchParams, document, location:{origin:'https://app.example'}, ...extra});
+        }
+        """ + Environment.NewLine + body;
+        var start = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("-e");
+        start.ArgumentList.Add(script);
+        start.ArgumentList.Add(ResolveSrcRoot());
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, await error + await output);
     }
 
     private static string ResolveSrcRoot()

@@ -1,3 +1,4 @@
+using DeezSpoTag.Core.Security;
 using System.Linq;
 using System.Net;
 using System.Text.Json;
@@ -36,7 +37,7 @@ public sealed class ZarzSignedSessionCoordinator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "{Provider} signed-session peek failed.", provider);
+            _logger.LogDebug(ex, "{Provider} signed-session peek failed.", LogSanitizer.OneLine(provider));
             return false;
         }
     }
@@ -455,7 +456,7 @@ public sealed class ZarzSignedSessionCoordinator
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            _logger.LogWarning(ex, "Failed to load {Provider} Zarz signed session.", provider);
+            _logger.LogWarning(ex, "Failed to load {Provider} Zarz signed session.", LogSanitizer.OneLine(provider));
             return null;
         }
     }

@@ -645,7 +645,7 @@
                 art.className = 'playlist-sync-track__art';
                 if (track.coverUrl) {
                     const img = document.createElement('img');
-                    img.src = track.coverUrl;
+                    img.src = toSafeHttpUrl(track.coverUrl);
                     img.alt = '';
                     img.loading = 'lazy';
                     img.addEventListener('error', () => art.classList.add('is-empty'));
@@ -915,7 +915,7 @@
         cover.className = "library-playlist-cover";
         if (playlist.coverUrl) {
             const img = document.createElement("img");
-            img.src = playlist.coverUrl;
+            img.src = toSafeHttpUrl(playlist.coverUrl);
             img.alt = "";
             img.loading = "lazy";
             img.addEventListener("error", () => {

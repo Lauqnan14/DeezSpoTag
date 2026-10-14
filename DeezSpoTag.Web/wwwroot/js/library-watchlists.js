@@ -2298,7 +2298,7 @@ function buildMergeArtworkSection(items) {
     sourceGrid.className = 'merge-artwork-grid';
 
     items.forEach(item => {
-        const imageUrl = String(item?.imageUrl || '').trim();
+        const imageUrl = toSafeHttpUrl(item?.imageUrl || '');
         if (!isManagedPlaylistVisualUrl(imageUrl)) {
             return;
         }
@@ -2448,7 +2448,11 @@ function buildMergeArtworkKey(item) {
 
 function isManagedPlaylistVisualUrl(value) {
     const url = String(value || '').trim().toLowerCase();
-    return url.includes('/api/library/playlists/') && url.includes('/visual');
+    try {
+        const parsed = new URL(url, globalThis.location.origin);
+        return parsed.origin === globalThis.location.origin
+            && /^\/api\/library\/playlists\/[^/]+\/[^/]+\/visual$/.test(parsed.pathname);
+    } catch { return false; }
 }
 
 function syncMergeArtworkAvailability(sourceList, artworkState) {

@@ -107,7 +107,7 @@
     }
 
     function buildSpotifyBrowseClick(item) {
-        const id = encodeURIComponent(item.id || '');
+        const id = encodeURIComponent(item.id || '').replace(/'/g, '%27');
         const title = encodeURIComponent(item.title || item.name || '');
         if (!id) {
             return 'void(0)';
@@ -144,11 +144,20 @@
                 || buildDeezerImageUrl(imageHash, imageType)
                 || '');
         const click = source === 'spotify' ? buildSpotifyBrowseClick(item) : buildHomeClick(item);
-        const artStyle = image ? "style=\"background-image: url('" + image + "');\"" : '';
+        let safeImage = '';
+        if (image) {
+            try {
+                const parsed = new URL(String(image), global.location.origin);
+                if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                    safeImage = parsed.href.replace(/'/g, '%27');
+                }
+            } catch { /* Invalid catalogue artwork is omitted. */ }
+        }
+        const artStyle = safeImage ? "style=\"background-image: url('" + escapeHtml(safeImage) + "');\"" : '';
         const platformIcon = source === 'ytmusic' ? '/images/icons/youtube-music.png' : `/images/availability/${source === 'spotify' || source === 'apple' ? source : 'deezer'}.svg`;
         const subtitleCandidate = (item.subtitle || item.artist || item.artists || item.owner || item.ownerName || '').toString().trim();
         const subtitle = /^(spotify|deezer|apple music|youtube music)$/i.test(subtitleCandidate) ? '' : escapeHtml(subtitleCandidate);
-        return "\n        <div class=\"top-genres-card top-genres-card--thumb\" onclick=\"" + click + "\" style=\"position: relative;\">\n            <div class=\"top-genres-platform\" style=\"--platform-icon: url('" + platformIcon + "');\"></div>\n            <div class=\"top-genres-content\">\n                <div class=\"top-genres-title\">" + title + "</div>\n                " + (subtitle ? "<div class=\"top-genres-subtitle\">" + subtitle + "</div>" : '') + "\n            </div>\n            <div class=\"top-genres-art\" " + artStyle + "></div>\n        </div>\n    ";
+        return "\n        <div class=\"top-genres-card top-genres-card--thumb\" onclick=\"" + escapeHtml(click) + "\" style=\"position: relative;\">\n            <div class=\"top-genres-platform\" style=\"--platform-icon: url('" + platformIcon + "');\"></div>\n            <div class=\"top-genres-content\">\n                <div class=\"top-genres-title\">" + title + "</div>\n                " + (subtitle ? "<div class=\"top-genres-subtitle\">" + subtitle + "</div>" : '') + "\n            </div>\n            <div class=\"top-genres-art\" " + artStyle + "></div>\n        </div>\n    ";
     }
 
     function buildAppleBrowseClick(item) {
@@ -177,13 +186,13 @@
         const canPreview = !!(preview || item.appleId || item.id);
         const previewData = `data-preview="${preview}" data-apple-id="${appleAttribute(item.appleId || item.id)}" data-apple-type="${appleAttribute(item.type)}"`;
         if (item.type === 'video') {
-            return `<div class="result-card video apple-card" onclick="${click}">
+            return `<div class="result-card video apple-card" onclick="${escapeHtml(click)}">
                 <div class="apple-thumb"><img src="${image}" alt="${appleAttribute(item.title)}" loading="lazy" />
                     ${canPreview ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Play preview" ${previewData} onclick="event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this)"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>` : ''}
                 </div><div class="apple-title">${title}</div>${subtitle ? `<div class="apple-sub">${subtitle}</div>` : ''}
             </div>`;
         }
-        return `<div class="home-top-song-item" onclick="${click}">
+        return `<div class="home-top-song-item" onclick="${escapeHtml(click)}">
             <div class="home-top-song-item__thumb"${canPreview ? ` onclick="event.preventDefault(); event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this.querySelector('.home-top-song-item__play'))"` : ''}><img src="${image}" alt="${appleAttribute(item.title)}" loading="lazy" />
                 ${canPreview ? `<button class="home-top-song-item__play" type="button" aria-label="Play preview" data-home-trending-track="true" ${previewData} data-track-title="${appleAttribute(item.title)}" data-track-artist="${appleAttribute(item.subtitle)}" data-cover="${image}" onclick="event.stopPropagation(); HomeViewHelpers.playAppleBrowsePreview(this)">
                 <span class="playback-glyph" aria-hidden="true"><svg class="playback-icon playback-icon--play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><svg class="playback-icon playback-icon--pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg></span></button>` : ''}
@@ -252,7 +261,7 @@
             return `globalThis.location.href='/Tracklist?id=${encodeURIComponent(id)}&type=${item.type}&source=ytmusic'`;
         }
         return item.type === 'browse-category'
-            ? `openYouTubeCategory('${encodeURIComponent(item.browseId || item.id)}','${encodeURIComponent(item.params || '')}')`
+            ? `openYouTubeCategory('${encodeURIComponent(item.browseId || item.id).replace(/'/g, '%27')}','${encodeURIComponent(item.params || '').replace(/'/g, '%27')}')`
             : 'void(0)';
     }
 
@@ -309,7 +318,7 @@
     }
 
     function buildHomeClick(item) {
-        const encodedId = encodeURIComponent(item.id || '');
+        const encodedId = encodeURIComponent(item.id || '').replace(/'/g, '%27');
         const source = (item.source || '').toString().toLowerCase();
         if (source === 'apple') return buildAppleBrowseClick(item);
         if (source === 'ytmusic') return buildYouTubeBrowseClick(item);
@@ -330,9 +339,9 @@
     function buildSpotifyHomeClick(item, encodedId) {
         const type = (item.type || 'playlist').toString().toLowerCase();
         if (type === 'artist') {
-            return "openSpotifyArtist('" + encodedId + "', '" + encodeURIComponent(item.name || '') + "')";
+            return "openSpotifyArtist('" + encodedId + "', '" + encodeURIComponent(item.name || '').replace(/'/g, '%27') + "')";
         }
-        return "openSpotifyTracklist('" + encodedId + "', '" + encodeURIComponent(type) + "')";
+        return "openSpotifyTracklist('" + encodedId + "', '" + encodeURIComponent(type).replace(/'/g, '%27') + "')";
     }
 
     function buildTargetHomeClick(targetValue) {
@@ -344,14 +353,14 @@
         ];
         for (const [prefix, type] of tracklistTargets) {
             if (target.startsWith(prefix)) {
-                return "openTracklist('" + encodeURIComponent(target.replace(prefix, '')) + "', '" + type + "')";
+                return "openTracklist('" + encodeURIComponent(target.replace(prefix, '')).replace(/'/g, '%27') + "', '" + type + "')";
             }
         }
         if (target.startsWith('/artist/')) {
-            return "openArtist('" + encodeURIComponent(target.replace('/artist/', '')) + "')";
+            return "openArtist('" + encodeURIComponent(target.replace('/artist/', '')).replace(/'/g, '%27') + "')";
         }
         if (target.startsWith('/channels/')) {
-            return "openHomeChannel('" + target.replace(/^\/+/, '') + "')";
+            return 'openHomeChannel(' + JSON.stringify(target.replace(/^\/+/, '')) + ')';
         }
         return '';
     }
@@ -367,7 +376,7 @@
         }
         if (type === 'channel') {
             const channelTarget = item.target || ('channels/' + (item.id || ''));
-            return "openHomeChannel('" + channelTarget + "')";
+            return 'openHomeChannel(' + JSON.stringify(channelTarget) + ')';
         }
         return "openTracklist('" + encodedId + "', 'smarttracklist')";
     }

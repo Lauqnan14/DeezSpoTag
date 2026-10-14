@@ -149,30 +149,13 @@ function initializeArtistBiographyToggle() {
 }
 
 function sanitizeMediaUrl(url) {
-    const value = (url || '').toString().trim();
-    if (!value) {
-        return '';
-    }
-
-    for (let index = 0; index < value.length; index += 1) {
-        const codePoint = value.codePointAt(index) ?? 0;
-        if (codePoint <= 0x1f || codePoint === 0x7f) {
-            return '';
-        }
-    }
-
-    if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
-        return value;
-    }
-
+    const raw = String(url || '');
+    if (/[\u0000-\u001f\u007f]/.test(raw)) return '';
+    if (!raw.trim()) return '';
     try {
-        const parsed = new URL(value, globalThis.location?.origin || 'http://localhost');
-        const allowedProtocol = parsed.protocol === 'http:' || parsed.protocol === 'https:';
-        if (!allowedProtocol) {
-            return '';
-        }
-
-        return value;
+        const parsed = new URL(raw.trim(), globalThis.location.origin);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+        return parsed.href;
     } catch {
         return '';
     }

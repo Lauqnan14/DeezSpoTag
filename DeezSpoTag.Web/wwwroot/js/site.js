@@ -1408,7 +1408,8 @@ globalThis.DeezSpoTag = {
                 : '/images/icons/tidal-light.png';
         }
 
-        return fallbackIcon || this.platformIconMap[normalized] || '';
+        const icon = this.platformIconMap[normalized] || fallbackIcon || '';
+        return /^\/images\/icons\/[a-zA-Z0-9_+./-]+$/.test(icon) && !icon.includes('..') ? icon : '';
     },
 
     isCurrentThemeLightSurface() {

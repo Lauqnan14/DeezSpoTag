@@ -502,7 +502,7 @@
             return;
         }
         try {
-            const response = await fetch(state.trackInfo.lrcUrl);
+            const response = await fetch(resolveLyricsFileUrl(state.trackInfo.lrcUrl, 'lrc'));
             if (!response.ok) {
                 if (!silent) {
                     uiAlert('No existing .LRC file found for this track.', { title: 'LRC Not Found' });
@@ -549,7 +549,7 @@
             return;
         }
         try {
-            const response = await fetch(state.trackInfo.txtUrl);
+            const response = await fetch(resolveLyricsFileUrl(state.trackInfo.txtUrl, 'txt'));
             if (!response.ok) {
                 if (!silent) {
                     uiAlert('No existing .TXT file found for this track.', { title: 'TXT Not Found' });
@@ -1246,6 +1246,20 @@
         const seconds = totalSeconds % 60;
         const hundredths = Math.floor((ms % 1000) / 10);
         return `${minutes}:${seconds.toString().padStart(2, '0')}.${hundredths.toString().padStart(2, '0')}`;
+    }
+
+    function resolveLyricsFileUrl(rawUrl, format) {
+        if (format !== 'lrc' && format !== 'txt') throw new Error('Invalid lyric format.');
+        const url = new URL(String(rawUrl), globalThis.location.origin);
+        const trackRoute = new RegExp('^/api/lrc/track/[0-9]+/' + format + '$');
+        if (url.origin !== globalThis.location.origin
+            || (url.pathname !== '/api/lrc/file/' + format && !trackRoute.test(url.pathname))) {
+            throw new Error('Invalid lyrics file URL.');
+        }
+        if (url.pathname === '/api/lrc/file/' + format) {
+            return '/api/lrc/file/' + format + '?path=' + encodeURIComponent(url.searchParams.get('path') || '');
+        }
+        return '/api/lrc/track/' + encodeURIComponent(url.pathname.split('/')[4]) + '/' + format;
     }
 
     function escapeHtml(value) {

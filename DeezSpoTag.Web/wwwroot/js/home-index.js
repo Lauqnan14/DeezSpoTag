@@ -1922,11 +1922,11 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
     const filterId = `home-filter-${index}`;
     const filtersHtml = meta.hasFilter
         ? `<div class="home-filters" data-filter-group="${filterId}">
-            ${meta.filter.options.map(opt => `<button class="home-filter-btn" data-filter-id="${opt.id}">${escapeHtml(opt.label || opt.id)}</button>`).join('')}
+            ${meta.filter.options.map(opt => `<button class="home-filter-btn" data-filter-id="${escapeHtml(opt.id)}">${escapeHtml(opt.label || opt.id)}</button>`).join('')}
            </div>`
         : '';
     const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
-        ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
+        ? `<div class="home-section-more"><button class="action-btn action-btn-sm" data-home-channel="${escapeHtml(section.pagePath)}">Show more</button></div>`
         : '';
     const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : meta.isPopularRadio && !isChannelPage ? ' id="home-popular-radio"' : meta.isTopGenres && !isChannelPage ? ' id="home-categories"' : '';
     const trendingWatchKey = meta.isTrendingSongs && (isChannelPage || homeTrendingProvider === 'spotify')
@@ -2838,7 +2838,7 @@ function registerHomeSpotifyCard(item) {
         return {
             isSpotifyItem: false,
             spotifyAttr: '',
-            clickAttr: ` onclick="${buildHomeClick(item)}"`
+            clickAttr: ` onclick="${escapeHtml(buildHomeClick(item))}"`
         };
     }
 
@@ -3046,7 +3046,7 @@ function buildHomeTrendingCardInteractivity(item) {
 
     return {
         spotifyAttr: '',
-        clickAttr: ` onclick="${buildHomeClick(item)}"`,
+        clickAttr: ` onclick="${escapeHtml(buildHomeClick(item))}"`,
         clickableAttr: ' data-home-clickable="true"'
     };
 }
@@ -3304,7 +3304,7 @@ function renderDiscoveryItem(item) {
     const click = buildDiscoverClick(item, avatarImage, heroImage);
     const coverStyle = collage ? '' : `background-image: url('${image}'); background-size: cover; background-position: center;`;
     return `
-        <div class="discover-card" onclick="${click}">
+        <div class="discover-card" onclick="${escapeHtml(click)}">
             <div class="discover-cover" style="${coverStyle}">
                 ${collage}
                 ${coverTitle ? `<div class="discover-banner">${coverTitle}</div>` : ''}
@@ -3418,10 +3418,12 @@ function openHomeChannel(target, layout) {
 }
 
 function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 // Load data when page loads
@@ -3499,6 +3501,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Authentication continues independently; the rendered home feed is not fetched twice.
     void checkAutoLogin();
     applySearchSourceState();
+    document.body.addEventListener('click', (event) => {
+        const channel = event.target.closest('[data-home-channel]');
+        if (channel) {
+            event.preventDefault();
+            openHomeChannel(channel.dataset.homeChannel);
+        }
+    });
     document.body.addEventListener('click', (event) => {
         const card = event.target.closest('[data-spotify-item]');
         if (!card) {
