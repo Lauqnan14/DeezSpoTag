@@ -2662,12 +2662,6 @@ span.badge.badge-artwork-animated {
     margin-top: 12px;
 }
 
-.media-operations-tab .analysis-sonic-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
 .media-operations-tab .analysis-sonic-message {
     min-height: 1.2em;
     color: var(--text-muted);
@@ -2938,6 +2932,15 @@ span.badge.badge-artwork-animated {
     align-items: start;
     justify-content: stretch;
     gap: 12px;
+}
+
+.media-operations-tab #analysis-card .tool-card-footer.analysis-sonic-footer {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+}
+
+.media-operations-tab .analysis-sonic-footer .tool-card-action-group {
+    justify-self: end;
 }
 
 .media-operations-tab #analysis-card .tool-card-footer .toggle-row {
@@ -3381,6 +3384,10 @@ span.badge.badge-artwork-animated {
     grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.media-operations-tab .analysis-summary-grid.analysis-summary-grid-sonic {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -3516,6 +3523,7 @@ span.badge.badge-artwork-animated {
 
     .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe,
     .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main,
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-sonic,
     .media-operations-tab .analysis-features-grid.analysis-features-grid-main {
         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
@@ -3641,6 +3649,7 @@ span.badge.badge-artwork-animated {
     .media-operations-tab .analysis-features-grid,
     .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe,
     .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main,
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-sonic,
     .media-operations-tab .analysis-features-grid.analysis-features-grid-main {
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 10px;
@@ -3677,7 +3686,8 @@ span.badge.badge-artwork-animated {
         justify-content: flex-start;
     }
 
-    .media-operations-tab #analysis-card .tool-card-footer {
+    .media-operations-tab #analysis-card .tool-card-footer,
+    .media-operations-tab #analysis-card .tool-card-footer.analysis-sonic-footer {
         grid-template-columns: 1fr;
     }
 
@@ -3910,9 +3920,9 @@ span.badge.badge-artwork-animated {
                                 <div class="tool-card-controls vibe-analysis-settings">
                                     <div class="settings-grid">
                                         <div class="field-group">
-                                            <label class="field-label" for="analysis-batch-size">Batch size</label>
+                                            <label class="field-label" for="analysis-batch-size">Batch size (Vibe and Sonic)</label>
                                             <div class="field-input">
-                                                <input id="analysis-batch-size" class="form-control" type="number" min="10" max="500" />
+                                                <input id="analysis-batch-size" class="form-control" type="number" min="10" max="500" value="50" />
                                                 <span class="field-unit">tracks</span>
                                             </div>
                                         </div>
@@ -3932,49 +3942,37 @@ span.badge.badge-artwork-animated {
                                     acoustic neighbourhoods instead of tags alone. Adds a second pass over each
                                     track, so it is off until you turn it on.
                                 </p>
-                                <div class="analysis-features-grid analysis-features-grid-main">
-                                    <div class="analysis-feature">
-                                        <span class="analysis-feature-label">Coverage</span>
-                                        <span class="analysis-feature-value" id="sonic-coverage">--</span>
+                                <div class="analysis-summary-grid analysis-summary-grid-sonic">
+                                    <div class="analysis-summary-card">
+                                        <span class="analysis-summary-label">Coverage</span>
+                                        <span class="analysis-summary-value" id="sonic-coverage">--</span>
                                     </div>
-                                    <div class="analysis-feature">
-                                        <span class="analysis-feature-label">Embedded</span>
-                                        <span class="analysis-feature-value" id="sonic-embedded">--</span>
+                                    <div class="analysis-summary-card">
+                                        <span class="analysis-summary-label">Embedded</span>
+                                        <span class="analysis-summary-value" id="sonic-embedded">--</span>
                                     </div>
-                                    <div class="analysis-feature">
-                                        <span class="analysis-feature-label">Needs analysis</span>
-                                        <span class="analysis-feature-value" id="sonic-pending">--</span>
+                                    <div class="analysis-summary-card">
+                                        <span class="analysis-summary-label">Needs analysis</span>
+                                        <span class="analysis-summary-value" id="sonic-pending">--</span>
                                     </div>
-                                    <div class="analysis-feature">
-                                        <span class="analysis-feature-label">Out of date</span>
-                                        <span class="analysis-feature-value" id="sonic-stale">--</span>
-                                    </div>
-                                </div>
-                                <div class="tool-card-controls vibe-analysis-settings">
-                                    <div class="settings-grid">
-                                        <div class="field-group">
-                                            <label class="field-label" for="sonic-reanalyze-batch">Re-analyse batch</label>
-                                            <div class="field-input">
-                                                <input id="sonic-reanalyze-batch" class="form-control" type="number" min="10" max="500" />
-                                                <span class="field-unit">tracks</span>
-                                            </div>
-                                        </div>
-                                        <div class="field-group">
-                                            <label class="field-label" for="sonic-model">Model</label>
-                                            <div class="field-input">
-                                                <input id="sonic-model" class="form-control" type="text" readonly />
-                                            </div>
-                                        </div>
+                                    <div class="analysis-summary-card">
+                                        <span class="analysis-summary-label">Out of date</span>
+                                        <span class="analysis-summary-value" id="sonic-stale">--</span>
                                     </div>
                                 </div>
                                 <div class="analysis-sonic-actions">
-                                    <label class="checkbox-group">
-                                        <input id="sonic-enabled" type="checkbox" />
-                                        <span>Enable sonic analysis</span>
-                                    </label>
-                                    <div class="analysis-sonic-buttons">
-                                        <button id="sonic-reanalyze" class="btn btn-secondary" type="button">Analyse missing or out of date</button>
-                                        <button id="sonic-rebuild-index" class="btn btn-secondary" type="button">Rebuild similarity index</button>
+                                    <div class="tool-card-footer analysis-sonic-footer">
+                                        <div class="toggle-row">
+                                            <label class="toggle-label" for="sonic-enabled">Enable sonic analysis</label>
+                                            <span class="switch">
+                                                <input id="sonic-enabled" type="checkbox" />
+                                                <span class="slider" aria-hidden="true"></span>
+                                            </span>
+                                        </div>
+                                        <div class="tool-card-action-group">
+                                            <button id="sonic-reanalyze" class="action-btn action-btn-sm" type="button">Analyse missing or out of date</button>
+                                            <button id="sonic-rebuild-index" class="action-btn action-btn-sm" type="button">Rebuild similarity index</button>
+                                        </div>
                                     </div>
                                     <div id="sonic-message" class="analysis-sonic-message" role="status" aria-live="polite"></div>
                                 </div>
@@ -9239,7 +9237,6 @@ function renderSonicStatus(status) {
     const embedded = document.getElementById('sonic-embedded');
     const pending = document.getElementById('sonic-pending');
     const stale = document.getElementById('sonic-stale');
-    const model = document.getElementById('sonic-model');
     if (!coverage || !embedded || !pending || !stale) {
         return;
     }
@@ -9247,16 +9244,6 @@ function renderSonicStatus(status) {
     const enabledEl = document.getElementById('sonic-enabled');
     if (enabledEl && document.activeElement !== enabledEl) {
         enabledEl.checked = Boolean(status.enabled);
-    }
-
-    const batchEl = document.getElementById('sonic-reanalyze-batch');
-    if (batchEl && document.activeElement !== batchEl) {
-        batchEl.value = status.reanalyzeBatchSize ?? 50;
-    }
-
-    if (model) {
-        model.value = status.modelId
-            ? `${status.modelId} (${status.dimensions}d)` : '--';
     }
 
     // Coverage is the honest headline: a DJ that claims to be sonic is only
@@ -9281,7 +9268,7 @@ async function loadSonicStatus() {
 
 async function saveSonicSettings() {
     const enabledEl = document.getElementById('sonic-enabled');
-    const batchEl = document.getElementById('sonic-reanalyze-batch');
+    const batchEl = document.getElementById('analysis-batch-size');
     try {
         const response = await activityFetch('/api/library/analysis/sonic/settings', {
             method: 'POST',
@@ -9309,6 +9296,8 @@ async function runSonicReanalyze() {
     setSonicBusy(true);
     setSonicMessage('Analysing missing and out-of-date tracks...');
     try {
+        if (!await saveSonicSettings()) return;
+        setSonicMessage('Analysing missing and out-of-date tracks...');
         const response = await activityFetch('/api/library/analysis/sonic/reanalyze', { method: 'POST' });
         if (!response.ok) {
             throw new Error(await response.text());
@@ -9351,6 +9340,9 @@ function initSonicAnalysis() {
     }
 
     enabledEl.addEventListener('change', saveSonicSettings);
+    document.getElementById('analysis-batch-size')?.addEventListener('change', async () => {
+        if (await saveAnalysisSettings(true)) await saveSonicSettings();
+    });
     document.getElementById('sonic-reanalyze')?.addEventListener('click', runSonicReanalyze);
     document.getElementById('sonic-rebuild-index')?.addEventListener('click', runSonicRebuildIndex);
     loadSonicStatus();

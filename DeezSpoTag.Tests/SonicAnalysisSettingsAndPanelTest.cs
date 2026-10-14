@@ -18,6 +18,56 @@ namespace DeezSpoTag.Tests;
 public sealed class SonicAnalysisSettingsAndPanelTest
 {
     [Fact]
+    public void SharedBatchInputSavesBothSettingsAndAppliesBeforeSonicReanalysis()
+    {
+        var view = Read("DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
+        var start = view.IndexOf("// --- Sonic analysis", StringComparison.Ordinal);
+        var end = view.IndexOf("async function persistAnalysisSettings", start, StringComparison.Ordinal);
+        var script = """
+            const assert = require('node:assert/strict');
+            const elements = new Map();
+            for (const id of ['sonic-enabled','analysis-batch-size','sonic-reanalyze-batch',
+                'sonic-reanalyze','sonic-rebuild-index','sonic-message',
+                'sonic-coverage','sonic-embedded','sonic-pending','sonic-stale']) {
+                elements.set(id, {value:id==='analysis-batch-size'?'37':'50',checked:false,
+                    classList:{toggle(){}},handlers:{},addEventListener(type,handler){this.handlers[type]=handler;}});
+            }
+            const document = {getElementById:id=>elements.get(id),activeElement:null};
+            const calls = []; let vibeSaves = 0, failSave = false;
+            const saveAnalysisSettings = async()=>{vibeSaves++;return true;};
+            const fetchJson = async()=>({reanalyzeBatchSize:99,enabled:false});
+            const activityFetch = async(url,options)=>{
+                calls.push({url,body:options.body?JSON.parse(options.body):null});
+                return {ok:!failSave,json:async()=>({accepted:true,message:'Done'}),text:async()=> 'save failed'};
+            };
+            """ + view[start..end] + """
+            (async()=>{
+                initSonicAnalysis();
+                const batch = elements.get('analysis-batch-size');
+                assert.equal(typeof batch.handlers.change,'function');
+                await batch.handlers.change();
+                assert.equal(vibeSaves,1);
+                assert.equal(calls.at(-1).body.reanalyzeBatchSize,37);
+                assert.equal(batch.value,'37','Sonic polling must not overwrite the shared value');
+                calls.length=0; batch.value='61';
+                await runSonicReanalyze();
+                assert.equal(calls[0].url,'/api/library/analysis/sonic/settings');
+                assert.equal(calls[0].body.reanalyzeBatchSize,61);
+                assert.equal(calls[1].url,'/api/library/analysis/sonic/reanalyze');
+                calls.length=0; failSave=true;
+                await runSonicReanalyze();
+                assert.equal(calls.length,1,'Failed settings save must prevent reanalysis');
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("node")
+            { RedirectStandardInput = true, RedirectStandardError = true, UseShellExecute = false })!;
+        process.StandardInput.Write(script);
+        process.StandardInput.Close();
+        Assert.True(process.WaitForExit(10000));
+        Assert.True(process.ExitCode == 0, process.StandardError.ReadToEnd());
+    }
+
+    [Fact]
     public void SonicSettingsLiveInTheirOwnFileBesideTheVibeSettings()
     {
         var store = Read("DeezSpoTag.Web", "Services", "SonicAnalysisSettingsStore.cs");
@@ -115,13 +165,12 @@ public sealed class SonicAnalysisSettingsAndPanelTest
     [Fact]
     public void ThePanelExposesNoVectorMathematics()
     {
-        // The panel may report the dimension as read-only context, but must not
-        // offer pooling, normalization, index or metric controls.
+        // Internal model details and vector tuning do not belong in the panel.
         var view = Read("DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
 
         foreach (var forbidden in new[]
         {
-            "sonic-dimensions", "sonic-pooling", "sonic-normalization",
+            "sonic-model", "sonic-dimensions", "sonic-pooling", "sonic-normalization",
             "sonic-distance", "sonic-hnsw", "sonic-ef-construction", "sonic-metric",
         })
         {
@@ -130,7 +179,7 @@ public sealed class SonicAnalysisSettingsAndPanelTest
     }
 
     [Fact]
-    public void ThePanelReportsCoverageStalenessAndTheModel()
+    public void ThePanelReportsCoverageStalenessAndUserControls()
     {
         var view = Read("DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
 
@@ -139,13 +188,21 @@ public sealed class SonicAnalysisSettingsAndPanelTest
         {
             "id=\"sonic-coverage\"", "id=\"sonic-embedded\"",
             "id=\"sonic-pending\"", "id=\"sonic-stale\"",
-            "id=\"sonic-model\"", "id=\"sonic-enabled\"",
+            "id=\"sonic-enabled\"",
             "id=\"sonic-reanalyze\"", "id=\"sonic-rebuild-index\"",
-            "id=\"sonic-reanalyze-batch\"", "id=\"sonic-message\"",
+            "id=\"analysis-batch-size\"", "id=\"sonic-message\"",
         })
         {
             Assert.Contains(id, view, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void BatchSizeIsSharedWithVibeInsteadOfDuplicatedInSonic()
+    {
+        var view = Read("DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
+        Assert.Equal(1, Occurrences(view, "id=\"analysis-batch-size\""));
+        Assert.DoesNotContain("sonic-reanalyze-batch", view, StringComparison.Ordinal);
     }
 
     [Fact]
