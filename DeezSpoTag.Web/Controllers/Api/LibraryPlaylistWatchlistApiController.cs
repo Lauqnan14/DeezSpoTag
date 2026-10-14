@@ -157,7 +157,7 @@ public partial class WatchlistApiController : ControllerBase
             return result;
         }
         catch (OperationCanceledException ex) { measurement.SetOutcome("cancelled"); measurement.SetFailure(ex); throw; }
-        catch (Exception ex) { measurement.SetOutcome("failed"); measurement.SetFailure(ex); throw; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { measurement.SetOutcome("failed"); measurement.SetFailure(ex); throw; }
     }
 
     private async Task<IReadOnlyList<PlaylistWatchlistDto>> HydrateQueuePresentationSummaryAsync(

@@ -127,8 +127,13 @@ public sealed class ArtistMetadataProviderGate
     private async Task ReleaseAfterCompletionAsync(
         Task operation, SemaphoreSlim inflight, CancellationTokenSource cancellation, string provider)
     {
-        try { await operation; }
-        catch (Exception) { /* Observe abandoned provider failure; the caller already completed. */ }
+        try
+        {
+            // WhenAny waits for cancellation or failure without throwing the abandoned task's
+            // exception into this detached cleanup task. Reading Exception observes its faults.
+            await Task.WhenAny(operation);
+            if (operation.IsFaulted) _ = operation.Exception;
+        }
         finally
         {
             RecordRequest(provider);

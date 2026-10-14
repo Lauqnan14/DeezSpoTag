@@ -37,6 +37,28 @@ public sealed class ArtistMetadataProviderGateTest
         Assert.True(nextEntered.Task.IsCompleted);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AbandonedFaultedOrCancelledWorkReleasesItsProviderSlot(bool cancelled)
+    {
+        var gate = CreateGate(operationTimeout: TimeSpan.FromMilliseconds(40));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = gate.RunAsync("spotify", _ => {started.SetResult(); return finish.Task;}, CancellationToken.None);
+        await started.Task;
+        Assert.Equal(0, await first.WaitAsync(TimeSpan.FromSeconds(2)));
+        var next = gate.RunAsync("spotify", _ => Task.FromResult(2), CancellationToken.None);
+        try { Assert.False(next.IsCompleted); }
+        finally
+        {
+            if (cancelled) finish.TrySetCanceled();
+            else finish.TrySetException(new ApplicationException("Provider failed after its caller timed out."));
+        }
+        Assert.Equal(2, await next.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.False(gate.IsUnavailable("spotify"));
+    }
+
     [Fact]
     public async Task EmptyOrFailedLookupDoesNotOpenTheProviderCircuit()
     {

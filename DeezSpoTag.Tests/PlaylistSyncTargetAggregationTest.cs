@@ -59,7 +59,7 @@ public sealed class PlaylistSyncTargetAggregationTest
     {
         var source = File.ReadAllText(Path.Join(
             FindRepoRoot(), "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
-        var start = source.IndexOf("> ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal);
+        var start = source.IndexOf("private async Task<PlaylistSyncResult?> ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal);
         Assert.True(start > 0);
         var body = source[start..(start + 3400)];
 
