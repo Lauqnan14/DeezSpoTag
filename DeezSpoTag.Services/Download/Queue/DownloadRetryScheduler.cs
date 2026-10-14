@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Settings;
@@ -177,19 +178,42 @@ public sealed class DownloadRetryScheduler
             return;
         }
 
-        if (payload == null
-            || !DownloadExecutionPlan.NormalizePersistedRetryPlan(payload, out var plan)
-            || plan.Count == 0)
+        // Finalization retries must keep the engine and quality of the acquired asset.
+        if (payload == null || DeezSpoTagApp.HasRecoverableAcquiredAudio(payload))
         {
             return;
         }
+
+        DownloadExecutionPlan.NormalizePersistedRetryPlan(payload, out var plan);
+        if (plan.Count == 0) return;
+
+        // A temporary provider failure must not pin every later retry to the last
+        // exhausted step. Restart the saved plan, preserving its enabled engines
+        // and quality order rather than rebuilding it from current settings.
+        void Set(string canonical, string legacy, JsonNode? value)
+        {
+            payload[canonical] = value;
+            payload.Remove(legacy);
+        }
+        Set("Engine", "engine", JsonValue.Create(plan[0].Engine));
+        Set("SourceService", "sourceService", JsonValue.Create(plan[0].Engine));
+        Set("Quality", "quality", JsonValue.Create(plan[0].Quality ?? string.Empty));
+        Set("AutoIndex", "autoIndex", JsonValue.Create(0));
+        Set("ResolvedAutoIndex", "resolvedAutoIndex", JsonValue.Create(0));
+        Set("ResolutionStatus", "resolutionStatus", JsonValue.Create("pending"));
+        Set("ResolvedAtUtc", "resolvedAtUtc", null);
+        foreach (var field in new[] { "ResolvedEngine", "ResolvedQuality", "ResolvedSourceUrl", "ResolutionError", "RequestedQuality", "DeliveredQuality" })
+        {
+            Set(field, char.ToLowerInvariant(field[0]) + field[1..], JsonValue.Create(string.Empty));
+        }
+        Set("FallbackHistory", "fallbackHistory", new JsonArray());
 
         await _queueRepository.UpdatePayloadAndEngineAsync(
             queueUuid,
             plan[0].Engine,
             payload.ToJsonString(),
             cancellationToken);
-        _activityLog.Info($"Normalized persisted fallback plan before retry: {queueUuid}");
+        _activityLog.Info($"Restarted saved fallback plan before retry: {queueUuid}");
     }
 
     public async Task ClearAsync(

@@ -21,6 +21,53 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Fact]
+    public async Task PublicTrackSearchPaginatesWithoutExceedingProviderPageLimit()
+    {
+        var requests = new List<(int Limit, int Offset)>();
+        using var client = new HttpClient(new SearchPageHandler(requests));
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+            new UnauthenticatedTidalAccessTokenProvider(), new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var method = typeof(TidalDownloadService).GetMethod("SearchTracksViaPublicApiAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(service, new object[] { "Song Artist", 100, CancellationToken.None })!;
+        await task;
+        var tracks = (System.Collections.ICollection)task.GetType().GetProperty("Result")!.GetValue(task)!;
+        Assert.Equal(100, tracks.Count);
+        Assert.Equal(new[] { (50, 0), (50, 50) }, requests);
+    }
+
+    [Fact]
+    public void FfmpegVersionProbeDrainsLargeOutputWithoutReportingExecutableMissing()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var path = Path.Combine(Path.GetTempPath(), "tool-version-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            File.WriteAllText(path, "#!/bin/sh\ndd if=/dev/zero bs=1024 count=128 2>/dev/null\nprintf '\\n'\ndd if=/dev/zero bs=1024 count=128 >&2 2>/dev/null\nprintf '\\n' >&2\nexit 0\n");
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Assert.True(DeezSpoTag.Services.Download.Shared.Utils.ExternalToolResolver.TryExecuteVersion(path));
+        }
+        finally { File.Delete(path); }
+    }
+
+    private sealed class SearchPageHandler(List<(int Limit, int Offset)> requests) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var limit = int.Parse(query["limit"]!); var offset = int.Parse(query["offset"]!);
+            requests.Add((limit, offset));
+            if (limit > 50) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
+                { Content = new StringContent("{\"userMessage\":\"Too big page, max page size is [50]\"}") });
+            var tracks = Enumerable.Range(offset + 1, limit).Select(id => new { id, title = "Song", isrc = "USGZ20930467", duration = 176,
+                artist = new { name = "Artist" } });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { items = tracks })) });
+        }
+    }
+
     [Theory]
     [InlineData("Cry Baby", "Cry Baby", null, "David Guetta", "Clean Bandit", "Cry Baby", 157, 157, true)]
     [InlineData("Will You Still Love Me Tomorrow (Digitally Remastered: 1999)", "Will You Still Love Me Tomorrow", "Digitally Remastered: 1999", "Dionne Warwick", "Dionne Warwick", "The Definitive Collection", 330, 330, true)]

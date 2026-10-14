@@ -77,53 +77,65 @@ public sealed class QobuzTrackResolver
 
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var exact = await TryFindTrackByISRCAsync(isrc, cancellationToken, failures);
-            if (exact != null
-                && IsExactIsrcMatch(exact, isrc)
-                && !HasContradictoryMetadata(exact, title, artist, expectedDurationSec))
-            {
-                var exactScore = ScoreCandidate(exact, title, artist, album, expectedDurationSec, preferHiRes: true);
-                return BuildResolution(exact, "isrc", Math.Max(exactScore, 20));
-            }
-
             var metadataQuery = string.Join(' ', new[] { title, artist }
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
-            if (string.IsNullOrWhiteSpace(metadataQuery))
+            var exactFailures = new List<Exception>();
+            var metadataFailures = new List<Exception>();
+            using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var lookupToken = lookupCancellation.Token;
+
+            async Task<QobuzTrackResolution?> ResolveExactAsync()
             {
-                return PreserveFailureIfUnresolved(null);
+                var exact = await TryFindTrackByISRCAsync(isrc, lookupToken, exactFailures);
+                return exact != null && IsExactIsrcMatch(exact, isrc)
+                    && !HasContradictoryMetadata(exact, title, artist, expectedDurationSec)
+                    ? BuildResolution(exact, "isrc", Math.Max(ScoreCandidate(exact, title, artist, album, expectedDurationSec, preferHiRes: true), 20))
+                    : null;
             }
 
-            var metadataCandidates = await SearchTracksSafeAsync(metadataQuery, cancellationToken, failures);
-            var metadataMatch = PickBestCandidate(
-                metadataCandidates,
-                isrc,
-                title,
-                artist,
-                album,
-                expectedDurationSec, rejectAmbiguous);
-            if (metadataMatch != null)
-            {
-                return metadataMatch;
-            }
+            async Task<QobuzTrackResolution?> ResolveMetadataAsync()
+                => PickBestCandidate(await SearchTracksSafeAsync(metadataQuery, lookupToken, metadataFailures),
+                    isrc, title, artist, album, expectedDurationSec, rejectAmbiguous);
 
-            var albumVariant = BuildAlbumTitleVariants(album)
-                .OrderBy(static value => value.Length)
-                .FirstOrDefault();
+            var exactTask = ResolveExactAsync();
+            var pending = new List<Task<QobuzTrackResolution?>> { exactTask };
+            try
+            {
+                // Cached/synchronous exact matches retain their cheap short-circuit. For a
+                // pending catalog request, run the already-supported metadata lookup alongside
+                // it so a slow ISRC miss cannot consume the entire shared identity deadline.
+                if (exactTask.IsCompleted)
+                {
+                    var exact = await exactTask;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (exact is not null) return exact;
+                    pending.Clear();
+                }
+                if (!string.IsNullOrWhiteSpace(metadataQuery)) pending.Add(ResolveMetadataAsync());
+                _ = Task.WhenAll(pending).ContinueWith(static task => { _ = task.Exception; },
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                while (pending.Count > 0)
+                {
+                    var completed = await Task.WhenAny(pending).WaitAsync(cancellationToken);
+                    pending.Remove(completed);
+                    var result = await completed;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (result is not null) return result;
+                }
+            }
+            finally { lookupCancellation.Cancel(); }
+            failures.AddRange(exactFailures);
+            failures.AddRange(metadataFailures);
+
+            if (string.IsNullOrWhiteSpace(metadataQuery)) return PreserveFailureIfUnresolved(null);
+            var albumVariant = BuildAlbumTitleVariants(album).OrderBy(static value => value.Length).FirstOrDefault();
             var albumQuery = string.Join(' ', new[] { albumVariant, artist }
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
-            if (string.IsNullOrWhiteSpace(albumQuery))
-            {
-                return PreserveFailureIfUnresolved(null);
-            }
-
+            if (string.IsNullOrWhiteSpace(albumQuery)) return PreserveFailureIfUnresolved(null);
             var albumCandidates = await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken, failures);
-            return PreserveFailureIfUnresolved(PickBestCandidate(
-                albumCandidates,
-                isrc,
-                title,
-                artist,
-                album,
-                expectedDurationSec, rejectAmbiguous));
+            return PreserveFailureIfUnresolved(PickBestCandidate(albumCandidates,
+                isrc, title, artist, album, expectedDurationSec, rejectAmbiguous));
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();

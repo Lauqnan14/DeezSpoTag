@@ -694,6 +694,8 @@ public sealed class TidalDownloadService
             if (result.Count > 0)
             {
                 allTracks.AddRange(result);
+                var exact = FindIsrcMatch(result, isrc);
+                if (exact != null) return exact;
             }
         }
 
@@ -1172,25 +1174,29 @@ public sealed class TidalDownloadService
 
     private async Task<List<TidalTrack>> SearchTracksViaPublicApiAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        var url = BuildTidalPublicApiUrl(
-            "search/tracks",
-            new Dictionary<string, string>
+        // This public endpoint rejects pages larger than 50. Preserve the requested search
+        // coverage by paging, rather than losing the second half of a 100-result lookup.
+        const int maximumPageSize = 50;
+        var requestedCount = limit > 0 ? limit : 20;
+        var tracks = new List<TidalTrack>();
+        for (var offset = 0; offset < requestedCount;)
+        {
+            var pageSize = Math.Min(maximumPageSize, requestedCount - offset);
+            var url = BuildTidalPublicApiUrl("search/tracks", new Dictionary<string, string>
             {
                 ["query"] = query,
-                ["limit"] = limit > 0 ? limit.ToString() : "20",
-                ["offset"] = "0"
+                ["limit"] = pageSize.ToString(CultureInfo.InvariantCulture),
+                ["offset"] = offset.ToString(CultureInfo.InvariantCulture)
             });
-        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(
-            url,
-            ex =>
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
-                }
-            },
-            cancellationToken);
-        return payload?.Items ?? new List<TidalTrack>();
+            var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(url,
+                ex => _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(query)), cancellationToken);
+            var page = payload?.Items ?? new List<TidalTrack>();
+            tracks.AddRange(page);
+            if (page.Count < pageSize) break;
+            offset += pageSize;
+        }
+        return tracks;
     }
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)

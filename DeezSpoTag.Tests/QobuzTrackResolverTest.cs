@@ -13,6 +13,22 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzTrackResolverTest
 {
+    [Fact]
+    public async Task ValidatedMetadataSearchCanFinishWhileIsrcLookupIsStillPending()
+    {
+        var pending = new TaskCompletionSource<QobuzTrack?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new StubQobuzMetadataService { PendingIsrc = pending.Task,
+            SearchHandler = _ => [new QobuzTrack { Id = 74444082, ISRC = "USGZ20930467", Title = "Big Boy", Duration = 176,
+                Performer = new QobuzArtist { Name = "Jackson 5" } }] };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try
+        {
+            var result = await CreateResolver(service).ResolveTrackAsync("USGZ20930467", "Big Boy", "The Jackson Five", null, 176000, deadline.Token);
+            Assert.Equal(74444082, result?.Track.Id);
+        }
+        finally { pending.TrySetResult(null); }
+    }
+
     [Theory]
     [InlineData("Artist", 180, true)]
     [InlineData("Different Artist", 180, false)]
@@ -426,6 +442,7 @@ public sealed class QobuzTrackResolverTest
     private sealed class StubQobuzMetadataService : IQobuzMetadataService
     {
         public Exception? IsrcFailure { get; init; }
+        public Task<QobuzTrack?>? PendingIsrc { get; init; }
         public QobuzTrack? IsrcResult { get; init; }
         public QobuzTrack? TrackResult { get; init; }
         public Func<string, List<QobuzTrack>> SearchHandler { get; set; } = _ => new List<QobuzTrack>();
@@ -434,6 +451,7 @@ public sealed class QobuzTrackResolverTest
 
         public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct)
         {
+            if (PendingIsrc is not null) return PendingIsrc.WaitAsync(ct);
             return IsrcFailure == null ? Task.FromResult(IsrcResult) : Task.FromException<QobuzTrack?>(IsrcFailure);
         }
 

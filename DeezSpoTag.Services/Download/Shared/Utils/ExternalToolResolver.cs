@@ -48,8 +48,17 @@ public static class ExternalToolResolver
                 ArgumentList = { "-version" }
             });
 
-            process?.WaitForExit(3000);
-            return process is { ExitCode: 0 };
+            if (process is null) return false;
+            // Drain both pipes while waiting: a verbose version banner can otherwise fill
+            // either pipe and prevent a valid executable from exiting.
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            if (!process.WaitForExit(3000))
+            {
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+            return process.ExitCode == 0;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -47,6 +47,45 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task AutomaticRetryRestartsSavedPlanUnlessAudioWasAlreadyAcquired(bool acquired)
+    {
+        var payload = BuildPayload();
+        payload.Engine = "amazon"; payload.Quality = "ULTRA_HD_FLAC"; payload.AutoIndex = 1;
+        payload.ResolutionStatus = "resolved"; payload.ResolvedEngine = "amazon"; payload.ResolvedAutoIndex = 1;
+        payload.FallbackHistory = [new("step-0", "skipped", "provider_timeout", "temporary catalog timeout")];
+        if (acquired)
+        {
+            var audio = Path.Join(_root, "acquired.flac");
+            await File.WriteAllBytesAsync(audio, new byte[] { 1, 2, 3 });
+            payload.AudioAcquired = true; payload.AcquiredAudioPath = audio;
+        }
+        await EnqueueAsync(payload);
+        Assert.True(await _repository.ScheduleRetryAsync(payload.Id, "amazon", "upstream API failed", 3));
+        await using (var connection = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await connection.OpenAsync();
+            await using var due = connection.CreateCommand();
+            due.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+            due.Parameters.AddWithValue("$uuid", payload.Id);
+            await due.ExecuteNonQueryAsync();
+        }
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), new DeezSpoTagListener(),
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        Assert.True(await retry.RunRetrySweepAsync());
+        var item = await _repository.GetByUuidAsync(payload.Id);
+        var saved = JsonSerializer.Deserialize<QobuzQueueItem>(item!.PayloadJson!)!;
+        Assert.Equal(acquired ? "amazon" : "qobuz", item.Engine);
+        Assert.Equal(acquired ? 1 : 0, saved.AutoIndex);
+        Assert.Equal(acquired ? "resolved" : "pending", saved.ResolutionStatus);
+        Assert.Equal(acquired ? 1 : 0, saved.FallbackHistory.Count);
+        Assert.Equal(3, saved.FallbackPlan.Count);
+        Assert.Equal("stereo", saved.ContentType);
+        if (acquired) Assert.Equal(payload.AcquiredAudioPath, saved.AcquiredAudioPath);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task FailedProviderLookupAdvancesToLaterEnabledService(bool httpFailure)
     {
         var payload = BuildPayload();

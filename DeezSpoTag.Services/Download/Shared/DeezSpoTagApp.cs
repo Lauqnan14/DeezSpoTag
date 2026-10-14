@@ -674,7 +674,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj.Remove("prefetchArtworkStatus");
     }
 
-    private static bool HasRecoverableAcquiredAudio(JsonObject payload)
+    internal static bool HasRecoverableAcquiredAudio(JsonObject payload)
     {
         var acquired = payload["AudioAcquired"]?.GetValue<bool?>()
             ?? payload["audioAcquired"]?.GetValue<bool?>()
