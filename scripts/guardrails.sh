@@ -107,6 +107,12 @@ if [[ "$MODE" == "changed" ]]; then
   while IFS= read -r file; do
     [[ -z "$file" ]] && continue
     before=${#selected[@]}
+    # Browser security tests cover escaping, URL validation, safe SVGs and handlers.
+    # Keep the existing feature mappings below as well.
+    case "$file" in
+      DeezSpoTag.Web/wwwroot/js/auto-playlists.js|DeezSpoTag.Web/wwwroot/js/home-index.js|DeezSpoTag.Web/wwwroot/js/home-view-helpers.js|DeezSpoTag.Web/wwwroot/js/library-artist-hero.js|DeezSpoTag.Web/wwwroot/js/library-watchlists.js|DeezSpoTag.Web/wwwroot/js/library.js|DeezSpoTag.Web/wwwroot/js/lrc-editor.js|DeezSpoTag.Web/wwwroot/js/personal-genre.js|DeezSpoTag.Web/wwwroot/js/site.js)
+        add_tests_matching '^SecurityHardeningGuardrailTest$' ;;
+    esac
     case "$file" in
       DeezSpoTag.Tests/*Test.cs)
         # Removed tests have nothing left to execute; CI still checks the full suite.
@@ -135,6 +141,20 @@ if [[ "$MODE" == "changed" ]]; then
       DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)
         add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
+      DeezSpoTag.Web/Services/ArtistMetadata*.cs)
+        add_tests_matching '^ArtistMetadata' ;;
+      DeezSpoTag.Web/Services/Audiomack/AudiomackArtistLocationService.cs)
+        add_tests_matching '^(AudiomackArtistLocation|ArtistLocationResolver)' ;;
+      DeezSpoTag.Web/Services/LocalLibraryScanner.cs)
+        add_tests_matching '^(LibraryScanTriggerGuardrail|TrackAnalysisBackgroundServiceGuardrail|AudioFileQualityRanker|EmbeddedVibeMetadataReader|VibeOrchestration)Test$' ;;
+      DeezSpoTag.Web/Services/TaggingProfileService.cs)
+        add_tests_matching '^(TaggingProfile|EmbeddedVibeMetadataReader|VibeAnalyzerGenreEvidence)' ;;
+      DeezSpoTag.Web/Services/Vibe/VibeSemanticEvidence.cs)
+        add_tests_matching '^(VibeSemanticResolver|VibeAnalyzerGenreEvidence|VibeOrchestration|EmbeddedVibeMetadataReader)Test$' ;;
+      DeezSpoTag.Web/Tools/vibe_analyzer.py)
+        add_tests_matching '^(VibeAnalyzerWorker|VibeAnalyzerGenreEvidence|SonicEmbeddingModelContract|SonicEmbeddingPooling)Test$' ;;
+      DeezSpoTag.Web/Views/Activities/Index.cshtml)
+        add_tests_matching '^(ActivitiesControllerContract|SonicAnalysisSettingsAndPanel|ArtistMetadataAutomationResilience)Test$' ;;
       *ArtistAlias*) add_tests_matching '(ArtistAlias|AliasGroup|ArtistMetadataAlias)' ;;
       DeezSpoTag.Services/Library/*|DeezSpoTag.Web/Services/Library*|DeezSpoTag.Web/Controllers/Api/Library*)
         add_tests_matching '^Library' ;;
