@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Diagnostics.CodeAnalysis;
@@ -59,7 +60,8 @@ public sealed record WatchlistPlatformProgress(
     long HeadPhaseMs = 0,
     long TotalMs = 0,
     DateTimeOffset? StartedUtc = null,
-    DateTimeOffset? CompletedUtc = null)
+    DateTimeOffset? CompletedUtc = null,
+    int Prepared = 0, int Reconciling = 0, int Settled = 0, long ReconciliationMs = 0)
 {
     /// <summary>Human-readable one-line summary, e.g. "20 checked - 2 changed - 18 unchanged".</summary>
     public string Summary
@@ -67,6 +69,8 @@ public sealed record WatchlistPlatformProgress(
         get
         {
             var parts = new List<string> { $"{HeadsChecked}/{TotalPlaylists} checked" };
+            if (Prepared > 0) parts.Add($"{Prepared} prepared");
+            if (Reconciling > 0) parts.Add($"{Reconciling} reconciling");
             if (Changed > 0)
             {
                 parts.Add($"{Changed} changed");
@@ -147,6 +151,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private readonly WatchlistRunSignal _runSignal;
     private readonly ILogger<WatchlistRunCoordinator> _logger;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _itemLocks = new();
+    private readonly ConcurrentDictionary<string, WatchlistReconciliationRequestDto> _leasedRequests = new();
     private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
     private readonly string _reconciliationLeaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
@@ -926,6 +931,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             TimeSpan.FromMinutes(15),
             _reconciliationLeaseOwner,
             stoppingToken);
+        foreach (var request in reconciliationRequests) _leasedRequests[request.Generation] = request;
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
         var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
@@ -960,6 +966,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
         finally
         {
+            _leasedRequests.Clear();
             activeTargetWorkCancellation.Cancel();
             try
             {
@@ -1124,13 +1131,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
-            if (await repository.RenewClaimedWatchlistReconciliationRequestsAsync(
-                    _reconciliationLeaseOwner,
-                    TimeSpan.FromMinutes(15),
-                    cancellationToken) == 0)
-            {
-                return;
-            }
+            await repository.RenewClaimedWatchlistReconciliationRequestsAsync(
+                _reconciliationLeaseOwner, TimeSpan.FromMinutes(15), cancellationToken, _leasedRequests.Values.ToArray());
         }
     }
 
@@ -1355,78 +1357,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         return items;
     }
 
-    [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist watch scheduler loop preserves queue budget, backoff, and circuit-breaker behavior in one control flow.")]
-    /// <summary>
-    /// Phase 1 of the platform-oriented workflow. Fetches every monitored playlist head grouped by
-    /// platform, with bounded per-provider concurrency and per-playlist failure isolation. Returns a
-    /// map keyed by "source:sourceId" so the serial reconciliation loop can reuse each head instead
-    /// of re-fetching it one playlist at a time.
-    /// </summary>
-    private async Task<IReadOnlyDictionary<string, PlaylistHeadSnapshot>> DiscoverPlatformHeadsAsync(
-        IServiceProvider serviceProvider,
-        LibraryRepository repository,
-        IReadOnlyList<PlaylistWatchlistDto> playlists,
-        CancellationToken cancellationToken)
-    {
-        var emptyHeads = new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
-        if (playlists.Count == 0)
-        {
-            return emptyHeads;
-        }
-
-        var platformCoordinator = serviceProvider.GetService<PlaylistPlatformSnapshotCoordinator>();
-        if (platformCoordinator is null)
-        {
-            // Discovery is an optimisation of ordering and concurrency, never a requirement: with no
-            // coordinator registered, reconciliation simply fetches its own heads as it always has.
-            return emptyHeads;
-        }
-
-        IReadOnlyList<PlaylistHeadDiscovery> discoveries;
-        try
-        {
-            discoveries = await platformCoordinator.DiscoverHeadsAsync(
-                playlists,
-                async (source, watchType, _) =>
-                {
-                    var state = await repository.GetWatchlistSourceCircuitStateAsync(watchType, source, cancellationToken);
-                    return state is not null && IsCircuitOpen(state);
-                },
-                cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            // A discovery-phase failure must not abort the run: fall back to per-playlist heads.
-            _logger.LogWarning(
-                ex,
-                "Playlist platform head discovery failed; falling back to per-playlist head fetches for {PlaylistCount} playlist(s).",
-                playlists.Count);
-            return new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var heads = new Dictionary<string, PlaylistHeadSnapshot>(StringComparer.OrdinalIgnoreCase);
-        foreach (var discovery in discoveries)
-        {
-            // Failed discoveries are deliberately not mapped: the playlist then fetches its own head
-            // during reconciliation, which preserves the existing per-playlist failure handling.
-            if (discovery.ChangeState == PlaylistHeadChangeState.Failed
-                || discovery.Head is null
-                || discovery.Head.IsFailed)
-            {
-                continue;
-            }
-
-            heads[BuildWatchKey(discovery.Source, discovery.SourceId)] = discovery.Head;
-        }
-
-        PublishPlatformProgress(BuildPlatformProgress(discoveries));
-        return heads;
-    }
-
     /// <summary>
     /// Collapses per-playlist discovery results into one progress entry per platform so the UI can
     /// report platform-level status instead of a message per playlist.
@@ -1514,9 +1444,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 updated.Add(platform with
                 {
                     Completed = platform.Completed + (succeeded ? 1 : 0),
+                    Failed = Math.Max(platform.Failed, platform.Settled + 1 - platform.Completed - (succeeded ? 1 : 0)),
                     Incomplete = platform.Incomplete + (incomplete ? 1 : 0),
-                    CompletedUtc = DateTimeOffset.UtcNow,
-                    TotalMs = platform.TotalMs + reconciliationElapsedMs
+                    Settled = platform.Settled + 1,
+                    Reconciling = 0,
+                    CompletedUtc = platform.Settled + 1 >= platform.TotalPlaylists ? DateTimeOffset.UtcNow : null,
+                    ReconciliationMs = platform.ReconciliationMs + reconciliationElapsedMs,
+                    TotalMs = platform.StartedUtc.HasValue ? (long)(DateTimeOffset.UtcNow - platform.StartedUtc.Value).TotalMilliseconds : reconciliationElapsedMs
                 });
             }
 
@@ -1557,149 +1491,371 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             .Select(static playlist => playlist!)
             .ToList();
 
-        // Phase 1: platform-oriented head discovery. All playlist heads for a platform are fetched
-        // together under bounded per-provider concurrency before any reconciliation runs. This is
-        // read-only; every mutation below still happens serially, in the existing priority order.
-        var prefetchedHeads = await WatchlistPerformanceMeasurement.TimeAsync("head_discovery", () => DiscoverPlatformHeadsAsync(
-            serviceProvider, repository, playlists, stoppingToken));
+        using var pipelineCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var pipelineToken = pipelineCancellation.Token;
+        var ready = playlistItems.ToDictionary(static item => item.Key,
+            static _ => new TaskCompletionSource<(WatchlistReconciliationRequestDto? Request, Exception? Failure)>(
+                TaskCreationOptions.RunContinuationsAsynchronously));
+        PublishPlatformProgress(playlists.GroupBy(static playlist => playlist.Source, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new WatchlistPlatformProgress(group.Key, PlatformLabel(group.Key), group.Count(),
+                0, 0, 0, 0, 0, 0, StartedUtc: DateTimeOffset.UtcNow)).ToList());
+        var preparation = ProducePreparedPlaylistsAsync(serviceProvider, repository, playlists, ready, pipelineCancellation);
+        var consumption = ConsumeAsync();
+        await Task.WhenAll(preparation, consumption);
+        return await consumption;
 
-        foreach (var activeItem in playlistItems)
+        async Task<PlaylistRunResult> ConsumeAsync()
         {
-            stoppingToken.ThrowIfCancellationRequested();
-            var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
-                PlaylistWatchType,
-                activeItem.Source,
-                stoppingToken);
-            if (sourceCircuit is { } openCircuit && IsCircuitOpen(openCircuit))
+            try
             {
-                WatchlistPerformanceMeasurement.Current?.Increment("playlists_skipped_circuit");
-                var openUntilUtc = openCircuit.OpenUntilUtc;
-                await PersistPlaylistSchedulerStateAsync(
-                    activeItem,
-                    serviceProvider,
-                    WatchlistPlaylistState.CircuitOpen,
-                    string.IsNullOrWhiteSpace(openCircuit.Reason) ? "Source circuit breaker open." : openCircuit.Reason,
-                    openUntilUtc,
-                    _consecutiveFailures.TryGetValue(activeItem.Key, out var circuitFailures) ? circuitFailures : 0,
-                    stoppingToken);
-                await PersistPlaylistProgressAsync(repository, activeItem, stoppingToken);
-                processedKeys.Add(activeItem.Key);
-                processed++;
-                failed++;
-                continue;
+                foreach (var activeItem in playlistItems)
+                {
+                    pipelineToken.ThrowIfCancellationRequested();
+                    var preparedWork = await ready[activeItem.Key].Task.WaitAsync(pipelineToken);
+                    var request = preparedWork.Request;
+                    PreparedPlaylistSnapshot? preparedSnapshot = null;
+                    if (request is not null)
+                    {
+                        if (request.Status != "processing" || request.LeaseOwner != _reconciliationLeaseOwner)
+                        {
+                            var claims = await repository.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(15),
+                                _reconciliationLeaseOwner, pipelineToken, request.Stage, BuildWatchKey(activeItem.Source, activeItem.Playlist?.SourceId));
+                            request = claims.FirstOrDefault();
+                        }
+                        if (request is null) continue;
+                        _leasedRequests[request.Generation] = request;
+                        if (preparedWork.Failure is null)
+                        {
+                            try { preparedSnapshot = JsonSerializer.Deserialize<PreparedPlaylistSnapshot>(request.PreparedSnapshotJson ?? "null"); }
+                            catch (JsonException) { }
+                            if (preparedSnapshot is null)
+                            {
+                                await repository.ReturnPreparedWatchlistRequestToFetchAsync(request, _reconciliationLeaseOwner,
+                                    "Prepared payload is invalid; source preparation must retry.", pipelineToken);
+                                continue;
+                            }
+                        }
+                    }
+                    else if (preparedWork.Failure is null) continue;
+                    ThrowIfWatchlistStopped(pipelineToken);
+                    if (activeItem.Playlist is null || !await repository.IsPlaylistWatchlistedAsync(activeItem.Source, activeItem.Playlist.SourceId, pipelineToken))
+                    {
+                        if (request is not null) await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner, pipelineToken);
+                        continue;
+                    }
+                    var currentPreference = await repository.GetPlaylistWatchPreferenceAsync(activeItem.Source, activeItem.Playlist.SourceId, pipelineToken);
+                    if (currentPreference?.DestinationFolderId is not > 0)
+                    {
+                        if (request is not null) await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner, pipelineToken);
+                        continue;
+                    }
+                    var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
+                        PlaylistWatchType,
+                        activeItem.Source,
+                        pipelineToken);
+                    if (sourceCircuit is { } openCircuit && IsCircuitOpen(openCircuit))
+                    {
+                        WatchlistPerformanceMeasurement.Current?.Increment("playlists_skipped_circuit");
+                        var openUntilUtc = openCircuit.OpenUntilUtc;
+                        await PersistPlaylistSchedulerStateAsync(
+                            activeItem,
+                            serviceProvider,
+                            WatchlistPlaylistState.CircuitOpen,
+                            string.IsNullOrWhiteSpace(openCircuit.Reason) ? "Source circuit breaker open." : openCircuit.Reason,
+                            openUntilUtc,
+                            _consecutiveFailures.TryGetValue(activeItem.Key, out var circuitFailures) ? circuitFailures : 0,
+                            pipelineToken);
+                        await PersistPlaylistProgressAsync(repository, activeItem, pipelineToken);
+                        processedKeys.Add(activeItem.Key);
+                        processed++;
+                        failed++;
+                        if (request is not null) await repository.RetryClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner,
+                            "Source circuit breaker open.", pipelineToken);
+                        RecordPlatformOutcome(activeItem.Source, false, false, 0);
+                        continue;
+                    }
+
+                    RecordReconciliationStarted(activeItem.Source);
+                    await TouchPlaylistHeartbeatAsync(repository, activeItem, pipelineToken);
+                    var execution = await TryProcessItemAsync(
+                        activeItem,
+                        settings,
+                        serviceProvider,
+                        pipelineToken,
+                        preparedSnapshot: preparedSnapshot,
+                        preparedRequest: request,
+                        preparationFailure: preparedWork.Failure);
+                    if (request is not null)
+                    {
+                        if (execution.PlaylistResult is { Success: true })
+                            await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner, pipelineToken);
+                        else if (execution.Outcome == WatchItemRunOutcome.LockBusy)
+                            await repository.RetryClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner, "Playlist is busy.", pipelineToken);
+                        else if (!await repository.ReturnPreparedWatchlistRequestToFetchAsync(request, _reconciliationLeaseOwner,
+                                execution.PlaylistResult?.Message ?? execution.FailureMessage ?? "Reconciliation failed.", pipelineToken))
+                            await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([request], _reconciliationLeaseOwner, pipelineToken);
+                    }
+                    await TouchPlaylistHeartbeatAsync(repository, activeItem, pipelineToken);
+                    await PersistPlaylistProgressAsync(repository, activeItem, pipelineToken);
+                    using (WatchlistPerformanceMeasurement.Current?.Measure("queue_admission"))
+                    {
+                        await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, pipelineToken);
+                    }
+                    if (execution.Outcome == WatchItemRunOutcome.LockBusy)
+                    {
+                        await PersistPlaylistSchedulerStateAsync(
+                            activeItem,
+                            serviceProvider,
+                            WatchlistPlaylistState.Pending,
+                            "Playlist reconciliation is already running.",
+                            null,
+                            0,
+                            pipelineToken);
+                        WatchlistPerformanceMeasurement.Current?.Increment("playlists_skipped_locked");
+                        skippedByLockBusy++;
+                        processedKeys.Add(activeItem.Key);
+                        processed++;
+                        failed++;
+                        continue;
+                    }
+
+                    processed++;
+                    WatchlistPerformanceMeasurement.Current?.Increment("playlists_processed");
+                    processedKeys.Add(activeItem.Key);
+                    if (execution.Outcome == WatchItemRunOutcome.Success)
+                    {
+                        succeeded++;
+                        WatchlistPerformanceMeasurement.Current?.Increment(
+                            execution.PlaylistResult?.Success == false ? "playlists_failed" : "playlists_succeeded");
+                    }
+                    else
+                    {
+                        failed++;
+                        WatchlistPerformanceMeasurement.Current?.Increment("playlists_failed");
+                    }
+
+                    // Fold this playlist's outcome into its platform's progress line. Truncation and
+                    // failure stay visible here; everything else stays in per-playlist state and history.
+                    RecordPlatformOutcome(
+                        activeItem.Source,
+                        execution.Outcome == WatchItemRunOutcome.Success && execution.PlaylistResult?.Success != false,
+                        execution.PlaylistResult?.QueueStopReason is { } stopReason
+                        && stopReason.Equals(WatchQueueStopReason.Incomplete.ToString(), StringComparison.OrdinalIgnoreCase),
+                        execution.ReconciliationElapsedMs);
+
+                    var playlistResult = execution.PlaylistResult;
+                    if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
+                    {
+                        await OpenSourceCircuitAsync(
+                            repository,
+                            activeItem.Source,
+                            systemicFailureResult.FailureFingerprint,
+                            systemicFailureResult.FailureMessage,
+                            pipelineToken);
+                        continue;
+                    }
+
+                    if (execution.Outcome == WatchItemRunOutcome.Failure && execution.SystemicFailure)
+                    {
+                        await OpenSourceCircuitAsync(
+                            repository,
+                            activeItem.Source,
+                            fingerprint: "hosted_service_exception",
+                            reason: execution.FailureMessage,
+                            pipelineToken);
+                        continue;
+                    }
+
+                    await repository.UpsertWatchlistSourceCircuitStateAsync(
+                        new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                            PlaylistWatchType,
+                            activeItem.Source,
+                            IsOpen: false,
+                            OpenUntilUtc: null,
+                            Reason: null,
+                            Fingerprint: null,
+                            FailureCount: 0),
+                        pipelineToken);
+
+
+                }
+
+                var elapsedMs = runTimer.Elapsed.TotalMilliseconds;
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
+                        playlistItems.Count,
+                        processed,
+                        succeeded,
+                        failed,
+                        skippedByLockBusy,
+                        elapsedMs);
+                }
+
+                return new PlaylistRunResult(AbortedRun: false, processedKeys);
+            }
+            catch { pipelineCancellation.Cancel(); throw; }
+        }
+    }
+
+    private async Task ProducePreparedPlaylistsAsync(
+        IServiceProvider serviceProvider, LibraryRepository repository, IReadOnlyList<PlaylistWatchlistDto> playlists,
+        IReadOnlyDictionary<string, TaskCompletionSource<(WatchlistReconciliationRequestDto? Request, Exception? Failure)>> ready,
+        CancellationTokenSource cancellation)
+    {
+        var token = cancellation.Token;
+        var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+        var publications = new List<Task>();
+        try
+        {
+            var fetch = new List<PlaylistWatchlistDto>();
+            var fetchRequests = new Dictionary<string, WatchlistReconciliationRequestDto>(StringComparer.OrdinalIgnoreCase);
+            var pending = await repository.GetWatchlistReconciliationRequestsAsync(token);
+            foreach (var playlist in playlists)
+            {
+                var key = BuildWatchKey(playlist.Source, playlist.SourceId);
+                var request = pending.FirstOrDefault(item => item.Kind == PlaylistKind && BuildWatchKey(item.Source, item.Identifier) == key);
+                if (request?.Stage == "reconcile" && request.Status == "retry" && request.NextAttemptUtc > DateTimeOffset.UtcNow)
+                {
+                    ready["playlist:" + key].TrySetResult((null, null));
+                    continue;
+                }
+                if (request?.Stage == "reconcile")
+                {
+                    ready["playlist:" + key].TrySetResult((request, null));
+                    RecordPreparationProgress(playlist.Source, restored: true);
+                    continue;
+                }
+                if (request is null)
+                {
+                    await repository.EnqueueWatchlistReconciliationRequestAsync(PlaylistKind, playlist.Source, playlist.SourceId, token);
+                    request = (await repository.GetWatchlistReconciliationRequestsAsync(token, key)).FirstOrDefault();
+                }
+                if (request is { Stage: "fetch", Status: "retry" })
+                {
+                    // An authorized full cycle revisits every playlist, as before. Job backoff
+                    // controls waiting work between cycles, not a fresh full source check.
+                    await repository.EnqueueWatchlistReconciliationRequestAsync(PlaylistKind, playlist.Source, playlist.SourceId, token);
+                    request = (await repository.GetWatchlistReconciliationRequestsAsync(token, key)).FirstOrDefault();
+                }
+                if (request is null)
+                {
+                    ready["playlist:" + key].TrySetResult((null, null));
+                    continue;
+                }
+                fetchRequests[key] = request;
+                fetch.Add(playlist);
             }
 
-            await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
-            var execution = await TryProcessItemAsync(
-                activeItem,
-                settings,
-                serviceProvider,
-                stoppingToken,
-                prefetchedHeads.GetValueOrDefault(BuildWatchKey(activeItem.Source, activeItem.Playlist?.SourceId)));
-            await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
-            await PersistPlaylistProgressAsync(repository, activeItem, stoppingToken);
-            using (WatchlistPerformanceMeasurement.Current?.Measure("queue_admission"))
+            async Task Publish(PlaylistWatchlistDto playlist, PreparedPlaylistSnapshot? snapshot, Exception? failure, CancellationToken ct)
             {
-                await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, stoppingToken);
-            }
-            if (execution.Outcome == WatchItemRunOutcome.LockBusy)
-            {
-                await PersistPlaylistSchedulerStateAsync(
-                    activeItem,
-                    serviceProvider,
-                    WatchlistPlaylistState.Pending,
-                    "Playlist reconciliation is already running.",
-                    null,
-                    0,
-                    stoppingToken);
-                WatchlistPerformanceMeasurement.Current?.Increment("playlists_skipped_locked");
-                skippedByLockBusy++;
-                processedKeys.Add(activeItem.Key);
-                processed++;
-                failed++;
-                continue;
+                var key = BuildWatchKey(playlist.Source, playlist.SourceId);
+                if (failure is not null)
+                {
+                    var failedRequest = (await repository.GetWatchlistReconciliationRequestsAsync(ct, key)).FirstOrDefault();
+                    if (failedRequest?.Generation != fetchRequests[key].Generation || failedRequest.Stage != "fetch")
+                    {
+                        await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([fetchRequests[key]], _reconciliationLeaseOwner, ct);
+                        ready["playlist:" + key].TrySetResult((null, null));
+                    }
+                    else ready["playlist:" + key].TrySetResult((failedRequest, failure));
+                    return;
+                }
+                var published = await reconciler.WithPlaylistExecutionAsync(playlist.Source, playlist.SourceId, async () =>
+                {
+                    ThrowIfWatchlistStopped(ct);
+                    if (!await repository.IsPlaylistWatchlistedAsync(playlist.Source, playlist.SourceId, ct)) return false;
+                    return await repository.PublishPreparedWatchlistPlaylistAsync(playlist.Source, playlist.SourceId,
+                        fetchRequests[key].Generation, JsonSerializer.Serialize(snapshot), ct);
+                }, ct);
+                var request = published ? (await repository.GetWatchlistReconciliationRequestsAsync(ct, key)).FirstOrDefault() : null;
+                if (!published)
+                    await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([fetchRequests[key]], _reconciliationLeaseOwner, ct);
+                if (request?.Stage != "reconcile") request = null;
+                ready["playlist:" + key].TrySetResult((request, null));
+                if (request is not null) RecordPreparationProgress(playlist.Source, restored: false);
             }
 
-            processed++;
-            WatchlistPerformanceMeasurement.Current?.Increment("playlists_processed");
-            processedKeys.Add(activeItem.Key);
-            if (execution.Outcome == WatchItemRunOutcome.Success)
+            Task SchedulePublication(PlaylistWatchlistDto playlist, PreparedPlaylistSnapshot? snapshot, Exception? failure, CancellationToken ct)
             {
-                succeeded++;
-                WatchlistPerformanceMeasurement.Current?.Increment(
-                    execution.PlaylistResult?.Success == false ? "playlists_failed" : "playlists_succeeded");
+                publications.Add(PublishOwnedAsync());
+                return Task.CompletedTask;
+                async Task PublishOwnedAsync()
+                {
+                    try { await Publish(playlist, snapshot, failure, ct); }
+                    catch { cancellation.Cancel(); throw; }
+                }
             }
+
+            async Task<bool> IsCircuitOpenAsync(string source, string watchType, string ignored)
+                => IsCircuitOpen(await repository.GetWatchlistSourceCircuitStateAsync(watchType, source, token));
+            var platformCoordinator = serviceProvider.GetService<PlaylistPlatformSnapshotCoordinator>();
+            if (platformCoordinator is not null)
+                await platformCoordinator.PrepareSnapshotsAsync(fetch, IsCircuitOpenAsync, RecordDiscoveredHeads, SchedulePublication, token);
             else
             {
-                failed++;
-                WatchlistPerformanceMeasurement.Current?.Increment("playlists_failed");
-            }
-
-            // Fold this playlist's outcome into its platform's progress line. Truncation and
-            // failure stay visible here; everything else stays in per-playlist state and history.
-            RecordPlatformOutcome(
-                activeItem.Source,
-                execution.Outcome == WatchItemRunOutcome.Success,
-                execution.PlaylistResult?.QueueStopReason is { } stopReason
-                && stopReason.Equals(WatchQueueStopReason.Incomplete.ToString(), StringComparison.OrdinalIgnoreCase),
-                execution.ReconciliationElapsedMs);
-
-            var playlistResult = execution.PlaylistResult;
-            if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
-            {
-                await OpenSourceCircuitAsync(
-                    repository,
-                    activeItem.Source,
-                    systemicFailureResult.FailureFingerprint,
-                    systemicFailureResult.FailureMessage,
-                    stoppingToken);
-                continue;
-            }
-
-            if (execution.Outcome == WatchItemRunOutcome.Failure && execution.SystemicFailure)
-            {
-                await OpenSourceCircuitAsync(
-                    repository,
-                    activeItem.Source,
-                    fingerprint: "hosted_service_exception",
-                    reason: execution.FailureMessage,
-                    stoppingToken);
-                continue;
-            }
-
-            await repository.UpsertWatchlistSourceCircuitStateAsync(
-                new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
-                    PlaylistWatchType,
-                    activeItem.Source,
-                    IsOpen: false,
-                    OpenUntilUtc: null,
-                    Reason: null,
-                    Fingerprint: null,
-                    FailureCount: 0),
-                stoppingToken);
-
-            if (execution.SnapshotExpanded
-                && settings.WatchDelayBetweenPlaylistsSeconds > 0)
-            {
-                await WatchlistPerformanceMeasurement.TimeAsync("intentional_delay", () => Task.Delay(
-                    TimeSpan.FromSeconds(settings.WatchDelayBetweenPlaylistsSeconds), stoppingToken));
+                // Preserve the existing missing-discovery-service path: fetch heads inline per playlist.
+                foreach (var playlist in fetch)
+                {
+                    PreparedPlaylistSnapshot? snapshot = null;
+                    Exception? failure = null;
+                    try
+                    {
+                        if (await IsCircuitOpenAsync(playlist.Source, PlaylistWatchType, playlist.SourceId))
+                            throw new HttpRequestException("Source circuit breaker open.");
+                        snapshot = await reconciler.PreparePlaylistSnapshotAsync(playlist, null, token);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    // Match the existing reconciliation boundary: a broken provider is isolated to its
+                    // playlist and reported by the consumer. Host cancellation and fatal memory failure propagate.
+                    catch (Exception ex) when (ex is not OutOfMemoryException) { failure = ex; }
+                    await SchedulePublication(playlist, snapshot, failure, token);
+                    var delay = serviceProvider.GetRequiredService<DeezSpoTagSettingsService>().LoadSettings().WatchDelayBetweenPlaylistsSeconds;
+                    if (snapshot is { WasExpanded: true, Candidates.Count: > 0 } && delay > 0)
+                        await WatchlistPerformanceMeasurement.TimeAsync("intentional_delay", () => Task.Delay(TimeSpan.FromSeconds(delay), token));
+                }
             }
         }
+        catch { cancellation.Cancel(); throw; }
+        finally { await Task.WhenAll(publications); }
+    }
 
-        var elapsedMs = runTimer.Elapsed.TotalMilliseconds;
-        if (_logger.IsEnabled(LogLevel.Information))
+    private void RecordDiscoveredHeads(IReadOnlyList<PlaylistHeadDiscovery> discoveries)
+    {
+        var discovered = BuildPlatformProgress(discoveries);
+        lock (_runtimeHealthGate)
         {
-            _logger.LogInformation(
-                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
-                playlistItems.Count,
-                processed,
-                succeeded,
-                failed,
-                skippedByLockBusy,
-                elapsedMs);
+            var current = _runtimeHealth.Platforms ?? [];
+            _runtimeHealth = _runtimeHealth with { Platforms = current.Select(platform =>
+            {
+                var heads = discovered.FirstOrDefault(value => string.Equals(value.Source, platform.Source, StringComparison.OrdinalIgnoreCase));
+                return heads is null ? platform : platform with { HeadsChecked = Math.Min(platform.TotalPlaylists, platform.HeadsChecked + heads.HeadsChecked),
+                    Changed = heads.Changed, Unchanged = heads.Unchanged, New = heads.New,
+                    RequiresExpansion = heads.RequiresExpansion, Failed = heads.Failed, HeadPhaseMs = heads.HeadPhaseMs };
+            }).ToList() };
         }
+    }
 
-        return new PlaylistRunResult(AbortedRun: false, processedKeys);
+    private void RecordReconciliationStarted(string source)
+    {
+        lock (_runtimeHealthGate)
+        {
+            _runtimeHealth = _runtimeHealth with { Platforms = (_runtimeHealth.Platforms ?? []).Select(platform =>
+                string.Equals(platform.Source, source, StringComparison.OrdinalIgnoreCase)
+                    ? platform with { Reconciling = 1 } : platform).ToList() };
+        }
+    }
+
+    private void RecordPreparationProgress(string source, bool restored)
+    {
+        lock (_runtimeHealthGate)
+        {
+            _runtimeHealth = _runtimeHealth with { Platforms = (_runtimeHealth.Platforms ?? []).Select(platform =>
+                string.Equals(platform.Source, source, StringComparison.OrdinalIgnoreCase)
+                    ? platform with { Prepared = platform.Prepared + 1, HeadsChecked = Math.Max(platform.HeadsChecked, platform.Prepared + 1) }
+                    : platform).ToList() };
+        }
     }
 
     private static async Task PersistPlaylistProgressAsync(
@@ -1826,7 +1982,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken,
-        PlaylistHeadSnapshot? prefetchedHead = null)
+        PlaylistHeadSnapshot? prefetchedHead = null,
+        PreparedPlaylistSnapshot? preparedSnapshot = null,
+        WatchlistReconciliationRequestDto? preparedRequest = null,
+        Exception? preparationFailure = null)
     {
         var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
         if (!await itemLock.WaitAsync(0, stoppingToken))
@@ -1850,7 +2009,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 null,
                 stoppingToken);
             reconciliationTimer.Start();
-            var playlistResult = await RunItemAsync(item, serviceProvider, stoppingToken, prefetchedHead);
+            if (preparationFailure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(preparationFailure).Throw();
+            var playlistResult = preparedSnapshot is not null && item.Playlist is not null
+                ? await serviceProvider.GetRequiredService<PlaylistWatchReconciler>().ReconcilePlaylistAsync(
+                    item.Playlist, stoppingToken, preparedSnapshot: preparedSnapshot,
+                    validateClaim: async () =>
+                    {
+                        ThrowIfWatchlistStopped(stoppingToken);
+                        var repository = serviceProvider.GetRequiredService<LibraryRepository>();
+                        return preparedRequest is not null
+                            && await repository.IsPlaylistWatchlistedAsync(item.Source, item.Playlist.SourceId, stoppingToken)
+                            && await repository.IsCurrentPreparedWatchlistClaimAsync(preparedRequest, _reconciliationLeaseOwner, stoppingToken);
+                    })
+                : await RunItemAsync(item, serviceProvider, stoppingToken, prefetchedHead);
             reconciliationTimer.Stop();
             _consecutiveFailures.TryRemove(item.Key, out _);
             await PersistArtistRunStateAsync(

@@ -963,7 +963,8 @@ public sealed record PlaylistTrackCandidateCacheDto(
     int SchemaVersion = 0,
     string? IdentityRevision = null,
     string? ProviderReadinessRevision = null,
-    bool IsComplete = false);
+    bool IsComplete = false,
+    int? SourceItemsObserved = null);
 
 public sealed record BoomplayDeezerTrackMappingDto(
     string BoomplayTrackId,
@@ -1182,7 +1183,10 @@ public sealed record WatchlistReconciliationRequestDto(
     DateTimeOffset? NextAttemptUtc = null,
     string? LeaseOwner = null,
     DateTimeOffset? LeaseUntilUtc = null,
-    string? LastError = null);
+    string? LastError = null,
+    string Stage = "fetch",
+    string Generation = "",
+    string? PreparedSnapshotJson = null);
 
 public sealed record MediaServerTrackMetadataUpsertDto(
     long TrackId,

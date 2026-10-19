@@ -1,3 +1,8 @@
+using System.Threading;
+using System.Threading.Tasks;
+using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.IO;
 using System.Linq;
@@ -15,6 +20,7 @@ namespace DeezSpoTag.Tests;
 /// that was actually collected, reported as incomplete, and never allowed to authorise removing
 /// anything outside that window.
 /// </summary>
+[Collection("Settings Config Isolation")]
 public sealed class PlaylistSnapshotLimitTest
 {
     private static string EngineSource()
@@ -22,6 +28,72 @@ public sealed class PlaylistSnapshotLimitTest
             AppContext.BaseDirectory,
             "..", "..", "..", "..",
             "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+
+    [Theory]
+    [InlineData("source")]
+    [InlineData("version")]
+    [InlineData("readiness")]
+    [InlineData("identity")]
+    [InlineData("observed")]
+    [InlineData("limit")]
+    public async Task PreparedSnapshots_RejectObsoleteOrInconsistentEvidence(string changed)
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var playlist = await repository.AddPlaylistWatchlistAsync("unsupported", "obsolete", new PlaylistWatchlistMetadataInput("Old", null, null, 0));
+            var reconciler = fixture.MeasurementTestServices.GetRequiredService<PlaylistWatchReconciler>();
+            var prepared = await reconciler.PreparePlaylistSnapshotAsync(playlist!, null, CancellationToken.None);
+            prepared = prepared with { IsComplete = true, IsAuthoritativeEmpty = true, TrackCount = 0, SourceItemsObserved = 0 };
+            if (changed == "source") prepared = prepared with { SourceId = "another-playlist" };
+            if (changed == "version") prepared = prepared with { ContractVersion = 99 };
+            if (changed == "readiness") prepared = prepared with { ProviderReadinessRevision = "obsolete" };
+            if (changed == "identity") prepared = prepared with { IdentityRevision = "inconsistent" };
+            if (changed == "observed") prepared = prepared with { SourceItemsObserved = -1 };
+            if (changed == "limit")
+            {
+                var settingsService = fixture.MeasurementTestServices.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>();
+                var settings = settingsService.LoadSettings();
+                settings.PlaylistSnapshotTrackLimit = settings.PlaylistSnapshotTrackLimit == 100 ? 200 : 100;
+                settingsService.SaveSettings(settings);
+            }
+            var result = await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: prepared);
+            Assert.False(result.Success);
+            Assert.Equal("prepared_snapshot_obsolete", result.FailureFingerprint);
+            Assert.Null(await repository.GetPlaylistTrackCandidateCacheAsync("unsupported", "obsolete"));
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Theory]
+    [InlineData(false, false, 0, "partial", false)]
+    [InlineData(true, false, 0, null, false)]
+    [InlineData(true, true, 0, null, true)]
+    [InlineData(true, true, 2, null, false)]
+    [InlineData(false, false, 2, null, false)]
+    public async Task PreparedSnapshots_PreserveEmptyPartialAndCountSafety(bool complete, bool authoritativeEmpty,
+        int reported, string? failureCode, bool succeeds)
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var playlist = await repository.AddPlaylistWatchlistAsync("unsupported", "safety", new PlaylistWatchlistMetadataInput("Safety", null, null, 0));
+            await repository.UpdatePlaylistWatchTrackVerificationAsync("unsupported", "safety",
+                new PlaylistWatchTrackVerification("keep", null, "missing", "original"));
+            var reconciler = fixture.MeasurementTestServices.GetRequiredService<PlaylistWatchReconciler>();
+            var prepared = await reconciler.PreparePlaylistSnapshotAsync(playlist!, null, CancellationToken.None);
+            prepared = prepared with { IsComplete = complete, IsAuthoritativeEmpty = authoritativeEmpty,
+                TrackCount = reported, SourceItemsObserved = 0, FailureCode = failureCode };
+            var result = await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: prepared);
+            Assert.Equal(succeeds, result.Success);
+            Assert.Contains(await repository.GetPlaylistWatchTrackStatusesAsync("unsupported", "safety"), row => row.TrackSourceId == "keep");
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
 
     [Fact]
     public void SyntheticTruncatedSnapshot_PreservesFullProviderCountAndObservedWindow()

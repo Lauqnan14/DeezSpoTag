@@ -444,16 +444,93 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         int? SourceItemsObserved = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
+    internal Task InvalidatePreparedPlaylistRequestAsync(string source, string sourceId, CancellationToken cancellationToken)
+        => _libraryRepository.InvalidatePreparedPlaylistRequestAsync(source, sourceId, cancellationToken);
+
+    internal async Task<PreparedPlaylistSnapshot> PreparePlaylistSnapshotAsync(
+        PlaylistWatchlistDto playlist, PlaylistHeadSnapshot? prefetchedHead, CancellationToken cancellationToken,
+        bool forceMediaServerSync = false)
+    {
+        var source = NormalizeWatchSource(playlist.Source);
+        var sourceId = playlist.SourceId.Trim();
+        var maxCandidates = ResolveSnapshotTrackLimit();
+        var providerRevision = await BuildProviderReadinessRevisionAsync(source);
+        var existingCandidateCache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
+        var settings = _settingsService.LoadSettings();
+        var head = prefetchedHead is not null
+            && string.Equals(prefetchedHead.Source, source, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(prefetchedHead.SourceId, sourceId, StringComparison.Ordinal)
+            ? ToLiveHeadSnapshot(prefetchedHead)
+            : await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
+        LivePlaylistSnapshot? fullSnapshotForArtwork = null;
+        if (_playlistVisualService != null && IsStreamingPlaylistArtworkSource(source)
+            && string.IsNullOrWhiteSpace(head.ImageUrl))
+        {
+            fullSnapshotForArtwork = await WatchlistPerformanceMeasurement.TimeAsync("snapshot_expand", () => FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken));
+            head = head with
+            {
+                Name = string.IsNullOrWhiteSpace(head.Name) ? fullSnapshotForArtwork.Name : head.Name,
+                Description = string.IsNullOrWhiteSpace(head.Description) ? fullSnapshotForArtwork.Description : head.Description,
+                ImageUrl = fullSnapshotForArtwork.ImageUrl,
+                TrackCount = head.TrackCount ?? fullSnapshotForArtwork.TrackCount,
+                OwnerName = string.IsNullOrWhiteSpace(head.OwnerName) ? fullSnapshotForArtwork.OwnerName : head.OwnerName
+            };
+        }
+        var cachedCandidates = existingCandidateCache is null ? null : TryDeserializePlaylistTrackCandidates(existingCandidateCache.CandidatesJson);
+        var cachedCandidatesComplete = !forceMediaServerSync && settings.WatchUseSnapshotIdChecking
+            && SupportsStrictSnapshotReuse(source) && !string.IsNullOrWhiteSpace(head.SnapshotId)
+            && !string.IsNullOrWhiteSpace(NormalizeSnapshotId(existingCandidateCache?.SnapshotId))
+            && string.Equals(NormalizeSnapshotId(existingCandidateCache?.SnapshotId), NormalizeSnapshotId(head.SnapshotId), StringComparison.Ordinal)
+            && PlaylistCandidateContract.IsReusableCache(source, existingCandidateCache?.SchemaVersion ?? 0, cachedCandidates,
+                head.TrackCount, existingCandidateCache?.IsComplete == true, existingCandidateCache?.SourceItemsObserved)
+            && string.Equals(existingCandidateCache?.ProviderReadinessRevision, providerRevision, StringComparison.Ordinal);
+        LivePlaylistSnapshot snapshot;
+        if (cachedCandidatesComplete)
+        {
+            snapshot = head with { Candidates = cachedCandidates!, IsComplete = true,
+                SourceItemsObserved = existingCandidateCache!.SourceItemsObserved ?? cachedCandidates!.Count };
+        }
+        else
+        {
+            if (settings.WatchUseSnapshotIdChecking && !forceMediaServerSync
+                && !string.IsNullOrWhiteSpace(head.SnapshotId)
+                && string.Equals(NormalizeSnapshotId(existingCandidateCache?.SnapshotId), NormalizeSnapshotId(head.SnapshotId), StringComparison.Ordinal))
+                _logger.LogInformation("Snapshot unchanged but cached candidates are incomplete. Refreshing candidates.");
+            snapshot = fullSnapshotForArtwork?.IsComplete == true
+                ? fullSnapshotForArtwork
+                : await WatchlistPerformanceMeasurement.TimeAsync("snapshot_expand", () => FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken));
+        }
+        // Some track-page APIs omit playlist metadata. Carry the independently fetched head
+        // through the handoff without changing completeness or authoritative-empty evidence.
+        snapshot = snapshot with
+        {
+            SnapshotId = snapshot.SnapshotId ?? head.SnapshotId,
+            Name = snapshot.Name ?? head.Name,
+            Description = snapshot.Description ?? head.Description,
+            ImageUrl = snapshot.ImageUrl ?? head.ImageUrl,
+            OwnerName = snapshot.OwnerName ?? head.OwnerName,
+            CanClearImageUrl = snapshot.CanClearImageUrl || head.CanClearImageUrl
+        };
+        WatchlistPerformanceMeasurement.Current?.Increment(cachedCandidatesComplete ? "candidate_cache_hits" : "candidate_cache_misses");
+        return new PreparedPlaylistSnapshot(source, sourceId, snapshot.Candidates, snapshot.SnapshotId,
+            snapshot.Name, snapshot.Description, snapshot.ImageUrl, snapshot.TrackCount, snapshot.IsComplete,
+            snapshot.IsAuthoritativeEmpty, snapshot.CanClearImageUrl, snapshot.OwnerName, snapshot.FailureCode,
+            snapshot.FailureIncidentId, snapshot.FailureIsIncidentOrigin, snapshot.SourceItemsObserved,
+            PlaylistCandidateContract.BuildIdentityRevision(source, snapshot.Candidates), providerRevision,
+            DateTimeOffset.UtcNow, WasExpanded: !cachedCandidatesComplete, SnapshotTrackLimit: maxCandidates);
+    }
+
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
         bool forceMediaServerSync = false,
-        PlaylistHeadSnapshot? prefetchedHead = null)
+        PlaylistHeadSnapshot? prefetchedHead = null,
+        PreparedPlaylistSnapshot? preparedSnapshot = null)
     {
         using var measurement = WatchlistPerformanceMeasurement.Start(_logger, playlist?.Source ?? "unknown", playlist?.SourceId ?? "");
         try
         {
-            var result = await ReconcilePlaylistCoreAsync(playlist!, cancellationToken, forceMediaServerSync, prefetchedHead);
+            var result = await ReconcilePlaylistCoreAsync(playlist!, cancellationToken, forceMediaServerSync, prefetchedHead, preparedSnapshot);
             measurement.Increment("source_track_count", result.SourceTracks);
             measurement.Increment("queued_tracks", result.QueuedTracks);
             measurement.Increment("attempted_tracks", result.AttemptedTracks);
@@ -473,7 +550,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
         bool forceMediaServerSync = false,
-        PlaylistHeadSnapshot? prefetchedHead = null)
+        PlaylistHeadSnapshot? prefetchedHead = null,
+        PreparedPlaylistSnapshot? preparedSnapshot = null)
     {
         if (playlist == null)
         {
@@ -497,7 +575,6 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             consecutiveFailures: 0,
             cancellationToken);
 
-        var maxCandidates = ResolveSnapshotTrackLimit();
         var preference = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken));
         var existingCandidateCache = await WatchlistPerformanceMeasurement.TimeAsync("cache_lookup", () => _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken));
         if (existingCandidateCache is null) WatchlistPerformanceMeasurement.Current?.Increment("candidate_cache_misses");
@@ -505,34 +582,31 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         var settings = _settingsService.LoadSettings();
         var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
 
-        // A head already fetched by the platform snapshot phase is reused verbatim. When null --
-        // which is every existing caller, including the API's forced sync -- the head is fetched
-        // here exactly as before, so nothing about the serial path changes.
-        var headSnapshot = prefetchedHead is not null
-            && string.Equals(prefetchedHead.Source, source, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(prefetchedHead.SourceId, sourceId, StringComparison.Ordinal)
-            ? ToLiveHeadSnapshot(prefetchedHead)
-            : await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
-        var liveSnapshot = headSnapshot;
-        LivePlaylistSnapshot? fullSnapshotForArtwork = null;
-        if (_playlistVisualService != null
-            && IsStreamingPlaylistArtworkSource(source)
-            && string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl))
+        preparedSnapshot ??= await PreparePlaylistSnapshotAsync(playlist, prefetchedHead, cancellationToken, forceMediaServerSync);
+        if (preparedSnapshot.ContractVersion != 1
+            || preparedSnapshot.SnapshotTrackLimit != ResolveSnapshotTrackLimit()
+            || preparedSnapshot.Candidates is null
+            || preparedSnapshot.SourceItemsObserved < preparedSnapshot.Candidates.Count
+            || !string.Equals(preparedSnapshot.Source, source, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(preparedSnapshot.SourceId, sourceId, StringComparison.Ordinal)
+            || !string.Equals(preparedSnapshot.ProviderReadinessRevision, providerReadinessRevision, StringComparison.Ordinal)
+            || preparedSnapshot.IdentityRevision != PlaylistCandidateContract.BuildIdentityRevision(source, preparedSnapshot.Candidates))
         {
-            fullSnapshotForArtwork = await WatchlistPerformanceMeasurement.TimeAsync("snapshot_expand", () => FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken));
-            if (!string.IsNullOrWhiteSpace(fullSnapshotForArtwork.ImageUrl))
-            {
-                liveSnapshot = liveSnapshot with
-                {
-                    Name = string.IsNullOrWhiteSpace(liveSnapshot.Name) ? fullSnapshotForArtwork.Name : liveSnapshot.Name,
-                    Description = string.IsNullOrWhiteSpace(liveSnapshot.Description) ? fullSnapshotForArtwork.Description : liveSnapshot.Description,
-                    ImageUrl = fullSnapshotForArtwork.ImageUrl,
-                    TrackCount = liveSnapshot.TrackCount ?? fullSnapshotForArtwork.TrackCount,
-                    OwnerName = string.IsNullOrWhiteSpace(liveSnapshot.OwnerName) ? fullSnapshotForArtwork.OwnerName : liveSnapshot.OwnerName
-                };
-            }
+            return new PlaylistReconciliationResult(false, "Prepared snapshot is obsolete; source preparation must retry.",
+                playlist.TrackCount ?? 0, 0, 0, 0, 0, 0, 1, null, FailureFingerprint: "prepared_snapshot_obsolete");
         }
+        var liveSnapshot = new LivePlaylistSnapshot(preparedSnapshot.Candidates, preparedSnapshot.SnapshotId,
+            preparedSnapshot.Name, preparedSnapshot.Description, preparedSnapshot.ImageUrl, preparedSnapshot.TrackCount,
+            preparedSnapshot.IsComplete, preparedSnapshot.IsAuthoritativeEmpty, preparedSnapshot.CanClearImageUrl,
+            preparedSnapshot.OwnerName, preparedSnapshot.FailureCode, preparedSnapshot.FailureIncidentId,
+            preparedSnapshot.FailureIsIncidentOrigin, preparedSnapshot.SourceItemsObserved);
         var liveTrackCount = liveSnapshot.TrackCount ?? playlist.TrackCount ?? 0;
+        if (!preparedSnapshot.WasExpanded)
+        {
+            await UpdatePlaylistStateAsync(source, sourceId, liveTrackCount, liveSnapshot.SnapshotId,
+                WatchlistPlaylistState.Unchanged, "Snapshot unchanged. Reusing cached candidates.",
+                nextAttemptUtc: null, consecutiveFailures: 0, cancellationToken);
+        }
 
         var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
         PlaylistVisualService.PlaylistArtworkInspectionResult? artworkInspection = null;
@@ -572,98 +646,9 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
 
         }
 
-        var existingSnapshotId = NormalizeSnapshotId(existingCandidateCache?.SnapshotId);
-        var currentSnapshotId = NormalizeSnapshotId(liveSnapshot.SnapshotId);
-        // Starts after the head is already in hand, so this measures the expansion/decision cost
-        // rather than re-reporting the head fetch the platform phase already timed.
         var snapshotPhaseTimer = Stopwatch.StartNew();
-        var tryUseCachedCandidates = settings.WatchUseSnapshotIdChecking
-            && SupportsStrictSnapshotReuse(source)
-            && !string.IsNullOrWhiteSpace(currentSnapshotId)
-            && string.Equals(existingSnapshotId, currentSnapshotId, StringComparison.Ordinal);
-        if (forceMediaServerSync)
-        {
-            tryUseCachedCandidates = false;
-        }
-
-        var snapshotExpanded = false;
-        IReadOnlyList<PlaylistTrackCandidate> candidates;
-        if (tryUseCachedCandidates)
-        {
-            var cachedCandidates = existingCandidateCache == null
-                ? null
-                : TryDeserializePlaylistTrackCandidates(existingCandidateCache.CandidatesJson);
-            var cachedCandidatesComplete = PlaylistCandidateContract.IsReusableCache(
-                    source,
-                    existingCandidateCache?.SchemaVersion ?? 0,
-                    cachedCandidates,
-                    liveSnapshot.TrackCount,
-                    existingCandidateCache?.IsComplete == true)
-                && string.Equals(
-                    existingCandidateCache!.ProviderReadinessRevision,
-                    providerReadinessRevision,
-                    StringComparison.Ordinal);
-            if (cachedCandidatesComplete)
-            {
-                WatchlistPerformanceMeasurement.Current?.Increment("candidate_cache_hits");
-                candidates = cachedCandidates!;
-                liveSnapshot = liveSnapshot with
-                {
-                    Candidates = candidates,
-                    TrackCount = liveSnapshot.TrackCount ?? candidates.Count,
-                    IsComplete = true
-                };
-                liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
-                await UpdatePlaylistStateAsync(
-                    source,
-                    sourceId,
-                    liveTrackCount,
-                    liveSnapshot.SnapshotId,
-                    WatchlistPlaylistState.Unchanged,
-                    "Snapshot unchanged. Reusing cached candidates.",
-                    nextAttemptUtc: null,
-                    consecutiveFailures: 0,
-                    cancellationToken);
-            }
-            else
-            {
-                snapshotExpanded = true;
-                await UpdatePlaylistStateAsync(
-                    source,
-                    sourceId,
-                    liveTrackCount,
-                    liveSnapshot.SnapshotId,
-                    WatchlistPlaylistState.Expanding,
-                    "Snapshot unchanged but cached candidates are incomplete. Refreshing candidates.",
-                    nextAttemptUtc: null,
-                    consecutiveFailures: 0,
-                    cancellationToken);
-                liveSnapshot = fullSnapshotForArtwork?.IsComplete == true
-                    ? fullSnapshotForArtwork
-                    : await WatchlistPerformanceMeasurement.TimeAsync("snapshot_expand", () => FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken));
-                candidates = liveSnapshot.Candidates;
-                liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
-            }
-        }
-        else
-        {
-            snapshotExpanded = true;
-            await UpdatePlaylistStateAsync(
-                source,
-                sourceId,
-                liveTrackCount,
-                liveSnapshot.SnapshotId,
-                WatchlistPlaylistState.DeltaDetected,
-                "Snapshot changed. Expanding candidates.",
-                nextAttemptUtc: null,
-                consecutiveFailures: 0,
-                cancellationToken);
-            liveSnapshot = fullSnapshotForArtwork?.IsComplete == true
-                ? fullSnapshotForArtwork
-                : await WatchlistPerformanceMeasurement.TimeAsync("snapshot_expand", () => FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken));
-            candidates = liveSnapshot.Candidates;
-            liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
-        }
+        var snapshotExpanded = preparedSnapshot.WasExpanded;
+        IReadOnlyList<PlaylistTrackCandidate> candidates = liveSnapshot.Candidates;
 
         if (_playlistVisualService != null
             && IsStreamingPlaylistArtworkSource(source)
@@ -904,7 +889,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             candidateIdentityRevision,
             providerReadinessRevision,
             candidateCacheComplete,
-            cancellationToken));
+            cancellationToken,
+            sourceItemsObserved: liveSnapshot.SourceItemsObserved ?? candidates.Count));
 
         // Snapshot pipeline timing. Structured and free of credentials so the real distribution of
         // head vs full-fetch cost per provider can be measured rather than estimated.
@@ -1010,7 +996,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 candidateIdentityRevision,
                 localTrackStatuses,
                 forceMediaServerSync,
-                cancellationToken))
+                cancellationToken,
+                reuseVerifiedLocalIdentities: true))
             : null;
 
         var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;
@@ -1745,7 +1732,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         string? candidateIdentityRevision,
         IReadOnlyList<PlaylistWatchTrackStatusDto> localTrackStatuses,
         bool force,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool reuseVerifiedLocalIdentities = false)
     {
         var results = new List<(string Service, PlaylistSyncResult Result)>();
         var revision = PlaylistCandidateContract.BuildTargetSyncRevision(
@@ -1761,7 +1749,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 candidates,
                 target,
                 force,
-                cancellationToken);
+                cancellationToken,
+                verifiedLocalTrackStatuses: reuseVerifiedLocalIdentities ? localTrackStatuses : null);
             results.Add((target, targetResult));
             if (targetResult.Success)
             {
@@ -2306,6 +2295,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             .ToList();
         var existingPaths = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.GetTrackPrimaryFilePathsAsync(existingLocalIds, cancellationToken));
         var localTrackCount = 0;
+        var verifications = new List<PlaylistWatchTrackVerification>(candidates.Count);
         for (var index = 0; index < candidates.Count; index++)
         {
             var identity = await WatchlistPerformanceMeasurement.TimeAsync("ambiguity_resolution", () => _localIdentityResolver.ResolveAsync(
@@ -2329,21 +2319,19 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                 : identity.LocalTrackId.HasValue
                     ? "identity_verified"
                     : "missing";
-            await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
-                source,
-                sourceId,
-                new PlaylistWatchTrackVerification(
+            verifications.Add(new PlaylistWatchTrackVerification(
                     candidates[index].TrackSourceId,
                     identity.LocalTrackId,
                     identityStatus,
-                    identity.Reason),
-                cancellationToken));
+                    identity.Reason));
             if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
             {
                 localTrackCount++;
             }
         }
 
+        await WatchlistPerformanceMeasurement.TimeAsync("ledger_mutation", () => _libraryRepository.UpdatePlaylistWatchTrackVerificationsAsync(
+            source, sourceId, verifications, cancellationToken));
         return localTrackCount;
     }
 
@@ -3029,7 +3017,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                         cached.SchemaVersion,
                         cachedCandidates,
                         watchState?.TrackCount,
-                        cached.IsComplete)
+                        cached.IsComplete,
+                        cached.SourceItemsObserved)
                     && string.Equals(cached.ProviderReadinessRevision, providerReadinessRevision, StringComparison.Ordinal))
                 {
                     return cachedCandidates!;
@@ -3057,7 +3046,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             PlaylistCandidateContract.BuildIdentityRevision(normalizedSource, freshCandidates),
             providerRevision,
             isComplete: true,
-            cancellationToken));
+            cancellationToken,
+            sourceItemsObserved: freshSnapshot.SourceItemsObserved ?? freshCandidates.Count));
         return freshCandidates;
     }
 
@@ -3090,7 +3080,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
                    cached.SchemaVersion,
                    candidates,
                    expectedTrackCount: null,
-                   cached.IsComplete)
+                   cached.IsComplete,
+                   cached.SourceItemsObserved)
                && string.Equals(cached.ProviderReadinessRevision, providerReadinessRevision, StringComparison.Ordinal)
             ? candidates!
             : [];
@@ -7221,12 +7212,38 @@ public sealed class PlaylistWatchReconciler
         _engine = engine;
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _executionGates = new();
+
+    internal async Task<T> WithPlaylistExecutionAsync<T>(string source, string sourceId,
+        Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        var key = source.Trim().ToLowerInvariant() + ":" + sourceId.Trim();
+        var gate = _executionGates.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try { return await action(); }
+        finally { gate.Release(); }
+    }
+
+    public Task<PreparedPlaylistSnapshot> PreparePlaylistSnapshotAsync(
+        PlaylistWatchlistDto playlist, PlaylistHeadSnapshot? head, CancellationToken cancellationToken)
+        => _engine.PreparePlaylistSnapshotAsync(playlist, head, cancellationToken);
+
     public Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        CancellationToken cancellationToken,
-        bool forceMediaServerSync = false,
-        PlaylistHeadSnapshot? prefetchedHead = null)
-        => _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync, prefetchedHead);
+        PlaylistWatchlistDto playlist, CancellationToken cancellationToken,
+        bool forceMediaServerSync = false, PlaylistHeadSnapshot? prefetchedHead = null,
+        PreparedPlaylistSnapshot? preparedSnapshot = null,
+        Func<Task<bool>>? validateClaim = null)
+        => WithPlaylistExecutionAsync(playlist.Source, playlist.SourceId, async () =>
+        {
+            if (validateClaim is not null && !await validateClaim())
+                return new PlaylistReconciliationResult(false, "Prepared request was superseded.",
+                    playlist.TrackCount ?? 0, 0, 0, 0, 0, 0, 1, null, FailureFingerprint: "prepared_snapshot_obsolete");
+            // A direct/manual source read supersedes any older preparation still in flight.
+            // Update existing work only; a manual operation must not create a second queue job.
+            if (preparedSnapshot is null)
+                await _engine.InvalidatePreparedPlaylistRequestAsync(playlist.Source, playlist.SourceId, cancellationToken);
+            return await _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync, prefetchedHead, preparedSnapshot);
+        }, cancellationToken);
 
     /// <summary>Read-only head fetch used by the platform snapshot discovery phase.</summary>
     public Task<PlaylistHeadSnapshot> FetchPlaylistHeadAsync(

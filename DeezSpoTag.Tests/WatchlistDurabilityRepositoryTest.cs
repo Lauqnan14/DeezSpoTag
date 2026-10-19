@@ -59,6 +59,62 @@ public sealed class WatchlistDurabilityRepositoryTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PreparedRequests_ExpiredLeaseIsReclaimedWithoutChangingTheSnapshot()
+    {
+        await _repository.AddPlaylistWatchlistAsync("spotify", "recovery", new PlaylistWatchlistMetadataInput("Recovery", null, null, 2));
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "recovery");
+        var fetch = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.True(await _repository.PublishPreparedWatchlistPlaylistAsync("spotify", "recovery", fetch.Generation, "payload"));
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "recovery"));
+        var old = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "dead-worker", stage: "reconcile"));
+        Assert.Empty(await NewRepository().ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "live-worker", stage: "reconcile"));
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE watchlist_reconciliation_request SET lease_until_utc='2000-01-01T00:00:00Z';";
+            await command.ExecuteNonQueryAsync();
+        }
+        var recovered = Assert.Single(await NewRepository().ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "live-worker", stage: "reconcile"));
+        Assert.Equal(old.Generation, recovered.Generation);
+        Assert.Equal("payload", recovered.PreparedSnapshotJson);
+        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([old], "dead-worker"));
+        Assert.Equal(0, await _repository.RenewClaimedWatchlistReconciliationRequestsAsync("dead-worker", TimeSpan.FromMinutes(1), requests: [old]));
+        Assert.Equal(1, await _repository.RenewClaimedWatchlistReconciliationRequestsAsync("live-worker", TimeSpan.FromMinutes(1), requests: [recovered]));
+        Assert.True(await _repository.RemovePlaylistWatchlistAsync("spotify", "recovery"));
+        Assert.Empty(await _repository.GetWatchlistReconciliationRequestsAsync());
+    }
+
+    [Fact]
+    public async Task PreparedRequests_SurviveReopenAndCannotLoseANewerGeneration()
+    {
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "prepared");
+        var initial = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        var generationProperty = initial.GetType().GetProperty("Generation");
+        Assert.NotNull(generationProperty);
+        var publish = typeof(LibraryRepository).GetMethod("PublishPreparedWatchlistPlaylistAsync");
+        Assert.NotNull(publish);
+        var generation = (string)generationProperty.GetValue(initial)!;
+        Assert.True(await (Task<bool>)publish.Invoke(_repository, ["spotify", "prepared", generation, "{\"version\":1}", CancellationToken.None])!);
+        var reopened = NewRepository();
+        var prepared = Assert.Single(await reopened.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal("reconcile", prepared.GetType().GetProperty("Stage")!.GetValue(prepared));
+        Assert.Equal("{\"version\":1}", prepared.GetType().GetProperty("PreparedSnapshotJson")!.GetValue(prepared));
+        Assert.Empty(await reopened.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "fetcher"));
+        var claimMethod = typeof(LibraryRepository).GetMethod("ClaimDueWatchlistReconciliationRequestsAsync")!;
+        var claimed = Assert.Single(await (Task<IReadOnlyList<WatchlistReconciliationRequestDto>>)claimMethod.Invoke(
+            reopened, [1, TimeSpan.FromMinutes(1), "consumer", CancellationToken.None, "reconcile", null])!);
+        await reopened.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "prepared");
+        Assert.Equal(0, await reopened.RenewClaimedWatchlistReconciliationRequestsAsync("consumer", TimeSpan.FromMinutes(1), requests: [claimed]));
+        Assert.Equal(0, await reopened.CompleteClaimedWatchlistReconciliationRequestsAsync([claimed], "consumer"));
+        var refreshed = Assert.Single(await reopened.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal("fetch", refreshed.GetType().GetProperty("Stage")!.GetValue(refreshed));
+        Assert.NotEqual(generationProperty.GetValue(claimed), generationProperty.GetValue(refreshed));
+        Assert.Equal(0, await reopened.RetryClaimedWatchlistReconciliationRequestsAsync([claimed], "consumer", "old failure"));
+        Assert.False(await (Task<bool>)publish.Invoke(reopened, ["spotify", "prepared", generation, "old", CancellationToken.None])!);
+    }
+
+    [Fact]
     public async Task ReconciliationRequests_AreDurableCoalescedAndCannotLoseAConcurrentRefresh()
     {
         Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", " Spotify ", " list-a "));
@@ -549,6 +605,181 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
+    public async Task TrackVerification_RepeatingUnchangedEvidenceDoesNotRewriteTheLedger()
+    {
+        await AddPlaylistWithTargetsAsync("verification-noop", ["plex"]);
+        var verification = new PlaylistWatchTrackVerification("track-1", 9001, "identity_verified", "Indexed.");
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "verification-noop", [MissingTrack("track-1", 1)]);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync("spotify", "verification-noop", verification);
+        await ExecuteSqlAsync(@"
+CREATE TABLE verification_update_audit (track_id TEXT);
+CREATE TRIGGER count_verification_updates AFTER UPDATE ON playlist_watch_track
+BEGIN INSERT INTO verification_update_audit VALUES (NEW.track_source_id); END;
+CREATE TRIGGER count_missing_verification_updates AFTER UPDATE ON playlist_watch_missing_track
+BEGIN INSERT INTO verification_update_audit VALUES (NEW.track_source_id); END;");
+
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync("spotify", "verification-noop", verification);
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var count = new SqliteCommand("SELECT COUNT(*) FROM verification_update_audit;", connection);
+        Assert.Equal(0L, (long)(await count.ExecuteScalarAsync())!);
+        Assert.Equal(9001, Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "verification-noop")).LocalTrackId);
+    }
+
+    [Fact]
+    public async Task TrackVerificationBatch_RollsBackEveryTrackWhenOneWriteFails()
+    {
+        await AddPlaylistWithTargetsAsync("verification-atomic", ["plex"]);
+        await _repository.AddPlaylistWatchTracksAsync("spotify", "verification-atomic",
+            [new PlaylistWatchTrackInsert("first", null), new PlaylistWatchTrackInsert("second", null)]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "verification-atomic", [MissingTrack("first", 1)]);
+        await ExecuteSqlAsync(@"
+CREATE TRIGGER fail_second_verification BEFORE UPDATE ON playlist_watch_track
+WHEN NEW.track_source_id='second' AND NEW.local_track_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'synthetic verification failure'); END;");
+        var method = typeof(LibraryRepository).GetMethod("UpdatePlaylistWatchTrackVerificationsAsync");
+        Assert.NotNull(method);
+
+        await Assert.ThrowsAsync<SqliteException>(async () => await (Task)method.Invoke(_repository,
+            new object[] { "spotify", "verification-atomic", new PlaylistWatchTrackVerification[] {
+                new("first", 100, "identity_verified"), new("second", 200, "identity_verified") }, CancellationToken.None })!);
+
+        var rows = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "verification-atomic");
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, row => Assert.Null(row.LocalTrackId));
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var missing = new SqliteCommand("SELECT status FROM playlist_watch_missing_track WHERE source_id='verification-atomic';", connection);
+        Assert.NotEqual("resolved", (string)(await missing.ExecuteScalarAsync())!);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(129)]
+    [InlineData(3000)]
+    public async Task TrackVerificationBatch_PreservesReviewAndMissingDecisionsAcrossWriteBatches(int count)
+    {
+        await AddPlaylistWithTargetsAsync("verification-large", ["plex"]);
+        var entries = Enumerable.Range(0, count).Select(i => (i % 3) switch {
+            0 => new PlaylistWatchTrackVerification("id-" + i, 100 + i, "identity_verified", "Indexed."),
+            1 => new PlaylistWatchTrackVerification("id-" + i, null, "review", "Ambiguous."),
+            _ => new PlaylistWatchTrackVerification("id-" + i, null, "missing", "Not indexed.") }).ToArray();
+        var method = typeof(LibraryRepository).GetMethod("UpdatePlaylistWatchTrackVerificationsAsync")!;
+        await (Task)method.Invoke(_repository, new object[] { "spotify", "verification-large", entries, CancellationToken.None })!;
+
+        var rows = new Dictionary<string, (long? LocalTrackId, string IdentityStatus, string Status)>();
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using (var read = new SqliteCommand(@"
+SELECT track_source_id, local_track_id, identity_status, status FROM playlist_watch_track
+WHERE source='spotify' AND source_id='verification-large';", connection))
+        await using (var reader = await read.ExecuteReaderAsync())
+            while (await reader.ReadAsync())
+                rows.Add(reader.GetString(0), (reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.GetString(2), reader.GetString(3)));
+        Assert.Equal(count, rows.Count);
+        foreach (var entry in entries)
+        {
+            Assert.True(rows.TryGetValue(entry.TrackSourceId, out var saved));
+            Assert.Equal(entry.LocalTrackId, saved.LocalTrackId);
+            Assert.Equal(entry.IdentityStatus, saved.IdentityStatus);
+            Assert.Equal(entry.LocalTrackId.HasValue ? "completed" : entry.IdentityStatus, saved.Status);
+        }
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await (Task)method.Invoke(_repository,
+            new object[] { "spotify", "verification-large", entries, cancelled.Token })!);
+        await using var verifyCount = new SqliteCommand("SELECT COUNT(*) FROM playlist_watch_track WHERE source_id='verification-large';", connection);
+        Assert.Equal((long)count, (long)(await verifyCount.ExecuteScalarAsync())!);
+    }
+
+    [Theory]
+    [InlineData("spotify", 2, 2, true)]
+    [InlineData("boomplay", 2, 2, true)]
+    [InlineData("apple", 2, 2, true)]
+    [InlineData("spotify", 2, 1, false)]
+    [InlineData("spotify", 2, 3, false)]
+    [InlineData("spotify", 2, 0, false)]
+    public void CandidateCache_RequiresObservedEntryCountToMatchTheSourceCount(string source, int expected, int observed, bool reusable)
+    {
+        Assert.Equal(reusable, PlaylistCandidateContract.IsReusableCache(source,
+            PlaylistCandidateContract.CurrentCacheSchemaVersion, [Candidate("one", "Song", "Artist")], expected,
+            isComplete: true, sourceItemsObserved: observed));
+        Assert.False(PlaylistCandidateContract.IsReusableCache(source,
+            PlaylistCandidateContract.CurrentCacheSchemaVersion, [Candidate("one", "Song", "Artist")], expected,
+            isComplete: false, sourceItemsObserved: observed));
+    }
+
+    [Fact]
+    public async Task CandidateCache_SchemaUpgradePreservesLegacyRowsWithoutInventingObservedCounts()
+    {
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync("spotify", "legacy-observed-cache", "snapshot", "[]", 4, "identity", "provider", true);
+        await ExecuteSqlAsync("ALTER TABLE playlist_track_candidate_cache DROP COLUMN source_items_observed;");
+
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+
+        var saved = await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "legacy-observed-cache");
+        Assert.NotNull(saved);
+        Assert.Null(saved.SourceItemsObserved);
+        Assert.True(saved.IsComplete);
+        Assert.Equal("snapshot", saved.SnapshotId);
+        Assert.Equal("[]", saved.CandidatesJson);
+    }
+
+    [Fact]
+    public async Task CandidateCache_RoundTripsObservedSourceCountIndependentlyOfUniqueCandidates()
+    {
+        var method = typeof(LibraryRepository).GetMethod("UpsertPlaylistTrackCandidateCacheAsync");
+        Assert.NotNull(method);
+        Assert.Contains(method.GetParameters(), parameter => parameter.Name == "sourceItemsObserved");
+        await (Task)method.Invoke(_repository, new object?[] { "spotify", "observed-cache", "same-snapshot", "[]",
+            PlaylistCandidateContract.CurrentCacheSchemaVersion, "identity", "provider", true, CancellationToken.None, 53 })!;
+
+        var saved = await NewRepository().GetPlaylistTrackCandidateCacheAsync("spotify", "observed-cache");
+        Assert.NotNull(saved);
+        Assert.Equal(53, saved.GetType().GetProperty("SourceItemsObserved")!.GetValue(saved));
+        Assert.Equal("[]", saved.CandidatesJson);
+    }
+
+    [Theory]
+    [InlineData("spotify")]
+    [InlineData("boomplay")]
+    public void CandidateCache_ShortLegacySnapshotRequiresRefreshInsteadOfBeingReusedAndRejected(string source)
+    {
+        Assert.False(PlaylistCandidateContract.IsReusableCache(source,
+            PlaylistCandidateContract.CurrentCacheSchemaVersion, [Candidate("one", "Song", "Artist")], 2, isComplete: true));
+    }
+
+    [Fact]
+    public async Task BatchIdentityMatching_RemovesFinalDecisionsFromLaterSqlPassesAndPreservesAmbiguity()
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using (var seed = new SqliteCommand(@"
+CREATE TEMP TABLE temp_local_track_identity_input (input_index INTEGER PRIMARY KEY);
+INSERT INTO temp_local_track_identity_input VALUES (0),(1),(2);", connection))
+            await seed.ExecuteNonQueryAsync();
+        var results = new LibraryRepository.LocalTrackIdentityResult[] {
+            new(71, "isrc", "Exact identity", [71]),
+            new(null, "ambiguous", "Keep in review", [29, 30]),
+            new(null, "none", "Still unresolved", []) };
+        var prune = typeof(LibraryRepository).GetMethod("PruneResolvedLocalTrackBatchInputsAsync",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(prune);
+
+        await (Task)prune.Invoke(null, new object[] { connection, results, CancellationToken.None })!;
+
+        await using var remaining = new SqliteCommand("SELECT input_index FROM temp_local_track_identity_input ORDER BY input_index;", connection);
+        await using var reader = await remaining.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(2, reader.GetInt32(0));
+        Assert.False(await reader.ReadAsync());
+        Assert.Equal(71, results[0].LocalTrackId);
+        Assert.True(results[1].IsAmbiguous);
+        Assert.Equal(new long[] { 29, 30 }, results[1].CandidateTrackIds);
+    }
+
+    [Fact]
     public async Task ArtworkSyncJobs_AreRevisionedPerTargetAndDoNotRequeueAppliedTargets()
     {
         await AddPlaylistWithTargetsAsync("artwork-list", ["plex", "jellyfin", "navidrome"]);
@@ -692,7 +923,7 @@ WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';
         Assert.True(PlaylistCandidateContract.IsReusableCache(
             "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 1, isComplete: true));
         Assert.True(PlaylistCandidateContract.IsReusableCache(
-            "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 2, isComplete: true));
+            "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 2, isComplete: true, sourceItemsObserved: 2));
     }
 
     [Fact]

@@ -10513,6 +10513,7 @@ SELECT EXISTS (
 	DELETE FROM playlist_watch_state WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_track_candidate_cache WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_watch_preferences WHERE source = @source AND source_id = @sourceId;
+DELETE FROM watchlist_reconciliation_request WHERE kind='playlist' AND source=@source AND identifier=@sourceId;
 DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -11819,7 +11820,8 @@ SELECT source,
        schema_version,
        identity_revision,
        provider_readiness_revision,
-       is_complete
+       is_complete,
+       source_items_observed
 FROM playlist_track_candidate_cache
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -11899,7 +11901,8 @@ LIMIT 1;";
             await reader.IsDBNullAsync(5, cancellationToken) ? 0 : reader.GetInt32(5),
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
             await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
-            !await reader.IsDBNullAsync(8, cancellationToken) && reader.GetInt32(8) != 0);
+            !await reader.IsDBNullAsync(8, cancellationToken) && reader.GetInt32(8) != 0,
+            await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetInt32(9));
     }
 
     public async Task UpsertPlaylistTrackCandidateCacheAsync(
@@ -11911,7 +11914,8 @@ LIMIT 1;";
         string? identityRevision,
         string? providerReadinessRevision,
         bool isComplete,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? sourceItemsObserved = null)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -11922,10 +11926,10 @@ LIMIT 1;";
         const string sql = @"
 INSERT INTO playlist_track_candidate_cache (
     source, source_id, snapshot_id, candidates_json, schema_version,
-    identity_revision, provider_readiness_revision, is_complete)
+    identity_revision, provider_readiness_revision, is_complete, source_items_observed)
 VALUES (
     @source, @sourceId, @snapshotId, @candidatesJson, @schemaVersion,
-    @identityRevision, @providerReadinessRevision, @isComplete)
+    @identityRevision, @providerReadinessRevision, @isComplete, @sourceItemsObserved)
 ON CONFLICT(source, source_id) DO UPDATE SET
     snapshot_id = excluded.snapshot_id,
     candidates_json = excluded.candidates_json,
@@ -11933,6 +11937,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
     identity_revision = excluded.identity_revision,
     provider_readiness_revision = excluded.provider_readiness_revision,
     is_complete = excluded.is_complete,
+    source_items_observed = excluded.source_items_observed,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -11943,6 +11948,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("identityRevision", (object?)identityRevision ?? DBNull.Value);
         command.Parameters.AddWithValue("providerReadinessRevision", (object?)providerReadinessRevision ?? DBNull.Value);
         command.Parameters.AddWithValue("isComplete", isComplete ? 1 : 0);
+        command.Parameters.AddWithValue("sourceItemsObserved", (object?)sourceItemsObserved ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -12820,80 +12826,85 @@ ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
         string sourceId,
         PlaylistWatchTrackVerification verification,
         CancellationToken cancellationToken = default)
+        => await UpdatePlaylistWatchTrackVerificationsAsync(source, sourceId, [verification], cancellationToken);
+
+    public async Task UpdatePlaylistWatchTrackVerificationsAsync(
+        string source,
+        string sourceId,
+        IReadOnlyCollection<PlaylistWatchTrackVerification> verifications,
+        CancellationToken cancellationToken = default)
     {
-        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
-            || string.IsNullOrWhiteSpace(verification.TrackSourceId))
+        if (verifications.Count == 0 || verifications.All(static item => string.IsNullOrWhiteSpace(item.TrackSourceId))
+            || !TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
             return;
         }
 
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string insertSql = @"
-INSERT OR IGNORE INTO playlist_watch_track (
-    source,
-    source_id,
-    track_source_id,
-    status,
-    created_at,
-    updated_at)
-VALUES (
-    @source,
-    @sourceId,
-    @trackSourceId,
-    @initialStatus,
-    CURRENT_TIMESTAMP,
-    CURRENT_TIMESTAMP);";
-        await using (var insert = new SqliteCommand(insertSql, connection))
-        {
-            insert.Parameters.AddWithValue(SourceField, normalizedSource);
-            insert.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-            insert.Parameters.AddWithValue("trackSourceId", verification.TrackSourceId.Trim());
-            insert.Parameters.AddWithValue(
-                "initialStatus",
-                verification.LocalTrackId.HasValue && !string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase)
-                    ? "completed"
-                    : string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase)
-                        ? "review"
-                        : "missing");
-            await insert.ExecuteNonQueryAsync(cancellationToken);
-        }
-
         const string sql = @"
-UPDATE playlist_watch_track
-SET status = CASE
+INSERT INTO playlist_watch_track (
+    source, source_id, track_source_id, status, local_track_id, identity_status,
+    identity_reason, redirect_track_source_id, redirect_reason, verified_at_utc, created_at, updated_at)
+VALUES (
+    @source, @sourceId, @trackSourceId, @initialStatus, @localTrackId, @identityStatus,
+    @identityReason, @redirectTrackSourceId, @redirectReason, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
+    status = CASE
         WHEN @localTrackId IS NOT NULL AND @identityStatus <> 'review' THEN 'completed'
         WHEN @identityStatus = 'missing' AND lower(status) IN ('completed', 'complete', 'downloaded') THEN 'missing'
-        ELSE status
+        ELSE playlist_watch_track.status
     END,
-    local_track_id = @localTrackId,
-    identity_status = @identityStatus,
-    identity_reason = @identityReason,
-    redirect_track_source_id = @redirectTrackSourceId,
-    redirect_reason = @redirectReason,
+    local_track_id = excluded.local_track_id,
+    identity_status = excluded.identity_status,
+    identity_reason = excluded.identity_reason,
+    redirect_track_source_id = excluded.redirect_track_source_id,
+    redirect_reason = excluded.redirect_reason,
     verified_at_utc = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
-WHERE source = @source
-  AND source_id = @sourceId
-  AND track_source_id = @trackSourceId;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, normalizedSource);
-        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("trackSourceId", verification.TrackSourceId.Trim());
-        command.Parameters.AddWithValue("localTrackId", (object?)verification.LocalTrackId ?? DBNull.Value);
-        command.Parameters.AddWithValue("identityStatus", verification.IdentityStatus);
-        command.Parameters.AddWithValue("identityReason", (object?)verification.IdentityReason ?? DBNull.Value);
-        command.Parameters.AddWithValue("redirectTrackSourceId", (object?)verification.RedirectTrackSourceId ?? DBNull.Value);
-        command.Parameters.AddWithValue("redirectReason", (object?)verification.RedirectReason ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-
-        if (verification.LocalTrackId.HasValue
-            && !string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase))
+WHERE playlist_watch_track.local_track_id IS NOT excluded.local_track_id
+   OR playlist_watch_track.identity_status IS NOT excluded.identity_status
+   OR playlist_watch_track.identity_reason IS NOT excluded.identity_reason
+   OR playlist_watch_track.redirect_track_source_id IS NOT excluded.redirect_track_source_id
+   OR playlist_watch_track.redirect_reason IS NOT excluded.redirect_reason
+   OR playlist_watch_track.verified_at_utc IS NULL
+   OR (excluded.local_track_id IS NOT NULL AND excluded.identity_status <> 'review' AND playlist_watch_track.status <> 'completed')
+   OR (excluded.identity_status = 'missing' AND lower(playlist_watch_track.status) IN ('completed','complete','downloaded'));";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        // Bound the write lock to a small group. Identity resolution and all provider work happen before this call.
+        foreach (var batch in verifications.Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId)).Chunk(128))
         {
-            await ResolvePlaylistWatchMissingTrackAsync(
-                normalizedSource,
-                normalizedSourceId,
-                verification.TrackSourceId,
-                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue(SourceField, normalizedSource);
+            command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            command.Parameters.Add("trackSourceId", SqliteType.Text);
+            command.Parameters.Add("initialStatus", SqliteType.Text);
+            command.Parameters.Add("localTrackId", SqliteType.Integer);
+            command.Parameters.Add("identityStatus", SqliteType.Text);
+            command.Parameters.Add("identityReason", SqliteType.Text);
+            command.Parameters.Add("redirectTrackSourceId", SqliteType.Text);
+            command.Parameters.Add("redirectReason", SqliteType.Text);
+            foreach (var verification in batch)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var available = verification.LocalTrackId.HasValue
+                    && !string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase);
+                command.Parameters["trackSourceId"].Value = verification.TrackSourceId.Trim();
+                command.Parameters["initialStatus"].Value = available ? "completed"
+                    : string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase) ? "review" : "missing";
+                command.Parameters["localTrackId"].Value = (object?)verification.LocalTrackId ?? DBNull.Value;
+                command.Parameters["identityStatus"].Value = verification.IdentityStatus;
+                command.Parameters["identityReason"].Value = (object?)verification.IdentityReason ?? DBNull.Value;
+                command.Parameters["redirectTrackSourceId"].Value = (object?)verification.RedirectTrackSourceId ?? DBNull.Value;
+                command.Parameters["redirectReason"].Value = (object?)verification.RedirectReason ?? DBNull.Value;
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                if (available)
+                {
+                    await ResolvePlaylistWatchMissingTrackAsync(connection, transaction, normalizedSource, normalizedSourceId,
+                        verification.TrackSourceId.Trim(), cancellationToken, skipUnchanged: true);
+                }
+            }
+            await transaction.CommitAsync(cancellationToken);
         }
     }
 
@@ -14034,7 +14045,15 @@ WHERE source=@source AND source_id=@sourceId AND track_source_id=@trackSourceId;
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        return await ResolvePlaylistWatchMissingTrackAsync(connection, null, normalizedSource, normalizedSourceId,
+            trackSourceId.Trim(), cancellationToken, skipUnchanged: false);
+    }
+
+    private static async Task<int> ResolvePlaylistWatchMissingTrackAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, string normalizedSource, string normalizedSourceId,
+        string trackSourceId, CancellationToken cancellationToken, bool skipUnchanged)
+    {
+        var sql = @"
 UPDATE playlist_watch_missing_track
 SET status='resolved',
     queue_uuid=NULL,
@@ -14042,7 +14061,11 @@ SET status='resolved',
     retry_after_utc=NULL,
     updated_at=CURRENT_TIMESTAMP
 WHERE source=@source AND source_id=@sourceId AND track_source_id=@trackSourceId;";
-        await using var command = new SqliteCommand(sql, connection);
+        if (skipUnchanged)
+        {
+            sql = sql.TrimEnd(';') + " AND (status IS NOT 'resolved' OR queue_uuid IS NOT NULL OR last_error IS NOT NULL OR retry_after_utc IS NOT NULL);";
+        }
+        await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("trackSourceId", trackSourceId.Trim());
@@ -14719,6 +14742,85 @@ WHERE lower(status) IN ('completed', 'complete', 'failed', 'cancelled', 'cancele
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task InvalidatePreparedPlaylistRequestAsync(
+        string source, string identifier, CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, identifier, out var normalizedSource, out var normalizedId)) return;
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_reconciliation_request
+SET stage='fetch', generation=@generation, prepared_snapshot_json=NULL, status='pending',
+    next_attempt_utc=CURRENT_TIMESTAMP, lease_owner=NULL, lease_until_utc=NULL, last_error=NULL,
+    updated_at=@now
+WHERE kind='playlist' AND source=@source AND identifier=@identifier;", connection);
+        command.Parameters.AddWithValue("source", normalizedSource);
+        command.Parameters.AddWithValue("identifier", normalizedId);
+        command.Parameters.AddWithValue("generation", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> IsCurrentPreparedWatchlistClaimAsync(
+        WatchlistReconciliationRequestDto request, string leaseOwner, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT EXISTS(SELECT 1 FROM watchlist_reconciliation_request
+WHERE kind='playlist' AND source=@source AND identifier=@identifier AND generation=@generation
+  AND stage='reconcile' AND status='processing' AND lease_owner=@owner
+  AND datetime(lease_until_utc)>datetime('now'));", connection);
+        command.Parameters.AddWithValue("source", request.Source);
+        command.Parameters.AddWithValue("identifier", request.Identifier);
+        command.Parameters.AddWithValue("generation", request.Generation);
+        command.Parameters.AddWithValue("owner", leaseOwner);
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) == 1;
+    }
+
+    public async Task<bool> ReturnPreparedWatchlistRequestToFetchAsync(
+        WatchlistReconciliationRequestDto request, string leaseOwner, string error,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_reconciliation_request
+SET stage='fetch', prepared_snapshot_json=NULL, generation=@newGeneration, status='retry',
+    next_attempt_utc=@next, attempt_count=attempt_count+1, last_error=@error,
+    lease_owner=NULL, lease_until_utc=NULL, updated_at=@now
+WHERE kind='playlist' AND source=@source AND identifier=@identifier
+  AND generation=@generation AND lease_owner=@owner;", connection);
+        command.Parameters.AddWithValue("source", request.Source);
+        command.Parameters.AddWithValue("identifier", request.Identifier);
+        command.Parameters.AddWithValue("generation", request.Generation);
+        command.Parameters.AddWithValue("newGeneration", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("owner", leaseOwner);
+        command.Parameters.AddWithValue("error", error);
+        command.Parameters.AddWithValue("next", DateTimeOffset.UtcNow.AddSeconds(Math.Min(600, 15 * Math.Pow(2, Math.Min(request.AttemptCount, 6)))).ToString("O"));
+        command.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> PublishPreparedWatchlistPlaylistAsync(
+        string source, string identifier, string expectedGeneration, string payloadJson,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, identifier, out var normalizedSource, out var normalizedId)) return false;
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_reconciliation_request
+SET stage='reconcile', prepared_snapshot_json=@payload, generation=@newGeneration,
+    status='pending', attempt_count=0, next_attempt_utc=CURRENT_TIMESTAMP,
+    lease_owner=NULL, lease_until_utc=NULL, last_error=NULL, updated_at=@now
+WHERE kind='playlist' AND source=@source AND identifier=@identifier
+  AND stage='fetch' AND generation=@expectedGeneration;", connection);
+        command.Parameters.AddWithValue("source", normalizedSource);
+        command.Parameters.AddWithValue("identifier", normalizedId);
+        command.Parameters.AddWithValue("payload", payloadJson);
+        command.Parameters.AddWithValue("expectedGeneration", expectedGeneration);
+        command.Parameters.AddWithValue("newGeneration", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<bool> EnqueueWatchlistReconciliationRequestAsync(
         string kind,
         string? source,
@@ -14755,10 +14857,11 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier LIMIT 1;";
         var alreadyExists = await existsCommand.ExecuteScalarAsync(cancellationToken) is not null;
 
         const string sql = @"
-INSERT INTO watchlist_reconciliation_request(kind,source,identifier,created_at,updated_at)
-VALUES(@kind,@source,@identifier,@nowUtc,@nowUtc)
+INSERT INTO watchlist_reconciliation_request(kind,source,identifier,created_at,updated_at,generation)
+VALUES(@kind,@source,@identifier,@nowUtc,@nowUtc,@generation)
 ON CONFLICT(kind,source,identifier) DO UPDATE SET
     updated_at=excluded.updated_at,
+    generation=excluded.generation, stage='fetch', prepared_snapshot_json=NULL,
     next_attempt_utc=excluded.updated_at,
     status=CASE WHEN lower(watchlist_reconciliation_request.status)='processing' THEN 'processing' ELSE 'pending' END,
     last_error=NULL;";
@@ -14767,19 +14870,22 @@ ON CONFLICT(kind,source,identifier) DO UPDATE SET
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("identifier", normalizedIdentifier);
         command.Parameters.AddWithValue("nowUtc", nowUtc);
+        command.Parameters.AddWithValue("generation", Guid.NewGuid().ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return !alreadyExists;
     }
 
     public async Task<IReadOnlyList<WatchlistReconciliationRequestDto>> GetWatchlistReconciliationRequestsAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? playlistKey = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
-SELECT kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error
+SELECT kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,prepared_snapshot_json
 FROM watchlist_reconciliation_request
+WHERE @playlistKey IS NULL OR (kind='playlist' AND source||':'||identifier=@playlistKey)
 ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_at, source, identifier;", connection);
+        command.Parameters.AddWithValue("playlistKey", (object?)playlistKey ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var requests = new List<WatchlistReconciliationRequestDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -14788,16 +14894,18 @@ ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_
                 reader.GetString(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                ParseDateTimeOffsetInvariant(reader.GetString(3)),
-                ParseDateTimeOffsetInvariant(reader.GetString(4)),
+                ParseUtcDateTimeOffsetInvariant(reader.GetString(3)),
+                ParseUtcDateTimeOffsetInvariant(reader.GetString(4)),
                 await reader.IsDBNullAsync(5, cancellationToken) ? "pending" : reader.GetString(5),
                 await reader.IsDBNullAsync(6, cancellationToken) ? 0 : reader.GetInt32(6),
                 await reader.IsDBNullAsync(7, cancellationToken) || string.IsNullOrWhiteSpace(reader.GetString(7))
                     ? null
-                    : ParseDateTimeOffsetInvariant(reader.GetString(7)),
+                    : ParseUtcDateTimeOffsetInvariant(reader.GetString(7)),
                 await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
-                await reader.IsDBNullAsync(9, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
-                await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10)));
+                await reader.IsDBNullAsync(9, cancellationToken) ? null : ParseUtcDateTimeOffsetInvariant(reader.GetString(9)),
+                await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
+                reader.GetString(11), reader.GetString(12),
+                await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13)));
         }
         return requests;
     }
@@ -14806,7 +14914,9 @@ ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_
         int limit,
         TimeSpan lease,
         string leaseOwner,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string stage = "fetch",
+        string? playlistKey = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -14814,21 +14924,25 @@ ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_
         await using var command = new SqliteCommand(@"
 UPDATE watchlist_reconciliation_request
 SET status='processing',
+    generation=CASE WHEN generation='' THEN lower(hex(randomblob(16))) ELSE generation END,
     lease_owner=@leaseOwner,
     lease_until_utc=@leaseUntilUtc
 WHERE rowid IN (
     SELECT rowid
     FROM watchlist_reconciliation_request
-    WHERE (lower(status) IN ('pending','retry')
+    WHERE stage=@stage AND (@playlistKey IS NULL OR source||':'||identifier=@playlistKey)
+      AND ((lower(status) IN ('pending','retry')
            AND (next_attempt_utc='' OR datetime(next_attempt_utc) <= datetime('now')))
-       OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'))
+       OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now')))
     ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_at
     LIMIT @limit
 )
-RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error;", connection, transaction);
+RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,prepared_snapshot_json;", connection, transaction);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 1000));
+        command.Parameters.AddWithValue("stage", stage);
+        command.Parameters.AddWithValue("playlistKey", (object?)playlistKey ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var requests = new List<WatchlistReconciliationRequestDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -14837,14 +14951,16 @@ RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next
                 reader.GetString(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                ParseDateTimeOffsetInvariant(reader.GetString(3)),
-                ParseDateTimeOffsetInvariant(reader.GetString(4)),
+                ParseUtcDateTimeOffsetInvariant(reader.GetString(3)),
+                ParseUtcDateTimeOffsetInvariant(reader.GetString(4)),
                 reader.GetString(5),
                 reader.GetInt32(6),
-                await reader.IsDBNullAsync(7, cancellationToken) || string.IsNullOrWhiteSpace(reader.GetString(7)) ? null : ParseDateTimeOffsetInvariant(reader.GetString(7)),
+                await reader.IsDBNullAsync(7, cancellationToken) || string.IsNullOrWhiteSpace(reader.GetString(7)) ? null : ParseUtcDateTimeOffsetInvariant(reader.GetString(7)),
                 await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
-                await reader.IsDBNullAsync(9, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
-                await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10)));
+                await reader.IsDBNullAsync(9, cancellationToken) ? null : ParseUtcDateTimeOffsetInvariant(reader.GetString(9)),
+                await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
+                reader.GetString(11), reader.GetString(12),
+                await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13)));
         }
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
@@ -14869,18 +14985,21 @@ RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next
             await using var delete = new SqliteCommand(@"
 DELETE FROM watchlist_reconciliation_request
 WHERE kind=@kind AND source=@source AND identifier=@identifier
-  AND updated_at=@updatedAt AND lease_owner=@leaseOwner;", connection, transaction);
+  AND (updated_at=@updatedAt OR julianday(updated_at)=julianday(@updatedAt))
+  AND generation=@generation AND lease_owner=@leaseOwner;", connection, transaction);
             delete.Parameters.AddWithValue("kind", request.Kind);
             delete.Parameters.AddWithValue(SourceField, request.Source);
             delete.Parameters.AddWithValue("identifier", request.Identifier);
             delete.Parameters.AddWithValue("updatedAt", request.UpdatedAt.ToString("O"));
+            delete.Parameters.AddWithValue("generation", request.Generation);
             delete.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
             completed += await delete.ExecuteNonQueryAsync(cancellationToken);
 
             await using var releaseRefreshed = new SqliteCommand(@"
 UPDATE watchlist_reconciliation_request
 SET status='pending', lease_owner=NULL, lease_until_utc=NULL, next_attempt_utc=CURRENT_TIMESTAMP
-WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@leaseOwner;", connection, transaction);
+WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@leaseOwner AND stage='fetch' AND generation<>@generation;", connection, transaction);
+            releaseRefreshed.Parameters.AddWithValue("generation", request.Generation);
             releaseRefreshed.Parameters.AddWithValue("kind", request.Kind);
             releaseRefreshed.Parameters.AddWithValue(SourceField, request.Source);
             releaseRefreshed.Parameters.AddWithValue("identifier", request.Identifier);
@@ -14894,7 +15013,8 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
     public async Task<int> RenewClaimedWatchlistReconciliationRequestsAsync(
         string leaseOwner,
         TimeSpan lease,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<WatchlistReconciliationRequestDto>? requests = null)
     {
         if (string.IsNullOrWhiteSpace(leaseOwner))
         {
@@ -14904,8 +15024,14 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         await using var command = new SqliteCommand(@"
 UPDATE watchlist_reconciliation_request
 SET lease_until_utc=@leaseUntilUtc
-WHERE lower(status)='processing' AND lease_owner=@leaseOwner;", connection);
+WHERE lower(status)='processing' AND lease_owner=@leaseOwner
+  AND (@claims IS NULL OR EXISTS(SELECT 1 FROM json_each(@claims) claim
+      WHERE json_extract(claim.value,'$.Kind')=watchlist_reconciliation_request.kind
+        AND json_extract(claim.value,'$.Source')=watchlist_reconciliation_request.source
+        AND json_extract(claim.value,'$.Identifier')=watchlist_reconciliation_request.identifier
+        AND json_extract(claim.value,'$.Generation')=watchlist_reconciliation_request.generation));", connection);
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
+        command.Parameters.AddWithValue("claims", requests is null ? DBNull.Value : (object)JsonSerializer.Serialize(requests.Select(request => new { request.Kind, request.Source, request.Identifier, request.Generation })));
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -14932,7 +15058,8 @@ WHERE lower(status)='processing' AND lease_owner=@leaseOwner;", connection);
 UPDATE watchlist_reconciliation_request
 SET status='retry', attempt_count=@attempt, next_attempt_utc=@nextAttemptUtc,
     lease_owner=NULL, lease_until_utc=NULL, last_error=@error
-WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@leaseOwner;", connection, transaction);
+WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@leaseOwner AND generation=@generation;", connection, transaction);
+            command.Parameters.AddWithValue("generation", request.Generation);
             command.Parameters.AddWithValue("attempt", attempt);
             command.Parameters.AddWithValue("nextAttemptUtc", nextAttemptUtc.ToString("O"));
             command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
@@ -18769,7 +18896,11 @@ ORDER BY t.id,
         try
         {
             await ResolveBatchIsrcMatchesAsync(connection, results, cancellationToken);
+            await PruneResolvedLocalTrackBatchInputsAsync(connection, results, cancellationToken);
+            if (results.All(HasResolvedLocalIdentityDecision)) return results;
             await ResolveBatchSourceMatchesAsync(connection, results, cancellationToken);
+            await PruneResolvedLocalTrackBatchInputsAsync(connection, results, cancellationToken);
+            if (results.All(HasResolvedLocalIdentityDecision)) return results;
             await ResolveBatchMetadataMatchesAsync(connection, lookups, results, cancellationToken);
         }
         finally
@@ -18821,6 +18952,23 @@ ORDER BY t.id,
         }
 
         return lookups;
+    }
+
+    private static async Task PruneResolvedLocalTrackBatchInputsAsync(
+        SqliteConnection connection,
+        LocalTrackIdentityResult[] results,
+        CancellationToken cancellationToken)
+    {
+        // An exact identity or a final ambiguous decision already wins over every later pass.
+        // Remove only these inputs, retaining their original result indexes and all unresolved candidates.
+        var resolvedIndexes = Enumerable.Range(0, results.Length)
+            .Where(index => HasResolvedLocalIdentityDecision(results[index])).ToArray();
+        if (resolvedIndexes.Length == 0) return;
+        await using var command = new SqliteCommand(@"
+DELETE FROM temp_local_track_identity_input
+WHERE input_index IN (SELECT CAST(value AS INTEGER) FROM json_each(@resolvedIndexes));", connection);
+        command.Parameters.AddWithValue("resolvedIndexes", JsonSerializer.Serialize(resolvedIndexes));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string? NormalizeBatchExactValue(string? value, int maxLength)

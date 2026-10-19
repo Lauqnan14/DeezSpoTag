@@ -49,7 +49,11 @@ public sealed class PlaylistSyncService
         IReadOnlyList<string> Genres,
         int? DurationMs,
         string? IdentitySource = null,
-        string? IdentityTrackId = null);
+        string? IdentityTrackId = null)
+    {
+        // Only supplied from identities verified during this reconciliation, never a cross-run cache.
+        public long? VerifiedLocalTrackId { get; init; }
+    }
 
     private sealed record SyncMatchSummary(
         List<string> TargetIds,
@@ -1995,7 +1999,8 @@ public sealed class PlaylistSyncService
         IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         string? targetService,
         bool force,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<PlaylistWatchTrackStatusDto>? verifiedLocalTrackStatuses = null)
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
@@ -2040,7 +2045,8 @@ public sealed class PlaylistSyncService
             playlist.Source,
             playlist.SourceId,
             eligibleTracks,
-            cancellationToken);
+            cancellationToken,
+            verifiedLocalTrackStatuses);
 
         if (availableTrackRows.Count == 0)
         {
@@ -2535,9 +2541,10 @@ public sealed class PlaylistSyncService
         string source,
         string sourceId,
         IReadOnlyList<SyncTrackSummary> eligibleTracks,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<PlaylistWatchTrackStatusDto>? verifiedLocalTrackStatuses = null)
     {
-        var localTrackIdBySourceId = (await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
+        var localTrackIdBySourceId = (verifiedLocalTrackStatuses ?? await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
                 source,
                 sourceId,
                 cancellationToken))
@@ -2550,7 +2557,8 @@ public sealed class PlaylistSyncService
                 StringComparer.OrdinalIgnoreCase);
         return eligibleTracks
             .Where(track => localTrackIdBySourceId.ContainsKey(track.SourceTrackId))
-            .Select(track => (track, localTrackIdBySourceId[track.SourceTrackId]))
+            .Select(track => (verifiedLocalTrackStatuses is null ? track : track with
+                { VerifiedLocalTrackId = localTrackIdBySourceId[track.SourceTrackId] }, localTrackIdBySourceId[track.SourceTrackId]))
             .ToList();
     }
 
@@ -5169,6 +5177,11 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (tracks.All(static track => track.VerifiedLocalTrackId is > 0))
+        {
+            return tracks.Select(static track => track.VerifiedLocalTrackId!.Value).ToList();
+        }
         var inputs = BuildLocalTrackIdentityInputs(playlistSource, tracks);
         var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
             inputs,

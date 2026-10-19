@@ -42,6 +42,103 @@ public sealed class PlaylistPlatformSnapshotTest
             "DeezSpoTag.Web", "Services", "PlaylistPlatformSnapshotCoordinator.cs"));
 
     [Fact]
+    public async Task UnexpectedHeadParserFailure_IsIsolatedFromSiblingPlaylists()
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            const string failedId = "12345678-1234-1234-1234-123456789abc";
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var first = await repository.AddPlaylistWatchlistAsync("tidal", failedId, new PlaylistWatchlistMetadataInput("Failed", null, null, 0));
+            var second = await repository.AddPlaylistWatchlistAsync("tidal", "12345678-1234-1234-1234-123456789abd", new PlaylistWatchlistMetadataInput("Healthy", null, null, 0));
+            fixture.SetHeadResponse((request, token) =>
+            {
+                if (request.RequestUri!.AbsolutePath.Contains(failedId))
+                    throw new NullReferenceException("Malformed provider response");
+                return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new System.Net.Http.StringContent("{\"title\":\"Healthy\",\"numberOfTracks\":0}") });
+            });
+            var coordinator = new PlaylistPlatformSnapshotCoordinator(fixture.MeasurementTestServices,
+                fixture.MeasurementTestServices.GetRequiredService<DeezSpoTagSettingsService>(),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<PlaylistPlatformSnapshotCoordinator>.Instance);
+            var results = await coordinator.DiscoverHeadsAsync(new[] { first!, second! }, null, System.Threading.CancellationToken.None);
+            Assert.Equal(2, results.Count);
+            Assert.Equal(PlaylistHeadChangeState.Failed, results[0].ChangeState);
+            Assert.NotNull(results[1].Head);
+            Assert.NotEqual(PlaylistHeadChangeState.Failed, results[1].ChangeState);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preparation_PublishesEarlierResultsBeforeLaterExpansionFinishes(bool firstFails)
+    {
+        var fixture = new WatchlistRunCoordinatorHardeningTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            const string firstId = "12345678-1234-1234-1234-123456789abc";
+            const string secondId = "12345678-1234-1234-1234-123456789abd";
+            var repository = fixture.MeasurementTestServices.GetRequiredService<LibraryRepository>();
+            var first = await repository.AddPlaylistWatchlistAsync("tidal", firstId, new PlaylistWatchlistMetadataInput("First", null, null, 0));
+            var second = await repository.AddPlaylistWatchlistAsync("tidal", secondId, new PlaylistWatchlistMetadataInput("Second", null, null, 0));
+            var settingsService = fixture.MeasurementTestServices.GetRequiredService<DeezSpoTagSettingsService>();
+            var settings = settingsService.LoadSettings();
+            settings.WatchDelayBetweenPlaylistsSeconds = 0;
+            settingsService.SaveSettings(settings);
+            var laterEntered = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            var published = new List<(string Id, Exception? Failure)>();
+            fixture.SetHeadResponse(async (request, token) =>
+            {
+                var path = request.RequestUri!.AbsolutePath;
+                if (path.EndsWith("/items", StringComparison.Ordinal) && path.Contains(firstId) && firstFails)
+                    throw new System.Net.Http.HttpRequestException("First playlist failed");
+                if (path.EndsWith("/items", StringComparison.Ordinal) && path.Contains(secondId))
+                {
+                    laterEntered.TrySetResult();
+                    await release.Task.WaitAsync(token);
+                }
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new System.Net.Http.StringContent("{\"items\":[],\"totalNumberOfItems\":0,\"numberOfTracks\":0,\"title\":\"Synthetic\"}") };
+            });
+            var coordinator = new PlaylistPlatformSnapshotCoordinator(fixture.MeasurementTestServices, settingsService,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<PlaylistPlatformSnapshotCoordinator>.Instance);
+            using var cancellation = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var preparation = coordinator.PrepareSnapshotsAsync(new[] { first!, second! }, (_, _, _) => System.Threading.Tasks.Task.FromResult(false),
+                _ => { }, (playlist, snapshot, failure, token) =>
+                {
+                    published.Add((playlist.SourceId, failure));
+                    return System.Threading.Tasks.Task.CompletedTask;
+                }, cancellation.Token);
+            try
+            {
+                await laterEntered.Task.WaitAsync(cancellation.Token);
+                var earlier = Assert.Single(published);
+                Assert.Equal(firstId, earlier.Id);
+                Assert.Equal(firstFails, earlier.Failure is not null);
+                Assert.False(preparation.IsCompleted);
+                Assert.Null(await repository.GetPlaylistTrackCandidateCacheAsync("tidal", firstId));
+            }
+            finally { release.TrySetResult(); await preparation; }
+            Assert.Equal(2, published.Count);
+            Assert.Null(published[1].Failure);
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    [Fact]
+    public void PreparationContract_IsAvailableWithoutAddingAnotherHostedService()
+    {
+        Assert.NotNull(typeof(PlaylistWatchReconciler).GetMethod("PreparePlaylistSnapshotAsync"));
+        var assembly = typeof(PlaylistWatchReconciler).Assembly;
+        Assert.NotNull(assembly.GetType("DeezSpoTag.Web.Services.PreparedPlaylistSnapshot"));
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task ConcurrentHeadDiscovery_CarriesMeasuredBatchTimeAndKeepsRequestsBounded()
     {
         var fixture = new WatchlistRunCoordinatorHardeningTest();
@@ -202,10 +299,11 @@ public sealed class PlaylistPlatformSnapshotTest
         Assert.Contains("if (!await itemLock.WaitAsync(0, stoppingToken))", coordinator, StringComparison.Ordinal);
         Assert.Contains("foreach (var activeItem in playlistItems)", coordinator, StringComparison.Ordinal);
 
-        // Discovery is awaited before the loop, not interleaved into it.
-        var discoveryIndex = coordinator.IndexOf("DiscoverPlatformHeadsAsync(", StringComparison.Ordinal);
-        var loopIndex = coordinator.IndexOf("foreach (var activeItem in playlistItems)", StringComparison.Ordinal);
-        Assert.True(discoveryIndex > 0 && loopIndex > discoveryIndex, "discovery must complete before the serial loop");
+        // Source preparation overlaps one ordered consumer; mutations remain serial.
+        Assert.Contains("var preparation = ProducePreparedPlaylistsAsync(", coordinator, StringComparison.Ordinal);
+        Assert.Contains("var consumption = ConsumeAsync();", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await Task.WhenAll(preparation, consumption);", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await ready[activeItem.Key].Task.WaitAsync(pipelineToken)", coordinator, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -214,7 +312,7 @@ public sealed class PlaylistPlatformSnapshotTest
         var coordinator = CoordinatorSource();
         var engine = EngineSource();
 
-        Assert.Contains("prefetchedHeads.GetValueOrDefault(", coordinator, StringComparison.Ordinal);
+        Assert.Contains("preparedSnapshot: preparedSnapshot", coordinator, StringComparison.Ordinal);
         Assert.Contains("RunItemAsync(item, serviceProvider, stoppingToken, prefetchedHead)", coordinator, StringComparison.Ordinal);
         Assert.Contains("prefetchedHead", engine, StringComparison.Ordinal);
         Assert.Contains("ToLiveHeadSnapshot(prefetchedHead)", engine, StringComparison.Ordinal);
@@ -244,24 +342,26 @@ public sealed class PlaylistPlatformSnapshotTest
     }
 
     [Fact]
-    public void FailedDiscoveriesAreExcludedSoTheSerialPathRetriesThem()
+    public void FailedDiscoveriesAreRecordedWithoutApplyingAnUntrustedSnapshot()
     {
         var coordinator = CoordinatorSource();
 
-        // A failed head is deliberately not mapped, so reconciliation fetches its own head and keeps
-        // the established per-playlist failure handling, circuit and backoff behaviour.
-        Assert.Contains("discovery.ChangeState == PlaylistHeadChangeState.Failed", coordinator, StringComparison.Ordinal);
-        Assert.Contains("discovery.Head.IsFailed", coordinator, StringComparison.Ordinal);
+        // Failed preparation retains the existing per-playlist failure/backoff path without applying a snapshot.
+        Assert.Contains("preparationFailure: preparedWork.Failure", coordinator, StringComparison.Ordinal);
+        Assert.Contains("head.IsFailed", PlatformSource(), StringComparison.Ordinal);
+        Assert.Contains("failure = ex", PlatformSource(), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void DiscoveryFailureFallsBackRatherThanAbortingTheRun()
+    public void PreparationFailureIsIsolatedAndCancellationStillPropagates()
     {
         var coordinator = CoordinatorSource();
 
-        // A discovery-phase failure must never stop the watch run.
-        Assert.Contains("Playlist platform head discovery failed; falling back", coordinator, StringComparison.Ordinal);
+        // Provider failures settle their own work item, while host cancellation still propagates.
+        Assert.Contains("ExceptionDispatchInfo.Capture(preparationFailure).Throw()", coordinator, StringComparison.Ordinal);
+        Assert.Contains("RecordItemFailureAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await publish(playlist, prepared, failure, cancellationToken)", PlatformSource(), StringComparison.Ordinal);
     }
 
     [Fact]

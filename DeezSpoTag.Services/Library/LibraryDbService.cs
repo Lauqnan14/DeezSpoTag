@@ -168,6 +168,7 @@ public sealed class LibraryDbService
             ,
             ["idx_media_server_refresh_outbox_due"] = (MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
             ,
+            ["idx_watchlist_reconciliation_request_stage_due"] = (WatchlistReconciliationRequestTable, "stage, status, next_attempt_utc", false),
             ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
@@ -895,6 +896,9 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     source TEXT NOT NULL DEFAULT '',
     identifier TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
+    stage TEXT NOT NULL DEFAULT 'fetch',
+    generation TEXT NOT NULL DEFAULT '',
+    prepared_snapshot_json TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     lease_owner TEXT,
@@ -904,6 +908,10 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (kind, source, identifier)
 );", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "stage", $"{TextType} NOT NULL DEFAULT 'fetch'", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "generation", $"{TextType} NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "prepared_snapshot_json", TextType, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_reconciliation_request_stage_due", WatchlistReconciliationRequestTable, "stage, status, next_attempt_utc", unique: false, cancellationToken);
         await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "status", $"{TextType} NOT NULL DEFAULT 'pending'", cancellationToken);
         await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "attempt_count", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "next_attempt_utc", $"{TextType} NOT NULL DEFAULT ''", cancellationToken);
@@ -1002,6 +1010,7 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     identity_revision TEXT,
     provider_readiness_revision TEXT,
     is_complete INTEGER NOT NULL DEFAULT 0,
+    source_items_observed INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );", cancellationToken);
@@ -1009,6 +1018,7 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "identity_revision", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "provider_readiness_revision", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "is_complete", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "source_items_observed", IntegerType, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_target_sync_state (
     source TEXT NOT NULL,

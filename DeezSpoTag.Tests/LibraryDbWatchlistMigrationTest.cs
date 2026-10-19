@@ -49,6 +49,36 @@ public sealed class LibraryDbWatchlistMigrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureSchema_PreparationUpgradePreservesLegacyRequestsAndIsIdempotent()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE watchlist_reconciliation_request (
+                  kind TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', identifier TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
+                  next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, lease_owner TEXT,
+                  lease_until_utc TEXT, last_error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(kind,source,identifier));
+                INSERT INTO watchlist_reconciliation_request(kind,source,identifier) VALUES('playlist','spotify','legacy');
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+        var schema = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await schema.EnsureSchemaAsync();
+        await schema.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+        var request = Assert.Single(await repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal("legacy", request.Identifier);
+        Assert.Equal("fetch", request.Stage);
+        Assert.Null(request.PreparedSnapshotJson);
+        var claimed = Assert.Single(await repository.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "migrated-worker"));
+        Assert.Equal(1, await repository.CompleteClaimedWatchlistReconciliationRequestsAsync([claimed], "migrated-worker"));
+    }
+
+    [Fact]
     public async Task EnsureSchema_NormalizesLegacyWatchlistKeys_And_EnsuresIndexes()
     {
         var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);

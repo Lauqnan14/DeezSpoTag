@@ -22,6 +22,31 @@ namespace DeezSpoTag.Tests;
 
 public sealed class PlaylistSyncReadinessTest : IAsyncLifetime
 {
+    [Fact]
+    public async Task DirectReconciliation_UsesTheSamePlaylistGateAndCancelsWithoutLeakingIt()
+    {
+        var reconciler = new PlaylistWatchReconciler(null!);
+        var playlist = CreatePlaylist();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = reconciler.WithPlaylistExecutionAsync(playlist.Source, playlist.SourceId, async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            return true;
+        }, CancellationToken.None);
+        await entered.Task;
+        using var cancellation = new CancellationTokenSource();
+        var direct = reconciler.ReconcilePlaylistAsync(playlist, cancellation.Token);
+        Assert.False(direct.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => direct);
+        release.TrySetResult();
+        await held;
+        Assert.True(await reconciler.WithPlaylistExecutionAsync(playlist.Source, playlist.SourceId,
+            () => Task.FromResult(true), CancellationToken.None));
+    }
+
     [Theory]
     [InlineData(3, 0, true)]
     [InlineData(3, 2, true)]
@@ -264,6 +289,72 @@ public sealed class PlaylistSyncReadinessTest : IAsyncLifetime
             Description: null,
             TrackCount: 1,
             CreatedAt: DateTimeOffset.UtcNow);
+
+    [Fact]
+    public async Task VerifiedSyncTrackIdentities_PreserveOrderAndDuplicatesWithoutRematchingLocalMetadata()
+    {
+        var load = typeof(PlaylistSyncService).GetMethod("LoadTracksForSyncAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)load.Invoke(_syncService, new object[] { CreatePlaylist(),
+            new List<PlaylistTrackCandidate> { CreateCandidate(), CreateCandidate("track-2", "Song Two"), CreateCandidate() },
+            CancellationToken.None })!;
+        await task;
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var tracks = result.GetType().GetField("Item1")!.GetValue(result)!;
+        var rows = ((System.Collections.IEnumerable)tracks).Cast<object>().ToList();
+        Assert.Equal(3, rows.Count);
+        var verifiedId = rows[0].GetType().GetProperty("VerifiedLocalTrackId");
+        Assert.NotNull(verifiedId);
+        verifiedId.SetValue(rows[0], 71L);
+        verifiedId.SetValue(rows[1], 29L);
+        verifiedId.SetValue(rows[2], 71L);
+        var resolve = typeof(PlaylistSyncService).GetMethod("ResolveOrderedTrackIdsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        // The fixture library contains no matching metadata. Re-matching would turn these verified IDs into zeroes.
+        for (var target = 0; target < 3; target++)
+        {
+            var ids = await (Task<List<long>>)resolve.Invoke(_syncService, new[] { (object)"spotify", tracks, CancellationToken.None })!;
+            Assert.Equal(new long[] { 71, 29, 71 }, ids);
+        }
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await (Task<List<long>>)resolve.Invoke(_syncService, new[] { (object)"spotify", tracks, cancelled.Token })!);
+    }
+
+    [Fact]
+    public async Task CurrentRunIdentities_AreCarriedIntoSyncButReviewCandidatesRemainExcluded()
+    {
+        var load = typeof(PlaylistSyncService).GetMethod("LoadTracksForSyncAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)load.Invoke(_syncService, new object[] { CreatePlaylist(),
+            new List<PlaylistTrackCandidate> { CreateCandidate(), CreateCandidate("track-2"), CreateCandidate() }, CancellationToken.None })!;
+        await task;
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var tracks = result.GetType().GetField("Item1")!.GetValue(result)!;
+        var statuses = new[] {
+            new PlaylistWatchTrackStatusDto("track-1", null, "completed", DateTimeOffset.UtcNow, null, null, null, null, null,
+                LocalTrackId: 71, IdentityStatus: "identity_verified"),
+            new PlaylistWatchTrackStatusDto("track-2", null, "review", DateTimeOffset.UtcNow, null, null, null, null, null,
+                LocalTrackId: 29, IdentityStatus: "review") };
+        var bind = typeof(PlaylistSyncService).GetMethod("ResolvePersistedAvailableTrackRowsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var binding = (Task)bind.Invoke(_syncService, new[] { (object)"spotify", "playlist-1", tracks, CancellationToken.None, statuses })!;
+        await binding;
+        var rows = ((System.Collections.IEnumerable)binding.GetType().GetProperty("Result")!.GetValue(binding)!).Cast<object>().ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.All(rows, row => {
+            var track = row.GetType().GetField("Item1")!.GetValue(row)!;
+            Assert.Equal("track-1", track.GetType().GetProperty("SourceTrackId")!.GetValue(track));
+            Assert.Equal(71L, track.GetType().GetProperty("VerifiedLocalTrackId")!.GetValue(track));
+        });
+
+        // Without a current-run verification, stale persisted decisions must still go through matching.
+        var ordinary = (Task)load.Invoke(_syncService, new object[] { CreatePlaylist(), new[] { CreateCandidate() }, CancellationToken.None })!;
+        await ordinary;
+        var tuple = ordinary.GetType().GetProperty("Result")!.GetValue(ordinary)!;
+        var unverified = tuple.GetType().GetField("Item1")!.GetValue(tuple)!;
+        var resolve = typeof(PlaylistSyncService).GetMethod("ResolveOrderedTrackIdsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.Equal(new long[] { 0 }, await (Task<List<long>>)resolve.Invoke(_syncService,
+            new[] { (object)"spotify", unverified, CancellationToken.None })!);
+    }
 
     private static PlaylistTrackCandidate CreateCandidate(
         string trackSourceId = "track-1",

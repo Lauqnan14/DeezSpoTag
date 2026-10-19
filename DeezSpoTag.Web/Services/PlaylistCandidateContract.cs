@@ -33,16 +33,14 @@ internal static class PlaylistCandidateContract
         int schemaVersion,
         IReadOnlyList<PlaylistTrackCandidate>? candidates,
         int? expectedTrackCount,
-        bool isComplete)
+        bool isComplete,
+        int? sourceItemsObserved = null)
         => schemaVersion == CurrentCacheSchemaVersion
            && isComplete
            && candidates != null
+           && (!sourceItemsObserved.HasValue || sourceItemsObserved.Value >= candidates.Count)
            && (!expectedTrackCount.HasValue
-               || (Normalize(source) is "spotify" or "boomplay"
-                   ? (expectedTrackCount.Value <= 0
-                       ? candidates.Count == 0
-                       : candidates.Count > 0 && candidates.Count <= expectedTrackCount.Value)
-                   : candidates.Count == Math.Max(0, expectedTrackCount.Value)));
+               || (sourceItemsObserved ?? candidates.Count) == Math.Max(0, expectedTrackCount.Value));
 
     public static IReadOnlyList<PlaylistTrackCandidate> ResolvableCandidates(
         string source,

@@ -45,6 +45,124 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         => _snapshotHttp.AsyncResponse = response;
 
     [Fact]
+    public async Task DirectReconciliation_InvalidatesAnOlderInFlightPreparation()
+    {
+        var playlist = await _repository.AddPlaylistWatchlistAsync("unsupported", "manual-newer", new PlaylistWatchlistMetadataInput("Manual", null, null, 0));
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "unsupported", "manual-newer");
+        var older = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        await _provider.GetRequiredService<PlaylistWatchReconciler>().ReconcilePlaylistAsync(playlist!, CancellationToken.None);
+        var current = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.NotEqual(older.Generation, current.Generation);
+        Assert.Equal("fetch", current.Stage);
+        Assert.False(await _repository.PublishPreparedWatchlistPlaylistAsync("unsupported", "manual-newer", older.Generation, "obsolete"));
+    }
+
+    [Fact]
+    public async Task ObsoletePreparationFailure_DoesNotBackOffANewerExplicitRequest()
+    {
+        const string id = "12345678-1234-1234-1234-123456789abc";
+        await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Refreshed", null, null, 0));
+        await ConfigurePlaylistDestinationAsync("tidal", id);
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", id);
+        string? refreshedGeneration = null;
+        _snapshotHttp.AsyncResponse = async (_, _) =>
+        {
+            await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", id);
+            refreshedGeneration = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync()).Generation;
+            throw new HttpRequestException("obsolete preparation failure");
+        };
+        await InvokeRunOnceAsync(new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance));
+        var current = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal(refreshedGeneration, current.Generation);
+        Assert.Equal("pending", current.Status);
+        Assert.Null(current.LastError);
+        Assert.Equal("fetch", current.Stage);
+    }
+
+    [Fact]
+    public async Task RestartedConsumer_UsesDurableSnapshotWithoutReadingTheSourceAgain()
+    {
+        const string id = "12345678-1234-1234-1234-123456789abc";
+        var playlist = await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Restored", null, null, 0));
+        await ConfigurePlaylistDestinationAsync("tidal", id);
+        _snapshotHttp.Response = _ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        { Content = new StringContent("{\"items\":[],\"totalNumberOfItems\":0,\"numberOfTracks\":0,\"title\":\"Restored\"}") };
+        var prepared = await _provider.GetRequiredService<PlaylistWatchReconciler>().PreparePlaylistSnapshotAsync(playlist!,
+            new PlaylistHeadSnapshot("tidal", id, Name: "Restored", TrackCount: 0), CancellationToken.None);
+        Assert.True(prepared.IsComplete);
+        // Supply explicitly authoritative empty evidence; an ordinary empty Tidal page alone is insufficient.
+        prepared = prepared with { IsAuthoritativeEmpty = true, SourceItemsObserved = 0 };
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", id);
+        var request = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.True(await _repository.PublishPreparedWatchlistPlaylistAsync("tidal", id, request.Generation,
+            System.Text.Json.JsonSerializer.Serialize(prepared)));
+        var calls = 0;
+        _snapshotHttp.Response = _ => { Interlocked.Increment(ref calls); throw new InvalidOperationException("Unexpected source read after restart"); };
+        await InvokeRunOnceAsync(new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance));
+        Assert.Equal(0, calls);
+        Assert.Equal("completed", (await _repository.GetPlaylistWatchStateAsync("tidal", id))?.LastRunStatus);
+        Assert.Empty(await _repository.GetWatchlistReconciliationRequestsAsync());
+    }
+
+    [Fact]
+    public async Task PlatformPreparation_ContinuesWhileEarlierReconciliationWaitsAndResumesPersistedWork()
+    {
+        var first = await _repository.AddPlaylistWatchlistAsync("unsupported", "prepare-first", new PlaylistWatchlistMetadataInput("First", null, null, 0));
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "prepare-second", new PlaylistWatchlistMetadataInput("Second", null, null, 0));
+        await ConfigurePlaylistDestinationAsync("unsupported", "prepare-first");
+        await ConfigurePlaylistDestinationAsync("unsupported", "prepare-second");
+        var ordered = await _repository.GetPlaylistWatchlistAsync();
+        var firstId = ordered[0].SourceId;
+        var laterId = ordered[1].SourceId;
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var held = reconciler.WithPlaylistExecutionAsync("unsupported", firstId, async () =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(cancellation.Token);
+            return true;
+        }, cancellation.Token);
+        await entered.Task.WaitAsync(cancellation.Token);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        var run = InvokeRunOnceAsync(hosted);
+        try
+        {
+            while (!(await _repository.GetWatchlistReconciliationRequestsAsync(cancellation.Token))
+                .Any(item => item.Identifier == laterId && item.Stage == "reconcile"))
+                await Task.Delay(20, cancellation.Token);
+            Assert.False(run.IsCompleted);
+            Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("unsupported", laterId));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await held;
+            await run.WaitAsync(cancellation.Token);
+        }
+        Assert.NotNull((await _repository.GetPlaylistWatchStateAsync("unsupported", laterId))?.LastCheckedUtc);
+    }
+
+    [Fact]
+    public async Task Preparation_IsReadOnlyAndPreparedConsumptionDoesNotFetchAgain()
+    {
+        const string id = "12345678-1234-1234-1234-123456789abc";
+        var playlist = await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Prepared", null, null, 0));
+        _snapshotHttp.Response = _ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        { Content = new StringContent("{\"items\":[],\"totalNumberOfItems\":0,\"numberOfTracks\":0,\"title\":\"Prepared\"}") };
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        var prepared = await reconciler.PreparePlaylistSnapshotAsync(playlist!,
+            new PlaylistHeadSnapshot("tidal", id, Name: "Prepared", TrackCount: 0), CancellationToken.None);
+        Assert.Equal("Prepared", prepared.Name);
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("tidal", id));
+        Assert.Empty(await _repository.GetPlaylistWatchTrackStatusesAsync("tidal", id));
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+        _snapshotHttp.Response = _ => throw new InvalidOperationException("Prepared consumption performed a second source request");
+        await reconciler.ReconcilePlaylistAsync(playlist!, CancellationToken.None, preparedSnapshot: prepared);
+    }
+
+    [Fact]
     public async Task PerformanceScopes_IsolateConcurrentOperationsAndRestoreNestedScope()
     {
         var logger = new ListLogger<WatchlistEngine>();
@@ -1095,7 +1213,8 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         var loopStart = hostedSource.IndexOf("foreach (var activeItem in playlistItems)", StringComparison.Ordinal);
         var loopEnd = hostedSource.IndexOf("private static async Task PersistPlaylistProgressAsync(", loopStart, StringComparison.Ordinal);
         var loopBody = hostedSource[loopStart..loopEnd];
-        Assert.Contains("PersistPlaylistProgressAsync(repository, activeItem, stoppingToken)", loopBody, StringComparison.Ordinal);
+        Assert.Contains("PersistPlaylistProgressAsync(repository, activeItem, pipelineToken)", loopBody, StringComparison.Ordinal);
+        Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(stoppingToken)", hostedSource, StringComparison.Ordinal);
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("GetWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsSnapshotExpandedAsync", hostedSource, StringComparison.Ordinal);

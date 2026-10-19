@@ -385,7 +385,7 @@ public sealed class WatchlistSettingsBehaviorTest : IDisposable
         Assert.Contains("identity.IsAmbiguous", source, StringComparison.Ordinal);
         Assert.Contains("\"review\"", source, StringComparison.Ordinal);
         Assert.Contains("decision.LocalTrackId", source, StringComparison.Ordinal);
-        Assert.Contains("UpdatePlaylistWatchTrackVerificationAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistWatchTrackVerificationsAsync", source, StringComparison.Ordinal);
         Assert.Contains("blocklist_match", source, StringComparison.Ordinal);
         Assert.Contains("TryRecordWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);

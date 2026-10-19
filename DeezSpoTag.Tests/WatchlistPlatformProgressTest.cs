@@ -48,6 +48,41 @@ public sealed class WatchlistPlatformProgressTest
             "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
     [Fact]
+    public void ReconciliationProgress_UsesWallTimeAndFinishesOnlyAfterEveryPlaylistSettles()
+    {
+        var coordinator = new WatchlistRunCoordinator(null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<WatchlistRunCoordinator>.Instance);
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var runtime = typeof(WatchlistRunCoordinator).GetField("_runtimeHealth", flags)!;
+        runtime.SetValue(coordinator, new WatchlistRuntimeHealth(true, false, null, null, null, 0,
+            Platforms: new[] { new WatchlistPlatformProgress("spotify", "Spotify", 2, 2, 2, 0, 0, 0, 0,
+                StartedUtc: DateTimeOffset.UtcNow.AddSeconds(-1), Prepared: 2) }));
+        var record = typeof(WatchlistRunCoordinator).GetMethod("RecordPlatformOutcome", flags)!;
+        record.Invoke(coordinator, new object[] { "spotify", true, false, 100000L });
+        var first = Assert.Single(coordinator.GetRuntimeHealth().Platforms!);
+        Assert.Equal(1, first.Completed);
+        Assert.Null(first.CompletedUtc);
+        Assert.True(first.TotalMs < 10000);
+        record.Invoke(coordinator, new object[] { "spotify", true, true, 100000L });
+        var final = Assert.Single(coordinator.GetRuntimeHealth().Platforms!);
+        Assert.Equal(2, final.Settled);
+        Assert.Equal(1, final.Incomplete);
+        Assert.NotNull(final.CompletedUtc);
+        Assert.Equal(200000, final.ReconciliationMs);
+        Assert.True(final.TotalMs < final.ReconciliationMs);
+    }
+
+    [Fact]
+    public void PreparedProgress_DoesNotPresentQueuedWorkAsCompleted()
+    {
+        var progress = new WatchlistPlatformProgress("spotify", "Spotify", 5, 5, 5, 0, 0, 0, 0,
+            Prepared: 5, Reconciling: 1);
+        Assert.Contains("5 prepared", progress.Summary);
+        Assert.Contains("1 reconciling", progress.Summary);
+        Assert.Equal(0, progress.Completed);
+        Assert.Null(progress.CompletedUtc);
+    }
+
+    [Fact]
     public void PlatformProgress_UsesProviderWallTimeRatherThanConcurrentRequestSum()
     {
         var property = typeof(PlaylistHeadDiscovery).GetProperty("PlatformHeadElapsedMs");

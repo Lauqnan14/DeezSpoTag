@@ -6,6 +6,15 @@ using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Web.Services;
 
+/// <summary>Versioned, immutable source evidence. Pending work never replaces the applied cache.</summary>
+public sealed record PreparedPlaylistSnapshot(
+    string Source, string SourceId, IReadOnlyList<PlaylistTrackCandidate> Candidates,
+    string? SnapshotId, string? Name, string? Description, string? ImageUrl, int? TrackCount,
+    bool IsComplete, bool IsAuthoritativeEmpty, bool CanClearImageUrl, string? OwnerName,
+    string? FailureCode, string? FailureIncidentId, bool FailureIsIncidentOrigin,
+    int? SourceItemsObserved, string IdentityRevision, string ProviderReadinessRevision,
+    DateTimeOffset FetchedAtUtc, bool WasExpanded, int ContractVersion = 1, int SnapshotTrackLimit = 0);
+
 /// <summary>
 /// Immutable, per-playlist result of the read-only platform snapshot phase.
 /// </summary>
@@ -126,7 +135,8 @@ public static class PlaylistPlatformSnapshotPolicy
 ///
 /// This phase is read-only with respect to the database: it performs no writes, no state
 /// transitions, and no queue work, which is what makes it safe to run concurrently. All mutation
-/// stays in the caller's ordered, serial reconciliation loop.
+/// stays in the caller's ordered reconciliation consumer; preparation publishes durable work through
+/// a separate callback without applying it to playlists or the download ledger.
 /// </summary>
 public sealed class PlaylistPlatformSnapshotCoordinator
 {
@@ -204,6 +214,46 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         }
 
         return results;
+    }
+
+    /// <summary>Publish each prepared item immediately; reconciliation never blocks subsequent source reads.</summary>
+    public async Task PrepareSnapshotsAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        Func<string, string, string, Task<bool>> isSourceCircuitOpen,
+        Action<IReadOnlyList<PlaylistHeadDiscovery>> headsDiscovered,
+        Func<PlaylistWatchlistDto, PreparedPlaylistSnapshot?, Exception?, CancellationToken, Task> publish,
+        CancellationToken cancellationToken)
+    {
+        foreach (var group in playlists.GroupBy(static playlist => playlist.Source.Trim(), StringComparer.OrdinalIgnoreCase))
+        {
+            var heads = await DiscoverHeadsAsync(group.ToList(), isSourceCircuitOpen, cancellationToken);
+            headsDiscovered(heads);
+            foreach (var playlist in group)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PreparedPlaylistSnapshot? prepared = null;
+                Exception? failure = null;
+                try
+                {
+                    if (await isSourceCircuitOpen(playlist.Source, "playlist", playlist.SourceId))
+                        throw new HttpRequestException("Source circuit breaker open.");
+                    var discovery = heads.FirstOrDefault(item => item.SourceId == playlist.SourceId);
+                    if (discovery is { Head: null, Error: not null })
+                        throw new HttpRequestException(discovery.Error);
+                    using var scope = _serviceProvider.CreateScope();
+                    prepared = await scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>()
+                        .PreparePlaylistSnapshotAsync(playlist, discovery?.Head, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                // Match the existing reconciliation boundary: a broken provider is isolated to its
+                    // playlist and reported by the consumer. Host cancellation and fatal memory failure propagate.
+                    catch (Exception ex) when (ex is not OutOfMemoryException) { failure = ex; }
+                await publish(playlist, prepared, failure, cancellationToken);
+                var delay = _settingsService.LoadSettings().WatchDelayBetweenPlaylistsSeconds;
+                if (prepared is { WasExpanded: true, Candidates.Count: > 0 } && delay > 0)
+                    await WatchlistPerformanceMeasurement.TimeAsync("intentional_delay", () => Task.Delay(TimeSpan.FromSeconds(delay), cancellationToken));
+            }
+        }
     }
 
     private async Task<IReadOnlyList<PlaylistHeadDiscovery>> DiscoverPlatformHeadsAsync(
@@ -311,7 +361,7 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         {
             throw;
         }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             // Contained deliberately: the other playlists on this platform still get their heads.
             _logger.LogWarning(
@@ -375,7 +425,8 @@ public sealed class PlaylistPlatformSnapshotCoordinator
                 cache.SchemaVersion,
                 ParseForClassification(cache.CandidatesJson),
                 head.TrackCount,
-                cache.IsComplete))
+                cache.IsComplete,
+                cache.SourceItemsObserved))
         {
             return PlaylistHeadChangeState.RequiresExpansion;
         }

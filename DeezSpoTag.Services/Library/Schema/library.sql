@@ -570,6 +570,7 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     identity_revision TEXT,
     provider_readiness_revision TEXT,
     is_complete INTEGER NOT NULL DEFAULT 0,
+    source_items_observed INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );
@@ -849,6 +850,9 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     source TEXT NOT NULL DEFAULT '',
     identifier TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
+    stage TEXT NOT NULL DEFAULT 'fetch',
+    generation TEXT NOT NULL DEFAULT '',
+    prepared_snapshot_json TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     lease_owner TEXT,
@@ -858,6 +862,9 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (kind, source, identifier)
 );
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_reconciliation_request_stage_due
+    ON watchlist_reconciliation_request (stage, status, next_attempt_utc);
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_reconciliation_request_updated
     ON watchlist_reconciliation_request (updated_at, kind, source, identifier);
