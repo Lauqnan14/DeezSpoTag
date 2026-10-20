@@ -48,6 +48,24 @@ public sealed class WatchlistPlatformProgressTest
             "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
     [Fact]
+    public void StreamedHeadsAccumulateCountsAndWorkTime()
+    {
+        var coordinator = new WatchlistRunCoordinator(null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<WatchlistRunCoordinator>.Instance);
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(WatchlistRunCoordinator).GetField("_runtimeHealth", flags)!.SetValue(coordinator,
+            new WatchlistRuntimeHealth(true, false, null, null, null, 0,
+                Platforms: new[] { new WatchlistPlatformProgress("tidal", "Tidal", 2, 0, 0, 0, 0, 0, 0) }));
+        var record = typeof(WatchlistRunCoordinator).GetMethod("RecordDiscoveredHeads", flags)!;
+        var head = new PlaylistHeadDiscovery("tidal", "one", PlaylistHeadChangeState.New, true, null, null, 10);
+        record.Invoke(coordinator, new object[] { new[] { head } });
+        record.Invoke(coordinator, new object[] { new[] { head with { SourceId = "two", DurationMs = 20 } } });
+        var progress = Assert.Single(coordinator.GetRuntimeHealth().Platforms!);
+        Assert.Equal(2, progress.HeadsChecked);
+        Assert.Equal(2, progress.New);
+        Assert.Equal(30, progress.HeadPhaseMs);
+    }
+
+    [Fact]
     public void ReconciliationProgress_UsesWallTimeAndFinishesOnlyAfterEveryPlaylistSettles()
     {
         var coordinator = new WatchlistRunCoordinator(null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<WatchlistRunCoordinator>.Instance);

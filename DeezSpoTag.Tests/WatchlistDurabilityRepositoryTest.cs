@@ -58,6 +58,84 @@ public sealed class WatchlistDurabilityRepositoryTest : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("provider_io")]
+    public async Task NonThrottleCircuitStillClearsNormally(string? fingerprint)
+    {
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+            "playlist", "tidal", true, DateTimeOffset.UtcNow.AddMinutes(5), "Unavailable", fingerprint, 3));
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+            "playlist", "tidal", false, null, null, null, 0));
+        Assert.False((await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "tidal"))!.IsOpen);
+    }
+
+    [Fact]
+    public async Task ConfirmedThrottleCannotBeShortenedOrClearedByAnOlderSuccess()
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(15);
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+            "playlist", "tidal", true, deadline, "Throttle", "http_429", 1));
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+            "playlist", "tidal", true, deadline.AddMinutes(-10), "Throttle", "http_429", 1));
+        Assert.Equal(deadline, (await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "tidal"))!.OpenUntilUtc);
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+            "playlist", "tidal", false, null, null, null, 0));
+        var current = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "tidal");
+        Assert.True(current!.IsOpen);
+        Assert.Equal(deadline, current.OpenUntilUtc);
+    }
+
+    [Fact]
+    public async Task MetadataOnlyRequestReadsOmitPayloadAndKeepDefaultCompatibility()
+    {
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "lean");
+        var fetch = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.True(await _repository.PublishPreparedWatchlistPlaylistAsync("spotify", "lean", fetch.Generation, "large-payload"));
+        var published = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal("large-payload", published.PreparedSnapshotJson);
+        var method = typeof(LibraryRepository).GetMethod("GetWatchlistReconciliationRequestsAsync")!;
+        Assert.Equal(3, method.GetParameters().Length);
+        var rows = await (Task<IReadOnlyList<WatchlistReconciliationRequestDto>>)method.Invoke(_repository, new object?[] { CancellationToken.None, null, false })!;
+        var lean = Assert.Single(rows);
+        Assert.Null(lean.PreparedSnapshotJson);
+        Assert.Equal(published.Generation, lean.Generation);
+        Assert.Equal("reconcile", lean.Stage);
+    }
+
+    [Fact]
+    public async Task OwnedPayloadRejectsWrongGenerationOwnerOrExpiredLease()
+    {
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "owned");
+        var fetch = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.True(await _repository.PublishPreparedWatchlistPlaylistAsync("spotify", "owned", fetch.Generation, "owned-payload"));
+        var method = typeof(LibraryRepository).GetMethod("GetOwnedPreparedWatchlistSnapshotAsync");
+        Assert.NotNull(method);
+        Task<string?> Load(string generation, string owner) => (Task<string?>)method!.Invoke(_repository,
+            new object[] { "spotify", "owned", generation, owner, CancellationToken.None })!;
+        Assert.Null(await Load(fetch.Generation, "worker"));
+        var claimMethod = typeof(LibraryRepository).GetMethod("ClaimDueWatchlistReconciliationRequestsAsync")!;
+        Assert.Equal(7, claimMethod.GetParameters().Length);
+        var rows = await (Task<IReadOnlyList<WatchlistReconciliationRequestDto>>)claimMethod.Invoke(_repository,
+            new object?[] { 1, TimeSpan.FromMinutes(1), "worker", CancellationToken.None, "reconcile", "spotify:owned", false })!;
+        var owned = Assert.Single(rows);
+        Assert.Null(owned.PreparedSnapshotJson);
+        Assert.Equal(Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync()).Generation, owned.Generation);
+        Assert.Equal("processing", owned.Status);
+        Assert.Equal("worker", owned.LeaseOwner);
+        Assert.NotNull(owned.LeaseUntilUtc);
+        Assert.Equal("owned-payload", await Load(owned.Generation, "worker"));
+        Assert.Null(await Load("obsolete", "worker"));
+        Assert.Null(await Load(owned.Generation, "other-worker"));
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE watchlist_reconciliation_request SET lease_until_utc='2000-01-01T00:00:00Z';";
+        await command.ExecuteNonQueryAsync();
+        Assert.Null(await Load(owned.Generation, "worker"));
+        Assert.Equal("owned-payload", Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync()).PreparedSnapshotJson);
+    }
+
     [Fact]
     public async Task PreparedRequests_ExpiredLeaseIsReclaimedWithoutChangingTheSnapshot()
     {
@@ -103,7 +181,7 @@ public sealed class WatchlistDurabilityRepositoryTest : IAsyncLifetime
         Assert.Empty(await reopened.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "fetcher"));
         var claimMethod = typeof(LibraryRepository).GetMethod("ClaimDueWatchlistReconciliationRequestsAsync")!;
         var claimed = Assert.Single(await (Task<IReadOnlyList<WatchlistReconciliationRequestDto>>)claimMethod.Invoke(
-            reopened, [1, TimeSpan.FromMinutes(1), "consumer", CancellationToken.None, "reconcile", null])!);
+            reopened, [1, TimeSpan.FromMinutes(1), "consumer", CancellationToken.None, "reconcile", null, true])!);
         await reopened.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "prepared");
         Assert.Equal(0, await reopened.RenewClaimedWatchlistReconciliationRequestsAsync("consumer", TimeSpan.FromMinutes(1), requests: [claimed]));
         Assert.Equal(0, await reopened.CompleteClaimedWatchlistReconciliationRequestsAsync([claimed], "consumer"));

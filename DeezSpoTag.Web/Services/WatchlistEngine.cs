@@ -114,6 +114,13 @@ internal sealed class WatchlistPerformanceMeasurement : IDisposable
     public IDisposable Measure(string stage) => new Stage(this, stage + "_ms");
     public void Increment(string counter, long amount = 1)
         => _values.AddOrUpdate(counter, amount, (_, value) => value + amount);
+    public void RecordFirst(string milestone)
+    {
+        _values.TryAdd(milestone + "_ms", _elapsed.ElapsedMilliseconds);
+        // Nested playlist scopes share their run's monotonic origin for end-to-end milestones.
+        if (_previous is not null && _runId is not null && _previous._runId == _runId)
+            _previous.RecordFirst(milestone);
+    }
     public static Task<T> TimeAsync<T>(string stage, Func<Task<T>> action)
     {
         var current = Current;
@@ -405,7 +412,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         /// How many source items the provider returned before this engine deduplicated them. Used
         /// by the completeness check so a duplicated playlist entry is not mistaken for a short read.
         /// </summary>
-        int? SourceItemsObserved = null)
+        int? SourceItemsObserved = null,
+        int? FailureHttpStatusCode = null, DateTimeOffset? RetryAfterUtc = null)
     {
         /// <summary>
         /// True when the snapshot stopped early because it reached the configured track ceiling
@@ -441,7 +449,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         /// would treat a playlist that merely lists the same track twice as a corrupt snapshot and
         /// retry it forever.
         /// </summary>
-        int? SourceItemsObserved = null);
+        int? SourceItemsObserved = null,
+        int? FailureHttpStatusCode = null, DateTimeOffset? RetryAfterUtc = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     internal Task InvalidatePreparedPlaylistRequestAsync(string source, string sourceId, CancellationToken cancellationToken)
@@ -462,6 +471,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             && string.Equals(prefetchedHead.SourceId, sourceId, StringComparison.Ordinal)
             ? ToLiveHeadSnapshot(prefetchedHead)
             : await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
+        if (head.FailureHttpStatusCode == 429) return Prepared(head, wasExpanded: false);
         LivePlaylistSnapshot? fullSnapshotForArtwork = null;
         if (_playlistVisualService != null && IsStreamingPlaylistArtworkSource(source)
             && string.IsNullOrWhiteSpace(head.ImageUrl))
@@ -512,12 +522,15 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             CanClearImageUrl = snapshot.CanClearImageUrl || head.CanClearImageUrl
         };
         WatchlistPerformanceMeasurement.Current?.Increment(cachedCandidatesComplete ? "candidate_cache_hits" : "candidate_cache_misses");
-        return new PreparedPlaylistSnapshot(source, sourceId, snapshot.Candidates, snapshot.SnapshotId,
+        return Prepared(snapshot, !cachedCandidatesComplete);
+
+        PreparedPlaylistSnapshot Prepared(LivePlaylistSnapshot snapshot, bool wasExpanded) => new(source, sourceId, snapshot.Candidates, snapshot.SnapshotId,
             snapshot.Name, snapshot.Description, snapshot.ImageUrl, snapshot.TrackCount, snapshot.IsComplete,
             snapshot.IsAuthoritativeEmpty, snapshot.CanClearImageUrl, snapshot.OwnerName, snapshot.FailureCode,
             snapshot.FailureIncidentId, snapshot.FailureIsIncidentOrigin, snapshot.SourceItemsObserved,
             PlaylistCandidateContract.BuildIdentityRevision(source, snapshot.Candidates), providerRevision,
-            DateTimeOffset.UtcNow, WasExpanded: !cachedCandidatesComplete, SnapshotTrackLimit: maxCandidates);
+            DateTimeOffset.UtcNow, WasExpanded: wasExpanded, SnapshotTrackLimit: maxCandidates,
+            FailureHttpStatusCode: snapshot.FailureHttpStatusCode, RetryAfterUtc: snapshot.RetryAfterUtc);
     }
 
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
@@ -599,7 +612,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             preparedSnapshot.Name, preparedSnapshot.Description, preparedSnapshot.ImageUrl, preparedSnapshot.TrackCount,
             preparedSnapshot.IsComplete, preparedSnapshot.IsAuthoritativeEmpty, preparedSnapshot.CanClearImageUrl,
             preparedSnapshot.OwnerName, preparedSnapshot.FailureCode, preparedSnapshot.FailureIncidentId,
-            preparedSnapshot.FailureIsIncidentOrigin, preparedSnapshot.SourceItemsObserved);
+            preparedSnapshot.FailureIsIncidentOrigin, preparedSnapshot.SourceItemsObserved,
+            preparedSnapshot.FailureHttpStatusCode, preparedSnapshot.RetryAfterUtc);
         var liveTrackCount = liveSnapshot.TrackCount ?? playlist.TrackCount ?? 0;
         if (!preparedSnapshot.WasExpanded)
         {
@@ -972,6 +986,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             sourceId,
             selection.MissingTracks.Select(track => ToMissingTrackUpsert(track, liveSnapshot.SnapshotId, candidateIdentityRevision, providerReadinessRevision)).ToList(),
             cancellationToken));
+        if (selection.MissingTracks.Count > 0) WatchlistPerformanceMeasurement.Current?.RecordFirst("first_missing_persisted");
         await RecordPlaylistSelectionHistoryAsync(source, sourceId, currentPlaylist.Name, selection, cancellationToken);
 
         var localTrackStatuses = await WatchlistPerformanceMeasurement.TimeAsync("ledger_read", () => _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
@@ -3151,7 +3166,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             head.OwnerName,
             head.FailureCode,
             head.FailureIncidentId,
-            head.FailureIsIncidentOrigin);
+            head.FailureIsIncidentOrigin, FailureHttpStatusCode: head.FailureHttpStatusCode, RetryAfterUtc: head.RetryAfterUtc);
     }
 
     private static LivePlaylistSnapshot ToLiveHeadSnapshot(PlaylistHeadSnapshot head)
@@ -3168,7 +3183,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             head.OwnerName,
             head.FailureCode,
             head.FailureIncidentId,
-            head.FailureIsIncidentOrigin);
+            head.FailureIsIncidentOrigin, FailureHttpStatusCode: head.FailureHttpStatusCode, RetryAfterUtc: head.RetryAfterUtc);
 
     /// <summary>
     /// Reads a self-hosted server's playlist for a sync.
@@ -3606,7 +3621,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             EmptyToNull(metadata.FailureCode),
             EmptyToNull(metadata.FailureIncidentId),
             metadata.FailureIsIncidentOrigin,
-            metadata.SourceItemsObserved);
+            metadata.SourceItemsObserved, metadata.FailureHttpStatusCode, metadata.RetryAfterUtc);
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate>? TryDeserializePlaylistTrackCandidates(string candidatesJson)
@@ -4375,6 +4390,8 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         var total = int.MaxValue;
         var pageCount = 0;
         var isComplete = true;
+        int? failureStatus = null;
+        DateTimeOffset? retryAfterUtc = null;
         var seenPageFingerprints = new HashSet<string>(StringComparer.Ordinal);
         while (offset < total)
         {
@@ -4392,6 +4409,13 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             }
             WatchlistPerformanceMeasurement.Current?.Increment("snapshot_pages_attempted");
             var page = await FetchTidalPlaylistItemsPageAsync(client, playlistId, token, offset, cancellationToken);
+            if (page.FailureHttpStatusCode is { } status)
+            {
+                isComplete = false;
+                failureStatus = status;
+                retryAfterUtc = page.RetryAfterUtc;
+                break;
+            }
             if (page.Items.ValueKind == JsonValueKind.Array) WatchlistPerformanceMeasurement.Current?.Increment("snapshot_pages_succeeded");
             if (page.Items.ValueKind != JsonValueKind.Array || page.Items.GetArrayLength() == 0)
             {
@@ -4430,7 +4454,9 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             new LivePlaylistSnapshotMetadata(
                 TrackCount: total == int.MaxValue ? candidates.Count : total,
                 IsComplete: isComplete && candidates.Count < maxCandidates && (total == int.MaxValue || offset >= total),
-                SourceItemsObserved: total == int.MaxValue ? null : (int?)total));
+                SourceItemsObserved: total == int.MaxValue ? null : (int?)total,
+                FailureCode: failureStatus is null ? null : $"tidal_items_http_{failureStatus}",
+                FailureHttpStatusCode: failureStatus, RetryAfterUtc: retryAfterUtc));
     }
 
     private async Task<LivePlaylistSnapshotMetadata> GetTidalSnapshotHeadAsync(
@@ -4452,7 +4478,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         using var response = await client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"tidal_head_http_{(int)response.StatusCode}");
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"tidal_head_http_{(int)response.StatusCode}", FailureHttpStatusCode: (int)response.StatusCode, RetryAfterUtc: GetProviderRetryAfterUtc(response, DateTimeOffset.UtcNow));
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -4472,6 +4498,13 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
             OwnerName: EmptyToNull(creator));
     }
 
+    internal static DateTimeOffset? GetProviderRetryAfterUtc(HttpResponseMessage response, DateTimeOffset nowUtc)
+    {
+        var retry = response.Headers.RetryAfter;
+        var deadline = retry?.Date ?? (retry?.Delta is { } delta ? nowUtc + delta : (DateTimeOffset?)null);
+        return deadline is { } value && value < nowUtc ? nowUtc : deadline;
+    }
+
     private static async Task<TidalPlaylistItemsPage> FetchTidalPlaylistItemsPageAsync(
         HttpClient client,
         string playlistId,
@@ -4486,7 +4519,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         using var response = await client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return default;
+            return new TidalPlaylistItemsPage(default, 0, (int)response.StatusCode, GetProviderRetryAfterUtc(response, DateTimeOffset.UtcNow));
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -4579,7 +4612,9 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         using var response = await client.GetAsync(playlistUrl, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>());
+            return BuildLivePlaylistSnapshot(Array.Empty<PlaylistTrackCandidate>(), new LivePlaylistSnapshotMetadata(
+                IsComplete: false, FailureCode: $"qobuz_items_http_{(int)response.StatusCode}",
+                FailureHttpStatusCode: (int)response.StatusCode, RetryAfterUtc: GetProviderRetryAfterUtc(response, DateTimeOffset.UtcNow)));
         }
 
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -4647,7 +4682,7 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
         using var response = await client.GetAsync(playlistUrl, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"qobuz_head_http_{(int)response.StatusCode}");
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"qobuz_head_http_{(int)response.StatusCode}", FailureHttpStatusCode: (int)response.StatusCode, RetryAfterUtc: GetProviderRetryAfterUtc(response, DateTimeOffset.UtcNow));
         }
 
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -6003,6 +6038,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 }
 
                 var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
+                if (primaryQueuedCount > 0) WatchlistPerformanceMeasurement.Current?.RecordFirst("first_successful_enqueue");
                 _queueAdmission.Release(1 - primaryQueuedCount);
                 if (ShouldDeferWatchTrack(result))
                 {
@@ -7178,7 +7214,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             => _fetchHead(sourceId, cancellationToken);
     }
 
-    private readonly record struct TidalPlaylistItemsPage(JsonElement Items, int Total);
+    private readonly record struct TidalPlaylistItemsPage(JsonElement Items, int Total, int? FailureHttpStatusCode = null, DateTimeOffset? RetryAfterUtc = null);
 
     private sealed record ApplePlaylistWatchData(
         string Name,

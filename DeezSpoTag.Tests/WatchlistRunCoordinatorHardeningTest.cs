@@ -45,6 +45,307 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         => _snapshotHttp.AsyncResponse = response;
 
     [Fact]
+    public async Task HundredPlaylistsWithThreeThousandCandidatesUseBoundedDurableHandoff()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.PlaylistSnapshotTrackLimit = 3000;
+        settings.WatchDelayBetweenPlaylistsSeconds = 0;
+        _settingsService.SaveSettings(settings);
+        var playlists = new List<PlaylistWatchlistDto>();
+        var generations = new Dictionary<string, string>();
+        for (var n = 0; n < 100; n++)
+        {
+            var id = $"12345678-1234-1234-1234-{n:000000000000}";
+            playlists.Add((await _repository.AddPlaylistWatchlistAsync("tidal", id, new PlaylistWatchlistMetadataInput("Synthetic", null, null, n == 0 ? 3000 : 0)))!);
+            await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", id);
+        }
+        foreach (var request in await _repository.GetWatchlistReconciliationRequestsAsync(includePreparedSnapshotJson: false))
+            generations[request.Identifier] = request.Generation;
+        var requests = 0;
+        var expansions = new ConcurrentQueue<string>();
+        var active = 0;
+        var peak = 0;
+        _snapshotHttp.AsyncResponse = async (request, token) =>
+        {
+            Interlocked.Increment(ref requests);
+            var count = Interlocked.Increment(ref active);
+            int before;
+            do { before = Volatile.Read(ref peak); if (before >= count) break; }
+            while (Interlocked.CompareExchange(ref peak, count, before) != before);
+            try
+            {
+                await Task.Yield();
+                token.ThrowIfCancellationRequested();
+                var first = request.RequestUri!.AbsolutePath.Contains(playlists[0].SourceId);
+                var total = first ? 3000 : 0;
+                var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
+                var offset = query.ContainsKey("offset") ? int.Parse(query["offset"].ToString()) : 0;
+                if (request.RequestUri.AbsolutePath.EndsWith("/items") && offset == 0)
+                    expansions.Enqueue(request.RequestUri.AbsolutePath.Split('/')[3]);
+                var items = Enumerable.Range(offset + 1, Math.Min(100, total - offset)).Select(id => new
+                { item = new { id, title = "Synthetic " + id, duration = 180, artist = new { name = "Fixture" }, album = new { title = "Album" } } });
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new StringContent(request.RequestUri.AbsolutePath.EndsWith("/items")
+                    ? System.Text.Json.JsonSerializer.Serialize(new { totalNumberOfItems = total, items })
+                    : System.Text.Json.JsonSerializer.Serialize(new { title = "Synthetic", numberOfTracks = total })) };
+            }
+            finally { Interlocked.Decrement(ref active); }
+        };
+        var published = new List<string>();
+        var coordinator = new PlaylistPlatformSnapshotCoordinator(_provider, _settingsService, NullLogger<PlaylistPlatformSnapshotCoordinator>.Instance);
+        await coordinator.PrepareSnapshotsAsync(playlists, (_, _, _) => Task.FromResult(false), _ => { },
+            async (playlist, snapshot, failure, token) =>
+            {
+                Assert.Null(failure);
+                Assert.NotNull(snapshot);
+                Assert.True(await _repository.PublishPreparedWatchlistPlaylistAsync("tidal", playlist.SourceId,
+                    generations[playlist.SourceId], System.Text.Json.JsonSerializer.Serialize(snapshot), token));
+                lock (published) published.Add(playlist.SourceId);
+            }, CancellationToken.None);
+        Assert.Equal(100, published.Count);
+        Assert.Equal(playlists.Select(item => item.SourceId), expansions);
+        Assert.InRange(peak, 1, 3);
+        Assert.Equal(0, active);
+        Assert.Equal(229, requests); // 100 heads, 30 pages for the large playlist, 99 empty pages
+        var lean = await _repository.GetWatchlistReconciliationRequestsAsync(includePreparedSnapshotJson: false);
+        Assert.Equal(100, lean.Count);
+        Assert.All(lean, item => { Assert.Equal("reconcile", item.Stage); Assert.Null(item.PreparedSnapshotJson); });
+        var claim = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(1, TimeSpan.FromMinutes(1), "load-one",
+            stage: "reconcile", playlistKey: "tidal:" + playlists[0].SourceId, includePreparedSnapshotJson: false));
+        var json = await _repository.GetOwnedPreparedWatchlistSnapshotAsync("tidal", claim.Identifier, claim.Generation, "load-one");
+        var prepared = System.Text.Json.JsonSerializer.Deserialize<PreparedPlaylistSnapshot>(json!)!;
+        Assert.Equal(Enumerable.Range(1, 3000).Select(id => id.ToString()), prepared.Candidates.Select(item => item.TrackSourceId));
+        Assert.Equal(3000, prepared.SnapshotTrackLimit);
+        Assert.False(prepared.IsComplete); // Preserve the existing ceiling behavior at exactly the limit.
+        Assert.Null(await _repository.GetOwnedPreparedWatchlistSnapshotAsync("tidal", claim.Identifier, generations[claim.Identifier], "load-one"));
+        Assert.Empty(await _queueRepository.GetTasksAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task EarlierPriorityPlaylistsReachQuotaWhileLowerPrioritySourceWorkIsHeld(bool holdExpansion)
+        => RunAdmissionScenarioAsync(holdExpansion);
+
+    [Fact]
+    public Task UnchangedSnapshotRevisitsKnownMissingWithoutFullExpansion()
+        => RunAdmissionScenarioAsync(false, cached: true);
+
+    [Fact]
+    public Task SharedIdentityAcrossPlaylistsCreatesOneAttempt()
+        => RunAdmissionScenarioAsync(false, shared: true);
+
+    [Fact]
+    public Task FinalAdmissionStillQueuesBelowQuotaRemainder()
+        => RunAdmissionScenarioAsync(false, belowQuota: true);
+
+    private async Task RunAdmissionScenarioAsync(bool holdExpansion, bool cached = false, bool shared = false, bool belowQuota = false)
+    {
+        EnableRealQueueAdmissionFixture();
+        const string firstId = "12345678-1234-1234-1234-123456789ab1";
+        const string secondId = "12345678-1234-1234-1234-123456789ab2";
+        const string thirdId = "12345678-1234-1234-1234-123456789ab3";
+        var settings = _settingsService.LoadSettings();
+        settings.WatchMaxItemsPerRun = belowQuota ? 3 : 2;
+        settings.WatchDelayBetweenPlaylistsSeconds = 0;
+        settings.Service = "deezer";
+        _settingsService.SaveSettings(settings);
+        foreach (var item in new[] { ("spotify", firstId), ("deezer", secondId), ("spotify", thirdId) })
+        {
+            await _repository.AddPlaylistWatchlistAsync(item.Item1, item.Item2, new PlaylistWatchlistMetadataInput(item.Item2, null, null, 1));
+            await ConfigurePlaylistDestinationAsync(item.Item1, item.Item2);
+        }
+        await _repository.UpdatePlaylistWatchlistPrioritiesAsync(new[] { ("spotify", firstId, 1), ("deezer", secondId, 2), ("spotify", thirdId, 3) });
+        if (cached)
+        {
+            var engine = _provider.GetRequiredService<WatchlistEngine>();
+            var buildRevision = typeof(WatchlistEngine).GetMethod("BuildProviderReadinessRevisionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var revision = await (Task<string>)buildRevision.Invoke(engine, new object[] { "spotify" })!;
+            var candidates = new[] { new PlaylistTrackCandidate("0000000000000000000001", "USAAA2600001", "Synthetic 1", "Fixture Artist", "Album 1", null, 180000, null, Array.Empty<string>()) };
+            var identity = PlaylistCandidateContract.BuildIdentityRevision("spotify", candidates);
+            await _repository.UpsertPlaylistTrackCandidateCacheAsync("spotify", firstId, "one", System.Text.Json.JsonSerializer.Serialize(candidates),
+                PlaylistCandidateContract.CurrentCacheSchemaVersion, identity, revision, true, sourceItemsObserved: 1);
+            await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", firstId,
+                new[] { new PlaylistWatchMissingTrackUpsert(candidates[0].TrackSourceId, candidates[0].Isrc, 1, "Synthetic 1", "Fixture Artist", "Album 1", 180000, null, null, null, "one", identity, revision) });
+        }
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var heldEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _snapshotHttp.AsyncResponse = async (request, token) =>
+        {
+            Interlocked.Increment(ref calls);
+            var path = request.RequestUri!.AbsolutePath;
+            var isItems = path.EndsWith("/items", StringComparison.Ordinal);
+            if (path.Contains(secondId) && !isItems)
+            { secondEntered.TrySetResult(); await releaseSecond.Task.WaitAsync(token); }
+            if (path.Contains(thirdId) && isItems == holdExpansion)
+            { heldEntered.TrySetResult(); await releaseHeld.Task.WaitAsync(token); }
+            var number = path.Contains(firstId) ? 1 : path.Contains(secondId) ? 2 : 3;
+            if (cached && number == 1 && isItems) throw new InvalidOperationException("Unchanged known-missing snapshot must reuse its applied cache.");
+            var id = number == 2 ? "2002" : number == 1 ? "0000000000000000000001" : "0000000000000000000003";
+            var isrc = "USAAA260000" + (shared && number == 2 ? 1 : number);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            { Content = new StringContent(isItems
+                ? System.Text.Json.JsonSerializer.Serialize(new { totalNumberOfItems = number == 3 ? 0 : 1, items = number == 3 ? Array.Empty<object>() : new object[] { new { item = new { id, title = "Synthetic " + number,
+                    isrc, duration = 180, artist = new { name = "Fixture Artist" }, album = new { title = "Album " + number } } } } })
+                : "{\"title\":\"Synthetic\",\"numberOfTracks\":1,\"lastUpdated\":\"one\"}") };
+        };
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var hosted = new WatchlistRunCoordinator(_provider, logger);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var run = InvokeRunOnceAsync(hosted);
+        try
+        {
+            await secondEntered.Task.WaitAsync(cts.Token);
+            while ((await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", firstId)).Count == 0)
+            {
+                if (run.IsCompleted) { await run; Assert.Fail(string.Join("\n", _engineLogger.Entries.Select(entry => entry.Message))); }
+                await Task.Delay(10, cts.Token);
+            }
+            Assert.Empty(await _queueRepository.GetTasksAsync()); // one eligible identity cannot fill quota two
+            releaseSecond.TrySetResult();
+            await heldEntered.Task.WaitAsync(cts.Token);
+            if (shared || belowQuota)
+            {
+                while (hosted.GetRuntimeHealth().Platforms?.FirstOrDefault(platform => platform.Source == "deezer")?.Settled != 1)
+                    await Task.Delay(10, cts.Token);
+                Assert.Empty(await _queueRepository.GetTasksAsync());
+                releaseHeld.TrySetResult();
+                await run.WaitAsync(cts.Token);
+                var finalQueue = await _queueRepository.GetTasksAsync();
+                Assert.Equal(shared ? 1 : 2, finalQueue.Count);
+                Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", firstId));
+                Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("deezer", secondId));
+                return;
+            }
+            while ((await _queueRepository.GetTasksAsync()).Count < 2)
+            {
+                if (run.IsCompleted) { await run; Assert.Fail(string.Join("\n", _engineLogger.Entries.Select(entry => entry.Message))); }
+                await Task.Delay(10, cts.Token);
+            }
+            var queue = (await _queueRepository.GetTasksAsync()).OrderBy(item => item.Id).ToList();
+            Assert.Equal(new[] { "Synthetic 1", "Synthetic 2" }, queue.Select(item => item.TrackTitle));
+            Assert.All(queue, item => Assert.Equal("queued", item.Status));
+            Assert.False(run.IsCompleted);
+            var requests = await _repository.GetWatchlistReconciliationRequestsAsync(includePreparedSnapshotJson: false);
+            Assert.All(requests, request => Assert.Null(request.PreparedSnapshotJson));
+            Console.WriteLine($"Early real admission: heldExpansion={holdExpansion}, callsBeforeRelease={calls}, queued={queue.Count}");
+        }
+        catch (Exception error)
+        {
+            var due = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
+            throw new Xunit.Sdk.XunitException(error + "\nDue ledger rows: " + System.Text.Json.JsonSerializer.Serialize(due)
+                + "\nEngine logs: " + string.Join("\n", _engineLogger.Entries.Select(entry => entry.Message))
+                + "\nCoordinator logs: " + string.Join("\n", logger.Entries.Select(entry => entry.Message))
+                + "\nRuntime: " + System.Text.Json.JsonSerializer.Serialize(hosted.GetRuntimeHealth())
+                + "\nRequests: " + System.Text.Json.JsonSerializer.Serialize(await _repository.GetWatchlistReconciliationRequestsAsync(includePreparedSnapshotJson: false))
+                + "\nOrder: " + System.Text.Json.JsonSerializer.Serialize((await _repository.GetPlaylistWatchlistAsync()).Select(item => new { item.Source, item.SourceId, item.SyncPriority })));
+
+        }
+        finally
+        {
+            releaseSecond.TrySetResult();
+            releaseHeld.TrySetResult();
+            await run.WaitAsync(TimeSpan.FromSeconds(20));
+            var summary = logger.Entries.LastOrDefault(entry => entry.Fields?.GetValueOrDefault("source") as string == "run")?.Fields;
+            Assert.NotNull(summary);
+            var firstPrepared = Assert.IsType<long>(summary!["first_prepared_persisted_ms"]);
+            var firstMissing = Assert.IsType<long>(summary["first_missing_persisted_ms"]);
+            var firstQueue = Assert.IsType<long>(summary["first_successful_enqueue_ms"]);
+            Assert.InRange(firstPrepared, 0, firstMissing);
+            Assert.True(firstMissing <= firstQueue);
+            File.AppendAllText(Path.Join(Path.GetTempPath(), "watchlist-admission-throughput-observations.jsonl"),
+                System.Text.Json.JsonSerializer.Serialize(new { holdExpansion, cached, shared, belowQuota, calls,
+                    queued = (await _queueRepository.GetTasksAsync()).Count, metrics = summary }) + Environment.NewLine);
+        }
+    }
+
+    private void EnableRealQueueAdmissionFixture()
+    {
+        // Reuse real queue/identity/destination/admission code. Only source HTTP and idle runtime
+        // collaborators are synthetic; no download worker or provider network service is started.
+        var engine = _provider.GetRequiredService<WatchlistEngine>();
+        SetPrivateField(engine, "_deezerClient", new DeezSpoTag.Integrations.Deezer.DeezerClient(
+            NullLogger<DeezSpoTag.Integrations.Deezer.DeezerClient>.Instance, null!));
+        var reconciler = _provider.GetRequiredService<PlaylistWatchReconciler>();
+        var queueAdmission = _provider.GetRequiredService<WatchlistQueueAdmissionService>();
+        var artist = _provider.GetRequiredService<ArtistWatchService>();
+        var profiles = _provider.GetRequiredService<AutoTagProfileResolutionService>();
+        var autoTag = (AutoTagService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(AutoTagService));
+        SetPrivateField(autoTag, "_activeJobIds", new ConcurrentDictionary<string, byte>());
+        SetPrivateField(autoTag, "_activeJobStages", new ConcurrentDictionary<string, string>());
+        var orchestration = (DownloadOrchestrationService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(DownloadOrchestrationService));
+        SetPrivateField(orchestration, "_autoTagService", autoTag);
+        SetPrivateField(orchestration, "_phaseLock", new object());
+        SetPrivateField(orchestration, "_enhancementResumeLock", new object());
+        SetPrivateField(orchestration, "_pendingEnhancementResumeFolderIds", new HashSet<string>());
+        SetPrivateField(orchestration, "_pendingEnhancementResumeRootPaths", new HashSet<string>());
+        SetPrivateField(orchestration, "_wakeSignal", new SemaphoreSlim(0, 1));
+        var intent = (DownloadIntentService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(DownloadIntentService));
+        var dedupe = new DeezSpoTag.Services.Download.DownloadDedupeService(_queueRepository, _repository,
+            NullLogger<DeezSpoTag.Services.Download.DownloadDedupeService>.Instance, new PassthroughLocalTrackAmbiguityResolver());
+        SetPrivateField(intent, "_queueRepository", _queueRepository);
+        SetPrivateField(intent, "_settingsService", _settingsService);
+        SetPrivateField(intent, "_libraryRepository", _repository);
+        SetPrivateField(intent, "_orchestrationService", orchestration);
+        SetPrivateField(intent, "_downloadTagSettingsResolver", new QueueFixtureTagSettings());
+        SetPrivateField(intent, "_activityLog", new DeezSpoTag.Services.Download.NullActivityLogWriter());
+        SetPrivateField(intent, "_deezspotagListener", new DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener());
+        SetPrivateField(intent, "_logger", NullLogger<DownloadIntentService>.Instance);
+        SetPrivateField(intent, "_dedupeService", dedupe);
+        SetPrivateField(intent, "_apiHealthTracker", new DeezSpoTag.Services.Download.DownloadApiHealthTracker());
+        var services = new ServiceCollection();
+        services.AddSingleton(_settingsService); services.AddSingleton(_repository); services.AddSingleton(_queueRepository);
+        services.AddSingleton(engine); services.AddSingleton(reconciler); services.AddSingleton(queueAdmission);
+        services.AddSingleton(artist); services.AddSingleton(profiles); services.AddSingleton(intent); services.AddSingleton(dedupe);
+        services.AddSingleton(new DeezSpoTag.Services.Download.Utils.EnhancedPathTemplateProcessor(
+            NullLogger<DeezSpoTag.Services.Download.Utils.EnhancedPathTemplateProcessor>.Instance));
+        services.AddSingleton((PlaylistSyncService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PlaylistSyncService)));
+        services.AddSingleton<PlaylistPlatformSnapshotCoordinator>(provider => new(provider, _settingsService, NullLogger<PlaylistPlatformSnapshotCoordinator>.Instance));
+        _provider.Dispose();
+        _provider = services.BuildServiceProvider();
+        SetPrivateField(engine, "_serviceProvider", _provider);
+        SetPrivateField(intent, "_serviceProvider", _provider);
+        // Use the existing adapter implementation with fake HTTP for both seed providers, keeping
+        // each source's real candidate contracts, identity, missing ledger and queue policy.
+        var adapters = (System.Collections.IDictionary)GetPrivateField(engine, "_sourceAdapters");
+        var tidal = adapters["tidal"]!;
+        foreach (var source in new[] { "spotify", "deezer" })
+            adapters[source] = Activator.CreateInstance(tidal.GetType(), source,
+                GetPrivateField(tidal, "_fetch"), GetPrivateField(tidal, "_fetchHead"));
+    }
+
+    private sealed class QueueFixtureTagSettings : DeezSpoTag.Services.Download.Shared.IDownloadTagSettingsResolver
+    {
+        public Task<DeezSpoTag.Core.Models.Settings.TagSettings?> ResolveAsync(long? id, CancellationToken token)
+            => Task.FromResult<DeezSpoTag.Core.Models.Settings.TagSettings?>(new());
+        public Task<DeezSpoTag.Services.Download.Shared.DownloadTagProfileSettings?> ResolveProfileAsync(long? id, CancellationToken token)
+            => Task.FromResult<DeezSpoTag.Services.Download.Shared.DownloadTagProfileSettings?>(new(new(), "deezer", null, null));
+    }
+
+    [Fact]
+    public async Task FirstOccurrenceMeasurementsAreMonotonicAndThreadSafe()
+    {
+        var logger = new ListLogger<WatchlistEngine>();
+        using (var scope = WatchlistPerformanceMeasurement.Start(logger, "run", "measurement"))
+        {
+            var record = typeof(WatchlistPerformanceMeasurement).GetMethod("RecordFirst");
+            Assert.NotNull(record);
+            await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Task.Run(() => record!.Invoke(scope, new object[] { "first_prepared" }))));
+            var values = GetPrivateField<ConcurrentDictionary<string, long>>(scope, "_values");
+            var first = values["first_prepared_ms"];
+            await Task.Delay(10);
+            record!.Invoke(scope, new object[] { "first_prepared" });
+            Assert.Equal(first, values["first_prepared_ms"]);
+            record.Invoke(scope, new object[] { "first_successful_enqueue" });
+            Assert.True(values["first_successful_enqueue_ms"] >= first);
+        }
+        Assert.Single(logger.Entries);
+    }
+
+    [Fact]
     public async Task DirectReconciliation_InvalidatesAnOlderInFlightPreparation()
     {
         var playlist = await _repository.AddPlaylistWatchlistAsync("unsupported", "manual-newer", new PlaylistWatchlistMetadataInput("Manual", null, null, 0));

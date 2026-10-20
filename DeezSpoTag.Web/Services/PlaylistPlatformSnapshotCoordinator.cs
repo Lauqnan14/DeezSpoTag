@@ -13,7 +13,8 @@ public sealed record PreparedPlaylistSnapshot(
     bool IsComplete, bool IsAuthoritativeEmpty, bool CanClearImageUrl, string? OwnerName,
     string? FailureCode, string? FailureIncidentId, bool FailureIsIncidentOrigin,
     int? SourceItemsObserved, string IdentityRevision, string ProviderReadinessRevision,
-    DateTimeOffset FetchedAtUtc, bool WasExpanded, int ContractVersion = 1, int SnapshotTrackLimit = 0);
+    DateTimeOffset FetchedAtUtc, bool WasExpanded, int ContractVersion = 1, int SnapshotTrackLimit = 0,
+    int? FailureHttpStatusCode = null, DateTimeOffset? RetryAfterUtc = null);
 
 /// <summary>
 /// Immutable, per-playlist result of the read-only platform snapshot phase.
@@ -31,7 +32,8 @@ public sealed record PlaylistHeadSnapshot(
     string? OwnerName = null,
     string? FailureCode = null,
     string? FailureIncidentId = null,
-    bool FailureIsIncidentOrigin = true)
+    bool FailureIsIncidentOrigin = true,
+    int? FailureHttpStatusCode = null, DateTimeOffset? RetryAfterUtc = null)
 {
     /// <summary>
     /// True when the provider answered but the answer is unusable, so no trustworthy change
@@ -112,6 +114,8 @@ public static class PlaylistPlatformSnapshotPolicy
         };
 
     public const int FallbackConcurrency = 2;
+    public const int GlobalSourceConcurrency = 5;
+    public const int PreparationsPerSource = 1;
 
     /// <summary>
     /// Providers without an explicit entry (generated sources such as smart tracklists) use a
@@ -129,29 +133,29 @@ public static class PlaylistPlatformSnapshotPolicy
 /// <summary>
 /// Phase 1 of the platform-oriented watchlist workflow.
 ///
-/// Groups watched playlists by normalised source, fetches every playlist head for that platform
-/// under a bounded per-provider concurrency limit, and returns immutable per-playlist results.
-/// Provider batches run sequentially so the app never issues an unbounded cross-provider burst.
+/// Streams read-only heads and preparations fairly across providers under shared bounded capacity.
+/// The compatibility head-only API still returns immutable results grouped by provider.
 ///
-/// This phase is read-only with respect to the database: it performs no writes, no state
-/// transitions, and no queue work, which is what makes it safe to run concurrently. All mutation
-/// stays in the caller's ordered reconciliation consumer; preparation publishes durable work through
-/// a separate callback without applying it to playlists or the download ledger.
+/// Source work never applies playlist membership or admits downloads. It persists confirmed
+/// provider cooldowns immediately and publishes immutable prepared evidence through the caller's
+/// bounded durable handoff. Playlist and missing-ledger mutation stays in the ordered consumer.
 /// </summary>
 public sealed class PlaylistPlatformSnapshotCoordinator
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<PlaylistPlatformSnapshotCoordinator> _logger;
+    private readonly TimeProvider _timeProvider;
 
     public PlaylistPlatformSnapshotCoordinator(
         IServiceProvider serviceProvider,
         DeezSpoTagSettingsService settingsService,
-        ILogger<PlaylistPlatformSnapshotCoordinator> logger)
+        ILogger<PlaylistPlatformSnapshotCoordinator> logger, TimeProvider? timeProvider = null)
     {
         _serviceProvider = serviceProvider;
         _settingsService = settingsService;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -224,36 +228,176 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         Func<PlaylistWatchlistDto, PreparedPlaylistSnapshot?, Exception?, CancellationToken, Task> publish,
         CancellationToken cancellationToken)
     {
-        foreach (var group in playlists.GroupBy(static playlist => playlist.Source.Trim(), StringComparer.OrdinalIgnoreCase))
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var token = lifetime.Token;
+        var sources = playlists.GroupBy(playlist => playlist.Source.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group => new SourceWork(group.Key, group.ToList())).ToList();
+        var operations = new List<(SourceWork Source, bool Preparation, int Index,
+            Task<(PlaylistHeadDiscovery? Head, PreparedPlaylistSnapshot? Snapshot, Exception? Failure)> Task)>();
+        var publications = new List<Task>();
+        var cursor = 0;
+        try
         {
-            var heads = await DiscoverHeadsAsync(group.ToList(), isSourceCircuitOpen, cancellationToken);
-            headsDiscovered(heads);
-            foreach (var playlist in group)
+            while (sources.Any(source => source.NextPreparation < source.Playlists.Count)
+                   || operations.Count > 0 || publications.Count > 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                PreparedPlaylistSnapshot? prepared = null;
-                Exception? failure = null;
-                try
+                token.ThrowIfCancellationRequested();
+                // Observe settled work before offering another read: in particular, never dispatch
+                // past a known throttle just because the serial reconciliation consumer is busy.
+                foreach (var publication in publications.Where(task => task.IsCompleted).ToArray())
+                { publications.Remove(publication); await publication; }
+                foreach (var operation in operations.Where(work => work.Task.IsCompleted).ToArray())
                 {
-                    if (await isSourceCircuitOpen(playlist.Source, "playlist", playlist.SourceId))
-                        throw new HttpRequestException("Source circuit breaker open.");
-                    var discovery = heads.FirstOrDefault(item => item.SourceId == playlist.SourceId);
-                    if (discovery is { Head: null, Error: not null })
-                        throw new HttpRequestException(discovery.Error);
-                    using var scope = _serviceProvider.CreateScope();
-                    prepared = await scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>()
-                        .PreparePlaylistSnapshotAsync(playlist, discovery?.Head, cancellationToken);
+                    if (operation.Preparation && publications.Count >= PlaylistPlatformSnapshotPolicy.GlobalSourceConcurrency) continue;
+                    operations.Remove(operation);
+                    var result = await operation.Task;
+                    var source = operation.Source;
+                    if (!operation.Preparation)
+                    {
+                        source.Heads[operation.Index] = result.Head!;
+                        headsDiscovered([result.Head!]);
+                        WatchlistPerformanceMeasurement.Current?.Increment(result.Head!.ChangeState switch
+                        {
+                            PlaylistHeadChangeState.Unchanged => "heads_unchanged",
+                            PlaylistHeadChangeState.Changed => "heads_changed",
+                            PlaylistHeadChangeState.New => "heads_new",
+                            PlaylistHeadChangeState.RequiresExpansion => "heads_requires_expansion",
+                            PlaylistHeadChangeState.Deferred => "heads_deferred",
+                            _ => "heads_failed"
+                        });
+                        if (result.Head?.Head?.FailureHttpStatusCode == 429) source.Blocked = true;
+                    }
+                    else
+                    {
+                        source.Preparing = false;
+                        source.NextPreparation++;
+                        if (result.Snapshot?.FailureHttpStatusCode == 429
+                            || result.Failure is HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests })
+                        {
+                            source.Blocked = true;
+                            await PersistThrottleAsync(source.Source, result.Snapshot?.RetryAfterUtc, token);
+                        }
+                        if (result.Snapshot is { WasExpanded: true, Candidates.Count: > 0 })
+                            source.NextExpansionUtc = _timeProvider.GetUtcNow().AddSeconds(
+                                _settingsService.LoadSettings().WatchDelayBetweenPlaylistsSeconds);
+                        publications.Add(publish(source.Playlists[operation.Index], result.Snapshot, result.Failure, token));
+                    }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                // Match the existing reconciliation boundary: a broken provider is isolated to its
-                    // playlist and reported by the consumer. Host cancellation and fatal memory failure propagate.
-                    catch (Exception ex) when (ex is not OutOfMemoryException) { failure = ex; }
-                await publish(playlist, prepared, failure, cancellationToken);
-                var delay = _settingsService.LoadSettings().WatchDelayBetweenPlaylistsSeconds;
-                if (prepared is { WasExpanded: true, Candidates.Count: > 0 } && delay > 0)
-                    await WatchlistPerformanceMeasurement.TimeAsync("intentional_delay", () => Task.Delay(TimeSpan.FromSeconds(delay), cancellationToken));
+
+                var launched = false;
+                // A rotating cursor offers each represented provider one operation per pass.
+                // Within a provider, expansions retain caller priority even if heads finish out of order.
+                for (var offered = 0; offered < sources.Count
+                     && operations.Count(work => !work.Task.IsCompleted) < PlaylistPlatformSnapshotPolicy.GlobalSourceConcurrency; offered++)
+                {
+                    var source = sources[cursor];
+                    cursor = (cursor + 1) % sources.Count;
+                    var active = operations.Count(work => work.Source == source && !work.Task.IsCompleted);
+                    if (active >= PlaylistPlatformSnapshotPolicy.HeadConcurrencyFor(source.Source)) continue;
+                    var index = source.NextPreparation;
+                    var canPrepare = (source.Preparing ? 1 : 0) < PlaylistPlatformSnapshotPolicy.PreparationsPerSource && index < source.Playlists.Count && source.Heads[index] is not null
+                        && publications.Count + operations.Count(work => work.Preparation) < PlaylistPlatformSnapshotPolicy.GlobalSourceConcurrency
+                        && (source.Blocked || source.Heads[index]!.ChangeState == PlaylistHeadChangeState.Unchanged
+                            || _timeProvider.GetUtcNow() >= source.NextExpansionUtc);
+                    if (canPrepare)
+                    {
+                        source.Preparing = true;
+                        operations.Add((source, true, index, PrepareOneAsync(source, index)));
+                        launched = true;
+                    }
+                    else if (source.NextHead < source.Playlists.Count)
+                    {
+                        index = source.NextHead++;
+                        operations.Add((source, false, index, HeadAsync(source, index)));
+                        launched = true;
+                    }
+                    // A synchronously completed response may carry a throttle. Settle it now.
+                    if (operations.Any(work => work.Task.IsCompleted)) break;
+                }
+                if (launched || operations.Any(work => work.Task.IsCompleted
+                    && (!work.Preparation || publications.Count < PlaylistPlatformSnapshotPolicy.GlobalSourceConcurrency))) continue;
+                var waits = operations.Select(work => (Task)work.Task).Where(task => !task.IsCompleted)
+                    .Concat(publications).ToList();
+                var nextExpansion = sources.Where(source => !source.Preparing && source.NextPreparation < source.Playlists.Count
+                        && source.Heads[source.NextPreparation] is not null && source.NextExpansionUtc > _timeProvider.GetUtcNow())
+                    .Select(source => (DateTimeOffset?)source.NextExpansionUtc).Min();
+                using var waitLifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+                if (nextExpansion is { } due)
+                    waits.Add(Task.Delay(due - _timeProvider.GetUtcNow() > TimeSpan.Zero ? due - _timeProvider.GetUtcNow() : TimeSpan.Zero,
+                        _timeProvider, waitLifetime.Token));
+                if (waits.Count > 0) await Task.WhenAny(waits).WaitAsync(token);
+                waitLifetime.Cancel();
             }
         }
+        catch { lifetime.Cancel(); throw; }
+        finally
+        {
+            // Cancellation owns the underlying calls until they finish unwinding. Never detach
+            // source or publication work from this cycle, including on a callback failure.
+            lifetime.Cancel();
+            try { await Task.WhenAll(operations.Select(work => (Task)work.Task).Concat(publications)); }
+            catch (Exception ex) when (ex is not OutOfMemoryException && lifetime.IsCancellationRequested)
+            {
+                // The dispatcher already observed the original terminal error. Draining cancelled
+                // siblings must not replace it with their cancellation exception.
+            }
+            finally { foreach (var source in sources) source.HeadGate.Dispose(); }
+        }
+
+        async Task<(PlaylistHeadDiscovery?, PreparedPlaylistSnapshot?, Exception?)> HeadAsync(SourceWork source, int index)
+        {
+            var playlist = source.Playlists[index];
+            if (source.Blocked || await isSourceCircuitOpen(source.Source, "playlist", playlist.SourceId))
+            {
+                WatchlistPerformanceMeasurement.Current?.Increment("source_deferrals");
+                return (PlaylistHeadDiscovery.Failed(source.Source, playlist.SourceId, "Source circuit breaker open.", 0), null, null);
+            }
+            var head = await DiscoverOneAsync(source.Source, playlist, source.HeadGate, token,
+                (stage, elapsed) => WatchlistPerformanceMeasurement.Current?.Increment("head_cache_" + stage + "_work_ms", elapsed),
+                () => source.Blocked, () => source.Blocked = true);
+            return (head, null, null);
+        }
+        async Task<(PlaylistHeadDiscovery?, PreparedPlaylistSnapshot?, Exception?)> PrepareOneAsync(SourceWork source, int index)
+        {
+            try
+            {
+                var playlist = source.Playlists[index];
+                var head = source.Heads[index]!;
+                if (source.Blocked || await isSourceCircuitOpen(source.Source, "playlist", playlist.SourceId))
+                    throw new HttpRequestException("Source circuit breaker open.");
+                if (head.Error is not null)
+                    throw new HttpRequestException(head.Error, null, (System.Net.HttpStatusCode?)head.Head?.FailureHttpStatusCode);
+                using var scope = _serviceProvider.CreateScope();
+                WatchlistPerformanceMeasurement.Current?.Increment("source_preparations");
+                var prepared = await scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>()
+                    .PreparePlaylistSnapshotAsync(playlist, head.Head, token);
+                if (prepared.FailureHttpStatusCode == 429) source.Blocked = true;
+                return (null, prepared, null);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { return (null, null, ex); }
+        }
+    }
+
+    private sealed class SourceWork(string source, List<PlaylistWatchlistDto> playlists)
+    {
+        public string Source { get; } = source;
+        public List<PlaylistWatchlistDto> Playlists { get; } = playlists;
+        public PlaylistHeadDiscovery?[] Heads { get; } = new PlaylistHeadDiscovery?[playlists.Count];
+        public SemaphoreSlim HeadGate { get; } = new(PlaylistPlatformSnapshotPolicy.HeadConcurrencyFor(source));
+        public int NextHead;
+        public int NextPreparation;
+        public bool Preparing;
+        public volatile bool Blocked;
+        public DateTimeOffset NextExpansionUtc;
+    }
+
+    private async Task PersistThrottleAsync(string source, DateTimeOffset? deadline, CancellationToken cancellationToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        WatchlistPerformanceMeasurement.Current?.Increment("source_throttles");
+        await WatchlistRunCoordinator.PersistSourceThrottleAsync(scope.ServiceProvider.GetRequiredService<LibraryRepository>(),
+            source, deadline, _timeProvider.GetUtcNow(), cancellationToken);
     }
 
     private async Task<IReadOnlyList<PlaylistHeadDiscovery>> DiscoverPlatformHeadsAsync(
@@ -277,11 +421,18 @@ public sealed class PlaylistPlatformSnapshotCoordinator
             if (stage == "lookup") Interlocked.Add(ref cacheLookupWorkMs, elapsed);
             else Interlocked.Add(ref cacheDeserializeWorkMs, elapsed);
         }
-        var tasks = batch.Select(playlist => DiscoverOneAsync(source, playlist, gate, cancellationToken, RecordCacheTiming)).ToList();
-
-        // Faults are contained per playlist inside DiscoverOneAsync, so awaiting them together
-        // cannot fail the batch and cannot cancel unrelated playlists.
-        var results = await Task.WhenAll(tasks);
+        var results = new PlaylistHeadDiscovery[batch.Count];
+        var next = -1;
+        var throttled = 0;
+        var workers = Enumerable.Range(0, Math.Min(limit, batch.Count)).Select(_ => ReadHeadsAsync()).ToArray();
+        await Task.WhenAll(workers);
+        async Task ReadHeadsAsync()
+        {
+            int index;
+            while ((index = Interlocked.Increment(ref next)) < batch.Count)
+                results[index] = await DiscoverOneAsync(source, batch[index], gate, cancellationToken, RecordCacheTiming,
+                    () => Volatile.Read(ref throttled) != 0, () => Interlocked.Exchange(ref throttled, 1));
+        }
         var totalMs = platformTimer.ElapsedMilliseconds;
         results = results.Select(result => result with { PlatformHeadElapsedMs = totalMs }).ToArray();
         var headMs = results.Sum(static result => result.DurationMs);
@@ -322,7 +473,9 @@ public sealed class PlaylistPlatformSnapshotCoordinator
         PlaylistWatchlistDto playlist,
         SemaphoreSlim gate,
         CancellationToken cancellationToken,
-        Action<string, long> recordCacheTiming)
+        Action<string, long> recordCacheTiming,
+        Func<bool>? isThrottleKnown = null,
+        Action? observeThrottle = null)
     {
         var sourceId = (playlist.SourceId ?? string.Empty).Trim();
         var requestTimer = Stopwatch.StartNew();
@@ -338,13 +491,24 @@ public sealed class PlaylistPlatformSnapshotCoordinator
             requestTimer.Restart();
 
             using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            var circuit = await repository.GetWatchlistSourceCircuitStateAsync("playlist", source, cancellationToken);
+            if (isThrottleKnown?.Invoke() == true
+                || circuit is { IsOpen: true } && (circuit.OpenUntilUtc is null || circuit.OpenUntilUtc > _timeProvider.GetUtcNow()))
+                return PlaylistHeadDiscovery.Failed(source, sourceId, "Source circuit breaker open.", 0);
             var engine = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
+            WatchlistPerformanceMeasurement.Current?.Increment("source_operations");
             var head = await engine.FetchPlaylistHeadAsync(source, sourceId, cancellationToken);
             var durationMs = requestTimer.ElapsedMilliseconds;
 
+            if (head.FailureHttpStatusCode == 429)
+            {
+                observeThrottle?.Invoke();
+                await PersistThrottleAsync(source, head.RetryAfterUtc, cancellationToken);
+            }
             if (head.IsFailed)
             {
-                return PlaylistHeadDiscovery.Failed(source, sourceId, head.FailureCode ?? "head_fetch_failed", durationMs);
+                return PlaylistHeadDiscovery.Failed(source, sourceId, head.FailureCode ?? "head_fetch_failed", durationMs) with { Head = head };
             }
 
             var state = await ClassifyAsync(source, sourceId, head, cancellationToken, recordCacheTiming);
@@ -369,6 +533,13 @@ public sealed class PlaylistPlatformSnapshotCoordinator
                 "Playlist head discovery failed for {Source}:{SourceId}; sibling playlists are unaffected.",
                 source,
                 sourceId);
+            if (ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests })
+            {
+                observeThrottle?.Invoke();
+                await PersistThrottleAsync(source, null, cancellationToken);
+                return PlaylistHeadDiscovery.Failed(source, sourceId, "Provider throttled requests (HTTP 429).", requestTimer.ElapsedMilliseconds)
+                    with { Head = new PlaylistHeadSnapshot(source, sourceId, FailureCode: "http_429", FailureHttpStatusCode: 429) };
+            }
             return PlaylistHeadDiscovery.Failed(
                 source,
                 sourceId,

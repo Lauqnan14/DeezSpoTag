@@ -11631,11 +11631,17 @@ VALUES (
 )
 ON CONFLICT(watch_type, source) DO UPDATE SET
     is_open = excluded.is_open,
-    open_until_utc = excluded.open_until_utc,
+    open_until_utc = CASE WHEN excluded.fingerprint='http_429'
+        AND julianday(watchlist_source_circuit_state.open_until_utc)>julianday(excluded.open_until_utc)
+        THEN watchlist_source_circuit_state.open_until_utc ELSE excluded.open_until_utc END,
     reason = excluded.reason,
     fingerprint = excluded.fingerprint,
     failure_count = excluded.failure_count,
-    updated_at = CURRENT_TIMESTAMP;";
+    updated_at = CURRENT_TIMESTAMP
+WHERE NOT (watchlist_source_circuit_state.is_open=1
+    AND COALESCE(watchlist_source_circuit_state.fingerprint,'')='http_429'
+    AND COALESCE(julianday(watchlist_source_circuit_state.open_until_utc),0)>julianday('now')
+    AND COALESCE(excluded.fingerprint,'')<>'http_429');";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("watchType", input.WatchType.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue(SourceField, input.Source.Trim().ToLowerInvariant());
@@ -14877,15 +14883,16 @@ ON CONFLICT(kind,source,identifier) DO UPDATE SET
     }
 
     public async Task<IReadOnlyList<WatchlistReconciliationRequestDto>> GetWatchlistReconciliationRequestsAsync(
-        CancellationToken cancellationToken = default, string? playlistKey = null)
+        CancellationToken cancellationToken = default, string? playlistKey = null, bool includePreparedSnapshotJson = true)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
-SELECT kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,prepared_snapshot_json
+SELECT kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,CASE WHEN @includePayload THEN prepared_snapshot_json ELSE NULL END
 FROM watchlist_reconciliation_request
 WHERE @playlistKey IS NULL OR (kind='playlist' AND source||':'||identifier=@playlistKey)
 ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_at, source, identifier;", connection);
         command.Parameters.AddWithValue("playlistKey", (object?)playlistKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("includePayload", includePreparedSnapshotJson);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var requests = new List<WatchlistReconciliationRequestDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -14916,7 +14923,8 @@ ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_
         string leaseOwner,
         CancellationToken cancellationToken = default,
         string stage = "fetch",
-        string? playlistKey = null)
+        string? playlistKey = null,
+        bool includePreparedSnapshotJson = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -14937,12 +14945,13 @@ WHERE rowid IN (
     ORDER BY CASE kind WHEN 'all' THEN 0 WHEN 'playlist' THEN 1 ELSE 2 END, updated_at
     LIMIT @limit
 )
-RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,prepared_snapshot_json;", connection, transaction);
+RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next_attempt_utc,lease_owner,lease_until_utc,last_error,stage,generation,CASE WHEN @includePayload THEN prepared_snapshot_json ELSE NULL END;", connection, transaction);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 1000));
         command.Parameters.AddWithValue("stage", stage);
         command.Parameters.AddWithValue("playlistKey", (object?)playlistKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("includePayload", includePreparedSnapshotJson);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var requests = new List<WatchlistReconciliationRequestDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -14965,6 +14974,23 @@ RETURNING kind,source,identifier,created_at,updated_at,status,attempt_count,next
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return requests;
+    }
+
+    public async Task<string?> GetOwnedPreparedWatchlistSnapshotAsync(
+        string source, string sourceId, string generation, string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT prepared_snapshot_json FROM watchlist_reconciliation_request
+WHERE kind='playlist' AND stage='reconcile' AND status='processing'
+  AND source=@source AND identifier=@identifier AND generation=@generation
+  AND lease_owner=@owner AND julianday(lease_until_utc)>julianday('now');", connection);
+        command.Parameters.AddWithValue("source", source.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("identifier", sourceId.Trim());
+        command.Parameters.AddWithValue("generation", generation);
+        command.Parameters.AddWithValue("owner", leaseOwner);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
     }
 
     public async Task<int> CompleteClaimedWatchlistReconciliationRequestsAsync(
