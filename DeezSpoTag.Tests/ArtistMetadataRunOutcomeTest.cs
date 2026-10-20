@@ -123,6 +123,169 @@ public class ArtistMetadataRunOutcomeTest
     }
 
     [Fact]
+    public void PartialWorkWithUnresolvedTargetsIsRetriedAfterAResume()
+    {
+        var retryable = new ArtistRunOutcomeRecord(
+            7,
+            ArtistRunOutcomes.Partial,
+            Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[] { ArtistTargetFields.Avatar }) },
+            PendingWork: new[]
+            {
+                new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
+            });
+        var settled = new ArtistRunOutcomeRecord(
+            8,
+            ArtistRunOutcomes.Partial,
+            Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[] { ArtistTargetFields.Avatar }) });
+
+        var skip = ArtistRunOutcomes.BuildResumeSkipSet(new[] { retryable, settled });
+
+        // A partial whose remaining fields were confirmed cannot change on a retry, but a partial that
+        // still owes a server write must be revisited even though its artist-level label is terminal.
+        Assert.Equal(new long[] { 8 }, skip.OrderBy(id => id).ToArray());
+        Assert.False(ArtistRunOutcomes.IsTerminal(retryable));
+        Assert.True(ArtistRunOutcomes.IsTerminal(settled));
+    }
+
+    [Fact]
+    public void NotDueSkipWithUnresolvedWorkIsNeitherTerminalNorAnAttempt()
+    {
+        var notDueWithWork = new ArtistRunOutcomeRecord(
+            9,
+            ArtistRunOutcomes.Skipped,
+            ArtistRunSkipReasons.NotDue,
+            PendingWork: new[]
+            {
+                new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar }, ArtistPendingWorkCategories.Transient)
+            });
+        var plainNotDue = new ArtistRunOutcomeRecord(10, ArtistRunOutcomes.Skipped, ArtistRunSkipReasons.NotDue);
+
+        // The interval has not elapsed for either artist, but the recorded unresolved work outranks the
+        // skip reason: the retry window may not be ended by a classification that consumed no attempt.
+        Assert.False(ArtistRunOutcomes.IsTerminal(notDueWithWork));
+        Assert.True(ArtistRunOutcomes.IsTerminal(plainNotDue));
+        Assert.Equal(new long[] { 10 }, ArtistRunOutcomes.BuildResumeSkipSet(new[] { notDueWithWork, plainNotDue }).ToArray());
+    }
+
+    [Fact]
+    public void RetryingAPartialArtistReplacesItsBucketInsteadOfAddingToIt()
+    {
+        var counters = InvokeCounters("FromOutcomes", 1, new[]
+        {
+            new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Partial,
+                PendingWork: new[]
+                {
+                    new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
+                })
+        });
+        counters.GetType().GetMethod("Apply", new[] { typeof(ArtistRunOutcomeRecord) })!
+            .Invoke(counters, new object[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Succeeded) });
+
+        Assert.Equal(1, ReadCounter(counters, "ProcessedArtists"));
+        Assert.Equal(1, ReadCounter(counters, "SuccessfulArtists"));
+        Assert.Equal(0, ReadCounter(counters, "PartialArtists"));
+    }
+
+    [Fact]
+    public void NoOpWithoutConfirmationStillOwesTheRequestedField()
+    {
+        var pending = InvokeDescribePendingTargetWork(
+            new Dictionary<string, IReadOnlyList<string>> { ["plex"] = new[] { ArtistTargetFields.Avatar } },
+            new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Unchanged) });
+        var unresolved = Assert.Single(pending);
+        Assert.Equal(new[] { ArtistTargetFields.Avatar }, unresolved.FieldList);
+    }
+
+    [Theory]
+    [InlineData(ArtistTargetOutcome.Updated, "avatar")]
+    [InlineData(ArtistTargetOutcome.Unchanged, "avatar")]
+    public void ExplicitlyConfirmedFieldsAreNotRecordedAsPendingWork(ArtistTargetOutcome outcome, string? updatedField)
+    {
+        var pending = InvokeDescribePendingTargetWork(
+            new Dictionary<string, IReadOnlyList<string>> { ["plex"] = new[] { ArtistTargetFields.Avatar } },
+            new[]
+            {
+                new ArtistTargetResult(
+                    "plex",
+                    outcome,
+                    updatedField is null ? null : new[] { updatedField })
+            });
+
+        Assert.Empty(pending);
+    }
+
+    [Fact]
+    public void FailedFieldsAreRecordedIndependentlyOfFieldsThatSucceeded()
+    {
+        var pending = InvokeDescribePendingTargetWork(
+            new Dictionary<string, IReadOnlyList<string>> { ["plex"] = new[] { ArtistTargetFields.Avatar, ArtistTargetFields.Background } },
+            new[]
+            {
+                new ArtistTargetResult(
+                    "plex",
+                    ArtistTargetOutcome.Updated,
+                    new[] { ArtistTargetFields.Avatar },
+                    Error: "Background upload failed.")
+            });
+
+        // The confirmed avatar stays satisfied; only the unconfirmed background is retried.
+        var entry = Assert.Single(pending);
+        Assert.Equal("plex", entry.Target);
+        Assert.Equal(new[] { ArtistTargetFields.Background }, entry.Fields.ToArray());
+        Assert.Equal(ArtistPendingWorkCategories.Transient, entry.Category);
+        Assert.Equal("Background upload failed.", entry.LastError);
+    }
+
+    [Fact]
+    public void AuthenticationAndUnconfiguredTargetsPauseRatherThanRetryBlindly()
+    {
+        var unauthorized = InvokeDescribePendingTargetWork(
+            new Dictionary<string, IReadOnlyList<string>> { ["plex"] = new[] { ArtistTargetFields.Avatar } },
+            new[]
+            {
+                new ArtistTargetResult("plex", ArtistTargetOutcome.Failed, Error: "The request failed with status code 401 (Unauthorized).")
+            });
+        var unconfigured = InvokeDescribePendingTargetWork(
+            new Dictionary<string, IReadOnlyList<string>> { ["navidrome"] = new[] { ArtistTargetFields.Avatar } },
+            new[] { ArtistTargetResult.NotConfigured("navidrome", "Navidrome is not configured.") });
+
+        Assert.Equal(ArtistPendingWorkCategories.Authentication, Assert.Single(unauthorized).Category);
+        Assert.Equal(ArtistPendingWorkCategories.NotConfigured, Assert.Single(unconfigured).Category);
+        Assert.True(ArtistPendingWorkCategories.NeedsUserAction(Assert.Single(unauthorized).Category));
+        Assert.False(ArtistPendingWorkCategories.IsRetryable(Assert.Single(unauthorized).Category));
+    }
+
+    [Fact]
+    public void PendingAttemptKeysCarryForwardAndDropSatisfiedPairs()
+    {
+        var key = ArtistMetadataPendingWork.Key(41, "Plex");
+        var outstanding = new[]
+        {
+            new ArtistRunOutcomeRecord(41, ArtistRunOutcomes.Partial,
+                PendingWork: new[]
+                {
+                    new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar }, ArtistPendingWorkCategories.Transient),
+                    new ArtistTargetPendingWork("PLEX", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
+                })
+        };
+
+        var pairs = ArtistMetadataPendingWork.Collect(outstanding, new Dictionary<string, int> { [key] = 2 });
+
+        // The same artist/target pair is one attempt scope even when the fields are recorded twice,
+        // and its attempt count is carried into the next attempt.
+        var pair = Assert.Single(pairs);
+        Assert.Equal(41, pair.ArtistId);
+        Assert.Equal(2, pair.Attempts);
+        Assert.Equal(new[] { ArtistTargetFields.Avatar, ArtistTargetFields.Background }, pair.Fields.OrderBy(field => field).ToArray());
+        Assert.Equal(key, ArtistMetadataPendingWork.Key(pair.ArtistId, pair.Target));
+
+        // A pair whose fields are all satisfied has no recorded pending work, so its counter cannot
+        // survive into the next window.
+        var satisfied = new[] { new ArtistRunOutcomeRecord(41, ArtistRunOutcomes.Succeeded) };
+        Assert.Empty(ArtistMetadataPendingWork.Collect(satisfied, new Dictionary<string, int> { [key] = 2 }));
+    }
+
+    [Fact]
     public void PartialSuccessIsNotAFailure_WhenAnotherTargetSucceeded()
     {
         var pushed = BuildPushOutcome(
@@ -354,4 +517,17 @@ public class ArtistMetadataRunOutcomeTest
 
     private static int ReadCounter(object counters, string property)
         => (int)counters.GetType().GetProperty(property)!.GetValue(counters)!;
+
+    /// <summary>Invokes the updater's per-target pending-work classifier.</summary>
+    private static IReadOnlyList<ArtistTargetPendingWork> InvokeDescribePendingTargetWork(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestedByTarget,
+        IReadOnlyList<ArtistTargetResult> results)
+    {
+        var method = typeof(ArtistMetadataUpdaterService)
+            .GetMethod("DescribePendingTargetWork", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("DescribePendingTargetWork was not found.");
+        return (IReadOnlyList<ArtistTargetPendingWork>)method.Invoke(
+            null,
+            [requestedByTarget, results, (IReadOnlyDictionary<string, IReadOnlyList<string>>?)null])!;
+    }
 }

@@ -335,7 +335,8 @@ public class PlexApiClient
         string serverUrl,
         string token,
         string artistName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(artistName))
         {
@@ -349,15 +350,17 @@ public class PlexApiClient
         }
         var targetLoose = NormalizeArtistLoose(targetName);
 
-        var sections = await GetMusicSectionKeysAsync(serverUrl, token, cancellationToken);
+        var sections = await GetMusicSectionKeysAsync(serverUrl, token, cancellationToken, requireSuccessfulResponse);
         if (sections.Count == 0)
         {
+            // A successful-but-empty section listing is a valid absence when the server has no music
+            // library; with a strict caller the empty listing has already been proven legitimate.
             return Array.Empty<PlexArtistLocation>();
         }
 
         var baseUrl = serverUrl.TrimEnd('/');
         var encodedArtist = Uri.EscapeDataString(artistName.Trim());
-        var candidates = await CollectArtistCandidatesAsync(baseUrl, token, encodedArtist, targetName, targetLoose, sections, cancellationToken);
+        var candidates = await CollectArtistCandidatesAsync(baseUrl, token, encodedArtist, targetName, targetLoose, sections, cancellationToken, requireSuccessfulResponse);
 
         if (candidates.Count == 0)
         {
@@ -399,9 +402,14 @@ public class PlexApiClient
         return locations;
     }
 
-    public async Task<PlexArtistLocation?> FindArtistLocationAsync(string serverUrl, string token, string artistName, CancellationToken cancellationToken = default)
+    public async Task<PlexArtistLocation?> FindArtistLocationAsync(
+        string serverUrl,
+        string token,
+        string artistName,
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
-        var matches = await FindArtistLocationsAsync(serverUrl, token, artistName, cancellationToken);
+        var matches = await FindArtistLocationsAsync(serverUrl, token, artistName, cancellationToken, requireSuccessfulResponse);
         return matches.Count > 0 ? matches[0] : null;
     }
 
@@ -413,44 +421,84 @@ public class PlexApiClient
         string serverUrl,
         string token,
         string ratingKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
         {
             return Array.Empty<string>();
         }
 
+        var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey.Trim())}/children?X-Plex-Token={Uri.EscapeDataString(token)}";
+        HttpResponseMessage response;
         try
         {
-            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey.Trim())}/children?X-Plex-Token={Uri.EscapeDataString(token)}";
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            response = await _httpClient.GetAsync(url, cancellationToken);
+        }
+        catch (Exception ex) when (!requireSuccessfulResponse && ex is not OperationCanceledException)
+        {
+            // Legacy callers accepted an unproven empty answer; strict callers classify the failure.
+            _logger.LogDebug(ex, "Plex artist album titles fetch failed for ratingKey {RatingKey}.", ratingKey);
+            return Array.Empty<string>();
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var statusCode = (int)response.StatusCode;
+            response.Dispose();
+            if (!requireSuccessfulResponse)
             {
                 return Array.Empty<string>();
             }
 
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            var doc = System.Xml.Linq.XDocument.Parse(content);
-            return doc.Descendants()
-                .Where(element => string.Equals(element.Name.LocalName, "Directory", StringComparison.OrdinalIgnoreCase))
-                .Select(element => element.Attribute("title")?.Value?.Trim())
-                .Where(title => !string.IsNullOrWhiteSpace(title))
-                .Cast<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            throw new TargetLookupException(
+                $"Plex artist album titles read failed with HTTP {statusCode} {(System.Net.HttpStatusCode)statusCode}.");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        response.Dispose();
+        XDocument doc;
+        try
         {
-            _logger.LogDebug(ex, "Plex artist album titles fetch failed for ratingKey {RatingKey}.", ratingKey);
-            return Array.Empty<string>();
+            doc = System.Xml.Linq.XDocument.Parse(content);
         }
+        catch (System.Xml.XmlException ex)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                // An empty 200 body can only be analysed when the caller accepted unproven answers.
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                throw new TargetLookupException("Plex artist album titles response was empty.");
+            }
+
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            throw new TargetLookupException("Plex artist album titles response was not valid XML.", ex);
+        }
+
+        ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
+        return doc.Descendants()
+            .Where(element => string.Equals(element.Name.LocalName, "Directory", StringComparison.OrdinalIgnoreCase))
+            .Select(element => element.Attribute("title")?.Value?.Trim())
+            .Where(title => !string.IsNullOrWhiteSpace(title))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public async Task<PlexArtistMetadata?> GetArtistMetadataAsync(
         string serverUrl,
         string token,
         string ratingKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
         {
@@ -458,37 +506,73 @@ public class PlexApiClient
         }
 
         var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey)}?X-Plex-Token={Uri.EscapeDataString(token)}";
+        HttpResponseMessage response;
         try
         {
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            response = await _httpClient.GetAsync(url, cancellationToken);
+        }
+        catch (Exception ex) when (!requireSuccessfulResponse && ex is not OperationCanceledException)
+        {
+            // Legacy callers accepted an unproven empty answer; strict callers classify the failure.
+            _logger.LogDebug(ex, "Failed to read Plex artist metadata for {RatingKey}", ratingKey);
+            return null;
+        }
+
+        PlexArtistMetadata? metadata;
+        try
+        {
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                if (!requireSuccessfulResponse)
+                {
+                    return null;
+                }
+
+                throw new TargetLookupException(
+                    $"Plex artist metadata read failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            var doc = XDocument.Parse(content);
+            XDocument doc;
+            try
+            {
+                doc = XDocument.Parse(content);
+            }
+            catch (System.Xml.XmlException ex)
+            {
+                if (!requireSuccessfulResponse)
+                {
+                    return null;
+                }
+
+                throw new TargetLookupException(
+                    $"Plex artist metadata for {ratingKey} was not valid XML.", ex);
+            }
+
+            ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
             var artist = doc.Descendants()
                 .FirstOrDefault(element =>
                     string.Equals(element.Name.LocalName, "Directory", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(element.Name.LocalName, "Artist", StringComparison.OrdinalIgnoreCase));
             if (artist is null)
             {
+                if (requireSuccessfulResponse) throw new TargetLookupException("Plex artist metadata response has no artist.");
                 return null;
             }
 
-            return new PlexArtistMetadata(
+            metadata = new PlexArtistMetadata(
                 artist.Attribute("ratingKey")?.Value ?? ratingKey,
                 artist.Attribute("title")?.Value,
                 artist.Attribute("thumb")?.Value,
                 artist.Attribute("art")?.Value,
                 artist.Attribute("summary")?.Value);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        finally
         {
-            _logger.LogDebug(ex, "Failed to read Plex artist metadata for {RatingKey}", ratingKey);
-            return null;
+            response.Dispose();
         }
+
+        return metadata;
     }
 
     /// <summary>
@@ -496,7 +580,7 @@ public class PlexApiClient
     /// This is more reliable than the URL-based approach because Plex does not need
     /// network access back to the DeezSpoTag server.
     /// </summary>
-    public async Task<bool> UpdateArtistPosterFromFileAsync(string serverUrl, string token, string ratingKey, string filePath, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistPosterFromFileAsync(string serverUrl, string token, string ratingKey, string filePath, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
         => await UpdateArtistImageFromFileAsync(
             serverUrl,
             token,
@@ -504,12 +588,12 @@ public class PlexApiClient
             filePath,
             "posters",
             "upload artist poster",
-            cancellationToken);
+            cancellationToken, requireSuccessfulResponse);
 
     /// <summary>
     /// Upload background art from a local file by sending raw image bytes directly to Plex.
     /// </summary>
-    public async Task<bool> UpdateArtistArtFromFileAsync(string serverUrl, string token, string ratingKey, string filePath, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistArtFromFileAsync(string serverUrl, string token, string ratingKey, string filePath, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
         => await UpdateArtistImageFromFileAsync(
             serverUrl,
             token,
@@ -517,7 +601,7 @@ public class PlexApiClient
             filePath,
             "arts",
             "upload artist art",
-            cancellationToken);
+            cancellationToken, requireSuccessfulResponse);
 
     private async Task<bool> UpdateArtistImageFromFileAsync(
         string serverUrl,
@@ -526,7 +610,7 @@ public class PlexApiClient
         string filePath,
         string mediaEndpoint,
         string operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool requireSuccessfulResponse)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey) || !File.Exists(filePath))
         {
@@ -542,7 +626,7 @@ public class PlexApiClient
             operation,
             ratingKey,
             cancellationToken,
-            content);
+            content, requireSuccessfulResponse);
     }
 
     /// <summary>
@@ -586,7 +670,7 @@ public class PlexApiClient
     /// correct Plex API for mutating artist metadata fields.
     /// Requires both the section key (music library) and the artist rating key.
     /// </summary>
-    public async Task<bool> UpdateArtistBiographyAsync(string serverUrl, string token, string sectionKey, string ratingKey, string biography, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistBiographyAsync(string serverUrl, string token, string sectionKey, string ratingKey, string biography, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) ||
             string.IsNullOrWhiteSpace(sectionKey) || string.IsNullOrWhiteSpace(ratingKey) ||
@@ -600,7 +684,8 @@ public class PlexApiClient
                   $"?type=8&id={Uri.EscapeDataString(ratingKey)}" +
                   $"&summary.value={Uri.EscapeDataString(biography)}&summary.locked=1" +
                   $"&X-Plex-Token={token}";
-        var response = await _httpClient.PutAsync(url, null, cancellationToken);
+        using var response = await _httpClient.PutAsync(url, null, cancellationToken);
+        if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("Failed to update Plex biography for {RatingKey}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey), response.StatusCode);
@@ -762,27 +847,83 @@ public class PlexApiClient
         return 0;
     }
 
-    private async Task<List<string>> GetMusicSectionKeysAsync(string serverUrl, string token, CancellationToken cancellationToken)
+    private static void ValidateArtistResponseEnvelope(XDocument document, bool strict)
+    {
+        if (strict && document.Root?.Name.LocalName != "MediaContainer")
+            throw new TargetLookupException("Plex artist response has no MediaContainer envelope.");
+    }
+
+    private async Task<List<string>> GetMusicSectionKeysAsync(
+        string serverUrl,
+        string token,
+        CancellationToken cancellationToken,
+        bool requireSuccessfulResponse = false)
     {
         var url = $"{serverUrl.TrimEnd('/')}/library/sections?X-Plex-Token={token}";
-        var response = await _httpClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
+            response = await _httpClient.GetAsync(url, cancellationToken);
+        }
+        catch (Exception ex) when (!requireSuccessfulResponse && ex is not OperationCanceledException)
+        {
+            // Legacy callers accepted an unproven empty answer; strict callers classify the failure.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Plex music section listing failed.");
+            }
+
             return new List<string>();
         }
 
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        var doc = XDocument.Parse(content);
-        var keys = doc.Descendants(DirectoryElementName)
-            .Where(element =>
-                string.Equals(element.Attribute("type")?.Value, "artist", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(element.Attribute("type")?.Value, "music", StringComparison.OrdinalIgnoreCase))
-            .Select(element => element.Attribute("key")?.Value)
-            .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Select(key => key!)
-            .ToList();
+        try
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                if (!requireSuccessfulResponse)
+                {
+                    return new List<string>();
+                }
 
-        return keys;
+                throw new TargetLookupException(
+                    $"Plex music section listing failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            XDocument doc;
+            if (requireSuccessfulResponse)
+            {
+                try
+                {
+                    doc = XDocument.Parse(content);
+                }
+                catch (System.Xml.XmlException ex)
+                {
+                    throw new TargetLookupException("Plex music section listing was not valid XML.", ex);
+                }
+            }
+            else
+            {
+                // Legacy callers kept the raw parse failure, which their own error handling reports.
+                doc = XDocument.Parse(content);
+            }
+
+            ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
+            var keys = doc.Descendants(DirectoryElementName)
+                .Where(element =>
+                    string.Equals(element.Attribute("type")?.Value, "artist", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.Attribute("type")?.Value, "music", StringComparison.OrdinalIgnoreCase))
+                .Select(element => element.Attribute("key")?.Value)
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key!)
+                .ToList();
+
+            return keys;
+        }
+        finally
+        {
+            response.Dispose();
+        }
     }
 
     public async Task<List<PlexTrack>> SearchTracksAsync(
@@ -871,12 +1012,13 @@ public class PlexApiClient
         string targetName,
         string targetLoose,
         IReadOnlyList<string> sections,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireSuccessfulResponse)
     {
         var candidates = new Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)>(StringComparer.OrdinalIgnoreCase);
         foreach (var query in BuildArtistCandidateQueries(baseUrl, token, encodedArtist, sections))
         {
-            await CollectArtistCandidatesFromQueryAsync(query.url, query.sectionKeyHint, targetName, targetLoose, sections, candidates, cancellationToken);
+            await CollectArtistCandidatesFromQueryAsync(query.url, query.sectionKeyHint, targetName, targetLoose, sections, candidates, cancellationToken, requireSuccessfulResponse);
         }
 
         return candidates;
@@ -900,23 +1042,64 @@ public class PlexApiClient
         string targetLoose,
         IReadOnlyList<string> sections,
         Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)> candidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireSuccessfulResponse)
     {
+        HttpResponseMessage response;
         try
         {
-            var response = await _httpClient.GetAsync(url, cancellationToken);
+            response = await _httpClient.GetAsync(url, cancellationToken);
+        }
+        catch (Exception ex) when (!requireSuccessfulResponse && ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Plex artist candidate query failed: {Url}", url);
+            }
+
+            return;
+        }
+
+        try
+        {
             if (!response.IsSuccessStatusCode)
             {
-                return;
+                if (!requireSuccessfulResponse)
+                {
+                    return;
+                }
+
+                throw new TargetLookupException(
+                    $"Plex artist candidate query failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             if (string.IsNullOrWhiteSpace(content))
             {
-                return;
+                if (!requireSuccessfulResponse)
+                {
+                    return;
+                }
+
+                throw new TargetLookupException("Plex artist candidate query returned an empty response.");
             }
 
-            var doc = XDocument.Parse(content);
+            XDocument doc;
+            try
+            {
+                doc = XDocument.Parse(content);
+            }
+            catch (System.Xml.XmlException ex)
+            {
+                if (!requireSuccessfulResponse)
+                {
+                    return;
+                }
+
+                throw new TargetLookupException("Plex artist candidate response was not valid XML.", ex);
+            }
+
+            ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
             foreach (var candidate in EnumerateArtistCandidates(doc, targetName, targetLoose, sections, sectionKeyHint)
                 .Where(candidate => !candidates.TryGetValue(candidate.ratingKey, out var existing) ||
                     candidate.score > existing.score ||
@@ -925,11 +1108,9 @@ public class PlexApiClient
                 candidates[candidate.ratingKey] = (candidate.score, candidate.lengthDelta, candidate.sectionKey, candidate.title);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        finally
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Plex artist candidate query failed: {Url}", url);            }
+            response.Dispose();
         }
     }
 
@@ -2590,7 +2771,7 @@ public class PlexApiClient
         string operation,
         string entityId,
         CancellationToken cancellationToken,
-        HttpContent? content = null)
+        HttpContent? content = null, bool requireSuccessfulResponse = false)
     {
         using var request = new HttpRequestMessage(method, url)
         {
@@ -2598,6 +2779,7 @@ public class PlexApiClient
         };
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
         if (response.IsSuccessStatusCode)
         {
             return true;

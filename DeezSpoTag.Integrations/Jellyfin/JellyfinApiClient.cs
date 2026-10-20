@@ -328,7 +328,12 @@ public class JellyfinApiClient
         return await GetUserChildItemsAsync(serverUrl, apiKey, userId, seasonId, "Episode", cancellationToken);
     }
 
-    public async Task<IReadOnlyList<string>> FindArtistIdsAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> FindArtistIdsAsync(
+        string serverUrl,
+        string apiKey,
+        string artistName,
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistName))
         {
@@ -342,11 +347,36 @@ public class JellyfinApiClient
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return Array.Empty<string>();
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            throw new TargetLookupException(
+                $"Jellyfin artist search failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<JellyfinArtistsResponse>(cancellationToken: cancellationToken);
-        var items = payload?.Items ?? new List<JellyfinArtistItem>();
+        List<JellyfinArtistItem> items;
+        try
+        {
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (requireSuccessfulResponse)
+            {
+                using var envelope = JsonDocument.Parse(json);
+                if (envelope.RootElement.ValueKind != JsonValueKind.Object
+                    || !envelope.RootElement.TryGetProperty("Items", out var entries)
+                    || entries.ValueKind != JsonValueKind.Array)
+                    throw new TargetLookupException("Jellyfin artist search response has no Items array.");
+            }
+            var payload = JsonSerializer.Deserialize<JellyfinArtistsResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            items = payload?.Items ?? new List<JellyfinArtistItem>();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && requireSuccessfulResponse)
+        {
+            // The strict caller cannot accept a malformed payload as "nothing found".
+            throw new TargetLookupException("Jellyfin artist search response was not valid.", ex);
+        }
+
         var exactMatches = items
             .Where(item => !string.IsNullOrWhiteSpace(item.Id)
                            && !string.IsNullOrWhiteSpace(item.Name)
@@ -366,9 +396,14 @@ public class JellyfinApiClient
             .ToList();
     }
 
-    public async Task<string?> FindArtistIdAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
+    public async Task<string?> FindArtistIdAsync(
+        string serverUrl,
+        string apiKey,
+        string artistName,
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
-        var matches = await FindArtistIdsAsync(serverUrl, apiKey, artistName, cancellationToken);
+        var matches = await FindArtistIdsAsync(serverUrl, apiKey, artistName, cancellationToken, requireSuccessfulResponse);
         return matches.Count > 0 ? matches[0] : null;
     }
 
@@ -380,7 +415,8 @@ public class JellyfinApiClient
         string serverUrl,
         string apiKey,
         string artistId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId))
         {
@@ -397,14 +433,25 @@ public class JellyfinApiClient
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return Array.Empty<string>();
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                throw new TargetLookupException(
+                    $"Jellyfin artist album titles read failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
             }
 
             using var document = await System.Text.Json.JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
             if (!document.RootElement.TryGetProperty("Items", out var items) || items.ValueKind != System.Text.Json.JsonValueKind.Array)
             {
-                return Array.Empty<string>();
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                throw new TargetLookupException("Jellyfin artist album listing did not contain an Items array.");
             }
 
             var titles = new List<string>();
@@ -419,9 +466,19 @@ public class JellyfinApiClient
 
             return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
+        catch (TargetLookupException)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Array.Empty<string>();
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            // Cancellation is never swallowed; malformed payloads and transport failures classify.
+            throw new TargetLookupException("Jellyfin artist album titles read did not produce a usable response.", ex);
         }
     }
 
@@ -1092,7 +1149,7 @@ public class JellyfinApiClient
             SHA256.HashData(storedBytes));
     }
 
-    public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
         {
@@ -1100,10 +1157,10 @@ public class JellyfinApiClient
         }
 
         var url = BuildUrl(serverUrl, $"/Items/{artistId}/Images/Primary");
-        return await UploadImageAsync(url, apiKey, imagePath, cancellationToken);
+        return await UploadImageAsync(url, apiKey, imagePath, cancellationToken, requireSuccessfulResponse);
     }
 
-    public async Task<bool> UpdateArtistBackdropAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistBackdropAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
         {
@@ -1119,12 +1176,12 @@ public class JellyfinApiClient
 
         // Jellyfin builds differ on Backdrop upload route support.
         var fallbackUrl = BuildUrl(serverUrl, $"/Items/{artistId}/Images/Backdrop?Index=0");
-        return await UploadImageAsync(fallbackUrl, apiKey, imagePath, cancellationToken);
+        return await UploadImageAsync(fallbackUrl, apiKey, imagePath, cancellationToken, requireSuccessfulResponse);
     }
 
-    public async Task<bool> UpdateArtistOverviewAsync(string serverUrl, string apiKey, string artistId, string biography, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateArtistOverviewAsync(string serverUrl, string apiKey, string artistId, string biography, CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
-        return await UpdateItemOverviewAsync(serverUrl, apiKey, artistId, biography, cancellationToken);
+        return await UpdateItemOverviewAsync(serverUrl, apiKey, artistId, biography, cancellationToken, requireSuccessfulResponse);
     }
 
     public async Task<bool> UpdateItemOverviewAsync(
@@ -1132,9 +1189,9 @@ public class JellyfinApiClient
         string apiKey,
         string itemId,
         string overview,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
-        return await UpdateItemMetadataAsync(serverUrl, apiKey, itemId, name: null, overview, cancellationToken);
+        return await UpdateItemMetadataAsync(serverUrl, apiKey, itemId, name: null, overview, cancellationToken, requireSuccessfulResponse);
     }
 
     public async Task<bool> UpdateItemMetadataAsync(
@@ -1143,8 +1200,8 @@ public class JellyfinApiClient
         string itemId,
         string? name,
         string? overview,
-        CancellationToken cancellationToken = default)
-        => await UpdateItemMetadataAsync(serverUrl, apiKey, userId: null, itemId, name, overview, cancellationToken);
+        CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
+        => await UpdateItemMetadataAsync(serverUrl, apiKey, userId: null, itemId, name, overview, cancellationToken, requireSuccessfulResponse);
 
     public async Task<bool> UpdateItemMetadataAsync(
         string serverUrl,
@@ -1153,7 +1210,7 @@ public class JellyfinApiClient
         string itemId,
         string? name,
         string? overview,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
@@ -1171,6 +1228,7 @@ public class JellyfinApiClient
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl);
         ApplyAuthorization(getRequest, apiKey);
         using var getResponse = await _httpClient.SendAsync(getRequest, cancellationToken);
+        if (requireSuccessfulResponse) getResponse.EnsureSuccessStatusCode();
         if (!getResponse.IsSuccessStatusCode)
         {
             return false;
@@ -1218,6 +1276,7 @@ public class JellyfinApiClient
         };
         ApplyAuthorization(postRequest, apiKey);
         using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
+        if (requireSuccessfulResponse) postResponse.EnsureSuccessStatusCode();
         return postResponse.IsSuccessStatusCode;
     }
 
@@ -1226,10 +1285,22 @@ public class JellyfinApiClient
         string apiKey,
         string userId,
         string itemId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         var lookup = await GetItemResult(serverUrl, apiKey, userId, itemId, cancellationToken);
-        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+        if (lookup.Status == TargetLookupStatus.Success)
+        {
+            return lookup.Value;
+        }
+
+        if (!requireSuccessfulResponse)
+        {
+            return null;
+        }
+
+        throw new TargetLookupException(
+            $"Jellyfin item read failed with HTTP {lookup.HttpStatusCode} ({lookup.Status}).");
     }
 
     public async Task<TargetPlaylistLookup<JellyfinMediaItem>> GetItemResult(
@@ -1456,7 +1527,7 @@ public class JellyfinApiClient
             SHA256.HashData(storedBytes));
     }
 
-    private async Task<bool> UploadImageAsync(string url, string apiKey, string imagePath, CancellationToken cancellationToken)
+    private async Task<bool> UploadImageAsync(string url, string apiKey, string imagePath, CancellationToken cancellationToken, bool requireSuccessfulResponse = false)
     {
         var imageBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
         if (imageBytes.Length == 0)
@@ -1476,6 +1547,7 @@ public class JellyfinApiClient
         ApplyAuthorization(request, apiKey);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
         return response.IsSuccessStatusCode;
     }
 

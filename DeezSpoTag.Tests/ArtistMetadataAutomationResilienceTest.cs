@@ -1,8 +1,17 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Web.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -455,7 +464,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
     }
 
     [Fact]
-    public void FinishedSweepsStampLastRunEvenWhenSomeArtistsFailed()
+    public void CacheRefreshSchedulingRemainsIndependentOfTargetSweepCompletion()
     {
         var coordinator = ReadCoordinator();
 
@@ -465,6 +474,157 @@ public sealed class ArtistMetadataAutomationResilienceTest
         var cacheRun = coordinator.IndexOf("if (cacheDue)", StringComparison.Ordinal);
         var targetRun = coordinator.IndexOf("if (updateDue)", StringComparison.Ordinal);
         Assert.True(cacheRun >= 0 && targetRun > cacheRun);
+    }
+
+    [Fact]
+    public async Task UnresolvedTargetSweepsDoNotAdvanceLastSuccessfulRun()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "deezspotag-artist-sweep-clock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var statePath = Path.Combine(root, "library-artist-images", "metadata-automation-state.json");
+
+            // One failed target in an otherwise successful artist leaves required server work
+            // outstanding, so the sweep must not stamp the success clock and must stay recoverable.
+            var unresolved = CreateCoordinatorForSweeps(root);
+            var pendingWork = new[]
+            {
+                new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
+            };
+            Assert.True(await EnqueueSweep(unresolved, artistId: 41, pendingWork));
+            await WaitForSweepToSettle(unresolved);
+            var retained = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(
+                await File.ReadAllTextAsync(statePath))!;
+            Assert.Null(retained.LastTargetUpdateUtc);
+            Assert.Equal(ArtistMetadataRunDispositions.PendingRetry, unresolved.GetStatus().RunDisposition);
+            Assert.NotNull(retained.ActiveRun!.NextAttemptUtc);
+            Assert.Equal(1, retained.ActiveRun.TargetAttempts[ArtistMetadataPendingWork.Key(41, "plex")]);
+            Assert.True(File.Exists(Path.Combine(root, "library-artist-images", "metadata-automation-outcomes.ndjson")),
+                "The retained run must keep the journal that holds its unresolved evidence.");
+
+            // An all-failed sweep is treated the same way: the failure leaves required work behind, so
+            // the clock cannot move and the work stays recoverable. A 401 pauses for user action
+            // instead of burning attempts.
+            var allFailedRoot = Path.Combine(root, "all-failed");
+            var allFailed = CreateCoordinatorForSweeps(allFailedRoot);
+            Assert.True(await EnqueueRecords(allFailed, new[]
+            {
+                new ArtistRunOutcomeRecord(42, ArtistRunOutcomes.Failed,
+                    Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Failed, Error: "Plex update failed.") },
+                    PendingWork: new[]
+                    {
+                        new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar, ArtistTargetFields.Background },
+                            ArtistPendingWorkCategories.Transient, "Plex update failed.")
+                    }),
+                new ArtistRunOutcomeRecord(43, ArtistRunOutcomes.Failed,
+                    Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Failed,
+                        Error: "The request failed with status code 401 (Unauthorized).") },
+                    PendingWork: new[]
+                    {
+                        new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar },
+                            ArtistPendingWorkCategories.Authentication,
+                            "The request failed with status code 401 (Unauthorized).")
+                    })
+            }));
+            await WaitForSweepToSettle(allFailed);
+            var failedSweep = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await File.ReadAllTextAsync(
+                Path.Combine(allFailedRoot, "library-artist-images", "metadata-automation-state.json")))!;
+            Assert.Null(failedSweep.LastTargetUpdateUtc);
+            Assert.True(failedSweep.ActiveRun!.Paused);
+            Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, allFailed.GetStatus().RunDisposition);
+            Assert.Null(failedSweep.ActiveRun.NextAttemptUtc);
+            Assert.Equal(1, failedSweep.ActiveRun.TargetAttempts[ArtistMetadataPendingWork.Key(42, "plex")]);
+            Assert.Contains("Resume", failedSweep.ActiveRun.PendingNotice!, StringComparison.Ordinal);
+
+            // The same sweep with nothing outstanding is settled and does stamp the clock.
+            var settledRoot = Path.Combine(root, "settled");
+            Directory.CreateDirectory(settledRoot);
+            var settled = CreateCoordinatorForSweeps(settledRoot);
+            Assert.True(await EnqueueSweep(settled, artistId: 41, pendingWork: Array.Empty<ArtistTargetPendingWork>()));
+            await WaitForSweepToSettle(settled);
+            var stamped = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await File.ReadAllTextAsync(
+                Path.Combine(settledRoot, "library-artist-images", "metadata-automation-state.json")))!;
+            Assert.NotNull(stamped.LastTargetUpdateUtc);
+            Assert.Null(stamped.ActiveRun);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch (IOException) { }
+        }
+    }
+
+    private static async Task<bool> EnqueueSweep(
+        ArtistMetadataAutomationCoordinator coordinator,
+        long artistId,
+        IReadOnlyList<ArtistTargetPendingWork> pendingWork)
+        => await EnqueueRecords(coordinator, new[]
+        {
+            new ArtistRunOutcomeRecord(
+                artistId,
+                pendingWork.Count == 0 ? ArtistRunOutcomes.Succeeded : ArtistRunOutcomes.Partial,
+                Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[] { ArtistTargetFields.Avatar }) },
+                PendingWork: pendingWork)
+        });
+
+    private static Task<bool> EnqueueRecords(
+        ArtistMetadataAutomationCoordinator coordinator,
+        IReadOnlyList<ArtistRunOutcomeRecord> records)
+        => (Task<bool>)typeof(ArtistMetadataAutomationCoordinator)
+            .GetMethod("EnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, new object?[]
+            {
+                "target-update",
+                (Func<CancellationToken, Task<bool>>)(async token =>
+                {
+                    foreach (var record in records)
+                    {
+                        typeof(ArtistMetadataAutomationCoordinator)
+                            .GetMethod("NoteArtistOutcome", BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(coordinator, new object[] { record });
+                    }
+
+                    await Task.Yield();
+                    return true;
+                }),
+                CancellationToken.None,
+                null,
+                null,
+                new MetadataUpdaterRunRequest { Targets = new List<string> { "plex" }, Force = true },
+                false
+            })!;
+
+    private static async Task WaitForSweepToSettle(ArtistMetadataAutomationCoordinator coordinator)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (coordinator.GetStatus().RunState == "running")
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
+    private static ArtistMetadataAutomationCoordinator CreateCoordinatorForSweeps(string root)
+    {
+        // Only status/state of the updater is used; provider dependencies are never invoked.
+        var updater = (ArtistMetadataUpdaterService)RuntimeHelpers.GetUninitializedObject(typeof(ArtistMetadataUpdaterService));
+        typeof(ArtistMetadataUpdaterService).GetField("_statusLock", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(updater, new object());
+        typeof(ArtistMetadataUpdaterService).GetField("_status", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(updater, MetadataUpdaterStatusSnapshot.Idle());
+        var env = new SweepClockEnvironment(root);
+        return new ArtistMetadataAutomationCoordinator(null!, updater,
+            new UserPreferencesStore(env, NullLogger<UserPreferencesStore>.Instance), env,
+            NullLogger<ArtistMetadataAutomationCoordinator>.Instance);
+    }
+
+    private sealed class SweepClockEnvironment(string root) : IWebHostEnvironment, IAppDataRootOverride
+    {
+        public string? AppDataRoot => root;
+        public string EnvironmentName { get; set; } = "Development";
+        public string ApplicationName { get; set; } = "Tests";
+        public string ContentRootPath { get; set; } = root;
+        public string WebRootPath { get; set; } = root;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     [Fact]

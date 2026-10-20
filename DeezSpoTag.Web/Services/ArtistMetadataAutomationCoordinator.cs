@@ -88,6 +88,13 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         if (!await _transitionGate.WaitAsync(0, cancellationToken)) return false;
         try
         {
+            if (_activeOperation is not { IsCompleted: false })
+            {
+                // A retained run waiting for its next retry attempt is paused in place: its unresolved
+                // work and journal are kept, and only the automatic retry window stops.
+                return await PauseRetainedRunAsync(operation, runId, cancellationToken);
+            }
+
             Task? active;
             CancellationTokenSource? cts;
             await _stateWriteGate.WaitAsync(cancellationToken);
@@ -129,6 +136,23 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         finally { _transitionGate.Release(); }
     }
 
+    /// <summary>
+    /// Pauses a retained run that is not currently executing. Nothing is running, so this only has to
+    /// stop the automatic retry window while keeping the unresolved work for an explicit Resume.
+    /// </summary>
+    private async Task<bool> PauseRetainedRunAsync(string operation, string runId, CancellationToken cancellationToken)
+    {
+        var state = await LoadStateAsync(cancellationToken);
+        var run = state.ActiveRun;
+        if (!MatchesRun(run, operation, runId) || run!.Paused) return false;
+        run.Paused = true;
+        run.NextAttemptUtc = null;
+        state.ActiveRun = SnapshotRun(run);
+        await SaveStateAsync(state, cancellationToken);
+        RestorePausedStatus(run);
+        return true;
+    }
+
     public Task<bool> ResumeAsync(string operation, string runId, CancellationToken cancellationToken)
         => ResumeAsync(operation, runId, cancellationToken, ResumeRunAsync);
 
@@ -142,6 +166,19 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             var run = state.ActiveRun;
             if (!MatchesRun(run, operation, runId) || !run!.Paused
                 || _activeOperation is { IsCompleted: false }) return false;
+            // An explicit resume starts a new retry window: attempts already spent do not carry over,
+            // but the work already satisfied is still suppressed by the recorded outcomes.
+            var retryWindowWasSet = run.TargetAttempts.Count > 0 || run.NextAttemptUtc is not null
+                || run.PendingNotice is not null || run.Disposition is not null;
+            ResetRetryWindow(run);
+            if (retryWindowWasSet)
+            {
+                // The reset is durable before the operation gate is asked to accept the run, so an
+                // interrupted enqueue cannot leave an exhausted attempt window behind.
+                state.ActiveRun = run;
+                await SaveStateAsync(state, cancellationToken);
+            }
+
             lock (_statusLock) _status = _status with { RunState = "resuming" };
             // Keep the durable pause until the operation gate has accepted the same run.
             try
@@ -168,7 +205,9 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         try
         {
             var state = await LoadStateAsync(cancellationToken);
-            if (state.ActiveRun?.Paused == true && _activeOperation is not { IsCompleted: false })
+            // A retained run is cancellable whether it is paused or waiting for its next retry
+            // attempt: either way the user is discarding the outstanding work deliberately.
+            if (state.ActiveRun is not null && _activeOperation is not { IsCompleted: false })
             {
                 var operation = state.ActiveRun.Operation;
                 state.ActiveRun = null;
@@ -177,6 +216,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 lock (_statusLock) _status = _status with
                 {
                     ActiveOperation = null, RunId = null, RunOperation = null, RunState = "idle", ResumeNotice = null,
+                    RunDisposition = null, RunNextAttemptUtc = null, RunPendingNotice = null,
                     CacheRefresh = operation == "cache-refresh" ? _status.CacheRefresh with
                     { Phase = "Cache refresh cancelled", Message = "The cache refresh was cancelled.", CompletedAtUtc = DateTimeOffset.UtcNow }
                         : _status.CacheRefresh,
@@ -197,7 +237,38 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             && string.Equals(run.RunId, runId, StringComparison.Ordinal)
             && string.Equals(run.Operation, operation, StringComparison.Ordinal);
 
-    private void RestorePausedStatus(ArtistMetadataActiveRun run)
+    /// <summary>
+    /// Clears the retry bookkeeping of a retained run. Resume calls this so the attempt window starts
+    /// over without discarding the work already recorded as satisfied.
+    /// </summary>
+    private static void ResetRetryWindow(ArtistMetadataActiveRun run)
+    {
+        run.TargetAttempts.Clear();
+        run.NextAttemptUtc = null;
+        run.PendingNotice = null;
+        run.Disposition = null;
+    }
+
+    /// <summary>
+    /// The notice shown for a retained run that is waiting for its next attempt, including the
+    /// actionable reason recorded by the run that retained it.
+    /// </summary>
+    private static string DescribePendingRetryNotice(ArtistMetadataActiveRun run, int processed)
+    {
+        var operation = run.Operation.Replace('-', ' ');
+        var retryAt = run.NextAttemptUtc is { } due ? $" at {due:HH:mm} (UTC)" : string.Empty;
+        var notice = $"Retrying {operation} automatically{retryAt} ({processed} artist(s) already done).";
+        return string.IsNullOrWhiteSpace(run.PendingNotice) ? notice : $"{notice} {run.PendingNotice}";
+    }
+
+    private void RestorePausedStatus(ArtistMetadataActiveRun run) => RestoreRetainedRunStatus(run, paused: true);
+
+    /// <summary>
+    /// Restores the visible state of a retained run (paused by the user, waiting for its next attempt,
+    /// or waiting for the user after an exhausted window) from durable evidence, so a restart does not
+    /// lose the reason the run is being kept.
+    /// </summary>
+    private void RestoreRetainedRunStatus(ArtistMetadataActiveRun run, bool paused)
     {
         var outcomes = BuildResumeContext(run)?.Outcomes ?? Array.Empty<ArtistRunOutcomeRecord>();
         var processed = outcomes.Count;
@@ -219,12 +290,26 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             summaries[result.Target].Limitations.UnionWith(result.LimitationList);
         foreach (var target in run.TargetRequest?.Targets ?? new List<string>())
             summaries.TryAdd(target, new ArtistMetadataUpdaterService.TargetAccumulator());
+        var operationLabel = run.Operation.Replace('-', ' ');
+        var needsAttention = string.Equals(run.Disposition, ArtistMetadataRunDispositions.NeedsAttention, StringComparison.Ordinal);
+        var disposition = paused
+            ? needsAttention ? ArtistMetadataRunDispositions.NeedsAttention : ArtistMetadataRunDispositions.Paused
+            : run.Disposition ?? ArtistMetadataRunDispositions.PendingRetry;
+        var notice = paused
+            ? string.IsNullOrWhiteSpace(run.PendingNotice)
+                ? $"Paused {operationLabel} ({processed} artist(s) already done)."
+                : $"Paused {operationLabel} ({processed} artist(s) already done). {run.PendingNotice}"
+            : run.NextAttemptUtc is null
+                ? $"Waiting to retry {operationLabel} ({processed} artist(s) already done)."
+                : DescribePendingRetryNotice(run, processed);
         lock (_statusLock)
         {
             _status = _status with
             {
-                ActiveOperation = null, RunId = run.RunId, RunOperation = run.Operation, RunState = "paused",
-                ResumeNotice = $"Paused {run.Operation.Replace('-', ' ')} ({processed} artist(s) already done).",
+                ActiveOperation = null, RunId = run.RunId, RunOperation = run.Operation,
+                RunState = paused ? "paused" : "pending-retry",
+                RunDisposition = disposition, RunNextAttemptUtc = run.NextAttemptUtc, RunPendingNotice = run.PendingNotice,
+                ResumeNotice = notice,
                 CacheRefresh = run.Operation == "cache-refresh"
                     ? new ArtistMetadataCacheStatus(false, run.Automatic, "Cache refresh paused", null,
                         processed, run.TargetArtistIds.Count, null, run.StartedAtUtc, null, succeeded, failed)
@@ -466,6 +551,14 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             RestorePausedStatus(run);
             return;
         }
+        if (run.NextAttemptUtc is { } nextAttempt && nextAttempt > DateTimeOffset.UtcNow)
+        {
+            // A retained run waits for its retry window instead of being re-enqueued on every poll
+            // tick, so a failing target is not hammered between attempts.
+            RestoreRetainedRunStatus(run, paused: false);
+            return;
+        }
+
         await enqueue(run, cancellationToken);
     }
 
@@ -690,6 +783,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             }
 
             var deepRefresh = _checkpoint?.CacheRequest?.ForceProviderRefresh == true;
+            var finishedRun = _checkpoint;
             await StopCheckpointWritesAsync();
             var state = await LoadStateAsync(CancellationToken.None);
             if (operation == "cache-refresh")
@@ -699,16 +793,31 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 {
                     state.LastDeepRefreshUtc = DateTimeOffset.UtcNow;
                 }
+                state.ActiveRun = null;
+                await SaveStateAsync(state, CancellationToken.None);
+                // The run finished, so its outcome journal is no longer needed. Leaving it would let it
+                // accumulate; a stale one is discarded by the run id header regardless.
+                DeleteOutcomeJournal();
+            }
+            else if (finishedRun is not null && RetainUnresolvedTargetWork(finishedRun, DateTimeOffset.UtcNow) is { Retain: true } decision)
+            {
+                // The sweep ended with unresolved target/field work. Keep the run and its journal so the
+                // work is retried at the poll interval, and do not stamp the success clock for it.
+                state.ActiveRun = SnapshotRun(finishedRun);
+                await SaveStateAsync(state, CancellationToken.None);
+                _logger.LogInformation(
+                    "Artist metadata {Operation} retained {Unresolved} unresolved artist/target pair(s). {Notice}",
+                    operation,
+                    decision.UnresolvedPairs,
+                    decision.Notice);
             }
             else
             {
                 state.LastTargetUpdateUtc = DateTimeOffset.UtcNow;
+                state.ActiveRun = null;
+                await SaveStateAsync(state, CancellationToken.None);
+                DeleteOutcomeJournal();
             }
-            state.ActiveRun = null;
-            await SaveStateAsync(state, CancellationToken.None);
-            // The run finished, so its outcome journal is no longer needed. Leaving it would let it
-            // accumulate; a stale one is discarded by the run id header regardless.
-            DeleteOutcomeJournal();
             var preferences = await _preferences.LoadAsync();
             UpdateScheduleStatus(state, preferences, DateTimeOffset.UtcNow);
         }
@@ -742,6 +851,23 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 await ClearActiveRunWithoutStampingAsync();
                 return;
             }
+            if (ex is DeezSpoTag.Integrations.TargetLookupException { Target: not null, UnresolvedArtists: not null } audit)
+            {
+                lock (_checkpointLock)
+                {
+                    if (_checkpoint is { } auditRun)
+                    {
+                        auditRun.UnresolvedAuditArtists[audit.Target] = new Dictionary<long, string>(audit.UnresolvedArtists);
+                        auditRun.PendingNotice = audit.Message;
+                        if (audit.UnresolvedArtists.Values.Any(cause =>
+                            ArtistPendingWorkCategories.NeedsUserAction(ArtistPendingWorkCategories.ClassifyFailure(cause))))
+                        {
+                            auditRun.Paused = true;
+                            auditRun.Disposition = ArtistMetadataRunDispositions.NeedsAttention;
+                        }
+                    }
+                }
+            }
             RecordOperationFailure(operation, ex.Message);
             await FlushCheckpointAsync();
 
@@ -761,6 +887,21 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                     poisoned.ConsecutiveFailures++;
                     failures = poisoned.ConsecutiveFailures;
                 }
+            }
+
+            if (failures >= MaxConsecutiveRunFailures
+                && ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null })
+            {
+                lock (_checkpointLock)
+                {
+                    if (_checkpoint is { } auditRun)
+                    {
+                        auditRun.Paused = true;
+                        auditRun.Disposition = ArtistMetadataRunDispositions.NeedsAttention;
+                    }
+                }
+                await PersistCheckpointAsync(requireDurable: true);
+                return;
             }
 
             if (failures >= MaxConsecutiveRunFailures)
@@ -812,7 +953,17 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 if (userCts is not null && !ReferenceEquals(userCts, cts)) userCts.Dispose();
                 _operationGate.Release();
             }
-            if (retained?.ActiveRun?.Paused == true) RestorePausedStatus(retained.ActiveRun);
+            if (retained?.ActiveRun is { } retainedRun)
+            {
+                if (retainedRun.Paused)
+                {
+                    RestorePausedStatus(retainedRun);
+                }
+                else
+                {
+                    RestoreRetainedRunStatus(retainedRun, paused: false);
+                }
+            }
         }
     }
 
@@ -851,12 +1002,89 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
     }
 
+    /// <summary>Attempts allowed per unresolved artist/target pair, including the initial sweep.</summary>
+    internal const int MaxAttemptsPerUnresolvedTarget = 3;
+
+    /// <summary>Result of judging whether a finished sweep is settled or must be retained.</summary>
+    internal readonly record struct RetainedRunDecision(
+        bool Retain,
+        int UnresolvedPairs,
+        int ExhaustedPairs,
+        bool NeedsUserAction,
+        string? Notice);
+
+    /// <summary>
+    /// Judges a finished target sweep against the durable per-target evidence it recorded. A sweep is
+    /// settled only when no artist still owes a target write; otherwise the run keeps its journal and is
+    /// retried at the poll interval, and the success clock is not stamped for it.
+    /// </summary>
+    private RetainedRunDecision RetainUnresolvedTargetWork(ArtistMetadataActiveRun run, DateTimeOffset nowUtc)
+    {
+        var pairs = ArtistMetadataPendingWork.Collect(ReadRunOutcomes(run), run.TargetAttempts);
+        if (pairs.Count == 0)
+        {
+            return new RetainedRunDecision(false, 0, 0, false, null);
+        }
+
+        var attempts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var needsUserAction = false;
+        var exhausted = 0;
+        foreach (var pair in pairs)
+        {
+            // This sweep was an attempt against every pair that is still unresolved.
+            var used = pair.Attempts + 1;
+            attempts[ArtistMetadataPendingWork.Key(pair.ArtistId, pair.Target)] = used;
+            if (ArtistPendingWorkCategories.NeedsUserAction(pair.Category))
+            {
+                needsUserAction = true;
+            }
+
+            if (used >= MaxAttemptsPerUnresolvedTarget)
+            {
+                exhausted++;
+            }
+        }
+
+        run.TargetAttempts = attempts;
+        run.NextAttemptUtc = needsUserAction || exhausted > 0 ? null : nowUtc + PollInterval;
+        run.PendingNotice = BuildPendingNotice(pairs.Count, exhausted, needsUserAction);
+        run.Disposition = needsUserAction || exhausted > 0
+            ? ArtistMetadataRunDispositions.NeedsAttention
+            : ArtistMetadataRunDispositions.PendingRetry;
+        if (needsUserAction || exhausted > 0)
+        {
+            run.Paused = true;
+        }
+
+        return new RetainedRunDecision(true, pairs.Count, exhausted, needsUserAction, run.PendingNotice);
+    }
+
+    private static string BuildPendingNotice(int unresolvedPairs, int exhaustedPairs, bool needsUserAction)
+    {
+        var scope = unresolvedPairs == 1 ? "1 artist/target pair" : $"{unresolvedPairs} artist/target pairs";
+        if (needsUserAction)
+        {
+            return $"Update Servers retained {scope} with a configuration or authentication failure. Fix the server settings, then Resume.";
+        }
+
+        if (exhaustedPairs > 0)
+        {
+            return $"Update Servers retained {scope} after {MaxAttemptsPerUnresolvedTarget} attempts. Resume to start a new retry window.";
+        }
+
+        return $"Update Servers retained {scope} for another attempt.";
+    }
+
     private static ArtistMetadataActiveRun SnapshotRun(ArtistMetadataActiveRun checkpoint, bool preserveLegacy = false) => new()
     {
         Operation = checkpoint.Operation, Automatic = checkpoint.Automatic, Paused = checkpoint.Paused,
         StartedAtUtc = checkpoint.StartedAtUtc, CacheRequest = checkpoint.CacheRequest,
         TargetRequest = checkpoint.TargetRequest, RunId = checkpoint.RunId,
         TargetArtistIds = checkpoint.TargetArtistIds.ToList(), ConsecutiveFailures = checkpoint.ConsecutiveFailures,
+        TargetAttempts = new Dictionary<string, int>(checkpoint.TargetAttempts, StringComparer.Ordinal),
+        NextAttemptUtc = checkpoint.NextAttemptUtc, PendingNotice = checkpoint.PendingNotice,
+        Disposition = checkpoint.Disposition,
+        UnresolvedAuditArtists = checkpoint.UnresolvedAuditArtists.ToDictionary(pair => pair.Key, pair => new Dictionary<long, string>(pair.Value), StringComparer.OrdinalIgnoreCase),
         Outcomes = preserveLegacy ? checkpoint.Outcomes?.ToList() : null,
         CompletedArtistIds = preserveLegacy ? checkpoint.CompletedArtistIds?.ToList() : null
     };
@@ -1161,12 +1389,21 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private int CountRecordedOutcomes(ArtistMetadataActiveRun? run = null)
     {
         var active = run ?? _checkpoint;
-        if (active is null || string.IsNullOrWhiteSpace(active.RunId))
+        return ReadRunOutcomes(active).Count;
+    }
+
+    /// <summary>
+    /// Reads the durable per-artist outcomes recorded for a run. The state file no longer carries
+    /// outcomes, so this is the only evidence a retained run can be judged on.
+    /// </summary>
+    private IReadOnlyList<ArtistRunOutcomeRecord> ReadRunOutcomes(ArtistMetadataActiveRun? run)
+    {
+        if (run is null || string.IsNullOrWhiteSpace(run.RunId))
         {
-            return 0;
+            return Array.Empty<ArtistRunOutcomeRecord>();
         }
 
-        return ArtistMetadataOutcomeJournal.Read(_outcomeJournalPath, active.RunId).Count;
+        return ArtistMetadataOutcomeJournal.Read(_outcomeJournalPath, run.RunId);
     }
 
     private static IReadOnlyList<ArtistRunOutcomeRecord> MigrateVisitedIdsToOutcomes(List<long> completedArtistIds)    {
@@ -1284,8 +1521,21 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 ResumeNotice = state.ActiveRun is null
                     ? null
                     : state.ActiveRun.Paused
-                        ? $"Paused {state.ActiveRun.Operation.Replace('-', ' ')} ({CountRecordedOutcomes(state.ActiveRun)} artist(s) already done)."
-                        : $"Interrupted {state.ActiveRun.Operation.Replace('-', ' ')} will resume where it stopped ({CountRecordedOutcomes(state.ActiveRun)} artist(s) already done)."
+                        ? string.IsNullOrWhiteSpace(state.ActiveRun.PendingNotice)
+                            ? $"Paused {state.ActiveRun.Operation.Replace('-', ' ')} ({CountRecordedOutcomes(state.ActiveRun)} artist(s) already done)."
+                            : $"Paused {state.ActiveRun.Operation.Replace('-', ' ')} ({CountRecordedOutcomes(state.ActiveRun)} artist(s) already done). {state.ActiveRun.PendingNotice}"
+                        : state.ActiveRun.NextAttemptUtc is null
+                            ? $"Interrupted {state.ActiveRun.Operation.Replace('-', ' ')} will resume where it stopped ({CountRecordedOutcomes(state.ActiveRun)} artist(s) already done)."
+                            : DescribePendingRetryNotice(state.ActiveRun, CountRecordedOutcomes(state.ActiveRun)),
+                RunDisposition = state.ActiveRun is null
+                    ? null
+                    : state.ActiveRun.Paused
+                        ? string.Equals(state.ActiveRun.Disposition, ArtistMetadataRunDispositions.NeedsAttention, StringComparison.Ordinal)
+                            ? ArtistMetadataRunDispositions.NeedsAttention
+                            : ArtistMetadataRunDispositions.Paused
+                        : state.ActiveRun.Disposition ?? ArtistMetadataRunDispositions.PendingRetry,
+                RunNextAttemptUtc = state.ActiveRun?.NextAttemptUtc,
+                RunPendingNotice = state.ActiveRun?.PendingNotice
             };
         }
     }
@@ -1428,6 +1678,24 @@ public sealed class ArtistMetadataActiveRun
     public int ConsecutiveFailures { get; set; }
 
     /// <summary>
+    /// Attempts already spent per unresolved artist/target pair, keyed by
+    /// <see cref="ArtistMetadataPendingWork.Key"/>. A pair that becomes satisfied is dropped, and an
+    /// explicit Resume clears the counters so it starts a new retry window.
+    /// </summary>
+    public Dictionary<string, int> TargetAttempts { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>When the retained run's next automatic attempt is due. Null when nothing is pending.</summary>
+    public DateTimeOffset? NextAttemptUtc { get; set; }
+
+    /// <summary>Why the run is retained, so the controls can state the actionable reason after restart.</summary>
+    public string? PendingNotice { get; set; }
+
+    public Dictionary<string, Dictionary<long, string>> UnresolvedAuditArtists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One of <see cref="ArtistMetadataRunDispositions"/> for a retained run.</summary>
+    public string? Disposition { get; set; }
+
+    /// <summary>
     /// Visited artist ids from state written before per-artist outcomes existed. Read for migration
     /// only; superseded by <see cref="ArtistMetadataOutcomeJournal"/> and never written.
     /// </summary>
@@ -1458,17 +1726,25 @@ public static class ArtistRunOutcomes
 
     /// <summary>
     /// True when the artist should not be revisited on resume. Successes and partial successes are
-    /// terminal; <c>notDue</c> skips are terminal because the interval has not elapsed. Failures and
-    /// missing metadata stay retryable.
+    /// terminal once they have nothing outstanding; <c>notDue</c> skips are terminal because the
+    /// interval has not elapsed. Failures and missing metadata stay retryable, and any record that
+    /// still carries unresolved target work is retryable regardless of its artist-level label.
     /// </summary>
     public static bool IsTerminal(ArtistRunOutcomeRecord record)
-        => record.Outcome switch
+    {
+        if (record.HasUnresolvedWork)
+        {
+            return false;
+        }
+
+        return record.Outcome switch
         {
             Succeeded => true,
             Partial => true,
             Skipped => IsTerminalSkip(record.Reason),
             _ => false
         };
+    }
 
     public static IReadOnlySet<long> BuildResumeSkipSet(IEnumerable<ArtistRunOutcomeRecord>? outcomes)
     {
@@ -1498,16 +1774,191 @@ public static class ArtistRunSkipReasons
     public const string Timeout = "timeout";
 }
 
+/// <summary>Immutable content selected for a target-update attempt and its retries.</summary>
+public sealed record ArtistPushPayload(string? AvatarPath, string? AvatarHash,
+    string? BackgroundPath, string? BackgroundHash, string? Biography,
+    int NextAvatarIndex, int NextBackgroundIndex);
+
 /// <summary>What one media server was actually asked to do for one artist.</summary>
 public sealed record ArtistRunOutcomeRecord(
     long ArtistId,
     string Outcome,
     string? Reason = null,
     IReadOnlyList<ArtistTargetResult>? Targets = null,
-    MetadataUpdaterTrackedArtist? TrackingState = null)
+    MetadataUpdaterTrackedArtist? TrackingState = null,
+    IReadOnlyList<ArtistTargetPendingWork>? PendingWork = null,
+    ArtistPushPayload? Payload = null)
 {
     /// <summary>Never-null view over <see cref="Targets"/> for consumers walking the graph.</summary>
     public IReadOnlyList<ArtistTargetResult> TargetResults => Targets ?? Array.Empty<ArtistTargetResult>();
+
+    /// <summary>Never-null view over the unresolved target work recorded for this artist.</summary>
+    public IReadOnlyList<ArtistTargetPendingWork> PendingWorkList => PendingWork ?? Array.Empty<ArtistTargetPendingWork>();
+
+    /// <summary>
+    /// True when this artist still owes a server write after its last attempt. Only typed outcomes
+    /// carry this, so legacy records without per-target evidence never suppress or invent a retry.
+    /// </summary>
+    public bool HasUnresolvedWork => PendingWorkList.Count > 0;
+}
+
+/// <summary>
+/// Dispositions a target-update sweep can end in. A retained run keeps its checkpoint and journal so
+/// the Activities controls can explain and recover it after a restart.
+/// </summary>
+public static class ArtistMetadataRunDispositions
+{
+    /// <summary>The sweep finished with no unresolved required target work.</summary>
+    public const string Completed = "completed";
+
+    /// <summary>Unresolved target/field work is retained and retried at the poll interval.</summary>
+    public const string PendingRetry = "pending-retry";
+
+    /// <summary>The attempt window is spent or the user has to act; Resume starts a new window.</summary>
+    public const string NeedsAttention = "needs-attention";
+
+    /// <summary>Paused by the user.</summary>
+    public const string Paused = "paused";
+
+    /// <summary>Cancelled by the user; nothing is retried.</summary>
+    public const string Cancelled = "cancelled";
+}
+
+/// <summary>Why an artist/target pair still has work after an attempt.</summary>
+public static class ArtistPendingWorkCategories
+{
+    /// <summary>A transient server error; another attempt can plausibly succeed.</summary>
+    public const string Transient = "transient";
+
+    /// <summary>Credentials or endpoint configuration need the user before more network attempts.</summary>
+    public const string Authentication = "authentication";
+
+    /// <summary>The server accepted a request but the local result could not be confirmed.</summary>
+    public const string Uncertain = "uncertain";
+
+    /// <summary>Preparation could not prove whether the target has the artwork.</summary>
+    public const string Unknown = "unknown";
+
+    /// <summary>The target is selected but not configured.</summary>
+    public const string NotConfigured = "not-configured";
+
+    /// <summary>True when an automatic retry is worth an attempt.</summary>
+    public static bool IsRetryable(string? category)
+        => category is Transient or Uncertain or Unknown;
+
+    /// <summary>True when the category needs the user before another network attempt.</summary>
+    public static bool NeedsUserAction(string? category)
+        => category is Authentication or NotConfigured;
+
+    /// <summary>
+    /// Classifies a failed target write into a retry category. Authentication and credential
+    /// failures must not consume repeated automatic attempts, so they are recognised explicitly
+    /// rather than retried three times.
+    /// </summary>
+    public static string ClassifyFailure(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return Transient;
+        }
+
+        foreach (var marker in AuthenticationMarkers)
+        {
+            if (error.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                return Authentication;
+            }
+        }
+
+        return Transient;
+    }
+
+    private static readonly string[] AuthenticationMarkers =
+    [
+        "401", "403", "unauthor", "forbidden", "authentication", "credential", "api key", "apikey",
+        "invalid token", "token expired", "access denied", "not permitted"
+    ];
+}
+
+/// <summary>
+/// Unresolved work for one artist/target pair, carried in the outcome journal so a later attempt knows
+/// what is outstanding and how many attempts it has already had.
+/// </summary>
+public sealed record ArtistTargetPendingWork(
+    string Target,
+    IReadOnlyList<string> Fields,
+    string Category,
+    string? LastError = null)
+{
+    /// <summary>Never-null view over the unresolved fields.</summary>
+    public IReadOnlyList<string> FieldList => Fields ?? Array.Empty<string>();
+}
+
+/// <summary>Aggregates the unresolved artist/target work recorded in a run's outcome journal.</summary>
+public static class ArtistMetadataPendingWork
+{
+    /// <summary>One unresolved pair with the attempts already spent on it.</summary>
+    public readonly record struct PendingPair(
+        long ArtistId,
+        string Target,
+        IReadOnlyList<string> Fields,
+        string Category,
+        int Attempts);
+
+    /// <summary>Stable attempt-counter key for one artist/target pair.</summary>
+    public static string Key(long artistId, string target)
+        => $"{artistId}|{target.Trim().ToLowerInvariant()}";
+
+    /// <summary>
+    /// Reads the surviving unresolved work from the latest outcome of each artist. A pair drops out as
+    /// soon as its recorded fields are satisfied, so a satisfied retry cannot keep a counter alive.
+    /// </summary>
+    public static IReadOnlyList<PendingPair> Collect(
+        IEnumerable<ArtistRunOutcomeRecord>? outcomes,
+        IReadOnlyDictionary<string, int>? priorAttempts)
+    {
+        if (outcomes is null)
+        {
+            return Array.Empty<PendingPair>();
+        }
+
+        var merged = new Dictionary<string, (long ArtistId, string Target, List<string> Fields, string Category)>(StringComparer.Ordinal);
+        foreach (var record in outcomes)
+        {
+            foreach (var work in record.PendingWorkList)
+            {
+                if (string.IsNullOrWhiteSpace(work.Target) || work.FieldList.Count == 0)
+                {
+                    continue;
+                }
+
+                var key = Key(record.ArtistId, work.Target);
+                if (merged.TryGetValue(key, out var existing))
+                {
+                    foreach (var field in work.FieldList)
+                    {
+                        if (!existing.Fields.Contains(field, StringComparer.OrdinalIgnoreCase))
+                        {
+                            existing.Fields.Add(field);
+                        }
+                    }
+
+                    continue;
+                }
+
+                merged[key] = (record.ArtistId, work.Target.Trim(), work.FieldList.ToList(), work.Category);
+            }
+        }
+
+        var pairs = new List<PendingPair>(merged.Count);
+        foreach (var (key, value) in merged)
+        {
+            var attempts = priorAttempts is not null && priorAttempts.TryGetValue(key, out var used) ? used : 0;
+            pairs.Add(new PendingPair(value.ArtistId, value.Target, value.Fields, value.Category, attempts));
+        }
+
+        return pairs;
+    }
 }
 
 public sealed record ArtistMetadataAutomationStatus(
@@ -1521,7 +1972,10 @@ public sealed record ArtistMetadataAutomationStatus(
     string? ResumeNotice = null,
     string? RunId = null,
     string? RunOperation = null,
-    string RunState = "idle")
+    string RunState = "idle",
+    string? RunDisposition = null,
+    DateTimeOffset? RunNextAttemptUtc = null,
+    string? RunPendingNotice = null)
 {
     public static ArtistMetadataAutomationStatus Idle()
         => new(null, ArtistMetadataCacheStatus.Idle(), MetadataUpdaterStatusSnapshot.Idle(), null, null, null, null);

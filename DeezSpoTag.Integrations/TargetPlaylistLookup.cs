@@ -53,3 +53,23 @@ public static class TargetLookupClassifier
            || exception is TimeoutException
            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested);
 }
+
+/// <summary>
+/// Thrown by clients when a caller required a provably successful response and the server returned
+/// something that cannot be trusted as evidence: failed HTTP, a malformed payload or a server
+/// application error. The caller classifies the affected artists as unknown instead of reading the
+/// failure as absence or as a complete count.
+/// </summary>
+public sealed class TargetLookupException : System.IO.IOException
+{
+    public TargetLookupException(string message, Exception? innerException = null,
+        string? target = null, IReadOnlyDictionary<long, string>? unresolvedArtists = null)
+        : base(message, innerException)
+    {
+        Target = target;
+        UnresolvedArtists = unresolvedArtists;
+    }
+
+    public string? Target { get; }
+    public IReadOnlyDictionary<long, string>? UnresolvedArtists { get; }
+}

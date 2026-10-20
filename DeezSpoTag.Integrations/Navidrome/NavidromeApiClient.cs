@@ -317,7 +317,8 @@ public sealed class NavidromeApiClient
         string username,
         string password,
         string searchTerm,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(searchTerm))
         {
@@ -336,7 +337,8 @@ public sealed class NavidromeApiClient
                 new KeyValuePair<string, string?>("albumCount", "0"),
                 new KeyValuePair<string, string?>("artistCount", "25")
             },
-            cancellationToken);
+            cancellationToken,
+            requireSuccessfulResponse);
         return response?.SubsonicResponse?.SearchResult?.Artists?
             .Where(static artist => !string.IsNullOrWhiteSpace(artist.Id))
             .Select(static artist => new NavidromeArtistSummary(
@@ -351,7 +353,8 @@ public sealed class NavidromeApiClient
         string username,
         string password,
         string artistName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         var normalizedArtistName = artistName?.Trim();
         if (string.IsNullOrWhiteSpace(normalizedArtistName))
@@ -359,7 +362,7 @@ public sealed class NavidromeApiClient
             return Array.Empty<string>();
         }
 
-        var artists = await SearchArtistsAsync(serverUrl, username, password, normalizedArtistName, cancellationToken);
+        var artists = await SearchArtistsAsync(serverUrl, username, password, normalizedArtistName, cancellationToken, requireSuccessfulResponse);
         var exactMatches = artists
             .Where(artist => string.Equals(artist.Name.Trim(), normalizedArtistName, StringComparison.OrdinalIgnoreCase))
             .Select(artist => artist.Id.Trim())
@@ -386,7 +389,8 @@ public sealed class NavidromeApiClient
         string username,
         string password,
         string artistId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(artistId))
         {
@@ -399,7 +403,13 @@ public sealed class NavidromeApiClient
             using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return Array.Empty<string>();
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                throw new TargetLookupException(
+                    $"Navidrome artist read failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
             }
 
             using var document = await System.Text.Json.JsonDocument.ParseAsync(
@@ -410,11 +420,32 @@ public sealed class NavidromeApiClient
                 albumContainer = subsonic;
             }
 
+            if (albumContainer.TryGetProperty("status", out var statusElement)
+                && string.Equals(statusElement.GetString(), "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                var errorText = albumContainer.TryGetProperty("error", out var errorElement)
+                    && errorElement.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+                throw new TargetLookupException(
+                    $"Navidrome reported an application error for getArtist: {(string.IsNullOrWhiteSpace(errorText) ? "the server did not describe the error." : errorText)}");
+            }
+
             if (!albumContainer.TryGetProperty("artist", out var artist)
                 || !artist.TryGetProperty("album", out var albums)
                 || albums.ValueKind != System.Text.Json.JsonValueKind.Array)
             {
-                return Array.Empty<string>();
+                if (!requireSuccessfulResponse)
+                {
+                    return Array.Empty<string>();
+                }
+
+                throw new TargetLookupException("Navidrome artist listing did not contain an artist album list.");
             }
 
             var titles = new List<string>();
@@ -434,9 +465,18 @@ public sealed class NavidromeApiClient
 
             return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
+        catch (TargetLookupException)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Array.Empty<string>();
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            throw new TargetLookupException("Navidrome artist read did not produce a usable response.", ex);
         }
     }
 
@@ -445,7 +485,8 @@ public sealed class NavidromeApiClient
         string username,
         string password,
         string artistId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(artistId))
         {
@@ -463,7 +504,8 @@ public sealed class NavidromeApiClient
                 new KeyValuePair<string, string?>("count", "0"),
                 new KeyValuePair<string, string?>("includeNotPresent", "false")
             },
-            cancellationToken);
+            cancellationToken,
+            requireSuccessfulResponse);
         var info = response?.SubsonicResponse?.ArtistInfo;
         return info is null
             ? null
@@ -922,7 +964,7 @@ public sealed class NavidromeApiClient
         string artistId,
         string imagePath,
         string? contentType = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(artistId))
         {
@@ -936,7 +978,7 @@ public sealed class NavidromeApiClient
             $"/api/artist/{Uri.EscapeDataString(artistId)}/image",
             imagePath,
             contentType,
-            cancellationToken);
+            cancellationToken, requireSuccessfulResponse);
     }
 
     private async Task<bool> UploadNativeImageAsync(
@@ -946,7 +988,7 @@ public sealed class NavidromeApiClient
         string path,
         string imagePath,
         string? contentType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
@@ -958,9 +1000,10 @@ public sealed class NavidromeApiClient
             return false;
         }
 
-        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken, requireSuccessfulResponse);
         if (string.IsNullOrWhiteSpace(token))
         {
+            if (requireSuccessfulResponse) throw new TargetLookupException("Navidrome native login response returned no token.");
             return false;
         }
 
@@ -982,6 +1025,7 @@ public sealed class NavidromeApiClient
             request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
             if (response.IsSuccessStatusCode)
             {
                 return true;
@@ -999,12 +1043,12 @@ public sealed class NavidromeApiClient
         {
             return false;
         }
-        catch (HttpRequestException ex)
+        catch (HttpRequestException ex) when (!requireSuccessfulResponse)
         {
             _logger.LogWarning(ex, "Navidrome image upload to {Path} failed: network error.", path);
             return false;
         }
-        catch (IOException ex)
+        catch (IOException ex) when (!requireSuccessfulResponse)
         {
             _logger.LogWarning(ex, "Navidrome image upload to {Path} failed: could not read image.", path);
             return false;
@@ -1234,12 +1278,18 @@ public sealed class NavidromeApiClient
         string password,
         string method,
         IEnumerable<KeyValuePair<string, string?>> parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireSuccessfulResponse = false)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
             || string.IsNullOrWhiteSpace(password))
         {
+            if (requireSuccessfulResponse)
+            {
+                throw new TargetLookupException($"Navidrome {method} request is missing its connection details.");
+            }
+
             return default;
         }
 
@@ -1251,10 +1301,20 @@ public sealed class NavidromeApiClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            if (requireSuccessfulResponse)
+            {
+                throw new TargetLookupException($"Navidrome {method} request timed out.");
+            }
+
             return default;
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
+            if (requireSuccessfulResponse)
+            {
+                throw new TargetLookupException($"Navidrome {method} request could not be sent.", ex);
+            }
+
             return default;
         }
 
@@ -1262,25 +1322,73 @@ public sealed class NavidromeApiClient
         {
             if (!response.IsSuccessStatusCode)
             {
+                if (requireSuccessfulResponse)
+                {
+                    throw new TargetLookupException(
+                        $"Navidrome {method} request failed with HTTP {(int)response.StatusCode} {response.StatusCode}.");
+                }
+
                 return default;
             }
 
+            T? payload;
             try
             {
-                return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
+                payload = await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
+                if (requireSuccessfulResponse)
+                {
+                    throw new TargetLookupException($"Navidrome {method} response was not valid JSON.", ex);
+                }
+
                 return default;
             }
+
+            // A Subsonic application error can arrive with HTTP 200: only a strict caller treats the
+            // envelope as untrustworthy evidence instead of an empty success.
+            var subsonic = payload?.GetType().GetProperty("SubsonicResponse")?.GetValue(payload);
+            var status = subsonic is NavidromeBaseResponse baseResponse ? baseResponse.Status : null;
+            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                if (requireSuccessfulResponse)
+                {
+                    throw new TargetLookupException(
+                        $"Navidrome reported an application error for {method}: {DescribeNavidromeError(payload)}.");
+                }
+
+                return default;
+            }
+
+            if (requireSuccessfulResponse && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+                throw new TargetLookupException($"Navidrome {method} response has no successful Subsonic envelope.");
+
+            return payload;
         }
+    }
+
+    /// <summary>Extracts the Subsonic error text from a parsed response, when present.</summary>
+    private static string DescribeNavidromeError(object? payload)
+    {
+        var subsonic = payload?.GetType().GetProperty("SubsonicResponse")?.GetValue(payload);
+        if (subsonic is null)
+        {
+            return "the server did not describe the error.";
+        }
+
+        var error = subsonic.GetType().GetProperty("Error")?.GetValue(subsonic);
+        var message = error?.GetType().GetProperty("Message")?.GetValue(error) as string;
+        return string.IsNullOrWhiteSpace(message)
+            ? "the server did not describe the error."
+            : message;
     }
 
     public async Task<string?> LoginNativeApiAsync(
         string serverUrl,
         string username,
         string password,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool requireSuccessfulResponse = false)
     {
         try
         {
@@ -1288,6 +1396,7 @@ public sealed class NavidromeApiClient
                 BuildNativeUrl(serverUrl, "/auth/login"),
                 new { username, password },
                 cancellationToken);
+            if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -1300,11 +1409,11 @@ public sealed class NavidromeApiClient
         {
             return null;
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException) when (!requireSuccessfulResponse)
         {
             return null;
         }
-        catch (JsonException)
+        catch (JsonException) when (!requireSuccessfulResponse)
         {
             return null;
         }

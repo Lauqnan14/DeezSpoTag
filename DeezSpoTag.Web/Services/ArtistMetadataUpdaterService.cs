@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
@@ -329,18 +330,24 @@ public sealed partial class ArtistMetadataUpdaterService
 
                 UpdateProgressStatus(tracked.ArtistName, counters);
 
+                var prior = latestOutcomes.TryGetValue(tracked.ArtistId, out var recorded) ? recorded : null;
+                // An artist whose recorded outcome still owes a server write is only visited again
+                // because of that work, so it must not be re-classified as not due. The prior record
+                // also supplies the field satisfaction a retry must not undo by resending.
                 var result = await ProcessTrackedArtistAsync(
                     tracked,
                     request,
                     auth,
                     runPreparation.NowUtc,
-                    cancellationToken);
+                    prior,
+                    cancellationToken, outcomeSink);
                 var record = new ArtistRunOutcomeRecord(
                     tracked.ArtistId,
                     DescribeRunOutcome(result.Outcome),
                     result.Reason,
-                    result.Targets,
-                    JsonSerializer.Deserialize<MetadataUpdaterTrackedArtist>(JsonSerializer.Serialize(tracked, _jsonOptions), _jsonOptions));
+                    MergeTargetResults(prior?.TargetResults, result.Targets),
+                    JsonSerializer.Deserialize<MetadataUpdaterTrackedArtist>(JsonSerializer.Serialize(tracked, _jsonOptions), _jsonOptions),
+                    result.PendingWork, result.Payload);
                 counters.Apply(record);
                 latestOutcomes[record.ArtistId] = record;
                 UpdateCounterStatus(counters);
@@ -576,30 +583,41 @@ public sealed partial class ArtistMetadataUpdaterService
         MetadataUpdaterRunRequest request,
         PlatformAuthState auth,
         DateTimeOffset nowUtc,
-        CancellationToken cancellationToken)
+        ArtistRunOutcomeRecord? prior,
+        CancellationToken cancellationToken,
+        Func<ArtistRunOutcomeRecord, Task>? payloadSink = null)
     {
         var effectiveIntervalDays = NormalizeIntervalDays(request.IntervalDays ?? tracked.IntervalDays);
-        if (ShouldSkipTrackedArtist(tracked, request, effectiveIntervalDays, nowUtc))
+        // Unresolved target/field work in a retained run bypasses the artist interval gate: the artist
+        // is only being revisited because a server write is still outstanding, and re-classifying it
+        // as not due would strand that work until the next full interval.
+        if (prior?.HasUnresolvedWork != true && ShouldSkipTrackedArtist(tracked, request, effectiveIntervalDays, nowUtc))
         {
             tracked.IntervalDays = effectiveIntervalDays;
             return new ArtistProcessingResult(ArtistProcessingOutcome.SkippedNotDue, MetadataSkipReasons.NotDue);
         }
 
         ApplyRequestOverrides(tracked, request, effectiveIntervalDays);
-        if (request.OcrTextArtBlockingEnabled.HasValue)
+        async Task SavePayloadAsync(ArtistRunOutcomeRecord record)
         {
-            await _libraryRepository.SetArtistMetadataOcrTextArtBlockingAsync(
-                tracked.ArtistId,
-                request.OcrTextArtBlockingEnabled.Value,
-                cancellationToken);
+            prior = record;
+            if (payloadSink is not null) await payloadSink(record);
         }
         try
         {
-            var outcome = await PushTrackedArtistMetadataWithTimeoutAsync(tracked, auth, request.FolderId, cancellationToken);
+            if (request.OcrTextArtBlockingEnabled.HasValue)
+            {
+                await _libraryRepository.SetArtistMetadataOcrTextArtBlockingAsync(
+                    tracked.ArtistId,
+                    request.OcrTextArtBlockingEnabled.Value,
+                    cancellationToken);
+            }
+            var outcome = await PushTrackedArtistMetadataWithTimeoutAsync(tracked, auth, request.FolderId, prior, cancellationToken, SavePayloadAsync);
             return new ArtistProcessingResult(
                 ClassifyProcessingOutcome(outcome.Outcome),
                 DescribePushSkipReason(outcome.Outcome),
-                outcome.Targets);
+                MergeTargetResults(prior?.TargetResults, outcome.Targets),
+                outcome.PendingWork, prior?.Payload);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -608,15 +626,27 @@ public sealed partial class ArtistMetadataUpdaterService
                 DateTimeOffset.UtcNow,
                 "error",
                 $"Metadata updater failed for {tracked.ArtistName}: {ex.Message}"));
-            return new ArtistProcessingResult(ArtistProcessingOutcome.Failed, null);
+            var requested = prior?.Payload is { } retained
+                ? DescribeRequestedFields(tracked, new PreparedVisuals(retained.AvatarPath, retained.BackgroundPath,
+                    retained.NextAvatarIndex, retained.NextBackgroundIndex), retained.Biography)
+                : DescribeRequestedFields(tracked, prepared: null, biography: null);
+            var pending = DescribePendingTargetWork(requested, prior?.TargetResults,
+                DescribeConfirmedFields(requested, prior))
+                .Select(work => work with { Category = ArtistPendingWorkCategories.ClassifyFailure(ex.Message), LastError = ex.Message }).ToList();
+            return new ArtistProcessingResult(ArtistProcessingOutcome.Failed, ex.Message,
+                prior?.TargetResults, pending, prior?.Payload);
         }
     }
 
     /// <summary>An artist's run outcome plus the reason it was skipped, when it was.</summary>
     private readonly record struct ArtistProcessingResult(ArtistProcessingOutcome Outcome, string? Reason,
-        IReadOnlyList<ArtistTargetResult>? Targets = null);
+        IReadOnlyList<ArtistTargetResult>? Targets = null,
+        IReadOnlyList<ArtistTargetPendingWork>? PendingWork = null,
+        ArtistPushPayload? Payload = null);
 
-    private readonly record struct ArtistPushResult(ArtistPushOutcome Outcome, IReadOnlyList<ArtistTargetResult>? Targets = null);
+    private readonly record struct ArtistPushResult(ArtistPushOutcome Outcome,
+        IReadOnlyList<ArtistTargetResult>? Targets = null,
+        IReadOnlyList<ArtistTargetPendingWork>? PendingWork = null);
 
     /// <summary>
     /// Bounds one artist so a stalled media server cannot hold the whole run open. The parent token
@@ -626,10 +656,18 @@ public sealed partial class ArtistMetadataUpdaterService
         MetadataUpdaterTrackedArtist tracked,
         PlatformAuthState auth,
         long? folderId,
-        CancellationToken cancellationToken)
+        ArtistRunOutcomeRecord? prior,
+        CancellationToken cancellationToken,
+        Func<ArtistRunOutcomeRecord, Task>? payloadSink = null)
     {
         using var artistCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pushTask = PushTrackedArtistMetadataAsync(tracked, auth, folderId, artistCancellation.Token);
+        async Task SavePayloadAsync(ArtistRunOutcomeRecord record)
+        {
+            artistCancellation.Token.ThrowIfCancellationRequested();
+            prior = record;
+            if (payloadSink is not null) await payloadSink(record);
+        }
+        var pushTask = PushTrackedArtistMetadataAsync(tracked, auth, folderId, prior, artistCancellation.Token, SavePayloadAsync);
         try
         {
             return await pushTask.WaitAsync(ArtistPushTimeout, cancellationToken);
@@ -643,7 +681,19 @@ public sealed partial class ArtistMetadataUpdaterService
                 "Metadata updater timed out after {TimeoutSeconds}s for artist {ArtistId}.",
                 ArtistPushTimeout.TotalSeconds,
                 tracked.ArtistId);
-            return new ArtistPushResult(ArtistPushOutcome.Failed);
+            // The timed-out push may still complete in the background, so the target outcome is
+            // unknown rather than a clean failure. Every requested target/field the prior attempt did
+            // not already confirm is retried, and the coordinator counts this timeout as one attempt.
+            var requested = prior?.Payload is { } retained
+                ? DescribeRequestedFields(tracked, new PreparedVisuals(retained.AvatarPath, retained.BackgroundPath,
+                    retained.NextAvatarIndex, retained.NextBackgroundIndex), retained.Biography)
+                : DescribeRequestedFields(tracked, prepared: null, biography: null);
+            return new ArtistPushResult(
+                ArtistPushOutcome.Failed,
+                PendingWork: DescribePendingTargetWork(
+                    requested,
+                    prior?.TargetResults,
+                    DescribeConfirmedFields(requested, prior)));
         }
     }
 
@@ -779,7 +829,9 @@ public sealed partial class ArtistMetadataUpdaterService
         MetadataUpdaterTrackedArtist tracked,
         PlatformAuthState auth,
         long? folderId,
-        CancellationToken cancellationToken)
+        ArtistRunOutcomeRecord? prior,
+        CancellationToken cancellationToken,
+        Func<ArtistRunOutcomeRecord, Task>? payloadSink = null)
     {
         var artist = await _libraryRepository.GetArtistAsync(tracked.ArtistId, cancellationToken);
         if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
@@ -798,41 +850,61 @@ public sealed partial class ArtistMetadataUpdaterService
             artist.Id,
             artist.Name,
             cancellationToken);
-        var source = NormalizeMetadataSource(tracked.Source);
-        await _artistArtworkCatalog.RefreshAsync(
-            artist.Id,
-            artist.Name,
-            artist.PreferredImagePath,
-            cancellationToken,
-            onlyProvider: source == MetadataSourceAuto ? null : source,
-            forceProviderRefresh: false,
-            includeGallery: true,
-            allowArtistPageScrape: false);
-        var resolved = await ResolveArtistMetadataAsync(
-            artist.Id,
-            artist.Name,
-            source,
-            tracked.IncludeBio,
-            tracked.OcrTextArtBlockingEnabled,
-            cancellationToken);
-        if (resolved is null)
+        ArtistPushPayload payload;
+        if (prior?.Payload is { } retainedPayload)
         {
-            // No upstream metadata is a normal condition for some artists, not a failure.
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "warn",
-                popularSongsSynced
-                    ? $"Metadata updater found no {source} metadata for {artist.Name}; synced popular songs only."
-                    : $"Metadata updater found no {source} metadata for {artist.Name}."));
-            return new ArtistPushResult(ArtistPushOutcome.NoMetadata);
+            payload = retainedPayload;
+            ValidatePushPayload(payload);
         }
+        else
+        {
+            var source = NormalizeMetadataSource(tracked.Source);
+            await _artistArtworkCatalog.RefreshAsync(
+                artist.Id,
+                artist.Name,
+                artist.PreferredImagePath,
+                cancellationToken,
+                onlyProvider: source == MetadataSourceAuto ? null : source,
+                forceProviderRefresh: false,
+                includeGallery: true,
+                allowArtistPageScrape: false);
+            var resolved = await ResolveArtistMetadataAsync(
+                artist.Id,
+                artist.Name,
+                source,
+                tracked.IncludeBio,
+                tracked.OcrTextArtBlockingEnabled,
+                cancellationToken);
+            if (resolved is null)
+            {
+                // No upstream metadata is a normal condition for some artists, not a failure.
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warn",
+                    popularSongsSynced
+                        ? $"Metadata updater found no {source} metadata for {artist.Name}; synced popular songs only."
+                        : $"Metadata updater found no {source} metadata for {artist.Name}."));
+                return new ArtistPushResult(ArtistPushOutcome.NoMetadata);
+            }
 
-        var prepared = await PrepareVisualsAsync(
-            tracked,
-            resolved.Candidates,
-            cancellationToken,
-            preferExistingSlots: !tracked.OcrTextArtBlockingEnabled);
-        await UpdateManagedArtistVisualsAsync(artist.Id, prepared, cancellationToken);
+            var selectedVisuals = await PrepareVisualsAsync(
+                tracked,
+                resolved.Candidates,
+                cancellationToken,
+                preferExistingSlots: !tracked.OcrTextArtBlockingEnabled);
+            payload = await FreezePushPayloadAsync(selectedVisuals,
+                tracked.IncludeBio ? SanitizeBiography(resolved.Biography) : null, cancellationToken);
+            var requested = DescribeRequestedFields(tracked, selectedVisuals, payload.Biography);
+            var pending = DescribePendingTargetWork(requested, results: null, DescribeConfirmedFields(requested, prior));
+            if (payloadSink is not null)
+                await payloadSink(new ArtistRunOutcomeRecord(tracked.ArtistId, ArtistRunOutcomes.Failed,
+                    "Prepared target payload", prior?.TargetResults, PendingWork: pending, Payload: payload));
+            await UpdateManagedArtistVisualsAsync(artist.Id, selectedVisuals, cancellationToken);
+
+        }
+        var prepared = new PreparedVisuals(payload.AvatarPath, payload.BackgroundPath,
+            payload.NextAvatarIndex, payload.NextBackgroundIndex);
+        var biography = payload.Biography;
 
         if (policy.SyncBlocked)
         {
@@ -857,9 +929,20 @@ public sealed partial class ArtistMetadataUpdaterService
                 cancellationToken);
         }
 
-        var biography = tracked.IncludeBio
-            ? SanitizeBiography(resolved.Biography)
-            : null;
+        var requestedByTarget = DescribeRequestedFields(tracked, prepared, biography);
+        // Fields the prior attempt already confirmed are explicitly withheld: a retry must not resend
+        // them, and their satisfaction cannot be lost when this attempt only reaches some targets.
+        var satisfiedByTarget = DescribeConfirmedFields(requestedByTarget, prior);
+        async Task SaveTargetEvidenceAsync(IReadOnlyList<ArtistTargetResult> results)
+        {
+            var merged = MergeTargetResults(prior?.TargetResults, results);
+            var pending = DescribePendingTargetWork(requestedByTarget, merged, satisfiedByTarget);
+            cancellationToken.ThrowIfCancellationRequested();
+            prior = new ArtistRunOutcomeRecord(tracked.ArtistId, ArtistRunOutcomes.Failed,
+                "Target results recorded; local finalization pending", Targets: merged, PendingWork: pending, Payload: payload);
+            if (payloadSink is not null) await payloadSink(prior);
+        }
+
         var pushed = await PushArtistMetadataAsync(
             new PushMetadataRequest(
                 artist.Id,
@@ -868,11 +951,16 @@ public sealed partial class ArtistMetadataUpdaterService
                 ResolveTrackedTargets(tracked),
                 tracked.IncludeAvatar ? prepared.AvatarPath : null,
                 tracked.IncludeBackground ? prepared.BackgroundPath : null,
-                biography),
+                biography,
+                SatisfiedFieldsByTarget: satisfiedByTarget) { ResultSink = SaveTargetEvidenceAsync },
             cancellationToken);
 
+        cancellationToken.ThrowIfCancellationRequested();
+        var pendingWork = DescribePendingTargetWork(requestedByTarget, pushed.Targets, satisfiedByTarget);
         var outcome = ClassifyArtistPushOutcome(pushed, popularSongsSynced);
-        if (outcome is not (ArtistPushOutcome.Succeeded or ArtistPushOutcome.Partial))
+        var confirmedRetry = outcome == ArtistPushOutcome.Unchanged && pendingWork.Count == 0
+            && prior?.Payload is not null;
+        if (outcome is not (ArtistPushOutcome.Succeeded or ArtistPushOutcome.Partial) && !confirmedRetry)
         {
             var warningText = DescribePushShortfall(pushed)
                 ?? "No server metadata was updated.";
@@ -880,45 +968,38 @@ public sealed partial class ArtistMetadataUpdaterService
                 DateTimeOffset.UtcNow,
                 "warn",
                 $"Metadata updater could not push {artist.Name}: {warningText}"));
-            return new ArtistPushResult(outcome, pushed.Targets);
+            return new ArtistPushResult(outcome, pushed.Targets, pendingWork);
         }
 
-        tracked.LastPushedAtUtc = DateTimeOffset.UtcNow;
-        tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
-        tracked.AvatarRotationIndex = prepared.NextAvatarIndex;
-        tracked.BackgroundRotationIndex = prepared.NextBackgroundIndex;
+        // Only a fully confirmed push advances the schedule baseline: while any requested target/field
+        // is unresolved the artist stays due for its retry window, and a still unresolved artwork
+        // field keeps its rotation position so the retry does not rotate that artwork again.
+        ApplyConfirmedPushScheduling(tracked, prepared, pendingWork);
         foreach (var target in ResolveTrackedTargets(tracked))
         {
-            var targetResult = pushed.Targets.FirstOrDefault(candidate =>
+            var targetResult = MergeTargetResults(prior?.TargetResults, pushed.Targets).FirstOrDefault(candidate =>
                 string.Equals(candidate.Target, target, StringComparison.OrdinalIgnoreCase));
-            // Biography is only recorded as synced for targets that can actually store it, so
-            // Navidrome's read-only biography no longer needs a warning-text match to be excluded.
-            var biographySyncUtc = targetResult?.LimitationList.Any(limitation =>
-                limitation.Contains("biography is read-only", StringComparison.OrdinalIgnoreCase)) == true
-                ? (DateTimeOffset?)null
-                : DateTimeOffset.UtcNow;
+            var requestedFields = requestedByTarget.TryGetValue(target, out var targetFields)
+                ? targetFields
+                : (IReadOnlyList<string>)Array.Empty<string>();
             await _libraryRepository.UpsertArtistServerSyncStateAsync(
-                new ArtistServerSyncStateUpsertInput(
-                    artist.Id,
+                BuildConfirmedServerSyncState(
+                    tracked,
                     target,
-                    DateTimeOffset.UtcNow,
-                    biographySyncUtc,
-                    ComputeFileHashOrNull(prepared.AvatarPath),
-                    ComputeFileHashOrNull(prepared.BackgroundPath),
-                    ComputeTextHashOrNull(biography),
-                    tracked.AvatarRotationIndex,
-                    tracked.BackgroundRotationIndex,
-                    DescribeTargetSyncResult(targetResult),
-                    targetResult?.Error),
+                    requestedFields,
+                    targetResult,
+                    pendingWork,
+                    prepared,
+                    biography,
+                    DateTimeOffset.UtcNow),
                 cancellationToken);
         }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            popularSongsSynced
-                ? $"Metadata updater pushed {artist.Name} and synced popular songs to {string.Join(", ", ResolveTrackedTargets(tracked))}."
-                : $"Metadata updater pushed {artist.Name} to {string.Join(", ", ResolveTrackedTargets(tracked))}."));
-        return new ArtistPushResult(outcome, pushed.Targets);
+            DescribeConfirmedPushLogText(artist.Name, pushed, popularSongsSynced, pendingWork)));
+        return new ArtistPushResult(outcome, pushed.Targets, pendingWork);
     }
 
     /// <summary>
@@ -963,6 +1044,288 @@ public sealed partial class ArtistMetadataUpdaterService
         ArtistTargetOutcome.Failed => "failed",
         _ => "skipped"
     };
+
+    /// <summary>
+    /// Keeps the cumulative per-target evidence across attempts: a target that was not revisited keeps
+    /// the fields it already confirmed, and a revisited target keeps the fields it confirmed earlier so
+    /// a retry cannot erase an established success.
+    /// </summary>
+    private static IReadOnlyList<ArtistTargetResult>? MergeTargetResults(
+        IReadOnlyList<ArtistTargetResult>? prior,
+        IReadOnlyList<ArtistTargetResult>? current)
+    {
+        if (prior is null || prior.Count == 0)
+        {
+            return current;
+        }
+
+        if (current is null || current.Count == 0)
+        {
+            return prior;
+        }
+
+        var merged = new List<ArtistTargetResult>(prior.Count);
+        foreach (var previous in prior)
+        {
+            var candidate = current.FirstOrDefault(result =>
+                string.Equals(result.Target, previous.Target, StringComparison.OrdinalIgnoreCase));
+            if (candidate is null)
+            {
+                merged.Add(previous);
+                continue;
+            }
+
+            var fields = previous.UpdatedFieldList
+                .Concat(candidate.UpdatedFieldList)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            merged.Add(candidate with { UpdatedFields = fields });
+        }
+
+        foreach (var extra in current.Where(result => !merged.Any(existing =>
+            string.Equals(existing.Target, result.Target, StringComparison.OrdinalIgnoreCase))))
+        {
+            merged.Add(extra);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// The fields one artist actually asked each selected target to store. A field with no local
+    /// candidate is not requested, so a missing candidate can never be mistaken for a failed write,
+    /// and a declared capability limit is excluded the same way.
+    /// </summary>
+    private static Dictionary<string, IReadOnlyList<string>> DescribeRequestedFields(
+        MetadataUpdaterTrackedArtist tracked,
+        PreparedVisuals? prepared,
+        string? biography)
+    {
+        var avatar = tracked.IncludeAvatar
+            && (prepared is null || !string.IsNullOrWhiteSpace(prepared.AvatarPath));
+        var background = tracked.IncludeBackground
+            && (prepared is null || !string.IsNullOrWhiteSpace(prepared.BackgroundPath));
+        var bio = tracked.IncludeBio
+            && (prepared is null || !string.IsNullOrWhiteSpace(biography));
+        var fieldsByTarget = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var target in ResolveTrackedTargets(tracked))
+        {
+            var fields = new List<string>();
+            var artworkOnly = ResolveTargetCapability(target) == ArtistTargetCapability.ArtworkOnly;
+            // Navidrome stores one image per artist: the push prefers the avatar slot and falls back
+            // to the background, so its request is whichever slot would actually be sent. Asking it
+            // for both artwork fields would leave one permanently unresolved.
+            var avatarRequested = avatar;
+            var backgroundRequested = artworkOnly ? !avatar && background : background;
+            if (avatarRequested)
+            {
+                fields.Add(ArtistTargetFields.Avatar);
+            }
+
+            if (backgroundRequested)
+            {
+                fields.Add(ArtistTargetFields.Background);
+            }
+
+            if (bio && ResolveTargetCapability(target) == ArtistTargetCapability.Full)
+            {
+                fields.Add(ArtistTargetFields.Biography);
+            }
+
+            fieldsByTarget[target] = fields;
+        }
+
+        return fieldsByTarget;
+    }
+
+    /// <summary>
+    /// Applies the schedule effects of a finished push: the artist baseline and the rotation indices
+    /// advance only when the push left no unresolved target/field work. A partial push therefore
+    /// keeps the artist due for its retry window and does not rotate the still unresolved artwork
+    /// again, while whole-artist scheduling never postpones another target's confirmed field.
+    /// </summary>
+    private static void ApplyConfirmedPushScheduling(
+        MetadataUpdaterTrackedArtist tracked,
+        PreparedVisuals prepared,
+        IReadOnlyList<ArtistTargetPendingWork> pendingWork)
+    {
+        if (pendingWork.Count == 0)
+        {
+            tracked.LastPushedAtUtc = DateTimeOffset.UtcNow;
+            tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        tracked.AvatarRotationIndex = pendingWork.Any(entry =>
+            entry.FieldList.Contains(ArtistTargetFields.Avatar, StringComparer.OrdinalIgnoreCase))
+            ? tracked.AvatarRotationIndex
+            : prepared.NextAvatarIndex;
+        tracked.BackgroundRotationIndex = pendingWork.Any(entry =>
+            entry.FieldList.Contains(ArtistTargetFields.Background, StringComparer.OrdinalIgnoreCase))
+            ? tracked.BackgroundRotationIndex
+            : prepared.NextBackgroundIndex;
+    }
+
+    /// <summary>
+    /// Builds the per-target sync-state upsert. Hashes and success timestamps advance only for the
+    /// request a target confirmed in this attempt; unconfirmed or disabled fields pass null so the
+    /// existing SQLite upsert preserves the earlier verified hashes, while the result text and its
+    /// error are recorded exactly as the attempt reported them.
+    /// </summary>
+    private static ArtistServerSyncStateUpsertInput BuildConfirmedServerSyncState(
+        MetadataUpdaterTrackedArtist tracked,
+        string target,
+        IReadOnlyList<string> requestedFields,
+        ArtistTargetResult? targetResult,
+        IReadOnlyList<ArtistTargetPendingWork> pendingWork,
+        PreparedVisuals prepared,
+        string? biography,
+        DateTimeOffset nowUtc)
+    {
+        var confirmedFields = new HashSet<string>(
+            DescribeConfirmedFields(requestedFields, targetResult),
+            StringComparer.OrdinalIgnoreCase);
+        var settled = targetResult?.Outcome is not (null or ArtistTargetOutcome.NotFound or ArtistTargetOutcome.NotConfigured)
+            && !pendingWork.Any(entry =>
+            string.Equals(entry.Target, target, StringComparison.OrdinalIgnoreCase));
+        var biographyConfirmed = confirmedFields.Contains(ArtistTargetFields.Biography);
+        return new ArtistServerSyncStateUpsertInput(
+            tracked.ArtistId,
+            target,
+            settled ? nowUtc : null,
+            biographyConfirmed ? nowUtc : null,
+            confirmedFields.Contains(ArtistTargetFields.Avatar)
+                ? ComputeFileHashOrNull(prepared.AvatarPath)
+                : null,
+            confirmedFields.Contains(ArtistTargetFields.Background)
+                ? ComputeFileHashOrNull(prepared.BackgroundPath)
+                : null,
+            biographyConfirmed ? ComputeTextHashOrNull(biography) : null,
+            tracked.AvatarRotationIndex,
+            tracked.BackgroundRotationIndex,
+            DescribeTargetSyncResult(targetResult),
+            targetResult?.Error);
+    }
+
+    /// <summary>
+    /// The success log names only the servers that actually accepted content and reports how much
+    /// work a retry still owes, instead of listing every selected server as updated.
+    /// </summary>
+    private static string DescribeConfirmedPushLogText(
+        string artistName,
+        PushOutcome pushed,
+        bool popularSongsSynced,
+        IReadOnlyList<ArtistTargetPendingWork> pendingWork)
+    {
+        var updatedTargets = pushed.UpdatedTargets
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var updatedTargetsText = updatedTargets.Count == 0
+            ? "no server yet"
+            : string.Join(", ", updatedTargets);
+        var retryNotice = pendingWork.Count == 0
+            ? string.Empty
+            : $" {pendingWork.Count} server write(s) remain unresolved and will be retried.";
+        return popularSongsSynced
+            ? $"Metadata updater pushed {artistName} and synced popular songs to {updatedTargetsText}.{retryNotice}"
+            : $"Metadata updater pushed {artistName} to {updatedTargetsText}.{retryNotice}";
+    }
+
+    /// <summary>
+    /// The requested fields one target result already confirmed. A confirmed write satisfies a field
+    /// — including on a target whose overall attempt failed on other work; an unverified no-op
+    /// does not confirm a field.
+    /// </summary>
+    private static IReadOnlyList<string> DescribeConfirmedFields(IReadOnlyList<string> requested, ArtistTargetResult? result)
+        => result?.Outcome switch
+        {
+            // A target that accepted some content is not fully confirmed, but the writes it did
+            // confirm are real evidence a retry must not undo by resending.
+            ArtistTargetOutcome.Updated or ArtistTargetOutcome.Failed => requested
+                .Where(field => result.UpdatedFieldList.Contains(field, StringComparer.OrdinalIgnoreCase))
+                .ToList(),
+            ArtistTargetOutcome.Unchanged => requested
+                .Where(field => result.UpdatedFieldList.Contains(field, StringComparer.OrdinalIgnoreCase)).ToList(),
+            _ => Array.Empty<string>()
+        };
+
+    /// <summary>The fields each selected target already confirmed, which a retry must not resend.</summary>
+    private static Dictionary<string, IReadOnlyList<string>> DescribeConfirmedFields(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestedByTarget,
+        ArtistRunOutcomeRecord? prior)
+    {
+        var satisfied = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (target, requested) in requestedByTarget)
+        {
+            var result = prior?.TargetResults.FirstOrDefault(candidate =>
+                string.Equals(candidate.Target, target, StringComparison.OrdinalIgnoreCase));
+            satisfied[target] = DescribeConfirmedFields(requested, result);
+        }
+
+        return satisfied;
+    }
+
+    /// <summary>
+    /// Describes the per-target work still outstanding after an attempt. A field is satisfied by a
+    /// confirmed write — this attempt's or a prior attempt's — and only the fields that remain outstanding are recorded, so a satisfied retry cannot keep
+    /// an attempt counter alive.
+    /// </summary>
+    private static IReadOnlyList<ArtistTargetPendingWork> DescribePendingTargetWork(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> requestedByTarget,
+        IReadOnlyList<ArtistTargetResult>? results,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? satisfiedByTarget = null)
+    {
+        var pending = new List<ArtistTargetPendingWork>();
+        foreach (var (target, fields) in requestedByTarget)
+        {
+            if (fields.Count == 0)
+            {
+                continue;
+            }
+
+            var carriedSatisfied = satisfiedByTarget is not null
+                && satisfiedByTarget.TryGetValue(target, out var carried)
+                ? carried
+                : Array.Empty<string>();
+            var result = results?.FirstOrDefault(candidate =>
+                string.Equals(candidate.Target, target, StringComparison.OrdinalIgnoreCase));
+            if (result is null)
+            {
+                var unreported = fields
+                    .Where(field => !carriedSatisfied.Contains(field, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                if (unreported.Count > 0)
+                {
+                    pending.Add(new ArtistTargetPendingWork(
+                        target,
+                        unreported,
+                        ArtistPendingWorkCategories.Unknown,
+                        "The target push did not report a result."));
+                }
+
+                continue;
+            }
+
+            // Only a successful strict lookup can produce NotFound. Proven absence is an exclusion.
+            if (result.Outcome == ArtistTargetOutcome.NotFound) continue;
+
+            var confirmed = DescribeConfirmedFields(fields, result);
+            var outstanding = fields
+                .Where(field => !confirmed.Contains(field, StringComparer.OrdinalIgnoreCase)
+                    && !carriedSatisfied.Contains(field, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            if (outstanding.Count == 0)
+            {
+                continue;
+            }
+
+            var category = result.Outcome == ArtistTargetOutcome.NotConfigured
+                ? ArtistPendingWorkCategories.NotConfigured
+                : result.PendingCategory ?? ArtistPendingWorkCategories.ClassifyFailure(result.Error);
+            pending.Add(new ArtistTargetPendingWork(target, outstanding, category, result.Error));
+        }
+
+        return pending;
+    }
 
     private async Task<bool> SyncPopularSongsIfRequestedAsync(
         MetadataUpdaterTrackedArtist tracked,
@@ -1512,18 +1875,28 @@ public sealed partial class ArtistMetadataUpdaterService
         var missing = new HashSet<long>();
         if (!TryGetPlexConnection(plex, out var plexUrl, out var plexToken))
         {
-            warnings.Add("Plex missing-art audit skipped because Plex is not configured.");
+            if (artists.Count > 0) throw new TargetLookupException("Plex missing-art audit: credentials are not configured.",
+                target: PlexTarget, unresolvedArtists: artists.ToDictionary(artist => artist.Id, _ => "Plex credentials are not configured."));
             return missing;
         }
 
+        var unknown = new Dictionary<long, string>();
         foreach (var artist in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var locations = await _plexClient.FindArtistLocationsAsync(plexUrl, plexToken, artist.Name, cancellationToken);
+                // Strict lookups keep failed HTTP, malformed XML and nested section failures from
+                // reading as absence: an unknown lookup cannot be classified as missing or present.
+                var locations = await _plexClient.FindArtistLocationsAsync(
+                    plexUrl,
+                    plexToken,
+                    artist.Name,
+                    cancellationToken,
+                    requireSuccessfulResponse: true);
                 if (locations.Count == 0)
                 {
+                    // A proven empty search is valid absence, not a guess.
                     missing.Add(artist.Id);
                     continue;
                 }
@@ -1531,7 +1904,12 @@ public sealed partial class ArtistMetadataUpdaterService
                 var hasArtwork = false;
                 foreach (var location in locations)
                 {
-                    var metadata = await _plexClient.GetArtistMetadataAsync(plexUrl, plexToken, location.RatingKey, cancellationToken);
+                    var metadata = await _plexClient.GetArtistMetadataAsync(
+                        plexUrl,
+                        plexToken,
+                        location.RatingKey,
+                        cancellationToken,
+                        requireSuccessfulResponse: true);
                     hasArtwork = hasArtwork || !string.IsNullOrWhiteSpace(metadata?.Thumb);
                     if (hasArtwork)
                     {
@@ -1546,11 +1924,14 @@ public sealed partial class ArtistMetadataUpdaterService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Keep unknowns separate: an incomplete audit cannot choose a missing-art driver.
+                unknown[artist.Id] = ex.Message;
                 _logger.LogDebug(ex, "Plex missing-art audit failed for artist {ArtistId}", artist.Id);
-                warnings.Add($"Plex missing-art audit failed for {artist.Name}.");
+                warnings.Add($"Plex artwork state on Plex is unknown for {artist.Name}: {ex.Message}");
             }
         }
 
+        EnsureAuditClassifiedArtists(PlexTarget, artists.Count, unknown, cancellationToken);
         return missing;
     }
 
@@ -1566,16 +1947,23 @@ public sealed partial class ArtistMetadataUpdaterService
             || string.IsNullOrWhiteSpace(jellyfin.ApiKey)
             || string.IsNullOrWhiteSpace(jellyfin.UserId))
         {
-            warnings.Add("Jellyfin missing-art audit skipped because Jellyfin is not configured.");
+            if (artists.Count > 0) throw new TargetLookupException("Jellyfin missing-art audit: credentials are not configured.",
+                target: JellyfinTarget, unresolvedArtists: artists.ToDictionary(artist => artist.Id, _ => "Jellyfin credentials are not configured."));
             return missing;
         }
 
+        var unknown = new Dictionary<long, string>();
         foreach (var artist in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var artistIds = await _jellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, artist.Name, cancellationToken);
+                var artistIds = await _jellyfinClient.FindArtistIdsAsync(
+                    jellyfin.Url,
+                    jellyfin.ApiKey,
+                    artist.Name,
+                    cancellationToken,
+                    requireSuccessfulResponse: true);
                 if (artistIds.Count == 0)
                 {
                     missing.Add(artist.Id);
@@ -1590,7 +1978,8 @@ public sealed partial class ArtistMetadataUpdaterService
                         jellyfin.ApiKey,
                         jellyfin.UserId,
                         artistId,
-                        cancellationToken);
+                        cancellationToken,
+                        requireSuccessfulResponse: true);
                     hasArtwork = hasArtwork || item?.ImageTags?.ContainsKey("Primary") == true;
                     if (hasArtwork)
                     {
@@ -1605,11 +1994,14 @@ public sealed partial class ArtistMetadataUpdaterService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Keep unknowns separate: an incomplete audit cannot choose a missing-art driver.
+                unknown[artist.Id] = ex.Message;
                 _logger.LogDebug(ex, "Jellyfin missing-art audit failed for artist {ArtistId}", artist.Id);
-                warnings.Add($"Jellyfin missing-art audit failed for {artist.Name}.");
+                warnings.Add($"Jellyfin artwork state is unknown for {artist.Name}: {ex.Message}");
             }
         }
 
+        EnsureAuditClassifiedArtists(JellyfinTarget, artists.Count, unknown, cancellationToken);
         return missing;
     }
 
@@ -1625,10 +2017,12 @@ public sealed partial class ArtistMetadataUpdaterService
             || string.IsNullOrWhiteSpace(navidrome.Username)
             || string.IsNullOrWhiteSpace(navidrome.Password))
         {
-            warnings.Add("Navidrome missing-art audit skipped because Navidrome is not configured.");
+            if (artists.Count > 0) throw new TargetLookupException("Navidrome missing-art audit: credentials are not configured.",
+                target: NavidromeTarget, unresolvedArtists: artists.ToDictionary(artist => artist.Id, _ => "Navidrome credentials are not configured."));
             return missing;
         }
 
+        var unknown = new Dictionary<long, string>();
         foreach (var artist in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1639,7 +2033,8 @@ public sealed partial class ArtistMetadataUpdaterService
                     navidrome.Username,
                     navidrome.Password,
                     artist.Name,
-                    cancellationToken);
+                    cancellationToken,
+                    requireSuccessfulResponse: true);
                 var match = matches.FirstOrDefault(candidate => string.Equals(candidate.Name.Trim(), artist.Name.Trim(), StringComparison.OrdinalIgnoreCase))
                     ?? matches.FirstOrDefault();
                 if (match is null)
@@ -1656,7 +2051,8 @@ public sealed partial class ArtistMetadataUpdaterService
                         navidrome.Username,
                         navidrome.Password,
                         match.Id,
-                        cancellationToken);
+                        cancellationToken,
+                        requireSuccessfulResponse: true);
                     hasArtwork = !string.IsNullOrWhiteSpace(info?.SmallImageUrl)
                         || !string.IsNullOrWhiteSpace(info?.MediumImageUrl)
                         || !string.IsNullOrWhiteSpace(info?.LargeImageUrl);
@@ -1669,12 +2065,37 @@ public sealed partial class ArtistMetadataUpdaterService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Keep unknowns separate: an incomplete audit cannot choose a missing-art driver.
+                unknown[artist.Id] = ex.Message;
                 _logger.LogDebug(ex, "Navidrome missing-art audit failed for artist {ArtistId}", artist.Id);
-                warnings.Add($"Navidrome missing-art audit failed for {artist.Name}.");
+                warnings.Add($"Navidrome artwork state is unknown for {artist.Name}: {ex.Message}");
             }
         }
 
+        EnsureAuditClassifiedArtists(NavidromeTarget, artists.Count, unknown, cancellationToken);
         return missing;
+    }
+
+    /// <summary>
+    /// An audit with any unknown artist cannot choose a missing-art driver. Preparation fails with
+    /// the unresolved IDs and causes, and the run stays recoverable
+    /// in the coordinator's retained-run state.
+    /// </summary>
+    private static void EnsureAuditClassifiedArtists(
+        string target,
+        int artistCount,
+        IReadOnlyDictionary<long, string> unknown,
+        CancellationToken cancellationToken)
+    {
+        if (artistCount <= 0 || unknown.Count == 0)
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new TargetLookupException(
+            $"The {target} missing-art audit has unresolved artist(s) {string.Join(", ", unknown.Keys)} of {artistCount}: {string.Join(" ", unknown.Values.Take(3))}",
+            target: target, unresolvedArtists: unknown);
     }
 
     private static void SeedTrackedArtists(
@@ -2422,17 +2843,26 @@ public sealed partial class ArtistMetadataUpdaterService
         var results = new List<ArtistTargetResult>(3);
         if (request.Targets.Contains(PlexTarget, StringComparer.OrdinalIgnoreCase))
         {
-            results.Add(await PushToPlexAsync(request, runWarnings, cancellationToken));
+            results.Add(request.IsTargetSatisfied(PlexTarget)
+                ? new ArtistTargetResult(PlexTarget, ArtistTargetOutcome.Unchanged, request.SatisfiedFieldsByTarget![PlexTarget])
+                : await PushToPlexAsync(request, runWarnings, cancellationToken));
+            if (request.ResultSink is not null) await request.ResultSink(results.ToList());
         }
 
         if (request.Targets.Contains(JellyfinTarget, StringComparer.OrdinalIgnoreCase))
         {
-            results.Add(await PushToJellyfinAsync(request, runWarnings, cancellationToken));
+            results.Add(request.IsTargetSatisfied(JellyfinTarget)
+                ? new ArtistTargetResult(JellyfinTarget, ArtistTargetOutcome.Unchanged, request.SatisfiedFieldsByTarget![JellyfinTarget])
+                : await PushToJellyfinAsync(request, runWarnings, cancellationToken));
+            if (request.ResultSink is not null) await request.ResultSink(results.ToList());
         }
 
         if (request.Targets.Contains(NavidromeTarget, StringComparer.OrdinalIgnoreCase))
         {
-            results.Add(await PushToNavidromeAsync(request, runWarnings, cancellationToken));
+            results.Add(request.IsTargetSatisfied(NavidromeTarget)
+                ? new ArtistTargetResult(NavidromeTarget, ArtistTargetOutcome.Unchanged, request.SatisfiedFieldsByTarget![NavidromeTarget])
+                : await PushToNavidromeAsync(request, runWarnings, cancellationToken));
+            if (request.ResultSink is not null) await request.ResultSink(results.ToList());
         }
 
         return new PushOutcome(results, runWarnings);
@@ -2467,7 +2897,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 navidrome.Username,
                 navidrome.Password,
                 request.ArtistName,
-                cancellationToken);
+                cancellationToken, requireSuccessfulResponse: true);
             if (artistIds.Count == 0)
             {
                 return ArtistTargetResult.NotFound(NavidromeTarget);
@@ -2480,7 +2910,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 foreach (var candidateId in artistIds.Take(8))
                 {
                     candidateAlbumTitles.Add(
-                        await _navidromeClient.GetArtistAlbumTitlesAsync(navidrome.Url, navidrome.Username, navidrome.Password, candidateId, cancellationToken));
+                        await _navidromeClient.GetArtistAlbumTitlesAsync(navidrome.Url, navidrome.Username, navidrome.Password, candidateId, cancellationToken, requireSuccessfulResponse: true));
                 }
 
                 var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, runWarnings, "Navidrome");
@@ -2497,17 +2927,24 @@ public sealed partial class ArtistMetadataUpdaterService
                 await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, NavidromeTarget, artistIds[0], cancellationToken);
             }
 
-            var avatarAvailable = HasLocalFile(request.AvatarPath);
+            // Navidrome stores one image per artist, preferring the avatar slot and falling back to
+            // the background; once a prior attempt confirmed any artwork slot here the slot is
+            // already filled and neither upload runs.
+            var artworkSatisfied = request.IsFieldSatisfied(NavidromeTarget, ArtistTargetFields.Avatar)
+                || request.IsFieldSatisfied(NavidromeTarget, ArtistTargetFields.Background);
+            var avatarAvailable = HasLocalFile(request.AvatarPath) && !artworkSatisfied;
+            var backgroundAvailable = HasLocalFile(request.BackgroundPath) && !artworkSatisfied;
             var navidromeImagePath = avatarAvailable
                 ? request.AvatarPath
-                : HasLocalFile(request.BackgroundPath)
+                : backgroundAvailable
                     ? request.BackgroundPath
                     : null;
-            var usedBackgroundSlot = !avatarAvailable && HasLocalFile(request.BackgroundPath);
+            var usedBackgroundSlot = !avatarAvailable && backgroundAvailable;
 
             if (HasLocalFile(navidromeImagePath))
             {
                 var uploadFailures = 0;
+                var uploadsAccepted = 0;
                 foreach (var artistId in artistIds)
                 {
                     var uploaded = await _navidromeClient.UpdateArtistImageFromFileAsync(
@@ -2517,16 +2954,19 @@ public sealed partial class ArtistMetadataUpdaterService
                         artistId,
                         navidromeImagePath!,
                         null,
-                        cancellationToken);
+                        cancellationToken, requireSuccessfulResponse: true);
                     if (uploaded)
                     {
-                        updatedFields.Add(usedBackgroundSlot ? ArtistTargetFields.Background : ArtistTargetFields.Avatar);
+                        uploadsAccepted++;
                     }
                     else
                     {
                         uploadFailures++;
                     }
                 }
+
+                if (uploadsAccepted == artistIds.Count)
+                    updatedFields.Add(usedBackgroundSlot ? ArtistTargetFields.Background : ArtistTargetFields.Avatar);
 
                 if (uploadFailures > 0)
                 {
@@ -2556,7 +2996,7 @@ public sealed partial class ArtistMetadataUpdaterService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Metadata updater Navidrome scan request failed for {Artist}", request.ArtistName);
-            errors.Add("Navidrome scan request failed.");
+            errors.Add($"Navidrome update failed: {ex.Message}");
         }
 
         return BuildTargetResult(NavidromeTarget, updatedFields, limitations, errors);
@@ -2566,6 +3006,18 @@ public sealed partial class ArtistMetadataUpdaterService
     /// Collapses a target's collected fields, limitations and errors into one typed result. A genuine
     /// error wins over a partial success, but a declared limitation never does.
     /// </summary>
+    private static void AddUnconfirmedWriteErrors(PushMetadataRequest request, string target,
+        IReadOnlyList<string> confirmed, List<string> errors)
+    {
+        var requested = new List<string>();
+        if (HasLocalFile(request.AvatarPath)) requested.Add(ArtistTargetFields.Avatar);
+        if (HasLocalFile(request.BackgroundPath)) requested.Add(ArtistTargetFields.Background);
+        if (!string.IsNullOrWhiteSpace(request.Biography)) requested.Add(ArtistTargetFields.Biography);
+        foreach (var field in requested.Where(field => !request.IsFieldSatisfied(target, field)
+            && !confirmed.Contains(field, StringComparer.OrdinalIgnoreCase)))
+            errors.Add($"{target} did not confirm the {field} write.");
+    }
+
     private static ArtistTargetResult BuildTargetResult(
         string target,
         List<string> updatedFields,
@@ -2600,7 +3052,7 @@ public sealed partial class ArtistMetadataUpdaterService
         var targetWarnings = new List<string>();
         try
         {
-            var locations = await _plexClient.FindArtistLocationsAsync(plexUrl, plexToken, request.ArtistName, cancellationToken);
+            var locations = await _plexClient.FindArtistLocationsAsync(plexUrl, plexToken, request.ArtistName, cancellationToken, requireSuccessfulResponse: true);
             if (locations.Count == 0)
             {
                 return ArtistTargetResult.NotFound(PlexTarget);
@@ -2613,7 +3065,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 foreach (var location in locations.Take(8))
                 {
                     candidateAlbumTitles.Add(
-                        await _plexClient.GetArtistAlbumTitlesAsync(plexUrl, plexToken, location.RatingKey, cancellationToken));
+                        await _plexClient.GetArtistAlbumTitlesAsync(plexUrl, plexToken, location.RatingKey, cancellationToken, requireSuccessfulResponse: true));
                 }
 
                 var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, runWarnings, "Plex");
@@ -2625,12 +3077,11 @@ public sealed partial class ArtistMetadataUpdaterService
                 return ArtistTargetResult.NotFound(PlexTarget);
             }
 
+            updates.ExpectedMatches = locations.Count;
             await UpsertPlexSourceIdAsync(request, locations[0], cancellationToken);
             foreach (var location in locations)
             {
-                var artworkUpdates = await UpdatePlexArtworkAsync(request, plexUrl, plexToken, location, cancellationToken);
-                updates.AvatarUpdated = artworkUpdates.AvatarUpdated || updates.AvatarUpdated;
-                updates.BackgroundUpdated = artworkUpdates.BackgroundUpdated || updates.BackgroundUpdated;
+                var artworkUpdates = await UpdatePlexArtworkAsync(request, plexUrl, plexToken, location, updates, cancellationToken);
                 await TryLockPlexArtworkAsync(plexUrl, plexToken, location, artworkUpdates, targetWarnings, cancellationToken);
                 await UpdatePlexBiographyAsync(request, plexUrl, plexToken, location, updates, cancellationToken);
             }
@@ -2638,9 +3089,10 @@ public sealed partial class ArtistMetadataUpdaterService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Metadata updater Plex push failed for {Artist}", request.ArtistName);
-            targetWarnings.Add("Plex update failed.");
+            targetWarnings.Add($"Plex update failed. {ex.Message}");
         }
 
+        AddUnconfirmedWriteErrors(request, PlexTarget, DescribePlexUpdatedFields(updates), targetWarnings);
         return BuildTargetResult(
             PlexTarget,
             DescribePlexUpdatedFields(updates),
@@ -2651,17 +3103,17 @@ public sealed partial class ArtistMetadataUpdaterService
     private static List<string> DescribePlexUpdatedFields(PushUpdateAccumulator updates)
     {
         var fields = new List<string>(3);
-        if (updates.AvatarUpdated)
+        if (updates.AvatarAccepted == updates.ExpectedMatches)
         {
             fields.Add(ArtistTargetFields.Avatar);
         }
 
-        if (updates.BackgroundUpdated)
+        if (updates.BackgroundAccepted == updates.ExpectedMatches)
         {
             fields.Add(ArtistTargetFields.Background);
         }
 
-        if (updates.BioUpdated)
+        if (updates.BioAccepted == updates.ExpectedMatches)
         {
             fields.Add(ArtistTargetFields.Biography);
         }
@@ -2701,30 +3153,35 @@ public sealed partial class ArtistMetadataUpdaterService
         string plexUrl,
         string plexToken,
         PlexArtistLocation location,
+        PushUpdateAccumulator updates,
         CancellationToken cancellationToken)
     {
         var avatarUpdated = false;
-        if (HasLocalFile(request.AvatarPath))
+        if (HasLocalFile(request.AvatarPath)
+            && !request.IsFieldSatisfied(PlexTarget, ArtistTargetFields.Avatar))
         {
             avatarUpdated = await _plexClient.UpdateArtistPosterFromFileAsync(
                 plexUrl,
                 plexToken,
                 location.RatingKey,
                 request.AvatarPath!,
-                cancellationToken);
+                cancellationToken, requireSuccessfulResponse: true);
         }
 
+        if (avatarUpdated) updates.AvatarAccepted++;
         var backgroundUpdated = false;
-        if (HasLocalFile(request.BackgroundPath))
+        if (HasLocalFile(request.BackgroundPath)
+            && !request.IsFieldSatisfied(PlexTarget, ArtistTargetFields.Background))
         {
             backgroundUpdated = await _plexClient.UpdateArtistArtFromFileAsync(
                 plexUrl,
                 plexToken,
                 location.RatingKey,
                 request.BackgroundPath!,
-                cancellationToken);
+                cancellationToken, requireSuccessfulResponse: true);
         }
 
+        if (backgroundUpdated) updates.BackgroundAccepted++;
         return new PlexArtworkUpdates(avatarUpdated, backgroundUpdated);
     }
 
@@ -2763,18 +3220,19 @@ public sealed partial class ArtistMetadataUpdaterService
         PushUpdateAccumulator updates,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Biography))
+        if (string.IsNullOrWhiteSpace(request.Biography)
+            || request.IsFieldSatisfied(PlexTarget, ArtistTargetFields.Biography))
         {
             return;
         }
 
-        updates.BioUpdated = await _plexClient.UpdateArtistBiographyAsync(
+        if (await _plexClient.UpdateArtistBiographyAsync(
             plexUrl,
             plexToken,
             location.SectionKey,
             location.RatingKey,
             request.Biography,
-            cancellationToken) || updates.BioUpdated;
+            cancellationToken, requireSuccessfulResponse: true)) updates.BioAccepted++;
     }
 
     private static bool HasLocalFile(string? path)
@@ -2795,7 +3253,7 @@ public sealed partial class ArtistMetadataUpdaterService
         var errors = new List<string>();
         try
         {
-            var artistIds = await _jellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, request.ArtistName, cancellationToken);
+            var artistIds = await _jellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, request.ArtistName, cancellationToken, requireSuccessfulResponse: true);
             if (artistIds.Count == 0)
             {
                 return ArtistTargetResult.NotFound(JellyfinTarget);
@@ -2808,7 +3266,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 foreach (var candidateId in artistIds.Take(8))
                 {
                     candidateAlbumTitles.Add(
-                        await _jellyfinClient.GetArtistAlbumTitlesAsync(jellyfin.Url, jellyfin.ApiKey, candidateId, cancellationToken));
+                        await _jellyfinClient.GetArtistAlbumTitlesAsync(jellyfin.Url, jellyfin.ApiKey, candidateId, cancellationToken, requireSuccessfulResponse: true));
                 }
 
                 var verifiedIndices = SelectServerCandidatesByAlbumOverlap(localAlbumTitles, candidateAlbumTitles, runWarnings, "Jellyfin");
@@ -2825,6 +3283,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, JellyfinTarget, artistIds[0], cancellationToken);
             }
 
+            updates.ExpectedMatches = artistIds.Count;
             foreach (var artistId in artistIds)
             {
                 await PushSingleJellyfinArtistMetadataAsync(
@@ -2839,9 +3298,10 @@ public sealed partial class ArtistMetadataUpdaterService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Metadata updater Jellyfin push failed for {Artist}", request.ArtistName);
-            errors.Add("Jellyfin update failed.");
+            errors.Add($"Jellyfin update failed: {ex.Message}");
         }
 
+        AddUnconfirmedWriteErrors(request, JellyfinTarget, DescribePlexUpdatedFields(updates), errors);
         return BuildTargetResult(
             JellyfinTarget,
             DescribePlexUpdatedFields(updates),
@@ -2857,34 +3317,37 @@ public sealed partial class ArtistMetadataUpdaterService
         PushUpdateAccumulator updates,
         CancellationToken cancellationToken)
     {
-        if (HasLocalFile(request.AvatarPath))
+        if (HasLocalFile(request.AvatarPath)
+            && !request.IsFieldSatisfied(JellyfinTarget, ArtistTargetFields.Avatar))
         {
-            updates.AvatarUpdated = await _jellyfinClient.UpdateArtistImageAsync(
+            if (await _jellyfinClient.UpdateArtistImageAsync(
                 jellyfinUrl,
                 jellyfinApiKey,
                 artistId,
                 request.AvatarPath!,
-                cancellationToken) || updates.AvatarUpdated;
+                cancellationToken, requireSuccessfulResponse: true)) updates.AvatarAccepted++;
         }
 
-        if (HasLocalFile(request.BackgroundPath))
+        if (HasLocalFile(request.BackgroundPath)
+            && !request.IsFieldSatisfied(JellyfinTarget, ArtistTargetFields.Background))
         {
-            updates.BackgroundUpdated = await _jellyfinClient.UpdateArtistBackdropAsync(
+            if (await _jellyfinClient.UpdateArtistBackdropAsync(
                 jellyfinUrl,
                 jellyfinApiKey,
                 artistId,
                 request.BackgroundPath!,
-                cancellationToken) || updates.BackgroundUpdated;
+                cancellationToken, requireSuccessfulResponse: true)) updates.BackgroundAccepted++;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Biography))
+        if (!string.IsNullOrWhiteSpace(request.Biography)
+            && !request.IsFieldSatisfied(JellyfinTarget, ArtistTargetFields.Biography))
         {
-            updates.BioUpdated = await _jellyfinClient.UpdateArtistOverviewAsync(
+            if (await _jellyfinClient.UpdateArtistOverviewAsync(
                 jellyfinUrl,
                 jellyfinApiKey,
                 artistId,
                 request.Biography,
-                cancellationToken) || updates.BioUpdated;
+                cancellationToken, requireSuccessfulResponse: true)) updates.BioAccepted++;
         }
     }
 
@@ -3453,6 +3916,44 @@ public sealed partial class ArtistMetadataUpdaterService
         }
     }
 
+    private static async Task<ArtistPushPayload> FreezePushPayloadAsync(PreparedVisuals prepared,
+        string? biography, CancellationToken cancellationToken)
+    {
+        async Task<(string? Path, string? Hash)> FreezeAsync(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return (null, null);
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            var hash = Convert.ToHexString(SHA256.HashData(bytes));
+            var root = Path.Join(Path.GetDirectoryName(path), "push-payloads");
+            Directory.CreateDirectory(root);
+            var frozen = Path.Join(root, $"{hash}{Path.GetExtension(path)}");
+            if (!File.Exists(frozen) || !string.Equals(ComputeFileHashOrNull(frozen), hash, StringComparison.OrdinalIgnoreCase))
+            {
+                var temporary = frozen + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
+                    File.Move(temporary, frozen, overwrite: true);
+                }
+                finally { TryDeleteBestEffort(temporary); }
+            }
+            return (frozen, hash);
+        }
+        var avatar = await FreezeAsync(prepared.AvatarPath);
+        var background = await FreezeAsync(prepared.BackgroundPath);
+        return new ArtistPushPayload(avatar.Path, avatar.Hash, background.Path, background.Hash, biography,
+            prepared.NextAvatarIndex, prepared.NextBackgroundIndex);
+    }
+
+    private static void ValidatePushPayload(ArtistPushPayload payload)
+    {
+        foreach (var (path, hash) in new[] { (payload.AvatarPath, payload.AvatarHash), (payload.BackgroundPath, payload.BackgroundHash) })
+        {
+            if (path is not null && (hash is null || !string.Equals(ComputeFileHashOrNull(path), hash, StringComparison.OrdinalIgnoreCase)))
+                throw new IOException("The retained target artwork is missing or changed; the original write cannot be confirmed.");
+        }
+    }
+
     private sealed record PreparedVisuals(string? AvatarPath, string? BackgroundPath, int NextAvatarIndex, int NextBackgroundIndex);
     private sealed record MissingArtistArtworkPlan(
         string DriverTarget,
@@ -3505,8 +4006,21 @@ public sealed partial class ArtistMetadataUpdaterService
         IReadOnlyList<string> Targets,
         string? AvatarPath,
         string? BackgroundPath,
-        string? Biography)
+        string? Biography,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? SatisfiedFieldsByTarget = null)
     {
+        public Func<IReadOnlyList<ArtistTargetResult>, Task>? ResultSink { get; init; }
+
+        public bool IsTargetSatisfied(string target)
+        {
+            var fields = new List<string>();
+            if (!string.IsNullOrWhiteSpace(AvatarPath)) fields.Add(ArtistTargetFields.Avatar);
+            if (!string.IsNullOrWhiteSpace(BackgroundPath) && (target != NavidromeTarget || fields.Count == 0))
+                fields.Add(ArtistTargetFields.Background);
+            if (!string.IsNullOrWhiteSpace(Biography) && target != NavidromeTarget) fields.Add(ArtistTargetFields.Biography);
+            return fields.Count > 0 && fields.All(field => IsFieldSatisfied(target, field));
+        }
+
         public PushMetadataRequest(
             long localArtistId,
             PlatformAuthState auth,
@@ -3518,6 +4032,16 @@ public sealed partial class ArtistMetadataUpdaterService
             : this(localArtistId, auth, artistName, NormalizeTargets(null, target), avatarPath, backgroundPath, biography)
         {
         }
+
+        /// <summary>
+        /// True when a prior attempt already confirmed this field on this target, so resending it
+        /// would rewrite verified content. The per-target map applies to the whole attempt, and a
+        /// field that is withheld here is still reported as satisfied in the outcome record.
+        /// </summary>
+        public bool IsFieldSatisfied(string target, string field)
+            => SatisfiedFieldsByTarget is not null
+               && SatisfiedFieldsByTarget.TryGetValue(target, out var fields)
+               && fields.Contains(field, StringComparer.OrdinalIgnoreCase);
     }
     /// <summary>
     /// Per-target write flags for one artist. Success and failure are derived from the typed
@@ -3526,9 +4050,10 @@ public sealed partial class ArtistMetadataUpdaterService
     /// </summary>
     private sealed class PushUpdateAccumulator
     {
-        public bool AvatarUpdated { get; set; }
-        public bool BackgroundUpdated { get; set; }
-        public bool BioUpdated { get; set; }
+        public int ExpectedMatches { get; set; } = 1;
+        public int AvatarAccepted { get; set; }
+        public int BackgroundAccepted { get; set; }
+        public int BioAccepted { get; set; }
     }
 }
 
@@ -3651,7 +4176,8 @@ public sealed record ArtistTargetResult(
     ArtistTargetOutcome Outcome,
     IReadOnlyList<string>? UpdatedFields = null,
     IReadOnlyList<string>? Limitations = null,
-    string? Error = null)
+    string? Error = null,
+    string? PendingCategory = null)
 {
     public IReadOnlyList<string> UpdatedFieldList => UpdatedFields ?? Array.Empty<string>();
     public IReadOnlyList<string> LimitationList => Limitations ?? Array.Empty<string>();

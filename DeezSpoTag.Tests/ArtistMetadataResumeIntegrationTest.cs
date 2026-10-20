@@ -397,6 +397,54 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
+    public async Task RepeatedAuditFailureRetainsUnknownEvidenceAfterAttemptLimit()
+    {
+        var coordinator = CreateCoordinator();
+        ArtistMetadataActiveRun? resume = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Assert.True(await EnqueueTestWork(coordinator, _ => Task.FromException<bool>(
+                new DeezSpoTag.Integrations.TargetLookupException("Plex HTTP 500", target: "plex",
+                    unresolvedArtists: new Dictionary<long, string> { [7] = "HTTP 500" })), resume, "target-update"));
+            await ActiveTask(coordinator);
+            resume = (await ReadState()).ActiveRun;
+            Assert.NotNull(resume);
+            Assert.Equal("HTTP 500", resume!.UnresolvedAuditArtists["plex"][7]);
+        }
+        Assert.True(resume!.Paused);
+        Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, resume.Disposition);
+        Assert.Null((await ReadState()).LastTargetUpdateUtc);
+    }
+
+    [Fact]
+    public async Task PartialAuditPersistsUnknownIdsAndPausesOnAuthenticationFailure()
+    {
+        var coordinator = CreateCoordinator();
+        var exception = new DeezSpoTag.Integrations.TargetLookupException("Plex HTTP 401",
+            target: "plex", unresolvedArtists: new Dictionary<long, string> { [7] = "HTTP 401" });
+        Assert.True(await EnqueueTestWork(coordinator, _ => Task.FromException<bool>(exception), operation: "target-update"));
+        await ActiveTask(coordinator);
+        var state = await ReadState();
+        Assert.True(state.ActiveRun!.Paused);
+        Assert.Equal("HTTP 401", state.ActiveRun.UnresolvedAuditArtists["plex"][7]);
+        Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, state.ActiveRun.Disposition);
+        Assert.Null(state.LastTargetUpdateUtc);
+    }
+
+    [Fact]
+    public async Task StrictLookupFailureUsesCoordinatorRecovery()
+    {
+        var coordinator = CreateCoordinator();
+        Assert.True(await EnqueueTestWork(coordinator,
+            _ => Task.FromException<bool>(new DeezSpoTag.Integrations.TargetLookupException("Preparation lookup failed")),
+            operation: "target-update"));
+        await ActiveTask(coordinator);
+        var state = await ReadState();
+        Assert.Equal(1, state.ActiveRun!.ConsecutiveFailures);
+        Assert.Null(state.LastTargetUpdateUtc);
+    }
+
+    [Fact]
     public async Task RepeatedRunFailuresPersistAndAbandonAfterThreeAttempts()
     {
         var coordinator = CreateCoordinator();
@@ -416,6 +464,256 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
             Assert.Null(state.LastCacheRefreshUtc);
         }
     }
+
+    [Fact]
+    public async Task RetainedRunWaitsForItsRetryWindowBeforeItIsRequeued()
+    {
+        var coordinator = CreateCoordinator();
+        var key = ArtistMetadataPendingWork.Key(7, "plex");
+        await WriteRetainedStateAsync(new ArtistMetadataActiveRun
+        {
+            Operation = "target-update", RunId = "retry-run", TargetArtistIds = new List<long> { 7 },
+            TargetAttempts = new Dictionary<string, int> { [key] = 1 },
+            NextAttemptUtc = DateTimeOffset.UtcNow.AddMinutes(20),
+            Disposition = ArtistMetadataRunDispositions.PendingRetry,
+            PendingNotice = "Update Servers retained 1 artist/target pair for another attempt."
+        });
+
+        var queued = 0;
+        await Invoke(coordinator, "RecoverRunAsync", CancellationToken.None,
+            (Func<ArtistMetadataActiveRun, CancellationToken, Task<bool>>)((_, _) => { queued++; return Task.FromResult(true); }));
+
+        // The retry window has not elapsed, so the run waits instead of hammering the failing target.
+        Assert.Equal(0, queued);
+        Assert.Equal("pending-retry", coordinator.GetStatus().RunState);
+        Assert.Equal(ArtistMetadataRunDispositions.PendingRetry, coordinator.GetStatus().RunDisposition);
+        Assert.NotNull(coordinator.GetStatus().RunNextAttemptUtc);
+        Assert.Contains("Retrying", coordinator.GetStatus().ResumeNotice!, StringComparison.Ordinal);
+
+        // Once the window has elapsed the same retained run is requeued.
+        var due = await ReadState();
+        due.ActiveRun!.NextAttemptUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+        await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(due));
+        await Invoke(coordinator, "RecoverRunAsync", CancellationToken.None,
+            (Func<ArtistMetadataActiveRun, CancellationToken, Task<bool>>)((_, _) => { queued++; return Task.FromResult(true); }));
+        Assert.Equal(1, queued);
+    }
+
+    [Fact]
+    public async Task ThreeUnresolvedAttemptsPauseTheRetainedRunAndResumeStartsANewWindow()
+    {
+        var coordinator = CreateCoordinator();
+        var pending = new[]
+        {
+            new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
+        };
+        var key = ArtistMetadataPendingWork.Key(7, "plex");
+        ArtistMetadataActiveRun? resume = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Assert.True(await EnqueueTargetSweep(coordinator, pending, resume));
+            await ActiveTask(coordinator);
+            var state = await ReadState();
+            Assert.Equal(attempt, state.ActiveRun!.TargetAttempts[key]);
+            Assert.Null(state.LastTargetUpdateUtc);
+            if (attempt < 3)
+            {
+                Assert.False(state.ActiveRun.Paused);
+                Assert.Equal(ArtistMetadataRunDispositions.PendingRetry, coordinator.GetStatus().RunDisposition);
+                Assert.NotNull(state.ActiveRun.NextAttemptUtc);
+                resume = state.ActiveRun;
+            }
+            else
+            {
+                // Exhaustion pauses the run and keeps it visible instead of abandoning the work.
+                Assert.True(state.ActiveRun.Paused);
+                Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, coordinator.GetStatus().RunDisposition);
+                Assert.Null(state.ActiveRun.NextAttemptUtc);
+                Assert.Contains("Resume", state.ActiveRun.PendingNotice!, StringComparison.Ordinal);
+
+                // The avatar the very first attempt confirmed is still recorded: retries add evidence,
+                // they never erase an established success.
+                var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
+                var record = Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, state.ActiveRun.RunId));
+                var plex = Assert.Single(record.TargetResults);
+                Assert.Equal("plex", plex.Target);
+                Assert.Equal(ArtistTargetOutcome.Updated, plex.Outcome);
+                Assert.Contains(ArtistTargetFields.Avatar, plex.UpdatedFieldList);
+                Assert.Contains(ArtistTargetFields.Background, record.PendingWorkList.Single().FieldList);
+            }
+        }
+
+        // Resume starts a new retry window; the recorded work is still the same scope.
+        var status = coordinator.GetStatus();
+        Assert.True(await coordinator.ResumeAsync("target-update", status.RunId!, CancellationToken.None,
+            async (saved, token) => await EnqueueTargetSweep(coordinator, pending, saved)));
+        await ActiveTask(coordinator);
+        var afterResume = await ReadState();
+        Assert.Equal(1, afterResume.ActiveRun!.TargetAttempts[key]);
+        Assert.False(afterResume.ActiveRun.Paused);
+    }
+
+    [Fact]
+    public async Task PauseRetainedRunStopsTheWindowAndResumeRestartsIt()
+    {
+        var coordinator = CreateCoordinator();
+        var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
+        await WriteRetainedStateAsync(new ArtistMetadataActiveRun
+        {
+            Operation = "target-update", RunId = "waiting-run", TargetArtistIds = new List<long> { 7 },
+            TargetAttempts = new Dictionary<string, int> { [ArtistMetadataPendingWork.Key(7, "plex")] = 1 },
+            NextAttemptUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            Disposition = ArtistMetadataRunDispositions.PendingRetry
+        });
+
+        Assert.True(await coordinator.PauseAsync("target-update", "waiting-run", CancellationToken.None));
+        var paused = await ReadState();
+        Assert.True(paused.ActiveRun!.Paused);
+        Assert.Null(paused.ActiveRun.NextAttemptUtc);
+        // Pausing keeps the evidence a retry would need; only the automatic window stops.
+        Assert.True(File.Exists(journalPath));
+
+        var status = coordinator.GetStatus();
+        Assert.Equal(ArtistMetadataRunDispositions.Paused, status.RunDisposition);
+
+        // Resuming starts a new retry window: the spent counters are cleared durably, while the
+        // journal evidence the retry suppresses against is untouched.
+        Assert.True(await coordinator.ResumeAsync("target-update", status.RunId!, CancellationToken.None,
+            (_, _) => Task.FromResult(true)));
+        var resumed = await ReadState();
+        Assert.Empty(resumed.ActiveRun!.TargetAttempts);
+        Assert.Null(resumed.ActiveRun.NextAttemptUtc);
+        Assert.Null(resumed.ActiveRun.PendingNotice);
+        Assert.Null(resumed.ActiveRun.Disposition);
+        Assert.True(File.Exists(journalPath));
+    }
+
+    [Fact]
+    public async Task CancellingARetainedRunDiscardsItsOutstandingWork()
+    {
+        var coordinator = CreateCoordinator();
+        await WriteRetainedStateAsync(new ArtistMetadataActiveRun
+        {
+            Operation = "target-update", RunId = "retained-run", TargetArtistIds = new List<long> { 7 },
+            TargetAttempts = new Dictionary<string, int> { [ArtistMetadataPendingWork.Key(7, "plex")] = 1 },
+            NextAttemptUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            Disposition = ArtistMetadataRunDispositions.PendingRetry
+        });
+        var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
+        await File.WriteAllTextAsync(journalPath, "{\"kind\":\"header\",\"runId\":\"retained-run\"}\n");
+
+        Assert.True(await coordinator.CancelAsync(CancellationToken.None));
+
+        var state = await ReadState();
+        Assert.Null(state.ActiveRun);
+        Assert.Null(state.LastTargetUpdateUtc);
+        Assert.False(File.Exists(journalPath));
+        Assert.Equal("idle", coordinator.GetStatus().RunState);
+    }
+
+    [Fact]
+    public async Task RunLevelFailuresDoNotConsumeTargetAttempts()
+    {
+        var coordinator = CreateCoordinator();
+        var pending = new[]
+        {
+            new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar }, ArtistPendingWorkCategories.Transient)
+        };
+        Assert.True(await EnqueueTargetSweep(coordinator, pending));
+        await ActiveTask(coordinator);
+        var retained = await ReadState();
+
+        // The retained run's next attempt is interrupted by a recoverable run-level failure, which
+        // is handled by the run loop rather than escaping it.
+        Assert.True(await EnqueueTestWork(coordinator, _ => Task.FromException<bool>(new IOException("Preparation failed")),
+            retained.ActiveRun, "target-update"));
+        await ActiveTask(coordinator);
+        var failed = await ReadState();
+        Assert.Equal(1, failed.ActiveRun!.ConsecutiveFailures);
+        Assert.Equal(1, failed.ActiveRun.TargetAttempts[ArtistMetadataPendingWork.Key(7, "plex")]);
+        // A run-level failure must not consume the retained target attempt or lose its evidence.
+        Assert.Equal(1, ArtistMetadataOutcomeJournal.Read(
+            Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson"),
+            failed.ActiveRun.RunId).Count);
+        Assert.Null(failed.LastTargetUpdateUtc);
+    }
+
+    [Fact]
+    public void UndocumentedVersionTwoStateReadsTolerantlyWithoutInventingOutcomes()
+    {
+        // The observed on-disk value has no defined v2 contract: only its known timestamp and
+        // null-active-run fields may be trusted, and no per-artist outcome may be manufactured.
+        var json = """
+        {
+          "version": 2,
+          "lastCacheRefreshUtc": "2026-09-04T23:59:25.3293777+00:00",
+          "lastTargetUpdateUtc": "2026-09-05T23:59:25.3293777+00:00",
+          "lastDeepRefreshUtc": "2026-09-01T23:59:25.3293777+00:00",
+          "activeRun": null
+        }
+        """;
+
+        var state = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(json, StateJsonOptions)
+            ?? throw new InvalidOperationException("State did not deserialize.");
+
+        Assert.Equal(2, state.Version);
+        Assert.Null(state.ActiveRun);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-04T23:59:25.3293777+00:00"), state.LastCacheRefreshUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-05T23:59:25.3293777+00:00"), state.LastTargetUpdateUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-01T23:59:25.3293777+00:00"), state.LastDeepRefreshUtc);
+        Assert.Empty(ArtistMetadataOutcomeJournal.Read(Path.Combine(_root, "outcomes.ndjson"), "anything"));
+    }
+
+    [Fact]
+    public void DefinedStateVersionsThreeAndFourStayExplicit()
+    {
+        Assert.Equal(3, ArtistMetadataAutomationStateVersions.VisitedIdsOnly);
+        Assert.Equal(4, ArtistMetadataAutomationStateVersions.Current);
+        // Version 3 is the visited-id-only shape and version 4 adds per-artist outcomes; the current
+        // version must not be rolled backwards to accommodate the undocumented v2 file.
+        Assert.True(ArtistMetadataAutomationStateVersions.Current > ArtistMetadataAutomationStateVersions.VisitedIdsOnly);
+    }
+
+    private async Task WriteRetainedStateAsync(ArtistMetadataActiveRun run)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+        await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = run }));
+        // The retained run's evidence lives in the journal, so a state file alone would not be a
+        // realistic restart fixture.
+        var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
+        await File.WriteAllTextAsync(journalPath, $"{{\"kind\":\"header\",\"runId\":\"{run.RunId}\"}}\n");
+    }
+
+    private static Task<bool> EnqueueTargetSweep(
+        ArtistMetadataAutomationCoordinator coordinator,
+        IReadOnlyList<ArtistTargetPendingWork> pendingWork,
+        ArtistMetadataActiveRun? resuming = null)
+        => (Task<bool>)typeof(ArtistMetadataAutomationCoordinator)
+            .GetMethod("EnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, new object?[]
+            {
+                "target-update",
+                (Func<CancellationToken, Task<bool>>)(_ =>
+                {
+                    typeof(ArtistMetadataAutomationCoordinator)
+                        .GetMethod("NoteArtistOutcome", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(coordinator, new object[]
+                        {
+                            new ArtistRunOutcomeRecord(
+                                7,
+                                ArtistRunOutcomes.Partial,
+                                Targets: new[] { new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[] { ArtistTargetFields.Avatar }) },
+                                PendingWork: pendingWork)
+                        });
+                    return Task.FromResult(true);
+                }),
+                CancellationToken.None,
+                resuming,
+                null,
+                new MetadataUpdaterRunRequest { Targets = new List<string> { "plex" }, Force = true },
+                false
+            })!;
 
     [Fact]
     public async Task CleanupReadFailureStillReleasesOperationGate()
