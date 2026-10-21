@@ -1289,25 +1289,9 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         ArtistMetadataActiveRun? resuming,
         CancellationToken cancellationToken)
     {
-        // Discography runs once, before any artist is recorded. A resumed run that
-        // already has completed artists is past that pass and continues at the updater.
+        // Provider collection belongs to Refresh Cache. Target updates publish the existing
+        // caches, including popular songs, without starting an unreported provider sweep.
         var resume = BuildResumeContext(resuming);
-        if (request.IncludeDiscography == true && resume is null)
-        {
-            await _cacheRefresh.RefreshAsync(
-                new ArtistMetadataCacheRefreshRequest(
-                    request.ArtistId,
-                    request.FolderId,
-                    request.Source,
-                    request.IncludePopularSongs ?? false,
-                    IncludeDiscography: true,
-                    ForceProviderRefresh: false,
-                    request.OcrTextArtBlockingEnabled),
-                progress: null,
-                resumedRun: null,
-                outcomeSink: null,
-                cancellationToken);
-        }
         lock (_statusLock)
         {
             _status = _status with { ActiveOperation = "target-update" };

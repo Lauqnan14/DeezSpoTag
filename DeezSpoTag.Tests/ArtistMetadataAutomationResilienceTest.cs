@@ -18,6 +18,58 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ArtistMetadataAutomationResilienceTest
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task TargetUpdateReachesTheTargetWorkerWithoutRefreshingProviders(bool includeDiscography, bool automatic)
+    {
+        var root = Path.Join(Path.GetTempPath(), "metadata-cache-separation-" + Guid.NewGuid().ToString("N"));
+        using var coordinator = CreateCoordinatorForSweeps(root);
+        var updater = typeof(ArtistMetadataAutomationCoordinator)
+            .GetField("_targetUpdate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(coordinator)!;
+        using var targetGate = new SemaphoreSlim(1, 1);
+        typeof(ArtistMetadataUpdaterService).GetField("_runGate", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(updater, targetGate);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        // The cache dependency is deliberately absent. Any hidden provider-refresh call fails;
+        // reaching the real target worker instead observes cancellation at its entry gate.
+        var method = typeof(ArtistMetadataAutomationCoordinator)
+            .GetMethod("RunTargetUpdateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task<bool>)method.Invoke(coordinator, new object?[]
+        {
+            new MetadataUpdaterRunRequest { IncludeDiscography = includeDiscography, IncludePopularSongs = true },
+            automatic, null, cancellation.Token
+        })!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.Equal(1, targetGate.CurrentCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MainRefreshCacheRetainsItsProviderAndDiscographyOptions(bool includeDiscography)
+    {
+        var preferences = new UserPreferencesDto
+        {
+            MetadataUpdaterSource = "apple", MetadataUpdaterFolderId = "7",
+            MetadataUpdaterIncludePopularSongs = true,
+            MetadataUpdaterIncludeDiscography = includeDiscography,
+            MetadataUpdaterOcrTextArtBlocking = false
+        };
+        var method = typeof(ArtistMetadataAutomationCoordinator)
+            .GetMethod("BuildCacheRequest", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var request = (ArtistMetadataCacheRefreshRequest)method.Invoke(null, new object[] { preferences })!;
+        Assert.Equal("apple", request.Source);
+        Assert.Equal(7L, request.FolderId);
+        Assert.True(request.IncludePopularSongs);
+        Assert.Equal(includeDiscography, request.IncludeDiscography);
+        Assert.False(request.ForceProviderRefresh);
+        Assert.False(request.OcrTextArtBlockingEnabled);
+    }
+
     [Fact]
     public void ArtistTrackingWritesStayOutsideThePerArtistLoopAndEnrichmentInsideItsDeadline()
     {
