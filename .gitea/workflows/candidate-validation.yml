@@ -24,7 +24,23 @@ jobs:
 
     steps:
       - name: Check out candidate source
-        uses: actions/checkout@v4
+        shell: bash
+        env:
+          CHECKOUT_URL: http://server:3000/${{ gitea.repository }}.git
+          CHECKOUT_SHA: ${{ gitea.sha }}
+          CHECKOUT_TOKEN: ${{ gitea.token }}
+        run: |
+          set -euo pipefail
+          test -n "$CHECKOUT_TOKEN"
+          git init .
+          git remote add origin "$CHECKOUT_URL"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraHeader
+          export GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 | tr -d '\n')"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 CHECKOUT_TOKEN
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
 
       - name: Verify runner prerequisites
         shell: bash
