@@ -330,6 +330,29 @@ public sealed class PublishingWorkflowGuardrailTest
     }
 
     [Fact]
+    public async Task PrePush_ExplicitFullModeChecksUnmappedChangesWithoutSkippingTests()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        var remoteSha = await fixture.GitAsync("rev-parse", "HEAD");
+        await fixture.CommitFileAsync("UnmappedSource.cs", "// requires the complete suite");
+        var result = await fixture.RunHookAsync(remoteSha, mode: "full");
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.StartsWith("build DeezSpoTag.Tests/", fixture.Calls[0]);
+        Assert.StartsWith("test DeezSpoTag.Tests/", fixture.Calls[1]);
+        Assert.DoesNotContain("--filter", fixture.Calls[1]);
+    }
+
+    [Fact]
+    public async Task PrePush_ExplicitFullModeStillBlocksTestFailures()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        var result = await fixture.RunHookAsync(fixture.BaseSha, mode: "full", testExit: "23");
+        Assert.Equal(23, result.ExitCode);
+        Assert.DoesNotContain("Guardrails passed.", result.Output);
+    }
+
+    [Fact]
     public async Task PrePush_RejectsDivergedDestinationBeforeBuilding()
     {
         using var fixture = await GuardrailFixture.CreateAsync();
@@ -444,8 +467,8 @@ public sealed class PublishingWorkflowGuardrailTest
         public Task<(int ExitCode, string Output)> RunAsync(string mode = "changed", string testExit = "0")
             => ExecuteAsync("bash", ["scripts/guardrails.sh"], new Dictionary<string, string> { ["GUARDRAILS_MODE"] = mode, ["TEST_EXIT"] = testExit });
 
-        public async Task<(int ExitCode, string Output)> RunHookAsync(string remoteSha)
-            => await ExecuteAsync("bash", [".githooks/pre-push", "origin", "unused"], [], $"refs/heads/main {await GitAsync("rev-parse", "HEAD")} refs/heads/main {remoteSha}\n");
+        public async Task<(int ExitCode, string Output)> RunHookAsync(string remoteSha, string mode = "changed", string testExit = "0")
+            => await ExecuteAsync("bash", [".githooks/pre-push", "origin", "unused"], new Dictionary<string, string> { ["GUARDRAILS_MODE"] = mode, ["TEST_EXIT"] = testExit }, $"refs/heads/main {await GitAsync("rev-parse", "HEAD")} refs/heads/main {remoteSha}\n");
 
         private async Task<(int ExitCode, string Output)> ExecuteAsync(string executable, string[] args, Dictionary<string, string> environment, string? input = null)
         {

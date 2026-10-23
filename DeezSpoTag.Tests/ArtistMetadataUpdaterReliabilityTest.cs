@@ -54,7 +54,7 @@ public sealed class ArtistMetadataUpdaterReliabilityTest
     [InlineData("plex")]
     [InlineData("jellyfin")]
     [InlineData("navidrome")]
-    public void FieldIsConfirmedOnlyAfterEveryMatchedServerArtistAcceptsIt(string target)
+    public async Task FieldIsConfirmedOnlyAfterEveryMatchedServerArtistAcceptsIt(string target)
     {
         var service = CreateService(request =>
         {
@@ -77,7 +77,7 @@ public sealed class ArtistMetadataUpdaterReliabilityTest
             if (path.EndsWith("/n2/image", StringComparison.Ordinal)) return new HttpResponseMessage(HttpStatusCode.Unauthorized);
             return BuildNavidromeHappyResponder()(request);
         });
-        var result = Assert.Single(ReadTargets(InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
+        var result = Assert.Single(ReadTargets(await InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
             new List<string> { target }, CreateTempFile(".png"), null, null))));
         Assert.Equal(ArtistTargetOutcome.Failed, result.Outcome);
         Assert.DoesNotContain(ArtistTargetFields.Avatar, result.UpdatedFieldList);
@@ -233,7 +233,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
     [InlineData("jellyfin", "biography", HttpStatusCode.InternalServerError)]
     [InlineData("navidrome", "avatar", HttpStatusCode.Unauthorized)]
     [InlineData("navidrome", "avatar", HttpStatusCode.InternalServerError)]
-    public void HttpWriteRejectionsCannotConfirmFields(string target, string field, HttpStatusCode status)
+    public async Task HttpWriteRejectionsCannotConfirmFields(string target, string field, HttpStatusCode status)
     {
         Func<HttpRequestMessage, HttpResponseMessage> Wrap(Func<HttpRequestMessage, HttpResponseMessage> happy)
             => request =>
@@ -249,7 +249,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
                 return isWrite && rejected ? new HttpResponseMessage(status) : happy(request);
             };
         var service = CreateService(Wrap(BuildPlexHappyResponder(null)), Wrap(BuildJellyfinHappyResponder()), Wrap(BuildNavidromeHappyResponder()));
-        var result = Assert.Single(ReadTargets(InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
+        var result = Assert.Single(ReadTargets(await InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
             new List<string> { target }, CreateTempFile(".png"), CreateTempFile(".png"), "biography"))));
         Assert.Equal(ArtistTargetOutcome.Failed, result.Outcome);
         Assert.Contains(((int)status).ToString(), result.Error, StringComparison.Ordinal);
@@ -262,12 +262,12 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.InternalServerError)]
-    public void RejectedJellyfinUploadRemainsPending(HttpStatusCode status)
+    public async Task RejectedJellyfinUploadRemainsPending(HttpStatusCode status)
     {
         var happy = BuildJellyfinHappyResponder();
         var service = CreateService(null, request => request.Method == HttpMethod.Post
             ? new HttpResponseMessage(status) : happy(request), null);
-        var pushed = InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
+        var pushed = await InvokePushMetadataAsync(service, CreateRequest(0, CreateAuth(),
             new List<string> { JellyfinTarget }, CreateTempFile(".png"), null, null));
         var result = Assert.Single(ReadTargets(pushed));
         Assert.Equal(ArtistTargetOutcome.Failed, result.Outcome);
@@ -303,7 +303,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             "A biography.");
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var targets = ReadTargets(pushed);
         Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<string>>(Prop(pushed, "Warnings")));
 
@@ -345,7 +345,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             "A biography.");
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var targets = ReadTargets(pushed);
         Assert.True(ReadPushedFlag(pushed, "Updated"));
 
@@ -383,7 +383,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             "A biography.");
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var plex = Assert.Single(ReadTargets(pushed));
         // A target that accepted some content is not *only* a failure: the accepted fields stay
         // recorded so the cumulative evidence is not erased by the rejected part of the push.
@@ -421,7 +421,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             "A biography.");
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var plex = Assert.Single(ReadTargets(pushed));
         // Every requested field was confirmed by the failed attempt (the rejection hit the artwork
         // lock after the writes succeeded), so nothing is pending for resend; the failure itself is
@@ -448,7 +448,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             biography: null);
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var plex = Assert.Single(ReadTargets(pushed));
         Assert.Equal(ArtistTargetOutcome.Updated, plex.Outcome);
         Assert.DoesNotContain(ArtistTargetFields.Biography, plex.UpdatedFieldList);
@@ -473,7 +473,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             CreateTempFile(".png"),
             "A biography.");
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var navidrome = Assert.Single(ReadTargets(pushed));
         Assert.Equal(ArtistTargetOutcome.Updated, navidrome.Outcome);
         // One image slot: the avatar is uploaded, the scan is a notification, and the biography is a
@@ -508,7 +508,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
             "A replacement biography.",
             satisfied);
 
-        var pushed = InvokePushMetadataAsync(service, request);
+        var pushed = await InvokePushMetadataAsync(service, request);
         var plex = Assert.Single(ReadTargets(pushed));
         // The withheld artwork was not uploaded again; only the biography write happened.
         Assert.Equal(0, counts.GetValueOrDefault("posters", 0));
@@ -1022,7 +1022,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
         return fieldsByTarget;
     }
 
-    private static object InvokePushMetadataAsync(ArtistMetadataUpdaterService service, object request)
+    private static async Task<object> InvokePushMetadataAsync(ArtistMetadataUpdaterService service, object request)
     {
         var method = typeof(ArtistMetadataUpdaterService).GetMethod(
             "PushArtistMetadataAsync",
@@ -1031,7 +1031,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);"; await insert.
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(
             service,
             [request, CancellationToken.None]));
-        task.Wait();
+        await task;
         var result = task.GetType().GetProperty("Result")!.GetValue(task);
         Assert.NotNull(result);
         return result;

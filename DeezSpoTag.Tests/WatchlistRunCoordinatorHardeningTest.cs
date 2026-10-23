@@ -333,7 +333,7 @@ public sealed class WatchlistRunCoordinatorHardeningTest : IAsyncLifetime
         {
             var record = typeof(WatchlistPerformanceMeasurement).GetMethod("RecordFirst");
             Assert.NotNull(record);
-            await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Task.Run(() => record!.Invoke(scope, new object[] { "first_prepared" }))));
+            Parallel.For(0, 20, _ => record!.Invoke(scope, new object[] { "first_prepared" }));
             var values = GetPrivateField<ConcurrentDictionary<string, long>>(scope, "_values");
             var first = values["first_prepared_ms"];
             await Task.Delay(10);

@@ -43,7 +43,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done
 
 if [ "$run_guardrails" = "1" ] && [ "${DEEZSPOTAG_SKIP_GUARDRAILS:-0}" != "1" ]; then
-  GUARDRAILS_MODE=changed GUARDRAILS_BASE_SHA="$destination_base" \
+  GUARDRAILS_MODE="${GUARDRAILS_MODE:-changed}" GUARDRAILS_BASE_SHA="$destination_base" \
     GUARDRAILS_HEAD_SHA="$push_head" GUARDRAILS_INCLUDE_WORKTREE=0 \
     "$repo_root/scripts/guardrails.sh"
 fi
