@@ -701,6 +701,23 @@ public static class DownloadSourceOrder
         return sources;
     }
 
+    /// <summary>
+    /// Checks a persisted step against the same selection used to build new plans.
+    /// Saved plans can outlive their configuration, so their presence is not permission to execute.
+    /// </summary>
+    public static bool IsSourceQualityEnabled(DeezSpoTagSettings settings, string engine, string? quality)
+    {
+        if (settings.DownloadEngineOrder?.Enabled != true)
+        {
+            return true;
+        }
+
+        var key = BuildProfileKey(engine, quality ?? string.Empty);
+        return ResolveConfiguredProfiles(settings).Any(profile =>
+            string.Equals(BuildProfileKey(profile.Source, profile.Quality ?? string.Empty), key,
+                StringComparison.OrdinalIgnoreCase));
+    }
+
     private static IReadOnlyList<DownloadProfile> ResolveConfiguredProfiles(DeezSpoTagSettings? settings)
     {
         if (settings?.DownloadEngineOrder?.Enabled != true)

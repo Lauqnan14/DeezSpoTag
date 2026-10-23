@@ -6,6 +6,8 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
@@ -108,6 +110,35 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
         var persisted = JsonSerializer.Deserialize<QobuzQueueItem>(saved.PayloadJson!);
         Assert.NotNull(persisted);
         Assert.Contains(persisted.FallbackHistory, attempt => attempt.StepId == "step-1" && attempt.Status == "skipped");
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task SavedPlanEnforcesSnapshotEngineAndQualityBeforeProviderLookup(bool engineEnabled, bool qualityEnabled)
+    {
+        var settings = new DeezSpoTagSettings { Service = "custom", FallbackBitrate = true };
+        settings.DownloadEngineOrder.Enabled = true;
+        var amazon = settings.DownloadEngineOrder.Engines.Find(engine => engine.Engine == "amazon")!;
+        amazon.Enabled = engineEnabled;
+        amazon.Qualities.Find(quality => quality.Quality == "OPUS")!.Enabled = qualityEnabled;
+        var payload = BuildPayload();
+        payload.FallbackPlan[1] = new("step-1", "amazon", "OPUS", [], "mapped_url");
+        payload.SourceSettingsSnapshot = QueueSourceSettingsSnapshot.Capture(settings);
+        await EnqueueAsync(payload);
+        var resolver = new ThrowingAmazonResolver(false);
+
+        Assert.True(await BuildCoordinator(resolver).TryAdvanceAsync(payload.Id, "qobuz", payload, CancellationToken.None));
+
+        var enabled = engineEnabled && qualityEnabled;
+        Assert.Equal(enabled ? 1 : 0, resolver.CallCount);
+        Assert.Equal("deezer", payload.Engine);
+        Assert.Equal(2, payload.AutoIndex);
+        Assert.Equal("step-2", payload.FallbackPlan[2].StepId);
+        if (!enabled)
+            Assert.Contains(payload.FallbackHistory, attempt => attempt.StepId == "step-1"
+                && attempt.Status == "skipped" && attempt.ErrorClass == "source_disabled");
     }
 
     [Fact]
@@ -352,11 +383,15 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
 
     private sealed class ThrowingAmazonResolver(bool httpFailure) : IAmazonFallbackTrackResolver
     {
+        public int CallCount { get; private set; }
         public Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
             string title, string artist, string? album, int? durationMs, string? isrc, CancellationToken cancellationToken)
-            => httpFailure
+        {
+            CallCount++;
+            return httpFailure
                 ? Task.FromException<AmazonFallbackTrackResolution?>(new HttpRequestException("Amazon unavailable"))
                 : Task.FromException<AmazonFallbackTrackResolution?>(new InvalidOperationException("Amazon Music metadata session could not be initialized."));
+        }
 
         public Task<AmazonFallbackTrackResolution?> ResolveAmazonAtmosFallbackTrackAsync(
             string title, string artist, string? album, int? durationMs, string? isrc, string? amazonId, CancellationToken cancellationToken)

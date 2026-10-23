@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Identity;
@@ -66,6 +67,51 @@ public sealed class DownloadIntentFallbackParityTest
             Assert.Equal("step-0", result.FallbackHistory![0].StepId);
             Assert.Contains("amazon", result.FallbackHistory[0].Detail);
             Assert.Contains("ULTRA_HD_FLAC", result.FallbackHistory[0].Detail);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task SavedPlan_EnforcesSnapshotEngineAndQualityBeforeResolution(bool engineEnabled, bool qualityEnabled)
+    {
+        var root = Path.Join(Path.GetTempPath(), "fallback-disabled-source-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var scope = new TestConfigRootScope(root);
+            var settings = new DeezSpoTagSettings { Service = "custom" };
+            settings.DownloadEngineOrder.Enabled = true;
+            var amazon = settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "amazon");
+            amazon.Enabled = engineEnabled;
+            amazon.Qualities.Single(quality => quality.Quality == "OPUS").Enabled = qualityEnabled;
+            var payload = new JsonObject
+            {
+                ["AutoIndex"] = 0,
+                ["SourceSettingsSnapshot"] = System.Text.Json.JsonSerializer.SerializeToNode(QueueSourceSettingsSnapshot.Capture(settings))
+            };
+            var resolver = new CountingFailingIdentityResolver();
+            var service = CreateService(resolver);
+            var plan = new List<FallbackPlanStep>
+            {
+                new("step-0", "amazon", "OPUS", [], "mapped_url"),
+                new("step-1", "apple", "ALAC", [], "mapped_url")
+            };
+
+            var result = await (Task<QueuePreResolutionPayload.ResolutionResult>)GetSavedPlanMethod().Invoke(service,
+                [CreateQueueItem(), CreateUnresolvedIntent(), payload, plan, CancellationToken.None])!;
+
+            Assert.Equal(engineEnabled && qualityEnabled ? 2 : 1, resolver.CallCount);
+            Assert.Equal(plan, result.FallbackPlan);
+            Assert.Equal(2, result.FallbackHistory!.Count);
+            if (!engineEnabled || !qualityEnabled)
+                Assert.Contains(result.FallbackHistory, attempt => attempt.StepId == "step-0"
+                    && attempt.Status == "skipped" && attempt.ErrorClass == "source_disabled");
         }
         finally
         {

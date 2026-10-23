@@ -787,6 +787,13 @@ public sealed class DownloadIntentService
                 continue;
             }
 
+            if (!DownloadSourceOrder.IsSourceQualityEnabled(settings, step.Engine, step.Quality))
+            {
+                lastSkipReason = "Engine or quality is disabled in the queue item's source settings.";
+                RecordResolutionFailure(step, lastSkipReason, "source_disabled");
+                continue;
+            }
+
             (string Engine, string? SourceUrl, string Message, string MappingSource) candidate;
             try
             {

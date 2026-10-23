@@ -284,6 +284,18 @@ public sealed class EngineFallbackCoordinator
                 continue;
             }
 
+            if (!DownloadSourceOrder.IsSourceQualityEnabled(settings, step.Source, step.Quality))
+            {
+                AddFallbackAttempt(
+                    stepContext.PayloadForSerialization,
+                    step,
+                    stepIndex,
+                    "skipped",
+                    "source_disabled",
+                    "Engine or quality is disabled in the queue item's source settings.");
+                continue;
+            }
+
             if (ShouldSkipStep(step, request.CurrentEngine, settings.FallbackBitrate))
             {
                 AddFallbackAttempt(
