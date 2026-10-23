@@ -1529,7 +1529,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                             var payload = await repository.GetOwnedPreparedWatchlistSnapshotAsync(request.Source, request.Identifier,
                                 request.Generation, _reconciliationLeaseOwner, pipelineToken);
                             try { preparedSnapshot = JsonSerializer.Deserialize<PreparedPlaylistSnapshot>(payload ?? "null"); }
-                            catch (JsonException) { }
+                            catch (JsonException ex)
+                            {
+                                _logger.LogDebug(ex,
+                                    "Prepared watchlist snapshot could not be read for {Source}/{Identifier}; returning it for preparation.",
+                                    request.Source, request.Identifier);
+                            }
                             if (preparedSnapshot is null)
                             {
                                 await repository.ReturnPreparedWatchlistRequestToFetchAsync(request, _reconciliationLeaseOwner,
