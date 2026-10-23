@@ -548,6 +548,71 @@ vm.createContext(context);vm.runInContext(source.slice(start,end),context);
     }
 
     [Fact]
+    public async Task NativeWeeklySelectionPublishesBeforeOptionalMetadataIsAvailable()
+    {
+        var id = LibraryRecommendationService.BuildWeeklyStationId(Folder.LibraryId!.Value, Folder.Id, LibraryRecommendationService.WeeklySimilarType);
+        var track = new RecommendationTrackDto("spotify-native", "Song", 180, "GB0000000001", 1,
+            new("artist", "Artist"), new("album", "Album", ""), "spotify");
+        var detail = new RecommendationDetailDto(new(id, "Weekly", "", LibraryRecommendationService.WeeklySimilarType, "Music", 1),
+            [track], DateTimeOffset.UtcNow, ReserveTracks: [track with { Id = "reserve-native" }], WeeklyTrackCount: 1);
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId.Value, Folder.Id, id, Monday);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        var method = typeof(LibraryRecommendationService).GetMethod("PublishWeeklyRecommendationResultAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        // No Spotify/Deezer network clients are wired. Saving the confirmed Spotify selection must not need them.
+        await (Task)method.Invoke(Service(), [key, detail, System.Threading.CancellationToken.None])!;
+        var state = await Repository.GetRecommendationGenerationStateAsync(Folder.LibraryId.Value, Folder.Id, id, Monday);
+        Assert.Equal("completed", state!.Status);
+        var result = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Equal("spotify-native", Assert.Single(result.Tracks).Id);
+        Assert.Equal("spotify", result.Tracks[0].Source);
+        Assert.Contains("weekly_mapping_incomplete", result.ReasonCodes!);
+        Assert.Contains("pending", result.Message!);
+    }
+
+    [Fact]
+    public async Task DeferredReserveMetadataDoesNotPreventWeeklyPublicationOrLoseSpotifyIdentity()
+    {
+        var id = LibraryRecommendationService.BuildWeeklyStationId(Folder.LibraryId!.Value, Folder.Id, LibraryRecommendationService.WeeklySimilarType);
+        var selected = new RecommendationTrackDto("selected-spotify", "Song", 180, "", 1,
+            new("artist", "Artist"), new("album", "Album", ""), "spotify", DeezerId: "123", MappingStatus: "matched");
+        var reserve = selected with { Id = "reserve-spotify", DeezerId = null, MappingStatus = null };
+        var detail = new RecommendationDetailDto(new(id, "Weekly", "", LibraryRecommendationService.WeeklySimilarType, "Music", 1),
+            [selected], DateTimeOffset.UtcNow, ReserveTracks: [reserve], WeeklyTrackCount: 1);
+        var method = typeof(LibraryRecommendationService).GetMethod("MapWeeklyTracksAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var mapped = await (Task<RecommendationDetailDto>)method.Invoke(Service(), [detail, System.Threading.CancellationToken.None])!;
+        var key = new RecommendationGenerationStateKey(Folder.LibraryId.Value, Folder.Id, id, Monday);
+        Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
+        Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-weekly-pool", id,
+            $"v1:{Monday:yyyyMMdd}", JsonSerializer.Serialize(mapped)));
+        var result = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Equal("selected-spotify", Assert.Single(result.Tracks).Id);
+        Assert.Equal("spotify", result.Tracks[0].Source);
+        Assert.Equal("ready", result.Status);
+        Assert.Contains("weekly_mapping_incomplete", result.ReasonCodes!);
+        Assert.Contains("reserve", result.Message!);
+        var saved = await Repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", id);
+        Assert.Contains("reserve-spotify", saved!.CandidatesJson);
+    }
+
+    [Fact]
+    public async Task WeeklyGenerationPreservesSafeStageAndFailureReasonForApiConsumers()
+    {
+        var id = LibraryRecommendationService.BuildWeeklyStationId(Folder.LibraryId!.Value, Folder.Id, LibraryRecommendationService.WeeklySimilarType);
+        var generate = typeof(LibraryRecommendationService).GetMethod("GenerateWeeklyRecommendationsAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        await (Task)generate.Invoke(Service(), [Folder.LibraryId.Value, Folder.Id, LibraryRecommendationService.WeeklySimilarType,
+            Monday, "scheduled", System.Threading.CancellationToken.None])!;
+        var state = await Repository.GetRecommendationGenerationStateAsync(Folder.LibraryId.Value, Folder.Id, id, Monday);
+        Assert.Equal("pathfinder_authentication_unavailable", state!.ReasonCode);
+        Assert.Contains("spotify_candidates", state.LastError!);
+        Assert.Contains("InvalidOperationException", state.LastError!);
+        var result = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        Assert.Contains("pathfinder_authentication_unavailable", result.ReasonCodes!);
+        Assert.Equal(result.ReasonCodes, result.Station.ReasonCodes);
+        Assert.Contains("authentication", result.Message!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task FailedWeeklyProviderGenerationPreservesPreviousSelection()
     {
         var id = await SeedWeekly(Monday.AddDays(-7));
@@ -562,6 +627,8 @@ vm.createContext(context);vm.runInContext(source.slice(start,end),context);
         Assert.Single(response!.Tracks);
         Assert.Equal("refresh_failed", response.Status);
         Assert.Contains("failed", response.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pathfinder_authentication_unavailable", response.ReasonCodes!);
+        Assert.Equal(response.ReasonCodes, response.Station.ReasonCodes);
     }
 
     internal sealed class EnvironmentFixture : IWebHostEnvironment

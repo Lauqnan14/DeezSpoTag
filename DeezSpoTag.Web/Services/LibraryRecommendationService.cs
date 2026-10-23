@@ -13,6 +13,7 @@ using DeezSpoTag.Services.Matching;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
@@ -62,7 +63,17 @@ public sealed class LibraryRecommendationService
         var reserves = detail.ReserveTracks;
         detail = detail with { Tracks = detail.Tracks.Concat(reserves ?? []).ToList() };
         if (_spotifyMetadata is not null)
-            detail = await HydrateWeeklyTrackIsrcsAsync(detail, tracks => _spotifyMetadata.HydrateTrackIsrcsAsync(tracks, cancellationToken));
+        {
+            try
+            {
+                detail = await HydrateWeeklyTrackIsrcsAsync(detail, tracks => _spotifyMetadata.HydrateTrackIsrcsAsync(tracks, cancellationToken));
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+                && (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex) || ex is OperationCanceledException))
+            {
+                _logger.LogWarning(ex, "Weekly ISRC hydration unavailable; retaining Spotify identities for later mapping.");
+            }
+        }
         var mapped = new List<RecommendationTrackDto>();
         foreach (var track in detail.Tracks)
         {
@@ -93,7 +104,7 @@ public sealed class LibraryRecommendationService
                 mapped.Add(track with { MappingStatus = "unavailable" });
             }
         }
-        return detail with { Tracks = mapped.Take(selectedCount).ToList(), ReserveTracks = mapped.Skip(selectedCount).ToList() };
+        return DescribeWeeklyDeferredMappings(detail with { Tracks = mapped.Take(selectedCount).ToList(), ReserveTracks = mapped.Skip(selectedCount).ToList() });
     }
 
     private async Task<RecommendationDetailDto> EnsureWeeklyMappingsAsync(
@@ -105,13 +116,32 @@ public sealed class LibraryRecommendationService
             var saved = await _repository.GetPlaylistTrackCandidateCacheAsync(WeeklyCacheSource, stationId, cancellationToken);
             if (saved?.SnapshotId != $"v1:{week:yyyyMMdd}") return detail;
             detail = JsonSerializer.Deserialize<RecommendationDetailDto>(saved.CandidatesJson) ?? detail;
-            if (detail.Tracks.Concat(detail.ReserveTracks ?? []).All(t => !string.IsNullOrWhiteSpace(t.DeezerId))) return detail;
-            var mapped = await MapWeeklyTracksAsync(detail, cancellationToken);
-            if (mapped.Tracks.Concat(mapped.ReserveTracks ?? []).Any(t => t.MappingStatus == "unavailable"))
-                throw new HttpRequestException("Weekly mapping refresh unavailable.");
-            return mapped;
+            if (detail.Tracks.Concat(detail.ReserveTracks ?? []).All(t => !string.IsNullOrWhiteSpace(t.DeezerId)))
+                return DescribeWeeklyDeferredMappings(detail);
+            return await MapWeeklyTracksAsync(detail, cancellationToken);
         }
         finally { _weeklyMappingGate.Release(); }
+    }
+
+    private static RecommendationDetailDto DescribeWeeklyDeferredMappings(RecommendationDetailDto detail)
+    {
+        static bool Pending(RecommendationTrackDto track) => string.IsNullOrWhiteSpace(track.DeezerId)
+            && track.MappingStatus is "unavailable" or "awaiting_isrc" or "pending";
+        var selected = detail.Tracks.Count(Pending);
+        var reserve = (detail.ReserveTracks ?? []).Count(Pending);
+        var reasons = (detail.ReasonCodes ?? []).Where(r => r != "weekly_mapping_incomplete").ToList();
+        var notices = new List<string>();
+        if (reasons.Contains("weekly_artist_lookup_incomplete"))
+            notices.Add("Some Spotify artist lookups failed; showing the confirmed recommendations.");
+        if (selected + reserve > 0)
+        {
+            reasons.Add("weekly_mapping_incomplete");
+            notices.Add($"Spotify recommendations are available; metadata mapping is pending for {selected} selected and {reserve} reserve songs.");
+        }
+        var message = notices.Count > 0 ? string.Join(" ", notices)
+            : detail.ReasonCodes?.Contains("weekly_mapping_incomplete") == true ? null : detail.Message;
+        return detail with { ReasonCodes = reasons, Message = message,
+            Station = detail.Station with { ReasonCodes = reasons, Message = message } };
     }
 
     private static DateOnly GetRecommendationWeekStart(DateOnly localDay)
@@ -211,6 +241,26 @@ public sealed class LibraryRecommendationService
         }
     }
 
+    private static async IAsyncEnumerable<SpotifyRelatedArtist> EnumerateWeeklyArtistsAsync(
+        IAsyncEnumerable<SpotifyRelatedArtist> seeds,
+        Func<SpotifyRelatedArtist, CancellationToken, Task<List<SpotifyRelatedArtist>>> expand,
+        Func<SpotifyRelatedArtist, bool> include,
+        Action<Exception> reportFailure,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var seed in seeds.WithCancellation(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var artists = await FetchWeeklyArtistMetadataAsync(() => expand(seed, cancellationToken), reportFailure, cancellationToken);
+            foreach (var artist in artists)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!string.IsNullOrWhiteSpace(artist.Id) && include(artist) && seen.Add(artist.Id)) yield return artist;
+            }
+        }
+    }
+
     private static IReadOnlyList<RecommendationTrackDto> SelectWeeklyArtistTracks(
         IReadOnlyList<RecommendationTrackDto> candidates, int limit, DateOnly weekStart, string sectionKey)
     {
@@ -300,12 +350,14 @@ public sealed class LibraryRecommendationService
             LibraryId: scope.LibraryId);
     }
 
-    private async Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames)> GetWeeklyLibraryArtistMembershipAsync(
+    private async Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames, int FailedLookups)> GetWeeklyLibraryArtistMembershipAsync(
         long libraryId, long folderId, bool discover, CancellationToken cancellationToken)
     {
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var displayNames = new Dictionary<string, string>(StringComparer.Ordinal);
+        var failedLookups = 0;
+        Exception? lastFailure = null;
         foreach (var artist in await _repository.GetRecommendationArtistSeedsForLibraryAsync(libraryId, folderId, cancellationToken))
         {
             names.Add(ArtistAliasService.NormalizeName(artist.Name));
@@ -320,15 +372,26 @@ public sealed class LibraryRecommendationService
             }
             if (discover && stored.Count == 0 && _spotifyArtists is not null)
             {
-                var resolved = await _spotifyArtists.EnsurePathfinderRecommendationArtistIdAsync(artist.ArtistId, artist.Name, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolved))
+                var resolved = await FetchWeeklyArtistMetadataAsync(async () =>
                 {
-                    ids.Add(resolved);
-                    displayNames.TryAdd(resolved, artist.Name);
+                    var id = await _spotifyArtists.EnsurePathfinderRecommendationArtistIdAsync(artist.ArtistId, artist.Name, cancellationToken);
+                    return string.IsNullOrWhiteSpace(id) ? new List<string>() : [id];
+                }, ex =>
+                {
+                    failedLookups++;
+                    lastFailure = ex;
+                    _logger.LogWarning(ex, "Weekly Spotify identity lookup failed for local artist {ArtistId}; continuing with other artists.", artist.ArtistId);
+                }, cancellationToken);
+                foreach (var id in resolved)
+                {
+                    ids.Add(id);
+                    displayNames.TryAdd(id, artist.Name);
                 }
             }
         }
-        return (ids, names, displayNames);
+        if (ids.Count == 0 && failedLookups > 0)
+            throw new InvalidOperationException("Weekly Spotify artist identities could not be resolved.", lastFailure);
+        return (ids, names, displayNames, failedLookups);
     }
 
     private async Task<bool> IsWeeklyTrackMissingAsync(
@@ -359,36 +422,40 @@ public sealed class LibraryRecommendationService
         if (_pathfinder is null || !await _pathfinder.HasPathfinderAuthContextAsync(cancellationToken))
             throw new InvalidOperationException("Spotify Pathfinder authentication is unavailable.");
         var membership = await GetWeeklyLibraryArtistMembershipAsync(libraryId, folderId, true, cancellationToken);
-        var failedArtists = 0;
+        var failedArtists = membership.FailedLookups;
+        Exception? lastArtistFailure = null;
         void ReportArtistFailure(Exception ex)
         {
             failedArtists++;
+            lastArtistFailure = ex;
             _logger.LogWarning(ex, "Skipping unavailable Pathfinder artist metadata for weekly section {SectionType} in library {LibraryId}.", sectionType, libraryId);
         }
-        var artists = new Dictionary<string, string>(StringComparer.Ordinal);
-        var orderedIds = membership.Ids.OrderBy(id => ComputeStableHash($"{weekStart}:{stationId}:{id}")).ToList();
-        if (sectionType == WeeklyMissingType)
+        async IAsyncEnumerable<SpotifyRelatedArtist> Seeds([EnumeratorCancellation] CancellationToken token)
         {
-            foreach (var id in orderedIds) artists[id] = membership.DisplayNames[id];
+            foreach (var id in membership.Ids.OrderBy(id => ComputeStableHash($"{weekStart}:{stationId}:{id}")).ToArray())
+            {
+                token.ThrowIfCancellationRequested();
+                yield return new(id, membership.DisplayNames[id], [], null);
+            }
+            await Task.CompletedTask;
         }
-        else
-        {
-            foreach (var seed in orderedIds)
-                foreach (var related in (await FetchWeeklyArtistMetadataAsync(
-                    () => _pathfinder.FetchArtistRelatedArtistsAsync(seed, cancellationToken, throwOnUnavailable: true), ReportArtistFailure, cancellationToken))
-                    .Where(candidate => !membership.Ids.Contains(candidate.Id) && !membership.Names.Contains(ArtistAliasService.NormalizeName(candidate.Name))))
-                    artists.TryAdd(related.Id, related.Name);
-        }
+        var similar = sectionType == WeeklySimilarType;
+        var artists = EnumerateWeeklyArtistsAsync(Seeds(cancellationToken),
+            (seed, token) => similar ? _pathfinder.FetchArtistRelatedArtistsAsync(seed.Id, token, throwOnUnavailable: true)
+                : Task.FromResult(new List<SpotifyRelatedArtist> { seed }),
+            artist => !similar || (!membership.Ids.Contains(artist.Id)
+                && !membership.Names.Contains(ArtistAliasService.NormalizeName(artist.Name))),
+            ReportArtistFailure, cancellationToken);
         var rejected = await _repository.GetRecommendationRejectedTrackIdsAsync(libraryId, folderId, stationId, cancellationToken);
         var candidates = new List<RecommendationTrackDto>();
-        foreach (var artist in artists.OrderBy(pair => ComputeStableHash($"{weekStart}:{stationId}:{pair.Key}")))
+        await foreach (var artist in artists.WithCancellation(cancellationToken))
         {
             var top = await FetchWeeklyArtistMetadataAsync(
-                () => _pathfinder.FetchArtistTopTracksAsync(artist.Key, cancellationToken, throwOnUnavailable: true), ReportArtistFailure, cancellationToken);
+                () => _pathfinder.FetchArtistTopTracksAsync(artist.Id, cancellationToken, throwOnUnavailable: true), ReportArtistFailure, cancellationToken);
             foreach (var dto in top.Select(track => new RecommendationTrackDto(track.Id, track.Name, (track.DurationMs ?? 0) / 1000,
-                    track.Isrc ?? string.Empty, 0, new(artist.Key, string.IsNullOrWhiteSpace(artist.Value) ? track.Artists ?? string.Empty : artist.Value),
+                    track.Isrc ?? string.Empty, 0, new(artist.Id, string.IsNullOrWhiteSpace(artist.Name) ? track.Artists ?? string.Empty : artist.Name),
                     new(track.AlbumId ?? string.Empty, track.Album ?? string.Empty, track.ImageUrl ?? string.Empty),
-                    SpotifySource, track.SourceUrl, artist.Key)))
+                    SpotifySource, track.SourceUrl, artist.Id)))
             {
                 var isRejected = rejected.Contains(WeeklyTrackKey(dto));
                 if (!isRejected && await IsWeeklyTrackMissingAsync(libraryId, folderId, dto, cancellationToken)) candidates.Add(dto);
@@ -396,23 +463,32 @@ public sealed class LibraryRecommendationService
             // Stop only after enough different artists have usable candidates, not after a fixed seed count.
             if (SelectWeeklyArtistTracks(candidates, targetCount, weekStart, stationId).Select(t => t.SeedArtistId).Distinct().Count() >= targetCount) break;
         }
-        var selected = SelectWeeklyArtistTracks(candidates, targetCount, weekStart, stationId);
-        if (failedArtists > 0)
-            throw new InvalidOperationException("Spotify Pathfinder requests failed; weekly generation will retry.");
-        var generated = DateTimeOffset.UtcNow;
-        var station = CreateWeeklyStation(scope, sectionType) with
+        return CreateWeeklyRecommendationResult(CreateWeeklyStation(scope, sectionType), candidates, targetCount,
+            weekStart, failedArtists, _timeProvider.GetUtcNow(), lastArtistFailure);
+    }
+
+    private static RecommendationDetailDto CreateWeeklyRecommendationResult(
+        RecommendationStationDto station, List<RecommendationTrackDto> candidates, int targetCount,
+        DateOnly weekStart, int failedArtists, DateTimeOffset generated, Exception? lastArtistFailure)
+    {
+        var selected = SelectWeeklyArtistTracks(candidates, targetCount, weekStart, station.Id);
+        if (selected.Count == 0 && failedArtists > 0)
+            throw new InvalidOperationException("Spotify artist requests failed before any eligible weekly songs could be collected.", lastArtistFailure);
+        var reasons = failedArtists > 0 ? new[] { "weekly_artist_lookup_incomplete" } : Array.Empty<string>();
+        var message = failedArtists > 0 ? "Some Spotify artist lookups failed; showing the confirmed recommendations."
+            : selected.Count == 0 ? "No eligible Pathfinder top tracks are missing from this library." : null;
+        var status = selected.Count == 0 ? "empty" : "ready";
+        station = station with
         {
             TrackCount = selected.Count, DistinctArtistCount = selected.Select(t => t.SeedArtistId).Distinct().Count(),
-            GeneratedAtUtc = generated, Status = selected.Count > 0 ? "ready" : "empty",
-            ImageUrl = selected.FirstOrDefault()?.Album.CoverMedium,
-            ReasonCodes = [],
-            Message = selected.Count == 0 ? "No eligible Pathfinder top tracks are missing from this library." : null
+            GeneratedAtUtc = generated, Status = status, ImageUrl = selected.FirstOrDefault()?.Album.CoverMedium,
+            ReasonCodes = reasons, Message = message
         };
         var selectedIds = selected.Select(t => t.Id).ToHashSet(StringComparer.Ordinal);
         var selectedIsrcs = selected.Where(t => !string.IsNullOrWhiteSpace(t.Isrc)).Select(t => t.Isrc).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var reserves = SelectWeeklyArtistTracks(candidates.Where(t => !selectedIds.Contains(t.Id)
-            && (string.IsNullOrWhiteSpace(t.Isrc) || !selectedIsrcs.Contains(t.Isrc))).ToList(), targetCount, weekStart, $"{stationId}:reserve");
-        return new(station, selected, generated, station.Status, station.ReasonCodes, station.Message, reserves, WeeklyTrackCount: targetCount);
+            && (string.IsNullOrWhiteSpace(t.Isrc) || !selectedIsrcs.Contains(t.Isrc))).ToList(), targetCount, weekStart, $"{station.Id}:reserve");
+        return new(station, selected, generated, status, reasons, message, reserves, WeeklyTrackCount: targetCount);
     }
 
     public Task RefreshWeeklyRecommendationsAsync(string reason, CancellationToken cancellationToken)
@@ -454,32 +530,52 @@ public sealed class LibraryRecommendationService
             if (!ShouldQueueWeeklyGeneration(prior, _timeProvider.GetUtcNow())) return;
             if (!await _repository.TryStartRecommendationGenerationAsync(key, reason,
                 _timeProvider.GetUtcNow() - RecommendationGenerationLease, cancellationToken)) return;
+            var stage = "spotify_candidates";
             try
             {
                 if (validSaved)
                 {
-                    await _repository.PublishRecommendationSnapshotAsync(key, WeeklyCacheSource, stationId, saved!.SnapshotId!, saved.CandidatesJson, cancellationToken);
+                    stage = "publication";
+                    if (!await _repository.PublishRecommendationSnapshotAsync(key, WeeklyCacheSource, stationId, saved!.SnapshotId!, saved.CandidatesJson, cancellationToken))
+                        throw new InvalidOperationException("Weekly publication claim was lost.");
                     return;
                 }
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 deadline.CancelAfter(TimeSpan.FromMinutes(20));
                 var detail = await BuildWeeklyRecommendationsAsync(scope, type, week, deadline.Token);
-                detail = await MapWeeklyTracksAsync(detail, deadline.Token);
-                if (detail.Tracks.Concat(detail.ReserveTracks ?? []).Any(t => t.MappingStatus == "unavailable"))
-                    throw new HttpRequestException("Weekly provider mapping unavailable.");
-                if (!await _repository.PublishRecommendationSnapshotAsync(key, WeeklyCacheSource, stationId, $"v1:{week:yyyyMMdd}",
-                    JsonSerializer.Serialize(detail), cancellationToken))
-                    throw new InvalidOperationException("Weekly publication claim was lost.");
+                deadline.Token.ThrowIfCancellationRequested();
+                stage = "publication";
+                await PublishWeeklyRecommendationResultAsync(key, detail, deadline.Token);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Weekly Pathfinder recommendations failed for {StationId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stationId));
                 await _repository.FailRecommendationGenerationAsync(key,
-                    _pathfinder is null ? "pathfinder_authentication_unavailable" : "pathfinder_failed",
-                    "Weekly generation unavailable; retry scheduled.", CancellationToken.None);
+                    ex.Message == "Spotify Pathfinder authentication is unavailable."
+                        ? "pathfinder_authentication_unavailable"
+                        : $"weekly_{stage}_{(ex is OperationCanceledException or TimeoutException ? "timeout" : "failed")}",
+                    $"Weekly stage={stage}; failure={ex.GetType().Name}; cause={ex.InnerException?.GetType().Name ?? "none"}; retry scheduled.", CancellationToken.None);
             }
         }
         finally { _weeklyGenerationGate.Release(); }
+    }
+
+    private async Task PublishWeeklyRecommendationResultAsync(
+        RecommendationGenerationStateKey key, RecommendationDetailDto detail, CancellationToken cancellationToken)
+    {
+        // A weekly track already has its native Spotify identity. Optional ISRC/Deezer enrichment belongs
+        // to the existing maintenance path and must not hold an otherwise valid weekly selection hostage.
+        static RecommendationTrackDto Pending(RecommendationTrackDto track)
+            => string.IsNullOrWhiteSpace(track.DeezerId) && string.IsNullOrWhiteSpace(track.MappingStatus)
+                ? track with { MappingStatus = "pending" } : track;
+        detail = DescribeWeeklyDeferredMappings(detail with
+        {
+            Tracks = detail.Tracks.Select(Pending).ToList(),
+            ReserveTracks = detail.ReserveTracks?.Select(Pending).ToList()
+        });
+        if (!await _repository.PublishRecommendationSnapshotAsync(key, WeeklyCacheSource, key.StationId,
+            $"v1:{key.TargetDay:yyyyMMdd}", JsonSerializer.Serialize(detail), cancellationToken))
+            throw new InvalidOperationException("Weekly publication claim was lost.");
     }
 
     /// <summary>
@@ -567,8 +663,6 @@ public sealed class LibraryRecommendationService
             var reserveTracks = (detail.ReserveTracks ?? []).Concat(refill.Tracks).Concat(refill.ReserveTracks ?? [])
                 .Where(t => !existingIds.Contains(t.Id)).GroupBy(t => t.Id, StringComparer.Ordinal).Select(g => g.First()).ToList();
             detail = await MapWeeklyTracksAsync(detail with { ReserveTracks = reserveTracks }, cancellationToken);
-            if (detail.Tracks.Concat(detail.ReserveTracks ?? []).Any(t => t.MappingStatus == "unavailable"))
-                throw new HttpRequestException("Weekly refill mapping unavailable.");
             visible = await SelectMissingAsync(detail);
         }
         var statusVisible = visible.Count > 0 ? "ready" : "empty";
@@ -597,11 +691,11 @@ public sealed class LibraryRecommendationService
             var failureReason = state?.ReasonCode;
             var failed = state?.Status == "failed";
             var status = failed ? "failed" : "waiting";
-            var message = failed ? failureReason == "pathfinder_authentication_unavailable"
-                ? "Spotify Pathfinder authentication is unavailable; retry scheduled." : "Weekly generation failed and will retry."
+            var message = failed ? DescribeWeeklyGenerationFailure(failureReason)
                 : "Waiting for Monday's daily charts and weekly generation.";
-            return new(ApplyWeeklyFolderIdentity(CreateWeeklyStation(scope, type), scope, type) with { Status = status, Message = message },
-                [], _timeProvider.GetUtcNow(), status, Message: message);
+            var reasons = failed && !string.IsNullOrWhiteSpace(failureReason) ? new[] { failureReason } : Array.Empty<string>();
+            return new(ApplyWeeklyFolderIdentity(CreateWeeklyStation(scope, type), scope, type) with { Status = status, Message = message, ReasonCodes = reasons },
+                [], _timeProvider.GetUtcNow(), status, reasons, message);
         }
         var rejected = await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, cancellationToken);
         var ignored = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, cancellationToken);
@@ -611,12 +705,26 @@ public sealed class LibraryRecommendationService
         var previous = saved!.SnapshotId != $"v1:{week:yyyyMMdd}";
         var statusSaved = previous ? (state?.Status == "failed" ? "refresh_failed" : "refreshing") : tracks.Count > 0 ? "ready" : "empty";
         var messageSaved = previous ? state?.Status == "failed"
-            ? "Weekly refresh failed; showing the previous saved selection while a retry is scheduled."
+            ? "Weekly refresh failed. " + DescribeWeeklyGenerationFailure(state?.ReasonCode) + " Showing the previous saved selection."
             : "Showing the previous saved selection while the new weekly selection is prepared." : detail.Message;
-        return detail with { Tracks = tracks, Status = statusSaved, Message = messageSaved,
-            Station = ApplyWeeklyFolderIdentity(detail.Station with { TrackCount = tracks.Count, Status = statusSaved, Message = messageSaved,
+        var savedReasons = previous && state?.Status == "failed" && !string.IsNullOrWhiteSpace(state.ReasonCode)
+            ? new[] { state.ReasonCode } : detail.ReasonCodes;
+        return detail with { Tracks = tracks, Status = statusSaved, Message = messageSaved, ReasonCodes = savedReasons,
+            Station = ApplyWeeklyFolderIdentity(detail.Station with { TrackCount = tracks.Count, Status = statusSaved, Message = messageSaved, ReasonCodes = savedReasons,
                 GeneratedAtUtc = detail.GeneratedAtUtc, DistinctArtistCount = tracks.Select(t => t.SeedArtistId ?? t.Artist.Id).Distinct().Count() }, scope, type) };
     }
+
+    private static string DescribeWeeklyGenerationFailure(string? reason)
+        => reason switch
+        {
+            "pathfinder_authentication_unavailable" => "Spotify Pathfinder authentication is unavailable; retry scheduled.",
+            "weekly_spotify_candidates_timeout" => "Spotify artist discovery or top-song lookup timed out; retry scheduled.",
+            "weekly_spotify_candidates_failed" => "Spotify artist discovery or top-song lookup failed; retry scheduled.",
+            "weekly_track_mapping_timeout" => "Weekly track metadata mapping timed out; retry scheduled.",
+            "weekly_track_mapping_failed" => "Weekly track metadata mapping failed; retry scheduled.",
+            "weekly_publication_failed" or "weekly_publication_timeout" => "Weekly recommendations could not be saved; retry scheduled.",
+            _ => "Weekly generation failed and will retry."
+        };
 
     private static RecommendationDetailDto CreateDisabledDailyResponse(RecommendationScope scope, DateTimeOffset now)
     {

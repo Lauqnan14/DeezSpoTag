@@ -70,10 +70,11 @@ public sealed class WeeklyPathfinderRecommendationTest
             var method = typeof(LibraryRecommendationService).GetMethod("GetWeeklyLibraryArtistMembershipAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
             foreach (var folder in new[] { fixture.Folder, other })
             {
-                var membership = await (Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames)>)method.Invoke(
+                var membership = await (Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames, int FailedLookups)>)method.Invoke(
                     fixture.Service(), [folder.LibraryId!.Value, folder.Id, false, CancellationToken.None])!;
                 Assert.Equal("artist-" + folder.Id, Assert.Single(membership.Ids));
                 Assert.Equal(folder.DisplayName + " artist", Assert.Single(membership.DisplayNames).Value);
+                Assert.Equal(0, membership.FailedLookups);
             }
         }
         finally { await fixture.DisposeAsync(); }
@@ -178,6 +179,95 @@ public sealed class WeeklyPathfinderRecommendationTest
         var tracks = await (Task<List<string>>)fetch.Invoke(null, [healthy, report, CancellationToken.None])!;
         Assert.Single(tracks);
         Assert.Equal(1, failures);
+    }
+
+    [Fact]
+    public async Task RelatedArtistDiscoveryStopsWhenConsumerHasEnoughAndSkipsFailuresAndLibraryAliases()
+    {
+        var method = typeof(LibraryRecommendationService).GetMethod("EnumerateWeeklyArtistsAsync", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        async IAsyncEnumerable<SpotifyRelatedArtist> Seeds()
+        {
+            foreach (var id in new[] { "broken", "healthy", "must-not-fetch" })
+            { yield return new(id, id, [], null); await Task.Yield(); }
+        }
+        var calls = new List<string>();
+        Func<SpotifyRelatedArtist, CancellationToken, Task<List<SpotifyRelatedArtist>>> fetch = (seed, _) =>
+        {
+            calls.Add(seed.Id);
+            return seed.Id == "broken" ? Task.FromException<List<SpotifyRelatedArtist>>(new TimeoutException())
+                : Task.FromResult(new List<SpotifyRelatedArtist>
+                { new("in-library", "Existing alias", [], null), new("similar", "New artist", [], null), new("similar", "Duplicate", [], null) });
+        };
+        var failures = 0;
+        Func<SpotifyRelatedArtist, bool> include = a => a.Id != "in-library";
+        var stream = (IAsyncEnumerable<SpotifyRelatedArtist>)method.Invoke(null,
+            [Seeds(), fetch, include, (Action<Exception>)(_ => failures++), CancellationToken.None])!;
+        await foreach (var artist in stream)
+        { Assert.Equal("similar", artist.Id); break; }
+        Assert.Equal(new[] { "broken", "healthy" }, calls);
+        Assert.Equal(1, failures);
+    }
+
+    [Theory]
+    [InlineData(0, 1, true)]
+    [InlineData(50, 1, false)]
+    [InlineData(0, 0, false)]
+    public void IsolatedArtistFailureDoesNotDiscardUsableSelection(int count, int failures, bool throws)
+    {
+        var method = typeof(LibraryRecommendationService).GetMethod("CreateWeeklyRecommendationResult", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var rows = Enumerable.Range(0, count).Select(n => new RecommendationTrackDto("track-" + n, "Song", 180, "", 0,
+            new("artist-" + n, "Artist " + n), new("album", "Album", ""), "spotify", SeedArtistId: "artist-" + n)).ToList();
+        var station = new RecommendationStationDto("weekly", "Weekly", "", "weekly", "Music", 50);
+        object?[] args = [station, rows, 50, new DateOnly(2026, 10, 19), failures, DateTimeOffset.UtcNow, null];
+        if (throws)
+            Assert.IsType<InvalidOperationException>(Assert.Throws<TargetInvocationException>(() => method.Invoke(null, args)).InnerException);
+        else
+        {
+            var result = (RecommendationDetailDto)method.Invoke(null, args)!;
+            Assert.Equal(count, result.Tracks.Count);
+            Assert.Equal(count == 0 ? "empty" : "ready", result.Status);
+            if (failures > 0) Assert.Contains("weekly_artist_lookup_incomplete", result.ReasonCodes!);
+        }
+    }
+
+    [Fact]
+    public void ReserveMappingFailureKeepsSpotifySelectionAndCanClearItsWarningAfterRecovery()
+    {
+        var method = typeof(LibraryRecommendationService).GetMethod("DescribeWeeklyDeferredMappings", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var track = new RecommendationTrackDto("spotify-id", "Song", 180, "", 1,
+            new("artist", "Artist"), new("album", "Album", ""), "spotify", DeezerId: "123", MappingStatus: "matched");
+        var pending = track with { Id = "reserve", DeezerId = null, MappingStatus = "unavailable" };
+        var original = new RecommendationDetailDto(new("weekly", "Weekly", "", "weekly", null, 1), [track], DateTimeOffset.UtcNow,
+            ReserveTracks: [pending], ReasonCodes: ["weekly_artist_lookup_incomplete"]);
+        var result = (RecommendationDetailDto)method.Invoke(null, [original])!;
+        Assert.Equal(track, Assert.Single(result.Tracks));
+        Assert.Equal(pending, Assert.Single(result.ReserveTracks!));
+        Assert.Equal("ready", result.Status);
+        Assert.Contains("weekly_mapping_incomplete", result.ReasonCodes!);
+        Assert.Contains("reserve", result.Message!);
+        var resolvedWithOldStatus = (RecommendationDetailDto)method.Invoke(null,
+            [result with { ReserveTracks = [pending with { DeezerId = "456" }] }])!;
+        Assert.DoesNotContain("weekly_mapping_incomplete", resolvedWithOldStatus.ReasonCodes!);
+        var recovered = (RecommendationDetailDto)method.Invoke(null,
+            [result with { ReserveTracks = [pending with { DeezerId = "456", MappingStatus = "matched" }] }])!;
+        Assert.DoesNotContain("weekly_mapping_incomplete", recovered.ReasonCodes!);
+        Assert.Contains("weekly_artist_lookup_incomplete", recovered.ReasonCodes!);
+    }
+
+    [Fact]
+    public async Task WeeklyArtistCancellationPropagatesWithoutBecomingAProviderFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var method = typeof(LibraryRecommendationService).GetMethod("FetchWeeklyArtistMetadataAsync", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(string));
+        var reported = false;
+        Func<Task<List<string>>> fetch = () => Task.FromCanceled<List<string>>(cancellation.Token);
+        var task = (Task<List<string>>)method.Invoke(null, [fetch, (Action<Exception>)(_ => reported = true), cancellation.Token])!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.False(reported);
     }
 
     [Fact]
