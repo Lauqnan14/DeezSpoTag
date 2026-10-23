@@ -536,9 +536,8 @@ public sealed class EngineFallbackCoordinator
         object payloadForSerialization,
         CancellationToken cancellationToken)
     {
-        // The item gets one short line: what happened, in the reader's terms. The step detail is the diagnosis,
-        // so it goes to the log here, where a reader with a log open can act on it, and stays on the payload's
-        // history for the same reason.
+        // Summarize the saved selection and its outcomes on the item; retain raw provider details in history
+        // and the activity log.
         var message = BuildExhaustionMessage(payloadForSerialization, request.CurrentEngine);
         SetResolutionError(payloadForSerialization, message);
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
@@ -559,22 +558,8 @@ public sealed class EngineFallbackCoordinator
     }
 
     /// <summary>
-    ///     The exhaustion message: one short line, naming what happened.
+    /// Summarizes the latest outcome for each attempted enabled quality in the item's saved selection.
     /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         This string is the item's error, rendered under its title in the queue list. It is read once, at a
-    ///         glance, in a column that has to fit - so it gets one line and nothing else. "Download failed after
-    ///         all enabled sources were tried" was half of that line and told the reader nothing they could not
-    ///         see from the status beside it; the raw step detail was the other problem, and produced lines like
-    ///         "Last attempt (download_failed): slskd did not create a transfer for ...\Hi Scores..." that named
-    ///         an internal service and a remote path and still said nothing about what to do.
-    ///     </para>
-    ///     <para>
-    ///         So the class vocabulary decides the line - it is what the walk itself concluded - and the detail
-    ///         goes to the log, where the diagnosis belongs.
-    ///     </para>
-    /// </remarks>
     private static string BuildExhaustionMessage(object payloadForSerialization, string? engine)
     {
         var source = SourceLabel(engine);
@@ -584,14 +569,49 @@ public sealed class EngineFallbackCoordinator
             return $"{source} did not deliver the file.";
         }
 
+        if (payload.FallbackPlan.Count > 0)
+        {
+            var settings = payload.SourceSettingsSnapshot?.ApplyTo(
+                new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings());
+            var enabledSteps = payload.FallbackPlan.Where(step => settings is null
+                || DownloadSourceOrder.IsSourceQualityEnabled(settings, step.Engine, step.Quality)).ToList();
+            var outcomes = enabledSteps.Select(step => new
+                {
+                    Step = step,
+                    Attempt = payload.FallbackHistory.LastOrDefault(attempt =>
+                        string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase))
+                })
+                .Where(outcome => outcome.Attempt is not null
+                    && outcome.Attempt.ErrorClass != "source_disabled"
+                    && (outcome.Attempt.Status == "failed" || outcome.Attempt.Status == "skipped"))
+                .GroupBy(outcome => (Source: SourceLabel(outcome.Step.Engine), Reason: DescribeLastAttempt(outcome.Attempt!)))
+                .Select(group =>
+                {
+                    var qualities = group.Select(outcome => outcome.Step.Quality)
+                        .Where(quality => !string.IsNullOrWhiteSpace(quality))
+                        .Distinct(StringComparer.OrdinalIgnoreCase);
+                    var qualityText = string.Join(", ", qualities);
+                    var label = string.IsNullOrWhiteSpace(qualityText)
+                        ? group.Key.Source
+                        : $"{group.Key.Source} ({qualityText})";
+                    return $"{label} {group.Key.Reason.TrimEnd('.')}";
+                }).ToList();
+            if (outcomes.Count > 0)
+            {
+                return string.Join("; ", outcomes) + ".";
+            }
+
+            return enabledSteps.Count == 0
+                ? "No enabled download steps remain in the saved selection."
+                : "No failure details were recorded for the enabled download selection.";
+        }
+
         var attempt = payload.FallbackHistory.LastOrDefault(static entry =>
                 entry.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired or FallbackFailureClassifier.AuthenticationRequired)
             ?? payload.FallbackHistory.LastOrDefault(static entry => entry.Status == "failed")
             ?? payload.FallbackHistory.LastOrDefault(static entry =>
                 entry.ErrorClass is not (FallbackFailureClassifier.Unresolved or FallbackFailureClassifier.IdentityUnresolved))
             ?? payload.FallbackHistory[^1];
-        var step = payload.FallbackPlan.FirstOrDefault(entry => entry.StepId == attempt.StepId);
-        if (step != null) source = SourceLabel(step.Engine);
         return $"{source} {DescribeLastAttempt(attempt)}";
     }
 
@@ -643,7 +663,7 @@ public sealed class EngineFallbackCoordinator
             FallbackFailureClassifier.ProviderRateLimited =>
                 "rate-limited the request.",
             FallbackFailureClassifier.ProviderVerificationRequired =>
-                "needs signing in again.",
+                "download API session needs verification.",
             FallbackFailureClassifier.Unresolved or FallbackFailureClassifier.Unavailable =>
                 "had no copy of this track.",
             FallbackFailureClassifier.NotConfigured =>

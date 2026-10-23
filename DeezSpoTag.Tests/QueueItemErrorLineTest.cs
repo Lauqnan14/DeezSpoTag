@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Soulseek;
 using Xunit;
 
@@ -82,7 +84,7 @@ public sealed class QueueItemErrorLineTest
     }
 
     [Fact]
-    public void ExhaustedFallback_ShowsActualBlockedProviderInsteadOfLastEmptyLookup()
+    public void ExhaustedFallback_ShowsEachAttemptedEngineAndQuality()
     {
         var payload = new SoulseekQueueItem
         {
@@ -91,7 +93,45 @@ public sealed class QueueItemErrorLineTest
         };
         var method = typeof(EngineFallbackCoordinator).GetMethod("BuildExhaustionMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
         var line = (string)method.Invoke(null, new object[] { payload, "tidal" })!;
-        Assert.Equal("Qobuz needs signing in again.", line);
+        Assert.Equal("Qobuz (6) download API session needs verification; Amazon Music (HD_FLAC) had no copy of this track.", line);
+    }
+
+    [Fact]
+    public void ExhaustedFallback_UsesSavedSelectionAndLatestOutcomeForEachQuality()
+    {
+        var settings = new DeezSpoTagSettings { Service = "custom" };
+        settings.DownloadEngineOrder.Enabled = true;
+        settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "amazon")
+            .Qualities.Single(quality => quality.Quality == "OPUS").Enabled = false;
+        settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "apple").Enabled = false;
+        var payload = new SoulseekQueueItem
+        {
+            SourceSettingsSnapshot = QueueSourceSettingsSnapshot.Capture(settings),
+            FallbackPlan =
+            [
+                new("step-0", "tidal", "HI_RES", [], "isrc"),
+                new("step-1", "tidal", "LOSSLESS", [], "isrc"),
+                new("step-2", "qobuz", "6", [], "isrc"),
+                new("step-3", "amazon", "OPUS", [], "isrc"),
+                new("step-4", "apple", "ALAC", [], "isrc")
+            ],
+            FallbackHistory =
+            [
+                new("step-0", "failed", "provider_verification_required", "old failure"),
+                new("step-0", "failed", "provider_rate_limited", "latest failure"),
+                new("step-1", "failed", "provider_rate_limited", "429"),
+                new("step-2", "skipped", "quality_below_requested", "wrong quality"),
+                new("step-3", "failed", "provider_verification_required", "disabled quality"),
+                new("step-4", "failed", "provider_verification_required", "disabled engine")
+            ]
+        };
+        var method = typeof(EngineFallbackCoordinator).GetMethod("BuildExhaustionMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var line = (string)method.Invoke(null, [payload, "amazon"])!;
+
+        Assert.Equal("Tidal (HI_RES, LOSSLESS) rate-limited the request; Qobuz (6) cannot offer that quality.", line);
+        Assert.DoesNotContain("OPUS", line);
+        Assert.DoesNotContain("Apple", line);
+        Assert.DoesNotContain("verification", line);
     }
 
     [Fact]

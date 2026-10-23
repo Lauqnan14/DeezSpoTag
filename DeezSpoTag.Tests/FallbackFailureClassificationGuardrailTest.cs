@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
+using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Fallback;
 using Xunit;
 
@@ -121,6 +123,23 @@ public sealed class FallbackFailureClassificationGuardrailTest
         Assert.True(
             gateUses >= 3,
             $"The manifest must be re-checked wherever audio is fetched, not only where it is declared. Found {gateUses} mentions.");
+    }
+
+    [Theory]
+    [InlineData("tidal", "provider_verification_required", "Tidal (LOSSLESS) download API session needs verification.")]
+    [InlineData("qobuz", "provider_verification_required", "Qobuz (LOSSLESS) download API session needs verification.")]
+    [InlineData("amazon", "provider_verification_required", "Amazon Music (LOSSLESS) download API session needs verification.")]
+    [InlineData("tidal", "authentication_required", "Tidal (LOSSLESS) needs signing in.")]
+    public void FallbackSummaryDistinguishesApiVerificationFromAccountSignIn(string engine, string errorClass, string expected)
+    {
+        var payload = new TidalQueueItem
+        {
+            FallbackPlan = [new("step-0", engine, "LOSSLESS", [], "mapped_url")],
+            FallbackHistory = [new("step-0", "failed", errorClass, "Provider session unavailable")]
+        };
+        var method = typeof(EngineFallbackCoordinator).GetMethod("BuildExhaustionMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        Assert.Equal(expected, method.Invoke(null, [payload, engine]));
     }
 
     [Fact]
