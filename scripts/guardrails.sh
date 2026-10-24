@@ -126,8 +126,14 @@ if [[ "$MODE" == "changed" ]]; then
         fi
         continue ;;
       *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
-      scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|Dockerfile*)
+      scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|.gitea/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      DeezSpoTag.Integrations/TargetPlaylistLookup.cs)
+        add_tests_matching '^(PlaylistSyncEngine|PlaylistSyncLinkService|PlaylistSyncSchedule|PlaylistSyncReadiness|ArtistMetadataUpdaterReliability)Test$' ;;
+      DeezSpoTag.Web/Services/PlaylistCandidateContract.cs)
+        add_tests_matching '^(WatchlistDurabilityRepository|WatchlistIdentityResolverGuardrail|WatchlistRunCoordinatorHardening|WatchlistSettingsBehavior|MonitoredPlaylistPresentationGuardrail)Test$' ;;
+      DeezSpoTag.Services/Download/DownloadSourceOrder.cs)
+        add_tests_matching '^(DownloadSourceOrderFallbackParity|DownloadIntentFallbackParity|DownloadQualityOrderMonotonicity|EngineFallbackCoordinator|AtmosPipelineGuardrail|SoundCloudIntentAndFallback)Test$' ;;
       scripts/setup-youtube-playback-runtime.sh|DeezSpoTag.Web/DeezSpoTag.Web.csproj)
         add_tests_matching '^(YouTubePlaybackTest|PublishingWorkflowGuardrailTest)$' ;;
       DeezSpoTag.Web/Views/Search/Index.cshtml)
