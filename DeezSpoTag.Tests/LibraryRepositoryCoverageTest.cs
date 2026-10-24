@@ -407,10 +407,11 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
         Assert.Equal("Artist Two", Assert.Single(await _repository.GetRecommendationArtistSeedsForLibraryAsync(first.LibraryId, second.Id)).Name);
         Assert.Empty(await _repository.GetRecommendationArtistSeedsForLibraryAsync(first.LibraryId + 1, second.Id));
         var method = typeof(LibraryRecommendationService).GetMethod("GetWeeklyLibraryArtistMembershipAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        var membership = await (Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames)>)method.Invoke(
+        var membership = await (Task<(HashSet<string> Ids, HashSet<string> Names, Dictionary<string, string> DisplayNames, int FailedLookups)>)method.Invoke(
             CreateWeeklyService(), [first.LibraryId, second.Id, false, System.Threading.CancellationToken.None])!;
         Assert.Contains(ArtistAliasService.NormalizeName("Artist Two"), membership.Names);
         Assert.DoesNotContain(ArtistAliasService.NormalizeName("Artist One"), membership.Names);
+        Assert.Equal(0, membership.FailedLookups);
     }
 
     [Fact]
