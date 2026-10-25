@@ -114,7 +114,9 @@ public sealed partial class ArtistArtworkCatalogService
             .Where(item => !item.UserBlocked
                 && (!excludeTextArt || !item.TextArtBlocked)
                 && !string.IsNullOrWhiteSpace(item.LocalPath)
-                && File.Exists(item.LocalPath))
+                && File.Exists(item.LocalPath)
+                && (string.IsNullOrWhiteSpace(item.OriginalUrl) || DeezerImageUrlValidator.IsAllowedDeezerImageUrl(item.OriginalUrl))
+                && !DeezerImageUrlValidator.IsArtistPlaceholderFile(item.LocalPath))
             .GroupBy(item => item.ContentHash ?? item.Identity, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .Select(item => new ArtistArtworkVisual(
@@ -196,7 +198,8 @@ public sealed partial class ArtistArtworkCatalogService
                     || blockedKeys.Contains(fileName)
                     || blockedKeys.Contains(Path.GetFileName(file))
                     || blockedKeys.Contains(fullPath)
-                    || BlockedByContentHash(fullPath, blockedKeys))
+                    || BlockedByContentHash(fullPath, blockedKeys)
+                    || DeezerImageUrlValidator.IsArtistPlaceholderFile(fullPath))
                 {
                     continue;
                 }
@@ -640,6 +643,7 @@ public sealed partial class ArtistArtworkCatalogService
 
     private async Task<string?> CacheCandidateAsync(long artistId, RemoteCandidate candidate, CancellationToken token)
     {
+        if (!DeezerImageUrlValidator.IsAllowedDeezerImageUrl(candidate.Url)) return null;
         if (!Uri.TryCreate(candidate.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) return null;
         var directory = Path.Join(_cacheRoot, candidate.Provider, "artists", artistId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Directory.CreateDirectory(directory);
@@ -651,6 +655,7 @@ public sealed partial class ArtistArtworkCatalogService
         {
             using var response = await _httpClients.CreateClient().GetAsync(uri, token);
             if (!response.IsSuccessStatusCode
+                || response.RequestMessage?.RequestUri is { } finalUri && !DeezerImageUrlValidator.IsAllowedDeezerImageUrl(finalUri.AbsoluteUri)
                 || response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true)
             {
                 return null;
@@ -658,7 +663,7 @@ public sealed partial class ArtistArtworkCatalogService
             await using (var input = await response.Content.ReadAsStreamAsync(token))
             await using (var output = File.Create(temp)) { await input.CopyToAsync(output, token); }
             using var image = await Image.LoadAsync(temp, token);
-            if (image.Width < 128 || image.Height < 128) return null;
+            if (image.Width < 128 || image.Height < 128 || DeezerImageUrlValidator.IsArtistPlaceholder(image)) return null;
             var extension = ImageFileExtensionResolver.ResolveStandardImageExtension(response.Content.Headers.ContentType.MediaType, uri.AbsoluteUri);
             var final = Path.Join(directory, $"{urlHash}{extension}");
             File.Move(temp, final, true);
@@ -677,7 +682,7 @@ public sealed partial class ArtistArtworkCatalogService
         try
         {
             using var image = await Image.LoadAsync(path, token);
-            if (image.Width < 128 || image.Height < 128) return null;
+            if (image.Width < 128 || image.Height < 128 || DeezerImageUrlValidator.IsArtistPlaceholder(image)) return null;
             await using var hashStream = File.OpenRead(path);
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(hashStream, token)).ToLowerInvariant();
             var textArtBlocked = ArtistArtworkTextInspector.LikelyContainsOverlayText(image);

@@ -75,6 +75,7 @@ public class ImageDownloader
         bool preferMaxQuality = false,
         CancellationToken cancellationToken = default)
     {
+        if (!DeezerImageUrlValidator.IsAllowedDeezerImageUrl(url)) return null;
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
@@ -136,6 +137,7 @@ public class ImageDownloader
             cts.CancelAfter(TimeSpan.FromMilliseconds(DOWNLOAD_TIMEOUT_MS));
 
             var downloadUrl = await ResolveDownloadUrlAsync(httpClient, url, cts.Token);
+            if (!DeezerImageUrlValidator.IsAllowedDeezerImageUrl(downloadUrl)) return DownloadAttemptResult.Fail;
             await DownloadImagePayloadAsync(httpClient, downloadUrl, path, cts.Token);
 
             if (_logger.IsEnabled(LogLevel.Information))
@@ -254,6 +256,9 @@ public class ImageDownloader
             return null;
         }
 
+        // A known placeholder is not valid existing artwork, even when real artwork is protected.
+        if (DeezerImageUrlValidator.IsArtistPlaceholderFile(path)) return null;
+
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
@@ -308,6 +313,9 @@ public class ImageDownloader
 
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
+        if (response.RequestMessage?.RequestUri is { } finalUri
+            && !DeezerImageUrlValidator.IsAllowedDeezerImageUrl(finalUri.AbsoluteUri))
+            throw new InvalidDataException("Deezer placeholder artwork was rejected.");
 
         using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write);

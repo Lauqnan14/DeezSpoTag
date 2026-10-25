@@ -10,6 +10,7 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
@@ -2636,7 +2637,7 @@ public sealed partial class ArtistMetadataUpdaterService
         if (!string.IsNullOrWhiteSpace(candidate.LocalPath))
         {
             var fullPath = Path.GetFullPath(candidate.LocalPath);
-            if (!File.Exists(fullPath))
+            if (!File.Exists(fullPath) || DeezerImageUrlValidator.IsArtistPlaceholderFile(fullPath))
             {
                 return null;
             }
@@ -3433,6 +3434,7 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             await using var stream = File.OpenRead(imagePath);
             using var image = await Image.LoadAsync<Rgba32>(stream, cancellationToken);
+            if (DeezerImageUrlValidator.IsArtistPlaceholder(image)) return null;
             return ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -3460,6 +3462,7 @@ public sealed partial class ArtistMetadataUpdaterService
 
         var path = Directory.GetFiles(managedRoot, $"{slot}.*", SearchOption.TopDirectoryOnly)
             .Where(File.Exists)
+            .Where(item => !DeezerImageUrlValidator.IsArtistPlaceholderFile(item))
             .OrderByDescending(item => new FileInfo(item).LastWriteTimeUtc)
             .FirstOrDefault();
         if (string.IsNullOrWhiteSpace(path)
@@ -3996,6 +3999,8 @@ public sealed partial class ArtistMetadataUpdaterService
     {
         foreach (var (path, hash) in new[] { (payload.AvatarPath, payload.AvatarHash), (payload.BackgroundPath, payload.BackgroundHash) })
         {
+            if (path is not null && DeezerImageUrlValidator.IsArtistPlaceholderFile(path))
+                throw new IOException("The retained artist artwork is a Deezer placeholder and cannot be pushed.");
             if (path is not null && (hash is null || !string.Equals(ComputeFileHashOrNull(path), hash, StringComparison.OrdinalIgnoreCase)))
                 throw new IOException("The retained target artwork is missing or changed; the original write cannot be confirmed.");
         }

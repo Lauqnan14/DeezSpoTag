@@ -713,6 +713,8 @@ public static class DownloadEngineArtworkHelper
         SaveArtistArtworkRequest request,
         CancellationToken cancellationToken)
     {
+        if (!DeezerImageUrlValidator.IsAllowedDeezerImageUrl(request.ArtistImageUrl))
+            return BuildArtistArtworkSaveResult(Array.Empty<ValidatedArtistArtwork>());
         Directory.CreateDirectory(request.ArtistPath);
         var savedArtwork = new List<ValidatedArtistArtwork>();
         var artistName = request.PathProcessor.GenerateArtistName(
@@ -851,6 +853,13 @@ public static class DownloadEngineArtworkHelper
         try
         {
             using var image = await Image.LoadAsync(downloadedPath, cancellationToken);
+            if (DeezerImageUrlValidator.IsArtistPlaceholder(image))
+            {
+                logger.LogInformation("Rejected Deezer placeholder artist artwork {Path}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(downloadedPath));
+                if (!protectedExisting) File.Delete(downloadedPath);
+                return null;
+            }
             if (IsSquareArtistArtworkDimensions(image.Width, image.Height))
             {
                 if (protectedExisting && logger.IsEnabled(LogLevel.Information))
@@ -886,7 +895,8 @@ public static class DownloadEngineArtworkHelper
     }
 
     private static bool IsProtectedExistingArtwork(string path, string? overwrite)
-        => File.Exists(path) && overwrite is not ("y" or "t");
+        => File.Exists(path) && overwrite is not ("y" or "t")
+            && !DeezerImageUrlValidator.IsArtistPlaceholderFile(path);
 
     public static bool IsSquareArtistArtworkDimensions(int width, int height)
     {
@@ -922,6 +932,7 @@ public static class DownloadEngineArtworkHelper
         {
             using var image = await Image.LoadAsync(path, cancellationToken);
             return IsSquareArtistArtworkDimensions(image.Width, image.Height)
+                && !DeezerImageUrlValidator.IsArtistPlaceholder(image)
                 ? (image.Width, image.Height)
                 : null;
         }
