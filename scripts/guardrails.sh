@@ -161,6 +161,8 @@ if [[ "$MODE" == "changed" ]]; then
       DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)
         add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
+      DeezSpoTag.Web/Services/ArtistArtworkCatalogService.cs|DeezSpoTag.Web/Services/ArtistArtworkTextInspector.cs)
+        add_tests_matching '^(ArtistMetadataUpdaterServicePlexPush|ArtistMetadataTargetSelectionGuardrail|DeezerPlaceholderArtwork)Test$' ;;
       DeezSpoTag.Web/Services/ArtistMetadata*.cs)
         add_tests_matching '^ArtistMetadata' ;;
       DeezSpoTag.Web/Services/Audiomack/AudiomackArtistLocationService.cs)
