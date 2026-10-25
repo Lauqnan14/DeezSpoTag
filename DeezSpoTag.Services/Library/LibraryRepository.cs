@@ -21967,7 +21967,8 @@ ON CONFLICT(artist_id, role, identity) DO UPDATE SET
         long artistId,
         string role,
         string identity,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool allowTextArt = false)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -21975,10 +21976,11 @@ SELECT 1
 FROM artist_artwork_cache
 WHERE artist_id = @artistId
   AND identity = @identity
-  AND (user_blocked = 1 OR text_art_blocked = 1)
+  AND (user_blocked = 1 OR (@allowTextArt = 0 AND text_art_blocked = 1))
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("allowTextArt", allowTextArt ? 1 : 0);
         command.Parameters.AddWithValue("identity", identity);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null and not DBNull;

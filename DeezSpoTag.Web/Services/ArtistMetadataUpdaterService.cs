@@ -873,15 +873,7 @@ public sealed partial class ArtistMetadataUpdaterService
         else
         {
             var source = NormalizeMetadataSource(tracked.Source);
-            await _artistArtworkCatalog.RefreshAsync(
-                artist.Id,
-                artist.Name,
-                artist.PreferredImagePath,
-                cancellationToken,
-                onlyProvider: source == MetadataSourceAuto ? null : source,
-                forceProviderRefresh: false,
-                includeGallery: true,
-                allowArtistPageScrape: false);
+            // Update Servers consumes Refresh Cache's artwork; it never refreshes providers here.
             var resolved = await ResolveArtistMetadataAsync(
                 artist.Id,
                 artist.Name,
@@ -2233,13 +2225,21 @@ public sealed partial class ArtistMetadataUpdaterService
     {
         var normalizedSource = NormalizeMetadataSource(source);
         var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, excludeTextArt);
-        var candidates = artwork.Visuals
+        IEnumerable<ArtistArtworkVisual> MatchingVisuals(ArtistArtworkCatalogResult catalog) => catalog.Visuals
             .Where(item => normalizedSource == MetadataSourceAuto
                 || string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
                 || normalizedSource == MetadataSourceApple
-                   && string.Equals(item.Source, "itunes", StringComparison.OrdinalIgnoreCase))
-            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash))
-            .ToList();
+                   && string.Equals(item.Source, "itunes", StringComparison.OrdinalIgnoreCase));
+        var candidates = MatchingVisuals(artwork)
+            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash)).ToList();
+        if (excludeTextArt)
+            candidates = await FilterUsableArtworkCandidatesAsync(artistId, NormalizeCandidates(candidates), cancellationToken);
+        if (excludeTextArt && candidates.Count == 0)
+        {
+            artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, excludeTextArt: false);
+            candidates = MatchingVisuals(artwork)
+                .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash)).ToList();
+        }
         var biography = includeBiography
             ? await _libraryRepository.GetArtistBiographyCacheAsync(
                 artistId,
@@ -2267,15 +2267,21 @@ public sealed partial class ArtistMetadataUpdaterService
         }
 
         var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, ocrTextArtBlockingEnabled);
-        var candidates = artwork.Visuals
+        List<ArtworkCandidate> SelectCandidates(ArtistArtworkCatalogResult catalog) => catalog.Visuals
             .Where(item => !IsNameOnlyItunesIdentity(item.Identity))
             .OrderBy(item => RankArtworkSource(item.Source, item.Identity))
             .ThenByDescending(item => (item.Width ?? 0) * (item.Height ?? 0))
             .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source, item.ContentHash))
             .ToList();
+        var candidates = SelectCandidates(artwork);
         if (ocrTextArtBlockingEnabled)
         {
             candidates = await FilterUsableArtworkCandidatesAsync(artistId, candidates, cancellationToken);
+            if (candidates.Count == 0)
+            {
+                artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, excludeTextArt: false);
+                candidates = await FilterUsableArtworkCandidatesAsync(artistId, SelectCandidates(artwork), cancellationToken);
+            }
         }
         if (candidates.Count == 0)
         {
@@ -2313,17 +2319,22 @@ public sealed partial class ArtistMetadataUpdaterService
 
         Directory.CreateDirectory(managedRoot);
 
+        var avatarSlot = ResolveSlotCandidate(managedRoot, AvatarSlot);
+        var backgroundSlot = ResolveSlotCandidate(managedRoot, BackgroundSlot);
         var sourceCandidatesNormalized = NormalizeCandidates(sourceCandidates);
         if (tracked.OcrTextArtBlockingEnabled)
         {
+            var allCandidates = BuildSlotCandidates(avatarSlot, AvatarSlot,
+                BuildSlotCandidates(backgroundSlot, BackgroundSlot, sourceCandidatesNormalized));
             sourceCandidatesNormalized = await FilterUsableArtworkCandidatesAsync(
-                tracked.ArtistId,
-                sourceCandidatesNormalized,
-                cancellationToken);
+                tracked.ArtistId, allCandidates, cancellationToken);
+            // A saved slot is subject to the same preference and explicit blocks as cached artwork.
+            if (!sourceCandidatesNormalized.Any(candidate => string.Equals(candidate.LocalPath, avatarSlot, StringComparison.OrdinalIgnoreCase)))
+                avatarSlot = null;
+            if (!sourceCandidatesNormalized.Any(candidate => string.Equals(candidate.LocalPath, backgroundSlot, StringComparison.OrdinalIgnoreCase)))
+                backgroundSlot = null;
         }
 
-        var avatarSlot = ResolveSlotCandidate(managedRoot, AvatarSlot);
-        var backgroundSlot = ResolveSlotCandidate(managedRoot, BackgroundSlot);
         var avatarCandidates = preferExistingSlots
             ? BuildSlotCandidates(avatarSlot, AvatarSlot, RankCandidatesForSlot(sourceCandidatesNormalized, AvatarSlot))
             : RankCandidatesForSlot(sourceCandidatesNormalized, AvatarSlot);
@@ -2347,7 +2358,6 @@ public sealed partial class ArtistMetadataUpdaterService
                 managedRoot,
                 AvatarSlot,
                 excludedFingerprints: null,
-                tracked.OcrTextArtBlockingEnabled,
                 rotateUnused,
                 cancellationToken);
             avatarPath = avatarSelection.Path;
@@ -2368,7 +2378,6 @@ public sealed partial class ArtistMetadataUpdaterService
                 managedRoot,
                 BackgroundSlot,
                 excluded,
-                tracked.OcrTextArtBlockingEnabled,
                 rotateUnused,
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(backgroundSelection.Path)
@@ -2381,7 +2390,6 @@ public sealed partial class ArtistMetadataUpdaterService
                     managedRoot,
                     BackgroundSlot,
                     excludedFingerprints: null,
-                    tracked.OcrTextArtBlockingEnabled,
                     rotateUnused,
                     cancellationToken);
             }
@@ -2403,7 +2411,6 @@ public sealed partial class ArtistMetadataUpdaterService
         string managedRoot,
         string slot,
         IReadOnlySet<string>? excludedFingerprints,
-        bool textArtBlockingEnabled,
         bool rotateUnused,
         CancellationToken cancellationToken)
     {
@@ -2430,7 +2437,6 @@ public sealed partial class ArtistMetadataUpdaterService
             managedRoot,
             slot,
             excludedFingerprints,
-            textArtBlockingEnabled,
             cancellationToken);
         if (rotateUnused
             && artistId > 0
@@ -2445,7 +2451,6 @@ public sealed partial class ArtistMetadataUpdaterService
                 managedRoot,
                 slot,
                 excludedFingerprints,
-                textArtBlockingEnabled,
                 cancellationToken);
         }
 
@@ -2509,12 +2514,11 @@ public sealed partial class ArtistMetadataUpdaterService
         string managedRoot,
         string slot,
         IReadOnlySet<string>? excludedFingerprints,
-        bool textArtBlockingEnabled,
         CancellationToken cancellationToken)
     {
         if (candidates.Count == 0)
         {
-            return (ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints), null);
+            return (null, null);
         }
 
         var boundedIndex = Math.Abs(rotationIndex) % candidates.Count;
@@ -2526,7 +2530,7 @@ public sealed partial class ArtistMetadataUpdaterService
             var selected = candidates[(boundedIndex + offset) % candidates.Count];
             if (artistId > 0
                 && _libraryRepository is not null
-                && await _libraryRepository.IsArtistArtworkBlockedAsync(artistId, slot, selected.Identity, cancellationToken))
+                && await _libraryRepository.IsArtistArtworkBlockedAsync(artistId, slot, selected.Identity, cancellationToken, allowTextArt: true))
             {
                 LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
                 continue;
@@ -2537,7 +2541,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 continue;
             }
 
-            var materialized = await TryMaterializeSlotCandidateAsync(selected, managedRoot, slot, textArtBlockingEnabled, cancellationToken);
+            var materialized = await TryMaterializeSlotCandidateAsync(selected, managedRoot, slot, cancellationToken);
             if (!string.IsNullOrWhiteSpace(materialized.Path)
                 && (excludedFingerprints is not { Count: > 0 }
                     || !IsExcludedPath(materialized.Path, excludedFingerprints)))
@@ -2546,25 +2550,17 @@ public sealed partial class ArtistMetadataUpdaterService
             }
         }
 
-        return (ResolveDistinctSlotCandidate(managedRoot, slot, excludedFingerprints), null);
+        return (null, null);
     }
 
     private async Task<(string? Path, ArtworkCandidate? Candidate)> TryMaterializeSlotCandidateAsync(
         ArtworkCandidate selected,
         string managedRoot,
         string slot,
-        bool textArtBlockingEnabled,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(selected.LocalPath) && File.Exists(selected.LocalPath))
         {
-            if (textArtBlockingEnabled && !await IsArtworkCandidateUsableAsync(selected.LocalPath, cancellationToken))
-            {
-                LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
-                await PersistRejectedArtworkCandidateAsync(managedRoot, slot, selected, selected.LocalPath, cancellationToken);
-                return (null, null);
-            }
-
             return (await CopyIntoSlotAsync(managedRoot, slot, selected.LocalPath, cancellationToken), selected);
         }
 
@@ -2577,40 +2573,31 @@ public sealed partial class ArtistMetadataUpdaterService
         CancellationToken cancellationToken)
     {
         var usable = new List<ArtworkCandidate>(candidates.Count);
+        var textOnly = new List<ArtworkCandidate>();
+        var blocked = _libraryRepository is not null && artistId > 0
+            ? (await _libraryRepository.GetArtistArtworkCacheAsync(artistId, cancellationToken)).Where(item => item.UserBlocked).ToList()
+            : new List<ArtistArtworkCacheDto>();
         foreach (var candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(candidate.LocalPath)
-                || !File.Exists(candidate.LocalPath))
-            {
+            if (string.IsNullOrWhiteSpace(candidate.LocalPath) || !File.Exists(candidate.LocalPath)
+                || blocked.Any(item => string.Equals(item.Identity, candidate.Identity, StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(item.ContentHash) && string.Equals(item.ContentHash, candidate.ContentHash, StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(item.LocalPath) && string.Equals(Path.GetFullPath(item.LocalPath), Path.GetFullPath(candidate.LocalPath), StringComparison.OrdinalIgnoreCase)))
                 continue;
-            }
-
-            if (await IsArtworkCandidateUsableAsync(candidate.LocalPath, cancellationToken))
+            var containsText = await InspectArtworkForTextAsync(candidate.LocalPath, cancellationToken);
+            if (containsText is null) continue; // An unreadable image is never a last-choice candidate.
+            if (!containsText.Value)
             {
                 usable.Add(candidate);
                 continue;
             }
-
+            textOnly.Add(candidate);
             await PersistRejectedArtworkCandidateAsync(artistId, candidate, candidate.LocalPath, cancellationToken);
         }
-
-        return usable;
-    }
-
-    private async Task PersistRejectedArtworkCandidateAsync(
-        string managedRoot,
-        string slot,
-        ArtworkCandidate selected,
-        string? localPath,
-        CancellationToken cancellationToken)
-    {
-        if (!long.TryParse(Path.GetFileName(managedRoot), out var artistId) || artistId <= 0)
-        {
-            return;
-        }
-
-        await PersistRejectedArtworkCandidateAsync(artistId, selected, localPath, cancellationToken);
+        // Decide before rotation or avatar/background deduplication: neither may promote text
+        // while a decodable, unblocked text-free image exists.
+        return usable.Count > 0 ? usable : textOnly;
     }
 
     private async Task PersistRejectedArtworkCandidateAsync(
@@ -2637,7 +2624,7 @@ public sealed partial class ArtistMetadataUpdaterService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Rejected text-heavy artwork candidate for {Slot}. artist={ArtistId} source={Source}",
+                "Skipped blocked artwork candidate for {Slot}. artist={ArtistId} source={Source}",
                 slot,
                 managedRoot,
                 source);
@@ -3435,18 +3422,18 @@ public sealed partial class ArtistMetadataUpdaterService
         return destination;
     }
 
-    private async Task<bool> IsArtworkCandidateUsableAsync(string imagePath, CancellationToken cancellationToken)
+    private async Task<bool?> InspectArtworkForTextAsync(string imagePath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
         {
-            return false;
+            return null;
         }
 
         try
         {
             await using var stream = File.OpenRead(imagePath);
             using var image = await Image.LoadAsync<Rgba32>(stream, cancellationToken);
-            return !ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
+            return ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3454,7 +3441,7 @@ public sealed partial class ArtistMetadataUpdaterService
             {
                 _logger.LogDebug(ex, "Artwork text inspection failed for {Path}", imagePath);
             }
-            return false;
+            return null;
         }
     }
 

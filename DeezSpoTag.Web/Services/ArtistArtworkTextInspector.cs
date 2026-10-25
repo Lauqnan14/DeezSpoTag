@@ -38,18 +38,12 @@ internal static class ArtistArtworkTextInspector
 
         return IsTextHeavyBand(top, middle)
             || IsTextHeavyBand(bottom, middle)
-            || IsLikelyAlbumCoverWithTitle(sampled);
+            || HasTextLikeCentralBand(sampled);
     }
 
-    private static bool IsLikelyAlbumCoverWithTitle(Image<Rgba32> image)
+    private static bool HasTextLikeCentralBand(Image<Rgba32> image)
     {
         if (image.Height <= 0)
-        {
-            return false;
-        }
-
-        var aspect = image.Width / (double)image.Height;
-        if (aspect < 0.85 || aspect > 1.15)
         {
             return false;
         }

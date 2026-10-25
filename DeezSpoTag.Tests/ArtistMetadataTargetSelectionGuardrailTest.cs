@@ -516,7 +516,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("ApplyCatalogVisualsToSlotsAsync", cacheRefresh);
         Assert.Contains("request.OcrTextArtBlockingEnabled", cacheRefresh);
         Assert.Contains("FilterUsableArtworkCandidatesAsync", targetUpdate);
-        Assert.Contains("_artistArtworkCatalog.RefreshAsync(", targetUpdate);
+        Assert.DoesNotContain("_artistArtworkCatalog.RefreshAsync(", targetUpdate);
         Assert.Contains("preferExistingSlots: !tracked.OcrTextArtBlockingEnabled", targetUpdate);
         Assert.Contains("ArtistArtworkTextInspector.LikelyContainsOverlayText", catalog);
         Assert.Contains("textArtBlocked", catalog);
