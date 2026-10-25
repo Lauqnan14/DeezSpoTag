@@ -46,6 +46,13 @@ let homeYouTubeStatus = 'loading';
 let homeYouTubeBrowseStatus = 'loading';
 let homeAppleSections = [];
 let homeAppleStatus = 'loading';
+const homeAppleRefresh = {
+    intervalMs: 4 * 60 * 60 * 1000,
+    loadedAt: 0,
+    retryAt: 0,
+    inFlight: null,
+    timer: null
+};
 let homeSpotifyStatus = 'loading';
 let homeTrendingProvider = 'spotify';
 let homeLatestSections = [];
@@ -1335,7 +1342,8 @@ async function loadHomeData() {
             homeCategoryStatus.apple = homeCategoryStatus.ytmusic = 'loading';
             void loadHomeCategories('apple', requestId);
             void loadHomeCategories('ytmusic', requestId);
-            void loadAppleHomeSections(requestId);
+            // Revalidate Apple on opening the page; other providers still render independently.
+            void loadAppleHomeSections(requestId, true);
             void loadYouTubeHomeTrending(requestId);
             void loadYouTubeHomeSections(requestId);
         }
@@ -1461,21 +1469,61 @@ function openYouTubeCategory(id, parameters) {
     globalThis.location.href = `/Categories?provider=ytmusic&id=${id}&parameters=${parameters}`;
 }
 
-async function loadAppleHomeSections(requestId) {
-    try {
-        const response = await fetch('/api/apple/browse/sections');
-        const data = await response.json();
-        if (requestId !== homeLoadRequestSeq) return;
-        if (!response.ok || !data.success || !Array.isArray(data.sections)) throw new Error(data.error || 'Apple Music browse unavailable');
-        homeAppleSections = data.sections;
-        homeAppleStatus = 'ready';
-    } catch (error) {
-        if (requestId !== homeLoadRequestSeq) return;
-        homeAppleSections = [];
-        homeAppleStatus = 'error';
-        console.warn('Apple Music home sections unavailable:', error);
+async function loadAppleHomeSections(requestId, refreshEnabled = true) {
+    if (requestId !== homeLoadRequestSeq) return;
+    if (homeAppleRefresh.inFlight?.requestId === requestId) return homeAppleRefresh.inFlight.promise;
+    const pending = { requestId, promise: null };
+    homeAppleRefresh.inFlight = pending;
+    pending.promise = (async () => {
+        try {
+            const response = await fetch(`/api/apple/browse/sections${refreshEnabled ? '?refresh=1' : ''}`, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`Apple Music browse request failed (${response.status})`);
+            const data = await response.json();
+            if (requestId !== homeLoadRequestSeq) return;
+            if (!data.success || !Array.isArray(data.sections)) throw new Error(data.error || 'Apple Music browse unavailable');
+            homeAppleSections = data.sections;
+            homeAppleStatus = 'ready';
+            homeAppleRefresh.loadedAt = Date.now();
+            homeAppleRefresh.retryAt = 0;
+        } catch (error) {
+            if (requestId !== homeLoadRequestSeq) return;
+            homeAppleStatus = homeAppleSections.length ? 'ready' : 'error';
+            homeAppleRefresh.retryAt = Date.now() + 30000;
+            console.warn('Apple Music home sections unavailable:', error);
+        } finally {
+            if (homeAppleRefresh.inFlight === pending) {
+                homeAppleRefresh.inFlight = null;
+                if (requestId === homeLoadRequestSeq) scheduleAppleHomeRefresh();
+            }
+        }
+        if (requestId === homeLoadRequestSeq && homeLatestSections.length) refreshHomeProviderSections('apple');
+    })();
+    return pending.promise;
+}
+
+function scheduleAppleHomeRefresh() {
+    clearTimeout(homeAppleRefresh.timer);
+    homeAppleRefresh.timer = null;
+    if (document.hidden || new URLSearchParams(globalThis.location.search).get('channel')) return;
+    const dueAt = homeAppleRefresh.loadedAt ? homeAppleRefresh.loadedAt + homeAppleRefresh.intervalMs : 0;
+    homeAppleRefresh.timer = setTimeout(() => {
+        void refreshAppleHomeSectionsIfDue();
+    }, Math.max(0, dueAt - Date.now(), homeAppleRefresh.retryAt - Date.now()));
+}
+
+function refreshAppleHomeSectionsIfDue() {
+    if (document.hidden || new URLSearchParams(globalThis.location.search).get('channel')) {
+        clearTimeout(homeAppleRefresh.timer);
+        homeAppleRefresh.timer = null;
+        return;
     }
-    if (homeLatestSections.length) refreshHomeProviderSections('apple');
+    if (homeAppleRefresh.inFlight?.requestId === homeLoadRequestSeq) return homeAppleRefresh.inFlight.promise;
+    const dueAt = homeAppleRefresh.loadedAt ? homeAppleRefresh.loadedAt + homeAppleRefresh.intervalMs : 0;
+    if (Date.now() < Math.max(dueAt, homeAppleRefresh.retryAt)) {
+        scheduleAppleHomeRefresh();
+        return;
+    }
+    return loadAppleHomeSections(homeLoadRequestSeq, true);
 }
 
 function renderHomeTrendingProviders() {
@@ -1487,6 +1535,7 @@ function renderHomeTrendingProviders() {
 function selectHomeTrendingProvider(provider) {
     if (provider !== 'spotify' && provider !== 'apple' && provider !== 'ytmusic') return;
     homeTrendingProvider = provider;
+    if (provider === 'apple') void refreshAppleHomeSectionsIfDue();
     refreshHomeTrendingSection();
 }
 
@@ -3492,6 +3541,8 @@ async function attemptAutoLogin() {
 // Load data when page loads
 document.addEventListener('DOMContentLoaded', async function() {
     setHomeGreeting();
+    document.addEventListener('visibilitychange', () => { void refreshAppleHomeSectionsIfDue(); });
+    globalThis.addEventListener?.('pageshow', () => { void refreshAppleHomeSectionsIfDue(); });
     // Start home render immediately; avoid blocking first paint on connect/auth checks.
     try {
         await loadHomeData();

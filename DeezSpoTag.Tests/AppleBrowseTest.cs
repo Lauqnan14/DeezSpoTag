@@ -18,6 +18,92 @@ namespace DeezSpoTag.Tests;
 public sealed class AppleBrowseTest
 {
     [Fact]
+    public void AppleHomeRefreshReplacesExpiredTracksWithoutDuplicateRequestsOrPageRedraws()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        let now=100000,calls=[],timers=[],renders=0,hold,fail=false;
+        const ctx=vm.createContext({console,URLSearchParams,Date:{now:()=>now},location:{search:''},document:{hidden:false},
+          setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length},clearTimeout:()=>{},
+          refreshHomeProviderSections:()=>renders++,fetch:async(url,options)=>{
+            calls.push({url,options});if(hold)await hold;if(fail)throw Error('upstream unavailable');
+            return{ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{title:'Song '+calls.length}]}]})};
+          }});
+        const state=source.slice(source.indexOf('const homeAppleRefresh ='),source.indexOf('let homeSpotifyStatus'));
+        assert(state.includes('intervalMs'),'Refresh state must exist');vm.runInContext(state,ctx);
+        vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{}],homeAppleSections=[],homeAppleStatus='loading';",ctx);
+        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue']){
+          const m=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(m,name);
+          const start=m.index,end=source.slice(start+m[0].length).search(/\n(?:async )?function /);
+          vm.runInContext(source.slice(start,end<0?undefined:start+m[0].length+end),ctx);
+        }
+        (async()=>{
+          await ctx.loadAppleHomeSections(1);assert.equal(calls.length,1);assert.equal(calls[0].options.cache,'no-store');
+          assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),'Song 1');
+          assert.equal(timers.at(-1).delay,4*60*60*1000);
+          await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,1,'A fresh feed must not be refetched');
+          now+=4*60*60*1000;let release;hold=new Promise(r=>release=r);
+          const first=ctx.refreshAppleHomeSectionsIfDue(),second=ctx.refreshAppleHomeSectionsIfDue();
+          assert.equal(calls.length,2,'Concurrent refresh triggers share one request');release();await Promise.all([first,second]);hold=null;
+          assert(calls[1].url.includes('refresh=1'));assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),'Song 2');
+          ctx.document.hidden=true;now+=4*60*60*1000;await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,2);
+          ctx.document.hidden=false;await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,3);
+          await ctx.loadAppleHomeSections(1,true);assert(calls.at(-1).url.includes('refresh=1'));
+          const last=vm.runInContext('homeAppleSections[0].items[0].title',ctx);fail=true;now+=4*60*60*1000;
+          await ctx.refreshAppleHomeSectionsIfDue();assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),last);
+          assert.equal(vm.runInContext('homeAppleStatus',ctx),'ready');assert(timers.at(-1).delay>=30000);
+          const count=calls.length;await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,count,'Do not spin after failure');
+          assert(renders>=3);assert(source.includes('loadAppleHomeSections(requestId, true)'));
+          assert(source.includes("addEventListener('visibilitychange'"));assert(source.includes("addEventListener?.('pageshow'"));
+        })().catch(e=>{console.error(e);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public async Task HomeSectionsRefreshBypassesCacheAndReturnsChangedTrendingTracks()
+    {
+        var directory = System.IO.Directory.CreateTempSubdirectory("apple-home-freshness-").FullName;
+        try
+        {
+            var settings = new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(NullLogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>.Instance);
+            foreach (var (field,value) in new[] { ("_configFolder",directory),("_settingsFilePath",System.IO.Path.Join(directory,"config.json")) })
+                typeof(DeezSpoTag.Services.Settings.DeezSpoTagSettingsService).GetField(field,BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(settings,value);
+            await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(directory,"config.json"),"{\"appleMusic\":{\"storefront\":\"ke\"}}");
+            string Page(string title) => "<script id=\"serialized-server-data\">" +
+                "{\"data\":[{\"data\":{\"sections\":[{\"itemKind\":\"trackLockup\",\"header\":{\"item\":{\"titleLink\":{\"title\":\"Trending Songs\"}}},\"items\":[{\"title\":\""+title+"\",\"contentDescriptor\":{\"kind\":\"song\",\"url\":\"https://music.apple.com/ke/song/test/123\",\"identifiers\":{\"storeAdamID\":\"123\"}}}]}]}}]}</script>";
+            using var handler = new BrowseHandler { BrowseResponse = Page("First song") };
+            using var client = new HttpClient(handler);
+            using var cache = new MemoryCache(new MemoryCacheOptions());
+            var service = new AppleMusicCatalogService(new ClientFactory(client),settings,NullLogger<AppleMusicCatalogService>.Instance,cache);
+            var controller = new DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController(service,settings,NullLogger<DeezSpoTag.Web.Controllers.Api.AppleBrowseApiController>.Instance)
+            { ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+            async Task<string> Title()
+            {
+                var result = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await controller.Sections(CancellationToken.None));
+                using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Value));
+                return json.RootElement.GetProperty("sections")[0].GetProperty("items")[0].GetProperty("title").GetString()!;
+            }
+            Assert.Equal("First song",await Title());
+            handler.BrowseResponse = Page("New song");
+            Assert.Equal("First song",await Title());
+            controller.HttpContext.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString("?refresh=1");
+            Assert.Equal("New song",await Title());
+            controller.HttpContext.Request.QueryString = default;
+            Assert.Equal("New song",await Title());
+            Assert.Equal(2,handler.Requests.Count);
+        }
+        finally { System.IO.Directory.Delete(directory,true); }
+    }
+    [Fact]
     public void HomeCategoriesKeepProviderRowsUniqueAndIncludeSpatialAudio()
     {
         var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
@@ -84,16 +170,16 @@ public sealed class AppleBrowseTest
         const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
         let fullRenders=0,insertions=0,cards=0,observer;
         const container={querySelectorAll:()=>[],querySelector:()=>null,insertAdjacentHTML:()=>insertions++};
-        const ctx=vm.createContext({console,Map,URLSearchParams,escapeHtml:String,
+        const ctx=vm.createContext({console,Map,URLSearchParams,escapeHtml:String,setTimeout:()=>1,clearTimeout:()=>{},
           document:{getElementById:()=>container},location:{search:''},
           IntersectionObserver:class{constructor(callback){observer=callback}observe(){}unobserve(){}},
           HomeViewHelpers:{renderAppleBrowseItem:()=>{cards++;return 'card'}},
           renderHomeItem:()=>{cards++;return 'card'},renderHomeSectionsWithLazyImages:()=>fullRenders++,
           observeLazyImages:()=>{},syncHomeTrendingPlaybackFromSession:()=>{},
           fetch:async()=>({ok:true,json:async()=>({success:true,sections:[{role:'new-this-week',title:'New this week',items:[{title:'Album'}]}]})})});
-        vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{title:'Base'}],homeAppleSections=[],homeAppleStatus='loading',homeTrendingProvider='spotify';const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;let homeDeferredRowObserver;",ctx);
+        vm.runInContext("let homeLoadRequestSeq=1,homeLatestSections=[{title:'Base'}],homeAppleSections=[],homeAppleStatus='loading',homeTrendingProvider='spotify';const homeAppleRefresh={intervalMs:14400000,loadedAt:0,retryAt:0,inFlight:null,timer:null};const homeDeferredRowRenders=new Map();let homeDeferredRowSeq=0;let homeDeferredRowObserver;",ctx);
         function load(name){const match=source.match(new RegExp('(?:async )?function '+name+'\\('));if(!match)return;const start=match.index,end=source.slice(start+match[0].length).search(/\n(?:async )?function /);vm.runInContext(source.slice(start,end<0?undefined:start+match[0].length+end),ctx)}
-        for(const name of ['loadAppleHomeSections','refreshHomeProviderSections','renderAppleHomeRows','renderDeferredHomeRow','observeHomeDeferredRows','hydrateHomeDeferredRow','removeHomeProviderSections'])load(name);
+        for(const name of ['loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue','refreshHomeProviderSections','renderAppleHomeRows','renderDeferredHomeRow','observeHomeDeferredRows','hydrateHomeDeferredRow','removeHomeProviderSections'])load(name);
         (async()=>{
           await ctx.loadAppleHomeSections(1);
           assert.equal(fullRenders,0,'Apple completion must not rebuild existing sections');
@@ -444,7 +530,7 @@ public sealed class AppleBrowseTest
         load('renderDeferredHomeRow'); load('renderHomeTrendingProviders'); load('renderAppleHomeRows'); load('renderAppleHomeTrending'); load('selectHomeTrendingProvider'); load('renderHomeSectionEntry');
         vm.runInContext("homeAppleSections=[{role:'videos',title:'Videos',items:[{source:'apple',type:'video',title:'Video',id:'456'}]},{role:'updated-playlists',title:'Updated',items:[{title:'Playlist'}]},{role:'new-this-week',title:'New',items:[{title:'Album'}]},{role:'trending',title:'Trending Songs',items:[{source:'apple',type:'track',title:'Apple Song',id:'123'}]},{role:'recent-releases',title:'Recent',items:[{title:'Release'}]}];homeAppleStatus='ready';",ctx);
         const rows=ctx.renderAppleHomeRows(); assert(rows.indexOf('New')<rows.indexOf('Recent'));assert(rows.indexOf('Recent')<rows.indexOf('Updated'));assert(rows.indexOf('Updated')<rows.indexOf('Videos'));
-        let rerenders=0;ctx.refreshHomeTrendingSection=()=>rerenders++;
+        let rerenders=0;ctx.refreshHomeTrendingSection=()=>rerenders++;ctx.refreshAppleHomeSectionsIfDue=()=>{};
         ctx.selectHomeTrendingProvider('apple');assert.equal(rerenders,1);assert(ctx.renderHomeTrendingProviders().includes('aria-pressed="true"'));
         assert(ctx.renderAppleHomeTrending().includes('Apple Song'));assert(!ctx.renderAppleHomeTrending().includes('data-spotify-url'));
         const previewMarkup=ctx.HomeViewHelpers.renderAppleBrowseItem({source:'apple',type:'track',id:'123',title:'Song',previewUrl:'https://preview.test/audio'});
@@ -505,6 +591,8 @@ public sealed class AppleBrowseTest
             await ctx.loadAppleCategories();
             assert.equal(parsedHtml,false);
             assert(elements['apple-status'].textContent.includes('Sign in'));
+            ctx.setTimeout=()=>1;ctx.clearTimeout=()=>{};
+            vm.runInContext("const homeAppleRefresh={intervalMs:14400000,loadedAt:0,retryAt:0,inFlight:null,timer:null};",ctx);
             vm.runInContext(home.slice(home.indexOf('async function loadAppleHomeSections('),home.indexOf('function renderHomeTrendingProviders(')),ctx);
             vm.runInContext("let homeLoadRequestSeq=7;homeLatestSections=[{title:'Latest Spotify enhancement'}];homeAppleStatus='loading';",ctx);
             ctx.fetch=async()=>({ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{source:'apple',type:'track',title:'Late Apple Song',id:'12'}]},{role:'videos',title:'Videos',items:[{source:'apple',type:'video',title:'Late Video',id:'13'}]}]})});
@@ -579,6 +667,7 @@ public sealed class AppleBrowseTest
 
     private sealed class BrowseHandler : HttpMessageHandler
     {
+        public string? BrowseResponse;
         public Exception? NextFailure;
         public bool HoldResponse;
         public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -595,7 +684,7 @@ public sealed class AppleBrowseTest
             if (HoldResponse) await Release.Task.WaitAsync(token);
             var response = request.RequestUri.AbsolutePath.Contains("/me/account")
                 ? AccountResponse!
-                : "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
+                : BrowseResponse ?? "<script id=\"serialized-server-data\" type=\"application/json\">{\"data\":[]}</script>";
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) };
         }
     }

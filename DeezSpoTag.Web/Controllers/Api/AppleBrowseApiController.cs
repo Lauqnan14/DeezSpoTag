@@ -21,7 +21,8 @@ public sealed class AppleBrowseApiController(
     public Task<IActionResult> Categories(CancellationToken cancellationToken) => Browse("search", true, false, cancellationToken);
 
     [HttpGet("sections")]
-    public Task<IActionResult> Sections(CancellationToken cancellationToken) => Browse("new", false, true, cancellationToken);
+    public Task<IActionResult> Sections(CancellationToken cancellationToken) => Browse("new", false, true, cancellationToken,
+        refresh: HttpContext?.Request.Query["refresh"].ToString() is "1" or "true" or "yes");
 
     [HttpGet("page")]
     public Task<IActionResult> Page([FromQuery] string path, CancellationToken cancellationToken) => Browse(path, false, false, cancellationToken);
@@ -53,7 +54,7 @@ public sealed class AppleBrowseApiController(
         }
     }
 
-    private async Task<IActionResult> Browse(string path, bool categoriesOnly, bool homeOnly, CancellationToken cancellationToken)
+    private async Task<IActionResult> Browse(string path, bool categoriesOnly, bool homeOnly, CancellationToken cancellationToken, bool refresh = false)
     {
         if (AppleCatalogJsonHelper.IsAppleDisabledByEnvironment())
             return StatusCode(503, new { success = false, error = "Apple Music is disabled." });
@@ -64,7 +65,7 @@ public sealed class AppleBrowseApiController(
             const string language = "en-US";
             // Apple occasionally returns destinations carrying another storefront. Rebind to the resolved store.
             path = Regex.Replace(path, @"^/[a-zA-Z]{2}/", "", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
-            using var document = await catalog.GetBrowsePageAsync(path, storefront, language, cancellationToken);
+            using var document = await catalog.GetBrowsePageAsync(path, storefront, language, cancellationToken, refresh);
             var sections = AppleCatalogJsonHelper.MapBrowseSections(document.RootElement, categoriesOnly);
             if (homeOnly)
             {
