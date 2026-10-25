@@ -70,7 +70,7 @@ public sealed class TidalDownloadService
     private static readonly string[] PlaylistLineSeparators = { "\r\n", "\n" };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
-    private static readonly ConcurrentDictionary<long, CachedTidalTrack> TrackMetadataCache = new();
+    private static readonly ConcurrentDictionary<(long TrackId, string CountryCode), CachedTidalTrack> TrackMetadataCache = new();
     private static readonly ConcurrentDictionary<string, CachedProviderManifest> ProviderManifestCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan UnknownManifestExpiryTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan TrackMetadataCacheLifetime = TimeSpan.FromHours(6);
@@ -266,44 +266,47 @@ public sealed class TidalDownloadService
                 ?? EngineLinkParser.TryExtractTidalTrackId(tidalIdOrUrl);
             if (long.TryParse(normalizedId, out var persistedTrackId) && persistedTrackId > 0)
             {
-                var persistedTrack = await GetTrackInfoByIdAsync(persistedTrackId, cancellationToken);
-                var validation = ValidateResolvedTrack(
-                    persistedTrack,
-                    trackTitle,
-                    artistName,
-                    NormalizeUsableAlbum(albumName) ?? string.Empty,
-                    isrc,
-                    expectedDuration);
-                if (validation.Accepted && TidalTrackCanSatisfyQuality(persistedTrack, requestedQuality))
+                var persistedTrack = await TryGetTrackInfoByIdViaPublicApiAsync(persistedTrackId, cancellationToken);
+                if (persistedTrack != null)
                 {
-                    return BuildTidalTrackListenUrl(persistedTrack.Id);
-                }
-
-                _logger.LogWarning(
-                    "Persisted Tidal identity {TrackId} rejected for {Title} - {Artist}: validation={Reason}, requestedQuality={Quality}, trackQuality={TrackQuality}, tags={Tags}, audioModes={AudioModes}",
-                    persistedTrackId,
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
-                    validation.Accepted ? "quality_mismatch" : validation.Reason,
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(requestedQuality),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(persistedTrack.AudioQuality),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.AudioModes ?? [])));
-
-                if (validation.Accepted)
-                {
-                    var stereoCounterpart = await TryResolveStereoCounterpartAsync(
+                    var validation = ValidateResolvedTrack(
                         persistedTrack,
                         trackTitle,
                         artistName,
-                        albumName,
+                        NormalizeUsableAlbum(albumName) ?? string.Empty,
                         isrc,
-                        expectedDuration,
-                        requestedQuality,
-                        cancellationToken);
-                    if (stereoCounterpart != null && stereoCounterpart.Id > 0)
+                        expectedDuration);
+                    if (validation.Accepted && TidalTrackCanSatisfyQuality(persistedTrack, requestedQuality))
                     {
-                        return BuildTidalTrackListenUrl(stereoCounterpart.Id);
+                        return BuildTidalTrackListenUrl(persistedTrack.Id);
+                    }
+
+                    _logger.LogWarning(
+                        "Persisted Tidal identity {TrackId} rejected for {Title} - {Artist}: validation={Reason}, requestedQuality={Quality}, trackQuality={TrackQuality}, tags={Tags}, audioModes={AudioModes}",
+                        persistedTrackId,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
+                        validation.Accepted ? "quality_mismatch" : validation.Reason,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(requestedQuality),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(persistedTrack.AudioQuality),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.AudioModes ?? [])));
+
+                    if (validation.Accepted)
+                    {
+                        var stereoCounterpart = await TryResolveStereoCounterpartAsync(
+                            persistedTrack,
+                            trackTitle,
+                            artistName,
+                            albumName,
+                            isrc,
+                            expectedDuration,
+                            requestedQuality,
+                            cancellationToken);
+                        if (stereoCounterpart != null && stereoCounterpart.Id > 0)
+                        {
+                            return BuildTidalTrackListenUrl(stereoCounterpart.Id);
+                        }
                     }
                 }
             }
@@ -613,7 +616,7 @@ public sealed class TidalDownloadService
         {
             trackTitle = unmarkedTitle;
         }
-        return TrackCandidateValidator.Validate(
+        var validation = TrackCandidateValidator.Validate(
             new TrackMatchSource(
                 isrc,
                 trackTitle,
@@ -633,6 +636,8 @@ public sealed class TidalDownloadService
                 RequireCandidateDurationWhenSourceHasDuration: true,
                 MaxIsrcDurationDifferenceMs: 20_000,
                 MaxMetadataDurationDifferenceMs: 3_000));
+        return validation.Accepted && !TrackTitleMatcher.RecordingTitlesMatch(trackTitle, candidateTitle)
+            ? new TrackCandidateValidationResult(false, "title_mismatch", 0) : validation;
     }
 
     private static string RemoveTrailingRemixLabel(string title)
@@ -674,7 +679,10 @@ public sealed class TidalDownloadService
 
     private async Task<TidalTrack> SearchTrackByMetadataWithIsrcAsync(string trackName, string artistName, string isrc, int expectedDuration, CancellationToken cancellationToken)
     {
-        var isrcTracks = await SearchTracksByIsrcAsync(isrc, 25, cancellationToken);
+        bool HasCompatibleIdentity(TidalTrack track) => ValidateResolvedTrack(
+            track, trackName, artistName, string.Empty, isrc, expectedDuration).Accepted;
+        var isrcTracks = (await SearchTracksByIsrcAsync(isrc, 25, cancellationToken))
+            .Where(HasCompatibleIdentity).ToList();
         var exactIsrcMatch = FindIsrcMatch(isrcTracks, isrc);
         if (exactIsrcMatch != null)
         {
@@ -690,7 +698,8 @@ public sealed class TidalDownloadService
             {
                 continue;
             }
-            var result = await SearchTracksAsync(query, 100, cancellationToken);
+            var result = (await SearchTracksAsync(query, 100, cancellationToken))
+                .Where(HasCompatibleIdentity).ToList();
             if (result.Count > 0)
             {
                 allTracks.AddRange(result);
@@ -731,6 +740,14 @@ public sealed class TidalDownloadService
         var sourceAlbum = NormalizeUsableAlbum(albumName);
         var candidates = new List<TidalTrack>();
         candidates.AddRange(await SearchTracksByIsrcAsync(isrc, 25, cancellationToken));
+        var exactMatch = FindIsrcMatch(candidates.Where(track =>
+            TidalTrackCanSatisfyQuality(track, requestedQuality)
+            && ValidateResolvedTrack(track, trackName, artistName, sourceAlbum ?? string.Empty,
+                isrc, expectedDuration).Accepted).ToList(), isrc, sourceAlbum);
+        if (exactMatch is not null)
+        {
+            return exactMatch;
+        }
 
         var queries = BuildSearchQueries(trackName, artistName);
         var seenQueries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -746,6 +763,8 @@ public sealed class TidalDownloadService
             .GroupBy(static track => track.Id)
             .Select(static group => group.First())
             .Where(track => TidalTrackCanSatisfyQuality(track, requestedQuality))
+            .Where(track => ValidateResolvedTrack(track, trackName, artistName, sourceAlbum ?? string.Empty,
+                isrc, expectedDuration).Accepted)
             .ToList();
         if (qualityCandidates.Count == 0)
         {
@@ -1130,8 +1149,18 @@ public sealed class TidalDownloadService
                 ["limit"] = Math.Clamp(limit, 1, 100).ToString(CultureInfo.InvariantCulture),
                 ["offset"] = "0"
             });
-        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(url, _ => { }, cancellationToken);
-        return payload?.Items ?? new List<TidalTrack>();
+        var countryCode = await ResolveCatalogCountryAsync(cancellationToken);
+        foreach (var market in EnumerateCatalogMarkets(countryCode))
+        {
+            var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(
+                url, _ => { }, cancellationToken, market);
+            var tracks = payload?.Items ?? [];
+            if (tracks.Count > 0)
+            {
+                return tracks;
+            }
+        }
+        return [];
     }
 
     private static long GetTrackIdFromUrl(string tidalUrl)
@@ -1201,31 +1230,43 @@ public sealed class TidalDownloadService
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)
     {
-        if (TrackMetadataCache.TryGetValue(trackId, out var cached)
-            && cached.ExpiresAtUtc > DateTimeOffset.UtcNow)
+        var countryCode = await ResolveCatalogCountryAsync(cancellationToken);
+        foreach (var market in EnumerateCatalogMarkets(countryCode))
         {
-            return cached.Track;
-        }
-
-        var track = await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
-            BuildTidalNativeApiUrl($"tracks/{trackId}"),
-            ex =>
+            var cacheKey = (trackId, market);
+            if (TrackMetadataCache.TryGetValue(cacheKey, out var cached)
+                && cached.ExpiresAtUtc > DateTimeOffset.UtcNow)
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
-                }
-            },
-            cancellationToken);
-        track ??= await ResolveTrackMetadataFromPublicProvidersAsync(trackId, cancellationToken);
-        if (track is not null && track.Id > 0)
-        {
-            TrackMetadataCache[trackId] = new CachedTidalTrack(
-                track,
-                DateTimeOffset.UtcNow.Add(TrackMetadataCacheLifetime));
-        }
+                return cached.Track;
+            }
 
-        return track;
+            try
+            {
+                var track = await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
+                    BuildTidalNativeApiUrl($"tracks/{trackId}"),
+                    ex =>
+                    {
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
+                        }
+                    },
+                    cancellationToken, market);
+                if (track is not null && track.Id == trackId)
+                {
+                    TrackMetadataCache[cacheKey] = new CachedTidalTrack(
+                        track, DateTimeOffset.UtcNow.Add(TrackMetadataCacheLifetime));
+                    return track;
+                }
+                // A successful malformed identity must not be treated as a regional 404.
+                throw new InvalidOperationException("Tidal catalog returned an unexpected track identity.");
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                // Retry this exact ID only; access errors must not trigger market recovery.
+            }
+        }
+        return await ResolveTrackMetadataFromPublicProvidersAsync(trackId, cancellationToken);
     }
 
     private async Task<TidalTrack?> ResolveTrackMetadataFromPublicProvidersAsync(
@@ -1264,11 +1305,36 @@ public sealed class TidalDownloadService
         return null;
     }
 
+    private static IEnumerable<string> EnumerateCatalogMarkets(string preferredCountry)
+    {
+        yield return preferredCountry;
+        foreach (var market in new[] { "ZA", "GB", "FR" })
+        {
+            if (!string.Equals(market, preferredCountry, StringComparison.Ordinal))
+            {
+                yield return market;
+            }
+        }
+    }
+
+    private async Task<string> ResolveCatalogCountryAsync(CancellationToken cancellationToken)
+    {
+        var country = (await _accessTokenProvider.GetCountryCodeAsync(cancellationToken))?.Trim().ToUpperInvariant();
+        return country is { Length: 2 } && country.All(static value => value is >= 'A' and <= 'Z')
+            ? country : TidalPublicCountryCode;
+    }
+
     private async Task<TPayload?> SendTidalPublicJsonOrDefaultAsync<TPayload>(
         string url,
         Action<Exception> logFailure,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? countryCode = null)
     {
+        var builder = new UriBuilder(url);
+        var query = System.Web.HttpUtility.ParseQueryString(builder.Query);
+        query["countryCode"] = countryCode ?? await ResolveCatalogCountryAsync(cancellationToken);
+        builder.Query = query.ToString();
+        url = builder.Uri.AbsoluteUri;
         Exception? lastFailure = null;
         for (var attempt = 1; attempt <= MaxProviderStageAttempts; attempt++)
         {
@@ -1533,6 +1599,7 @@ public sealed class TidalDownloadService
                         BuildZarzHttpFailureMessage(stage, response, body),
                         null,
                         response.StatusCode);
+                DeezSpoTag.Services.Download.Fallback.FallbackFailureClassifier.AttachProviderErrorContract(failure, body);
                 if ((!response.IsSuccessStatusCode && !IsTransientProviderStatus(response.StatusCode))
                     || attempt == MaxProviderStageAttempts)
                 {

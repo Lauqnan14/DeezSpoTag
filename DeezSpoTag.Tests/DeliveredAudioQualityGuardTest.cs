@@ -1,6 +1,10 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
+using DeezSpoTag.Core.Models.Settings;
+using Microsoft.Extensions.Logging.Abstractions;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Fallback;
@@ -19,6 +23,68 @@ public sealed class DeliveredAudioQualityGuardTest : IDisposable
     public DeliveredAudioQualityGuardTest()
     {
         Directory.CreateDirectory(_tempDirectory);
+    }
+
+    [Fact]
+    public async Task AmazonUltraHdStep_AttemptsAudioAcquisitionInsteadOfRejectingMissingPreflight()
+    {
+        var path = Path.Combine(_tempDirectory, "ultra-hd.wav");
+        WriteWave(path, bitsPerSample: 24, sampleRate: 48000);
+        var processor = new AmazonEngineProcessor(null!, new AcquiredAmazonAudio(path), NullLogger<AmazonEngineProcessor>.Instance);
+        var method = typeof(AmazonEngineProcessor).GetMethod("DownloadAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var result = await (Task<string>)method.Invoke(processor,
+            new object?[] { CreateAmazonPayload("ULTRA_HD_FLAC"), new AmazonDownloadRequest { Quality = "ULTRA_HD_FLAC" },
+                new DeezSpoTagSettings(), null, CancellationToken.None })!;
+        Assert.Equal(path, result);
+    }
+
+    [Theory]
+    [InlineData(16, false)]
+    [InlineData(24, true)]
+    public void AmazonAcquiredAudio_IsCheckedBeforePromotionAndRejectedFilesAreDeleted(int depth, bool accepted)
+    {
+        var path = Path.Combine(_tempDirectory, "acquired.wav");
+        var existing = Path.Combine(_tempDirectory, "existing.wav");
+        WriteWave(path, bitsPerSample: (short)depth);
+        File.WriteAllText(existing, "existing audio must survive");
+        var method = typeof(AmazonDownloadService).GetMethod("ValidateAcquiredAudio", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        if (accepted)
+        {
+            method.Invoke(null, new object[] { new AmazonDownloadRequest { Quality = "ULTRA_HD_FLAC" }, path });
+            Assert.True(File.Exists(path));
+        }
+        else
+        {
+            var failure = Assert.Throws<TargetInvocationException>(() => method.Invoke(null,
+                new object[] { new AmazonDownloadRequest { Quality = "ULTRA_HD_FLAC" }, path }));
+            Assert.Equal("DeliveredAudioQualityBelowPlanStepException", failure.InnerException?.GetType().Name);
+            Assert.False(File.Exists(path));
+        }
+        Assert.Equal("existing audio must survive", File.ReadAllText(existing));
+    }
+
+    [Fact]
+    public void AmazonUltraHdAcquisition_RejectsUnverifiedAudioBeforePromotion()
+    {
+        var path = Path.Combine(_tempDirectory, "unknown-audio.bin");
+        File.WriteAllText(path, "not inspectable audio");
+        var method = typeof(AmazonDownloadService).GetMethod("ValidateAcquiredAudio", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var failure = Assert.Throws<TargetInvocationException>(() => method.Invoke(null,
+            new object[] { new AmazonDownloadRequest { Quality = "ULTRA_HD_FLAC" }, path }));
+        Assert.IsAssignableFrom<InvalidOperationException>(failure.InnerException);
+        Assert.False(File.Exists(path));
+    }
+
+    private sealed class AcquiredAmazonAudio(string path) : IAmazonDownloadService
+    {
+        public Task<bool> HasPublicDownloadSessionAsync(CancellationToken token) => Task.FromResult(true);
+        public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken token) => Task.FromResult(true);
+        public Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken token, string? publicAppBaseUrl = null) => Task.FromResult<string?>(null);
+        public Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken token) => Task.CompletedTask;
+        public Task<string> DownloadAsync(AmazonDownloadRequest request, bool embedMaxQualityCover,
+            TagSettings? tags, Func<double, double, Task>? progress, CancellationToken token) => Task.FromResult(path);
     }
 
     [Fact]
@@ -304,7 +370,7 @@ public sealed class DeliveredAudioQualityGuardTest : IDisposable
     private static string ReadString(object value, string property)
         => (string)value.GetType().GetProperty(property)!.GetValue(value)!;
 
-    private static void WriteWave(string path, short bitsPerSample, int sampleRate = 44100)
+    internal static void WriteWave(string path, short bitsPerSample, int sampleRate = 44100)
     {
         const short channels = 2;
         var blockAlign = (short)(channels * (bitsPerSample / 8));

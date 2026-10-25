@@ -3658,6 +3658,16 @@ public static partial class EngineAudioPostDownloadHelper
         var terminalStatus = IsTrackUnavailableFailure(failureMessage)
             ? "unavailable"
             : FailedStatus;
+        if (payload is { FallbackPlan.Count: > 0 })
+        {
+            terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(payload.FallbackPlan, payload.FallbackHistory)
+                ? "unavailable" : FailedStatus;
+        }
+        else if (terminalStatus == "unavailable")
+        {
+            context.Logger.LogWarning("Cannot confirm unavailability without saved engine/quality outcomes for {QueueUuid}.", queueUuid);
+            terminalStatus = FailedStatus;
+        }
         if (IsFinalDestinationDedupeBlock(failureMessage)
             && payload != null
             && await TryCompleteWatchlistFinalDestinationDedupeAsync(
@@ -3689,10 +3699,11 @@ public static partial class EngineAudioPostDownloadHelper
 
         context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {failureMessage}");
         if (!string.Equals(terminalStatus, "unavailable", StringComparison.OrdinalIgnoreCase)
-            && !IsRateLimitedFailure(exception)
             && !IsFinalDestinationDedupeBlock(failureMessage))
         {
-            await context.RetryScheduler.ScheduleRetryAsync(queueUuid, context.EngineName, failureMessage, CancellationToken.None);
+            await context.RetryScheduler.ScheduleRetryAsync(queueUuid, context.EngineName, failureMessage,
+                CancellationToken.None, FallbackFailureClassifier.MinimumRetryDelay(exception),
+                FallbackFailureClassifier.IsTemporaryProviderFailure(exception));
         }
     }
 
@@ -3789,12 +3800,6 @@ public static partial class EngineAudioPostDownloadHelper
             TimeSpan.FromMilliseconds(250));
         return match.Success ? match.Groups[1].Value.Trim() : null;
     }
-
-    private static bool IsRateLimitedFailure(Exception exception)
-        => exception.Message.Contains("429", StringComparison.OrdinalIgnoreCase)
-           || exception.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
-           || exception.Message.Contains("rate-limit", StringComparison.OrdinalIgnoreCase)
-           || exception.Message.Contains("throttl", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsTrackUnavailableFailure(string? message)
     {

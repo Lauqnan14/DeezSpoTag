@@ -49,7 +49,9 @@ public sealed class DownloadRetryScheduler
         string queueUuid,
         string engine,
         string reason,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? minimumDelay = null,
+        bool continueProviderRecovery = false)
     {
         if (string.IsNullOrWhiteSpace(queueUuid)
             || _cancellationRegistry.WasUserCanceled(queueUuid))
@@ -70,7 +72,7 @@ public sealed class DownloadRetryScheduler
             string.IsNullOrWhiteSpace(engine) ? "unknown" : engine,
             reason ?? string.Empty,
             maxRetries,
-            cancellationToken);
+            cancellationToken, minimumDelay, continueProviderRecovery);
         _lastKnownPending = scheduled || await _queueRepository.HasScheduledRetriesAsync(cancellationToken);
         if (scheduled)
         {

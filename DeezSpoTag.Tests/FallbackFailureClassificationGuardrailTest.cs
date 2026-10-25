@@ -15,6 +15,49 @@ public sealed class FallbackFailureClassificationGuardrailTest
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
     [Fact]
+    public void GenericSummaryDoesNotHideTemporaryFailureInSavedProviderOutcomes()
+    {
+        var failure = new AggregateException("Selected downloads failed",
+            new InvalidOperationException("No resolvable URL"),
+            new HttpRequestException("Provider HTTP 503", null, HttpStatusCode.ServiceUnavailable));
+        Assert.True(FallbackFailureClassifier.IsTemporaryProviderFailure(failure));
+    }
+
+    [Theory]
+    [InlineData(404, "TRACK_UNAVAILABLE", false, "none", "unavailable")]
+    [InlineData(409, "QUALITY_UNAVAILABLE", false, "none", "quality_below_requested")]
+    [InlineData(404, "TRACK_UNAVAILABLE", true, "none", "provider_transient")]
+    [InlineData(404, "TRACK_UNAVAILABLE", false, "poll_existing", "provider_transient")]
+    [InlineData(503, "TRACK_UNAVAILABLE", false, "none", "provider_transient")]
+    [InlineData(404, "UPSTREAM_FAILURE", false, "none", "provider_transient")]
+    public void OnlyExplicitNonRetryableProviderAbsenceIsConclusive(int status, string code, bool retryable, string mode, string expected)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { code, retryable, retry_mode = mode });
+        var failure = new HttpRequestException($"HTTP {status}: {body}", null, (HttpStatusCode)status);
+        Assert.Equal(expected, FallbackFailureClassifier.Classify(failure));
+        var retained = new HttpRequestException($"HTTP {status}", null, (HttpStatusCode)status);
+        FallbackFailureClassifier.AttachProviderErrorContract(retained, body);
+        Assert.Equal(expected, FallbackFailureClassifier.Classify(retained));
+    }
+
+    [Theory]
+    [InlineData("identity_unresolved")]
+    [InlineData("unresolved")]
+    [InlineData("catalog_lookup_failed")]
+    [InlineData("catalog_quality_below_requested")]
+    [InlineData("authentication_required")]
+    [InlineData("provider_timeout")]
+    [InlineData("provider_rate_limited")]
+    public void LookupOrOperationalFailureDoesNotConfirmSelectionAbsence(string errorClass)
+        => Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
+            [new("step-0", "tidal", "LOSSLESS", [], "isrc")], [new("step-0", "failed", errorClass, "No delivery confirmation")]));
+
+    [Fact]
+    public void CorruptedOutcomeIsNotConfirmationOfUnavailability()
+        => Assert.False(FallbackFailureClassifier.IsPlanUnavailable(
+            [new("step-0", "tidal", "LOSSLESS", [], "isrc")], [null!]));
+
+    [Fact]
     public void EngineFallback_DoesNotTreatGenericDownloadFailuresAsTerminalFallbackExhaustion()
     {
         var coordinator = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");

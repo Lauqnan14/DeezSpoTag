@@ -282,7 +282,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException.Message);
+        await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException);
     }
 
     private async Task<bool> TryAdvanceFallbackAsync(DownloadQueueItem item)
@@ -349,11 +349,34 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private async Task HandleUnhandledProcessorFailureAsync(DownloadQueueItem item, Exception ex)
     {
         _logger.LogError(ex, "Queue processor failure escaped engine for {QueueUuid}", item.QueueUuid);
-        await MarkQueueItemAsFailedAndRetryAsync(item, ex.Message);
+        await MarkQueueItemAsFailedAndRetryAsync(item, ex);
     }
 
-    private async Task MarkQueueItemAsFailedAndRetryAsync(DownloadQueueItem item, string error)
+    private static List<FallbackAttempt> ReadRecoveryHistory(JsonObject payload)
     {
+        try
+        {
+            return (payload["FallbackHistory"] ?? payload["fallbackHistory"])?.Deserialize<List<FallbackAttempt>>() ?? [];
+        }
+        catch (JsonException) { return []; }
+    }
+
+    private static AggregateException ResolveRetryFailure(DownloadQueueItem item)
+    {
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson ?? string.Empty);
+        var outcomes = ReadRecoveryHistory(payload);
+        var failure = new AggregateException(item.Error ?? string.Empty,
+            outcomes.Where(attempt => attempt is not null)
+                .Select(attempt => FallbackFailureClassifier.IsTemporaryProviderClass(attempt.ErrorClass)
+                    ? (Exception)new HttpRequestException($"{attempt.ErrorClass}: {attempt.Detail}")
+                    : new InvalidOperationException($"{attempt.ErrorClass}: {attempt.Detail}"))
+                .Prepend(new InvalidOperationException(item.Error ?? string.Empty)));
+        return failure;
+    }
+
+    private async Task MarkQueueItemAsFailedAndRetryAsync(DownloadQueueItem item, Exception exception)
+    {
+        var error = exception.Message;
         if (string.IsNullOrWhiteSpace(item.QueueUuid))
         {
             return;
@@ -364,7 +387,9 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             FailedStatus,
             string.IsNullOrWhiteSpace(error) ? "Unhandled processor failure." : error,
             cancellationToken: CancellationToken.None);
-        await _retryScheduler.ScheduleRetryAsync(item.QueueUuid, item.Engine ?? "unknown", error, CancellationToken.None);
+        await _retryScheduler.ScheduleRetryAsync(item.QueueUuid, item.Engine ?? "unknown", error,
+            CancellationToken.None, FallbackFailureClassifier.MinimumRetryDelay(exception),
+            FallbackFailureClassifier.IsTemporaryProviderFailure(exception));
     }
 
     public async Task ProcessQueueItemAsync(DownloadQueueItem nextItem, CancellationToken cancellationToken = default)
@@ -376,11 +401,13 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             var effectiveItem = await NormalizeFallbackPayloadAsync(nextItem, cancellationToken);
             if (string.Equals(effectiveItem.Status, FailedStatus, StringComparison.OrdinalIgnoreCase))
             {
+                var retryFailure = ResolveRetryFailure(effectiveItem);
                 await _retryScheduler.ScheduleRetryAsync(
                     effectiveItem.QueueUuid,
                     effectiveItem.Engine ?? "unknown",
                     effectiveItem.Error ?? "Track unavailable in enabled download sources.",
-                    cancellationToken);
+                    cancellationToken, FallbackFailureClassifier.MinimumRetryDelay(retryFailure),
+                    FallbackFailureClassifier.IsTemporaryProviderFailure(retryFailure));
                 return;
             }
             if (string.Equals(effectiveItem.Status, UnavailableStatus, StringComparison.OrdinalIgnoreCase))
@@ -414,7 +441,9 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             {
                 _logger.LogError(ex, "Engine processing failed for {QueueUuid}", effectiveItem.QueueUuid);
                 await _queueRepository.UpdateStatusAsync(effectiveItem.QueueUuid, FailedStatus, ex.Message, cancellationToken: cancellationToken);
-                await _retryScheduler.ScheduleRetryAsync(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", ex.Message, cancellationToken);
+                await _retryScheduler.ScheduleRetryAsync(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", ex.Message,
+                    cancellationToken, FallbackFailureClassifier.MinimumRetryDelay(ex),
+                    FallbackFailureClassifier.IsTemporaryProviderFailure(ex));
             }
         }
         finally
@@ -490,6 +519,19 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             var terminalStatus = EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(resolution.Error)
                 ? UnavailableStatus
                 : FailedStatus;
+            var resolvedPayload = QueuePreResolutionPayload.ParseOrEmpty(resolution.Item.PayloadJson ?? string.Empty);
+            var savedPlan = DownloadExecutionPlan.Read(resolvedPayload);
+            if (savedPlan.Count > 0)
+            {
+                var history = ReadRecoveryHistory(resolvedPayload);
+                terminalStatus = FallbackFailureClassifier.IsPlanUnavailable(savedPlan, history)
+                    ? UnavailableStatus : FailedStatus;
+            }
+            else if (terminalStatus == UnavailableStatus)
+            {
+                _logger.LogWarning("Cannot confirm unavailability without saved engine/quality outcomes for {QueueUuid}.", resolution.Item.QueueUuid);
+                terminalStatus = FailedStatus;
+            }
             await _queueRepository.UpdateStatusAsync(
                 resolution.Item.QueueUuid,
                 terminalStatus,

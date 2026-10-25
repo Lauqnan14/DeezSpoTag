@@ -12,12 +12,212 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Shared;
 using System.Text.Json;
+using System.Net;
+using System.Net.Http;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class QobuzQualityFallbackTest
 {
+    [Fact]
+    public void DownloadedAudio_WithoutEmbeddedIdentityIsNotMarkedVerified()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "qobuz-untagged-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "audio.wav");
+            DeliveredAudioQualityGuardTest.WriteWave(path, 16);
+            var method = typeof(QobuzDownloadService).GetMethod("ValidateDownloadedAudioIdentity", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var result = method.Invoke(null, new object[] { path,
+                new QobuzDownloadRequest { TrackName = "Song", ArtistName = "Artist", Isrc = "USGZ20930467" } })!;
+            Assert.True((bool)result.GetType().GetProperty("Success")!.GetValue(result)!);
+            Assert.False((bool)result.GetType().GetProperty("Conclusive")!.GetValue(result)!);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void DownloadedAudio_WithOneConflictingIsrcIsRejected()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "qobuz-identity-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "audio.wav");
+            DeliveredAudioQualityGuardTest.WriteWave(path, 16);
+            using (var audio = TagLib.File.Create(path))
+            {
+                audio.Tag.Title = "Song";
+                audio.Tag.Performers = ["Artist"];
+                audio.Tag.ISRC = "USGZ20930468";
+                audio.Save();
+            }
+            using (var saved = TagLib.File.Create(path)) Assert.Equal("USGZ20930468", saved.Tag.ISRC);
+            var method = typeof(QobuzDownloadService).GetMethod("ValidateDownloadedAudioIdentity", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var result = method.Invoke(null, new object[] { path,
+                new QobuzDownloadRequest { TrackName = "Song", ArtistName = "Artist", Isrc = "USGZ20930467" } })!;
+            Assert.False((bool)result.GetType().GetProperty("Success")!.GetValue(result)!);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task VerifiedSession_CooldownResetPreservesCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var providers = new EmptyQualityProviders { Failure = new TaskCanceledException() };
+        var service = new QobuzDownloadService(NullLogger<QobuzDownloadService>.Instance, Options.Create(new QobuzApiConfig()),
+            new CountingCredentials(), new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance), providers);
+        var method = typeof(QobuzDownloadService).GetMethod("ResetVerifiedProviderBackoffAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            (Task)method.Invoke(service, new object[] { cancellation.Token })!);
+    }
+
+    [Fact]
+    public async Task VerifiedSession_IsNotRejectedWhenCooldownRegistryCannotBeRead()
+    {
+        var providers = new EmptyQualityProviders { Failure = new IOException("registry read failed") };
+        var service = new QobuzDownloadService(NullLogger<QobuzDownloadService>.Instance, Options.Create(new QobuzApiConfig()),
+            new CountingCredentials(), new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance), providers);
+        var method = typeof(QobuzDownloadService).GetMethod("ResetVerifiedProviderBackoffAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        await (Task)method.Invoke(service, new object[] { CancellationToken.None })!;
+    }
+
+    [Fact]
+    public async Task FreshVerifiedSession_ClearsOnlyEnabledSignedProviderBackoff()
+    {
+        var name = "verified-" + Guid.NewGuid().ToString("N");
+        var other = "disabled-" + Guid.NewGuid().ToString("N");
+        var providers = new EmptyQualityProviders { Providers = new[]
+        {
+            new QobuzPublicProvider("enabled", name, "zarz-v2", "https://example.invalid", null, null, null, true, "online", null, null, null, null, null, null),
+            new QobuzPublicProvider("disabled", other, "zarz-v2", "https://example.invalid", null, null, null, false, "disabled", null, null, null, null, null, null)
+        } };
+        var service = new QobuzDownloadService(NullLogger<QobuzDownloadService>.Instance, Options.Create(new QobuzApiConfig()),
+            new CountingCredentials(), new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance), providers);
+        var dictionary = (System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>)typeof(QobuzDownloadService)
+            .GetField("ProviderBackoffUntil", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        dictionary[name] = dictionary[other] = DateTimeOffset.UtcNow.AddMinutes(10);
+        try
+        {
+            var method = typeof(QobuzDownloadService).GetMethod("ResetVerifiedProviderBackoffAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(method);
+            await (Task)method.Invoke(service, new object[] { CancellationToken.None })!;
+            Assert.False(dictionary.ContainsKey(name));
+            Assert.True(dictionary.ContainsKey(other));
+        }
+        finally { dictionary.TryRemove(name, out _); dictionary.TryRemove(other, out _); }
+    }
+
+    [Fact]
+    public async Task ExpiredPreResolvedStream_FreshUrlDeliversTheOriginalAudio()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "qobuz-stream-recovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var input = Path.Combine(root, "fixture.flac");
+            var processInfo = new System.Diagnostics.ProcessStartInfo("ffmpeg") { UseShellExecute = false, RedirectStandardError = true };
+            foreach (var argument in new[] { "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2", input })
+                processInfo.ArgumentList.Add(argument);
+            using (var process = System.Diagnostics.Process.Start(processInfo)!)
+            {
+                var error = await process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                Assert.True(process.ExitCode == 0, error);
+            }
+            var audio = await File.ReadAllBytesAsync(input);
+            var handler = new RenewedStreamHandler(audio);
+            using var client = new HttpClient(handler);
+            var service = CreateQualityService(new ValidCredentials());
+            foreach (var field in new[] { "_apiClient", "_downloadClient" })
+                typeof(QobuzDownloadService).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, client);
+            var request = new QobuzDownloadRequest
+            {
+                TrackUrl = "https://play.qobuz.com/track/74444082", TrackName = "Song", ArtistName = "Artist",
+                OutputDir = root, Quality = "6",
+                ResolvedQuality = new QobuzQualityResolution(74444082, "6", "6", "https://expired.invalid/audio", 16, 44.1, "zarz")
+            };
+            var path = await service.DownloadByUrlAsync(request, CancellationToken.None);
+            Assert.Equal(audio, await File.ReadAllBytesAsync(path));
+            Assert.Equal(new[] { "expired", "resolve", "fresh" }, handler.Requests);
+            Assert.Equal("6", request.Quality);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class ValidCredentials : IQobuzCredentialProvider
+    {
+        public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken token)
+            => Task.FromResult(new QobuzOfficialCredentials("app", "token", "secret"));
+    }
+
+    private sealed class RenewedStreamHandler(byte[] audio) : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            if (request.RequestUri!.Host == "expired.invalid")
+            {
+                Requests.Add("expired");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+            }
+            if (request.RequestUri.Host == "fresh.invalid")
+            {
+                Requests.Add("fresh");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(audio) });
+            }
+            Requests.Add("resolve");
+            Assert.Contains("format_id=6", request.RequestUri.Query, StringComparison.Ordinal);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"url\":\"https://fresh.invalid/audio\",\"bit_depth\":16,\"sampling_rate\":44.1}") });
+        }
+    }
+    [Fact]
+    public async Task ExpiredPreResolvedStream_ResumesFreshResolutionAtTheSameQuality()
+    {
+        var credentials = new CountingCredentials();
+        var service = CreateQualityService(credentials);
+        using var client = new HttpClient(new ExpiredStreamHandler());
+        typeof(QobuzDownloadService).GetField("_downloadClient", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var root = Path.Combine(Path.GetTempPath(), "qobuz-expired-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var request = new QobuzDownloadRequest
+            {
+                TrackUrl = "https://play.qobuz.com/track/74444082", TrackName = "Song", ArtistName = "Artist",
+                OutputDir = root, Quality = "6",
+                ResolvedQuality = new QobuzQualityResolution(74444082, "6", "6", "https://expired.invalid/audio", 16, 44.1, "zarz")
+            };
+            var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DownloadByUrlAsync(request, CancellationToken.None));
+            Assert.Equal("official unavailable", failure.Message);
+            Assert.Equal(1, credentials.Calls);
+            Assert.Null(request.ResolvedQuality);
+            Assert.Equal("6", request.Quality);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class CountingCredentials : IQobuzCredentialProvider
+    {
+        public int Calls { get; private set; }
+        public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken token)
+        {
+            Calls++;
+            return Task.FromException<QobuzOfficialCredentials>(new InvalidOperationException("official unavailable"));
+        }
+    }
+
+    private sealed class ExpiredStreamHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+    }
+
     [Fact]
     public async Task ResolveQuality_PreservesOfficialFailureWhenNoPublicStreamSucceeds()
     {
@@ -51,8 +251,10 @@ public sealed class QobuzQualityFallbackTest
 
     private sealed class EmptyQualityProviders : IQobuzPublicProviderRegistry
     {
+        public Exception? Failure { get; set; }
+        public IReadOnlyList<QobuzPublicProvider> Providers { get; set; } = [];
         public Task<IReadOnlyList<QobuzPublicProvider>> GetProvidersAsync(CancellationToken ct)
-            => Task.FromResult<IReadOnlyList<QobuzPublicProvider>>([]);
+            => Failure == null ? Task.FromResult(Providers) : Task.FromException<IReadOnlyList<QobuzPublicProvider>>(Failure);
         public Task<IReadOnlyList<QobuzPublicProvider>> CheckEnabledProvidersAsync(CancellationToken ct) => GetProvidersAsync(ct);
         public Task<QobuzPublicProvider?> SetEnabledAsync(string id, bool enabled, CancellationToken ct) => Task.FromResult<QobuzPublicProvider?>(null);
         public Task RecordSuccessAsync(string id, long ms, CancellationToken ct) => Task.CompletedTask;

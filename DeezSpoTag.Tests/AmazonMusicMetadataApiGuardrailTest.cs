@@ -19,6 +19,123 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class AmazonMusicMetadataApiGuardrailTest
 {
+    [Fact]
+    public void MatchingIsrc_DoesNotOverrideAConflictingAmazonTitle()
+    {
+        var method = typeof(AmazonMusicMetadataService).GetMethod("IsAcceptedResolvedTrack", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var track = new AmazonCatalogItem("B012345678", "track", "An Entirely Different Song", "Nivea", "Album", "", "", 188000, "FR8GV1715720", false);
+        Assert.False((bool)method.Invoke(null, new object?[] { track, "Don't Mess With My Man", "Nivea", "Album", 188000, "FR8GV1715720" })!);
+    }
+
+    [Fact]
+    public async Task SingleToAlbumException_DoesNotDisplaceAnExistingValidRelease()
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-release-precedence-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            await auth.SaveAsync(new PlatformAuthState { AmazonMusic = new AmazonMusicAuth { Host = "music.amazon.com" } });
+            using var handler = new BootstrapHandler
+            {
+                SearchResponseBody = System.Text.Json.JsonSerializer.Serialize(new { items = new[]
+                {
+                    (Id: "B00O9WYR5O", Album: "My Life"), (Id: "B003YT64H2", Album: "Missing You - Single")
+                }.Select(item => new
+                {
+                    primaryText = "Missing You", secondaryText = "I-Octane",
+                    iconButton = new { observer = new { storageKey = "B00O9WYQQ2:" + item.Id } },
+                    contextMenu = new { options = new[] { new { text = "Go to album", headerText = item.Album } } }
+                }) }),
+                TrackResponseBody = "{\"items\":[]}"
+            };
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var result = await service.ResolveTrackAsync("Missing You", "I-Octane", "Missing You - Single", 255000, "US4R31001332", CancellationToken.None);
+            Assert.Equal("B003YT64H2", result?.Id);
+            Assert.Equal(0, handler.DetailRequests);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("Missing You - Single", 255000, 255000, "Missing You", "I-Octane", "", true)]
+    [InlineData("Missing You", 255000, 257000, "Missing You", "I-Octane", "", true)]
+    [InlineData("Another Album", 255000, 255000, "Missing You", "I-Octane", "", false)]
+    [InlineData("Missing You - Single", 255000, 258000, "Missing You", "I-Octane", "", false)]
+    [InlineData("Missing You - Single", 255000, 0, "Missing You", "I-Octane", "", false)]
+    [InlineData("Missing You - Single", 0, 255000, "Missing You", "I-Octane", "", false)]
+    [InlineData("Missing You - Single", 255000, 255000, "Missing You (Dirty)", "I-Octane", "", false)]
+    [InlineData("Missing You - Single", 255000, 255000, "Missing You", "Another Artist", "", false)]
+    [InlineData("Missing You - Single", 255000, 255000, "Missing You", "I-Octane", "USVPR1200009", false)]
+    public void SingleToAlbumException_RequiresConfirmedRecordingEvidence(string album, int expectedDuration,
+        int deliveredDuration, string title, string artist, string isrc, bool accepted)
+    {
+        var candidate = new AmazonCatalogItem("B00O9WYR5O", "track", title, artist, "My Life", "", "", null, "", false);
+        var details = new AmazonTrack(candidate.Id, title, "", "My Life", "", "", deliveredDuration, 1, isrc, candidate.Id, false);
+        var method = typeof(AmazonMusicMetadataService).GetMethod("MatchSingleAlbumCandidate", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var result = method.Invoke(null, new object?[] { candidate, details, "Missing You", "I-Octane", album, expectedDuration, "US4R31001332" });
+        Assert.Equal(accepted, result != null);
+    }
+
+    [Theory]
+    [InlineData(255000, "B00O9WYR5O", true)]
+    [InlineData(0, "B00O9WYR5O", false)]
+    [InlineData(258000, "B00O9WYR5O", false)]
+    [InlineData(255000, "B003YT64H2", false)]
+    public async Task SingleToAlbumResolution_HydratesOnlyTheExactSearchIdentity(int duration, string detailId, bool accepted)
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-single-album-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            await auth.SaveAsync(new PlatformAuthState { AmazonMusic = new AmazonMusicAuth { Host = "music.amazon.com" } });
+            using var handler = new BootstrapHandler
+            {
+                SearchResponseBody = "{\"items\":[{\"primaryText\":\"Missing You\",\"secondaryText\":\"I-Octane\",\"iconButton\":{\"observer\":{\"storageKey\":\"B00O9WYQQ2:B00O9WYR5O\"}},\"contextMenu\":{\"options\":[{\"text\":\"Go to album\",\"headerText\":\"My Life\"}]}}]}",
+                TrackResponseBody = System.Text.Json.JsonSerializer.Serialize(new { items = new[] { new {
+                    deeplink = "https://music.amazon.com/tracks/" + detailId, primaryText = "Missing You", durationMs = duration,
+                    contextMenu = new { options = new[] { new { text = "Go to album", headerText = "My Life" } } }
+                } } })
+            };
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var result = await service.ResolveTrackAsync("Missing You", "I-Octane", "Missing You - Single", 255000, "US4R31001332", CancellationToken.None);
+            Assert.Equal(accepted, result != null);
+            Assert.Equal(1, handler.DetailRequests);
+            if (accepted)
+            {
+                Assert.Equal("B00O9WYR5O", result!.Id);
+                Assert.Equal(255000, result.DurationMs);
+                Assert.Equal("I-Octane", result.Artist);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task TypedSearchAccessFailure_IsNotReportedAsAnEmptyCatalog()
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-search-failure-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            await auth.SaveAsync(new PlatformAuthState { AmazonMusic = new AmazonMusicAuth { Host = "music.amazon.com" } });
+            using var handler = new BootstrapHandler(HttpStatusCode.Forbidden);
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => service.SearchAsync("Song Artist", "track", 25, CancellationToken.None));
+            Assert.Equal(HttpStatusCode.Forbidden, failure.StatusCode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData("music.amazon.com")]
     [InlineData("music.amazon.co.uk")]
@@ -51,8 +168,11 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    private sealed class BootstrapHandler : HttpMessageHandler, IHttpClientFactory
+    private sealed class BootstrapHandler(HttpStatusCode searchStatus = HttpStatusCode.OK) : HttpMessageHandler, IHttpClientFactory
     {
+        public string? SearchResponseBody { get; set; }
+        public string? TrackResponseBody { get; set; }
+        public int DetailRequests { get; private set; }
         public HttpMethod? BootstrapMethod { get; private set; }
         public string? BootstrapUri { get; private set; }
         public bool HadCookie { get; private set; }
@@ -70,8 +190,19 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
                     ? "{\"sessionId\":\"guest-session\",\"deviceId\":\"guest-device\",\"csrf\":{\"token\":\"guest-csrf\",\"ts\":\"issued-ts\",\"rnd\":\"issued-nonce\"}}"
                     : "{\"sessionId\":\"guest-session\",\"deviceId\":\"guest-device\"}";
             }
-            else { SearchBody = await request.Content!.ReadAsStringAsync(token); response = "{\"methods\":[]}"; }
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response) };
+            else
+            {
+                SearchBody = await request.Content!.ReadAsStringAsync(token);
+                if (request.RequestUri.AbsolutePath.EndsWith("/searchCatalogTracks", StringComparison.Ordinal))
+                    response = SearchResponseBody ?? "{\"methods\":[]}";
+                else
+                {
+                    DetailRequests++;
+                    response = TrackResponseBody ?? "{\"methods\":[]}";
+                }
+            }
+            return new HttpResponseMessage(request.RequestUri!.AbsolutePath == "/config.json" ? HttpStatusCode.OK : searchStatus)
+                { Content = new StringContent(response) };
         }
     }
 
@@ -167,7 +298,7 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
 
         Assert.Contains("string? album,\n        int? durationMs", source, StringComparison.Ordinal);
         Assert.Contains("Album: album", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Album: null", source, StringComparison.Ordinal);
+        Assert.Contains("MatchSingleAlbumCandidate", source, StringComparison.Ordinal);
     }
 
     [Fact]

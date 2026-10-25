@@ -157,6 +157,14 @@ public sealed class QobuzTrackResolver
     {
         if (!string.IsNullOrWhiteSpace(isrc))
         {
+            var direct = await TryGetTrackAsync(trackId.Value, cancellationToken);
+            var expectedSeconds = durationMs is > 0 ? (int)Math.Round(durationMs.Value / 1000d) : 0;
+            if (direct?.Id == trackId.Value && IsExactIsrcMatch(direct, isrc)
+                && !HasContradictoryMetadata(direct, title, artist, expectedSeconds))
+            {
+                return BuildResolution(direct, "direct_url", Math.Max(
+                    ScoreCandidate(direct, title, artist, album, expectedSeconds, preferHiRes: true), 20));
+            }
             return await ResolveTrackAsync(isrc, title, artist, album, durationMs, cancellationToken);
         }
 
@@ -396,6 +404,18 @@ public sealed class QobuzTrackResolver
                 continue;
             }
 
+            if (!string.IsNullOrWhiteSpace(expectedTitle)
+                && !TrackTitleMatcher.RecordingTitlesMatch(expectedTitle, GetTrackMatchTitle(candidate)))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedIsrc) && IsExactIsrcMatch(candidate, expectedIsrc)
+                && HasContradictoryMetadata(candidate, expectedTitle, expectedArtist, expectedDurationSec))
+            {
+                continue;
+            }
+
             var score = ScoreCandidate(candidate, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, preferHiRes: true);
             var validation = TrackCandidateValidator.Validate(
                 new TrackMatchSource(
@@ -467,11 +487,19 @@ public sealed class QobuzTrackResolver
     private static QobuzTrackResolution BuildResolution(QobuzTrack track, string source, int score)
         => new(track, source, score);
 
+    private static string GetTrackMatchTitle(QobuzTrack track)
+    {
+        var title = track.Title ?? string.Empty;
+        return string.IsNullOrWhiteSpace(track.Version)
+            || title.Contains(track.Version, StringComparison.OrdinalIgnoreCase)
+                ? title : $"{title} ({track.Version})";
+    }
+
     private static TrackMatchCandidate BuildTrackMatchCandidate(QobuzTrack track)
         => new(
             track.Id > 0 ? track.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty,
             track.ISRC,
-            track.Title,
+            GetTrackMatchTitle(track),
             GetTrackArtist(track),
             track.Album?.Title,
             track.Duration > 0 ? track.Duration * 1000 : null);
@@ -486,7 +514,7 @@ public sealed class QobuzTrackResolver
     {
         var score = 0;
 
-        if (TitlesMatch(expectedTitle, candidate.Title))
+        if (TitlesMatch(expectedTitle, GetTrackMatchTitle(candidate)))
         {
             score += 8;
         }
@@ -573,7 +601,7 @@ public sealed class QobuzTrackResolver
     {
         var hasTitle = !string.IsNullOrWhiteSpace(expectedTitle);
         var hasArtist = !string.IsNullOrWhiteSpace(expectedArtist);
-        if (hasTitle && !TitlesMatch(expectedTitle, track.Title))
+        if (hasTitle && !TrackTitleMatcher.RecordingTitlesMatch(expectedTitle, GetTrackMatchTitle(track)))
         {
             return true;
         }

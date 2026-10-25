@@ -12,6 +12,7 @@ using System.Linq;
 using System.Globalization;
 using System.Text.Json;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Services.Download.Fallback;
 
 namespace DeezSpoTag.Web.Controllers;
 
@@ -869,11 +870,61 @@ public class ActivitiesController : Controller
         {
             payload["error"] = item.Error;
         }
+        payload["failureMessage"] = BuildDownloadFailureMessage(item.PayloadJson, item.Status, item.Error)!;
         if (!payload.TryGetValue("quality", out var quality) || quality is null || string.IsNullOrWhiteSpace(quality.ToString()))
         {
             payload["quality"] = ResolveSourceQuality(item.Engine, settings);
         }
         return payload;
+    }
+
+    private static string? BuildDownloadFailureMessage(string? payloadJson, string status, string? error)
+    {
+        if (GetActivityStatus(status) is not (ActivityStatus.Failed or ActivityStatus.Unavailable or ActivityStatus.Retrying))
+            return null;
+
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(payloadJson ?? string.Empty);
+        var plan = DownloadExecutionPlan.Read(payload);
+        List<FallbackAttempt> history;
+        try
+        {
+            history = (payload["FallbackHistory"] ?? payload["fallbackHistory"])
+                ?.Deserialize<List<FallbackAttempt>>() ?? [];
+            var snapshot = (payload["SourceSettingsSnapshot"] ?? payload["sourceSettingsSnapshot"])
+                ?.Deserialize<QueueSourceSettingsSnapshot>();
+            if (snapshot is not null)
+            {
+                var savedSettings = snapshot.ApplyTo(new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings());
+                plan = plan.Where(step => step is not null
+                    && DownloadSourceOrder.IsSourceQualityEnabled(savedSettings, step.Engine, step.Quality)).ToList();
+                if (plan.Count == 0) return null;
+            }
+        }
+        catch (JsonException) { return null; }
+
+        var outcomes = plan.Count > 0
+            ? plan.Where(step => step is not null).Select(step => history.LastOrDefault(attempt => attempt is not null
+                && string.Equals(attempt.StepId, step.StepId, StringComparison.OrdinalIgnoreCase))).ToList()
+            : history.TakeLast(1).ToList();
+        if (outcomes.Any(attempt => attempt?.ErrorClass is FallbackFailureClassifier.ProviderVerificationRequired
+            or FallbackFailureClassifier.AuthenticationRequired))
+            return "Session verification needed";
+
+        if (FallbackFailureClassifier.IsPlanUnavailable(plan, history))
+            return outcomes.Any(attempt => attempt?.ErrorClass == FallbackFailureClassifier.QualityBelowRequested)
+                ? "Quality unavailable" : "Unavailable among the enabled services";
+
+        // A transport failure or missing mapping is not evidence that a recording is unavailable.
+        // Keep those diagnostics in the stored error/history and logs, not on the download card.
+        if (plan.Count == 0 && history.Count == 0)
+        {
+            var reason = FallbackFailureClassifier.Classify(new InvalidOperationException(error ?? string.Empty));
+            if (reason is FallbackFailureClassifier.ProviderVerificationRequired or FallbackFailureClassifier.AuthenticationRequired)
+                return "Session verification needed";
+            if (reason == FallbackFailureClassifier.QualityBelowRequested)
+                return "Quality unavailable";
+        }
+        return null;
     }
 
     private static bool CanMonitorUnavailableItem(

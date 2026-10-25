@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Matching;
 
@@ -367,7 +368,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                 RequireCandidateDurationWhenSourceHasDuration: false,
                 MaxIsrcDurationDifferenceMs: 20_000,
                 MaxMetadataDurationDifferenceMs: 8_000));
-        return validation.Accepted;
+        return validation.Accepted && TrackTitleMatcher.RecordingTitlesMatch(title, candidate.Title);
     }
 
     private async Task<AmazonCatalogItem?> ResolveTrackFromCatalogAsync(
@@ -387,14 +388,76 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
         var session = await CreateSessionAsync(cancellationToken);
         var candidates = await ResolveTrackCatalogCandidatesAsync(session, query, cancellationToken);
-        foreach (var candidate in candidates
+        var eligible = candidates
             .Where(IsDownloadableMusicTrackResult)
-            .Where(candidate => (!requireAtmos || candidate.HasAtmos) && IsAcceptedResolvedTrack(candidate, title, artist, album, durationMs, isrc)))
+            .Where(candidate => !requireAtmos || candidate.HasAtmos)
+            .ToArray();
+        var accepted = eligible.FirstOrDefault(candidate => IsAcceptedResolvedTrack(candidate, title, artist, album, durationMs, isrc));
+        if (accepted != null) return accepted;
+
+        foreach (var candidate in eligible)
         {
-            return candidate;
+            if (!CanCheckSingleAlbumCandidate(candidate, title, artist, album, durationMs, isrc))
+                continue;
+
+            // Search cards can omit duration/ISRC. Fetch the same identity's
+            // details before considering the approved single-to-album exception.
+            var tracklist = await GetTracklistAsync(session, candidate.Id, "track", candidate.Url, cancellationToken);
+            foreach (var details in tracklist?.Tracks ?? [])
+            {
+                var matched = MatchSingleAlbumCandidate(candidate, details, title, artist, album, durationMs, isrc);
+                if (matched != null) return matched;
+            }
         }
 
         return null;
+    }
+
+    private static bool CanCheckSingleAlbumCandidate(AmazonCatalogItem candidate, string title, string artist,
+        string? album, int? durationMs, string? isrc)
+    {
+        if (durationMs is not > 0 || string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist)
+            || string.IsNullOrWhiteSpace(candidate.Artist) || string.IsNullOrWhiteSpace(album)) return false;
+
+        var singleAlbumTitle = Regex.Replace(album.Trim(), @"\s*(?:[-–—]\s*|\(\s*)?\bSingle\)?\s*$",
+            string.Empty, RegexOptions.IgnoreCase, RegexTimeout).Trim();
+        if (NormalizeSearchText(album) != NormalizeSearchText(title)
+            && NormalizeSearchText(singleAlbumTitle) != NormalizeSearchText(title)) return false;
+
+        // Unlike ordinary title matching, this narrow exception cannot erase
+        // radio/dirty/clean/version labels or accept a spelling correction.
+        return NormalizeSearchText(candidate.Title) == NormalizeSearchText(title)
+            && TrackTitleMatcher.StrictArtistsMatch(artist, candidate.Artist)
+            && IsAcceptedResolvedTrack(candidate, title, artist, album: null, durationMs: null, isrc);
+    }
+
+    private static AmazonCatalogItem? MatchSingleAlbumCandidate(AmazonCatalogItem candidate, AmazonTrack details,
+        string title, string artist, string? album, int? durationMs, string? isrc)
+    {
+        if (!CanCheckSingleAlbumCandidate(candidate, title, artist, album, durationMs, isrc)
+            || !string.Equals(details.Id, candidate.Id, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(details.AmazonId, candidate.Id, StringComparison.OrdinalIgnoreCase)
+            || details.DurationMs <= 0 || Math.Abs((long)details.DurationMs - durationMs!.Value) > 2000
+            || NormalizeSearchText(details.Title) != NormalizeSearchText(title)) return null;
+
+        var knownIsrcs = new[] { isrc, candidate.Isrc, details.Isrc }
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!.Replace("-", string.Empty).Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        if (knownIsrcs.Skip(1).Any()) return null;
+
+        var hydrated = candidate with
+        {
+            Title = details.Title,
+            Artist = string.IsNullOrWhiteSpace(details.Artist) ? candidate.Artist : details.Artist,
+            Album = string.IsNullOrWhiteSpace(details.Album) ? candidate.Album : details.Album,
+            DurationMs = details.DurationMs,
+            Isrc = string.IsNullOrWhiteSpace(details.Isrc) ? candidate.Isrc : details.Isrc,
+            HasAtmos = candidate.HasAtmos || details.HasAtmos
+        };
+        return TrackTitleMatcher.StrictArtistsMatch(artist, hydrated.Artist)
+            && IsAcceptedResolvedTrack(hydrated, title, artist, album: null, durationMs, isrc)
+                ? hydrated : null;
     }
 
     private async Task<IReadOnlyList<AmazonCatalogItem>> ResolveTrackCatalogCandidatesAsync(
@@ -474,7 +537,8 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Amazon Music typed {Type} search failed for {Keyword}.", LogSanitizer.OneLine(normalizedType), LogSanitizer.OneLine(keyword));
-            return [];
+            // Do not turn failed access into a successful empty catalog search.
+            throw;
         }
     }
 
@@ -688,7 +752,8 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             }
         }
 
-        throw new HttpRequestException($"Amazon Music metadata call failed for {path}.", lastException);
+        throw new HttpRequestException($"Amazon Music catalog lookup failed for {path}.", lastException,
+            (lastException as HttpRequestException)?.StatusCode);
     }
 
     private static string BuildAmazonSkillHeaders(AmazonSession session, string pageUrl)

@@ -584,7 +584,9 @@ WHERE status IN ('queued', 'resolving')
         string engine,
         string reason,
         int maxAttempts,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? minimumDelay = null,
+        bool continueProviderRecovery = false)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -597,16 +599,18 @@ SET status = 'retry_waiting',
     retry_next_at = strftime(
         '%Y-%m-%dT%H:%M:%fZ',
         'now',
-        '+' || MIN(300, 15 * (1 << retry_attempt_count)) || ' seconds'),
+        '+' || MAX(MIN(300, 15 * (1 << MIN(retry_attempt_count, 5))), @minimumDelaySeconds) || ' seconds'),
     retry_attempt_count = retry_attempt_count + 1,
     retry_reason = @reason,
     retry_engine = @engine,
     error = @reason,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
-  AND retry_attempt_count < @maxAttempts
+  AND (retry_attempt_count < @maxAttempts OR (@continueProviderRecovery = 1 AND @maxAttempts > 0))
   AND lower(status) NOT IN ('completed', 'complete', 'canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("continueProviderRecovery", continueProviderRecovery ? 1 : 0);
+        command.Parameters.AddWithValue("minimumDelaySeconds", Math.Max(0L, (long)Math.Ceiling(minimumDelay?.TotalSeconds ?? 0)));
         command.Parameters.AddWithValue("maxAttempts", Math.Max(0, maxAttempts));
         command.Parameters.AddWithValue("reason", reason ?? string.Empty);
         command.Parameters.AddWithValue("engine", engine ?? string.Empty);

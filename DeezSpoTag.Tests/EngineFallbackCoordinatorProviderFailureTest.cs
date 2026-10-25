@@ -20,6 +20,7 @@ using DeezSpoTag.Services.Settings;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -44,6 +45,180 @@ public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
         }).Build();
         _repository = new DownloadQueueRepository(configuration, NullLogger<DownloadQueueRepository>.Instance);
         _settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+    }
+
+    [Fact]
+    public async Task TemporaryProviderFailure_DoesNotBecomePermanentWhenNormalRetriesAreExhausted()
+    {
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 1; _settings.SaveSettings(settings);
+        var payload = BuildPayload(); payload.FallbackPlan = [new("step-0", "qobuz", "7", [], "isrc")]; payload.Quality = "7";
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "qobuz", NullLogger.Instance);
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await EngineAudioPostDownloadHelper.HandleFailureAsync(new HttpRequestException("Provider HTTP 503", null, HttpStatusCode.ServiceUnavailable),
+                payload.Id, payload, context, CancellationToken.None);
+            Assert.Equal("retry_waiting", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+            await using (var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+            {
+                await db.OpenAsync();
+                await using var command = db.CreateCommand();
+                command.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+                command.Parameters.AddWithValue("$uuid", payload.Id);
+                await command.ExecuteNonQueryAsync();
+            }
+            Assert.True(await retry.RunRetrySweepAsync());
+            Assert.Equal("queued", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task ExhaustedDownload_KeepsEveryAttemptInActivityAndDockerLogs()
+    {
+        var payload = BuildPayload();
+        payload.AutoIndex = 2;
+        payload.FallbackHistory =
+        [
+            new("step-0", "failed", "provider_transient", "first diagnostic"),
+            new("step-1", "skipped", "authentication_required", "second diagnostic")
+        ];
+        await EnqueueAsync(payload);
+        var capture = new CapturingDownloadLog();
+        var catalog = new AppleMusicCatalogService(new NotFoundHttpClientFactory(), _settings,
+            NullLogger<AppleMusicCatalogService>.Instance, new MemoryCache(new MemoryCacheOptions()));
+        var search = new EngineFallbackSearchService(catalog, NullLogger<EngineFallbackSearchService>.Instance,
+            amazonFallbackTrackResolver: new ThrowingAmazonResolver(false));
+        var coordinator = new EngineFallbackCoordinator(_repository, _settings,
+            new DeezerIsrcResolver(null!, NullLogger<DeezerIsrcResolver>.Instance), search, capture, logger: capture);
+        Assert.False(await coordinator.TryAdvanceAsync(payload.Id, "deezer", payload, CancellationToken.None));
+        foreach (var detail in new[] { "first diagnostic", "second diagnostic" })
+        {
+            Assert.Contains(capture.Activity, line => line.Contains(detail, StringComparison.Ordinal));
+            Assert.Contains(capture.Docker, line => line.Contains(detail, StringComparison.Ordinal));
+        }
+    }
+
+    private sealed class CapturingDownloadLog : IActivityLogWriter, Microsoft.Extensions.Logging.ILogger<EngineFallbackCoordinator>
+    {
+        public List<string> Activity { get; } = [];
+        public List<string> Docker { get; } = [];
+        public void Info(string message) => Activity.Add(message);
+        public void Warn(string message) => Activity.Add(message);
+        public void Error(string message) => Activity.Add(message);
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel level) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel level, Microsoft.Extensions.Logging.EventId id,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Docker.Add(formatter(state, exception));
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task PreDownloadResolution_UsesSavedOutcomesAndPreservesProviderBackoff(bool rateLimited, bool includeHistory)
+    {
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload(); payload.ResolutionStatus = "pending";
+        payload.FallbackHistory = payload.FallbackPlan.ConvertAll(step => new FallbackAttempt(step.StepId, "skipped", "unavailable", "Confirmed unavailable"));
+        if (rateLimited) payload.FallbackHistory[0] = new("step-0", "skipped", "provider_rate_limited", "HTTP 429 retry_after=600");
+        if (!includeHistory) payload.FallbackHistory.Clear();
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().AddSingleton<IQueuedDownloadPayloadResolver>(
+            new RecordedPayloadResolver(JsonSerializer.Serialize(payload), rateLimited ? (includeHistory ? "Qobuz rate-limited the request." : "Qobuz HTTP 429") : "All selected sources had no copy."))
+            .BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var cancellation = new DownloadCancellationRegistry();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, cancellation);
+        var app = new DeezSpoTagApp(NullLogger<DeezSpoTagApp>.Instance,
+            new DeezSpoTagApp.Dependencies(_settings, listener, retry, _repository, cancellation, null!), services);
+        var before = DateTimeOffset.UtcNow;
+        await app.ProcessQueueItemAsync((await _repository.GetByUuidAsync(payload.Id))!);
+        Assert.Equal(rateLimited ? "retry_waiting" : "unavailable", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        if (rateLimited)
+        {
+            await using var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}");
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "SELECT retry_next_at FROM download_task WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            Assert.True(DateTimeOffset.Parse((string)(await command.ExecuteScalarAsync())!) >= before.AddSeconds(includeHistory ? 599 : 899));
+        }
+    }
+
+    private sealed class RecordedPayloadResolver(string payload, string error) : IQueuedDownloadPayloadResolver
+    {
+        public Task<QueuedDownloadPayloadResolution> ResolveAsync(DownloadQueueItem item, CancellationToken token)
+            => Task.FromResult(new QueuedDownloadPayloadResolution(item with { PayloadJson = payload, Status = "unavailable" }, error));
+    }
+
+    [Theory]
+    [InlineData(false, true, "unavailable", true)]
+    [InlineData(true, true, "retry_waiting", true)]
+    [InlineData(false, false, "retry_waiting", true)]
+    [InlineData(false, false, "retry_waiting", false)]
+    public async Task FinalStatus_RequiresConfirmedOutcomesForEverySavedEngineQuality(bool transient, bool allStepsKnown, string expected, bool savedSelection)
+    {
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload();
+        payload.FallbackPlan = [new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "LOSSLESS", [], "isrc"), new("step-2", "amazon", "HD_FLAC", [], "isrc")];
+        payload.Quality = "7";
+        payload.ResolutionError = transient ? "Track not found." : "Qobuz (7), Tidal (LOSSLESS), Amazon (HD_FLAC) had no copy.";
+        if (allStepsKnown) payload.FallbackHistory = [new("step-1", "failed", "unavailable", "Confirmed missing recording"),
+            new("step-2", "failed", "quality_below_requested", "Actual audio was below requested quality")];
+        if (!savedSelection) { payload.FallbackPlan.Clear(); payload.ResolutionError = "Track not found."; }
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "qobuz", NullLogger.Instance);
+        var message = transient ? "Provider HTTP 503" : "HTTP 404: {\"code\":\"TRACK_UNAVAILABLE\",\"retryable\":false,\"retry_mode\":\"none\"}";
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(new HttpRequestException(message, null,
+            transient ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.NotFound), payload.Id, payload, context, CancellationToken.None);
+        Assert.Equal(expected, (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        Assert.Equal(expected == "retry_waiting", await retry.HasPendingRetriesAsync());
+    }
+
+    [Fact]
+    public async Task RateLimitedDownload_IsDurablyRequeuedAfterItsAdvertisedDelay()
+    {
+        var settings = _settings.LoadSettings(); settings.MaxRetries = 3; _settings.SaveSettings(settings);
+        var payload = BuildPayload(); payload.FallbackPlan = [new("step-0", "qobuz", "7", [], "isrc")]; payload.Quality = "7";
+        await EnqueueAsync(payload);
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var listener = new DeezSpoTagListener();
+        var retry = new DownloadRetryScheduler(_repository, _settings, new NullActivityLogWriter(), listener,
+            NullLogger<DownloadRetryScheduler>.Instance, new DownloadCancellationRegistry());
+        var context = new EngineAudioPostDownloadHelper.FailureHandlingContext<QobuzQueueItem>(
+            _repository, new NullActivityLogWriter(), listener, retry, services,
+            (_, _, _, _) => Task.FromResult(false), p => p.ToQueuePayload(), "qobuz", NullLogger.Instance);
+        var before = DateTimeOffset.UtcNow;
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(new ZarzSessionRateLimitException("Qobuz rate limited", 600),
+            payload.Id, payload, context, CancellationToken.None);
+        Assert.Equal("retry_waiting", (await _repository.GetByUuidAsync(payload.Id))!.Status);
+        await using (var db = new SqliteConnection($"Data Source={Path.Join(_root, "queue.db")}"))
+        {
+            await db.OpenAsync();
+            await using var command = db.CreateCommand();
+            command.CommandText = "SELECT retry_next_at FROM download_task WHERE queue_uuid = $uuid";
+            command.Parameters.AddWithValue("$uuid", payload.Id);
+            Assert.True(DateTimeOffset.Parse((string)(await command.ExecuteScalarAsync())!) >= before.AddSeconds(599));
+            command.CommandText = "UPDATE download_task SET retry_next_at = '2000-01-01T00:00:00Z' WHERE queue_uuid = $uuid";
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.True(await retry.RunRetrySweepAsync());
+        Assert.Equal("queued", (await _repository.GetByUuidAsync(payload.Id))!.Status);
     }
 
     [Theory]

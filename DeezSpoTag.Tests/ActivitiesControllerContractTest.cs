@@ -12,6 +12,86 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ActivitiesControllerContractTest
 {
+    [Theory]
+    [InlineData("provider_verification_required", "Session verification needed")]
+    [InlineData("authentication_required", "Session verification needed")]
+    [InlineData("quality_below_requested", "Quality unavailable")]
+    [InlineData("unavailable", "Unavailable among the enabled services")]
+    [InlineData("provider_transient", null)]
+    [InlineData("catalog_lookup_failed", null)]
+    [InlineData("identity_unresolved", null)]
+    [InlineData("unresolved", null)]
+    [InlineData("provider_timeout", null)]
+    public void DownloadFailureMessage_UsesOnlyApprovedCopy(string reason, string? expected)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            FallbackPlan = new[] { new { StepId = "step-0", Engine = "qobuz", Quality = "7", RequiredInputs = Array.Empty<string>(), ResolutionStrategy = "isrc" } },
+            FallbackHistory = new[] { new { StepId = "step-0", Status = "failed", ErrorClass = reason, Detail = "technical diagnostic" } }
+        });
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic"]));
+        Assert.Null(method.Invoke(null, [json, "complete", "technical diagnostic"]));
+        Assert.Null(method.Invoke(null, [json, "canceled", "technical diagnostic"]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_UnknownOutcomesDoNotClaimUnavailability()
+    {
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        Assert.Null(method.Invoke(null, ["{}", "unavailable", "Track not found"]));
+        Assert.Null(method.Invoke(null, ["not json", "failed", "HTTP 503"]));
+        var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+        Assert.Contains("const displayedError = task.failureMessage;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("const displayedError = task.error;", source, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("provider_transient", null)]
+    [InlineData("identity_unresolved", null)]
+    [InlineData("quality_below_requested", "Quality unavailable")]
+    [InlineData("unavailable", "Unavailable among the enabled services")]
+    [InlineData("authentication_required", "Session verification needed")]
+    public void DownloadFailureMessage_RequiresConclusiveResultsAcrossTheSelection(string secondReason, string? expected)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            FallbackPlan = new[]
+            {
+                new { StepId = "step-0", Engine = "qobuz", Quality = "7", RequiredInputs = Array.Empty<string>(), ResolutionStrategy = "isrc" },
+                new { StepId = "step-1", Engine = "tidal", Quality = "LOSSLESS", RequiredInputs = Array.Empty<string>(), ResolutionStrategy = "isrc" }
+            },
+            FallbackHistory = new[]
+            {
+                new { StepId = "step-0", Status = "failed", ErrorClass = "unavailable", Detail = "confirmed" },
+                new { StepId = "step-1", Status = "failed", ErrorClass = "authentication_required", Detail = "old result" },
+                new { StepId = "step-1", Status = "failed", ErrorClass = secondReason, Detail = "latest result" }
+            }
+        });
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        Assert.Equal(expected, method.Invoke(null, [json, "failed", "technical diagnostic"]));
+    }
+
+    [Fact]
+    public void DownloadFailureMessage_IgnoresDisabledSourcesInSavedSettings()
+    {
+        var settings = new DeezSpoTagSettings();
+        settings.DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault();
+        settings.DownloadEngineOrder.Enabled = true;
+        foreach (var engine in settings.DownloadEngineOrder.Engines) engine.Enabled = false;
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SourceSettingsSnapshot = DeezSpoTag.Services.Download.Shared.QueueSourceSettingsSnapshot.Capture(settings),
+            FallbackPlan = new[] { new { StepId = "step-0", Engine = "qobuz", Quality = "7", RequiredInputs = Array.Empty<string>(), ResolutionStrategy = "isrc" } },
+            FallbackHistory = new[] { new { StepId = "step-0", Status = "failed", ErrorClass = "authentication_required", Detail = "disabled source" } }
+        });
+        var method = typeof(ActivitiesController).GetMethod("BuildDownloadFailureMessage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        Assert.Null(method.Invoke(null, [json, "failed", "technical diagnostic"]));
+    }
+
     [Fact]
     public void ActivitiesQualityLabels_ScopeSoulseekMappingsToSoulseek()
     {

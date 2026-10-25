@@ -121,6 +121,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             throw new InvalidOperationException(durationValidation.Message);
         }
 
+        ValidateAcquiredAudio(request, filePath);
+
         var renamedPath = await TryRenameAndTagAsync(
             new RenameAndTagRequest(
                 FilePath: filePath,
@@ -143,6 +145,23 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 RequestedLocalQualityRank: request.RequestedLocalQualityRank));
 
         return renamedPath ?? filePath;
+    }
+
+    private static void ValidateAcquiredAudio(AmazonDownloadRequest request, string filePath)
+    {
+        // Validate the temporary acquisition before it can replace a library file.
+        // Ultra HD needs positive 24-bit evidence, rather than unavailable catalog preflight.
+        var result = DeliveredAudioQualityGuard.Validate(
+            new AmazonQueueItem { Quality = request.Quality }, filePath);
+        var unverifiedUltraHd = string.Equals(request.Quality?.Trim(), "ULTRA_HD_FLAC", StringComparison.OrdinalIgnoreCase)
+            && !result.Conclusive;
+        if (!result.Success || unverifiedUltraHd)
+        {
+            DownloadFileUtilities.TryDeleteFile(filePath);
+            throw new DeliveredAudioQualityBelowPlanStepException(unverifiedUltraHd
+                ? "Amazon Ultra HD FLAC requires verified 24-bit audio; the downloaded file could not be inspected."
+                : result.Message);
+        }
     }
 
     private async Task<string> DownloadFromServiceAsync(
@@ -180,7 +199,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 {
                     var category = ClassifyDownloadFailure(response.StatusCode);
                     await _publicProviderRegistry.RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, cancellationToken);
-                    lastError = new InvalidOperationException(BuildZarzFailure("Amazon download API", response, body));
+                    lastError = new HttpRequestException(BuildZarzFailure("Amazon download API", response, body), null, response.StatusCode);
                     continue;
                 }
 

@@ -6,6 +6,8 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using DeezSpoTag.Services.Apple;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DeezSpoTag.Services.Download.Fallback;
 
@@ -38,6 +40,7 @@ public sealed class EngineFallbackCoordinator
     private readonly IActivityLogWriter _activityLog;
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private readonly IServiceProvider? _serviceProvider;
+    private readonly ILogger<EngineFallbackCoordinator> _logger;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
@@ -107,7 +110,8 @@ public sealed class EngineFallbackCoordinator
         EngineFallbackSearchService fallbackSearchService,
         IActivityLogWriter activityLog,
         DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null,
-        IServiceProvider? serviceProvider = null)
+        IServiceProvider? serviceProvider = null,
+        ILogger<EngineFallbackCoordinator>? logger = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
@@ -118,6 +122,7 @@ public sealed class EngineFallbackCoordinator
 
         // Optional so a host that registers the coordinator without the Soulseek engine still resolves it.
         _serviceProvider = serviceProvider;
+        _logger = logger ?? NullLogger<EngineFallbackCoordinator>.Instance;
     }
 
     /// <summary>
@@ -539,6 +544,9 @@ public sealed class EngineFallbackCoordinator
         // Summarize the saved selection and its outcomes on the item; retain raw provider details in history
         // and the activity log.
         var message = BuildExhaustionMessage(payloadForSerialization, request.CurrentEngine);
+        _activityLog.Warn($"Download source results for {request.QueueUuid}: {message}");
+        _logger.LogWarning("Download source results for {QueueUuid}: {Message}", request.QueueUuid,
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(message));
         SetResolutionError(payloadForSerialization, message);
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
         await _queueRepository.UpdatePayloadAsync(request.QueueUuid, json, cancellationToken);
@@ -550,6 +558,15 @@ public sealed class EngineFallbackCoordinator
         if (payloadForSerialization is EngineQueueItemBase exhausted
             && exhausted.FallbackHistory.Count > 0)
         {
+            foreach (var attempt in exhausted.FallbackHistory)
+            {
+                _logger.LogWarning("Download attempt for {QueueUuid}, step {StepId}, {ErrorClass}: {Detail}",
+                    request.QueueUuid, DeezSpoTag.Core.Security.LogSanitizer.OneLine(attempt.StepId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(attempt.ErrorClass),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(attempt.Detail));
+            }
+            foreach (var attempt in exhausted.FallbackHistory.Take(exhausted.FallbackHistory.Count - 1))
+                _activityLog.Warn($"Fallback attempt for {request.QueueUuid}, step {attempt.StepId}: {attempt.Detail}");
             _activityLog.Warn(
                 $"Fallback exhausted detail for {request.QueueUuid}: {exhausted.FallbackHistory[^1].Detail}");
         }

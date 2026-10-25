@@ -6375,8 +6375,8 @@ async function clearCanceledTasks() {
 
 	        // Lyrics are an optional sidecar artifact: a missing or incomplete lyrics format must
 	        // never render as a download error. The reason stays on the payload for diagnostics.
-	        const displayedError = task.error;
-	        const errorHtml = displayedError
+	        const displayedError = task.failureMessage;
+	        const errorHtml = displayedError && ['failed', 'unavailable', 'retrying'].includes(statusForUi)
 	            ? `<div class="error-message">⚠ ${escapeHtml(displayedError)}</div>`
 	            : '';
 	        const taskActionInFlight = Boolean(task._actionInFlight);
@@ -6885,6 +6885,8 @@ function mapQueueItem(item) {
         failed: normalizeQueueCounter(item.failed || item.Failed),
         engine: normalizeEngine(resolvedEngine || 'deezer'),
         error: item.error || null,
+        failureMessage: ['Session verification needed', 'Quality unavailable', 'Unavailable among the enabled services']
+            .includes(item.failureMessage) ? item.failureMessage : null,
         canPause: getQueueBoolFlag(item, 'canPause', 'CanPause'),
         canResume: getQueueBoolFlag(item, 'canResume', 'CanResume'),
         canCancel: getQueueBoolFlag(item, 'canCancel', 'CanCancel'),

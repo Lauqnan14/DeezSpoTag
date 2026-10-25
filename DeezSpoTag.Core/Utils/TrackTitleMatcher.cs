@@ -41,6 +41,24 @@ public static class TrackTitleMatcher
     }
 
     public static bool TitlesMatch(string? expected, string? actual)
+        => MatchTitles(expected, actual, allowContainment: true);
+
+    public static bool RecordingTitlesMatch(string? expected, string? actual)
+    {
+        // Featured credits are metadata; an arbitrary shorter song title is not.
+        static string StripFeaturedCredits(string? title)
+        {
+            var value = Regex.Replace(title ?? string.Empty,
+                @"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+[^)\]]+[\)\]]", string.Empty,
+                RegexOptions.IgnoreCase, RegexTimeout);
+            return Regex.Replace(value, @"\s+(?:feat\.?|ft\.?|featuring)\s+[^([\]]*$", string.Empty,
+                RegexOptions.IgnoreCase, RegexTimeout);
+        }
+        return !HasVersionDrift(expected, actual)
+            && MatchTitles(StripFeaturedCredits(expected), StripFeaturedCredits(actual), allowContainment: false);
+    }
+
+    private static bool MatchTitles(string? expected, string? actual, bool allowContainment)
     {
         if (HasVersionDrift(expected, actual))
         {
@@ -58,7 +76,7 @@ public static class TrackTitleMatcher
         return expectedSignature.BaseTitle == actualSignature.BaseTitle
             || (!string.IsNullOrWhiteSpace(expectedSignature.CompactTitle)
                 && expectedSignature.CompactTitle == actualSignature.CompactTitle)
-            || HasSafeContainmentMatch(expectedSignature.BaseTitle, actualSignature.BaseTitle);
+            || (allowContainment && HasSafeContainmentMatch(expectedSignature.BaseTitle, actualSignature.BaseTitle));
     }
 
     /// <summary>

@@ -21,6 +21,208 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CopiedIsrc_CannotOverrideAConflictingSongTitle(bool discoveryOnly)
+    {
+        using var handler = new StaleTrackHandler(HttpStatusCode.NotFound);
+        var service = CreateRegionalService(handler, "US");
+        if (discoveryOnly)
+            Assert.Null(await service.ResolveTrackUrlAsync("An Entirely Different Song", "Artist", "USGZ20930467", 178, CancellationToken.None));
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResolveTrackUrlForQualityAsync(null,
+                "An Entirely Different Song", "Artist", "Album", "USGZ20930467", 178, "LOSSLESS", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("US", "ZA", "US,ZA")]
+    [InlineData("GB", "GB", "GB")]
+    [InlineData("ZA", "FR", "ZA,GB,FR")]
+    public async Task EmptyIsrcSearch_UsesBoundedMarketsInOrder(string configured, string found, string expected)
+    {
+        using var handler = new RegionalCatalogHandler(found);
+        var service = CreateRegionalService(handler, configured);
+        var method = typeof(TidalDownloadService).GetMethod("SearchTracksByIsrcAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(service, new object[] { "USGZ20930467", 25, CancellationToken.None })!;
+        await task;
+        Assert.Equal(expected.Split(','), handler.Countries);
+        Assert.Single((System.Collections.IEnumerable)task.GetType().GetProperty("Result")!.GetValue(task)!);
+    }
+
+    [Fact]
+    public async Task RegionalLosslessRecording_DoesNotSatisfyHiResRequest()
+    {
+        using var handler = new RegionalCatalogHandler("ZA");
+        var service = CreateRegionalService(handler, "US");
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResolveTrackUrlForQualityAsync(
+            null, "Song", "Artist", "Album", "USGZ20930467", 178, "HI_RES_LOSSLESS", CancellationToken.None));
+        Assert.Contains("quality_below_requested", failure.Message);
+    }
+
+    [Fact]
+    public async Task EmptyIsrcSearch_StopsAfterTheApprovedMarkets()
+    {
+        using var handler = new RegionalCatalogHandler("DE");
+        var service = CreateRegionalService(handler, "US");
+        var method = typeof(TidalDownloadService).GetMethod("SearchTracksByIsrcAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(service, new object[] { "USGZ20930467", 25, CancellationToken.None })!;
+        await task;
+        Assert.Empty((System.Collections.IEnumerable)task.GetType().GetProperty("Result")!.GetValue(task)!);
+        Assert.Equal(new[] { "US", "ZA", "GB", "FR" }, handler.Countries);
+    }
+
+    [Fact]
+    public async Task CatalogAccessFailure_DoesNotRotateMarkets()
+    {
+        using var handler = new RegionalCatalogHandler("ZA", HttpStatusCode.Forbidden);
+        var service = CreateRegionalService(handler, "US");
+        await Assert.ThrowsAsync<HttpRequestException>(() => service.ResolveTrackUrlForQualityAsync(
+            null, "Song", "Artist", "Album", "USGZ20930467", 178, "LOSSLESS", CancellationToken.None));
+        Assert.Equal(new[] { "US" }, handler.Countries);
+    }
+
+    [Fact]
+    public async Task MissingKnownId_UsesRegionalCatalogBeforeDeclaringMissing()
+    {
+        using var handler = new RegionalCatalogHandler("ZA");
+        var service = CreateRegionalService(handler, "US");
+        var track = await service.ResolveTrackMetadataAsync("812345678902", CancellationToken.None);
+        Assert.NotNull(track);
+        Assert.Equal("USGZ20930467", track.Isrc);
+        Assert.Equal(new[] { "US", "ZA" }, handler.Countries);
+    }
+
+    private static TidalDownloadService CreateRegionalService(HttpMessageHandler handler, string country)
+    {
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+            new UnauthenticatedTidalAccessTokenProvider { CountryCode = country },
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, new HttpClient(handler, false));
+        return service;
+    }
+
+    private sealed class RegionalCatalogHandler(string found, HttpStatusCode? error = null) : HttpMessageHandler
+    {
+        public List<string> Countries { get; } = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var country = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["countryCode"]!;
+            Countries.Add(country);
+            if (error.HasValue) return Task.FromResult(new HttpResponseMessage(error.Value));
+            var isTrack = request.RequestUri.AbsolutePath.Contains("/tracks/", StringComparison.Ordinal);
+            const string track = "{\"id\":812345678902,\"title\":\"Song\",\"isrc\":\"USGZ20930467\",\"duration\":178,\"artist\":{\"name\":\"Artist\"},\"album\":{\"title\":\"Album\"},\"audioQuality\":\"LOSSLESS\"}";
+            var status = isTrack && country != found ? HttpStatusCode.NotFound : HttpStatusCode.OK;
+            var body = isTrack ? (country == found ? track : "{}") : (country == found ? "{\"items\":[" + track + "]}" : "{\"items\":[]}");
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
+        }
+    }
+
+    [Fact]
+    public async Task QualityCompatibleExactRecording_DoesNotPerformBroadSearches()
+    {
+        using var handler = new StaleTrackHandler(HttpStatusCode.NotFound);
+        using var client = new HttpClient(handler);
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()), new UnauthenticatedTidalAccessTokenProvider(),
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var result = await service.ResolveTrackUrlForQualityAsync(null, "Song", "Artist", "Album", "USGZ20930467", 178, "LOSSLESS", CancellationToken.None);
+        Assert.Equal("https://listen.tidal.com/track/39565351", result);
+        Assert.Equal(1, handler.Searches);
+    }
+
+    [Theory]
+    [InlineData("za", "ZA")]
+    [InlineData("GB", "GB")]
+    [InlineData("invalid", "US")]
+    public async Task PublicCatalog_UsesConfiguredCountryWithoutRequiringLogin(string configured, string expected)
+    {
+        using var handler = new CountryCaptureHandler();
+        using var client = new HttpClient(handler);
+        var tokens = new UnauthenticatedTidalAccessTokenProvider { CountryCode = configured };
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()), tokens,
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var method = typeof(TidalDownloadService).GetMethod("SearchTracksViaPublicApiAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task)method.Invoke(service, new object[] { "Song Artist", 25, CancellationToken.None })!;
+        Assert.Equal(new[] { expected }, handler.Countries);
+        Assert.Equal(0, tokens.AuthenticationRequests);
+    }
+
+    [Fact]
+    public async Task TrackMetadataCache_DoesNotReuseAnotherMarketsResult()
+    {
+        using var handler = new CountryCaptureHandler();
+        using var client = new HttpClient(handler);
+        var tokens = new UnauthenticatedTidalAccessTokenProvider();
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()), tokens,
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        Assert.Equal("US Song", (await service.ResolveTrackMetadataAsync("812345678901", CancellationToken.None))?.Title);
+        tokens.CountryCode = "ZA";
+        Assert.Equal("ZA Song", (await service.ResolveTrackMetadataAsync("812345678901", CancellationToken.None))?.Title);
+        Assert.Equal(new[] { "US", "ZA" }, handler.Countries);
+    }
+
+    private sealed class CountryCaptureHandler : HttpMessageHandler
+    {
+        public List<string> Countries { get; } = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            var country = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["countryCode"] ?? "";
+            Countries.Add(country);
+            var body = request.RequestUri.AbsolutePath.Contains("/tracks/", StringComparison.Ordinal)
+                ? System.Text.Json.JsonSerializer.Serialize(new { id = 812345678901L, title = country + " Song", duration = 178, artist = new { name = "Artist" } })
+                : "{\"items\":[]}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+        }
+    }
+
+    [Theory]
+    [InlineData(404, true)]
+    [InlineData(403, false)]
+    public async Task PersistedTrackLookup_ContinuesMatchingOnlyForMissingTrack(int status, bool succeeds)
+    {
+        using var handler = new StaleTrackHandler((HttpStatusCode)status);
+        using var client = new HttpClient(handler);
+        var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+            new UnauthenticatedTidalAccessTokenProvider(), new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+        typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+        var task = service.ResolveTrackUrlForQualityAsync("157768510", "Song", "Artist", "Album",
+            "USGZ20930467", 178, "LOSSLESS", CancellationToken.None);
+        if (succeeds)
+        {
+            Assert.Equal("https://listen.tidal.com/track/39565351", await task);
+            Assert.True(handler.Searches > 0);
+        }
+        else
+        {
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => task);
+            Assert.Equal(HttpStatusCode.Forbidden, failure.StatusCode);
+            Assert.Equal(0, handler.Searches);
+        }
+    }
+
+    private sealed class StaleTrackHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        public int Searches { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (request.RequestUri!.AbsolutePath.EndsWith("/tracks/157768510", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
+            Searches++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                "{\"items\":[{\"id\":39565351,\"title\":\"Song\",\"isrc\":\"USGZ20930467\",\"duration\":178,\"artist\":{\"name\":\"Artist\"},\"album\":{\"title\":\"Album\"},\"audioQuality\":\"LOSSLESS\",\"audioModes\":[\"STEREO\"]}]}") });
+        }
+    }
+
     [Fact]
     public async Task PublicTrackSearchPaginatesWithoutExceedingProviderPageLimit()
     {
@@ -177,7 +379,7 @@ public sealed class TidalStereoQualitySeparationTest
         var method = typeof(TidalDownloadService).GetMethod("SendTidalPublicJsonOrDefaultAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .MakeGenericMethod(typeof(object));
         return await (Task<object?>)method.Invoke(service,
-            new object?[] { "https://catalog.invalid/search", (Action<Exception>)(_ => { }), ct })!;
+            new object?[] { "https://catalog.invalid/search", (Action<Exception>)(_ => { }), ct, null })!;
     }
 
     private sealed class CatalogResponseHandler(HttpStatusCode status, string body) : HttpMessageHandler
@@ -931,11 +1133,16 @@ public sealed class TidalStereoQualitySeparationTest
 
     private sealed class UnauthenticatedTidalAccessTokenProvider : ITidalAccessTokenProvider
     {
+        public string CountryCode { get; set; } = "US";
+        public int AuthenticationRequests { get; private set; }
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
-            => Task.FromResult(string.Empty);
+        {
+            AuthenticationRequests++;
+            return Task.FromResult(string.Empty);
+        }
 
         public Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
-            => Task.FromResult("US");
+            => Task.FromResult(CountryCode);
 
         public Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken)
             => Task.FromResult(false);

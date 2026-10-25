@@ -14,6 +14,49 @@ namespace DeezSpoTag.Tests;
 public sealed class QobuzTrackResolverTest
 {
     [Fact]
+    public async Task KnownId_WithVerifiedRecordingMetadataDoesNotDependOnSearchIndex()
+    {
+        var service = new StubQobuzMetadataService { TrackResult = new QobuzTrack {
+            Id = 124134888, Title = "Don't Mess With My Man", Version = "Remix", ISRC = "FR8GV1715720",
+            Duration = 188, Performer = new QobuzArtist { Name = "Nivea" } } };
+        Assert.True(QobuzTrackId.TryCreate(124134888, out var id));
+        var result = await CreateResolver(service).ValidateTrackIdAsync(id, "FR8GV1715720",
+            "Don't Mess With My Man - Remix", "Nivea", null, 188000, CancellationToken.None);
+        Assert.Equal(124134888, result?.Track.Id);
+        Assert.Empty(service.Queries);
+    }
+
+    [Theory]
+    [InlineData("FR8GV1715720", "An Entirely Different Song")]
+    [InlineData(null, "An Entirely Different Song")]
+    [InlineData("FR8GV1715720", "Don't Mess With My Man - Another Song")]
+    [InlineData(null, "Don't Mess With My Man - Another Song")]
+    public async Task MetadataResult_CannotOverrideADifferentTitleByCopyingTheSourceIsrc(string? sourceIsrc, string candidateTitle)
+    {
+        var service = new StubQobuzMetadataService { SearchHandler = _ => [new QobuzTrack {
+            Id = 124134888, ISRC = "FR8GV1715720", Title = candidateTitle, Duration = 188,
+            Performer = new QobuzArtist { Name = "Nivea" } }] };
+        Assert.Null(await CreateResolver(service).ResolveTrackAsync(sourceIsrc, "Don't Mess With My Man",
+            "Nivea", null, 188000, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("Don't Mess With My Man - Remix", "Remix", true)]
+    [InlineData("Don't Mess With My Man - Remix", "Live", false)]
+    [InlineData("Don't Mess With My Man", "Remix", false)]
+    [InlineData("Don't Mess With My Man - Remix", null, false)]
+    public async Task SeparateVersionField_IsIncludedInExactRecordingValidation(string sourceTitle, string? version, bool accepted)
+    {
+        var service = new StubQobuzMetadataService { IsrcResult = new QobuzTrack {
+            Id = 124134888, ISRC = "FR8GV1715720", Title = "Don't Mess With My Man", Version = version,
+            Duration = 188, Performer = new QobuzArtist { Name = "Nivea" } } };
+        var result = await CreateResolver(service).ResolveTrackAsync("FR8GV1715720", sourceTitle,
+            "Nivea", null, 188000, CancellationToken.None);
+        Assert.Equal(accepted, result is not null);
+        if (accepted) Assert.Equal(124134888, result!.Track.Id);
+    }
+
+    [Fact]
     public async Task ValidatedMetadataSearchCanFinishWhileIsrcLookupIsStillPending()
     {
         var pending = new TaskCompletionSource<QobuzTrack?>(TaskCreationOptions.RunContinuationsAsynchronously);

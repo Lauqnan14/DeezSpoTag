@@ -6,6 +6,19 @@ namespace DeezSpoTag.Tests;
 public sealed class TrackTitleMatcherTest
 {
     [Theory]
+    [InlineData("An Entirely Different Song", "Song", false)]
+    [InlineData("Song (feat. Guest)", "Song", true)]
+    [InlineData("Song", "Song (feat. Guest)", true)]
+    [InlineData("P.I.M.P.", "PIMP", true)]
+    [InlineData("Song", "Song (Live)", false)]
+    public void RecordingTitles_RejectUnrelatedContainmentButPreserveCreditsAndPunctuation(string source, string candidate, bool expected)
+    {
+        var method = typeof(TrackTitleMatcher).GetMethod("RecordingTitlesMatch");
+        Assert.NotNull(method);
+        Assert.Equal(expected, (bool)method.Invoke(null, new object[] { source, candidate })!);
+    }
+
+    [Theory]
     [InlineData("i am > i was", "i am > i was (Dolby Atmos Version)")]
     [InlineData("LOVE? (Deluxe Edition)", "LOVE? (Deluxe Edition) (Atmos Version)")]
     public void TitlesMatch_IgnoresAtmosEditionMarker(string expected, string actual)
