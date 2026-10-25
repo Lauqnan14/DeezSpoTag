@@ -757,7 +757,12 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         try
         {
             await PersistCheckpointAsync();
-            var completed = await run(cts.Token);
+            bool completed;
+            try { completed = await run(cts.Token); }
+            catch (OperationCanceledException ex) when (!cts.IsCancellationRequested)
+            {
+                throw new TimeoutException("An artist metadata request ended unexpectedly without cancelling the run.", ex);
+            }
             if (!completed)
             {
                 // The target updater catches cancellation and returns false, so a shutdown
@@ -776,6 +781,8 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 }
                 else
                 {
+                    if (_userCancelCts?.IsCancellationRequested != true && !cts.IsCancellationRequested)
+                        throw new InvalidOperationException("The artist metadata operation did not complete; unfinished work was retained.");
                     await ClearActiveRunWithoutStampingAsync();
                 }
 
@@ -821,7 +828,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             var preferences = await _preferences.LoadAsync();
             UpdateScheduleStatus(state, preferences, DateTimeOffset.UtcNow);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
         {
             // Distinguish app shutdown from a user cancel: shutdown must KEEP the run
             // so it resumes on the next start; only an explicit user cancel clears it.
@@ -841,7 +848,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 await ClearActiveRunWithoutStampingAsync();
             }
         }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex) || ex is OperationCanceledException)
         {
             _logger.LogWarning(ex, "Artist metadata {Operation} failed.", operation);
             if (_userCancelCts?.IsCancellationRequested == true)
@@ -890,7 +897,8 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             }
 
             if (failures >= MaxConsecutiveRunFailures
-                && ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null })
+                && (ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null }
+                    || ex is TimeoutException or OperationCanceledException))
             {
                 lock (_checkpointLock)
                 {
@@ -898,6 +906,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                     {
                         auditRun.Paused = true;
                         auditRun.Disposition = ArtistMetadataRunDispositions.NeedsAttention;
+                        auditRun.PendingNotice ??= ex.Message;
                     }
                 }
                 await PersistCheckpointAsync(requireDurable: true);

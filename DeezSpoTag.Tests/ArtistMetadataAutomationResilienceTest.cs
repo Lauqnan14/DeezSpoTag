@@ -19,6 +19,63 @@ namespace DeezSpoTag.Tests;
 public sealed class ArtistMetadataAutomationResilienceTest
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedCancellationOrIncompleteResultRetainsRun(bool returnsFalse)
+    {
+        var root = Path.Join(Path.GetTempPath(), "artist-unexpected-cancel-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var coordinator = CreateCoordinatorForSweeps(root);
+            Func<CancellationToken, Task<bool>> run = _ => returnsFalse
+                ? Task.FromResult(false)
+                : Task.FromException<bool>(new TaskCanceledException("Target request timed out", new TimeoutException()));
+            Assert.True(await EnqueueCancellationScenario(coordinator, run));
+            await WaitForSweepToSettle(coordinator);
+            var state = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await File.ReadAllTextAsync(
+                Path.Join(root, "library-artist-images", "metadata-automation-state.json")))!;
+            Assert.NotNull(state.ActiveRun);
+            Assert.Null(state.LastTargetUpdateUtc);
+            Assert.Equal(1, state.ActiveRun.ConsecutiveFailures);
+            Assert.True(File.Exists(Path.Join(root, "library-artist-images", "metadata-automation-outcomes.ndjson")));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RepeatedPreparationTimeoutRetainsRunForExplicitResume()
+    {
+        var root = Path.Join(Path.GetTempPath(), "artist-timeout-cap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var coordinator = CreateCoordinatorForSweeps(root);
+            var retained = new ArtistMetadataActiveRun
+            {
+                Operation = "target-update", RunId = Guid.NewGuid().ToString("N"), StartedAtUtc = DateTimeOffset.UtcNow,
+                ConsecutiveFailures = 100, TargetRequest = new MetadataUpdaterRunRequest()
+            };
+            Assert.True(await EnqueueCancellationScenario(coordinator,
+                _ => Task.FromException<bool>(new TimeoutException("Plex request timed out")), retained));
+            await WaitForSweepToSettle(coordinator);
+            var state = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await File.ReadAllTextAsync(
+                Path.Join(root, "library-artist-images", "metadata-automation-state.json")))!;
+            Assert.NotNull(state.ActiveRun);
+            Assert.True(state.ActiveRun.Paused);
+            Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, state.ActiveRun.Disposition);
+            Assert.Null(state.LastTargetUpdateUtc);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static Task<bool> EnqueueCancellationScenario(ArtistMetadataAutomationCoordinator coordinator,
+        Func<CancellationToken, Task<bool>> run, ArtistMetadataActiveRun? resumed = null)
+        => (Task<bool>)typeof(ArtistMetadataAutomationCoordinator).GetMethod("EnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, new object?[] { "target-update", run, CancellationToken.None, resumed, null,
+                new MetadataUpdaterRunRequest { Targets = new() { "plex" }, Force = true }, false })!;
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]

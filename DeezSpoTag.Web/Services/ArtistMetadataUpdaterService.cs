@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
@@ -246,7 +247,7 @@ public sealed partial class ArtistMetadataUpdaterService
             await run;
             return !linkedCts.Token.IsCancellationRequested;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
             return false;
         }
@@ -379,6 +380,19 @@ public sealed partial class ArtistMetadataUpdaterService
         }
         catch (OperationCanceledException ex)
         {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                var timeout = new TimeoutException("A metadata update request timed out or was interrupted without cancelling the run.", ex);
+                runFailure = timeout;
+                _logger.LogWarning(timeout, "Metadata updater request ended unexpectedly.");
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "error", timeout.Message));
+                UpdateStatus(_status with
+                {
+                    Running = false, CurrentArtist = null, CompletedAtUtc = DateTimeOffset.UtcNow,
+                    Phase = "Metadata update failed", Message = timeout.Message
+                });
+                throw timeout;
+            }
             runFailure = ex;
             UpdateStatus(_status with
             {
@@ -1881,9 +1895,12 @@ public sealed partial class ArtistMetadataUpdaterService
         }
 
         var unknown = new Dictionary<long, string>();
-        foreach (var artist in artists)
+        for (var artistIndex = 0; artistIndex < artists.Count; artistIndex++)
         {
+            var artist = artists[artistIndex];
             cancellationToken.ThrowIfCancellationRequested();
+            var started = Stopwatch.GetTimestamp();
+            var stage = "artist lookup";
             try
             {
                 // Strict lookups keep failed HTTP, malformed XML and nested section failures from
@@ -1904,6 +1921,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 var hasArtwork = false;
                 foreach (var location in locations)
                 {
+                    stage = "artwork lookup";
                     var metadata = await _plexClient.GetArtistMetadataAsync(
                         plexUrl,
                         plexToken,
@@ -1921,6 +1939,11 @@ public sealed partial class ArtistMetadataUpdaterService
                 {
                     missing.Add(artist.Id);
                 }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsAuditRequestTimeout(ex))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw BuildAuditTimeoutException(PlexTarget, artists, artistIndex, unknown, stage, started, ex);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1953,9 +1976,12 @@ public sealed partial class ArtistMetadataUpdaterService
         }
 
         var unknown = new Dictionary<long, string>();
-        foreach (var artist in artists)
+        for (var artistIndex = 0; artistIndex < artists.Count; artistIndex++)
         {
+            var artist = artists[artistIndex];
             cancellationToken.ThrowIfCancellationRequested();
+            var started = Stopwatch.GetTimestamp();
+            var stage = "artist lookup";
             try
             {
                 var artistIds = await _jellyfinClient.FindArtistIdsAsync(
@@ -1973,6 +1999,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 var hasArtwork = false;
                 foreach (var artistId in artistIds)
                 {
+                    stage = "artwork lookup";
                     var item = await _jellyfinClient.GetItemAsync(
                         jellyfin.Url,
                         jellyfin.ApiKey,
@@ -1991,6 +2018,11 @@ public sealed partial class ArtistMetadataUpdaterService
                 {
                     missing.Add(artist.Id);
                 }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsAuditRequestTimeout(ex))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw BuildAuditTimeoutException(JellyfinTarget, artists, artistIndex, unknown, stage, started, ex);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -2023,9 +2055,12 @@ public sealed partial class ArtistMetadataUpdaterService
         }
 
         var unknown = new Dictionary<long, string>();
-        foreach (var artist in artists)
+        for (var artistIndex = 0; artistIndex < artists.Count; artistIndex++)
         {
+            var artist = artists[artistIndex];
             cancellationToken.ThrowIfCancellationRequested();
+            var started = Stopwatch.GetTimestamp();
+            var stage = "artist lookup";
             try
             {
                 var matches = await _navidromeClient.SearchArtistsAsync(
@@ -2046,6 +2081,7 @@ public sealed partial class ArtistMetadataUpdaterService
                 var hasArtwork = !string.IsNullOrWhiteSpace(match.CoverArt);
                 if (!hasArtwork)
                 {
+                    stage = "artwork lookup";
                     var info = await _navidromeClient.GetArtistInfoAsync(
                         navidrome.Url,
                         navidrome.Username,
@@ -2063,6 +2099,11 @@ public sealed partial class ArtistMetadataUpdaterService
                     missing.Add(artist.Id);
                 }
             }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsAuditRequestTimeout(ex))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw BuildAuditTimeoutException(NavidromeTarget, artists, artistIndex, unknown, stage, started, ex);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Keep unknowns separate: an incomplete audit cannot choose a missing-art driver.
@@ -2074,6 +2115,25 @@ public sealed partial class ArtistMetadataUpdaterService
 
         EnsureAuditClassifiedArtists(NavidromeTarget, artists.Count, unknown, cancellationToken);
         return missing;
+    }
+
+    private static bool IsAuditRequestTimeout(Exception failure)
+        => failure is TimeoutException or OperationCanceledException
+            or HttpRequestException { StatusCode: System.Net.HttpStatusCode.RequestTimeout or System.Net.HttpStatusCode.GatewayTimeout }
+            || (failure.InnerException is { } inner && IsAuditRequestTimeout(inner));
+
+    private TargetLookupException BuildAuditTimeoutException(string target, IReadOnlyList<ArtistDto> artists,
+        int artistIndex, IReadOnlyDictionary<long, string> priorUnknown, string stage, long started, Exception failure)
+    {
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        var detail = $"{target} {stage} timed out or was interrupted after {elapsed.TotalSeconds:F1}s for artist {artists[artistIndex].Id}: {failure.Message}";
+        var unresolved = new Dictionary<long, string>(priorUnknown);
+        foreach (var remaining in artists.Skip(artistIndex)) unresolved.TryAdd(remaining.Id, detail);
+        _logger.LogWarning(failure,
+            "Artist metadata preparation: {Target} {Stage} ended after {ElapsedSeconds}s for artist {ArtistId}; retaining {UnresolvedCount} unresolved artists.",
+            target, stage, elapsed.TotalSeconds, artists[artistIndex].Id, unresolved.Count);
+        _configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "error", detail));
+        return new TargetLookupException(detail, failure, target: target, unresolvedArtists: unresolved);
     }
 
     /// <summary>

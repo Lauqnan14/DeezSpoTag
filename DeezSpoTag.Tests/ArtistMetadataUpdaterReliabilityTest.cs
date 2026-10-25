@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Text.Json;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,33 @@ namespace DeezSpoTag.Tests;
 [Collection("DataRoot Environment")]
 public sealed class ArtistMetadataUpdaterReliabilityTest
 {
+    [Theory]
+    [InlineData("Plex", "plex")]
+    [InlineData("Jellyfin", "jellyfin")]
+    [InlineData("Navidrome", "navidrome")]
+    public async Task AuditRequestTimeoutRetainsUncheckedArtistsWithoutRepeatingTheStalledRequest(string methodTarget, string target)
+    {
+        var calls = 0;
+        HttpResponseMessage Timeout(HttpRequestMessage request)
+        {
+            Interlocked.Increment(ref calls);
+            throw new TaskCanceledException("Request deadline exceeded", new TimeoutException());
+        }
+        var service = CreateService(Timeout, Timeout, Timeout);
+        var auth = CreateAuth();
+        auth.Jellyfin!.UserId = "local-test-user";
+        var credential = typeof(PlatformAuthState).GetProperty(methodTarget)!.GetValue(auth);
+        var artists = JsonSerializer.Deserialize<List<ArtistDto>>("[{\"Id\":1,\"Name\":\"One\"},{\"Id\":2,\"Name\":\"Two\"},{\"Id\":3,\"Name\":\"Three\"}]")!;
+        var method = typeof(ArtistMetadataUpdaterService).GetMethod("Find" + methodTarget + "MissingArtistArtworkAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var task = (Task)method.Invoke(service, new object?[] { artists, credential, new List<string>(), CancellationToken.None })!;
+        var error = await Assert.ThrowsAsync<TargetLookupException>(() => task);
+        Assert.Equal(target, error.Target);
+        Assert.Equal(3, error.UnresolvedArtists!.Count);
+        Assert.Equal(1, calls);
+        Assert.IsType<TimeoutException>(error.GetBaseException());
+        Assert.Contains("artist lookup", error.Message, StringComparison.Ordinal);
+    }
+
     private readonly List<string> _tempPaths = [];
 
     [Fact]

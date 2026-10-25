@@ -1299,11 +1299,11 @@ public sealed class NavidromeApiClient
         {
             response = await _httpClient.GetAsync(requestUrl, cancellationToken);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             if (requireSuccessfulResponse)
             {
-                throw new TargetLookupException($"Navidrome {method} request timed out.");
+                throw new TargetLookupException($"Navidrome {method} request timed out.", ex);
             }
 
             return default;
