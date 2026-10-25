@@ -25,7 +25,7 @@ public sealed class EscapedQueueCancellationFallbackGuardrailTest
             handlerStart,
             StringComparison.Ordinal);
         var failureIndex = source.IndexOf(
-            "await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException.Message)",
+            "await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException)",
             handlerStart,
             StringComparison.Ordinal);
 
