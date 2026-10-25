@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -33,6 +34,8 @@ public sealed class DownloadQueueRepository
 
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);
     private static readonly SemaphoreSlim EnqueueAdmissionGate = new(1, 1);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SchemaGates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private const string DownloadTaskTable = "download_task";
     private const string FilesPropertyLower = "files";
     private const string PayloadParameterName = "payload";
@@ -60,8 +63,8 @@ public sealed class DownloadQueueRepository
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
     private readonly DownloadQueueWakeSignal? _queueWakeSignal;
     private readonly ILogger<DownloadQueueRepository> _logger;
-    private bool _schemaEnsured;
-    private readonly object _schemaLock = new();
+    private volatile bool _schemaEnsured;
+    private readonly SemaphoreSlim _schemaGate;
 
     public DownloadQueueRepository(
         IConfiguration configuration,
@@ -80,6 +83,10 @@ public sealed class DownloadQueueRepository
 
         _connectionString = SqliteConnectionStringResolver.Resolve(rawConnection, "queue.db")
             ?? throw new InvalidOperationException("Queue database connection string is not configured.");
+        // The resolver canonicalizes file paths. Connection options must not give
+        // two repository instances separate migration gates for the same database.
+        var dataSource = new SqliteConnectionStringBuilder(_connectionString).DataSource;
+        _schemaGate = SchemaGates.GetOrAdd(dataSource, static _ => new SemaphoreSlim(1, 1));
     }
 
     public static bool IsConfigured => true;
@@ -3070,14 +3077,19 @@ LIMIT 1;";
 
     private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
     {
-        lock (_schemaLock)
+        if (_schemaEnsured) return;
+        await _schemaGate.WaitAsync(cancellationToken);
+        try
         {
-            if (_schemaEnsured)
-            {
-                return;
-            }
+            if (_schemaEnsured) return;
+            await EnsureSchemaCoreAsync(cancellationToken);
+            _schemaEnsured = true;
         }
+        finally { _schemaGate.Release(); }
+    }
 
+    private async Task EnsureSchemaCoreAsync(CancellationToken cancellationToken)
+    {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
@@ -3186,10 +3198,6 @@ WHERE lower(status) NOT IN ('completed', 'complete', 'finished', 'canceled', 'ca
         await NormalizeLegacyExecutionPlansAsync(connection, cancellationToken);
         await MigrateLegacyLyricsArtifactsAsync(connection, cancellationToken);
 
-        lock (_schemaLock)
-        {
-            _schemaEnsured = true;
-        }
     }
 
     private static async Task MigrateLegacyLyricsArtifactsAsync(

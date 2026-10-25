@@ -15,6 +15,72 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadQueueRepositoryDuplicateTest
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentFirstAccess_MigratesQueueOnceWithoutDuplicateColumns(bool separateRepositories)
+    {
+        for (var round = 0; round < 8; round++)
+        {
+            await using var context = await CreateContextAsync();
+            using var start = new ManualResetEventSlim();
+            using var ready = new CountdownEvent(12);
+            var tasks = Enumerable.Range(0, 12).Select(_ => Task.Factory.StartNew(() =>
+            {
+                var repository = separateRepositories
+                    ? new DownloadQueueRepository(context.Configuration, NullLogger<DownloadQueueRepository>.Instance)
+                    : context.QueueRepository;
+                ready.Signal();
+                if (!start.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Concurrent initialization was not released.");
+                return repository.GetTasksAsync();
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap()).ToArray();
+            var allReady = ready.Wait(TimeSpan.FromSeconds(10));
+            start.Set();
+            var results = await Task.WhenAll(tasks);
+            Assert.True(allReady);
+            Assert.All(results, rows => Assert.Empty(rows));
+
+            await using var connection = new SqliteConnection($"Data Source={context.QueueDbPath}");
+            await connection.OpenAsync();
+            foreach (var column in new[] { "retry_attempt_count", "retry_next_at", "retry_reason", "retry_engine" })
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('download_task') WHERE name = $name";
+                command.Parameters.AddWithValue("$name", column);
+                Assert.Equal(1L, await command.ExecuteScalarAsync());
+            }
+            Assert.NotNull(await context.QueueRepository.EnqueueAsync(CreateQueueItem("after-init", "Artist", "Track", 6)));
+            Assert.Single(await context.QueueRepository.GetTasksAsync());
+        }
+    }
+
+    [Fact]
+    public async Task FailedOrCanceledInitialization_DoesNotPreventLaterInitialization()
+    {
+        await using var context = await CreateContextAsync();
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => context.QueueRepository.GetTasksAsync(cancellationToken: canceled.Token));
+        await using (var connection = new SqliteConnection($"Data Source={context.QueueDbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE download_task (id INTEGER PRIMARY KEY)";
+            await command.ExecuteNonQueryAsync();
+        }
+        await Assert.ThrowsAsync<SqliteException>(() => context.QueueRepository.GetTasksAsync());
+        await using (var connection = new SqliteConnection($"Data Source={context.QueueDbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE download_task";
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.Empty(await context.QueueRepository.GetTasksAsync());
+        Assert.NotNull(await context.QueueRepository.EnqueueAsync(CreateQueueItem("after-retry", "Artist", "Track", 6)));
+        Assert.Single(await context.QueueRepository.GetTasksAsync());
+    }
+
     private const string WatchlistPayloadJson = """
         {"WatchlistOrigin":"playlist","WatchlistSource":"spotify","WatchlistPlaylistId":"playlist-1","WatchlistTrackId":"track-1"}
         """;
