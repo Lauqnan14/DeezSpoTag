@@ -64,14 +64,17 @@ public sealed class QobuzTrackResolver
         if (!string.IsNullOrWhiteSpace(conversionQuery))
         {
             var links = await SearchTracksSafeAsync(conversionQuery, cancellationToken, failures);
-            var converted = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(links.Take(4), conversionQuery,
-                item => item.Title ?? "", GetTrackArtist, item => item.Id.ToString());
-            if (converted is not null)
+            var verified = new List<QobuzTrack>();
+            var albumPages = new Dictionary<string, Task<List<QobuzTrack>>>(StringComparer.Ordinal);
+            foreach (var link in links.DistinctBy(static track => track.Id).Take(4))
             {
-                var returnedId = converted.Id;
-                converted = await TryGetTrackAsync(returnedId, cancellationToken);
-                if (converted?.Id != returnedId) return null;
+                var candidate = await VerifySearchCandidateAsync(link, albumPages, cancellationToken);
+                if (candidate?.Id == link.Id
+                    && PickBestCandidate([candidate], isrc, title, artist, album, expectedDurationSec, rejectAmbiguous) is not null)
+                    verified.Add(candidate);
             }
+            var converted = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.ConvertCandidate(verified, conversionQuery,
+                item => item.Title ?? "", GetTrackArtist, item => item.Id.ToString());
             return PreserveFailureIfUnresolved(converted is null ? null : PickBestCandidate([converted], isrc, title, artist, album, expectedDurationSec, rejectAmbiguous));
         }
 
@@ -144,6 +147,66 @@ public sealed class QobuzTrackResolver
 
         var best = PickBestCandidate(candidates.Values, isrc, title, artist, album, expectedDurationSec, rejectAmbiguous);
         return PreserveFailureIfUnresolved(best);
+    }
+
+    private async Task<QobuzTrack?> VerifySearchCandidateAsync(QobuzTrack link,
+        Dictionary<string, Task<List<QobuzTrack>>> albumPages, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.GetTrack(link.Id, cancellationToken);
+        }
+        catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            var albumUrl = link.Album?.Url;
+            if (string.IsNullOrWhiteSpace(albumUrl)
+                && link.Album?.Id is { Length: > 0 and <= 64 } albumId
+                && albumId.All(char.IsAsciiLetterOrDigit))
+            {
+                var store = QobuzStoreManager.NormalizeStore(_config.DefaultStore, "us-en");
+                albumUrl = $"https://www.qobuz.com/{store}/album/-/{albumId}";
+            }
+            if (!Uri.TryCreate(albumUrl, UriKind.Absolute, out var uri)
+                || uri.Scheme != Uri.UriSchemeHttps
+                || !(uri.Host.Equals("qobuz.com", StringComparison.OrdinalIgnoreCase)
+                    || uri.Host.EndsWith(".qobuz.com", StringComparison.OrdinalIgnoreCase))
+                || !uri.AbsolutePath.Contains("/album/", StringComparison.Ordinal)) return null;
+            try
+            {
+                if (!albumPages.TryGetValue(uri.AbsoluteUri, out var pageTask))
+                {
+                    pageTask = _metadataService.GetAlbumPageTracks(uri.AbsoluteUri, cancellationToken);
+                    albumPages.Add(uri.AbsoluteUri, pageTask);
+                }
+                var tracks = await pageTask;
+                var native = tracks.SingleOrDefault(track => track.Id == link.Id);
+                // Bind the page to the search recording before preserving search-only ISRC/artwork.
+                if (native is null || string.IsNullOrWhiteSpace(link.Title)
+                    || string.IsNullOrWhiteSpace(GetTrackArtist(link)) || link.Duration <= 0
+                    || PickBestCandidate([native], null, GetTrackMatchTitle(link), GetTrackArtist(link),
+                        null, link.Duration, true) is null
+                    || (!string.IsNullOrWhiteSpace(native.ISRC) && !string.IsNullOrWhiteSpace(link.ISRC)
+                        && !IsExactIsrcMatch(native, link.ISRC))) return null;
+                native.ISRC ??= link.ISRC;
+                if (native.Album is null) native.Album = link.Album;
+                if (native.Album is not null)
+                {
+                    native.Album.Image ??= link.Album?.Image;
+                    native.Album.Url ??= albumUrl;
+                }
+                return native;
+            }
+            catch (Exception pageException) when (pageException is not OperationCanceledException)
+            {
+                _logger.LogWarning(pageException, "Qobuz native verification failed for {TrackId}", link.Id);
+                return null;
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Qobuz track verification failed for {TrackId}", link.Id);
+            return null;
+        }
     }
 
     public async Task<QobuzTrackResolution?> ValidateTrackIdAsync(

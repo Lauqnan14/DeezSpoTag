@@ -2184,13 +2184,13 @@ DeezSpoTag.DownloadClient = {
             'blocklist_match'
         ]);
         return reasonCodes.some((code) => skipCodes.has(String(code || '').toLowerCase()))
-            || /(^|\s)skipped:|not higher than|already exists in library|already in queue|currently downloading|blocklist|blocked/i.test(String(message || ''));
+            || /(^|\s)skipped:|not higher than|already exists in library|already in queue|currently downloading|blocklist/i.test(String(message || ''));
     },
     classifySkipReason(reasonCodes, message) {
         const normalizedCodes = Array.isArray(reasonCodes)
             ? reasonCodes.map((code) => String(code || '').trim().toLowerCase()).filter(Boolean)
             : [];
-        if (normalizedCodes.includes('blocklist_match') || /blocklist|blocked/i.test(String(message || ''))) {
+        if (normalizedCodes.includes('blocklist_match') || /blocklist/i.test(String(message || ''))) {
             return 'blocked';
         }
         if (normalizedCodes.includes('library_duplicate')

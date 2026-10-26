@@ -13,6 +13,133 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzTrackResolverTest
 {
+    [Theory]
+    [InlineData("d32kntyn5grvj", true)]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("../other", false)]
+    public async Task NativeVerificationBuildsMissingUrlOnlyFromSafeReturnedAlbumId(string? albumId, bool accepted)
+    {
+        var track = new QobuzTrack { Id = 460755331, Title = "Mtu Mzima", Duration = 223,
+            ISRC = "ZA56E2640694", Performer = new QobuzArtist { Name = "Marioo" },
+            Album = new QobuzAlbum { Id = albumId } };
+        var service = new StubQobuzMetadataService { SearchHandler = _ => [track],
+            TrackHandler = _ => throw new System.Net.Http.HttpRequestException("details", null, System.Net.HttpStatusCode.NotFound),
+            PageTracks = [new QobuzTrack { Id = track.Id, Title = track.Title, Duration = track.Duration,
+                Performer = track.Performer, Album = new QobuzAlbum { Title = "Mtu Mzima" } }] };
+        var result = await CreateResolver(service).ResolveTrackAsync(null, "Mtu Mzima", "Marioo", null,
+            224000, CancellationToken.None, true, "Mtu Mzima Marioo");
+        Assert.Equal(accepted, result is not null);
+        Assert.Equal(accepted ? 1 : 0, service.PageCalls);
+        if (accepted)
+        {
+            Assert.Equal("https://www.qobuz.com/us-en/album/-/d32kntyn5grvj", service.LastPageUrl);
+            Assert.Equal(service.LastPageUrl, result!.Track.Album?.Url);
+        }
+    }
+
+    [Fact]
+    public async Task NativeVerificationDeduplicatesAlbumPagesAndLimitsCandidateCount()
+    {
+        var candidates = new List<QobuzTrack>();
+        for (var id = 1; id <= 6; id++) candidates.Add(new QobuzTrack { Id = id, Title = "Song", Duration = 180,
+            Performer = new QobuzArtist { Name = "Artist" },
+            Album = new QobuzAlbum { Url = "https://www.qobuz.com/us-en/album/song/abc" } });
+        var service = new StubQobuzMetadataService { SearchHandler = _ => candidates,
+            TrackHandler = _ => throw new System.Net.Http.HttpRequestException("details", null, System.Net.HttpStatusCode.NotFound) };
+        Assert.Null(await CreateResolver(service).ResolveTrackAsync(null, "Song", "Artist", null,
+            180000, CancellationToken.None, true, "Song Artist"));
+        Assert.Equal(4, service.DetailCalls);
+        Assert.Equal(1, service.PageCalls);
+    }
+
+    [Fact]
+    public async Task NativeVerificationDoesNotRunWhenDetailsSucceedsOrCancellationOccurs()
+    {
+        var search = new QobuzTrack { Id = 123, Title = "Song", Duration = 180,
+            Performer = new QobuzArtist { Name = "Artist" },
+            Album = new QobuzAlbum { Url = "https://www.qobuz.com/us-en/album/song/abc" } };
+        var service = new StubQobuzMetadataService { SearchHandler = _ => [search], TrackResult = search };
+        Assert.NotNull(await CreateResolver(service).ResolveTrackAsync(null, "Song", "Artist", null,
+            180000, CancellationToken.None, true, "Song Artist"));
+        Assert.Equal(0, service.PageCalls);
+        service = new StubQobuzMetadataService { SearchHandler = _ => [search],
+            TrackHandler = _ => throw new OperationCanceledException() };
+        await Assert.ThrowsAsync<OperationCanceledException>(() => CreateResolver(service).ResolveTrackAsync(
+            null, "Song", "Artist", null, 180000, CancellationToken.None, true, "Song Artist"));
+        Assert.Equal(0, service.PageCalls);
+    }
+
+    [Theory]
+    [InlineData(404, 123, "Song", "Artist", 180, true)]
+    [InlineData(503, 123, "Song", "Artist", 180, false)]
+    [InlineData(401, 123, "Song", "Artist", 180, false)]
+    [InlineData(404, 999, "Song", "Artist", 180, false)]
+    [InlineData(404, 123, "Different", "Artist", 180, false)]
+    [InlineData(404, 123, "Song (Live)", "Artist", 180, false)]
+    [InlineData(404, 123, "Song", "Other", 180, false)]
+    [InlineData(404, 123, "Song", "Artist", 210, false)]
+    public async Task NativeVerificationRequires404SameIdAndRecording(int status, int id, string title,
+        string artist, int duration, bool accepted)
+    {
+        var search = new QobuzTrack { Id = 123, Title = "Song", Duration = 180,
+            ISRC = "US0000000001", Performer = new QobuzArtist { Name = "Artist" },
+            Album = new QobuzAlbum { Url = "https://www.qobuz.com/us-en/album/song/abc" } };
+        var service = new StubQobuzMetadataService {
+            SearchHandler = _ => [search],
+            TrackHandler = _ => throw new System.Net.Http.HttpRequestException("details", null, (System.Net.HttpStatusCode)status),
+            PageTracks = [new QobuzTrack { Id = id, Title = title, Duration = duration,
+                Performer = new QobuzArtist { Name = artist } }] };
+        var result = await CreateResolver(service).ResolveTrackAsync(null, "Song", "Artist", null,
+            180000, CancellationToken.None, true, "Song Artist");
+        Assert.Equal(accepted, result is not null);
+        Assert.Equal(status == 404 ? 1 : 0, service.PageCalls);
+        if (accepted) Assert.Equal(search.ISRC, result!.Track.ISRC);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task MandatoryYouTubeQobuzLookupCanFinishBeyondTheOptionalMetadataDeadline(bool youtube, bool expected)
+    {
+        var track = new QobuzTrack { Id = 123, Title = "Song", Duration = 180, ISRC = "US0000000001",
+            Performer = new QobuzArtist { Name = "Artist" } };
+        var service = new StubQobuzMetadataService { SearchDelay = TimeSpan.FromMilliseconds(3400),
+            SearchHandler = _ => [track], TrackResult = track };
+        var resolver = new DeezSpoTag.Web.Services.TrackIdentityResolver(null!, null!, null!, CreateResolver(service),
+            null!, null!, null!, null!, null, NullLogger<DeezSpoTag.Web.Services.TrackIdentityResolver>.Instance);
+        var stateType = typeof(DeezSpoTag.Web.Services.TrackIdentityResolver).GetNestedType("IdentityState", System.Reflection.BindingFlags.NonPublic)!;
+        var state = Activator.CreateInstance(stateType, true)!;
+        foreach (var (name, value) in new (string, object)[] { ("IsYouTubeSource", youtube), ("Title", "Song"),
+            ("Artist", "Artist"), ("DurationMs", 180000) }) stateType.GetProperty(name)!.SetValue(state, value);
+        if (youtube) stateType.GetProperty("ConversionQuery")!.SetValue(state, "Song Artist");
+        var candidates = new List<DeezSpoTag.Services.Download.Identity.PlatformIdentityCandidate>();
+        var method = typeof(DeezSpoTag.Web.Services.TrackIdentityResolver).GetMethod("ResolveQobuzAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        await (Task)method.Invoke(resolver, [state, candidates, deadline.Token])!;
+        Assert.Equal(expected, candidates.Exists(candidate => candidate.Accepted));
+        if (!youtube) Assert.Contains(candidates, candidate => candidate.Reason == "qobuz-timeout");
+    }
+
+    [Theory]
+    [InlineData(200, 223, 460755331)]
+    [InlineData(223, 200, 457275258)]
+    [InlineData(223, 223, null)]
+    [InlineData(200, 200, null)]
+    public async Task YouTubeConversionChecksVerifiedDurationsBeforeRejectingNameTies(int firstDuration, int secondDuration, int? expectedId)
+    {
+        QobuzTrack Track(int id, int duration) => new() { Id = id, Title = "Mtu Mzima", ISRC = "ZA56E2640694",
+            Duration = duration, Performer = new QobuzArtist { Name = "Marioo" } };
+        var service = new StubQobuzMetadataService {
+            SearchHandler = _ => [Track(457275258, 200), Track(460755331, 223)],
+            TrackHandler = id => id == 457275258 ? Track(id, firstDuration) : Track(id, secondDuration)
+        };
+        var result = await CreateResolver(service).ResolveTrackAsync(null, "Mtu Mzima", "Marioo", null, 224000,
+            CancellationToken.None, rejectAmbiguous: true, conversionQuery: "Mtu Mzima Marioo");
+        Assert.Equal(expectedId, result?.Track.Id);
+        Assert.Equal(new[] { "Mtu Mzima Marioo" }, service.Queries);
+    }
+
     [Fact]
     public async Task KnownId_WithVerifiedRecordingMetadataDoesNotDependOnSearchIndex()
     {
@@ -488,6 +615,19 @@ public sealed class QobuzTrackResolverTest
         public Task<QobuzTrack?>? PendingIsrc { get; init; }
         public QobuzTrack? IsrcResult { get; init; }
         public QobuzTrack? TrackResult { get; init; }
+        public Func<int, QobuzTrack?>? TrackHandler { get; init; }
+        public List<QobuzTrack> PageTracks { get; init; } = [];
+        public string? LastPageUrl { get; private set; }
+        public int PageCalls { get; private set; }
+        public int DetailCalls { get; private set; }
+        public Task<List<QobuzTrack>> GetAlbumPageTracks(string url, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            PageCalls++;
+            LastPageUrl = url;
+            return Task.FromResult(PageTracks);
+        }
+        public TimeSpan SearchDelay { get; init; }
         public Func<string, List<QobuzTrack>> SearchHandler { get; set; } = _ => new List<QobuzTrack>();
         public Func<string, List<QobuzTrack>> AlbumSearchHandler { get; set; } = _ => new List<QobuzTrack>();
         public List<string> Queries { get; } = new();
@@ -508,10 +648,11 @@ public sealed class QobuzTrackResolverTest
             return Task.FromResult<QobuzArtist?>(null);
         }
 
-        public Task<List<QobuzTrack>> SearchTracks(string query, CancellationToken ct)
+        public async Task<List<QobuzTrack>> SearchTracks(string query, CancellationToken ct)
         {
             Queries.Add(query);
-            return Task.FromResult(SearchHandler(query));
+            if (SearchDelay > TimeSpan.Zero) await Task.Delay(SearchDelay, ct);
+            return SearchHandler(query);
         }
 
         public Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct)
@@ -548,7 +689,8 @@ public sealed class QobuzTrackResolverTest
 
         public Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct)
         {
-            return Task.FromResult(TrackResult);
+            DetailCalls++;
+            return Task.FromResult(TrackHandler is null ? TrackResult : TrackHandler(trackId));
         }
 
     }

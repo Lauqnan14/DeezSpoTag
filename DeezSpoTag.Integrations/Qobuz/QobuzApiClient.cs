@@ -116,7 +116,9 @@ public sealed class QobuzApiClient : IQobuzApiClient
     private async Task<string?> GetQobuzPageHtmlAsync(string albumUrl, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(albumUrl, UriKind.Absolute, out var uri)
-            || !uri.Host.EndsWith("qobuz.com", StringComparison.OrdinalIgnoreCase))
+            || uri.Scheme != Uri.UriSchemeHttps
+            || !(uri.Host.Equals("qobuz.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.EndsWith(".qobuz.com", StringComparison.OrdinalIgnoreCase)))
         {
             return null;
         }
@@ -155,6 +157,7 @@ public sealed class QobuzApiClient : IQobuzApiClient
                 continue;
             }
 
+            if (track.Id > 0 && track.Id != trackId) continue;
             track.Id = track.Id > 0 ? track.Id : trackId;
             track.Duration = ParseDurationSeconds(groups["duration"].Value);
             tracks.Add(track);
@@ -325,14 +328,15 @@ public sealed class QobuzApiClient : IQobuzApiClient
     public async Task<QobuzTrack?> GetTrackAsync(int trackId, CancellationToken cancellationToken)
     {
         var url = $"/api.json/0.2/track/get?track_id={trackId}";
-        return await GetAsync<QobuzTrack>(url, cancellationToken);
+        return await GetAsync<QobuzTrack>(url, cancellationToken, requireSuccess: true);
     }
 
-    private async Task<T?> GetAsync<T>(string url, CancellationToken cancellationToken)
+    private async Task<T?> GetAsync<T>(string url, CancellationToken cancellationToken, bool requireSuccess = false)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("x-app-id", _config.AppId);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (requireSuccess) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             return default;

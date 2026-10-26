@@ -42,6 +42,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private const string DefaultStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly TimeSpan ProviderResolveTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan YouTubeCatalogResolveTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AmazonResolveTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan AppleResolveTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AppleIsrcResolveTimeout = TimeSpan.FromSeconds(3);
@@ -1130,7 +1131,9 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            providerTimeout.CancelAfter(ProviderResolveTimeout);
+            // YouTube needs a verified catalog recording before it can be queued;
+            // this is mandatory work rather than optional identity enrichment.
+            providerTimeout.CancelAfter(state.IsYouTubeSource ? YouTubeCatalogResolveTimeout : ProviderResolveTimeout);
             var providerToken = providerTimeout.Token;
             resolved = await _qobuzTrackResolver.ResolveTrackAsync(
                 state.Isrc,

@@ -9,7 +9,59 @@ namespace DeezSpoTag.Tests;
 
 public sealed class NotificationPreferenceWiringTest
 {
+    [Fact]
+    public void HomeLoadsSharedDownloadClientBeforeYouTubeActions()
+    {
+        var home = ReadSource("DeezSpoTag.Web/Views/Home/Index.cshtml");
+        var logger = home.IndexOf("~/js/download-logger.js", StringComparison.Ordinal);
+        var client = home.IndexOf("~/js/download-client.js", StringComparison.Ordinal);
+        var actions = home.IndexOf("~/js/home-view-helpers.js", StringComparison.Ordinal);
+        Assert.True(logger >= 0, "Home must load the existing download logger.");
+        Assert.True(client > logger, "Home must load the shared download client after its logger.");
+        Assert.True(actions > client, "YouTube actions require the shared download client before they run.");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task UnresolvedYouTubeRecordingIsNotReportedAsABlocklistMatch()
+    {
+        const string script = """
+            const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
+            const context={document:{addEventListener(){}},console,URL,setTimeout,clearTimeout};
+            context.globalThis=context;vm.createContext(context);
+            vm.runInContext(fs.readFileSync('DeezSpoTag.Web/wwwroot/js/download-client.js','utf8'),context);
+            const client=context.DeezSpoTagDownload;
+            const message='No unambiguous destination recording was found for this YouTube song. Download blocked.';
+            assert.equal(client.isSkipReason(['unresolved_engine_identity'],message),false);
+            assert.notEqual(client.classifySkipReason(['unresolved_engine_identity'],message),'blocked');
+            assert.equal(client.resolveSkipToastMessage(['unresolved_engine_identity'],message),message);
+            assert.equal(client.isSkipReason(['blocklist_match'],'Track is blocked.'),true);
+            assert.equal(client.classifySkipReason(['blocklist_match'],'Track is blocked.'),'blocked');
+            assert.equal(client.classifySkipReason([],'Blocked by your Media Management blocklist.'),'blocked');
+            """;
+        await RunNotificationNodeAsync(script);
+    }
+
     private static readonly string RepoRoot = ResolveRepoRoot();
+
+    private static async System.Threading.Tasks.Task RunNotificationNodeAsync(string script)
+    {
+        using var process = new System.Diagnostics.Process
+        {
+            StartInfo = new("node") { RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true, WorkingDirectory = RepoRoot, UseShellExecute = false }
+        };
+        Assert.True(process.Start());
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.StandardInput.WriteAsync(script);
+        process.StandardInput.Close();
+        using var timeout = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        Assert.True(process.ExitCode == 0, await error + await output);
+    }
+
+
 
     [Fact]
     public void SettingsEventRows_CoverEveryKnownNotificationKind()

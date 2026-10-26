@@ -107,7 +107,7 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         var merged = new Dictionary<int, QobuzTrack>();
         foreach (var track in results.SelectMany(static tracks => tracks).Where(static track => track.Id > 0))
         {
-            merged.TryAdd(track.Id, track);
+            AddSearchCandidate(merged, track);
         }
 
         return merged.Values.ToList();
@@ -368,7 +368,7 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         var results = new Dictionary<int, QobuzTrack>();
         foreach (var track in response.Tracks?.Items.Where(track => track.Id > 0) ?? Enumerable.Empty<QobuzTrack>())
         {
-            results.TryAdd(track.Id, track);
+            AddSearchCandidate(results, track);
         }
 
         foreach (var album in response.Albums?.Items ?? Enumerable.Empty<QobuzAlbum>())
@@ -376,11 +376,23 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
             var track = await BuildSingleTrackAlbumCandidateAsync(album, cancellationToken);
             if (track?.Id > 0)
             {
-                results.TryAdd(track.Id, track);
+                AddSearchCandidate(results, track);
             }
         }
 
         return results.Values.ToList();
+    }
+
+    private static void AddSearchCandidate(Dictionary<int, QobuzTrack> results, QobuzTrack track)
+    {
+        if (results.TryAdd(track.Id, track)) return;
+        var existing = results[track.Id];
+        // Keep native URL/artwork returned for the exact same track and album.
+        if (existing.Album?.Id is { Length: > 0 } albumId && track.Album?.Id == albumId)
+        {
+            MergeAlbumMetadata(existing, track.Album);
+            existing.Album.Image ??= track.Album.Image;
+        }
     }
 
     private async Task<QobuzTrack?> BuildSingleTrackAlbumCandidateAsync(
@@ -552,6 +564,9 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         var artist = await _artistService.GetArtistWithDiscographyAsync(artistId, store, ct);
         return artist?.Albums?.Items ?? new List<QobuzAlbum>();
     }
+
+    public Task<List<QobuzTrack>> GetAlbumPageTracks(string albumUrl, CancellationToken ct)
+        => _apiClient.GetAlbumPageTracksAsync(albumUrl, ct);
 
     public async Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct)
     {

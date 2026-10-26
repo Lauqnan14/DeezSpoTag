@@ -2026,7 +2026,12 @@ public sealed class DownloadIntentService
             intent.SpotifyId = intent.DeezerId = intent.QobuzId = intent.TidalId = intent.AmazonId = intent.AppleId = intent.Isrc = "";
             var identity = await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
             if (identity is null || !identity.Candidates.Any(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id)))
+            {
+                _logger.LogWarning("YouTube recording {VideoId} could not be resolved. Catalog results: {Results}",
+                    youtubeId, identity is null ? "no resolution" : string.Join(", ", identity.Candidates.Select(candidate =>
+                        candidate.Platform + ": " + candidate.Reason)));
                 throw new InvalidOperationException("No unambiguous destination recording was found for this YouTube song. Download blocked.");
+            }
         }
         NormalizeEnqueueSettings(settings);
         var isPodcastIntent = NormalizeIntentContentType(intent);

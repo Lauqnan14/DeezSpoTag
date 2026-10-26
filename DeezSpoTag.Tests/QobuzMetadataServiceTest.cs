@@ -16,6 +16,58 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzMetadataServiceTest
 {
+    [Fact]
+    public async Task CatalogSearchRetainsNativeAlbumUrlForTheSameTrackAndAlbum()
+    {
+        var album = new QobuzAlbum { Id = "abc", Title = "Song", Duration = 180, TracksCount = 1,
+            Url = "https://www.qobuz.com/us-en/album/song/abc",
+            Artists = [new QobuzArtist { Name = "Artist" }] };
+        var client = new StubQobuzApiClient { AlbumPageTrackIds = [123],
+            CatalogResponse = new QobuzCatalogSearchResponse {
+                Tracks = new QobuzSearchList<QobuzTrack> { Items = [new QobuzTrack { Id = 123,
+                    Title = "Song", Duration = 180, Album = new QobuzAlbum { Id = "abc" } }] },
+                Albums = new QobuzSearchList<QobuzAlbum> { Items = [album] } } };
+        var options = Options.Create(new QobuzApiConfig());
+        var service = new QobuzMetadataService(client,
+            new QobuzArtistService(client, new MemoryCache(new MemoryCacheOptions()), options), options);
+        Assert.Equal(album.Url, Assert.Single(await service.SearchTracks("Song Artist", CancellationToken.None)).Album?.Url);
+    }
+
+    [Theory]
+    [InlineData("https://notqobuz.com/us-en/album/song/abc", 123)]
+    [InlineData("http://www.qobuz.com/us-en/album/song/abc", 123)]
+    [InlineData("https://www.qobuz.com/us-en/album/song/abc", 999)]
+    public async Task NativeAlbumVerificationRejectsUntrustedHostAndConflictingPageIds(string url, int metadataId)
+    {
+        var metadata = WebUtility.HtmlEncode(JsonSerializer.Serialize(new { item_id = metadataId,
+            item_name = "Song", item_brand = "Artist" }));
+        using var client = new HttpClient(new StubHttpMessageHandler(
+            $"<div data-track=\"123\" data-track-v2=\"{metadata}\"><span class=\"track__item track__item--duration\">00:03:00</span></div>"));
+        var api = new QobuzApiClient(client, new MemoryCache(new MemoryCacheOptions()),
+            Options.Create(new QobuzApiConfig { BaseUrl = "https://www.qobuz.com", AppId = "test" }));
+        Assert.Empty(await api.GetAlbumPageTracksAsync(url, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(404)]
+    [InlineData(401)]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task TrackDetailsPreservesHttpStatusForNativeVerification(int status)
+    {
+        using var client = new HttpClient(new StatusHttpMessageHandler((HttpStatusCode)status));
+        var api = new QobuzApiClient(client, new MemoryCache(new MemoryCacheOptions()),
+            Options.Create(new QobuzApiConfig { BaseUrl = "https://www.qobuz.com", AppId = "test" }));
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => api.GetTrackAsync(123, CancellationToken.None));
+        Assert.Equal((HttpStatusCode)status, error.StatusCode);
+    }
+
+    private sealed class StatusHttpMessageHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
