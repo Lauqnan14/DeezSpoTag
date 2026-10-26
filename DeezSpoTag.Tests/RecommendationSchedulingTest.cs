@@ -14,6 +14,56 @@ namespace DeezSpoTag.Tests;
 
 public sealed class RecommendationSchedulingTest
 {
+    [Theory]
+    [InlineData("Africa/Nairobi", "2026-10-24T18:59:59Z", true)]
+    [InlineData("Africa/Nairobi", "2026-10-24T19:00:00Z", false)]
+    [InlineData("Africa/Nairobi", "2026-10-24T20:00:00Z", false)]
+    [InlineData("Africa/Nairobi", "2026-10-24T21:00:00Z", true)]
+    [InlineData("America/New_York", "2026-10-25T01:59:59Z", true)]
+    [InlineData("America/New_York", "2026-10-25T02:00:00Z", false)]
+    [InlineData("America/New_York", "2026-10-25T03:00:00Z", false)]
+    [InlineData("America/New_York", "2026-10-25T04:00:00Z", true)]
+    public void DailyCutoffUsesTheConfiguredCalendarDay(string zone,string utc,bool allowed)
+    {
+        var now=TimeZoneInfo.ConvertTime(DateTimeOffset.Parse(utc),TimeZoneInfo.FindSystemTimeZoneById(zone));
+        Assert.Equal(allowed,LibraryRecommendationService.AutomaticDailyAllowed(now));
+    }
+
+    [Theory]
+    [InlineData("America/New_York","2026-03-08","2026-03-09T04:00:00Z")]
+    [InlineData("America/New_York","2026-11-01","2026-11-02T05:00:00Z")]
+    [InlineData("Africa/Nairobi","2026-10-24","2026-10-24T21:00:00Z")]
+    public void ExpiryUsesNextLocalMidnightIncludingDaylightSavingChanges(string zone,string day,string expected)
+        => Assert.Equal(DateTimeOffset.Parse(expected),LibraryRecommendationService.DailyBoundaryUtc(
+            DateOnly.Parse(day).AddDays(1),TimeOnly.MinValue,TimeZoneInfo.FindSystemTimeZoneById(zone)));
+
+    [Theory]
+    [InlineData(21,59,true)]
+    [InlineData(22,0,false)]
+    [InlineData(23,0,false)]
+    [InlineData(0,0,true)]
+    public async Task AutomaticServiceSkipsLateGenerationButManualRebuildRemainsAvailable(int hour,int minute,bool automatic)
+    {
+        var fixture=new RecommendationCacheServingTest();await fixture.InitializeAsync();
+        try
+        {
+            var clock=new SchedulingClock(new DateTimeOffset(2026,10,24,hour,minute,0,TimeSpan.FromHours(3)).ToUniversalTime());
+            var service=fixture.Service(clock);var day=new DateOnly(2026,10,24);
+            var station=$"daily-rotation:l{fixture.Folder.LibraryId}:f{fixture.Folder.Id}";
+            await service.RefreshDailyRecommendationsForDateAsync(day,"scheduled",CancellationToken.None);
+            var state=await fixture.Repository.GetRecommendationGenerationStateAsync(fixture.Folder.LibraryId!.Value,fixture.Folder.Id,station,day);
+            Assert.Equal(automatic,state is not null);
+            if (!automatic)
+            {
+                var response=(await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value,station))!;
+                Assert.Equal("waiting",response.Status);Assert.Empty(response.Tracks);Assert.Contains("22:00",response.Message!);
+                await service.RebuildRecommendationsAsync(fixture.Folder.LibraryId.Value,station);
+                Assert.NotNull(await fixture.Repository.GetRecommendationGenerationStateAsync(fixture.Folder.LibraryId.Value,fixture.Folder.Id,station,day));
+            }
+        }
+        finally {await fixture.DisposeAsync();}
+    }
+
     [Fact]
     public async Task MidnightCancelsPreviousDayWorkAndImmediatelyAllowsMondaysRun()
     {
@@ -154,7 +204,7 @@ public sealed class RecommendationSchedulingTest
             Assert.True(await fixture.Repository.TryStartRecommendationGenerationAsync(key, "test"));
             var track = new RecommendationTrackDto("12345", "Daily", 180, "", 1, new("artist", "Artist"), new("album", "Album", ""));
             Assert.True(await fixture.Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", dailyId,
-                "v1:20261009", System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } })));
+                "v1:20261009", System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = dailyId, GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } })));
             var second = await fixture.Repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
                 RootPath: fixture.Folder.RootPath + "-blocked", DisplayName: "Blocked", Enabled: true, LibraryName: "Music", DesiredQuality: "flac",
                 ConvertEnabled: false, ConvertFormat: null, ConvertBitrate: null, AutoTagProfileId: "test-profile"));
@@ -217,7 +267,7 @@ public sealed class RecommendationSchedulingTest
             Assert.False(await Check());
             Assert.True(await fixture.Repository.TryStartRecommendationGenerationAsync(key, "retry"));
             Assert.True(await fixture.Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", key.StationId,
-                "v1:20261005", System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { new RecommendationTrackDto("12345", "Saved", 180, "", 1, new("artist", "Artist"), new("album", "Album", "")) } })));
+                "v1:20261005", System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = key.StationId, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { new RecommendationTrackDto("12345", "Saved", 180, "", 1, new("artist", "Artist"), new("album", "Album", "")) } })));
             Assert.True(await Check());
             var second = await fixture.Repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
                 RootPath: fixture.Folder.RootPath + "-second", DisplayName: "Second", Enabled: true, LibraryName: "Music", DesiredQuality: "flac",
@@ -227,7 +277,7 @@ public sealed class RecommendationSchedulingTest
                 $"daily-rotation:l{second.LibraryId}:f{second.Id}", day);
             Assert.True(await fixture.Repository.TryStartRecommendationGenerationAsync(secondKey, "test"));
             Assert.True(await fixture.Repository.PublishRecommendationSnapshotAsync(secondKey, "recommendations-daily-pool", secondKey.StationId,
-                "v1:20261005", System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { new RecommendationTrackDto("23456", "Second", 180, "", 1, new("artist", "Artist"), new("album", "Album", "")) } })));
+                "v1:20261005", System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = secondKey.StationId, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { new RecommendationTrackDto("23456", "Second", 180, "", 1, new("artist", "Artist"), new("album", "Album", "")) } })));
             Assert.True(await Check());
         }
         finally { await fixture.DisposeAsync(); }
@@ -249,13 +299,13 @@ public sealed class RecommendationSchedulingTest
             var track = new RecommendationTrackDto("12345", "Saved", 180, "", 1, new("1", "Artist"), new("1", "Album", ""));
             // Simulate a restart after legacy cache publication but before its completion checkpoint.
             await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", dailyId, $"v1:{monday:yyyyMMdd}",
-                System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } }), 0, null, null, true);
+                System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = dailyId, GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } }), 0, null, null, true);
             if (daysLater > 0)
                 await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", dailyId + $":day:{monday:yyyyMMdd}", $"v1:{monday:yyyyMMdd}",
-                    System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow().AddDays(-daysLater), Tracks = new[] { track } }), 0, null, null, true);
+                    System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = dailyId, GeneratedAtUtc = clock.GetUtcNow().AddDays(-daysLater), Tracks = new[] { track } }), 0, null, null, true);
             if (daysLater > 0)
                 await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", dailyId, $"v1:{today:yyyyMMdd}",
-                    System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } }), 0, null, null, true);
+                    System.Text.Json.JsonSerializer.Serialize(new { SeedScopeKey = dailyId, GeneratedAtUtc = clock.GetUtcNow(), Tracks = new[] { track } }), 0, null, null, true);
             var firstId = await fixture.SeedWeekly(monday);
             var secondId = await fixture.SeedWeekly(monday, LibraryRecommendationService.WeeklySimilarType);
             var first = new RecommendationGenerationStateKey(fixture.Folder.LibraryId!.Value, fixture.Folder.Id, firstId, monday);

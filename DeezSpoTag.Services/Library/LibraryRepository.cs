@@ -2227,8 +2227,9 @@ WHERE f.library_id = @libraryId
     public async Task<IReadOnlyList<LibraryRecommendationArtistSeedDto>> GetRecommendationArtistSeedsForLibraryAsync(
         long libraryId, long? folderId = null, CancellationToken cancellationToken = default)
     {
+        // Read only distinct credits; weekly discovery must not hydrate every track/source ID.
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"SELECT DISTINCT ar.id, ar.name
+        const string creditSql = @"SELECT DISTINCT COALESCE(NULLIF(TRIM(t.tag_artist), ''), ar.name)
 FROM artist ar JOIN album al ON al.artist_id=ar.id JOIN track t ON t.album_id=al.id
 JOIN track_local tl ON tl.track_id=t.id JOIN audio_file af ON af.id=tl.audio_file_id
 JOIN folder f ON f.id=af.folder_id
@@ -2236,16 +2237,38 @@ WHERE f.library_id=@libraryId AND f.enabled=TRUE
   AND (@folderId IS NULL OR f.id=@folderId)
   AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%atmos%'
   AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%video%'
-  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%podcast%'
-ORDER BY ar.id;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("libraryId", libraryId);
-        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var result = new List<LibraryRecommendationArtistSeedDto>();
-        while (await reader.ReadAsync(cancellationToken))
-            result.Add(new(reader.GetInt64(0), reader.GetString(1)));
-        return result;
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%podcast%';";
+        var credits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = new SqliteCommand(creditSql, connection))
+        {
+            command.Parameters.AddWithValue("libraryId", libraryId);
+            command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (!reader.IsDBNull(0) && !string.IsNullOrWhiteSpace(reader.GetString(0))) credits.Add(reader.GetString(0).Trim());
+        }
+        if (credits.Count == 0) return Array.Empty<LibraryRecommendationArtistSeedDto>();
+        var names = credits.Concat(credits.Select(ArtistNameNormalizer.ExtractPrimaryArtist)).Distinct(StringComparer.OrdinalIgnoreCase);
+        const string identitySql = @"SELECT ar.id, ar.name, GROUP_CONCAT(DISTINCT src.source_id)
+FROM artist ar LEFT JOIN artist_source src ON src.artist_id=ar.id AND src.source='spotify'
+WHERE ar.name COLLATE NOCASE IN (SELECT value FROM json_each(@names))
+GROUP BY ar.id, ar.name ORDER BY ar.id;";
+        var identities = new Dictionary<string, LibraryRecommendationArtistSeedDto>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = new SqliteCommand(identitySql, connection))
+        {
+            command.Parameters.AddWithValue("names", JsonSerializer.Serialize(names));
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                identities.TryAdd(reader.GetString(1), new(reader.GetInt64(0), reader.GetString(1),
+                    reader.IsDBNull(2) ? Array.Empty<string>() : reader.GetString(2).Split(',', StringSplitOptions.RemoveEmptyEntries)));
+        }
+        // Preserve known group names such as AC/DC before splitting collaboration credits.
+        return credits.Select(credit => identities.TryGetValue(credit, out var exact) ? exact
+                : identities.TryGetValue(ArtistNameNormalizer.ExtractPrimaryArtist(credit), out var primary) ? primary
+                : new LibraryRecommendationArtistSeedDto(0, ArtistNameNormalizer.ExtractPrimaryArtist(credit), Array.Empty<string>()))
+            .Where(artist => !string.IsNullOrWhiteSpace(artist.Name))
+            .DistinctBy(artist => artist.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(artist => artist.ArtistId).ThenBy(artist => artist.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     public async Task<IReadOnlyList<LibraryRecommendationSeedTrackDto>> GetRecommendationSeedTracksForLibraryScopeAsync(
@@ -2256,9 +2279,9 @@ ORDER BY ar.id;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT t.id,
-       COALESCE(NULLIF(TRIM(t.title), ''), NULLIF(TRIM(t.tag_title), '')),
-       COALESCE(NULLIF(TRIM(ar.name), ''), NULLIF(TRIM(t.tag_artist), '')),
-       COALESCE(NULLIF(TRIM(al.title), ''), NULLIF(TRIM(t.tag_album), '')),
+       COALESCE(NULLIF(TRIM(t.tag_title), ''), NULLIF(TRIM(t.title), '')),
+       COALESCE(NULLIF(TRIM(t.tag_artist), ''), NULLIF(TRIM(ar.name), '')),
+       COALESCE(NULLIF(TRIM(t.tag_album), ''), NULLIF(TRIM(al.title), '')),
        COALESCE(af.duration_ms, t.duration_ms, t.tag_duration_ms),
        COALESCE(
            (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'isrc' LIMIT 1),
@@ -2272,7 +2295,10 @@ JOIN folder f ON f.id = af.folder_id
 JOIN track t ON t.id = tl.track_id
 LEFT JOIN album al ON al.id = t.album_id
 LEFT JOIN artist ar ON ar.id = al.artist_id
-WHERE f.library_id = @libraryId
+WHERE f.library_id = @libraryId AND f.enabled = TRUE
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%atmos%'
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(COALESCE(f.desired_quality_value, '')) NOT LIKE '%podcast%'
   AND (@folderId IS NULL OR f.id = @folderId)
 GROUP BY t.id
 ORDER BY t.id;";

@@ -98,9 +98,12 @@ public sealed record RecommendationStationDto(
     DateTimeOffset? GeneratedAtUtc = null,
     string Cadence = "daily",
     long? LibraryId = null,
-    string? LibraryName = null);
+    string? LibraryName = null,
+    DateOnly? DailyDateLocal = null,
+    DateTimeOffset? ExpiresAtUtc = null,
+    DateTimeOffset? ServerNowUtc = null);
 
-public sealed record LibraryRecommendationArtistSeedDto(long ArtistId, string Name);
+public sealed record LibraryRecommendationArtistSeedDto(long ArtistId, string Name, IReadOnlyList<string>? SpotifyIds = null);
 
 public sealed record RecommendationArtistDto(
     string Id,
@@ -140,7 +143,11 @@ public sealed record RecommendationDetailDto(
     IReadOnlyDictionary<string, int>? DailyAllocations = null,
     DailyRecommendationAiFilterMode? DailyAiFilterMode = null,
     DailyRecommendationDiagnosticsDto? Diagnostics = null,
-    int? WeeklyTrackCount = null);
+    int? WeeklyTrackCount = null,
+    DateOnly? DailyDateLocal = null,
+    DateTimeOffset? ExpiresAtUtc = null,
+    DateTimeOffset? ServerNowUtc = null,
+    string? SeedScopeKey = null);
 
 public sealed record RecommendationRejectionUpsertInput(
     long LibraryId,
@@ -1364,4 +1371,9 @@ public sealed record DailyRecommendationDiagnosticsDto(
     IReadOnlyDictionary<string, string> ProviderFailures,
     IReadOnlyDictionary<string, int> MissingSourceCounts,
     int DestinationCount,
-    int OverflowCount);
+    int OverflowCount,
+    IReadOnlyDictionary<string, IReadOnlyList<long>>? ProcessedSeedIds = null,
+    IReadOnlyDictionary<string, int>? AttemptedSeeds = null,
+    IReadOnlyDictionary<string, bool>? ExhaustedSources = null,
+    bool? InitialSelectionPublished = null,
+    IReadOnlyList<string>? PublishedTrackIds = null);

@@ -13,6 +13,92 @@ namespace DeezSpoTag.Tests;
 public sealed class WeeklyPathfinderRecommendationTest
 {
     [Theory]
+    [InlineData(LibraryRecommendationService.WeeklyMissingType)]
+    [InlineData(LibraryRecommendationService.WeeklySimilarType)]
+    public async Task LargeFolderPublishesWeeklyBeforeResolvingEveryArtist(string type)
+    {
+        var fixture = new RecommendationCacheServingTest();
+        await fixture.InitializeAsync();
+        try
+        {
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + fixture.DatabasePath);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<3000)
+                INSERT INTO artist(id,name) SELECT n,'Local artist '||n FROM numbers;
+                INSERT INTO album(id,artist_id,title) SELECT id,id,'Owned album' FROM artist;
+                INSERT INTO track(id,album_id,title) SELECT id,id,'Owned song '||id FROM artist;
+                INSERT INTO audio_file(id,path,folder_id) SELECT id,'/fixture/'||id||'.flac',@folder FROM artist;
+                INSERT INTO track_local(track_id,audio_file_id) SELECT id,id FROM artist;
+                INSERT INTO artist_source(artist_id,source,source_id)
+                    SELECT id,'spotify',printf('%022d',id) FROM artist WHERE id<=50;
+                """;
+            command.Parameters.AddWithValue("folder",fixture.Folder.Id);
+            await command.ExecuteNonQueryAsync();
+            using var handler = new WeeklyHandler();
+            var client = new SpotifyPathfinderMetadataClient(null!,null!,null!,new WeeklyUser(),new WeeklyHttp(handler),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<SpotifyPathfinderMetadataClient>.Instance);
+            PrimeWeeklyAuthentication(client);
+            var service = new LibraryRecommendationService(new LibraryRecommendationService.LibraryRecommendationCollaborators
+                {Repository=fixture.Repository,Pathfinder=client},new RecommendationCacheServingTest.EnvironmentFixture(),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryRecommendationService>.Instance);
+            var station = LibraryRecommendationService.BuildWeeklyStationId(fixture.Folder.LibraryId!.Value,fixture.Folder.Id,type);
+            var generate=typeof(LibraryRecommendationService).GetMethod("GenerateWeeklyRecommendationsAsync",BindingFlags.NonPublic|BindingFlags.Instance)!;
+            await ((Task)generate.Invoke(service,[fixture.Folder.LibraryId.Value,fixture.Folder.Id,type,
+                RecommendationCacheServingTest.Monday,"test",CancellationToken.None])!).WaitAsync(TimeSpan.FromSeconds(45));
+            var saved = await fixture.Repository.GetPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool",station);
+            Assert.NotNull(saved);
+            var result = (await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value,station))!;
+            Assert.Equal(50,result.Tracks.Count);
+            Assert.Equal(50,result.Tracks.Select(t=>t.SeedArtistId).Distinct().Count());
+            Assert.Equal("ready",result.Status);
+            Assert.Equal("completed",(await fixture.Repository.GetRecommendationGenerationStateAsync(
+                fixture.Folder.LibraryId.Value,fixture.Folder.Id,station,RecommendationCacheServingTest.Monday))!.Status);
+            Assert.InRange(handler.Calls,100,101);
+            Assert.All(result.Tracks,t=>Assert.Equal("spotify",t.Source));
+        }
+        finally { await fixture.DisposeAsync(); }
+    }
+
+    private static void PrimeWeeklyAuthentication(SpotifyPathfinderMetadataClient client)
+    {
+        var type=typeof(SpotifyPathfinderMetadataClient);
+        const string path="weekly-test-auth";
+        type.GetField("_backgroundUserBlobCachedPath",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(client,path);
+        type.GetField("_backgroundUserBlobCheckedAt",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(client,DateTimeOffset.UtcNow);
+        var context=Activator.CreateInstance(type.GetNestedType("PathfinderAuthContext",BindingFlags.NonPublic)!,
+            ["test-access","test-client","test-version","test-device"]);
+        var stateType=type.GetNestedType("BlobAuthState",BindingFlags.NonPublic)!;
+        var state=Activator.CreateInstance(stateType,nonPublic:true)!;
+        stateType.GetProperty("Context")!.SetValue(state,context);
+        stateType.GetProperty("AccessTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
+        stateType.GetProperty("ClientTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
+        ((System.Collections.IDictionary)type.GetField("_blobAuthStates",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(client)!).Add(path,state);
+    }
+    private sealed class WeeklyUser : ISpotifyUserContextAccessor { public string? UserId=>null; }
+    private sealed class WeeklyHttp(WeeklyHandler handler) : System.Net.Http.IHttpClientFactory
+    { public System.Net.Http.HttpClient CreateClient(string name)=>new(handler,disposeHandler:false); }
+    private sealed class WeeklyHandler : System.Net.Http.HttpMessageHandler
+    {
+        public int Calls;
+        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,CancellationToken token)
+        {
+            using var json=System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            var operation=json.RootElement.GetProperty("operationName").GetString();
+            Assert.Contains(operation,new[]{"queryArtist","queryArtistOverview"});
+            System.Threading.Interlocked.Increment(ref Calls);
+            var id=json.RootElement.GetProperty("variables").GetProperty("uri").GetString()!.Split(':').Last();
+            object artist=new {profile=new {name="Provider artist "+id},
+                relatedContent=new {relatedArtists=new {items=Enumerable.Range(1,50).Select(n=>new {id=(10000+n).ToString("D22"),profile=new {name="Related artist "+n}})}},
+                discography=new {topTracks=new {items=new[]{new {track=new {id=(100000+long.Parse(id)).ToString("D22"),name="New song "+id,duration=new {totalMilliseconds=180000},
+                    albumOfTrack=new {id="new-album",name="New album"},artists=new {items=new[]{new {profile=new {name="Provider artist "+id}}}}}}}}}};
+            return new(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent(
+                System.Text.Json.JsonSerializer.Serialize(new {data=new {artistUnion=artist}}),System.Text.Encoding.UTF8,"application/json")};
+        }
+    }
+
+    [Theory]
     [InlineData("2026-10-04", "2026-09-28")]
     [InlineData("2026-10-05", "2026-10-05")]
     [InlineData("2027-01-01", "2026-12-28")]

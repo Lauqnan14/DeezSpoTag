@@ -3083,74 +3083,103 @@ function buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath) {
 }
 
 let recommendationReloadTimer;
+let recommendationExpiryTimer;
 let recommendationRequestGeneration = 0;
+let recommendationDailyDeadline = Infinity;
+let recommendationLastDailyPayload = null;
+
+function expireDailyRecommendations() {
+    if (recommendationDailyDeadline === Infinity || Date.now() < recommendationDailyDeadline) return false;
+    clearTimeout(recommendationExpiryTimer);
+    clearTimeout(recommendationReloadTimer);
+    recommendationRequestGeneration++;
+    recommendationDailyDeadline = Infinity;
+    const message = "The previous daily selection has expired. Today's recommendations are being prepared.";
+    const cleared = mapRecommendationsTracklist({ ...(recommendationLastDailyPayload || {}), tracks: [] });
+    cleared.description = message;
+    cleared.cover_big = '';
+    renderTracklist(cleared, { allowEmptyTracks: true });
+    setTracksEmptyMessage(message);
+    const notice = document.getElementById('tracklist-notice');
+    if (notice) { notice.textContent = message; notice.classList.remove('is-hidden'); }
+    globalThis.recommendationReloadAttempt = 0;
+    return true;
+}
+
+function armDailyRecommendationExpiry(payload, requestedAt) {
+    clearTimeout(recommendationExpiryTimer);
+    const expiry = Date.parse(payload.expiresAtUtc || payload.station?.expiresAtUtc || '');
+    const serverNow = Date.parse(payload.serverNowUtc || payload.station?.serverNowUtc || '');
+    recommendationDailyDeadline = payload.station?.cadence !== 'weekly' && Number.isFinite(expiry) && Number.isFinite(serverNow)
+        ? requestedAt + expiry - serverNow : Infinity;
+    recommendationLastDailyPayload = recommendationDailyDeadline === Infinity ? null : payload;
+    if (expireDailyRecommendations()) return false;
+    if (recommendationDailyDeadline !== Infinity)
+        recommendationExpiryTimer = setTimeout(() => {
+            if (expireDailyRecommendations() && tracklistSource === 'recommendations' && globalThis.navigator?.onLine !== false)
+                void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
+        }, Math.max(0,recommendationDailyDeadline-Date.now()));
+    return true;
+}
 
 async function loadRecommendationsTracklist() {
+    expireDailyRecommendations();
     clearTimeout(recommendationReloadTimer);
     const requestGeneration = ++recommendationRequestGeneration;
-    if (!tracklistLibraryId) {
-        throw new Error('Library is required for recommendations.');
-    }
-
-    const params = new URLSearchParams({
-        libraryId: tracklistLibraryId,
-        limit: '50'
-    });
-    if (tracklistId) {
-        params.set('stationId', tracklistId);
-    }
-    if (recommendationType) {
-        params.set('type', recommendationType);
-    }
-    if (recommendationValue) {
-        params.set('value', recommendationValue);
-    }
-
+    const requestedAt = Date.now();
+    if (!tracklistLibraryId) throw new Error('Library is required for recommendations.');
+    const params = new URLSearchParams({ libraryId: tracklistLibraryId });
+    if (tracklistId) params.set('stationId', tracklistId);
+    if (recommendationType) params.set('type', recommendationType);
+    if (recommendationValue) params.set('value', recommendationValue);
     const response = await fetch(`/api/library/recommendations?${params.toString()}`);
-    if (!response.ok) {
-        throw new Error(`Failed to load recommendations (HTTP ${response.status})`);
-    }
-
+    if (!response.ok) throw new Error(`Failed to load recommendations (HTTP ${response.status})`);
     const payload = await response.json();
     if (requestGeneration !== recommendationRequestGeneration || tracklistSource !== 'recommendations') return;
-    if (!payload?.station || !Array.isArray(payload.tracks)) {
-        throw new Error('Recommendations unavailable.');
-    }
-
+    if (!payload?.station || !Array.isArray(payload.tracks)) throw new Error('Recommendations unavailable.');
+    if (!armDailyRecommendationExpiry(payload,requestedAt)) { scheduleRecommendationsReload(); return; }
     const mapped = mapRecommendationsTracklist(payload);
     await loadIgnoredTracks();
-    if (requestGeneration !== recommendationRequestGeneration) return;
+    if (requestGeneration !== recommendationRequestGeneration || expireDailyRecommendations()) return;
     const status = String(payload.status || payload.station?.status || '').trim().toLowerCase();
-    const refreshing = ['generating', 'waiting', 'refreshing', 'refresh_failed', 'failed'].includes(status);
-    renderTracklist(mapped, { allowEmptyTracks: refreshing });
-    if (refreshing) {
-        const message = payload.message || payload.station?.message || 'Saved recommendations are being refreshed.';
-        const savedDate = payload.tracks.length && payload.generatedAtUtc
+    const message = payload.message || payload.station?.message || '';
+    const pausedUntilMidnight = status === 'waiting' && /midnight/i.test(message);
+    const refreshing = ['generating','waiting','refreshing','refresh_failed','failed','refilling'].includes(status);
+    renderTracklist(mapped,{ allowEmptyTracks: refreshing || payload.tracks.length === 0 });
+    if (payload.tracks.length === 0) setTracksEmptyMessage(message || "Today's recommendations are not yet available.");
+    const notice = document.getElementById('tracklist-notice');
+    if (notice) {
+        const savedDate = payload.station.cadence === 'weekly' && payload.tracks.length && payload.generatedAtUtc
             ? ` Saved ${new Date(payload.generatedAtUtc).toLocaleDateString()}.` : '';
-        if (payload.tracks.length === 0) setTracksEmptyMessage(message);
-        const notice = document.getElementById('tracklist-notice');
-        if (notice) {
-            notice.textContent = message + savedDate;
-            notice.classList.remove('is-hidden');
-        }
-        scheduleRecommendationsReload();
-    } else {
-        globalThis.recommendationReloadAttempt = 0;
+        notice.textContent = message + savedDate;
+        if (message) notice.classList.remove('is-hidden');
+        else notice.classList.add?.('is-hidden');
     }
+    if (refreshing && !pausedUntilMidnight) scheduleRecommendationsReload();
+    else globalThis.recommendationReloadAttempt = 0;
 }
 
 function scheduleRecommendationsReload() {
     clearTimeout(recommendationReloadTimer);
-    const currentAttempt = Number.parseInt(String(globalThis.recommendationReloadAttempt || '0'), 10) || 0;
-    if (currentAttempt >= 24) return;
-    globalThis.recommendationReloadAttempt = currentAttempt + 1;
-    const delay = Math.min(60000, 5000 * (1 + Math.floor(currentAttempt / 4)));
+    const attempt = Number(globalThis.recommendationReloadAttempt || 0);
+    globalThis.recommendationReloadAttempt = attempt + 1;
     recommendationReloadTimer = setTimeout(() => {
-        if (tracklistSource === 'recommendations') {
-            void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
-        }
-    }, delay);
+        if (tracklistSource === 'recommendations') void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
+    }, Math.min(60000,5000*(1+Math.floor(attempt/4))));
 }
+
+for (const event of ['focus','online']) globalThis.addEventListener?.(event, () => {
+    if (tracklistSource === 'recommendations' && recommendationLastDailyPayload !== null) {
+        expireDailyRecommendations();
+        void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
+    }
+});
+document.addEventListener?.('visibilitychange', () => {
+    if (!document.hidden && tracklistSource === 'recommendations' && recommendationLastDailyPayload !== null) {
+        expireDailyRecommendations();
+        void loadRecommendationsTracklist().catch(() => scheduleRecommendationsReload());
+    }
+});
 
 function mapRecommendationsTracklist(payload) {
     const tracks = (payload.tracks || []).map((track, index) => ({

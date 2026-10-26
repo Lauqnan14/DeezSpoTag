@@ -262,7 +262,7 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
         var monday = day.AddDays(-(((int)day.DayOfWeek + 6) % 7));
         var folder = Assert.Single((await _repository.GetFoldersAsync()).Where(f => f.LibraryId == libraryId));
         var station = new RecommendationStationDto($"weekly-rotation:l{libraryId}:f{folder.Id}:{type}", "Weekly", "Test", type, null, tracks.Length, Cadence: "weekly");
-        var detail = new RecommendationDetailDto(station, tracks, DateTimeOffset.UtcNow);
+        var detail = new RecommendationDetailDto(station, tracks, DateTimeOffset.UtcNow, SeedScopeKey: station.Id);
         await _repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-weekly-pool", station.Id,
             $"v1:{monday:yyyyMMdd}", JsonSerializer.Serialize(detail), 0, null, null, true);
     }
@@ -350,7 +350,7 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
         Assert.True(await _repository.TryStartRecommendationGenerationAsync(key, "test"));
         var dailyTrack = new RecommendationTrackDto("12345", "Saved", 180, "", 1, new("1", "Artist"), new("1", "Album", ""));
         Assert.True(await _repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", dailyId,
-            $"v1:{monday:yyyyMMdd}", JsonSerializer.Serialize(new { GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { dailyTrack } })));
+            $"v1:{monday:yyyyMMdd}", JsonSerializer.Serialize(new { SeedScopeKey = dailyId, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = new[] { dailyTrack } })));
         await service.RefreshWeeklyRecommendationsAsync("test", default);
         var result = await service.GetRecommendationsAsync(seeded.LibraryId, $"weekly-rotation:l{seeded.LibraryId}:f{seeded.Folder.Id}:weekly-missing-favourites");
         Assert.Equal("failed", result!.Status);
@@ -373,6 +373,46 @@ public sealed class LibraryRepositoryCoverageTest : IAsyncLifetime
         Assert.Equal("running", (await _repository.GetRecommendationGenerationStateAsync(7, 9, similar.StationId, week))!.Status);
         Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing with { StationId = "weekly-rotation:l8:f9:weekly-missing-favourites" }, "forged"));
         Assert.False(await _repository.TryStartRecommendationGenerationAsync(missing with { FolderId = -3 }, "invalid"));
+    }
+
+    [Fact]
+    public async Task RecommendationSeedsUseTheFoldersTrackCreditsInsteadOfCompilationMetadata()
+    {
+        var seeded = await SeedLibraryAsync(("Canonical title", "12345", "sp", "ap"));
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE track SET tag_title='Tagged title',tag_artist='Darkoo, Guest',tag_album='Tagged album' WHERE id=@id;";
+            command.Parameters.AddWithValue("id", seeded.TrackIdsByTitle["Canonical title"]);
+            await command.ExecuteNonQueryAsync();
+        }
+        var track = Assert.Single(await _repository.GetRecommendationSeedTracksForLibraryScopeAsync(seeded.LibraryId, seeded.Folder.Id));
+        Assert.Equal("Tagged title", track.Title);
+        Assert.Equal("Darkoo, Guest", track.Artist);
+        Assert.Equal("Tagged album", track.Album);
+        var artist = Assert.Single(await _repository.GetRecommendationArtistSeedsForLibraryAsync(seeded.LibraryId, seeded.Folder.Id));
+        Assert.Equal("Darkoo", artist.Name);
+        Assert.Equal(0, artist.ArtistId); // A track credit need not have its own album-artist row.
+        Assert.Empty(artist.SpotifyIds!);
+        Assert.Empty(await _repository.GetRecommendationArtistSeedsForLibraryAsync(seeded.LibraryId + 1, seeded.Folder.Id));
+    }
+
+    [Fact]
+    public async Task RecommendationArtistMembershipPreservesKnownBandNamesWithSeparators()
+    {
+        var seeded = await SeedLibraryAsync(("Song", "123", "sp", "ap"));
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO artist(name) VALUES ('AC/DC'); UPDATE track SET tag_artist='AC/DC' WHERE id=@id;";
+            command.Parameters.AddWithValue("id", seeded.TrackIdsByTitle["Song"]);
+            await command.ExecuteNonQueryAsync();
+        }
+        var artist = Assert.Single(await _repository.GetRecommendationArtistSeedsForLibraryAsync(seeded.LibraryId, seeded.Folder.Id));
+        Assert.Equal("AC/DC", artist.Name);
+        Assert.True(artist.ArtistId > 0);
     }
 
     [Fact]

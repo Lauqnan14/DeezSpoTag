@@ -1151,7 +1151,7 @@
         });
     };
 
-    const renderRecommendationCard = (station, libraryId) => {
+    const renderRecommendationCard = (station, libraryId, requestedAt = Date.now()) => {
         const card = document.createElement("div");
         card.className = "auto-tool-card recommendation-tool-card";
         card.addEventListener("click", () => openRecommendationStation(station, libraryId));
@@ -1189,7 +1189,7 @@
         const trackCount = document.createElement("span");
         trackCount.textContent = station.cadence === "weekly"
             ? `${station.trackCount || 0} tracks · ${station.distinctArtistCount || 0} artists`
-            : (station.trackCount ? `${station.trackCount} tracks` : "Daily mix");
+            : `${Number(station.trackCount || 0)} tracks`;
         const mode = document.createElement("span");
         mode.textContent = station.cadence === "weekly"
             ? (station.generatedAtUtc ? `Weekly · ${new Date(station.generatedAtUtc).toLocaleDateString()}` : (station.message || station.status || "Generating"))
@@ -1204,6 +1204,21 @@
         body.append(header, desc, meta);
 
         card.append(body);
+        if (station.cadence !== 'weekly') {
+            const expiry=Date.parse(station.expiresAtUtc || '');
+            const serverNow=Date.parse(station.serverNowUtc || '');
+            if (Number.isFinite(expiry) && Number.isFinite(serverNow)) {
+                card.dataset.dailyDeadline=String(requestedAt+expiry-serverNow);
+                card.expireDaily = () => {
+                    card.dataset.dailyExpired='true';
+                    trackCount.textContent='0 tracks';
+                    desc.textContent="Today's recommendations are being prepared.";
+                    mode.textContent='Previous daily selection expired';
+                    cover.replaceChildren();
+                };
+                if (Date.now() >= Number(card.dataset.dailyDeadline)) card.expireDaily();
+            }
+        }
         return card;
     };
 
@@ -1272,6 +1287,32 @@
 
     var recommendationCardsRefreshTimer;
     let recommendationLoadGeneration = 0;
+    let recommendationCardsExpiryTimer;
+    function expireDailyRecommendationCards() {
+        let changed=false;
+        for (const card of Array.from(recommendationsGrid?.children || [])) {
+            const deadline=Number(card.dataset.dailyDeadline);
+            if (Number.isFinite(deadline) && Date.now() >= deadline && card.dataset.dailyExpired !== 'true') {
+                card.expireDaily?.();changed=true;
+            }
+        }
+        if (changed) recommendationLoadGeneration++;
+        return changed;
+    }
+    function armRecommendationCardsExpiry() {
+        clearTimeout(recommendationCardsExpiryTimer);
+        let next=Infinity;
+        for (const card of Array.from(recommendationsGrid?.children || [])) {
+            const deadline=Number(card.dataset.dailyDeadline);
+            if (Number.isFinite(deadline) && card.dataset.dailyExpired !== 'true') next=Math.min(next,deadline);
+        }
+        if (next !== Infinity) recommendationCardsExpiryTimer=setTimeout(() => {
+            expireDailyRecommendationCards();
+            armRecommendationCardsExpiry();
+            if (globalThis.navigator?.onLine !== false) void loadRecommendations();
+        },Math.max(0,next-Date.now()));
+    }
+
     let recommendationFolderScopes = null;
     function scheduleRecommendationCardsRefresh(delay = 15000) {
         clearTimeout(recommendationCardsRefreshTimer);
@@ -1285,7 +1326,7 @@
         return Number.isFinite(indexDiff) ? indexDiff : 0;
     };
 
-    function renderRecommendationLibrary(libraryId, stations, libraryOrder) {
+    function renderRecommendationLibrary(libraryId, stations, libraryOrder, requestedAt = Date.now()) {
         const missingGrid = document.getElementById("weeklyMissingRecommendationsGrid");
         const similarGrid = document.getElementById("weeklySimilarRecommendationsGrid");
         const grids = [recommendationsGrid, missingGrid, similarGrid];
@@ -1299,7 +1340,7 @@
             const grid = station.type === "weekly-missing-favourites" ? missingGrid
                 : station.type === "weekly-similar-artists" ? similarGrid : recommendationsGrid;
             if (!grid) continue;
-            const card = renderRecommendationCard(station, libraryId);
+            const card = renderRecommendationCard(station, libraryId, requestedAt);
             card.dataset.recommendationLibrary = String(libraryId);
             const folderIdentity = String(station.id || "").match(/^(?:daily|weekly)-rotation:l\d+:f(\d+)(?::|$)/);
             if (folderIdentity) card.dataset.recommendationFolder = folderIdentity[1];
@@ -1318,6 +1359,7 @@
     }
 
     async function loadRecommendations() {
+        expireDailyRecommendationCards();
         const generation = ++recommendationLoadGeneration;
         clearTimeout(recommendationCardsRefreshTimer);
         const libraryIds = await resolveRecommendationLibraryIds();
@@ -1344,13 +1386,16 @@
         let refreshNeeded = false;
         await Promise.all(libraryIds.map(async libraryId => {
             try {
+                const requestedAt=Date.now();
                 const response = await fetch(`/api/library/recommendations/stations?libraryId=${encodeURIComponent(libraryId)}`, { cache: "no-store" });
                 if (!response.ok) throw new Error(`Recommendations HTTP ${response.status}`);
                 const payload = await response.json();
                 if (generation !== recommendationLoadGeneration) return;
                 const stations = Array.isArray(payload) ? payload : [];
-                renderRecommendationLibrary(libraryId, stations, libraryIds.indexOf(libraryId));
-                refreshNeeded ||= stations.some(station => ["generating", "waiting", "refreshing", "refresh_failed", "failed"].includes(station.status));
+                renderRecommendationLibrary(libraryId, stations, libraryIds.indexOf(libraryId),requestedAt);
+                armRecommendationCardsExpiry();
+                refreshNeeded ||= stations.some(station => ["generating", "waiting", "refreshing", "refresh_failed", "failed", "refilling"].includes(station.status)
+                    && !(station.status === 'waiting' && /midnight/i.test(station.message || '')));
             } catch {
                 // Keep existing cards for this library while its request is retried.
                 refreshNeeded = true;
@@ -1383,6 +1428,12 @@
     // async function rejected with a ReferenceError before it issued a single request and
     // the Recommendations tab stayed blank forever.
     if (hasRecommendationSection) {
+        for (const event of ['focus','online']) globalThis.addEventListener?.(event, () => {
+            expireDailyRecommendationCards();void loadRecommendations();
+        });
+        document.addEventListener?.('visibilitychange', () => {
+            if (!document.hidden) {expireDailyRecommendationCards();void loadRecommendations();}
+        });
         loadRecommendations();
     }
 })();

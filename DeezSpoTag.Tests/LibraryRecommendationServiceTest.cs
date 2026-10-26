@@ -18,6 +18,64 @@ namespace DeezSpoTag.Tests;
 public sealed class LibraryRecommendationServiceTest
 {
     [Theory]
+    [InlineData("no_data", true)]
+    [InlineData("not_found", true)]
+    [InlineData("quota", false)]
+    [InlineData("network", false)]
+    [InlineData("cancel", false)]
+    public async Task StoredSeedLookupDistinguishesMissingRecordingsFromProviderFailures(string kind, bool missing)
+    {
+        var seed = new LibraryRecommendationSeedTrackDto(42, "Song", "Artist", "Album", 180000, "ISRC", "12345");
+        Exception failure = kind switch
+        {
+            "no_data" => new InvalidOperationException("API Error: 800 - no data"),
+            "not_found" => new System.Net.Http.HttpRequestException("not found", null, System.Net.HttpStatusCode.NotFound),
+            "quota" => new InvalidOperationException("API Error: 4 - quota exceeded"),
+            "network" => new System.Net.Http.HttpRequestException("unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable),
+            _ => new OperationCanceledException()
+        };
+        Func<string, CancellationToken, Task<DeezSpoTag.Core.Models.Deezer.ApiTrack>> fetch = (_, _) => Task.FromException<DeezSpoTag.Core.Models.Deezer.ApiTrack>(failure);
+        var method = typeof(LibraryRecommendationService).GetMethod("ValidateStoredDeezerSeedAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var task = (Task<string>)method.Invoke(null, [seed, fetch, CancellationToken.None])!;
+        if (missing) Assert.Equal("", await task);
+        else Assert.Same(failure, await Record.ExceptionAsync(async () => await task));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StoredDailySeedIdsMustIdentifyTheFoldersActualRecording(bool matches)
+    {
+        var seed = new LibraryRecommendationSeedTrackDto(42, "Like Dat", "Darkoo", "Album", 180000, "GBMA22510404", "134522904");
+        var candidate = new DeezSpoTag.Core.Models.Deezer.ApiTrack { Id = seed.DeezerTrackId!,
+            Title = matches ? "Like Dat" : "You Don't Know What Love Is", Duration = matches ? 180 : 391,
+            Isrc = matches ? seed.Isrc! : "USFI85600002",
+            Artist = new DeezSpoTag.Core.Models.Deezer.ApiArtist { Name = matches ? "Darkoo" : "Sonny Rollins" } };
+        var calls = 0;
+        Func<string, CancellationToken, Task<DeezSpoTag.Core.Models.Deezer.ApiTrack>> fetch = (id, token) =>
+        { Assert.Equal(seed.DeezerTrackId, id); calls++; return Task.FromResult(candidate); };
+        var method = typeof(LibraryRecommendationService).GetMethod("ValidateStoredDeezerSeedAsync", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = await (Task<string>)method.Invoke(null, [seed, fetch, CancellationToken.None])!;
+        Assert.Equal(matches ? seed.DeezerTrackId : "", result);
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
+    [InlineData("daily-rotation:l1:f2", 3)]
+    [InlineData("daily-rotation:l1:f2:extra", 2)]
+    [InlineData("daily-rotation:l1:f999", 2)]
+    [InlineData("not-a-station", 2)]
+    public void DailyScopeNeverFallsBackToAnotherFolder(string stationId, long folderId)
+    {
+        var folders = new[] {
+            new FolderDto(2, "/music", "Music", true, 1, "Library", "flac", null, false, false, null, null),
+            new FolderDto(3, "/gold", "Gold", true, 1, "Library", "flac", null, false, false, null, null) };
+        var method = typeof(LibraryRecommendationService).GetMethod("ResolveScope", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.Null(method.Invoke(null, [1L, folders, stationId, folderId]));
+    }
+
+    [Theory]
     [InlineData(20)]
     [InlineData(50)]
     [InlineData(100)]
@@ -35,6 +93,13 @@ public sealed class LibraryRecommendationServiceTest
         Assert.DoesNotContain(result, t => excluded.Contains(t.Id));
         Assert.Equal(Enumerable.Range(1, total), result.Select(t => t.TrackPosition));
     }
+
+    private static Task<List<RecommendationTrackDto>> CollectDailySourcesAsync(
+        DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings configuration,
+        Func<string,int,CancellationToken,Task<IReadOnlyList<RecommendationTrackDto>>> fetch,CancellationToken token)
+        => LibraryRecommendationService.CollectDailySeedBatchesAsync(
+            [new(1,"Seed","Artist","Album",180000,null,"1")],configuration.Allocations(),new(2026,10,24),[],
+            new(),new(),(source,batch,count,ct)=>fetch(source,count,ct),_=>Task.CompletedTask,token);
 
     [Fact]
     public void DailyAllocationCannotReplaceAnUnavailableSource()
@@ -64,7 +129,7 @@ public sealed class LibraryRecommendationServiceTest
     {
         var calls = new List<string>();
         var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings();
-        await LibraryRecommendationService.CollectDailySourcesAsync(configuration, (source, count, token) =>
+        await CollectDailySourcesAsync(configuration, (source, count, token) =>
         {
             calls.Add(source);
             Assert.Equal(60, count);
@@ -81,7 +146,7 @@ public sealed class LibraryRecommendationServiceTest
         {
             ShazamEnabled = true, ShazamTrackCount = 25
         };
-        await LibraryRecommendationService.CollectDailySourcesAsync(configuration, (source, _, _) =>
+        await CollectDailySourcesAsync(configuration, (source, _, _) =>
         {
             calls.Add(source);
             return Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(Array.Empty<RecommendationTrackDto>());
@@ -108,7 +173,7 @@ public sealed class LibraryRecommendationServiceTest
     {
         var paused = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings { ShazamEnabled = false, ShazamTrackCount = 0,
             DeezerEnabled = false, DeezerTrackCount = 0, SpotifyEnabled = false, SpotifyTrackCount = 0, TidalEnabled = false, TidalTrackCount = 0 };
-        var rows = await LibraryRecommendationService.CollectDailySourcesAsync(paused,
+        var rows = await CollectDailySourcesAsync(paused,
             (_, _, _) => throw new InvalidOperationException("Disabled source called"), CancellationToken.None);
         Assert.Empty(rows);
     }
@@ -203,7 +268,7 @@ public sealed class LibraryRecommendationServiceTest
         var config = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings { TrackCount = 20, ShazamEnabled = false,
             ShazamTrackCount = 0, DeezerEnabled = deezer > 0, DeezerTrackCount = deezer,
             SpotifyEnabled = spotify > 0, SpotifyTrackCount = spotify, TidalEnabled = tidal > 0, TidalTrackCount = tidal };
-        var raw = await LibraryRecommendationService.CollectDailySourcesAsync(config, (source, count, _) =>
+        var raw = await CollectDailySourcesAsync(config, (source, count, _) =>
             Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(CreateTracks(source, count, source == "deezer" ? 1 : source == "spotify" ? 1001 : 2001)
                 .Select(t => t with { RecommendationOrigin = source }).ToList()), CancellationToken.None);
         var selected = LibraryRecommendationService.BuildAllocatedDailySelection(raw, config.Allocations(), 20, new DateOnly(2026, 10, 11));
@@ -241,7 +306,7 @@ public sealed class LibraryRecommendationServiceTest
     private static readonly string[] GenerationQueuedReasonCodes = ["generation_queued"];
 
     [Fact]
-    public async System.Threading.Tasks.Task PreviousDailySelectionRetainsSavedDateAndOrdering()
+    public async System.Threading.Tasks.Task PreviousDailySelectionIsExpiredInsteadOfServedForToday()
     {
         var fixture = new RecommendationCacheServingTest();
         await fixture.InitializeAsync();
@@ -254,12 +319,11 @@ public sealed class LibraryRecommendationServiceTest
             var generated = new DateTimeOffset(savedDay.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
             await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id, $"v1:{savedDay:yyyyMMdd}",
                 System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = generated, Tracks = tracks }), 0, null, null, true);
-            var expected = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(null,
-                [tracks, new HashSet<string>(StringComparer.Ordinal), 50, savedDay])!;
             var response = await fixture.Service().GetRecommendationsAsync(fixture.Folder.LibraryId!.Value, id);
-            Assert.Equal("refreshing", response!.Status);
-            Assert.Equal(generated, response.GeneratedAtUtc);
-            Assert.Equal(expected.Select(t => t.Id), response.Tracks.Select(t => t.Id));
+            Assert.Equal("generating", response!.Status);
+            Assert.Empty(response.Tracks);
+            Assert.Equal(savedDay.AddDays(1), response.DailyDateLocal);
+            Assert.Equal(0, response.Station.TrackCount);
         }
         finally { await fixture.DisposeAsync(); }
     }
@@ -362,9 +426,8 @@ public sealed class LibraryRecommendationServiceTest
         var tracks = CreateTracks("daily", 50, 1);
         var replacement = CreateTracks("refill", 1, 51);
         var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { tracks[0].Id };
-        var method = typeof(LibraryRecommendationService).GetMethod("MergeDailyRefillTracks", BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-        var merged = (List<RecommendationTrackDto>)method.Invoke(null, [tracks, replacement, excluded])!;
+        var merged = LibraryRecommendationService.MergeDailyRecommendationProvenance(
+            tracks.Concat(replacement).Where(t => !excluded.Contains(t.Id)));
         Assert.Equal(50, merged.Count);
         Assert.DoesNotContain(merged, t => excluded.Contains(t.Id));
         Assert.Equal(tracks[1].Id, merged[0].Id);
