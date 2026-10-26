@@ -1342,8 +1342,8 @@ async function loadHomeData() {
             homeCategoryStatus.apple = homeCategoryStatus.ytmusic = 'loading';
             void loadHomeCategories('apple', requestId);
             void loadHomeCategories('ytmusic', requestId);
-            // Revalidate Apple on opening the page; other providers still render independently.
-            void loadAppleHomeSections(requestId, true);
+            // Use the catalog cache on opening; explicit and scheduled refreshes revalidate it.
+            void loadAppleHomeSections(requestId, refreshEnabled);
             void loadYouTubeHomeTrending(requestId);
             void loadYouTubeHomeSections(requestId);
         }
@@ -1469,7 +1469,7 @@ function openYouTubeCategory(id, parameters) {
     globalThis.location.href = `/Categories?provider=ytmusic&id=${id}&parameters=${parameters}`;
 }
 
-async function loadAppleHomeSections(requestId, refreshEnabled = true) {
+async function loadAppleHomeSections(requestId, refreshEnabled = false) {
     if (requestId !== homeLoadRequestSeq) return;
     if (homeAppleRefresh.inFlight?.requestId === requestId) return homeAppleRefresh.inFlight.promise;
     const pending = { requestId, promise: null };

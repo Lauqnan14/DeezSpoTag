@@ -18,6 +18,48 @@ namespace DeezSpoTag.Tests;
 public sealed class AppleBrowseTest
 {
     [Fact]
+    public void HomeOpeningUsesAvailableAppleCacheWhenUpstreamRefreshFails()
+    {
+        var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !System.IO.File.Exists(System.IO.Path.Join(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "home-index.js"))) root = root.Parent;
+        Assert.NotNull(root);
+        var script = """
+        const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+        const source=fs.readFileSync(process.argv[1]+'/DeezSpoTag.Web/wwwroot/js/home-index.js','utf8');
+        const calls=[],pending=[];let search='';
+        const ctx=vm.createContext({console:{warn:()=>{},log:()=>{},error:console.error},URLSearchParams,Date,
+          location:{get search(){return search}},document:{hidden:false},setTimeout:()=>1,clearTimeout:()=>{},
+          fetchSpotifyHomeEnhancements:()=>null,loadHomeCategories:()=>{},loadYouTubeHomeTrending:()=>{},loadYouTubeHomeSections:()=>{},
+          fetchHomeSections:async()=>[{}],renderHomeSectionsWithLazyImages:()=>{},refreshHomeProviderSections:()=>{},
+          fetch:async url=>{calls.push(url);return url.includes('refresh=1')
+            ? {ok:false,status:502}
+            : {ok:true,json:async()=>({success:true,sections:[{role:'trending',items:[{title:'Available cached song'}]}]})};}});
+        vm.runInContext(source.slice(source.indexOf('const homeAppleRefresh ='),source.indexOf('let homeSpotifyStatus')),ctx);
+        vm.runInContext("let homeLoadRequestSeq=0,homeLatestSections=[],homeAppleSections=[],homeAppleStatus='loading',homeSpotifyStatus,homeAppleCategories,homeYouTubeCategories,spotifyHomeCategories;const homeCategoryStatus={};",ctx);
+        for(const name of ['loadHomeData','loadAppleHomeSections','scheduleAppleHomeRefresh','refreshAppleHomeSectionsIfDue']){
+          const m=source.match(new RegExp('(?:async )?function '+name+'\\('));assert(m,name);
+          const start=m.index,end=source.slice(start+m[0].length).search(/\n(?:async )?function /);
+          vm.runInContext(source.slice(start,end<0?undefined:start+m[0].length+end),ctx);
+        }
+        const load=ctx.loadAppleHomeSections;ctx.loadAppleHomeSections=(...args)=>{const p=load(...args);pending.push(p);return p};
+        (async()=>{
+          await ctx.loadHomeData();await Promise.all(pending);
+          assert.equal(vm.runInContext('homeAppleStatus',ctx),'ready','A fresh page must display available server-cached Apple content');
+          assert.equal(calls[0],'/api/apple/browse/sections');
+          assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),'Available cached song');
+          search='?refresh=1';await ctx.loadHomeData();await Promise.all(pending);
+          assert(calls.at(-1).includes('refresh=1'),'Explicit refresh must still bypass the server cache');
+          assert.equal(vm.runInContext('homeAppleStatus',ctx),'ready','Failed refresh must preserve content already loaded');
+        })().catch(e=>{console.error(e);process.exitCode=1});
+        """;
+        var start = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true };
+        start.ArgumentList.Add("-e"); start.ArgumentList.Add(script); start.ArgumentList.Add(root!.FullName);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
     public void AppleHomeRefreshReplacesExpiredTracksWithoutDuplicateRequestsOrPageRedraws()
     {
         var root = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
@@ -43,6 +85,7 @@ public sealed class AppleBrowseTest
         }
         (async()=>{
           await ctx.loadAppleHomeSections(1);assert.equal(calls.length,1);assert.equal(calls[0].options.cache,'no-store');
+          assert.equal(calls[0].url,'/api/apple/browse/sections','Normal loading must use the existing server cache');
           assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),'Song 1');
           assert.equal(timers.at(-1).delay,4*60*60*1000);
           await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,1,'A fresh feed must not be refetched');
@@ -57,7 +100,7 @@ public sealed class AppleBrowseTest
           await ctx.refreshAppleHomeSectionsIfDue();assert.equal(vm.runInContext('homeAppleSections[0].items[0].title',ctx),last);
           assert.equal(vm.runInContext('homeAppleStatus',ctx),'ready');assert(timers.at(-1).delay>=30000);
           const count=calls.length;await ctx.refreshAppleHomeSectionsIfDue();assert.equal(calls.length,count,'Do not spin after failure');
-          assert(renders>=3);assert(source.includes('loadAppleHomeSections(requestId, true)'));
+          assert(renders>=3);assert(source.includes('loadAppleHomeSections(requestId, refreshEnabled)'));
           assert(source.includes("addEventListener('visibilitychange'"));assert(source.includes("addEventListener?.('pageshow'"));
         })().catch(e=>{console.error(e);process.exitCode=1});
         """;
