@@ -128,6 +128,12 @@ if [[ "$MODE" == "changed" ]]; then
       *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
       scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|.gitea/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      DeezSpoTag.Integrations/Qobuz/QobuzApiClient.cs|DeezSpoTag.Services/Metadata/Qobuz/IQobuzMetadataService.cs)
+        add_tests_matching '^(QobuzMetadataService|QobuzTrackResolver)Test$' ;;
+      DeezSpoTag.Web/Services/TrackIdentityResolver.cs)
+        add_tests_matching '^(TrackIdentityTrust|QobuzTrackResolver|DownloadIntentPayloadPopulation)Test$' ;;
+      DeezSpoTag.Web/wwwroot/js/download-client.js)
+        add_tests_matching '^(NotificationPreferenceWiring|YouTubeBrowse)Test$' ;;
       DeezSpoTag.Integrations/TargetPlaylistLookup.cs)
         add_tests_matching '^(PlaylistSyncEngine|PlaylistSyncLinkService|PlaylistSyncSchedule|PlaylistSyncReadiness|ArtistMetadataUpdaterReliability)Test$' ;;
       DeezSpoTag.Web/Services/PlaylistCandidateContract.cs)
