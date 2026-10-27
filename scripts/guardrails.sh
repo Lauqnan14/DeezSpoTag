@@ -128,9 +128,9 @@ if [[ "$MODE" == "changed" ]]; then
       *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
       scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|.gitea/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
-      DeezSpoTag.Integrations/Qobuz/QobuzApiClient.cs|DeezSpoTag.Services/Metadata/Qobuz/IQobuzMetadataService.cs)
+      DeezSpoTag.Integrations/Qobuz/QobuzApiClient.cs|DeezSpoTag.Services/Metadata/Qobuz/IQobuzMetadataService.cs|DeezSpoTag.Services/Metadata/Qobuz/QobuzArtistService.cs)
         add_tests_matching '^(QobuzMetadataService|QobuzTrackResolver)Test$' ;;
-      DeezSpoTag.Web/Services/TrackIdentityResolver.cs)
+      DeezSpoTag.Services/Download/Identity/TrackIdentityResolution.cs|DeezSpoTag.Web/Services/TrackIdentityResolver.cs)
         add_tests_matching '^(TrackIdentityTrust|QobuzTrackResolver|DownloadIntentPayloadPopulation)Test$' ;;
       DeezSpoTag.Web/wwwroot/js/download-client.js)
         add_tests_matching '^(NotificationPreferenceWiring|YouTubeBrowse)Test$' ;;
@@ -167,8 +167,14 @@ if [[ "$MODE" == "changed" ]]; then
       DeezSpoTag.Web/Views/Shared/_GenreIntelligence.cshtml)
         add_tests_matching '^(GenreIntelligenceAutoTagTest|GenreVocabularySurfaceTest|GenreRegionUiGuardrailTest)$' ;;
       *AutoTag*|*autotag*) add_tests_matching '(AutoTag|OneTagger|AlbumIdentity|ManualEnhancement|LastFmAutoTag)' ;;
-      DeezSpoTag.Web/Services/ArtistArtworkCatalogService.cs|DeezSpoTag.Web/Services/ArtistArtworkTextInspector.cs)
-        add_tests_matching '^(ArtistMetadataUpdaterServicePlexPush|ArtistMetadataTargetSelectionGuardrail|DeezerPlaceholderArtwork)Test$' ;;
+      DeezSpoTag.Web/Services/ArtistArtworkCatalogService.cs|DeezSpoTag.Web/Services/ArtistArtworkCatalogService.Matching.cs|DeezSpoTag.Web/Services/ArtistArtworkCatalogService.Matching.Overlap.cs|DeezSpoTag.Web/Services/ArtistArtworkTextInspector.cs)
+        add_tests_matching '^(ArtistMetadataUpdaterServicePlexPush|ArtistMetadataTargetSelectionGuardrail|DeezerPlaceholderArtwork|ArtistArtworkCatalogService|ArtistMetadataAliasLookup)Test$' ;;
+      DeezSpoTag.Web/Services/ArtistLocation/MusicBrainzArtistLocationService.cs)
+        add_tests_matching '^(MusicBrainzArtistLocation|ArtistLocationResolver)' ;;
+      DeezSpoTag.Web/Services/PersistentArtistQueueStore.cs)
+        add_tests_matching '^ArtistMetadataQueueRecoveryTest$' ;;
+      DeezSpoTag.Web/Controllers/Api/NotificationsApiController.cs|DeezSpoTag.Web/Services/Notifications/NotificationModels.cs|DeezSpoTag.Web/Services/Notifications/NotificationService.cs|DeezSpoTag.Web/Services/SignalRDeezSpoTagListener.cs)
+        add_tests_matching '^(NotificationSinkDispatch|NotificationStore|NotificationTransportAdapter|NotificationPreferenceWiring|WatchlistNotificationEvent|ActivitiesControllerContract)Test$' ;;
       DeezSpoTag.Web/Services/ArtistMetadata*.cs)
         add_tests_matching '^ArtistMetadata' ;;
       DeezSpoTag.Web/Services/Audiomack/AudiomackArtistLocationService.cs)
