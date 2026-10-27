@@ -459,7 +459,7 @@ public sealed class ArtistMetadataCacheRefreshService
                 ArtistCacheWorkOutcome outcome;
                 try { outcome = await action(); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     var status = ex switch
                     {

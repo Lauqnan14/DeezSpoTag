@@ -301,7 +301,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Notification webhook delivery could not complete; pending work is retained.");
                 wait = TimeSpan.FromSeconds(2);

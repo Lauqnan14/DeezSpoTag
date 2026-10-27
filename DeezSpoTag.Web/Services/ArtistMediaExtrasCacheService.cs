@@ -147,7 +147,7 @@ public sealed class ArtistMediaExtrasCacheService
                 await _cache.UpsertRequiredAsync("artist-media-section", key, "{\"complete\":true}", DateTimeOffset.UtcNow, token);
                 current = replacement;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is Exception)
             {
                 _logger.LogWarning(ex, "Artist {ArtistId} {Provider}/{Section} extras retained their last-known-good content.", artistId, provider, section);
                 try
