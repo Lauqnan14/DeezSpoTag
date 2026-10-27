@@ -7,31 +7,6 @@
             global.DeezSpoTag.showNotification(message, toastType);
             return;
         }
-
-        const existingToasts = document.querySelectorAll('.toast-notification');
-        existingToasts.forEach((toast) => toast.remove());
-
-        const toast = document.createElement('div');
-        toast.className = 'toast-notification toast-' + toastType;
-        toast.textContent = message;
-
-        toast.style.position = 'fixed';
-        toast.style.top = '20px';
-        toast.style.right = '20px';
-        toast.style.padding = '12px 20px';
-        toast.style.borderRadius = '6px';
-        toast.style.fontWeight = '500';
-        toast.style.zIndex = '10000';
-        toast.style.maxWidth = '300px';
-        toast.style.overflowWrap = 'break-word';
-
-        document.body.appendChild(toast);
-
-        setTimeout(function () {
-            if (toast.parentNode) {
-                toast.remove();
-            }
-        }, 5000);
     }
 
     function clearHomeTrendingPlayingMarkers(exceptButton) {

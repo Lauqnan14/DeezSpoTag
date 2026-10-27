@@ -10,16 +10,19 @@ public sealed class SignalRDeezSpoTagListener : IDeezSpoTagListener
 {
     private readonly IHubContext<DeezerQueueHub> _hubContext;
     private readonly DownloadQueueRepository _queueRepository;
+    private readonly IHubContext<CrossDeviceSyncHub> _notificationHub;
     private readonly ILogger<SignalRDeezSpoTagListener> _logger;
 
     public SignalRDeezSpoTagListener(
         IHubContext<DeezerQueueHub> hubContext,
         DownloadQueueRepository queueRepository,
-        ILogger<SignalRDeezSpoTagListener> logger)
+        ILogger<SignalRDeezSpoTagListener> logger,
+        IHubContext<CrossDeviceSyncHub> notificationHub)
     {
         _hubContext = hubContext;
         _queueRepository = queueRepository;
         _logger = logger;
+        _notificationHub = notificationHub;
     }
 
     public void Send(string eventName, object? data = null)
@@ -27,6 +30,10 @@ public sealed class SignalRDeezSpoTagListener : IDeezSpoTagListener
         if (data != null)
         {
             _ = _hubContext.Clients.All.SendAsync(eventName, data);
+            if (eventName is "notificationRaised" or "notificationsChanged" or "toastNotification")
+            {
+                _ = _notificationHub.Clients.All.SendAsync(eventName, data);
+            }
             if (eventName == "updateQueue" || eventName == "downloadProgress")
             {
                 _ = PersistQueueProgressAsync(data);

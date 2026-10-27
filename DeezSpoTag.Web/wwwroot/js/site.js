@@ -893,6 +893,14 @@ globalThis.DeezSpoTag = {
         connection.on('watchlistUpdated', (eventPayload) => {
             this.handleWatchlistUpdated(eventPayload);
         });
+        connection.on('notificationRaised', () => { void globalThis.DeezSpoTagNotifications?.refresh(); });
+        connection.on('notificationsChanged', () => { void globalThis.DeezSpoTagNotifications?.refresh(); });
+        connection.on('toastNotification', (payload) => {
+            const message = String(payload?.message || '').trim();
+            if (message) this.showNotification(message,
+                String(payload?.type || 'info').trim().toLowerCase(),
+                payload?.action ? { action: payload.action } : {});
+        });
         connection.on('deezerConnectionStateChanged', () => {
             this.loadConnectedPlatforms({ force: true, reason: 'deezer-state-event' });
         });
@@ -902,6 +910,7 @@ globalThis.DeezSpoTag = {
 
         connection.onreconnected(() => {
             this.loadConnectedPlatforms({ force: true, reason: 'signalr-reconnected' });
+            void globalThis.DeezSpoTagNotifications?.refresh();
         });
 
         connection.start()
@@ -2486,13 +2495,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     }
 
+    let refreshSequence = 0;
     async function loadNotifications() {
+        const sequence = ++refreshSequence;
         try {
             const response = await fetch('/api/notifications?limit=25');
             if (!response.ok) {
                 return;
             }
-            renderNotifications(await response.json());
+            const payload = await response.json();
+            if (sequence === refreshSequence) renderNotifications(payload);
         } catch (error) {
             console.warn('Failed to load notifications', error);
         }
@@ -2503,14 +2515,16 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try {
-            await fetch('/api/notifications/read', {
+            const response = await fetch('/api/notifications/read', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ids: [id] })
             });
+            if (!response.ok) throw new Error(`Mark read failed: ${response.status}`);
             await loadNotifications();
         } catch (error) {
             console.warn('Failed to mark notification read', error);
+            globalThis.DeezSpoTag?.showNotification('Failed to mark notification read. Please try again.', 'error');
         }
     }
 
@@ -2530,15 +2544,18 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadNotifications();
         } catch (error) {
             console.warn('Failed to clear notifications', error);
+            globalThis.DeezSpoTag?.showNotification('Failed to clear notifications. Please try again.', 'error');
         }
     }
 
     async function markAllRead() {
         try {
-            await fetch('/api/notifications/read-all', { method: 'POST' });
+            const response = await fetch('/api/notifications/read-all', { method: 'POST' });
+            if (!response.ok) throw new Error(`Mark all read failed: ${response.status}`);
             await loadNotifications();
         } catch (error) {
             console.warn('Failed to mark notifications read', error);
+            globalThis.DeezSpoTag?.showNotification('Failed to mark notifications read. Please try again.', 'error');
         }
     }
 
@@ -2594,6 +2611,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         void loadNotifications();
-        window.DeezSpoTagNotifications = { refresh: loadNotifications };
+        let refreshTimer = null;
+        window.DeezSpoTagNotifications = { refresh() {
+            if (refreshTimer !== null) return;
+            refreshTimer = globalThis.setTimeout(() => {
+                refreshTimer = null;
+                void loadNotifications();
+            }, 100);
+        } };
+        globalThis.addEventListener('focus', () => { void loadNotifications(); });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) void loadNotifications();
+        });
     });
 })();

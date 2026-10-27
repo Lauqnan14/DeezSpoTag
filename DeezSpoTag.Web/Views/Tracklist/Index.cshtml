@@ -7802,7 +7802,7 @@ async function downloadEpisodeTracks(trackElements, triggerButton) {
         if (success > 0) {
             showTracklistToast(`Queued ${success} episode(s)${alreadyQueued ? ` (${alreadyQueued} already queued)` : ''}${failed ? ` (${failed} failed)` : ''}`, failed ? 'warning' : 'success');
         } else if (alreadyQueued > 0 && failed === 0) {
-            showTracklistToast(`All ${alreadyQueued} episode(s) already queued`, 'info');
+            showTracklistToast(`All ${alreadyQueued} episode(s) already queued`, 'warning');
         } else if (failed > 0) {
             showTracklistToast('Failed to queue episodes', 'error');
         }
@@ -8156,15 +8156,15 @@ async function downloadTracks(trackElements, triggerButton) {
                     action: { label: 'View', href: activitiesDownloadsTabHref }
                 });
             } else if (deferredCount > 0) {
-                const message = `Queued ${deferredCount} track(s) for background intent resolution.` +
+                const message = `Matching pending for ${deferredCount} track(s); not yet added to the download queue.` +
                     `${alreadyQueuedCount > 0 ? ` (${alreadyQueuedCount} already queued)` : ''}` +
                     `${boomplayUnmatchedCount > 0 ? ` (${boomplayUnmatchedCount} skipped: no Deezer match)` : ''}` +
                     `${errorCount > 0 ? ` (${errorCount} failed)` : ''}`;
-                showTracklistToast(message, boomplayUnmatchedCount > 0 || errorCount > 0 ? 'warning' : 'info', {
+                showTracklistToast(message, 'warning', {
                     action: { label: 'View', href: activitiesDownloadsTabHref }
                 });
             } else if (alreadyQueuedCount > 0 && errorCount === 0) {
-                showTracklistToast(`All ${alreadyQueuedCount} track(s) were already queued.`, 'info');
+                showTracklistToast(`All ${alreadyQueuedCount} track(s) were already queued.`, 'warning');
             } else {
                 const message = lastMessage
                     || (boomplayUnmatchedCount > 0
@@ -8467,8 +8467,8 @@ async function downloadTracks(trackElements, triggerButton) {
                 action: { label: 'View', href: activitiesDownloadsTabHref }
             });
         } else if (deferredCount > 0) {
-            const message = `Queued ${deferredCount} track(s) for background intent resolution.`;
-            showTracklistToast(message, 'info', {
+            const message = `Matching pending for ${deferredCount} track(s); not yet added to the download queue.`;
+            showTracklistToast(message, 'warning', {
                 action: { label: 'View', href: activitiesDownloadsTabHref }
             });
         } else {

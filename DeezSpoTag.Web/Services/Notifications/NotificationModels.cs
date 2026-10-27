@@ -63,6 +63,11 @@ public sealed record NotificationEntry
     public DateTimeOffset? ResolvedUtc { get; init; }
     public bool ManuallyResolved { get; init; }
 
+    public bool WebhookPending { get; init; }
+    public int WebhookAttempts { get; init; }
+    public DateTimeOffset? WebhookNextAttemptUtc { get; init; }
+    public DateTimeOffset? WebhookDeliveredUtc { get; init; }
+
     [JsonIgnore]
     public bool IsRead => ReadUtc.HasValue;
 

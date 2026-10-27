@@ -126,4 +126,9 @@ public sealed class NotificationTransportAdapterTest
             EntityId = entityId,
             LastSeenUtc = DateTimeOffset.Parse("2026-08-19T12:00:00Z")
         };
+    [Fact]
+    public void FailedRunIsNotClassifiedAsWebhookSuccess()
+        => Assert.Equal("warning", NotificationTransportAdapter.ResolveType(
+            Entry("Run failed", "Failure") with { Severity = NotificationSeverity.Warning }));
+
 }

@@ -283,4 +283,120 @@ public sealed class NotificationSinkDispatchTest : IDisposable
         Assert.Equal("success", root.GetProperty("type").GetString());
         Assert.False(root.TryGetProperty("title", out _));
     }
+    [Fact]
+    public async Task WebhookTimeoutIsDeliveryFailureWhileCallerCancellationPropagates()
+    {
+        using var service = new NotificationService(_store, new TimeoutFactory(), _listener,
+            NullLogger<NotificationService>.Instance);
+        Assert.False(await service.SendWebhookTestAsync("http://192.168.1.10/notify", CancellationToken.None));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.SendWebhookTestAsync("http://192.168.1.10/notify", cancellation.Token));
+    }
+
+    [Fact]
+    public async Task SlowWebhookDoesNotBlockLaterInAppNotifications()
+    {
+        var preferences = NotificationPreferences.CreateDefault();
+        preferences.WebhookUrl = "http://192.168.1.10/notify";
+        preferences.Events[NotificationKinds.ProviderUnhealthy].Webhook = true;
+        await _store.SavePreferencesAsync(preferences);
+        var handler = new BlockingHandler();
+        using var service = new NotificationService(_store, new HandlerFactory(handler), _listener,
+            NullLogger<NotificationService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            service.Raise(new(NotificationKinds.ProviderUnhealthy, "First", "Slow webhook", DedupeKey: "slow"));
+            await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            service.Raise(new(NotificationKinds.DownloadFailed, "Second", "Must be visible", DedupeKey: "later"));
+            for (var i = 0; i < 100 && (await _store.GetAsync()).Count < 2; i++) await Task.Delay(10);
+            Assert.Equal(2, (await _store.GetAsync()).Count);
+        }
+        finally { await service.StopAsync(CancellationToken.None); }
+    }
+
+    private sealed class TimeoutFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new TimeoutHandler());
+    }
+    private sealed class TimeoutHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+            => Task.FromException<HttpResponseMessage>(new TaskCanceledException("Simulated HTTP timeout", new TimeoutException()));
+    }
+    private sealed class HandlerFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return new(HttpStatusCode.OK);
+        }
+    }
+
+    [Fact]
+    public async Task SeparateOutageCyclesProduceSeparateUnreadRecoveries()
+    {
+        var request = new NotificationRequest(NotificationKinds.ProviderUnhealthy, "Offline", "Provider down", DedupeKey: "provider-cycle");
+        var recovery = new NotificationRequest(NotificationKinds.ProviderRecovered, "Online", "Provider up", DedupeKey: "provider-cycle:recovered");
+        for (var cycle = 0; cycle < 2; cycle++)
+        {
+            await _store.AddOrCoalesceAsync(request, 30);
+            await _service.ResolveIncidentAsync("provider-cycle", false, recovery);
+        }
+        Assert.Equal(2, (await _store.GetAsync()).Count(entry => entry.Kind == NotificationKinds.ProviderRecovered));
+    }
+
+    [Fact]
+    public async Task BurstNotificationsAreNotDroppedWhenBoundedChannelFills()
+    {
+        await _service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var i = 0; i < 520; i++)
+                _service.Raise(new(NotificationKinds.DownloadFailed, "Failed", "Track unavailable", DedupeKey: $"burst:{i}"));
+            for (var i = 0; i < 500 && _listener.SendCount < 520; i++) await Task.Delay(20);
+            Assert.Equal(520, _listener.SendCount);
+        }
+        finally { await _service.StopAsync(CancellationToken.None); }
+    }
+
+    [Fact]
+    public async Task TimedOutWebhookKeepsItsRetryAndDoesNotStopTheService()
+    {
+        var preferences = NotificationPreferences.CreateDefault();
+        preferences.WebhookUrl = "http://192.168.1.10/notify";
+        preferences.Events[NotificationKinds.ProviderUnhealthy].Webhook = true;
+        await _store.SavePreferencesAsync(preferences);
+        using var service = new NotificationService(_store, new TimeoutFactory(), _listener,
+            NullLogger<NotificationService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            service.Raise(new(NotificationKinds.ProviderUnhealthy, "Offline", "Provider unavailable", DedupeKey: "timeout-live"));
+            NotificationEntry? entry = null;
+            for (var i = 0; i < 100; i++)
+            {
+                entry = (await _store.GetAsync()).SingleOrDefault();
+                if (entry?.WebhookAttempts > 0) break;
+                await Task.Delay(10);
+            }
+            Assert.NotNull(entry);
+            Assert.Equal(1, entry.WebhookAttempts);
+            Assert.True(entry.WebhookPending);
+            Assert.False(service.ExecuteTask!.IsCompleted);
+            service.Raise(new(NotificationKinds.DownloadFailed, "Later", "Still processes", DedupeKey: "after-timeout"));
+            for (var i = 0; i < 100 && (await _store.GetAsync()).Count < 2; i++) await Task.Delay(10);
+            Assert.Equal(2, (await _store.GetAsync()).Count);
+        }
+        finally { await service.StopAsync(CancellationToken.None); }
+    }
+
 }

@@ -320,4 +320,63 @@ public sealed class NotificationStoreTest : IDisposable
         Assert.True(reloaded.Events.ContainsKey(NotificationKinds.RunCompleted));
         Assert.False(reloaded.Resolve(NotificationKinds.RunCompleted).Webhook);
     }
+    [Fact]
+    public async Task PendingWebhookSurvivesRestartAndExhaustedDeliveryCanBeRetriedOnRepeat()
+    {
+        var request = Request("pending-delivery");
+        var added = await _store.AddOrCoalesceAsync(request, 30, webhookRequested: true);
+        var restarted = new NotificationStore(new StubEnvironment(_root), NullLogger<NotificationStore>.Instance);
+        Assert.Equal(added.Entry.Id, Assert.Single(await restarted.GetPendingWebhooksAsync()).Id);
+        await restarted.RecordWebhookAttemptAsync(added.Entry.Id, false, TimeSpan.FromSeconds(2));
+        var pending = Assert.Single(await restarted.GetPendingWebhooksAsync());
+        Assert.Equal(1, pending.WebhookAttempts);
+        Assert.True(pending.WebhookNextAttemptUtc > DateTimeOffset.UtcNow);
+        await restarted.RecordWebhookAttemptAsync(added.Entry.Id, false, null);
+        Assert.Empty(await restarted.GetPendingWebhooksAsync());
+        var repeated = await restarted.AddOrCoalesceAsync(request, 30, webhookRequested: true);
+        Assert.False(repeated.IsNewIncident);
+        Assert.True(repeated.Entry.WebhookPending);
+        Assert.Equal(0, repeated.Entry.WebhookAttempts);
+        await restarted.RecordWebhookAttemptAsync(added.Entry.Id, true, null);
+        var deliveredRepeat = await restarted.AddOrCoalesceAsync(request, 30, webhookRequested: true);
+        Assert.False(deliveredRepeat.Entry.WebhookPending);
+        Assert.NotNull(deliveredRepeat.Entry.WebhookDeliveredUtc);
+    }
+
+    [Fact]
+    public async Task CorruptEntriesAreNotOverwrittenWithAnEmptyHistory()
+    {
+        await _store.AddOrCoalesceAsync(Request("original"), 30);
+        var path = Path.Join(_root, "notifications", "entries.json");
+        await File.WriteAllTextAsync(path, "{broken");
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() =>
+            _store.AddOrCoalesceAsync(Request("new"), 30));
+        Assert.Equal("{broken", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task AtomicStoreWritesLeaveNoTemporaryFilesAndPreferencesRemainReadable()
+    {
+        await _store.AddOrCoalesceAsync(Request("original"), 30);
+        var preferences = NotificationPreferences.CreateDefault();
+        preferences.Events[NotificationKinds.ProviderUnhealthy].InApp = false;
+        await _store.SavePreferencesAsync(preferences);
+        Assert.False((await _store.LoadPreferencesAsync()).Resolve(NotificationKinds.ProviderUnhealthy).InApp);
+        Assert.Empty(Directory.GetFiles(Path.Join(_root, "notifications"), "*.tmp"));
+        Assert.Empty(await _store.GetAsync());
+    }
+
+    [Fact]
+    public void PendingDeliveryIsNotPrunedBeforeItHasBeenAttempted()
+    {
+        var pending = new NotificationEntry { Id = "delivery", Kind = NotificationKinds.ProviderUnhealthy,
+            DedupeKey = "pending", Title = "Pending", WebhookPending = true,
+            ReadUtc = DateTimeOffset.UtcNow.AddDays(-90), LastSeenUtc = DateTimeOffset.UtcNow.AddDays(-90) };
+        var entries = Enumerable.Range(0, 500).Select(index => new NotificationEntry {
+            Id = index.ToString(), Kind = NotificationKinds.RunCompleted, DedupeKey = index.ToString(), Title = "Run"
+        }).ToList();
+        entries.Add(pending);
+        Assert.Contains(pending, NotificationStore.Prune(entries, 1));
+    }
+
 }

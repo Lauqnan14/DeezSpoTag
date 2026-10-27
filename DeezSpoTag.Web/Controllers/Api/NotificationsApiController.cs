@@ -58,16 +58,22 @@ public sealed class NotificationsApiController : ControllerBase
             return BadRequest(new { error = "At least one notification id is required." });
         }
 
+        var updated = await _store.MarkReadAsync(request.Ids);
+        _service.NotifyChanged();
         return Ok(new
         {
-            updated = await _store.MarkReadAsync(request.Ids),
+            updated,
             unreadCount = await _store.GetUnreadCountAsync()
         });
     }
 
     [HttpPost("read-all")]
     public async Task<IActionResult> MarkAllRead()
-        => Ok(new { updated = await _store.MarkAllReadAsync(), unreadCount = 0 });
+    {
+        var updated = await _store.MarkAllReadAsync();
+        _service.NotifyChanged();
+        return Ok(new { updated, unreadCount = await _store.GetUnreadCountAsync() });
+    }
 
     [HttpPost("clear")]
     public async Task<IActionResult> Clear([FromBody] MarkReadRequest? request)
@@ -75,6 +81,7 @@ public sealed class NotificationsApiController : ControllerBase
         var removed = request?.Ids is { Count: > 0 }
             ? await _store.RemoveAsync(request.Ids)
             : await _store.ClearAsync();
+        _service.NotifyChanged();
         return Ok(new { removed, unreadCount = await _store.GetUnreadCountAsync() });
     }
 
@@ -130,7 +137,9 @@ public sealed class NotificationsApiController : ControllerBase
             preferences.RetentionDays = Math.Clamp(retention, 1, 365);
         }
 
-        return Ok(BuildPreferencesResponse(await _store.SavePreferencesAsync(preferences)));
+        var saved = await _store.SavePreferencesAsync(preferences);
+        _service.NotifyChanged();
+        return Ok(BuildPreferencesResponse(saved));
     }
 
     [HttpPost("webhook-test")]
@@ -152,7 +161,7 @@ public sealed class NotificationsApiController : ControllerBase
                 ? Ok(new { delivered = true })
                 : StatusCode(502, new { error = "The webhook endpoint did not accept the test notification." });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Notification webhook test failed.");
             return StatusCode(502, new { error = "Failed to reach the webhook endpoint." });

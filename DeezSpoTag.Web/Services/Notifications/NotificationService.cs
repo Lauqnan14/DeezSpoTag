@@ -23,7 +23,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
                 recoveryBody ?? string.Empty,
                 NotificationSeverity.Info,
                 $"{dedupeKey}:recovered");
-        _queue.Writer.TryWrite(new NotificationWork(null, dedupeKey.Trim(), manuallyResolved, recovery));
+        Enqueue(new NotificationWork(null, dedupeKey.Trim(), manuallyResolved, recovery));
     }
 
     void INotificationSink.Raise(
@@ -63,9 +63,13 @@ public sealed class NotificationService : BackgroundService, INotificationSink
     private readonly Channel<NotificationWork> _queue =
         Channel.CreateBounded<NotificationWork>(new BoundedChannelOptions(500)
         {
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.Wait
         });
 
+    private readonly object _enqueueGate = new();
+    private Task _enqueueTail = Task.CompletedTask;
+    private bool _accepting = true;
+    private readonly SemaphoreSlim _webhookWake = new(0, 1);
     private readonly NotificationStore _store;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IDeezSpoTagListener _events;
@@ -83,6 +87,8 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         _logger = logger;
     }
 
+    public void NotifyChanged() => _events.Send("notificationsChanged", new { });
+
     public void Raise(NotificationRequest request)
     {
         if (!NotificationKinds.IsKnown(request.Kind))
@@ -90,7 +96,60 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             return;
         }
 
-        _queue.Writer.TryWrite(new NotificationWork(request, null, false, null));
+        Enqueue(new NotificationWork(request, null, false, null));
+    }
+
+    private void Enqueue(NotificationWork work)
+    {
+        lock (_enqueueGate)
+        {
+            if (!_accepting)
+            {
+                _logger.LogWarning("Notification service is stopped; work was not accepted.");
+                return;
+            }
+            if (_enqueueTail.IsCompleted && _queue.Writer.TryWrite(work)) return;
+            // The sink is synchronous. Own deferred writes, preserve their order and drain
+            // them at shutdown without blocking a request thread or dropping older work.
+            _enqueueTail = EnqueueAfterAsync(_enqueueTail, work);
+        }
+    }
+
+    private async Task EnqueueAfterAsync(Task previous, NotificationWork work)
+    {
+        try
+        {
+            await previous.ConfigureAwait(false);
+            await _queue.Writer.WriteAsync(work).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            _logger.LogWarning("Notification service stopped before pending work could be accepted.");
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        Task pending;
+        lock (_enqueueGate) { _accepting = false; pending = _enqueueTail; }
+        try
+        {
+            if (ExecuteTask is not null) await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _queue.Writer.TryComplete();
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void WakeWebhookDelivery()
+    {
+        if (_webhookWake.CurrentCount == 0)
+        {
+            try { _webhookWake.Release(); }
+            catch (SemaphoreFullException) { /* Another producer already signalled. */ }
+        }
     }
 
     /// <summary>
@@ -108,7 +167,10 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             return;
         }
 
-        Raise(recovery);
+        await DispatchAsync(recovery with
+        {
+            DedupeKey = $"{recovery.DedupeKey}:{result.IncidentId}"
+        }, CancellationToken.None).ConfigureAwait(false);
     }
 
     public Task<bool> SendWebhookTestAsync(string url, CancellationToken cancellationToken)
@@ -127,12 +189,23 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             Title = "DeezSpoTag test notification",
             Body = "If you can read this, the webhook is configured correctly."
         };
-        return await PostWebhookAsync(url, probe, singleAttempt: true, cancellationToken, preferences);
+        return await PostWebhookAsync(url, probe, cancellationToken, preferences);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var work in _queue.Reader.ReadAllAsync(stoppingToken))
+        using var shutdownRegistration = stoppingToken.Register(() => _queue.Writer.TryComplete());
+        try
+        {
+            await Task.WhenAll(ProcessNotificationsAsync(stoppingToken), DeliverWebhooksAsync(stoppingToken)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally { _queue.Writer.TryComplete(); }
+    }
+
+    private async Task ProcessNotificationsAsync(CancellationToken stoppingToken)
+    {
+        await foreach (var work in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
             try
             {
@@ -149,7 +222,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             {
                 break;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Failed dispatching {Kind} notification.", work.Raise?.Kind ?? "resolve");
             }
@@ -165,19 +238,15 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             return;
         }
 
-        var added = await _store.AddOrCoalesceAsync(request, preferences.RetentionDays);
+        var added = await _store.AddOrCoalesceAsync(request, preferences.RetentionDays,
+            channels.Webhook && !string.IsNullOrWhiteSpace(preferences.WebhookUrl)).ConfigureAwait(false);
         var entry = added.Entry;
-        if (!added.IsNewIncident)
-        {
-            // Same incident still open: counted, never re-announced.
-            return;
-        }
 
         if (channels.InApp)
         {
             try
             {
-                _events.Send("notificationRaised", new
+                _events.Send(added.IsNewIncident ? "notificationRaised" : "notificationsChanged", new
                 {
                     entry.Id,
                     entry.Kind,
@@ -189,25 +258,65 @@ public sealed class NotificationService : BackgroundService, INotificationSink
                     unreadCount = await _store.GetUnreadCountAsync()
                 });
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug(ex, "Failed pushing in-app notification.");
             }
         }
 
-        if (channels.Webhook && !string.IsNullOrWhiteSpace(preferences.WebhookUrl))
+        if (entry.WebhookPending) WakeWebhookDelivery();
+    }
+
+    private async Task DeliverWebhooksAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
         {
-            await PostWebhookAsync(preferences.WebhookUrl, entry, singleAttempt: false, cancellationToken, preferences);
+            var wait = TimeSpan.FromSeconds(30);
+            try
+            {
+                var pending = await _store.GetPendingWebhooksAsync().ConfigureAwait(false);
+                var now = DateTimeOffset.UtcNow;
+                var entry = pending.OrderBy(item => item.WebhookNextAttemptUtc ?? DateTimeOffset.MinValue).FirstOrDefault();
+                if (entry is not null)
+                {
+                    var due = entry.WebhookNextAttemptUtc ?? now;
+                    if (due <= now)
+                    {
+                        var preferences = await _store.LoadPreferencesAsync().ConfigureAwait(false);
+                        if (!preferences.Resolve(entry.Kind).Webhook || string.IsNullOrWhiteSpace(preferences.WebhookUrl))
+                        {
+                            await _store.RecordWebhookAttemptAsync(entry.Id, false, null).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            var delivered = await PostWebhookAsync(preferences.WebhookUrl, entry,
+                                stoppingToken, preferences).ConfigureAwait(false);
+                            var delay = !delivered && entry.WebhookAttempts < WebhookRetryDelays.Length
+                                ? (TimeSpan?)WebhookRetryDelays[entry.WebhookAttempts] : null;
+                            await _store.RecordWebhookAttemptAsync(entry.Id, delivered, delay).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
+                    wait = due - now < wait ? due - now : wait;
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Notification webhook delivery could not complete; pending work is retained.");
+                wait = TimeSpan.FromSeconds(2);
+            }
+            await _webhookWake.WaitAsync(wait, stoppingToken).ConfigureAwait(false);
         }
     }
 
     private async Task<bool> PostWebhookAsync(
         string url,
         NotificationEntry entry,
-        bool singleAttempt,
         CancellationToken cancellationToken,
         NotificationPreferences? preferences = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!Uri.TryCreate(url, UriKind.Absolute, out var webhookUri)
             || !await OutboundUrlGuard.IsAllowedRemoteUriAsync(
                 webhookUri,
@@ -222,34 +331,20 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         var transport = preferences ?? NotificationPreferences.CreateDefault();
         var payload = JsonSerializer.Serialize(NotificationTransportAdapter.BuildPayload(entry, transport));
 
-        var attempts = singleAttempt ? 1 : WebhookRetryDelays.Length + 1;
-        for (var attempt = 0; attempt < attempts; attempt++)
+        try
         {
-            try
-            {
-                using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(15);
-                using var response = await client.PostAsync(url, content, cancellationToken);
-                if (response.IsSuccessStatusCode)
-                {
-                    return true;
-                }
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
+            using var response = await client.PostAsync(url, content, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode) return true;
 
-                _logger.LogWarning(
-                    "Notification webhook returned HTTP {Status} for {Kind}.",
-                    (int)response.StatusCode,
-                    entry.Kind);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Notification webhook post failed for {Kind}.", entry.Kind);
-            }
-
-            if (attempt < attempts - 1)
-            {
-                await Task.Delay(WebhookRetryDelays[attempt], cancellationToken);
-            }
+            _logger.LogWarning("Notification webhook returned HTTP {Status} for {Kind}.",
+                (int)response.StatusCode, entry.Kind);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Notification webhook post failed for {Kind}.", entry.Kind);
         }
 
         return false;

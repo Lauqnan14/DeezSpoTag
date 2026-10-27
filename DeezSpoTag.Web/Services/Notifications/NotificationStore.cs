@@ -31,7 +31,7 @@ public sealed class NotificationStore
 
     public async Task<NotificationPreferences> LoadPreferencesAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var preferences = ReadPreferences();
@@ -46,11 +46,11 @@ public sealed class NotificationStore
 
     public async Task<NotificationPreferences> SavePreferencesAsync(NotificationPreferences preferences)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             preferences.EnsureDefaults();
-            await File.WriteAllTextAsync(_preferencesPath, JsonSerializer.Serialize(preferences, _jsonOptions));
+            await WriteJsonAtomicallyAsync(_preferencesPath, preferences).ConfigureAwait(false);
             return preferences;
         }
         finally
@@ -61,7 +61,7 @@ public sealed class NotificationStore
 
     public async Task<IReadOnlyList<NotificationEntry>> GetAsync(bool unreadOnly = false, int limit = 100)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             return ReadInAppVisibleEntries()
@@ -78,7 +78,7 @@ public sealed class NotificationStore
 
     public async Task<int> GetUnreadCountAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             return ReadInAppVisibleEntries().Count(entry => !entry.IsRead);
@@ -104,7 +104,7 @@ public sealed class NotificationStore
 
     public sealed record AddResult(NotificationEntry Entry, bool IsNewIncident);
 
-    public sealed record ResolveResult(bool HadOpenIncident, bool ManuallyResolved);
+    public sealed record ResolveResult(bool HadOpenIncident, bool ManuallyResolved, string? IncidentId = null);
 
     /// <summary>
     /// Closes any open incident for the key. Manual resolution records that the user acted, so a
@@ -112,12 +112,13 @@ public sealed class NotificationStore
     /// </summary>
     public async Task<ResolveResult> ResolveIncidentAsync(string dedupeKey, bool manuallyResolved)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
             var now = DateTimeOffset.UtcNow;
             var closed = 0;
+            string? incidentId = null;
             for (var index = 0; index < entries.Count; index++)
             {
                 var entry = entries[index];
@@ -127,15 +128,16 @@ public sealed class NotificationStore
                 }
 
                 entries[index] = entry with { ResolvedUtc = now, ManuallyResolved = manuallyResolved };
+                incidentId = entry.Id;
                 closed++;
             }
 
             if (closed > 0)
             {
-                await WriteEntriesAsync(entries);
+                await WriteEntriesAsync(entries).ConfigureAwait(false);
             }
 
-            return new ResolveResult(closed > 0, manuallyResolved);
+            return new ResolveResult(closed > 0, manuallyResolved, incidentId);
         }
         finally
         {
@@ -143,9 +145,9 @@ public sealed class NotificationStore
         }
     }
 
-    public async Task<AddResult> AddOrCoalesceAsync(NotificationRequest request, int retentionDays)
+    public async Task<AddResult> AddOrCoalesceAsync(NotificationRequest request, int retentionDays, bool webhookRequested = false)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
@@ -170,7 +172,12 @@ public sealed class NotificationStore
                     Body = request.Body,
                     Severity = request.Severity,
                     OccurrenceCount = request.Kind == NotificationKinds.VerificationRequired ? 1 : existing.OccurrenceCount + 1,
-                    LastSeenUtc = now
+                    LastSeenUtc = now,
+                    WebhookPending = existing.WebhookPending || (webhookRequested && !existing.WebhookDeliveredUtc.HasValue),
+                    WebhookAttempts = webhookRequested && !existing.WebhookPending && !existing.WebhookDeliveredUtc.HasValue
+                        ? 0 : existing.WebhookAttempts,
+                    WebhookNextAttemptUtc = webhookRequested && !existing.WebhookPending && !existing.WebhookDeliveredUtc.HasValue
+                        ? now : existing.WebhookNextAttemptUtc
                 };
                 entries[entries.IndexOf(existing)] = result;
             }
@@ -188,12 +195,14 @@ public sealed class NotificationStore
                     EntityId = request.EntityId,
                     Link = request.Link,
                     CreatedUtc = now,
-                    LastSeenUtc = now
+                    LastSeenUtc = now,
+                    WebhookPending = webhookRequested,
+                    WebhookNextAttemptUtc = webhookRequested ? now : null
                 };
                 entries.Add(result);
             }
 
-            await WriteEntriesAsync(Prune(entries, retentionDays));
+            await WriteEntriesAsync(Prune(entries, retentionDays)).ConfigureAwait(false);
             return new AddResult(result, isNewIncident);
         }
         finally
@@ -204,7 +213,7 @@ public sealed class NotificationStore
 
     public async Task<int> MarkReadAsync(IReadOnlyCollection<string> ids)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
@@ -229,7 +238,7 @@ public sealed class NotificationStore
 
             if (changed > 0)
             {
-                await WriteEntriesAsync(entries);
+                await WriteEntriesAsync(entries).ConfigureAwait(false);
             }
 
             return changed;
@@ -242,14 +251,14 @@ public sealed class NotificationStore
 
     public async Task<int> RemoveAsync(IReadOnlyCollection<string> ids)
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
             var removed = DismissEntries(entries, entry => ids.Contains(entry.Id, StringComparer.OrdinalIgnoreCase));
             if (removed > 0)
             {
-                await WriteEntriesAsync(entries);
+                await WriteEntriesAsync(entries).ConfigureAwait(false);
             }
 
             return removed;
@@ -262,14 +271,14 @@ public sealed class NotificationStore
 
     public async Task<int> ClearAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
             var removed = DismissEntries(entries, _ => true);
             if (removed > 0)
             {
-                await WriteEntriesAsync(entries);
+                await WriteEntriesAsync(entries).ConfigureAwait(false);
             }
 
             return removed;
@@ -282,7 +291,7 @@ public sealed class NotificationStore
 
     public async Task<int> MarkAllReadAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             var entries = ReadEntries();
@@ -306,7 +315,7 @@ public sealed class NotificationStore
 
             if (changed > 0)
             {
-                await WriteEntriesAsync(entries);
+                await WriteEntriesAsync(entries).ConfigureAwait(false);
             }
 
             return changed;
@@ -321,9 +330,9 @@ public sealed class NotificationStore
     {
         var cutoff = DateTimeOffset.UtcNow.AddDays(-Math.Max(1, retentionDays));
         // An unresolved verification remains deduplicated even after dismissal or retention expiry.
-        var pendingVerification = entries.Where(IsPendingVerification).ToList();
+        var pendingVerification = entries.Where(entry => IsPendingVerification(entry) || entry.WebhookPending).ToList();
         return pendingVerification.Concat(entries
-            .Where(entry => !IsPendingVerification(entry))
+            .Where(entry => !IsPendingVerification(entry) && !entry.WebhookPending)
             .Where(entry => !entry.IsRead || entry.LastSeenUtc >= cutoff)
             .OrderByDescending(entry => entry.LastSeenUtc)
             .Take(Math.Max(0, MaxEntries - pendingVerification.Count)))
@@ -357,14 +366,13 @@ public sealed class NotificationStore
             }
 
             var json = File.ReadAllText(_preferencesPath);
-            return string.IsNullOrWhiteSpace(json)
-                ? NotificationPreferences.CreateDefault()
-                : JsonSerializer.Deserialize<NotificationPreferences>(json, _jsonOptions) ?? NotificationPreferences.CreateDefault();
+            return JsonSerializer.Deserialize<NotificationPreferences>(json, _jsonOptions)
+                ?? throw new JsonException("Notification preferences cannot be null.");
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
-            _logger.LogWarning(ex, "Failed reading notification preferences; using defaults.");
-            return NotificationPreferences.CreateDefault();
+            _logger.LogError(ex, "Cannot read notification preferences; preserving the saved file.");
+            throw;
         }
     }
 
@@ -378,17 +386,58 @@ public sealed class NotificationStore
             }
 
             var json = File.ReadAllText(_entriesPath);
-            return string.IsNullOrWhiteSpace(json)
-                ? []
-                : JsonSerializer.Deserialize<List<NotificationEntry>>(json, _jsonOptions) ?? [];
+            return JsonSerializer.Deserialize<List<NotificationEntry>>(json, _jsonOptions)
+                ?? throw new JsonException("Notification entries cannot be null.");
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
-            _logger.LogWarning(ex, "Failed reading notifications; starting from an empty list.");
-            return [];
+            _logger.LogError(ex, "Cannot read notifications; preserving the saved file.");
+            throw;
         }
     }
 
-    private async Task WriteEntriesAsync(List<NotificationEntry> entries)
-        => await File.WriteAllTextAsync(_entriesPath, JsonSerializer.Serialize(entries, _jsonOptions));
+    public async Task<IReadOnlyList<NotificationEntry>> GetPendingWebhooksAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try { return ReadEntries().Where(entry => entry.WebhookPending).ToList(); }
+        finally { _gate.Release(); }
+    }
+
+    public async Task RecordWebhookAttemptAsync(string id, bool delivered, TimeSpan? retryDelay)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var entries = ReadEntries();
+            var index = entries.FindIndex(entry => entry.Id == id);
+            if (index < 0) return;
+            var now = DateTimeOffset.UtcNow;
+            entries[index] = entries[index] with
+            {
+                WebhookAttempts = entries[index].WebhookAttempts + 1,
+                WebhookPending = !delivered && retryDelay.HasValue,
+                WebhookNextAttemptUtc = !delivered && retryDelay.HasValue ? now + retryDelay.Value : null,
+                WebhookDeliveredUtc = delivered ? now : entries[index].WebhookDeliveredUtc
+            };
+            await WriteEntriesAsync(entries).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    private Task WriteEntriesAsync(List<NotificationEntry> entries)
+        => WriteJsonAtomicallyAsync(_entriesPath, entries);
+
+    private async Task WriteJsonAtomicallyAsync<T>(string path, T value)
+    {
+        var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, JsonSerializer.Serialize(value, _jsonOptions)).ConfigureAwait(false);
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
 }

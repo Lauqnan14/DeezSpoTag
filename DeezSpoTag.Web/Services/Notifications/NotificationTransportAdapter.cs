@@ -98,6 +98,11 @@ public static class NotificationTransportAdapter
             return "failure";
         }
 
+        if (entry.Severity != NotificationSeverity.Info)
+        {
+            return "warning";
+        }
+
         if (string.Equals(entry.Kind, NotificationKinds.RunCompleted, StringComparison.OrdinalIgnoreCase)
             || string.Equals(entry.Kind, NotificationKinds.ProviderRecovered, StringComparison.OrdinalIgnoreCase))
         {
