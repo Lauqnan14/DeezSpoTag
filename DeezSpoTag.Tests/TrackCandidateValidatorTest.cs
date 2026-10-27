@@ -109,6 +109,39 @@ public sealed class TrackCandidateValidatorTest
     }
 
     [Fact]
+    public void Validate_AcceptsExactIsrc_WhenQueuedArtistIsNamedInTitleCredit()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                "USUG12208791",
+                "Creepin' (with The Weeknd & 21 Savage)",
+                "21 Savage",
+                "HEROES & VILLAINS",
+                221000),
+            new TrackMatchCandidate(
+                "qobuz-1",
+                "USUG12208791",
+                "Creepin'",
+                "Metro Boomin",
+                "HEROES & VILLAINS",
+                221000));
+
+        Assert.True(result.Accepted);
+        Assert.Equal("isrc", result.Reason);
+    }
+
+    [Fact]
+    public void Validate_RejectsExactIsrc_WhenArtistIsUnrelatedAndUncredited()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("USUG12208791", "Creepin'", "Someone Else", "HEROES & VILLAINS", 221000),
+            new TrackMatchCandidate("qobuz-1", "USUG12208791", "Creepin'", "Metro Boomin", "HEROES & VILLAINS", 221000));
+
+        Assert.False(result.Accepted);
+        Assert.Equal("artist_mismatch", result.Reason);
+    }
+
+    [Fact]
     public void Validate_RejectsExactIsrc_WhenTitleDriftsToRemix()
     {
         var result = TrackCandidateValidator.Validate(

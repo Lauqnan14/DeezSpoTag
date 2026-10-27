@@ -1713,6 +1713,11 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddScoped<DeezSpoTag.Web.Services.LinkMapping.DeezerLinkMappingService>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.DeezerMetadataResolver>();
+        foreach (var source in new[] { "tidal", "apple", "amazon" })
+        {
+            services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver>(sp =>
+                new DeezSpoTag.Web.Services.CatalogDownloadMetadataResolver(source, sp));
+        }
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyArtworkResolver, DeezSpoTag.Web.Services.SpotifyArtworkResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.LastFmArtistImageService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(sp =>

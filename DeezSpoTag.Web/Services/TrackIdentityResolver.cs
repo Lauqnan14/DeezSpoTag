@@ -440,6 +440,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         }
 
         string? id;
+        string? coverUrl = null;
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -449,6 +450,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             {
                 var verified = await (_spotifyIdResolver as SpotifyIdResolver ?? throw new InvalidOperationException("Strict Spotify resolver unavailable.")).ResolveVerifiedTrackAsync(state.Title ?? "", state.Artist ?? "", state.Album, state.Isrc, state.DurationMs, providerToken, state.ConversionQuery);
                 id = verified?.Id;
+                coverUrl = verified?.ImageUrl;
                 state.Isrc ??= verified?.Isrc;
                 if (verified is not null)
                     state.SetMatchedMetadata(verified.Name, verified.Subtitle, null, verified.Isrc, verified.DurationMs);
@@ -488,7 +490,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         state.SpotifyId = id.Trim();
         state.SpotifyUrl = BuildSpotifyUrl(state.SpotifyId);
-        candidates.Add(Accepted(Spotify, state.SpotifyId, state.SpotifyUrl, "spotify-resolver"));
+        candidates.Add(Accepted(Spotify, state.SpotifyId, state.SpotifyUrl, "spotify-resolver", coverUrl: coverUrl));
     }
 
     private async Task ResolveDeezerAsync(
@@ -534,6 +536,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 return;
             }
 
+            string? coverUrl = null;
             state.DeezerId = id;
             state.DeezerUrl = BuildDeezerUrl(id);
             if (state.IsYouTubeSource && !string.IsNullOrWhiteSpace(state.DeezerId))
@@ -541,10 +544,11 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 var recording = await _deezerClient.GetTrackAsync(state.DeezerId).WaitAsync(providerToken);
                 if (recording is null || recording.Id != state.DeezerId)
                     throw new InvalidOperationException("Deezer returned a different recording ID.");
+                coverUrl = FirstNonEmpty(recording.Album?.CoverXl, recording.Album?.CoverBig, recording.Album?.CoverMedium);
                 state.Isrc ??= recording.Isrc;
                 state.SetMatchedMetadata(recording.Title, recording.Artist?.Name, recording.Album?.Title, recording.Isrc, recording.Duration * 1000);
             }
-            candidates.Add(Accepted(Deezer, state.DeezerId, state.DeezerUrl, "deezer-native"));
+            candidates.Add(Accepted(Deezer, state.DeezerId, state.DeezerUrl, "deezer-native", coverUrl: coverUrl));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -731,7 +735,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 && cachedCandidate != null)
             {
                 ApplyAppleCandidate(state, cachedCandidate, storefront);
-                candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog-cache"));
+                candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog-cache", coverUrl: cachedCandidate.CoverUrl));
                 return;
             }
 
@@ -767,7 +771,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                     Size = 1
                 });
             }
-            candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog"));
+            candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog", coverUrl: appleCandidate.CoverUrl));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -931,6 +935,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 ? candidate
                 : candidate with
                 {
+                    CoverUrl = FirstNonEmpty(hydrated.CoverUrl, candidate.CoverUrl),
                     AlbumId = FirstNonEmpty(hydrated.AlbumId, candidate.AlbumId),
                     AlbumName = FirstNonEmpty(hydrated.AlbumName, candidate.AlbumName),
                     ArtistName = FirstNonEmpty(hydrated.ArtistName, candidate.ArtistName),
@@ -1086,7 +1091,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             Isrc: ReadString(attributes, "isrc"),
             DurationMs: ReadInt(attributes, "durationInMillis"),
             AlbumId: TryExtractAppleAlbumId(item),
-            Score: 0d);
+            Score: 0d,
+            CoverUrl: AppleCatalogJsonHelper.ResolveArtwork(attributes));
     }
 
     private static string? TryExtractAppleAlbumId(JsonElement item)
@@ -1115,7 +1121,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         string? Isrc,
         int? DurationMs,
         string? AlbumId,
-        double Score);
+        double Score,
+        string? CoverUrl = null);
 
     private async Task ResolveQobuzAsync(
         IdentityState state,
@@ -1175,7 +1182,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             string.IsNullOrWhiteSpace(resolved.Track.Version) ? resolved.Track.Title : $"{resolved.Track.Title} ({resolved.Track.Version})",
             resolved.Track.Performer?.Name ?? resolved.Track.Album?.Artists.FirstOrDefault()?.Name,
             resolved.Track.Album?.Title, resolved.Track.ISRC, resolved.Track.Duration * 1000);
-        candidates.Add(Accepted(Qobuz, state.QobuzId, state.QobuzUrl, resolved.Source, resolved.Score));
+        candidates.Add(Accepted(Qobuz, state.QobuzId, state.QobuzUrl, resolved.Source, resolved.Score,
+            FirstNonEmpty(resolved.Track.Album?.Image?.Mega, resolved.Track.Album?.Image?.ExtraLarge, resolved.Track.Album?.Image?.Large, resolved.Track.Album?.Image?.Medium, resolved.Track.Album?.Image?.Small)));
     }
 
     private async Task ResolveTidalAsync(
@@ -1227,17 +1235,19 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return;
         }
 
+        string? coverUrl = null;
         if (state.IsYouTubeSource)
         {
             var recording = await _tidalDownloadService.ResolveTrackMetadataAsync(tidalUrl, cancellationToken);
             if (recording is null || !string.Equals(TrackCandidateValidator.NormalizeIsrc(recording.Isrc), TrackCandidateValidator.NormalizeIsrc(state.Isrc), StringComparison.Ordinal)
                 || !TrackCandidateValidator.Validate(new(state.Isrc, state.Title, state.Artist, state.Album, state.DurationMs), new(recording.Id.ToString(), recording.Isrc, recording.Title, recording.Artist, recording.Album, recording.DurationSeconds * 1000), new(RequireCandidateDurationWhenSourceHasDuration: true)).Accepted)
             { candidates.Add(Rejected(Tidal, "recording-verification-failed")); return; }
+            coverUrl = recording.CoverUrl;
             state.SetMatchedMetadata(recording.Title, recording.Artist, recording.Album, recording.Isrc, recording.DurationSeconds * 1000);
         }
         state.TidalUrl = tidalUrl;
         state.TidalId = EngineLinkParser.TryExtractTidalTrackId(tidalUrl);
-        candidates.Add(Accepted(Tidal, state.TidalId, state.TidalUrl, "tidal-native"));
+        candidates.Add(Accepted(Tidal, state.TidalId, state.TidalUrl, "tidal-native", coverUrl: coverUrl));
     }
 
     private async Task ResolveAmazonAsync(
@@ -1294,7 +1304,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         state.AmazonId = resolved.Id;
         state.AmazonUrl = resolved.Url;
         state.Isrc ??= resolved.Isrc;
-        candidates.Add(Accepted(Amazon, state.AmazonId, state.AmazonUrl, "amazon-native"));
+        candidates.Add(Accepted(Amazon, state.AmazonId, state.AmazonUrl, "amazon-native", coverUrl: resolved.CoverUrl));
     }
 
     private static PlatformIdentityCandidate Accepted(
@@ -1302,8 +1312,9 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         string? id,
         string? url,
         string source,
-        double score = 1d)
-        => new(platform, id, url, source, true, null, score);
+        double score = 1d,
+        string? coverUrl = null)
+        => new(platform, id, url, source, true, null, score, coverUrl);
 
     private static PlatformIdentityCandidate Rejected(string platform, string reason)
         => new(platform, null, null, "central", false, reason);

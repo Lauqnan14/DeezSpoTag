@@ -9,6 +9,9 @@ public sealed class TrackTitleMatcherTest
     [InlineData("An Entirely Different Song", "Song", false)]
     [InlineData("Song (feat. Guest)", "Song", true)]
     [InlineData("Song", "Song (feat. Guest)", true)]
+    [InlineData("Creepin' (with The Weeknd & 21 Savage)", "Creepin'", true)]
+    [InlineData("Creepin'", "Creepin' (with The Weeknd & 21 Savage)", true)]
+    [InlineData("Creepin' (with The Weeknd & 21 Savage)", "Creepin' (Remix)", false)]
     [InlineData("P.I.M.P.", "PIMP", true)]
     [InlineData("Song", "Song (Live)", false)]
     public void RecordingTitles_RejectUnrelatedContainmentButPreserveCreditsAndPunctuation(string source, string candidate, bool expected)

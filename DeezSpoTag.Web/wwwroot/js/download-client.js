@@ -26,6 +26,7 @@ DeezSpoTag.DownloadClient = {
         started: 0,
         completed: 0,
         failed: 0,
+        deferred: 0,
         timer: null
     },
 
@@ -439,7 +440,9 @@ DeezSpoTag.DownloadClient = {
             return;
         }
 
-        this.showNotification(message, type, context.options);
+        if (this.getAppleNotificationMode() === 'detailed') {
+            this.showNotification(message, type, context.options);
+        }
     },
     queueAppleNotification(kind) {
         if (kind === 'started') {
@@ -448,6 +451,8 @@ DeezSpoTag.DownloadClient = {
             this.appleNotifications.completed += 1;
         } else if (kind === 'failed') {
             this.appleNotifications.failed += 1;
+        } else if (kind === 'deferred') {
+            this.appleNotifications.deferred = (this.appleNotifications.deferred || 0) + 1;
         }
 
         if (this.appleNotifications.timer) {
@@ -476,12 +481,11 @@ DeezSpoTag.DownloadClient = {
             parts.push(`${pending.failed} failed`);
         }
 
+        if (pending.deferred > 0) parts.push(`${pending.deferred} awaiting matching, not yet in the download queue`);
         if (parts.length) {
-            let type = 'info';
+            let type = pending.deferred > 0 ? 'warning' : 'success';
             if (pending.failed > 0) {
                 type = 'error';
-            } else if (pending.completed > 0) {
-                type = 'success';
             }
             this.showNotification(`Downloads: ${parts.join(', ')}`, type);
         }
@@ -489,6 +493,7 @@ DeezSpoTag.DownloadClient = {
         pending.started = 0;
         pending.completed = 0;
         pending.failed = 0;
+        pending.deferred = 0;
     },
 
     resolveSingleCandidateDestinationId(select) {
@@ -676,26 +681,25 @@ DeezSpoTag.DownloadClient = {
         destinationFolderId,
         options,
         linkType,
-        message,
-        logMessage = 'queued for background intent resolution'
+        logMessage = 'awaiting background intent resolution'
     }) {
         if (!result?.deferred) {
             return null;
         }
 
         const deferredCount = Number.isFinite(result.deferredCount) ? result.deferredCount : 1;
-        const resolvedMessage = result.message || message || `Queued ${deferredCount} item(s) for background processing.`;
+        const resolvedMessage = `Matching pending for ${deferredCount} item(s); not yet added to the download queue.`;
         const parsedUrl = this.tryParseAbsoluteUrl(url);
         if (parsedUrl && this.hostMatches(parsedUrl.hostname, ['youtube.com', 'youtu.be'])) {
             if (!options?.silent) {
-                this.showQueueToast(resolvedMessage, 'info');
+                this.showQueueToast(resolvedMessage, 'warning');
             }
         } else {
-            this.notifyAppleAware('started', resolvedMessage, 'info', { linkType });
+            if (!options?.silent) this.notifyAppleAware('deferred', resolvedMessage, 'warning', { url, linkType });
         }
         this.logDownloadEvent('info', logMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        return { success: true, deferred: true, linkType };
+        return { success: false, deferred: true, linkType };
     },
     async enqueueStandardDownloadRequest({
         endpoint,
@@ -952,18 +956,11 @@ DeezSpoTag.DownloadClient = {
             };
         }
 
-        if (result?.deferred) {
-            const deferredCount = Number.isFinite(result.deferredCount) ? result.deferredCount : 1;
-            const message = result.message || `Queued ${deferredCount} item(s) for background processing.`;
-            notifyQueue(message, 'info');
-            this.logDownloadEvent('info', 'queued for background intent resolution');
-            this.removePendingQueueIfNeeded(url, bitrate, destinationId, options);
-            return {
-                success: true,
-                deferred: true,
-                linkType: result.engine || intentContext.preferredEngine || sourceService
-            };
-        }
+        const deferredResult = this.handleDeferredResult(result, {
+            url, bitrate, destinationFolderId: destinationId, options,
+            linkType: result.engine || intentContext.preferredEngine || sourceService
+        });
+        if (deferredResult) return deferredResult;
 
         const reasonCodes = this.getReasonCodes(result);
         const message = this.resolveApiMessage(result, 'Item was not queued.');
@@ -1162,7 +1159,7 @@ DeezSpoTag.DownloadClient = {
                 bitrate,
                 destinationFolderId: destinationId,
                 options,
-                notificationType: 'info',
+                notificationType: 'warning',
                 linkType: 'apple-video'
             });
             if (alreadyQueuedError) return alreadyQueuedError;
@@ -1175,7 +1172,7 @@ DeezSpoTag.DownloadClient = {
             bitrate,
             destinationFolderId: destinationId,
             options,
-            notificationType: 'info',
+            notificationType: 'warning',
             linkType: 'apple-video'
         });
         if (alreadyQueuedResult) return alreadyQueuedResult;
@@ -1431,7 +1428,6 @@ DeezSpoTag.DownloadClient = {
             destinationFolderId: context.destinationId,
             options: context.options,
             linkType: result.linkType || '',
-            message: 'Queued items for background matching',
             logMessage: result.message || 'Queued items for background matching'
         });
         if (deferredResult) return deferredResult;
@@ -1530,6 +1526,7 @@ DeezSpoTag.DownloadClient = {
 
         const parsed = this.tryParseAbsoluteUrl(url);
         if (!parsed) return null;
+        if (this.hostMatches(parsed.hostname, ['youtube.com', 'youtu.be'])) return 'ytmusic';
         if (this.hostMatches(parsed.hostname, ['boomplay.com'])) return 'boomplay';
         if (this.hostMatches(parsed.hostname, ['deezer.com'])) return 'deezer';
         return null;
@@ -1556,7 +1553,7 @@ DeezSpoTag.DownloadClient = {
             intentContext: context.intentContext,
             notify: context.notify,
             notifyQueue: context.notifyQueue,
-            resolveImmediately: false
+            resolveImmediately: sourceService === 'ytmusic'
         });
     },
     handleAddToQueueError(error, { url, bitrate, destinationId, options, notify }) {
@@ -1596,14 +1593,6 @@ DeezSpoTag.DownloadClient = {
             return validationError;
         }
 
-        const appleContext = {
-            url: normalizedUrl,
-            logLabel: normalizedUrl,
-            sourceService: options?.metadata?.sourceService
-        };
-        if (!options.silent && (!this.isAppleNotificationContext(appleContext) || this.getAppleNotificationMode() === 'detailed')) {
-            notify('Adding to download queue...', 'info');
-        }
         this.addPendingQueueIfNeeded(url, bitrate, destinationId, options);
         const lockId = this.acquireInFlightLock(normalizedUrl, destinationId);
 
@@ -1679,14 +1668,8 @@ DeezSpoTag.DownloadClient = {
             errors: []
         };
 
-        const inputSummary = inputDuplicates > 0
-            ? ` (+${inputDuplicates} duplicates removed)`
-            : '';
         const appleBatch = dedupedUrls.length > 0 && dedupedUrls.every((entry) => this.isAppleUrl(entry));
         const appleMode = appleBatch ? this.getAppleNotificationMode() : 'detailed';
-        if (appleMode === 'detailed') {
-            this.showNotification(`Adding ${dedupedUrls.length}${inputSummary} items to download queue...`, 'info');
-        }
 
         // Persist the full bulk selection up front so queue submission survives page navigation.
         this.enqueuePendingQueueItems(dedupedUrls, bitrate, destinationId);
@@ -1778,7 +1761,7 @@ DeezSpoTag.DownloadClient = {
         }
 
         if (results.deferred > 0 && results.failed === 0) {
-            this.showQueueToast(this.buildDeferredBatchQueueMessage(results), 'info');
+            this.showQueueToast(this.buildDeferredBatchQueueMessage(results), 'warning');
             return;
         }
 
@@ -1801,7 +1784,7 @@ DeezSpoTag.DownloadClient = {
         return `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${skippedSummary}${failedSummary}`;
     },
     buildDeferredBatchQueueMessage(results) {
-        return `Queued ${results.deferred} item(s) for background intent resolution. They will appear after matching.`;
+        return `Matching pending for ${results.deferred} item(s); not yet added to the download queue.`;
     },
     buildSkippedBatchQueueMessage(results) {
         const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
@@ -1941,7 +1924,7 @@ DeezSpoTag.DownloadClient = {
             notifyResumeStart: () => {
                 if (!this.queue.resumeNotified) {
                     this.queue.resumeNotified = true;
-                    this.showNotification('Resuming downloads...', 'info');
+                    this.showNotification('Retrying saved download requests.', 'warning');
                 }
             }
         });

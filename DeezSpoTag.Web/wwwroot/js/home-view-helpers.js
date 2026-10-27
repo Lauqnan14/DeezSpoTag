@@ -304,15 +304,14 @@
         const id = button?.dataset.youtubeId;
         if (!/^[A-Za-z0-9_-]{11}$/.test(id || '') || button.disabled) return;
         const download = global.DeezSpoTagDownload;
-        if (!download?.apiFetch) { showToast('Download client unavailable.', 'error'); return; }
+        if (!download?.addToQueue) { showToast('Download client unavailable.', 'error'); return; }
         button.disabled = true;
         try {
-            const context = download.buildIntentContext({});
-            const response = await download.apiFetch('/api/download/intent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolveImmediately: true, intents: [{ sourceService: 'ytmusic', sourceUrl: `https://music.youtube.com/watch?v=${id}`, preferredEngine: context.preferredEngine || 'auto', quality: context.preferredQuality }] }) });
-            const data = await response.json();
-            const results = data.results || data.items || [];
-            if (!response.ok || data.success === false || results.some(result => result.success === false)) throw new Error(results.find(result => result.success === false)?.message || data.message || 'Download identity could not be resolved.');
-            showToast('Added to download queue.', 'success');
+            // The shared client owns destination selection, persisted queue confirmation and toasts.
+            await download.addToQueue(`https://music.youtube.com/watch?v=${id}`, 0, null, {
+                metadata: { sourceService: 'ytmusic', sourceUrl: `https://music.youtube.com/watch?v=${id}`,
+                    title: button.dataset.trackTitle, artist: button.dataset.trackArtist }
+            });
         } catch (error) { showToast(error.message || 'Download failed.', 'error'); }
         finally { button.disabled = false; }
     }

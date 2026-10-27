@@ -2,6 +2,9 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Collections.Generic;
+using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
 using Xunit;
 
@@ -37,6 +40,46 @@ public sealed class AudioTaggerMp4CodecMarkerTest : IDisposable
 
         Assert.False(InvokeHasMp4AudioCodecMarker(path, "ec-3"));
     }
+
+    [Theory]
+    [InlineData("tidal", "0000")]
+    [InlineData("apple", "0000")]
+    [InlineData("amazon", "0000")]
+    [InlineData("tidal", "0001")]
+    [InlineData("apple", "invalid")]
+    public void Mp4Persistence_DoesNotDemandAnUnavailableYear(string source, string year)
+    {
+        var track = new Track { Source = source, Date = new CustomDate("00", "00", year) };
+        var tags = YearOnlyTags();
+        var validators = GetValidators(track, tags);
+        Assert.Empty(validators);
+    }
+
+    [Fact]
+    public void Mp4Persistence_RequiresTheSuppliedYearRatherThanAnyPositiveYear()
+    {
+        var validators = GetValidators(new Track { Date = CustomDate.FromString("2022-04-22") }, YearOnlyTags());
+        Assert.Single(validators);
+        var file = new ATL.Track(Path.Combine(_tempDir, "year.m4a"));
+        file.Year = 2021;
+        Assert.False(validators[0](file));
+        file.Year = 2022;
+        Assert.True(validators[0](file));
+    }
+
+    private static TagSettings YearOnlyTags()
+    {
+        var tags = new TagSettings();
+        foreach (var property in typeof(TagSettings).GetProperties())
+            if (property.PropertyType == typeof(bool) && property.CanWrite) property.SetValue(tags, false);
+        tags.Year = true;
+        return tags;
+    }
+
+    private static List<Func<ATL.Track, bool>> GetValidators(Track track, TagSettings tags)
+        => (List<Func<ATL.Track, bool>>)typeof(AudioTagger)
+            .GetMethod("BuildMp4PersistenceValidators", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { track, tags })!;
 
     public void Dispose()
     {

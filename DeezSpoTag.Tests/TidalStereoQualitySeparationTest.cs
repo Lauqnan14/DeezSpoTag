@@ -271,6 +271,7 @@ public sealed class TidalStereoQualitySeparationTest
     }
 
     [Theory]
+    [InlineData("Creepin' (with The Weeknd & 21 Savage)", "Creepin'", null, "21 Savage", "Metro Boomin", "HEROES & VILLAINS", 221, 221, true)]
     [InlineData("Cry Baby", "Cry Baby", null, "David Guetta", "Clean Bandit", "Cry Baby", 157, 157, true)]
     [InlineData("Will You Still Love Me Tomorrow (Digitally Remastered: 1999)", "Will You Still Love Me Tomorrow", "Digitally Remastered: 1999", "Dionne Warwick", "Dionne Warwick", "The Definitive Collection", 330, 330, true)]
     [InlineData("Ananipenda (Remix)", "Ananipenda", null, "Platform", "Platform", "Ananipenda (Remix)", 289, 290, true)]

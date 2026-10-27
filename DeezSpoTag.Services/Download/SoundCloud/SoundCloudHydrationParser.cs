@@ -725,20 +725,12 @@ public static partial class SoundCloudHydrationParser
         // "calculated_artwork_url" is checked alongside the plain field because an algorithmic
         // /discover/sets page sets "artwork_url" to null and carries the only usable image in the calculated
         // one. Reading the plain field alone left every discover playlist cover-less.
-        foreach (var name in new[] { "artwork_url", "calculated_artwork_url", "artwork_url_https" })
-        {
-            if (element.TryGetProperty(name, out var artwork)
-                && artwork.ValueKind == JsonValueKind.String)
-            {
-                var value = artwork.GetString();
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
-        }
-
-        return string.Empty;
+        return new[] { "artwork_url", "calculated_artwork_url", "artwork_url_https" }
+            .Select(name => element.TryGetProperty(name, out var artwork)
+                && artwork.ValueKind == JsonValueKind.String
+                ? artwork.GetString()
+                : null)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
     }
 
     private static string ReadUri(JsonElement element)

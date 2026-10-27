@@ -187,12 +187,12 @@ public class AudioTagger
 
             if (!string.IsNullOrWhiteSpace(track.Title))
             {
-                track.Title = Library.ArtistAliasGateway.ResolveCredit(track.Title);
+                track.Title = Library.ArtistAliasGateway.ResolveTitleCredit(track.Title);
             }
 
             if (!string.IsNullOrWhiteSpace(track.Album?.Title))
             {
-                track.Album.Title = Library.ArtistAliasGateway.ResolveCredit(track.Album.Title);
+                track.Album.Title = Library.ArtistAliasGateway.ResolveTitleCredit(track.Album.Title);
             }
 
             if (track.Album != null)
@@ -285,6 +285,7 @@ public class AudioTagger
     /// </summary>
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
+        await Library.ArtistAliasGateway.EnsureLoadedAsync();
         ApplyArtistAliasPreference(track);
 
         var finalPathExtension = Path.GetExtension(writePath);
@@ -1281,7 +1282,7 @@ public class AudioTagger
             file.Genre = string.Join("; ", SanitizeGenres(track.Album.Genre));
         }
 
-        if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year) && int.TryParse(track.Date.Year, out var year))
+        if (save.Year && TryResolveMp4Year(track.Date, out var year))
         {
             file.Year = year;
         }
@@ -1325,7 +1326,8 @@ public class AudioTagger
     {
         SetAtlAdditionalFieldIf(file, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
         SetAtlAdditionalFieldIf(file, save.ReleaseType, ReleaseTypeRawTag, ResolveReleaseType(track));
-        SetAtlAdditionalFieldIf(file, save.ReleaseDate, "DATE", ResolveReleaseDate(track));
+        var releaseDate = ResolveReleaseDate(track);
+        SetAtlAdditionalFieldIf(file, save.ReleaseDate && CustomDate.FromString(releaseDate ?? string.Empty).IsValid(), "DATE", releaseDate);
         SetAtlAdditionalFieldIf(file, save.PublishDate, OriginalDateUpperTag, ResolvePublishDate(track));
         SetAtlAdditionalFieldIf(file, save.CatalogNumber, CatalogNumberUpperTag, track.CatalogNumber);
         SetAtlAdditionalFieldIf(file, save.Version, "desc", track.TitleVersion);
@@ -1530,11 +1532,12 @@ public class AudioTagger
                 SetAtlAdditionalField(file, "TDRC", track.DateString);
             }
 
-            SetAtlAdditionalField(file, "TDAT", $"{track.Date.Day}{track.Date.Month}");
+            if (track.Date.IsValid())
+                SetAtlAdditionalField(file, "TDAT", $"{track.Date.Day}{track.Date.Month}");
         }
-        else if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year))
+        else if (save.Year && TryResolveMp4Year(track.Date, out var year))
         {
-            SetAtlAdditionalField(file, "TDRC", track.Date.Year);
+            SetAtlAdditionalField(file, "TDRC", year.ToString(CultureInfo.InvariantCulture));
         }
     }
 
@@ -1859,14 +1862,15 @@ public class AudioTagger
             validators.Add(tag => MetadataValueEquals(tag.Album, expectedAlbum));
         }
 
-        if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year))
+        if (save.Year && TryResolveMp4Year(track.Date, out var year))
         {
-            validators.Add(static tag => tag.Year > 0);
+            validators.Add(tag => tag.Year == year);
         }
 
         if (save.Date && track.Date != null && track.Date.IsValid())
         {
-            validators.Add(static tag => tag.Year > 0);
+            var dateYear = int.Parse(track.Date.Year, CultureInfo.InvariantCulture);
+            validators.Add(tag => tag.Year == dateYear);
         }
 
         if (save.Isrc && !string.IsNullOrWhiteSpace(track.ISRC))
@@ -1884,6 +1888,10 @@ public class AudioTagger
 
         return validators;
     }
+
+    private static bool TryResolveMp4Year(CustomDate? date, out int year)
+        => int.TryParse(date?.Year, NumberStyles.None, CultureInfo.InvariantCulture, out year)
+            && year is >= 1000 and <= 9999;
 
     private static bool MetadataValueEquals(string? actual, string? expected)
     {

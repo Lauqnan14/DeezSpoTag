@@ -98,7 +98,8 @@ public sealed class TidalDownloadService
         string Album,
         string Isrc,
         int DurationSeconds,
-        string CoverUrl);
+        string CoverUrl,
+        string ReleaseDate = "");
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
@@ -473,7 +474,8 @@ public sealed class TidalDownloadService
             track.Album?.Title ?? string.Empty,
             track.Isrc,
             track.Duration,
-            BuildTidalCoverUrl(track.Album?.Cover));
+            BuildTidalCoverUrl(track.Album?.Cover),
+            track.ReleaseDate ?? track.Album?.ReleaseDate ?? string.Empty);
 
     private static string BuildTidalCoverUrl(string? imageId)
     {
@@ -3949,6 +3951,9 @@ public sealed class TidalDownloadService
 
     private sealed class TidalTrack
     {
+        [JsonPropertyName("releaseDate")]
+        public string? ReleaseDate { get; set; }
+
         [JsonPropertyName("id")]
         public long Id { get; set; }
 
@@ -4001,6 +4006,9 @@ public sealed class TidalDownloadService
 
     private sealed class TidalAlbum
     {
+        [JsonPropertyName("releaseDate")]
+        public string? ReleaseDate { get; set; }
+
         [JsonPropertyName("id")]
         public long Id { get; set; }
 

@@ -1,10 +1,32 @@
 using DeezSpoTag.Services.Download.Shared;
 using Xunit;
+using System;
+using System.Linq;
+using System.Reflection;
+using DeezSpoTag.Services.Metadata;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class DownloadTagSourceHelperTest
 {
+    [Fact]
+    public void AtmosEngines_RegisterCatalogMetadataResolversForFollowEngine()
+    {
+        var services = new ServiceCollection();
+        var program = typeof(DeezSpoTag.Web.Program);
+        program.GetMethod("RegisterApplicationServices", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { services, new ConfigurationBuilder().Build() });
+        // Existing resolvers have concrete implementation types. The three catalog adapters
+        // are registered through factories, sharing the existing provider services.
+        using var provider = new ServiceCollection().BuildServiceProvider();
+        var catalogSources = services.Where(d => d.ServiceType == typeof(IMetadataResolver) && d.ImplementationFactory != null)
+            .Select(d => ((IMetadataResolver)d.ImplementationFactory!(provider)).SourceKey).ToArray();
+        Assert.Contains("tidal", catalogSources);
+        Assert.Contains("apple", catalogSources);
+        Assert.Contains("amazon", catalogSources);
+    }
     [Theory]
     [InlineData("engine", "engine")]
     [InlineData("spotify", "spotify")]

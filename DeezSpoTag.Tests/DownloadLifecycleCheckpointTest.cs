@@ -15,6 +15,16 @@ public sealed class DownloadLifecycleCheckpointTest : IDisposable
     public DownloadLifecycleCheckpointTest() => Directory.CreateDirectory(_root);
 
     [Fact]
+    public void FinalizationFailure_PreservesTheUnderlyingTaggingCause()
+    {
+        var type = typeof(EngineAudioPostDownloadHelper).Assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.DownloadFinalizationException")!;
+        var cause = new InvalidOperationException("tidal tagging failed", new IOException("MP4 tag verification failed"));
+        var failure = Activator.CreateInstance(type, "tag_writing", "Audio downloaded; tag writing will be retried.", cause)!;
+        Assert.Equal("MP4 tag verification failed", type.GetProperty("OriginalMessage")!.GetValue(failure));
+    }
+
+    [Fact]
     public void ExistingValidAudio_IsAdoptedAndResumedWithoutAcquisition()
     {
         var path = Path.Combine(_root, "retained.wav");

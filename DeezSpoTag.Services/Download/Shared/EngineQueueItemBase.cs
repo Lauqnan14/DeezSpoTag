@@ -56,6 +56,8 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string WatchlistOrigin { get; set; } = "";
     public string WatchlistUnavailableSettingsFingerprint { get; set; } = "";
     public string Cover { get; set; } = "";
+    /// <summary>Artwork for queue presentation only; never used as the tagging artwork source.</summary>
+    public string DisplayCoverUrl { get; set; } = "";
     public QueueSourceSettingsSnapshot SourceSettingsSnapshot { get; set; } = new();
     public int AutoIndex { get; set; }
     public string Quality { get; set; } = "";

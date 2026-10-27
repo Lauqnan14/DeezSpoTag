@@ -85,7 +85,7 @@ public static class TrackCandidateValidator
         TrackMatchCandidate candidate,
         TrackCandidateValidationOptions options)
     {
-        if (HasArtist(source) && HasArtist(candidate) && !TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist))
+        if (HasArtist(source) && HasArtist(candidate) && !ExactIsrcArtistsCompatible(source, candidate))
         {
             return Reject("artist_mismatch");
         }
@@ -106,6 +106,20 @@ public static class TrackCandidateValidator
         }
 
         return Accept("isrc", 1.0d);
+    }
+
+    private static bool ExactIsrcArtistsCompatible(TrackMatchSource source, TrackMatchCandidate candidate)
+    {
+        if (TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist))
+        {
+            return true;
+        }
+
+        // The same recording is often queued under a collaborator. Spotify credits
+        // that person in the title ("(with …)" / "(feat. …)") while the catalog
+        // performer stays the primary artist.
+        return TrackTitleMatcher.ArtistIsNamedInRecordingCredit(source.Artist, source.Title)
+            || TrackTitleMatcher.ArtistIsNamedInRecordingCredit(source.Artist, candidate.Title);
     }
 
     private static TrackCandidateValidationResult ValidateMetadataCandidate(

@@ -1145,6 +1145,7 @@ public sealed class DownloadIntentService
             Album = ReadPayloadString(payload, "Album", "album") ?? string.Empty,
             AlbumArtist = ReadPayloadString(payload, "AlbumArtist", "albumArtist") ?? string.Empty,
             Cover = NormalizeQueueCover(ReadPayloadString(payload, "Cover", "cover")),
+            DisplayCoverUrl = NormalizeQueueCover(ReadPayloadString(payload, "DisplayCoverUrl", "displayCoverUrl")),
             Genres = ReadPayloadStringList(payload, "Genres", "genres"),
             Label = ReadPayloadString(payload, "Label", "label") ?? string.Empty,
             Copyright = ReadPayloadString(payload, "Copyright", "copyright") ?? string.Empty,
@@ -2022,6 +2023,8 @@ public sealed class DownloadIntentService
         {
             if (youtubeId is null) throw new ArgumentException("YouTube downloads require an exact video URL.");
             intent.SourceService = "ytmusic";
+            // Page images may be video stills. Only accepted catalogue identities supply queue artwork.
+            intent.Cover = intent.DisplayCoverUrl = string.Empty;
             intent.SourceUrl = "https://music.youtube.com/watch?v=" + youtubeId;
             intent.SpotifyId = intent.DeezerId = intent.QobuzId = intent.TidalId = intent.AmazonId = intent.AppleId = intent.Isrc = "";
             var identity = await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
@@ -3099,8 +3102,17 @@ public sealed class DownloadIntentService
 
     private static void ApplyResolvedIdentity(DownloadIntent intent, TrackIdentityResolution resolution)
     {
-        if (DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null
-            && resolution.Candidates.Any(candidate => candidate.Accepted))
+        var isYouTube = DeezSpoTag.Integrations.YouTube.YouTubeMusicSearchClient.GetVideoId(intent.SourceUrl) is not null;
+        if (isYouTube && resolution.Candidates.Count > 0)
+        {
+            // PrepareEnqueueAsync discards untrusted page images before resolution.
+            // Preserve tagging artwork and queue artwork when existing identities are reused.
+            intent.DisplayCoverUrl = resolution.Candidates
+                .Where(candidate => candidate.Accepted && !string.IsNullOrWhiteSpace(candidate.Id))
+                .Select(candidate => NormalizeQueueCover(candidate.CoverUrl))
+                .FirstOrDefault(cover => !string.IsNullOrWhiteSpace(cover)) ?? string.Empty;
+        }
+        if (isYouTube && resolution.Candidates.Any(candidate => candidate.Accepted))
         {
             intent.Title = resolution.Title ?? ""; intent.Artist = resolution.Artist ?? ""; intent.Album = resolution.Album ?? "";
             intent.DurationMs = resolution.DurationMs ?? 0;
@@ -7641,6 +7653,7 @@ public sealed class DownloadIntentService
         PopulateLookupIdentitySnapshot(payload, intent, context.DurationSeconds);
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
+        payload.DisplayCoverUrl = NormalizeQueueCover(intent.DisplayCoverUrl);
         payload.AutoIndex = Math.Max(0, context.SelectedAutoIndex);
         payload.FallbackPlan = context.FallbackPlan;
         payload.ReleaseDate = context.ReleaseDate;

@@ -43,19 +43,46 @@ public static class TrackTitleMatcher
     public static bool TitlesMatch(string? expected, string? actual)
         => MatchTitles(expected, actual, allowContainment: true);
 
+    private static readonly Regex FeaturedCreditClauseRegex = new(
+        @"[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^)\]]+)[\)\]]",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+
     public static bool RecordingTitlesMatch(string? expected, string? actual)
     {
         // Featured credits are metadata; an arbitrary shorter song title is not.
-        static string StripFeaturedCredits(string? title)
-        {
-            var value = Regex.Replace(title ?? string.Empty,
-                @"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+[^)\]]+[\)\]]", string.Empty,
-                RegexOptions.IgnoreCase, RegexTimeout);
-            return Regex.Replace(value, @"\s+(?:feat\.?|ft\.?|featuring)\s+[^([\]]*$", string.Empty,
-                RegexOptions.IgnoreCase, RegexTimeout);
-        }
+        // Spotify writes collaborator credits as "(with …)" as well as "(feat. …)".
         return !HasVersionDrift(expected, actual)
             && MatchTitles(StripFeaturedCredits(expected), StripFeaturedCredits(actual), allowContainment: false);
+    }
+
+    /// <summary>
+    /// True when <paramref name="artist"/> is named in a parenthetical collaborator
+    /// credit on <paramref name="title"/>, such as "(feat. …)" or "(with …)".
+    /// </summary>
+    public static bool ArtistIsNamedInRecordingCredit(string? artist, string? title)
+    {
+        if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        foreach (Match match in FeaturedCreditClauseRegex.Matches(title))
+        {
+            if (ArtistsMatch(artist, match.Groups[1].Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string StripFeaturedCredits(string? title)
+    {
+        var value = FeaturedCreditClauseRegex.Replace(title ?? string.Empty, string.Empty);
+        return Regex.Replace(value, @"\s+(?:feat\.?|ft\.?|featuring)\s+[^([\]]*$", string.Empty,
+            RegexOptions.IgnoreCase, RegexTimeout);
     }
 
     private static bool MatchTitles(string? expected, string? actual, bool allowContainment)

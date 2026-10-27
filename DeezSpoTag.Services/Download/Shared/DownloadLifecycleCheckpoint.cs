@@ -146,7 +146,7 @@ internal static class DownloadLifecycleCheckpoint
         var retryAt = DateTimeOffset.UtcNow.AddSeconds(15);
         payload.FinalizationStage = failure.Stage;
         payload.FinalizationError = failure.OriginalMessage;
-        payload.FinalizationInnerError = failure.InnerException?.Message ?? string.Empty;
+        payload.FinalizationInnerError = failure.GetBaseException().Message;
         payload.FinalizationRetryAtUtc = retryAt;
         if (string.Equals(failure.Stage, DownloadFinalizationStage.ArtworkPrefetch, StringComparison.Ordinal))
         {
@@ -212,7 +212,7 @@ internal sealed class DownloadFinalizationException : InvalidOperationException
     {
         Stage = stage;
         UserMessage = userMessage;
-        OriginalMessage = cause.Message;
+        OriginalMessage = cause.GetBaseException().Message;
     }
 
     public string Stage { get; }

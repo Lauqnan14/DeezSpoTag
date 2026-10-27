@@ -18,6 +18,45 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EmbeddedArtworkPreferenceTest
 {
+    [Theory]
+    [InlineData("tidal", "")]
+    [InlineData("apple", "")]
+    [InlineData("amazon", "")]
+    [InlineData("tidal", "2022-04-22")]
+    [InlineData("apple", "2022-04-22")]
+    [InlineData("amazon", "2022-04-22")]
+    public async Task AtmosMp4_TaggingHandlesUnavailableDatesWithoutInventingThem(string source, string date)
+    {
+        var root = Path.Join(Path.GetTempPath(), $"atmos-tag-dates-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Join(root, "track.m4a");
+            await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                "anullsrc=r=48000:cl=5.1", "-t", "0.2", "-c:a", "eac3", "-f", "mp4", path);
+            var track = new Track
+            {
+                Source = source, SourceId = "123", Title = "Atmos date regression",
+                MainArtist = new Artist("Artist"), Album = new Album("Album"),
+                Date = CustomDate.FromString(date), DateString = string.IsNullOrEmpty(date) ? "0000-00-00" : date
+            };
+            track.Album.Date = track.Date;
+            track.Album.DateString = track.DateString;
+            var settings = new DeezSpoTagSettings { Tags = new TagSettings { Cover = false, ReleaseDate = true } };
+            var tagger = new AudioTagger(NullLogger<AudioTagger>.Instance,
+                new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance));
+            await tagger.TagTrackAsync(path, track, settings);
+            var result = new ATL.Track(path);
+            Assert.Equal(track.Title, result.Title);
+            Assert.Equal("Artist", result.Artist);
+            Assert.Equal("Album", result.Album);
+            Assert.Equal(string.IsNullOrEmpty(date) ? 0 : 2022, result.Year);
+            Assert.DoesNotContain(result.AdditionalFields.Values, value => value.Contains("0000-00-00", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.AdditionalFields.Values, value => value.Contains("0001-01-01", StringComparison.Ordinal));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public void RequiresEmbeddedAlbumArtwork_ObeysCoverTagPreference()
     {

@@ -1140,16 +1140,10 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, ArtistKey, "Artist", "artistName", "ArtistName");
         EnsurePayloadField(payload, "album", "Album", "albumName", "AlbumName");
         EnsurePayloadField(payload, "albumArtist", "AlbumArtist", "album_artist", "Album_Artist");
-        EnsurePayloadField(
-            payload,
-            "cover",
-            "Cover",
-            "coverUrl",
-            "CoverUrl",
-            "albumCover",
-            "AlbumCover",
-            "soulseekDisplayCoverUrl",
-            "SoulseekDisplayCoverUrl");
+        var displayCover = QueuePayloadJsonParser.ReadCoverUrl(payload,
+            "cover", "Cover", "coverUrl", "CoverUrl", "albumCover", "AlbumCover",
+            "displayCoverUrl", "DisplayCoverUrl", "soulseekDisplayCoverUrl", "SoulseekDisplayCoverUrl");
+        if (!string.IsNullOrWhiteSpace(displayCover)) payload["cover"] = displayCover;
         EnsurePayloadField(payload, "sourceService", "SourceService", "source_service");
         EnsurePayloadField(payload, "sourceUrl", "SourceUrl", "source_url");
         EnsurePayloadField(payload, "contentType", "ContentType", "content_type");

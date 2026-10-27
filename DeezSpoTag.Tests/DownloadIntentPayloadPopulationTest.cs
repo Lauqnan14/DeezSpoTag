@@ -10,6 +10,7 @@ using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -20,6 +21,61 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadIntentPayloadPopulationTest
 {
+    [Fact]
+    public void ResolvedCatalogDisplayArtworkSurvivesEveryStandardEngineWithoutBecomingTaggingArtwork()
+    {
+        var intent = new DownloadIntent { SourceService = "ytmusic", Title = "Song", Artist = "Artist",
+            DisplayCoverUrl = "https://static.qobuz.com/images/covers/catalog.jpg", Cover = "" };
+        var property = typeof(EngineQueueItemBase).GetProperty("DisplayCoverUrl");
+        Assert.NotNull(property);
+        foreach (var payload in new EngineQueueItemBase[] {new DeezerQueueItem(),new QobuzQueueItem(),new TidalQueueItem()})
+        {
+            InvokePopulateStandardQueuePayload(payload,intent,180);
+            Assert.Equal(intent.DisplayCoverUrl,property.GetValue(payload));
+            Assert.Equal("",payload.Cover);
+        }
+    }
+
+    [Fact]
+    public void QueuePresentationUsesDisplayArtworkWhenTaggingArtworkIsEmpty()
+    {
+        var payload = new Dictionary<string,object> { ["Cover"] = "", ["cover"] = "",
+            ["DisplayCoverUrl"] = "https://static.qobuz.com/images/covers/catalog.jpg" };
+        var method=typeof(DeezSpoTag.Web.Controllers.ActivitiesController).GetMethod("NormalizePayloadKeys",BindingFlags.NonPublic|BindingFlags.Static)!;
+        method.Invoke(null,[payload]);
+        Assert.Equal(payload["DisplayCoverUrl"],payload["cover"]);
+        Assert.Equal("",payload["Cover"]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void YouTubeArtworkComesOnlyFromAcceptedCatalogIdentity(bool accepted)
+    {
+        var request = new TrackIdentityResolutionRequest("ytmusic", "https://music.youtube.com/watch?v=_POKM8PhWrA", "Song", "Artist", null, null, 180000);
+        var candidate = new PlatformIdentityCandidate("qobuz", "123", "https://www.qobuz.com/track/123", "qobuz", accepted);
+        var coverProperty = typeof(PlatformIdentityCandidate).GetProperty("CoverUrl");
+        Assert.NotNull(coverProperty);
+        coverProperty.SetValue(candidate, "https://static.qobuz.com/images/covers/catalog.jpg");
+        var resolution = TrackIdentityResolution.Empty(request) with { Candidates = new[] { candidate } };
+        var intent = new DownloadIntent { SourceService = "ytmusic", SourceUrl = request.SourceUrl!,
+            Cover = "", DisplayCoverUrl = "https://i.ytimg.com/vi/_POKM8PhWrA/hqdefault.jpg" };
+        typeof(DownloadIntentService).GetMethod("ApplyResolvedIdentity", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [intent, resolution]);
+        Assert.Equal("", intent.Cover);
+        Assert.Equal(accepted ? "https://static.qobuz.com/images/covers/catalog.jpg" : "", intent.DisplayCoverUrl);
+    }
+
+    [Fact]
+    public void ReusingResolvedIdentitiesPreservesCatalogDisplayAndSelectedTaggingArtwork()
+    {
+        var request = new TrackIdentityResolutionRequest("ytmusic", "https://music.youtube.com/watch?v=_POKM8PhWrA", "Song", "Artist", null, null, 180000);
+        var intent = new DownloadIntent { SourceService = "ytmusic", SourceUrl = request.SourceUrl!,
+            Cover = "https://selected-catalog.test/tagging.jpg", DisplayCoverUrl = "https://resolved-catalog.test/queue.jpg" };
+        typeof(DownloadIntentService).GetMethod("ApplyResolvedIdentity", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [intent, TrackIdentityResolution.Empty(request)]);
+        Assert.Equal("https://selected-catalog.test/tagging.jpg", intent.Cover);
+        Assert.Equal("https://resolved-catalog.test/queue.jpg", intent.DisplayCoverUrl);
+    }
+
     [Fact]
     public void YouTubeOrigin_IsPreservedSeparatelyFromDownloadPlatformUrl()
     {
@@ -387,7 +443,7 @@ public sealed class DownloadIntentPayloadPopulationTest
     }
 
     private static void InvokePopulateStandardQueuePayload(
-        DeezerQueueItem payload,
+        EngineQueueItemBase payload,
         DownloadIntent intent,
         int durationSeconds = 0)
     {

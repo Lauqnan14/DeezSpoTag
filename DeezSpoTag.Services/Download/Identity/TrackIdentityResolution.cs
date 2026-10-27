@@ -29,7 +29,8 @@ public sealed record PlatformIdentityCandidate(
     string Source,
     bool Accepted,
     string? Reason = null,
-    double Score = 0d);
+    double Score = 0d,
+    string? CoverUrl = null);
 
 public sealed record TrackIdentityResolution(
     string? Title,

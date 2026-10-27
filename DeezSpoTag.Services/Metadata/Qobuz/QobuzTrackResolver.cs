@@ -669,7 +669,7 @@ public sealed class QobuzTrackResolver
             return true;
         }
 
-        if (hasArtist && !ArtistsMatch(expectedArtist, GetTrackArtist(track)))
+        if (hasArtist && !ExactIsrcArtistsCompatible(expectedArtist, expectedTitle, track))
         {
             return true;
         }
@@ -822,6 +822,14 @@ public sealed class QobuzTrackResolver
     private static bool ArtistsMatch(string? expected, string? actual)
     {
         return TrackTitleMatcher.ArtistsMatch(expected, actual);
+    }
+
+    private static bool ExactIsrcArtistsCompatible(string? expectedArtist, string? expectedTitle, QobuzTrack track)
+    {
+        var catalogArtist = GetTrackArtist(track);
+        return ArtistsMatch(expectedArtist, catalogArtist)
+            || TrackTitleMatcher.ArtistIsNamedInRecordingCredit(expectedArtist, expectedTitle)
+            || TrackTitleMatcher.ArtistIsNamedInRecordingCredit(expectedArtist, GetTrackMatchTitle(track));
     }
 
     private static bool AlbumMatches(string? expected, string? actual)

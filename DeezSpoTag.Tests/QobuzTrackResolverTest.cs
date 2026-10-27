@@ -313,6 +313,34 @@ public sealed class QobuzTrackResolverTest
     }
 
     [Fact]
+    public async Task ResolveTrackAsync_AcceptsExactIsrcWhenFeaturedArtistIsCreditedInTitle()
+    {
+        var resolver = CreateResolver(new StubQobuzMetadataService
+        {
+            IsrcResult = new QobuzTrack
+            {
+                Id = 123456,
+                ISRC = "USUG12208791",
+                Title = "Creepin'",
+                Performer = new QobuzArtist { Name = "Metro Boomin" },
+                Duration = 221,
+                Album = new QobuzAlbum { Title = "HEROES & VILLAINS" }
+            }
+        });
+
+        var result = await resolver.ResolveTrackAsync(
+            "USUG12208791",
+            "Creepin' (with The Weeknd & 21 Savage)",
+            "21 Savage",
+            "HEROES & VILLAINS",
+            221000,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(123456, result!.Track.Id);
+    }
+
+    [Fact]
     public async Task ResolveTrackAsync_RejectsContradictoryIsrcMetadata()
     {
         var resolver = CreateResolver(new StubQobuzMetadataService
