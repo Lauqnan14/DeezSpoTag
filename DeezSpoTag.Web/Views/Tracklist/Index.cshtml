@@ -3151,8 +3151,9 @@ async function loadRecommendationsTracklist() {
     if (notice) {
         const savedDate = payload.station.cadence === 'weekly' && payload.tracks.length && payload.generatedAtUtc
             ? ` Saved ${new Date(payload.generatedAtUtc).toLocaleDateString()}.` : '';
-        notice.textContent = message + savedDate;
-        if (message) notice.classList.remove('is-hidden');
+        const noticeMessage = status === 'ready' ? '' : message + savedDate;
+        notice.textContent = noticeMessage;
+        if (noticeMessage) notice.classList.remove('is-hidden');
         else notice.classList.add?.('is-hidden');
     }
     if (refreshing && !pausedUntilMidnight) scheduleRecommendationsReload();
@@ -3840,6 +3841,7 @@ function renderTracklist(data, options = {}) {
     }
 
     preloadDeezerPlaybackContextsForVisibleRows();
+    restoreTracklistPlaybackControls();
     if (!isManualUnavailableTracklist()) {
         void loadTracklistRecommendations();
     }
@@ -4278,6 +4280,7 @@ function appendExternalTrackRows(tracks, options = {}) {
         return [];
     }
     tableBody.insertAdjacentHTML('beforeend', rows);
+    restoreTracklistPlaybackControls();
     const appendedRows = getTrackRowsByIndices(appendedIndices);
     applyIgnoredTrackStateForRows(appendedRows);
     bindIgnoreButtonsForRows(appendedRows);
@@ -7179,6 +7182,24 @@ function resetPreviewControls() {
     document.querySelectorAll('tr.track-row-playing').forEach((row) => {
         row.classList.remove('track-row-playing');
     });
+}
+
+function restoreTracklistPlaybackControls() {
+    const player = window.DeezerUnifiedPlayback;
+    const session = player?.getSession?.();
+    const request = player?.getCurrentRequest?.();
+    if (!session || request?.page !== 'tracklist' || request.button?.isConnected) return;
+
+    const state = request.button?.dataset.playbackState || (session.playing ? 'playing' : 'paused');
+    for (const control of document.querySelectorAll('#tracks-table-body .preview-controls')) {
+        const replacement = buildTracklistPlaybackRequest(control);
+        if (!replacement || (replacement.key !== session.key && replacement.key !== session.sourceKey)) continue;
+        // The player retains this request object. Rebind its callbacks and adjacent-track
+        // navigation as well as its button, without restarting or resolving the audio.
+        Object.assign(request, replacement);
+        setTracklistPreviewControlState(control, state);
+        return;
+    }
 }
 
 function applyTracklistPlayingVisual(control, isPlaying) {

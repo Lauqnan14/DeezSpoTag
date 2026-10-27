@@ -26,7 +26,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
     [InlineData(DailyRecommendationAiFilterMode.Allow, 20, true)]
     [InlineData(DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated, 20, true)]
     [InlineData(DailyRecommendationAiFilterMode.Strict, 20, true)]
-    public async Task SavedDailySelectionRechecksLibraryProviderIdentitiesAndCurrentAiPreference(DailyRecommendationAiFilterMode mode, int expected, bool sameIsrc)
+    public async Task DailyPreparationChecksLibraryProviderIdentitiesAndSavedDisplayHonoursCurrentAiPreference(DailyRecommendationAiFilterMode mode, int expected, bool sameIsrc)
     {
         using var configScope = new TestConfigRootScope(_root);
         var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
@@ -58,12 +58,20 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
             RecommendationOrigin:"tidal", Provenance: [new("tidal", n == 1 ? "2487938" : "native" + n, n, "seed" + n, n)],
             AiEvidence: n is 2 or 3 ? [new(n == 2 ? RecommendationAiStatus.FullyAiTrack : RecommendationAiStatus.PartialAiInvolvement,
                 "tidal", "disclosure", "verified_provider_disclosure", clock.GetUtcNow())] : null)).ToArray();
-        var payload = JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = rows, SeedScopeKey = id,
+        // Exercise the ownership check used by generation/maintenance before saving, rather than
+        // doing library analysis again when the user opens the recommendations tab.
+        var service = Service(clock, settings);
+        var prepare = typeof(LibraryRecommendationService).GetMethod("FilterDailyRecommendationEligibilityAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var prepared = await (Task<List<RecommendationTrackDto>>)prepare.Invoke(service,
+            [rows, DailyRecommendationAiFilterMode.Allow, System.Threading.CancellationToken.None])!;
+        Assert.DoesNotContain(prepared, t => t.Title == "Groovin My Girl");
+        var payload = JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = prepared, SeedScopeKey = id,
             TrackCount = 20, Allocations = new Dictionary<string,int>{{"tidal",20}},
             AiFilterMode = DailyRecommendationAiFilterMode.Allow, Status = "ready",
             Diagnostics = new DailyRecommendationDiagnosticsDto(26, new Dictionary<string,int>(), new Dictionary<string,int>(),
-                new Dictionary<string,int>(), new Dictionary<string,string>(), new Dictionary<string,int>(),20,6,
-                InitialSelectionPublished:true, PublishedTrackIds:rows.Take(20).Select(t => t.Id).ToArray()) });
+                new Dictionary<string,int>(), new Dictionary<string,string>(), new Dictionary<string,int>(),20,5,
+                InitialSelectionPublished:true, PublishedTrackIds:prepared.Take(20).Select(t => t.Id).ToArray()) });
         await Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id,
             $"v1:{day:yyyyMMdd}", payload, 0, null, null, true);
         var result = await Service(clock, settings).GetRecommendationsAsync(Folder.LibraryId!.Value, id, Folder.Id);
@@ -842,8 +850,10 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         Assert.True(process.ExitCode == 0, error);
     }
 
-    [Fact]
-    public async Task RefreshNoticeDoesNotEraseSavedTrackRows()
+    [Theory]
+    [InlineData("refreshing")]
+    [InlineData("ready")]
+    public async Task RefreshNoticeDoesNotEraseSavedTrackRows(string status)
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "DeezSpoTag.Web", "Views", "Tracklist"))) root = root.Parent;
@@ -857,14 +867,16 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const source=SOURCE;
 const start=source.indexOf('let recommendationReloadTimer;');
 const end=source.indexOf('function mapRecommendationsTracklist',start);
-let emptied=0,notice='';
+let emptied=0,notice='',hidden=true;
+const status=STATUS;
 const context={URLSearchParams,clearTimeout,setTimeout,tracklistSource:'recommendations',tracklistId:'library:1:weekly-missing-favourites',recommendationType:'',recommendationValue:'',tracklistLibraryId:1,
- fetch:async()=>({ok:true,json:async()=>({station:{cadence:'weekly'},tracks:[{id:'saved'}],generatedAtUtc:'2026-10-05T00:00:00Z',status:'refreshing',message:'Previous selection'})}),
+ fetch:async()=>({ok:true,json:async()=>({station:{cadence:'weekly'},tracks:[{id:'saved'}],generatedAtUtc:'2026-10-05T00:00:00Z',status,message:status==='ready'?'60/60 tracks. deezer: 20/20, spotify: 20/20, tidal: 20/20. 120 replacement suggestions available.':'Previous selection'})}),
  mapRecommendationsTracklist:p=>p,loadIgnoredTracks:async()=>{},renderTracklist:()=>{},setTracksEmptyMessage:()=>emptied++,
- document:{getElementById:()=>({set textContent(v){notice=v;},classList:{remove(){}}})}};
+ document:{getElementById:()=>({set textContent(v){notice=v;},classList:{remove(){hidden=false;},add(){hidden=true;}}})}};
 vm.createContext(context);vm.runInContext(source.slice(start,end),context);
-(async()=>{await context.loadRecommendationsTracklist();vm.runInContext('clearTimeout(recommendationReloadTimer)',context);assert.equal(emptied,0,'A refresh message must not erase saved tracks');assert.match(notice,/Previous selection/);})().catch(e=>{console.error(e);process.exitCode=1;});
-""".Replace("SOURCE", JsonSerializer.Serialize(source), StringComparison.Ordinal);
+(async()=>{await context.loadRecommendationsTracklist();vm.runInContext('clearTimeout(recommendationReloadTimer)',context);assert.equal(emptied,0,'A refresh message must not erase saved tracks');if(status==='ready'){assert.equal(hidden,true,'Ready selections must not display a success summary banner');assert.equal(notice,'');}else{assert.equal(hidden,false);assert.match(notice,/Previous selection/);}})().catch(e=>{console.error(e);process.exitCode=1;});
+""".Replace("SOURCE", JsonSerializer.Serialize(source), StringComparison.Ordinal)
+    .Replace("STATUS", JsonSerializer.Serialize(status), StringComparison.Ordinal);
         var info = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true, UseShellExecute = false };
         info.ArgumentList.Add("-e");
         info.ArgumentList.Add(script);
@@ -872,6 +884,99 @@ vm.createContext(context);vm.runInContext(source.slice(start,end),context);
         var error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
         Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public async Task TracklistRedrawRebindsActivePlaybackAndAdjacentNavigation()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml"))) root = root.Parent;
+        Assert.NotNull(root);
+        var view = File.ReadAllText(Path.Combine(root.FullName, "DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml"));
+        var start = view.IndexOf("const tracklistPlaybackState =", StringComparison.Ordinal);
+        var end = view.IndexOf("async function playPausePreview", start, StringComparison.Ordinal);
+        var stateSource = File.ReadAllText(Path.Combine(root.FullName, "DeezSpoTag.Web", "wwwroot", "js", "deezer-playback-state.js"));
+        var script = """
+            const assert=require('node:assert/strict');
+            globalThis.window=globalThis;
+            globalThis.localStorage={getItem:()=>null};
+            function classes(){const values=new Set();return {add:v=>values.add(v),remove:v=>values.delete(v),contains:v=>values.has(v),toggle(v,on){on?values.add(v):values.delete(v);}};}
+            function control(id,connected=true){
+                const checkbox={dataset:{trackId:id,trackTitle:'Track '+id}};
+                const row={dataset:{},classList:classes(),querySelector:selector=>selector==='.track-checkbox'?checkbox:button};
+                const button={dataset:{},classList:classes(),textContent:'play_arrow',isConnected:connected,closest:()=>row,
+                    getAttribute:()=>'',setAttribute(name,value){this[name]=value;},removeAttribute(name){delete this[name];}};
+                return button;
+            }
+            const old=control('2',false),unrelated=control('1'),current=control('2'),next=control('3');
+            const controls=[unrelated,current,next];
+            const body={querySelectorAll:()=>controls.map(c=>c.closest('tr'))};
+            for(const c of controls)c.closest('tr').parentElement=body;
+            globalThis.document={querySelectorAll:selector=>selector.includes('.preview-controls')?controls:[]};
+            """ + stateSource + view[start..end] + """
+            let request=buildTracklistPlaybackRequest(old);
+            old.dataset.playbackState='playing';
+            window.DeezerUnifiedPlayback={getSession:()=>({key:'deezer:2',sourceKey:'deezer:2',playing:true}),getCurrentRequest:()=>request};
+            const retained=request;
+            restoreTracklistPlaybackControls();
+            assert.equal(request,retained,'Keep the player session request rather than starting audio again');
+            assert.equal(request.button,current);
+            assert.equal(current.playing,'true');
+            assert.equal(unrelated.playing,undefined,'Do not animate another recording');
+            assert.equal(request.getNextRequest().key,'deezer:3','Navigation must use the new rows');
+            request.onStateChange('paused');
+            assert.equal(current.playing,undefined);
+            request.onStateChange('playing');
+            assert.equal(current.playing,'true');
+            request.onStateChange('idle');
+            assert.equal(current.playing,undefined);
+            """;
+        var info = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardError = true, UseShellExecute = false };
+        info.ArgumentList.Add("-e");
+        info.ArgumentList.Add(script);
+        using var process = System.Diagnostics.Process.Start(info)!;
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    [Fact]
+    public async Task SavedDailyAndWeeklyCardsRenderWhileAnotherConnectionHoldsTheWriterLock()
+    {
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var day = DateOnly.FromDateTime(DateTime.Now);
+        var rows = Enumerable.Range(1, 60).Select(n => new RecommendationTrackDto(n.ToString(),
+            "Saved song " + n, 180, "", n, new("artist" + n, "Artist " + n), new("album", "Album", ""),
+            RecommendationOrigin: n <= 20 ? "deezer" : n <= 40 ? "spotify" : "tidal")).ToArray();
+        await Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id, $"v1:{day:yyyyMMdd}",
+            JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = rows,
+                TrackCount = 60, Allocations = new Dictionary<string, int> { ["deezer"] = 20, ["spotify"] = 20, ["tidal"] = 20 },
+                Status = "ready" }), 0, null, null, true);
+        var missing = await SeedWeekly(Monday);
+        var similar = await SeedWeekly(Monday, LibraryRecommendationService.WeeklySimilarType);
+        await using var writer = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + DatabasePath);
+        await writer.OpenAsync();
+        await using var transaction = writer.BeginTransaction();
+        var service = Service(); // No provider clients or dedupe service: this is the display path.
+        var read = Task.Run(async () =>
+        {
+            var stations = await service.GetStationsAsync(Folder.LibraryId!.Value);
+            Assert.Equal(60, Assert.Single(stations, s => s.Id == id).TrackCount);
+            Assert.Equal(1, Assert.Single(stations, s => s.Id == missing).TrackCount);
+            Assert.Equal(1, Assert.Single(stations, s => s.Id == similar).TrackCount);
+            var detail = (await service.GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+            Assert.Equal(60, detail.Tracks.Count);
+            Assert.Equal("ready", detail.Status);
+            Assert.All(new[] { "deezer", "spotify", "tidal" }, source =>
+                Assert.Equal(20, detail.Tracks.Count(t => t.RecommendationOrigin == source)));
+        });
+        try { await read.WaitAsync(TimeSpan.FromSeconds(5)); }
+        finally
+        {
+            await transaction.RollbackAsync();
+            // Let a failed pre-fix read unwind before the fixture database is removed.
+            await read;
+        }
     }
 
     [Fact]

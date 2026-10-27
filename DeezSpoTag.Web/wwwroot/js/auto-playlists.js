@@ -1191,12 +1191,13 @@
             ? `${station.trackCount || 0} tracks · ${station.distinctArtistCount || 0} artists`
             : `${Number(station.trackCount || 0)} tracks`;
         const mode = document.createElement("span");
+        const stationMessage = station.status === 'ready' ? '' : station.message;
         mode.textContent = station.cadence === "weekly"
-            ? (station.generatedAtUtc ? `Weekly · ${new Date(station.generatedAtUtc).toLocaleDateString()}` : (station.message || station.status || "Generating"))
+            ? (station.generatedAtUtc ? `Weekly · ${new Date(station.generatedAtUtc).toLocaleDateString()}` : (stationMessage || station.status || "Generating"))
             : normalizeRecommendationMode(station);
         if (station.generatedAtUtc && station.cadence !== "weekly")
             mode.textContent += ` · ${new Date(station.generatedAtUtc).toLocaleDateString()}`;
-        if (station.message) mode.textContent += ` · ${station.message}`;
+        if (stationMessage) mode.textContent += ` · ${stationMessage}`;
         meta.append(trackCount, mode);
 
         const body = document.createElement("div");

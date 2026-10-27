@@ -795,9 +795,12 @@ public sealed class LibraryRecommendationService
         }
         var excluded = BuildNormalizedRecommendationIdSet(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, cancellationToken));
         excluded.UnionWith(await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, cancellationToken));
-        // Saved pools must obey library changes and the user's current AI preference too.
+        // Generation and background maintenance check library ownership before saving the pool.
+        // Display requests only project that saved result: rerunning the identity lookup here
+        // starts a database transaction and can block every recommendation section behind a writer.
+        // Current AI preferences use the evidence already saved with each track, without fetching.
         var aiMode = _settings is null ? pool.DailyAiFilterMode ?? configuration.AiFilterMode : configuration.AiFilterMode;
-        var eligibleTracks = await FilterDailyRecommendationEligibilityAsync(pool.Tracks, aiMode, cancellationToken);
+        var eligibleTracks = pool.Tracks.Where(track => EvaluateDailyAiPolicy(track.AiEvidence, aiMode) is null).ToList();
         var savedCount = pool.DailyTrackCount ?? MaxDailyRecommendations;
         var viewLimit = limit <= 0 ? savedCount : Math.Min(limit, savedCount);
         var selected = pool.DailyAllocations is null
