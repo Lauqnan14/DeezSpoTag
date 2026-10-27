@@ -508,6 +508,16 @@ VALUES ($group_id, $name, $normalized);";
         return RewriteCreditWithSnapshot(snapshot, trimmed);
     }
 
+    /// <summary>Only artist credits following a featured-artist marker are rewritten in titles.</summary>
+    public string ResolveTitleCredit(string? title)
+    {
+        var value = title ?? string.Empty;
+        var marker = Regex.Match(value, @"\b(?:feat\.?|ft\.?|featuring)\s+", RegexOptions.IgnoreCase, RegexTimeout);
+        if (!marker.Success) return value;
+        var start = marker.Index + marker.Length;
+        return value[..start] + ResolveCredit(value[start..]);
+    }
+
     private static string RewriteCreditWithSnapshot(AliasSnapshot snapshot, string trimmed)
     {
         if (snapshot.AliasToPreferred.Count == 0)

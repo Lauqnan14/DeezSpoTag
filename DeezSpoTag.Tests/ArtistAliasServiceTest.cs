@@ -12,6 +12,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("ArtistAliasGateway")]
 public class ArtistAliasServiceTest
 {
     private static (ArtistAliasService Service, string DbPath) CreateService()
@@ -133,6 +134,102 @@ public class ArtistAliasServiceTest
         }
         finally
         {
+            Cleanup(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadAliasPreference_PreservesLiteralTitlesAndIdentifiers()
+    {
+        var (service, dbPath) = CreateService();
+        var gatewayField = typeof(ArtistAliasGateway).GetField("_service", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var previousGateway = gatewayField.GetValue(null);
+        try
+        {
+            await service.SaveGroupAsync("Abbas Kubaff", new[] { "Abbas Doobeez" });
+            ArtistAliasGateway.Configure(service);
+            await service.GetAliasMapAsync();
+            var track = new DeezSpoTag.Core.Models.Track
+            {
+                Title = "Abbas Doobeez",
+                MainArtist = new DeezSpoTag.Core.Models.Artist("spotify-id", "Abbas Doobeez"),
+                Album = new DeezSpoTag.Core.Models.Album("album-id", "Abbas Doobeez"),
+                Artists = new List<string> { "Other Artist", "Abbas Doobeez" }
+            };
+            var apply = typeof(DeezSpoTag.Services.Download.Utils.AudioTagger).GetMethod(
+                "ApplyArtistAliasPreference", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            apply.Invoke(null, new object[] { track });
+            Assert.Equal("Abbas Kubaff", track.MainArtist.Name);
+            Assert.Equal("spotify-id", track.MainArtist.Id);
+            Assert.Equal("Abbas Doobeez", track.Title);
+            Assert.Equal("Abbas Doobeez", track.Album.Title);
+            Assert.Equal(new[] { "Other Artist", "Abbas Kubaff" }, track.Artists);
+            track.Title = "Song (feat. Abbas Doobeez)";
+            apply.Invoke(null, new object[] { track });
+            Assert.Equal("Song (feat. Abbas Kubaff)", track.Title);
+        }
+        finally { gatewayField.SetValue(null, previousGateway); Cleanup(dbPath); }
+    }
+
+    [Theory]
+    [InlineData("mp3")]
+    [InlineData("flac")]
+    [InlineData("m4a")]
+    public async Task DownloadTags_WritePreferredMainAndFeaturedCreditsToAudioFile(string extension)
+    {
+        var (service, dbPath) = CreateService();
+        var gatewayField = typeof(ArtistAliasGateway).GetField("_service", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var previousGateway = gatewayField.GetValue(null);
+        var audioPath = Path.Combine(Path.GetTempPath(), $"alias-audio-{Guid.NewGuid():N}.{extension}");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("ffmpeg") { RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2", "-y", audioPath })
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            Assert.True(process.ExitCode == 0, error);
+            await service.SaveGroupAsync("Abbas Kubaff", new[] { "Abbas Doobeez" });
+            ArtistAliasGateway.Configure(service);
+            service.InvalidateCache();
+            var tagger = new DeezSpoTag.Services.Download.Utils.AudioTagger(
+                NullLogger<DeezSpoTag.Services.Download.Utils.AudioTagger>.Instance, null!);
+            typeof(DeezSpoTag.Services.Download.Utils.AudioTagger).GetField("_genreAliasMap", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .SetValue(tagger, new Dictionary<string,string>());
+            var track = new DeezSpoTag.Core.Models.Track
+            {
+                Title = "Song (feat. Abbas Doobeez)",
+                MainArtist = new DeezSpoTag.Core.Models.Artist("artist-id", "Abbas Doobeez"),
+                Album = new DeezSpoTag.Core.Models.Album("album-id", "Album")
+                { MainArtist = new DeezSpoTag.Core.Models.Artist("artist-id", "Abbas Doobeez") },
+                Artists = new List<string> { "Other Artist", "Abbas Doobeez" }
+            };
+            await tagger.TagTrackAsync(extension, audioPath, track, new DeezSpoTag.Core.Models.Settings.TagSettings
+            { Title = true, Artist = true, AlbumArtist = true, Cover = false, Genre = false, Lyrics = false, Year = false, Date = false });
+            using var audio = TagLib.File.Create(audioPath);
+            Assert.Equal("Song (feat. Abbas Kubaff)", audio.Tag.Title);
+            Assert.Contains("Abbas Kubaff", string.Join(";",audio.Tag.Performers));
+            Assert.Contains("Other Artist", string.Join(";",audio.Tag.Performers));
+            Assert.Contains("Abbas Kubaff", string.Join(";",audio.Tag.AlbumArtists));
+            Assert.DoesNotContain("Abbas Doobeez", string.Join(";",audio.Tag.Performers));
+            audio.Dispose();
+            await service.SaveGroupAsync("Abbas Doobeez", new[] { "Abbas Kubaff" });
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            { ["ConnectionStrings:Library"] = $"Data Source={dbPath}" }).Build();
+            ArtistAliasGateway.Configure(new ArtistAliasService(config, NullLogger<ArtistAliasService>.Instance));
+            await tagger.TagTrackAsync(extension, audioPath, track, new DeezSpoTag.Core.Models.Settings.TagSettings
+            { Title = true, Artist = true, AlbumArtist = true, Cover = false, Genre = false, Lyrics = false, Year = false, Date = false });
+            using var retagged = TagLib.File.Create(audioPath);
+            Assert.Equal("Song (feat. Abbas Doobeez)", retagged.Tag.Title);
+            Assert.Contains("Abbas Doobeez", string.Join(";", retagged.Tag.Performers));
+            Assert.Contains("Other Artist", string.Join(";", retagged.Tag.Performers));
+            Assert.Contains("Abbas Doobeez", string.Join(";", retagged.Tag.AlbumArtists));
+        }
+        finally
+        {
+            gatewayField.SetValue(null, previousGateway);
+            if (File.Exists(audioPath)) File.Delete(audioPath);
             Cleanup(dbPath);
         }
     }

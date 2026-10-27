@@ -20,6 +20,15 @@ public static class ArtistAliasGateway
         _ = service.GetAliasMapAsync(CancellationToken.None);
     }
 
+    public static async Task EnsureLoadedAsync(CancellationToken cancellationToken = default)
+    {
+        var service = _service;
+        if (service is not null) await service.GetAliasMapAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public static string ResolveTitleCredit(string? title)
+        => _service?.ResolveTitleCredit(title) ?? title ?? string.Empty;
+
     /// <summary>Resolves a single artist name to the user's preferred name (sync, cached).</summary>
     public static string Resolve(string? name)
     {
