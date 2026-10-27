@@ -205,6 +205,9 @@ public sealed class SecurityHardeningGuardrailTest
     ///         wrap delegates they observe from outside the test's own async flow.
     ///         SoulseekRepositoryTest awaits both Task.Run calls through Task.WhenAll to exercise
     ///         competing source-path claims from separate repository instances.
+    ///         RecommendationCacheServingTest holds a SQLite writer transaction on the test thread
+    ///         and runs the cached display read on another thread so the read can be observed
+    ///         while that lock is held. The test awaits the read with a timeout.
     ///     </para>
     ///     <para>
     ///         A new entry must carry its reason here rather than being added silently. Anything not
@@ -214,6 +217,7 @@ public sealed class SecurityHardeningGuardrailTest
     private static readonly string[] DetachedWorkAllowlist =
     {
         "PlaylistPlatformSnapshotTest.cs",
+        "RecommendationCacheServingTest.cs",
         "SoulseekApiController.cs",
         "SoulseekConnectionServiceTest.cs",
         "SoulseekRepositoryTest.cs",
