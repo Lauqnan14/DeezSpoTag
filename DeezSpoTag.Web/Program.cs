@@ -2084,6 +2084,7 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies>(sp =>
             new DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies
             {
+                CacheRefresh = sp.GetRequiredService<DeezSpoTag.Web.Services.ArtistMetadataCacheRefreshService>(),
                 Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 CacheRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.ArtistPageCacheRepository>(),
                 SpotifyArtistService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),
@@ -2097,6 +2098,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
             services,
             StartupWorkerCategory.Deferred,
             "Spotify artist metadata queue after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataProviderGate>(provider =>
+            new DeezSpoTag.Web.Services.ArtistMetadataProviderGate(provider.GetRequiredService<ILogger<DeezSpoTag.Web.Services.ArtistMetadataProviderGate>>()));
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistArtworkCatalogService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMediaExtrasCacheService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataCacheRefreshService>();

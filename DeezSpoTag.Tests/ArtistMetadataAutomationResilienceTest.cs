@@ -140,7 +140,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         var enrich = cache.IndexOf("await RetainArtistEnrichmentAsync", StringComparison.Ordinal);
         Assert.True(enrich > cache.IndexOf("public async Task<bool> RefreshArtistAsync", StringComparison.Ordinal));
         Assert.DoesNotContain("artistCancellation.CancelAfter", cache, StringComparison.Ordinal);
-        Assert.Contains("retainEnrichment: true", cache, StringComparison.Ordinal);
+        Assert.Contains("request.Scope.HasFlag(ArtistCacheRefreshScope.Enrichment)", cache, StringComparison.Ordinal);
         Assert.Contains("bool retainEnrichment = false", cache, StringComparison.Ordinal);
     }
 
@@ -160,6 +160,12 @@ public sealed class ArtistMetadataAutomationResilienceTest
                 addEventListener: (event, handler) => refreshButton.handler = handler};
             let queued = true, failing = false, messages = [], requests = [];
             const showToast = (message, warning) => messages.push({message, warning});
+            const followArtistCacheRun = async (id, result) => {
+                assert.equal(id, artistId);
+                if (!result.queued) throw new Error('Another metadata run is retained.');
+                status.textContent = 'Source cache: updated';
+                showToast('Artist cache updated.', false);
+            };
             const fetchJson = async (url, options) => {
                 requests.push({url, options});
                 if (failing) throw new Error('network');
@@ -170,11 +176,11 @@ public sealed class ArtistMetadataAutomationResilienceTest
                 await refreshButton.handler();
                 assert.equal(requests[0].url, '/api/library/artists/994/external-cache/refresh');
                 assert.equal(requests[0].options.method, 'POST');
-                assert.equal(status.textContent, 'Source cache: queued');
+                assert.equal(status.textContent, 'Source cache: updated');
                 assert.equal(messages.at(-1).warning, false);
                 queued = false;
                 await refreshButton.handler();
-                assert.equal(status.textContent, 'Source cache: not queued');
+                assert.equal(status.textContent, 'Source cache: failed');
                 assert.equal(messages.at(-1).warning, true);
                 failing = true;
                 await refreshButton.handler();
@@ -192,20 +198,21 @@ public sealed class ArtistMetadataAutomationResilienceTest
     }
 
     [Fact]
-    public void ArtistPageCacheRefresh_ReusesUpdaterQueueAndSettingsForOnlyThisArtist()
+    public void ArtistPageCacheRefresh_ReusesPersistentArtistQueueAndSettingsForOnlyThisArtist()
     {
         var source = ReadCoordinator();
-        var start = source.IndexOf("public async Task<bool> EnqueueArtistCacheRefreshAsync", StringComparison.Ordinal);
+        var start = source.IndexOf("public async Task<(bool Queued, string? RunId)> EnqueueArtistCacheRefreshAsync", StringComparison.Ordinal);
         Assert.True(start >= 0);
         var end = source.IndexOf("public Task<bool> EnqueueCacheRefreshAsync", start, StringComparison.Ordinal);
         Assert.True(end > start);
         var method = source[start..end];
         Assert.Contains("await _preferences.LoadAsync()", method);
-        Assert.Contains("BuildCacheRequest(preferences) with { ArtistId = artistId, FolderId = null }", method);
-        Assert.Contains("await EnqueueCacheRefreshAsync(request, cancellationToken)", method);
+        Assert.Contains("BuildCacheRequest(preferences) with { ArtistId = artistId, FolderId = null, Scope = scope, ForceProviderRefresh = !automatic }", method);
+        Assert.Contains("await _artistQueue.EnqueueRefreshAsync(request, cancellationToken)", method);
+        Assert.DoesNotContain("await EnqueueAsync(\"cache-refresh\"", method);
 
         var controller = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Controllers", "Api", "LibraryArtistExternalCacheApiController.cs"));
-        Assert.Contains("_coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken)", controller);
+        Assert.Contains("_coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken, automatic: automatic)", controller);
         Assert.Contains("queued", controller);
         Assert.DoesNotContain("RefreshArtistAsync(", controller);
         var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "Library", "Artist.cshtml"));
@@ -555,11 +562,11 @@ public sealed class ArtistMetadataAutomationResilienceTest
         // An interrupted artist must stay in the durable queue: the cancellation path rethrows before
         // the item is completed, and completion is gated on the work having finished.
         Assert.Contains("catch (OperationCanceledException)", queue, StringComparison.Ordinal);
-        Assert.Contains("leaving it queued for the next start", queue, StringComparison.Ordinal);
-        Assert.Contains("if (finished)", queue, StringComparison.Ordinal);
+        Assert.Contains("work retained", queue, StringComparison.Ordinal);
+        Assert.Contains("if (result.IsComplete)", queue, StringComparison.Ordinal);
         var cancellationIndex = queue.IndexOf("catch (OperationCanceledException)", StringComparison.Ordinal);
-        var completeIndex = queue.IndexOf("PersistentArtistQueueStore.CompleteItem", StringComparison.Ordinal);
-        Assert.True(cancellationIndex > 0 && completeIndex > cancellationIndex,
+        var completeIndex = queue.IndexOf("if (result.IsComplete)", StringComparison.Ordinal);
+        Assert.True(cancellationIndex > 0 && completeIndex > 0 && queue.Contains("when (stoppingToken.IsCancellationRequested) { throw; }", StringComparison.Ordinal),
             "CompleteItem must not run for an artist that was interrupted by shutdown.");
     }
 
@@ -578,7 +585,7 @@ public sealed class ArtistMetadataAutomationResilienceTest
         var coordinator = ReadCoordinator();
 
         Assert.DoesNotContain("IsCacheRefreshComplete", coordinator, StringComparison.Ordinal);
-        Assert.Contains("await RunCacheRefreshAsync(request, automatic: false, token);\n                return true;", coordinator, StringComparison.Ordinal);
+        Assert.Contains("await RunCacheRefreshAsync(request with { ForceProviderRefresh = true }, automatic: false, token);\n                return true;", coordinator, StringComparison.Ordinal);
         Assert.Contains("await RunCacheRefreshAsync(cacheRequest, automatic: true, token);\n                        return true;", coordinator, StringComparison.Ordinal);
         var cacheRun = coordinator.IndexOf("if (cacheDue)", StringComparison.Ordinal);
         var targetRun = coordinator.IndexOf("if (updateDue)", StringComparison.Ordinal);
@@ -865,11 +872,11 @@ public sealed class ArtistMetadataAutomationResilienceTest
 
         Assert.DoesNotContain("await Task.WhenAll(requestedProviders", cache, StringComparison.Ordinal);
         Assert.DoesNotContain("await Task.WhenAll(providers)", catalog, StringComparison.Ordinal);
-        Assert.Contains("foreach (var provider in requestedProviders)", cache, StringComparison.Ordinal);
-        Assert.Contains("gate.RunAsync(", cache, StringComparison.Ordinal);
-        Assert.Contains("gate.IsUnavailable(providerName)", cache, StringComparison.Ordinal);
+        Assert.Contains("foreach (var provider in providers)", cache, StringComparison.Ordinal);
+        Assert.Contains("gate.RunRequiredAsync(", cache, StringComparison.Ordinal);
+        Assert.Contains("gate.IsUnavailable(source)", cache, StringComparison.Ordinal);
         Assert.Contains("new ArtistMetadataProviderGate(_logger)", cache, StringComparison.Ordinal);
-        Assert.Contains("await AddRemoteProviderAsync(", catalog, StringComparison.Ordinal);
+        Assert.Contains("await gate.RunRequiredAsync(provider,", catalog, StringComparison.Ordinal);
         Assert.Contains("ArtistMetadataProviderGate.ThrowIfRateLimited(response)", cache, StringComparison.Ordinal);
         Assert.Contains("ArtistMetadataProviderGate.ThrowIfRateLimited(response)", catalog, StringComparison.Ordinal);
     }
@@ -881,11 +888,11 @@ public sealed class ArtistMetadataAutomationResilienceTest
 
         Assert.Contains("ArtistRefreshTimeout = TimeSpan.FromMinutes(10)", cache, StringComparison.Ordinal);
         Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)", cache, StringComparison.Ordinal);
-        Assert.Contains("refreshTask.WaitAsync(ArtistRefreshTimeout, cancellationToken)", cache, StringComparison.Ordinal);
+        Assert.Contains("deadline.CancelAfter(ArtistRefreshTimeout)", cache, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
         Assert.Contains("catch (TimeoutException)", cache, StringComparison.Ordinal);
         Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", cache, StringComparison.Ordinal);
-        Assert.Contains("artistCancellation.Cancel();", cache, StringComparison.Ordinal);
+        Assert.Contains("exclusion.WaitAsync(deadline.Token)", cache, StringComparison.Ordinal);
         Assert.Contains("Artist metadata cache refresh timed out for artist {ArtistId} ({ArtistName})", cache, StringComparison.Ordinal);
     }
 
@@ -905,9 +912,9 @@ public sealed class ArtistMetadataAutomationResilienceTest
         // The engines are referenced through their canonical constants now rather than as repeated
         // literals, so this asserts the same thing against the new spelling: media extras are
         // refreshed for Apple and Tidal, and neither call dropped its provider argument.
-        Assert.Contains("RefreshMediaExtrasAsync(AppleSource", cache, StringComparison.Ordinal);
-        Assert.Contains("RefreshMediaExtrasAsync(TidalSource", cache, StringComparison.Ordinal);
-        Assert.Contains("gate.RunAsync(\n                provider,", cache, StringComparison.Ordinal);
+        Assert.Contains("_mediaExtras.RefreshAppleAsync", cache, StringComparison.Ordinal);
+        Assert.Contains("_mediaExtras.RefreshTidalAsync", cache, StringComparison.Ordinal);
+        Assert.Contains("_providerGate.RunRequiredAsync(provider,", cache, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
         Assert.Contains("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", cache, StringComparison.Ordinal);
     }
@@ -917,7 +924,8 @@ public sealed class ArtistMetadataAutomationResilienceTest
     {
         var cache = ReadCacheRefresh();
 
-        Assert.Contains("biographies.Add((provider, biography!));", cache, StringComparison.Ordinal);
+        Assert.Contains("await _repository.UpsertArtistBiographyCacheAsync(artistId, source, identity.SourceId", cache, StringComparison.Ordinal);
+        Assert.Contains("if (wroteBiography) await _repository.SelectArtistBiographySourceAsync", cache, StringComparison.Ordinal);
         Assert.Contains("SelectArtistBiographySourceAsync(", cache, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshSelectedArtistBiographyAsync(artistId, cancellationToken)", cache, StringComparison.Ordinal);
     }

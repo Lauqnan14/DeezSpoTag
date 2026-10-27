@@ -40,7 +40,8 @@ public sealed class AppleArtistBiographyService
         string appleArtistId,
         string? expectedArtistName,
         CancellationToken cancellationToken,
-        bool allowArtistPageScrape = true)
+        bool allowArtistPageScrape = true,
+        bool propagatePageErrors = false)
     {
         var id = (appleArtistId ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(id))
@@ -72,7 +73,8 @@ public sealed class AppleArtistBiographyService
             storefront,
             attrs,
             allowArtistPageScrape,
-            cancellationToken);
+            cancellationToken,
+            propagatePageErrors);
         return new AppleArtistBiographyResult(id, name, image, biography ?? string.Empty);
     }
 
@@ -106,7 +108,8 @@ public sealed class AppleArtistBiographyService
     public async Task<AppleArtistBiographyResult?> ResolveByExactArtistNameAndTracksAsync(
         string artistName,
         IReadOnlyCollection<string> trackTitles,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagatePageErrors = false)
     {
         var appleId = await ResolveArtistIdFromLocalTracksAsync(artistName, trackTitles, cancellationToken);
         if (string.IsNullOrWhiteSpace(appleId))
@@ -114,7 +117,7 @@ public sealed class AppleArtistBiographyService
             return null;
         }
 
-        return await ResolveByArtistIdAsync(appleId, artistName, cancellationToken);
+        return await ResolveByArtistIdAsync(appleId, artistName, cancellationToken, propagatePageErrors: propagatePageErrors);
     }
 
     public Task<string?> ResolveArtistIdFromLocalTracksAsync(
@@ -293,7 +296,8 @@ public sealed class AppleArtistBiographyService
         string storefront,
         JsonElement attributes,
         bool allowArtistPageScrape,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagatePageErrors)
     {
         var editorialNotes = ResolveEditorialNotes(attributes);
         if (!string.IsNullOrWhiteSpace(editorialNotes))
@@ -306,14 +310,15 @@ public sealed class AppleArtistBiographyService
             return null;
         }
 
-        return await ResolveAppleArtistPageBiographyAsync(id, artistName, storefront, cancellationToken);
+        return await ResolveAppleArtistPageBiographyAsync(id, artistName, storefront, cancellationToken, propagatePageErrors);
     }
 
     private async Task<string?> ResolveAppleArtistPageBiographyAsync(
         string id,
         string artistName,
         string storefront,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagateErrors)
     {
         var url = BuildAppleArtistPageUrl(id, storefront);
         try
@@ -327,6 +332,7 @@ public sealed class AppleArtistBiographyService
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
+                if (propagateErrors) response.EnsureSuccessStatusCode();
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
                     _logger.LogDebug("Apple artist biography page returned HTTP {StatusCode} for artist Id", (int)response.StatusCode);
@@ -338,7 +344,7 @@ public sealed class AppleArtistBiographyService
             var html = await response.Content.ReadAsStringAsync(cancellationToken);
             return ResolveAppleArtistPageBiography(html, id, artistName);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!propagateErrors && ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Apple artist biography page fetch failed for artist Id");
             return null;

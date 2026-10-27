@@ -56,7 +56,8 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
     public async Task<IReadOnlyList<LastFmArtistImageCandidate>> SearchArtistImagesAsync(
         string? artistName,
         int limit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool propagateRateLimits = false,
+        Func<IReadOnlyList<LastFmArtistImageCandidate>, CancellationToken, Task>? retainCandidates = null)
     {
         var normalizedArtist = NormalizeArtistName(artistName);
         if (string.IsNullOrWhiteSpace(normalizedArtist) || limit <= 0)
@@ -70,8 +71,15 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
             var apiKey = await ResolveApiKeyAsync();
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                candidates.AddRange(await SearchArtistInfoImagesAsync(normalizedArtist, apiKey, limit, cancellationToken));
+                candidates.AddRange(await SearchArtistInfoImagesAsync(normalizedArtist, apiKey, limit, cancellationToken, propagateRateLimits));
             }
+            else if (propagateRateLimits)
+                throw new HttpRequestException("Last.fm API key is not configured.", null, HttpStatusCode.Unauthorized);
+            if (candidates.Count > 0 && retainCandidates is not null)
+                await retainCandidates(candidates, cancellationToken);
+            // Full gallery collection is explicit; one-image legacy callers keep their API-only path.
+            if (propagateRateLimits && limit > 1 && candidates.Count < Math.Min(limit, 8))
+                candidates.AddRange(await SearchArtistGalleryImagesAsync(normalizedArtist, Math.Min(limit, 8), cancellationToken));
 
             return candidates
                 .GroupBy(candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
@@ -79,7 +87,8 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
                 .Take(limit)
                 .ToArray();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException
+            && !propagateRateLimits)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -91,7 +100,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
 
     public async Task<LastFmArtistBiography?> GetArtistBiographyAsync(
         string? artistName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool propagateRateLimits = false)
     {
         var normalizedArtist = NormalizeArtistName(artistName);
         if (string.IsNullOrWhiteSpace(normalizedArtist))
@@ -109,6 +118,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
                     "Last.fm biography lookup skipped because no Last.fm API key is configured (login page or Lastfm:ApiKey).");
             }
 
+            if (propagateRateLimits) throw new HttpRequestException("Last.fm API key is not configured.", null, HttpStatusCode.Unauthorized);
             return null;
         }
 
@@ -116,6 +126,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         {
             var client = _httpClientFactory.CreateClient();
             using var response = await client.GetAsync(BuildArtistInfoUri(normalizedArtist, apiKey), cancellationToken);
+            if (propagateRateLimits) response.EnsureSuccessStatusCode();
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
@@ -145,6 +156,9 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
                         LogSanitizer.OneLine(normalizedArtist));
                 }
 
+                if (propagateRateLimits && errorCode != 6)
+                    throw new HttpRequestException($"Last.fm API error {errorCode}.", null,
+                        errorCode == 29 ? HttpStatusCode.TooManyRequests : errorCode == 10 ? HttpStatusCode.Unauthorized : HttpStatusCode.ServiceUnavailable);
                 return null;
             }
 
@@ -165,7 +179,8 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
                 ? null
                 : new LastFmArtistBiography(returnedName, biography);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException
+            && !propagateRateLimits)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -179,11 +194,12 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         string normalizedArtist,
         string apiKey,
         int limit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool propagateRateLimits = false)
     {
         var requestUri = BuildArtistInfoUri(normalizedArtist, apiKey);
         var client = _httpClientFactory.CreateClient();
         using var response = await client.GetAsync(requestUri, cancellationToken);
+        if (propagateRateLimits) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             return Array.Empty<LastFmArtistImageCandidate>();
@@ -192,11 +208,12 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         if (doc.RootElement.TryGetProperty("error", out var error)
-            && error.ValueKind == JsonValueKind.Number
-            && error.TryGetInt32(out var errorCode)
-            && errorCode == 10)
+            && error.ValueKind == JsonValueKind.Number && error.TryGetInt32(out var errorCode))
         {
-            _cachedApiKey = null;
+            if (errorCode == 10) _cachedApiKey = null;
+            if (propagateRateLimits && errorCode != 6)
+                throw new HttpRequestException($"Last.fm image API error {errorCode}.", null,
+                    errorCode == 29 ? HttpStatusCode.TooManyRequests : errorCode == 10 ? HttpStatusCode.Unauthorized : HttpStatusCode.ServiceUnavailable);
             return Array.Empty<LastFmArtistImageCandidate>();
         }
 
@@ -247,12 +264,19 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildArtistGalleryUri(normalizedArtist));
         request.Headers.UserAgent.ParseAdd("Mozilla/5.0");
         using var response = await client.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return Array.Empty<LastFmArtistImageCandidate>();
-        }
-
+        var finalUri = response.RequestMessage?.RequestUri ?? request.RequestUri!;
+        if (!string.Equals(finalUri.Host, request.RequestUri!.Host, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(finalUri.AbsolutePath, request.RequestUri.AbsolutePath, StringComparison.OrdinalIgnoreCase))
+            throw new HttpRequestException("Last.fm gallery redirected away from the requested artist.", null, HttpStatusCode.ServiceUnavailable);
+        if (response.StatusCode == HttpStatusCode.NotFound) return Array.Empty<LastFmArtistImageCandidate>();
+        response.EnsureSuccessStatusCode();
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        var expected = $"/music/{BuildLastFmArtistPathSegment(normalizedArtist)}/+images";
+        if (html.Contains("Client Challenge", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("captcha", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("Just a moment", StringComparison.OrdinalIgnoreCase)
+            || !WebUtility.HtmlDecode(html).Contains(expected, StringComparison.OrdinalIgnoreCase))
+            throw new HttpRequestException("Last.fm artist gallery could not be verified.", null, HttpStatusCode.ServiceUnavailable);
         return ExtractGalleryImages(html, limit, normalizedArtist);
     }
 

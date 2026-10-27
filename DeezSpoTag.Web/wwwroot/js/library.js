@@ -4407,6 +4407,20 @@ function applyLocalArtistHeader(resolvedArtist) {
         artistName.textContent = resolvedArtist.name;
     }
 
+    const aliasLabel = document.getElementById('artistAliases');
+    if (aliasLabel) {
+        const preferred = String(resolvedArtist?.name || '').trim().toLocaleLowerCase();
+        const seen = new Set([preferred]);
+        const aliases = (Array.isArray(resolvedArtist?.aliases) ? resolvedArtist.aliases : [])
+            .map(name => String(name || '').trim()).filter(name => {
+                const key = name.toLocaleLowerCase();
+                if (!name || seen.has(key)) return false;
+                seen.add(key); return true;
+            });
+        aliasLabel.textContent = aliases.length ? `Also known as: ${aliases.join(', ')}` : '';
+        aliasLabel.hidden = aliases.length === 0;
+    }
+
     const avatarEl = document.getElementById('artistAvatar');
     if (avatarEl && resolvedArtist?.preferredImagePath) {
         const avatarPath = appendCacheKey(`/api/library/image?path=${encodeURIComponent(resolvedArtist.preferredImagePath)}&size=320`);
@@ -4515,7 +4529,9 @@ function getSpotifyCacheStatusElement() {
 function setSpotifyCacheStatus(message) {
     const statusEl = getSpotifyCacheStatusElement();
     if (statusEl) {
-        statusEl.textContent = message;
+        const settled = libraryState.artistCacheStatus;
+        statusEl.textContent = settled?.message && String(settled.artistId) === String(getCurrentLibraryArtistId())
+            ? settled.message : message;
     }
 }
 
@@ -4643,6 +4659,7 @@ function renderSpotifyArtistPayload(artistId, payloadForRender, effectiveAlbums,
 }
 
 async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = false, cacheOnly = false) {
+    if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
     if (forceRematch) {
         clearLibrarySpotifyArtistState(artistId);
     }
@@ -4673,6 +4690,7 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
             ? `/api/library/artists/${artistId}/spotify?${query}`
             : `/api/library/artists/${artistId}/spotify`;
         const spotifyDataRaw = await fetchJsonOptional(spotifyApiPath);
+        if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
         if (!spotifyDataRaw || isSpotifyPayloadUnavailable(spotifyDataRaw)) {
             handleUnavailableSpotifyArtistResponse(hasBrowserCached, cacheOnly);
             return;
@@ -4701,9 +4719,10 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
         );
 
     } catch (error) {
+        if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
         handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly);
     } finally {
-        if (cacheOnly && !forceRefresh && !forceRematch) {
+        if (String(getCurrentLibraryArtistId()) === String(artistId) && cacheOnly && !forceRefresh && !forceRematch) {
             queueDiscographyBackgroundRefresh(artistId);
         }
     }
@@ -4754,7 +4773,7 @@ function initSpotifyCacheControls(artistId) {
                 await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/biographies/select`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ source: getSelectedArtistBiographySource() })
+                    body: JSON.stringify({ source: getSelectedArtistBiographySource(), sourceId: getSelectedArtistBiographyIdentity() })
                 });
             } catch (error) {
                 console.warn('Biography source selection persist failed.', error);
@@ -4793,12 +4812,7 @@ function initSpotifyCacheControls(artistId) {
         }
         try {
             const result = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
-            showToast(result?.queued
-                ? 'Artist cache refresh started. Progress is available in Artist Metadata Updater.'
-                : 'A metadata run is already retained. Check Artist Metadata Updater.', !result?.queued);
-            if (statusEl) {
-                statusEl.textContent = result?.queued ? 'Source cache: queued' : 'Source cache: not queued';
-            }
+            await followArtistCacheRun(artistId, result);
         } catch (error) {
             showToast(`Artist source cache refresh failed: ${error?.message || error}`, true);
             if (statusEl) {
@@ -6668,7 +6682,18 @@ function getArtistBiographySourceLabel(source) {
     return source === 'lastfm' ? 'Last.fm' : 'Spotify';
 }
 
+function getSelectedArtistBiographyIdentity() {
+    return document.getElementById('artist-biography-source')?.selectedOptions?.[0]?.dataset.sourceId ?? null;
+}
+
 function getArtistBiographyBySource(source) {
+    const profiles = (libraryState.cachedBiographyProfiles || []).filter(row => row.source === source);
+    if (profiles.length) {
+        const id = getSelectedArtistBiographyIdentity();
+        const profile = profiles.find(row => id !== null && row.sourceId === id)
+            || profiles.find(row => row.selected) || profiles[0];
+        return normalizeArtistBiographyForSync(profile.biography || '');
+    }
     libraryState.cachedBiographies = libraryState.cachedBiographies || {};
     if (source === 'apple') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.biography || '');
@@ -6699,8 +6724,36 @@ async function loadArtistBiographiesFromCache(artistId) {
 
     try {
         const data = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/biographies`);
+        if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
         libraryState.cachedBiographies = { spotify: null };
         const sources = Array.isArray(data?.sources) ? data.sources : [];
+        libraryState.cachedBiographyProfiles = sources.map(row => ({ ...row,
+            source: String(row.source || '').toLowerCase(), sourceId: String(row.sourceId || '') }));
+        const selector = document.getElementById('artist-biography-source');
+        const previousSource = selector?.value;
+        const previousId = getSelectedArtistBiographyIdentity();
+        selector?.querySelectorAll('option[data-profile-option]').forEach(option => option.remove());
+        selector?.querySelectorAll('option').forEach(option => {
+            const profiles = libraryState.cachedBiographyProfiles.filter(row => row.source === option.value);
+            option.hidden = profiles.length > 1;
+            if (profiles.length === 1) option.dataset.sourceId = profiles[0].sourceId;
+            else delete option.dataset.sourceId;
+            if (profiles.length <= 1) return;
+            profiles.forEach(row => {
+                const profileOption = document.createElement('option');
+                profileOption.value = row.source;
+                profileOption.dataset.sourceId = row.sourceId;
+                profileOption.dataset.profileOption = 'true';
+                profileOption.textContent = `${getArtistBiographySourceLabel(row.source)} — ${row.aliasName || row.nativeName || row.sourceId}`;
+                selector.appendChild(profileOption);
+            });
+        });
+        const chosen = libraryState.cachedBiographyProfiles.find(row => selector?.dataset.userSelected
+            && row.source === previousSource && row.sourceId === previousId)
+            || libraryState.cachedBiographyProfiles.find(row => row.selected);
+        if (chosen && selector) Array.from(selector.options).forEach(option => {
+            option.selected = option.value === chosen.source && option.dataset.sourceId === chosen.sourceId;
+        });
         sources.forEach(row => {
             const text = normalizeArtistBiographyForSync(row?.biography || '') || null;
             const source = String(row?.source || '').trim().toLowerCase();
@@ -6721,45 +6774,70 @@ async function loadArtistBiographiesFromCache(artistId) {
 
         const select = document.getElementById('artist-biography-source');
         const selected = String(data?.selected || '').trim().toLowerCase();
-        if (select && selected && !select.dataset.userSelected) {
+        if (select && selected && !select.dataset.userSelected && !chosen) {
             select.value = selected;
         }
         updateArtistBiographySourceControls();
         applySelectedArtistBiographySource();
     } catch (error) {
-        console.warn('Cached biography load failed; falling back to live sources.', error);
-        const appleExtras = libraryState.appleExtras;
-        await Promise.allSettled([
-            loadAppleArtistBiography(appleExtras.appleArtistId),
-            loadTidalArtistBiography(appleExtras.tidalArtistId),
-            loadQobuzArtistBiography(appleExtras.qobuzArtistId),
-            loadLastFmArtistBiography(libraryState.currentLocalArtistName),
-            loadAudiomackArtistBiography(artistId)
-        ]);
+        console.warn('Cached biography load failed; retaining the displayed cached metadata.', error);
+    }
+}
+
+const artistCacheRuns = new Map();
+
+async function reloadCachedArtistPanels(artistId) {
+    if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
+    const cached = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/artwork`);
+    if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
+    mergeArtistVisualPickerResult(libraryState.artistVisuals, cached);
+    renderArtistVisualPicker(artistId);
+    await loadArtistBiographiesFromCache(artistId);
+    if (String(getCurrentLibraryArtistId()) === String(artistId))
+        await loadSpotifyArtist(artistId, false, false, true);
+}
+
+async function followArtistCacheRun(artistId, submission) {
+    const runId = submission?.runId || submission?.status?.runId;
+    if (!submission?.queued || !runId) throw new Error('The cache refresh request was not accepted. Cached content has been retained.');
+    const key = String(artistId);
+    artistCacheRuns.set(key, runId);
+    libraryState.artistCacheStatus = { artistId: key, runId, message: null };
+    const statusEl = document.getElementById('spotify-cache-status');
+    let failures = 0;
+    while (artistCacheRuns.get(key) === runId && String(getCurrentLibraryArtistId()) === key) {
+        try {
+            const response = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status?runId=${encodeURIComponent(runId)}`);
+            if (artistCacheRuns.get(key) !== runId || String(getCurrentLibraryArtistId()) !== key) return;
+            const status = response?.status;
+            const sameRun = status?.runId === runId;
+            const pending = sameRun && ['pending-retry', 'paused'].includes(status?.runState);
+            const finished = sameRun && status?.runState === 'idle';
+            if (pending || finished || (!sameRun && response?.completed)) {
+                await reloadCachedArtistPanels(artistId);
+                const incomplete = pending || (sameRun ? Number(status?.cacheRefresh?.failedArtists || 0) > 0 : Number(response?.completed?.result?.failed || 0) > 0);
+                if (String(getCurrentLibraryArtistId()) !== key || artistCacheRuns.get(key) !== runId) return;
+                libraryState.artistCacheStatus = { artistId: key, runId, message: incomplete
+                    ? `Source cache: ${(sameRun ? status?.runPendingNotice : response?.completed?.result?.error) || 'some source work is unfinished'}`
+                    : 'Source cache: updated' };
+                const settledStatusEl = document.getElementById('spotify-cache-status');
+                if (settledStatusEl) setSpotifyCacheStatus(libraryState.artistCacheStatus.message);
+                return;
+            }
+            if (!sameRun && !response?.completed) throw new Error('Refresh status is unavailable; cached content has been retained.');
+            if (statusEl) statusEl.textContent = `Source cache: ${status?.cacheRefresh?.currentArtist || 'updating'}`;
+            failures = 0;
+        } catch (error) {
+            if (++failures >= 3) throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
     }
 }
 
 // Explicit per-source live refresh, used by the "Refresh bios" action.
 async function refreshArtistBiographiesFromSources(artistId) {
-    const appleExtras = libraryState.appleExtras;
-    await Promise.allSettled([
-        loadAppleArtistBiography(appleExtras.appleArtistId),
-        loadTidalArtistBiography(appleExtras.tidalArtistId),
-        loadQobuzArtistBiography(appleExtras.qobuzArtistId),
-        loadLastFmArtistBiography(libraryState.currentLocalArtistName),
-        loadAudiomackArtistBiography(artistId)
-    ]);
-    applySelectedArtistBiographySource();
-    const selected = getSelectedArtistBiographySource();
-    try {
-        await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/biographies/select`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: selected })
-        });
-    } catch (error) {
-        console.warn('Biography source selection persist failed.', error);
-    }
+    const result = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/biographies/refresh`, { method: 'POST' });
+    await followArtistCacheRun(artistId, result);
 }
 
 function updateArtistBiographySourceControls() {
@@ -6906,59 +6984,6 @@ async function loadQobuzArtistBiography(storedQobuzId) {
             updateArtistBiographySourceControls();
         }
         console.warn('Qobuz artist biography failed.', error);
-    }
-}
-
-async function loadLastFmArtistBiography(artistName) {
-    const normalizedArtistName = (artistName || '').toString().trim();
-    libraryState.appleExtras.biographyLastFmArtistName = normalizedArtistName || null;
-    updateArtistBiographySourceControls();
-
-    if (!normalizedArtistName) {
-        return;
-    }
-
-    try {
-        const data = await fetchJsonOptional(`/api/library/artists/lastfm-biography?artistName=${encodeURIComponent(normalizedArtistName)}`);
-        if ((libraryState.appleExtras.biographyLastFmArtistName || '') !== normalizedArtistName) {
-            return;
-        }
-
-        libraryState.appleExtras.lastFmBiography = data?.available
-            ? (normalizeArtistBiographyForSync(data?.biography || '') || null)
-            : null;
-        updateArtistBiographySourceControls();
-        if (getSelectedArtistBiographySource() === 'lastfm') {
-            applySelectedArtistBiographySource();
-        }
-    } catch (error) {
-        if ((libraryState.appleExtras.biographyLastFmArtistName || '') === normalizedArtistName) {
-            libraryState.appleExtras.lastFmBiography = null;
-            updateArtistBiographySourceControls();
-        }
-        console.warn('Last.fm artist biography failed.', error);
-    }
-}
-
-// Live Audiomack biography. The endpoint resolves the artist's public Audiomack
-// profile and persists a non-empty result, so a miss leaves the cached bio alone.
-async function loadAudiomackArtistBiography(artistId) {
-    const numericArtistId = Number.parseInt(artistId, 10);
-    if (!Number.isFinite(numericArtistId) || numericArtistId <= 0) {
-        return;
-    }
-
-    try {
-        const data = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(numericArtistId)}/audiomack-biography`);
-        libraryState.appleExtras.audiomackBiography = data?.available
-            ? (normalizeArtistBiographyForSync(data?.biography || '') || null)
-            : null;
-        updateArtistBiographySourceControls();
-        if (getSelectedArtistBiographySource() === 'audiomack') {
-            applySelectedArtistBiographySource();
-        }
-    } catch (error) {
-        console.warn('Audiomack artist biography failed.', error);
     }
 }
 
@@ -7158,6 +7183,19 @@ async function loadExternalArtistVisuals(artistName, artistId) {
         }
         mergeArtistVisualPickerResult(visuals, cached);
         renderArtistVisualPicker(artistId);
+        const key = String(artistId);
+        if (!artistCacheRuns.has(key)) {
+            const state = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status`);
+            if (!state?.complete && visuals.externalRequestId === requestId) {
+                artistCacheRuns.set(key, 'submitting');
+                const submission = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh?automatic=true`, { method: 'POST' });
+                if (submission?.queued) void followArtistCacheRun(artistId, submission).catch(error => {
+                    artistCacheRuns.delete(key);
+                    console.warn('Artist cache recovery remains incomplete.', error);
+                });
+                else artistCacheRuns.delete(key);
+            }
+        }
     } catch (error) {
         console.warn('Failed to load cached artist artwork.', error);
     } finally {

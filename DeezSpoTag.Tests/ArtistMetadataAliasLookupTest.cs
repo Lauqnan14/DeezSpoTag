@@ -63,6 +63,9 @@ public sealed class ArtistMetadataAliasLookupTest
     {
         var method = target.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException($"Method '{name}' was not found.");
+        var parameters = method.GetParameters();
+        if (arguments.Length < parameters.Length && parameters.Skip(arguments.Length).All(parameter => parameter.HasDefaultValue))
+            arguments = arguments.Concat(parameters.Skip(arguments.Length).Select(parameter => parameter.DefaultValue)).ToArray();
         return method.Invoke(target, arguments)!;
     }
 
@@ -105,6 +108,31 @@ public sealed class ArtistMetadataAliasLookupTest
         SetField(service, "_artistAliasService", aliasService);
         SetField(service, "_logger", NullLogger<ArtistMetadataCacheRefreshService>.Instance);
         return service;
+    }
+
+    private static void InitialiseRefreshFixture(ArtistMetadataCacheRefreshService service, IConfiguration configuration, string dbPath)
+    {
+        var environment = new AliasEnvironment(dbPath + ".cache");
+        Directory.CreateDirectory(environment.ContentRootPath);
+        var repository = (LibraryRepository)typeof(ArtistMetadataCacheRefreshService).GetField("_repository",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(service)!;
+        var cache = new ArtistPageCacheRepository(configuration,NullLogger<ArtistPageCacheRepository>.Instance);
+        var gate = (ArtistMetadataProviderGate)typeof(ArtistMetadataCacheRefreshService).GetField("_providerGate",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(service)!;
+        SetField(service,"_artistLocks",new System.Collections.Concurrent.ConcurrentDictionary<long,SemaphoreSlim>());
+        SetField(service,"_artistPageCache",cache);
+        SetField(service,"_preferences",new UserPreferencesStore(environment,NullLogger<UserPreferencesStore>.Instance));
+        SetField(service,"_artworkCatalog",new ArtistArtworkCatalogService(repository,null!,null!,null!,null!,null!,null!,null!,null!,environment,
+            NullLogger<ArtistArtworkCatalogService>.Instance,providerGate:gate,completionCache:cache));
+    }
+
+    private sealed class AliasEnvironment(string root) : Microsoft.AspNetCore.Hosting.IWebHostEnvironment, IAppDataRootOverride
+    {
+        public string? AppDataRoot => root;
+        public string EnvironmentName {get;set;}="Development";
+        public string ApplicationName {get;set;}="Alias fixtures";
+        public string ContentRootPath {get;set;}=root;
+        public string WebRootPath {get;set;}=root;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
+        public Microsoft.Extensions.FileProviders.IFileProvider WebRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 
     private static async Task<IReadOnlyList<string>> ResolveLookupNamesAsync(
@@ -234,10 +262,12 @@ public sealed class ArtistMetadataAliasLookupTest
             "Services",
             "ArtistMetadataCacheRefreshService.cs"));
 
-        var body = ExtractMethodBody(source, "public async Task<bool> RefreshArtistAsync");
-        Assert.Contains("var canonicalArtistName = (artist.Name ?? string.Empty).Trim();", body, StringComparison.Ordinal);
-        Assert.Contains("await _artworkCatalog.RefreshAsync(\n            artistId,\n            canonicalArtistName,", body.Replace("\r\n", "\n"), StringComparison.Ordinal);
-        Assert.Contains("ResolveBiographyAsync(provider, artistId, canonicalArtistName, token, lookupNames)", body, StringComparison.Ordinal);
+        var wrapper = ExtractMethodBody(source, "public async Task<bool> RefreshArtistAsync");
+        Assert.Contains("RefreshArtistWithOutcomeAsync", wrapper, StringComparison.Ordinal);
+        var body = ExtractMethodBody(source, "public async Task<ArtistCacheRefreshOutcome> RefreshArtistWithOutcomeAsync");
+        Assert.Contains("var artist = await _repository.GetArtistAsync(artistId, token);", body, StringComparison.Ordinal);
+        Assert.Contains("await _artworkCatalog.RefreshAsync(artistId, artist.Name,", body, StringComparison.Ordinal);
+        Assert.Contains("CacheBiographiesAsync(artistId, artist.Name, provider, names, _providerGate, token)", body, StringComparison.Ordinal);
 
         // The alias list is built once and reused; it is never rebuilt per provider.
         Assert.Equal(1, CountOccurrences(body, "ResolveLookupNamesAsync("));
@@ -266,78 +296,122 @@ public sealed class ArtistMetadataAliasLookupTest
     [Fact]
     public async Task LastFmBiography_CanonicalNameRejected_AliasNameSucceeds_AndKeepsTheCanonicalArtistId()
     {
+        var (rows, queries) = await CollectLastFmBiographiesAsync(name => name == Canonical
+            ? LastFmJson("Some Unrelated Artist", "Not this one.")
+            : LastFmJson(Alias, "Abbass Kubaff is the verified biography."));
+        var row = Assert.Single(rows);
+        Assert.Equal(Alias, row.SourceId);
+        Assert.Equal("Abbass Kubaff is the verified biography.",row.Biography);
+        Assert.Equal(new[] { Canonical, Alias },queries);
+    }
+
+    [Fact]
+    public async Task LastFmBiography_OnlyCanonicalNameIsQueriedForANormalArtist()
+    {
+        var (rows, queries) = await CollectLastFmBiographiesAsync(name => LastFmJson(name,"Verified biography."),withAlias:false);
+        Assert.Equal(Canonical, Assert.Single(rows).SourceId);
+        Assert.Equal(new[] { Canonical },queries);
+    }
+
+    [Fact]
+    public async Task LastFmBiography_NoNameValidates_ReturnsNullWithoutStoring()
+    {
+        var (rows,queries) = await CollectLastFmBiographiesAsync(_ => LastFmJson("Completely Different", "Wrong artist."));
+        Assert.Empty(rows);
+        Assert.Equal(new[] { Canonical, Alias },queries);
+    }
+
+    [Fact]
+    public async Task LastFmBiography_RateLimitStopsFurtherAliasRequests()
+    {
+        var (rows,queries) = await CollectLastFmBiographiesAsync(_ => "{}",status:HttpStatusCode.TooManyRequests);
+        Assert.Empty(rows);
+        Assert.Single(queries);
+    }
+
+    private static async Task<(IReadOnlyList<ArtistBiographyCacheRowDto> Rows,List<string> Queries)> CollectLastFmBiographiesAsync(
+        Func<string,string> response, bool withAlias = true, HttpStatusCode status = HttpStatusCode.OK)
+    {
+        var (configuration,dbPath) = CreateLibrary();
+        try
+        {
+            await EnsureSchemaAsync(configuration);
+            await SeedArtistAsync(dbPath,Canonical);
+            await SeedAlbumAsync(dbPath,"Angabanga");
+            var aliases = new ArtistAliasService(configuration,NullLogger<ArtistAliasService>.Instance);
+            if (withAlias) await aliases.SaveGroupAsync(Canonical,new[] { Alias });
+            var repository = new LibraryRepository(configuration,NullLogger<LibraryRepository>.Instance);
+            var service = CreateCacheRefreshService(aliases);
+            var factory = new LastFmFactory(response) { Status = status };
+            SetField(service,"_repository",repository);
+            SetField(service,"_lastFm",CreateLastFmService(factory));
+            SetField(service,"_providerGate",new ArtistMetadataProviderGate(NullLogger.Instance,_ => TimeSpan.Zero));
+            InitialiseRefreshFixture(service,configuration,dbPath);
+            await service.RefreshBiographiesAsync(ArtistId,Canonical,"lastfm",CancellationToken.None);
+            Assert.Equal(1,await CountArtistsAsync(dbPath));
+            return (await repository.GetArtistBiographyRowsAsync(ArtistId),factory.Queries);
+        }
+        finally { TryDelete(dbPath); }
+    }
+
+    [Fact]
+    public async Task BiographyCollection_StoresBothLastFmAliasesWithTheirActualNames()
+    {
+        var (configuration, dbPath) = CreateLibrary();
+        try
+        {
+            await EnsureSchemaAsync(configuration);
+            await SeedArtistAsync(dbPath, Canonical);
+            await SeedAlbumAsync(dbPath, "Angabanga");
+            var aliases = new ArtistAliasService(configuration, NullLogger<ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync(Canonical, new[] { Alias });
+            var service = CreateCacheRefreshService(aliases);
+            var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+            SetField(service, "_repository", repository);
+            SetField(service, "_lastFm", CreateLastFmService(new LastFmFactory(name => LastFmJson(name, name + " biography."))));
+            SetField(service, "_providerGate", new ArtistMetadataProviderGate(NullLogger.Instance));
+            InitialiseRefreshFixture(service,configuration,dbPath);
+            var method = typeof(ArtistMetadataCacheRefreshService).GetMethod("RefreshBiographiesAsync");
+            Assert.NotNull(method);
+            await (Task<bool>)method.Invoke(service, new object?[] { ArtistId, Canonical, "lastfm", CancellationToken.None, null })!;
+            var rows = await repository.GetArtistBiographyRowsAsync(ArtistId);
+            Assert.Equal(2, rows.Count);
+            Assert.Contains(rows, row => row.SourceId == Canonical && row.Biography == Canonical + " biography.");
+            Assert.Contains(rows, row => row.SourceId == Alias && row.Biography == Alias + " biography.");
+        }
+        finally { TryDelete(dbPath); }
+    }
+
+    [Fact]
+    public async Task BiographyCollection_KeepsBothNonEmptySpotifyProfiles()
+    {
         var (configuration, dbPath) = CreateLibrary();
         try
         {
             await EnsureSchemaAsync(configuration);
             await SeedArtistAsync(dbPath, Canonical);
             var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
-            var lastFm = CreateLastFmService(new LastFmFactory(
-                query => query.Equals(Canonical, StringComparison.OrdinalIgnoreCase)
-                    ? LastFmJson("Some Unrelated Artist", "Not this one.")
-                    : LastFmJson(Alias, "Abbass Kubaff is the verified biography.")));
-
-            var service = CreateCacheRefreshService(null);
-            SetField(service, "_lastFm", lastFm);
-
-            var biography = await (Task<string?>)Invoke(
-                service,
-                "ResolveLastFmBiographyAsync",
-                Canonical,
-                new[] { Canonical, Alias },
-                CancellationToken.None);
-
-            Assert.Equal("Abbass Kubaff is the verified biography.", biography);
-
-            // Stored against the single canonical artist; no second artist row exists.
-            await repository.UpsertArtistBiographyCacheAsync(ArtistId, "lastfm", biography, selected: false);
-            Assert.Equal(
-                "Abbass Kubaff is the verified biography.",
-                (await repository.GetArtistBiographyCacheAsync(ArtistId, "lastfm", allowFallback: false))?.Biography);
-            Assert.Equal(1, await CountArtistsAsync(dbPath));
-            Assert.Equal(1, await CountRowsAsync(dbPath, "artist_biography_cache", "artist_id = $id", ("$id", ArtistId)));
+            var cache = new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance);
+            const string kubaff = "31u4mA182lnRN4ZMqE0yp3";
+            const string doobeez = "4NkhpYn11BA1zR6ibSFSR6";
+            await repository.UpsertArtistSourceIdAsync(ArtistId,"spotify",kubaff,userConfirmed:true);
+            await repository.UpsertArtistSourceIdAsync(ArtistId,"spotify",doobeez,userConfirmed:true);
+            await SeedCachedSpotifyPageAsync(cache,kubaff,Canonical,"Kubaff biography.");
+            await SeedCachedSpotifyPageAsync(cache,doobeez,Alias,"Doobeez biography.");
+            await repository.UpsertArtistBiographyCacheAsync(ArtistId,"spotify",kubaff,"Outdated selected biography.",true,Canonical,null);
+            var service = CreateCacheRefreshService();
+            SetField(service,"_repository",repository);
+            SetField(service,"_spotify",CreateFreshSpotifyService(repository,cache,dbPath));
+            var provider = Enum.Parse(typeof(ArtistMetadataCacheRefreshService).GetNestedType("BiographyProvider",BindingFlags.NonPublic)!,"Spotify");
+            await (Task<bool>)Invoke(service,"CacheBiographiesAsync",ArtistId,Canonical,provider,
+                new[] { Canonical, Alias },new ArtistMetadataProviderGate(NullLogger.Instance),CancellationToken.None);
+            var rows = await repository.GetArtistBiographyRowsAsync(ArtistId);
+            Assert.Equal(2,rows.Count);
+            Assert.Contains(rows,row => row.SourceId == kubaff && row.Biography == "Kubaff biography." && row.NativeName == Canonical);
+            Assert.Contains(rows,row => row.SourceId == doobeez && row.Biography == "Doobeez biography." && row.NativeName == Alias);
+            Assert.Single(rows.Where(row => row.Selected));
         }
-        finally
-        {
-            TryDelete(dbPath);
-        }
-    }
-
-    [Fact]
-    public async Task LastFmBiography_OnlyCanonicalNameIsQueriedForANormalArtist()
-    {
-        var factory = new LastFmFactory(query => LastFmJson(Canonical, "Primary biography."));
-        var service = CreateCacheRefreshService(null);
-        SetField(service, "_lastFm", CreateLastFmService(factory));
-
-        var biography = await (Task<string?>)Invoke(
-            service,
-            "ResolveLastFmBiographyAsync",
-            Canonical,
-            new[] { Canonical },
-            CancellationToken.None);
-
-        Assert.Equal("Primary biography.", biography);
-        Assert.Single(factory.Queries);
-        Assert.Equal(Canonical, factory.Queries[0]);
-    }
-
-    [Fact]
-    public async Task LastFmBiography_NoNameValidates_ReturnsNullWithoutStoring()
-    {
-        var factory = new LastFmFactory(query => LastFmJson("Completely Different", "Wrong artist."));
-        var service = CreateCacheRefreshService(null);
-        SetField(service, "_lastFm", CreateLastFmService(factory));
-
-        var biography = await (Task<string?>)Invoke(
-            service,
-            "ResolveLastFmBiographyAsync",
-            Canonical,
-            new[] { Canonical, Alias },
-            CancellationToken.None);
-
-        Assert.Null(biography);
-        Assert.Equal(new[] { Canonical, Alias }, factory.Queries);
+        finally { TryDelete(dbPath); }
     }
 
     // ---- 5. Last.fm artwork -------------------------------------------------------
@@ -391,6 +465,17 @@ public sealed class ArtistMetadataAliasLookupTest
     }
 
     [Fact]
+    public async Task LastFmArtwork_QueriesBothConfirmedNamesWhenPrimaryHasImages()
+    {
+        var factory = new LastFmFactory(query => LastFmJson(query, "A verified biography."));
+        var catalog = (ArtistArtworkCatalogService)RuntimeHelpers.GetUninitializedObject(typeof(ArtistArtworkCatalogService));
+        SetField(catalog, "_lastFm", CreateLastFmService(factory));
+        SetField(catalog, "_logger", NullLogger<ArtistArtworkCatalogService>.Instance);
+        await (Task)Invoke(catalog, "ResolveLastFmAsync", Canonical, false, CancellationToken.None, new[] { Canonical, Alias });
+        Assert.Equal(new[] { Canonical, Alias }, factory.Queries);
+    }
+
+    [Fact]
     public async Task LastFmArtwork_NormalArtist_MakesExactlyOneRequestWithTheCanonicalName()
     {
         var factory = new LastFmFactory(query => LastFmJson(Canonical, "Yes."));
@@ -405,6 +490,25 @@ public sealed class ArtistMetadataAliasLookupTest
         Assert.Equal(1, candidates.Count);
         Assert.Single(factory.Queries);
         Assert.Equal(Canonical, factory.Queries[0]);
+    }
+
+    [Theory]
+    [InlineData(503)]
+    [InlineData(429)]
+    public async Task InitialAudiomackBiographyFailureIsNotSettledNoData(int status)
+    {
+        var (configuration,dbPath)=CreateLibrary();
+        try
+        {
+            await EnsureSchemaAsync(configuration);await SeedArtistAsync(dbPath,Canonical);
+            var factory=AudiomackFactory.ForReferenceCase();factory.PageStatus=(HttpStatusCode)status;
+            var refresh=CreateCacheRefreshService();SetField(refresh,"_audiomack",CreateAudiomackService(configuration,factory));
+            var provider=Enum.Parse(typeof(ArtistMetadataCacheRefreshService).GetNestedType("BiographyProvider",BindingFlags.NonPublic)!,"Audiomack");
+            var error=await Assert.ThrowsAsync<HttpRequestException>(()=>(Task<string?>)Invoke(refresh,"ResolveBiographyAsync",
+                provider,ArtistId,Canonical,CancellationToken.None,new[]{Canonical,Alias}));
+            Assert.Equal((HttpStatusCode)status,error.StatusCode);
+        }
+        finally{TryDelete(dbPath);}
     }
 
     // ---- 6. Audiomack -------------------------------------------------------------
@@ -726,6 +830,7 @@ public sealed class ArtistMetadataAliasLookupTest
             Assert.Contains("https://img/primary.jpg", urls);
             Assert.Contains("https://img/alias.jpg", urls);
             Assert.Contains("https://img/alias-gallery.jpg", urls);
+            Assert.Contains("https://img/alias-header.jpg", urls);
             // The primary's own header stays authoritative; a sibling never replaces it.
             Assert.Equal("https://img/primary-header.jpg", merged.Artist.HeaderImageUrl);
             // Every URL the secondary identity contributed is reachable from the gallery.
@@ -741,12 +846,12 @@ public sealed class ArtistMetadataAliasLookupTest
     }
 
     [Fact]
-    public void SpotifySiblingFetch_RequestsNoDiscography_AndTheBiographyFillKeepsThePrimaryAuthoritative()
+    public void SpotifySiblingFetch_RequestsNoDiscography_AndLegacyPrimaryLookupRemainsFillOnly()
     {
         var spotifySource = File.ReadAllText(FindSourceFile("DeezSpoTag.Web", "Services", "SpotifyArtistService.cs"));
         var refreshSource = File.ReadAllText(FindSourceFile("DeezSpoTag.Web", "Services", "ArtistMetadataCacheRefreshService.cs"));
 
-        var sibling = ExtractMethodBody(spotifySource, "private async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync");
+        var sibling = ExtractMethodBody(spotifySource, "internal async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync");
         Assert.Contains("includeDiscography: false", sibling, StringComparison.Ordinal);
         Assert.Contains("includeDeezerLinking: false", sibling, StringComparison.Ordinal);
         // A cache hit never reaches the network.
@@ -963,6 +1068,7 @@ public sealed class ArtistMetadataAliasLookupTest
 
     private static void TryDelete(string dbPath)
     {
+        if (Directory.Exists(dbPath + ".cache")) Directory.Delete(dbPath + ".cache",true);
         try
         {
             if (File.Exists(dbPath))
@@ -1009,6 +1115,67 @@ public sealed class ArtistMetadataAliasLookupTest
                 NullLogger<AudiomackApiClient>.Instance),
             NullLogger<AudiomackArtistLocationService>.Instance,
             new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance));
+
+    [Fact]
+    public async Task FreshSpotifyVisualRequestPreservesUnrequestedAlbumsAndUsesFreshBiography()
+    {
+        var (configuration,dbPath)=CreateLibrary();
+        try
+        {
+            await EnsureSchemaAsync(configuration);
+            var repository=new LibraryRepository(configuration,NullLogger<LibraryRepository>.Instance);
+            var cache=new ArtistPageCacheRepository(configuration,NullLogger<ArtistPageCacheRepository>.Instance);
+            const string id="31u4mA182lnRN4ZMqE0yp3";
+            var old=BuildSpotifyPage(id,Canonical,"https://img/old.jpg","Old biography.") with {
+                Albums=new(){new SpotifyAlbum("old-album","Held Album","2020","album",10,new(),null)}};
+            await cache.UpsertAsync("spotify",id,JsonSerializer.Serialize(new SpotifyArtistCacheEnvelope(10,old),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)),DateTimeOffset.UtcNow,CancellationToken.None);
+            var service=CreateFreshSpotifyService(repository,cache,dbPath);
+            var fresh=await (Task<SpotifyArtistPageResult?>)Invoke(service,"GetArtistPageBySpotifyIdInternalAsync",
+                id,Canonical,false,null,false,false,CancellationToken.None,true);
+            Assert.Equal("Kubaff biography.",fresh!.Artist.Biography);
+            Assert.Equal("old-album",Assert.Single(fresh.Albums).Id);
+            var saved=(await cache.TryGetAsync("spotify",id,CancellationToken.None))!;
+            Assert.Contains("old-album",saved.PayloadJson,StringComparison.Ordinal);
+        }
+        finally{SqliteConnection.ClearAllPools();File.Delete(dbPath);}
+    }
+
+    private static SpotifyArtistService CreateFreshSpotifyService(LibraryRepository repository, ArtistPageCacheRepository cache, string dbPath)
+    {
+        var environment=new AliasEnvironment(dbPath+".cache");Directory.CreateDirectory(environment.ContentRootPath);
+        var pathfinder=new SpotifyPathfinderMetadataClient(null!,null!,null!,new AliasUser(),new AliasSpotifyFactory(),NullLogger<SpotifyPathfinderMetadataClient>.Instance);
+        const string path="alias-refresh-fixture";
+        SetField(pathfinder,"_backgroundUserBlobCachedPath",path);
+        SetField(pathfinder,"_backgroundUserBlobCheckedAt",DateTimeOffset.UtcNow);
+        var type=typeof(SpotifyPathfinderMetadataClient);
+        var context=Activator.CreateInstance(type.GetNestedType("PathfinderAuthContext",BindingFlags.NonPublic)!,new object[]{"fixture-access","fixture-client","fixture-version","fixture-device"});
+        var stateType=type.GetNestedType("BlobAuthState",BindingFlags.NonPublic)!;
+        var state=Activator.CreateInstance(stateType,nonPublic:true)!;
+        stateType.GetProperty("Context")!.SetValue(state,context);
+        stateType.GetProperty("AccessTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
+        stateType.GetProperty("ClientTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
+        ((IDictionary)type.GetField("_blobAuthStates",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(pathfinder)!).Add(path,state);
+        return new SpotifyArtistService(repository,cache,new LibraryConfigStore(repository,NullLogger<LibraryConfigStore>.Instance,environment),null!,null!,
+            new SpotifyArtistServiceDependencies(pathfinder,null!,null!,null!,null!),NullLogger<SpotifyArtistService>.Instance);
+    }
+    private sealed class AliasUser : ISpotifyUserContextAccessor {public string? UserId=>null;}
+    private sealed class AliasSpotifyFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name)=>new(new NativeHandler());
+        private sealed class NativeHandler : HttpMessageHandler
+        {
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+            {
+                using var payload=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+                var id=payload.RootElement.GetProperty("variables").GetProperty("uri").GetString()!.Split(':').Last();
+                var primary=id=="31u4mA182lnRN4ZMqE0yp3";
+                var json=JsonSerializer.Serialize(new {data=new {artistUnion=new {profile=new {name=primary?Canonical:Alias,
+                    biography=new {text=primary?"Kubaff biography.":"Doobeez biography."},genres=new[]{"hip hop"}}}}});
+                return new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(json,Encoding.UTF8,"application/json")};
+            }
+        }
+    }
 
     private static SpotifyArtistService CreateSpotifyService(
         LibraryRepository? repository,
@@ -1266,6 +1433,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
         public LastFmFactory(Func<string, string> respond) => _respond = respond;
 
         public List<string> Queries { get; } = new();
+        public HttpStatusCode Status { get; init; } = HttpStatusCode.OK;
 
         public HttpClient CreateClient(string name) => new(new Handler(this));
 
@@ -1279,7 +1447,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
                     owner.Queries.Add(artist);
                 }
 
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                return Task.FromResult(new HttpResponseMessage(owner.Status)
                 {
                     Content = new StringContent(owner._respond(artist), Encoding.UTF8, "application/json")
                 });
@@ -1294,6 +1462,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
 
         public Func<string, string> ArtistSearchJson { get; set; } = _ => "{}";
         public Func<string, string> SongSearchJson { get; set; } = _ => """{"results":[]}""";
+        public HttpStatusCode PageStatus {get;set;}=HttpStatusCode.OK;
         public Func<string, string> PageHtml { get; set; } = _ => "<html></html>";
 
         public List<string> Requests { get; } = new();
@@ -1342,7 +1511,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
                 }
 
                 var slug = url.TrimEnd('/').Split('/').LastOrDefault() ?? string.Empty;
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                return Task.FromResult(new HttpResponseMessage(owner.PageStatus)
                 {
                     Content = new StringContent(owner.PageHtml(slug), Encoding.UTF8, "text/html")
                 });

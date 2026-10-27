@@ -24,6 +24,19 @@ public sealed class ArtistMetadataProviderGate
     private readonly Dictionary<string, DateTimeOffset> _lastRequestUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _rateLimitedUntil = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
+    private readonly AsyncLocal<List<Task>?> _observedOperations = new();
+
+    internal IDisposable CaptureOperations(List<Task> operations)
+    {
+        var previous = _observedOperations.Value;
+        _observedOperations.Value = operations;
+        return new OperationCapture(() => _observedOperations.Value = previous);
+    }
+
+    private sealed class OperationCapture(Action restore) : IDisposable
+    {
+        public void Dispose() => restore();
+    }
 
     public ArtistMetadataProviderGate(
         ILogger logger,
@@ -48,16 +61,21 @@ public sealed class ArtistMetadataProviderGate
         }
     }
 
+    public Task<T?> RunRequiredAsync<T>(string provider, Func<CancellationToken, Task<T>> work, CancellationToken cancellationToken)
+        => RunAsync(provider, work, cancellationToken, required: true);
+
     public async Task<T?> RunAsync<T>(
         string provider,
         Func<CancellationToken, Task<T>> work,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool required = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
         ArgumentNullException.ThrowIfNull(work);
 
         if (IsUnavailable(provider))
         {
+            if (required) throw new HttpRequestException(UnavailableMessage, null, HttpStatusCode.TooManyRequests);
             return default;
         }
 
@@ -69,6 +87,7 @@ public sealed class ArtistMetadataProviderGate
         {
             if (IsUnavailable(provider))
             {
+                if (required) throw new HttpRequestException(UnavailableMessage, null, HttpStatusCode.TooManyRequests);
                 return default;
             }
 
@@ -77,12 +96,15 @@ public sealed class ArtistMetadataProviderGate
             try
             {
                 operation = work(operationCancellation.Token);
+                if (_observedOperations.Value is { } observed)
+                    lock (observed) observed.Add(operation);
                 var result = await operation.WaitAsync(_operationTimeout, cancellationToken);
                 RecordRequest(provider);
                 return result;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                operationCancellation.Cancel();
                 throw;
             }
             catch (TimeoutException)
@@ -97,12 +119,14 @@ public sealed class ArtistMetadataProviderGate
                     "Artist metadata provider {Provider} timed out after {TimeoutSeconds} seconds.",
                     provider,
                     _operationTimeout.TotalSeconds);
+                if (required) throw;
                 return default;
             }
             catch (Exception ex) when (ex is not OperationCanceledException && IsRateLimited(ex))
             {
                 RecordRequest(provider);
                 MarkUnavailable(provider, "rate limited");
+                if (required) throw;
                 return default;
             }
         }

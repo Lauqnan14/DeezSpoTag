@@ -130,6 +130,15 @@ CREATE TABLE IF NOT EXISTS artist_biography_cache (
     PRIMARY KEY (artist_id, source, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS artist_biography_rotation (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    last_source TEXT NOT NULL,
+    last_source_id TEXT NOT NULL DEFAULT '',
+    profile_cursors_json TEXT NOT NULL DEFAULT '{}',
+    used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id)
+);
+
 CREATE TABLE IF NOT EXISTS artist_server_sync_state (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
     server TEXT NOT NULL,

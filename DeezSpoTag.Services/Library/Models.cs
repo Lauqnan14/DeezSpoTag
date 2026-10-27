@@ -1377,3 +1377,7 @@ public sealed record DailyRecommendationDiagnosticsDto(
     IReadOnlyDictionary<string, bool>? ExhaustedSources = null,
     bool? InitialSelectionPublished = null,
     IReadOnlyList<string>? PublishedTrackIds = null);
+
+public sealed record ArtistSourceIdentityDto(
+    string Source, string SourceId, string? NativeName, string? AliasName,
+    bool IsPrimary, string VerificationState, string? Evidence);

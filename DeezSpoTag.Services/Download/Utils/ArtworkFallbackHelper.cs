@@ -601,7 +601,7 @@ public static class ArtworkFallbackHelper
         string? deezerArtistId,
         int size,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool required = false)
     {
         if (deezerClient == null)
         {
@@ -626,7 +626,7 @@ public static class ArtworkFallbackHelper
                 artist.PictureSmall,
                 artist.Picture);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!required && ex is not OperationCanceledException)
         {
             if (logger.IsEnabled(LogLevel.Debug))
             {

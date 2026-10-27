@@ -1059,6 +1059,42 @@ public sealed class AudiomackArtistLocationTest
     /// </summary>
     public sealed class ArtistProfileService
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FreshProfileDistinguishesEmbeddedRecaptchaFromAnActualChallenge(bool challenge)
+        {
+            var db = Path.Combine(Path.GetTempPath(), "audiomack-recaptcha-" + Guid.NewGuid().ToString("N") + ".db");
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+                { ["ConnectionStrings:Library"] = "Data Source=" + db }).Build();
+            try
+            {
+                await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+                var html = challenge ? "<title>Client Challenge</title><div>captcha</div>"
+                    : ReadFixture("artist-page-flight.txt") + "<script src='https://www.google.com/recaptcha/api.js'></script>";
+                var (service, _) = CreateService(html, configuration: config);
+                var cache = new ArtistPageCacheRepository(config, NullLogger<ArtistPageCacheRepository>.Instance);
+                if (challenge)
+                {
+                    var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
+                        service.ResolveBiographyBySlugAsync("alikiba", "Alikiba", CancellationToken.None, requireFresh:true));
+                    Assert.Equal(HttpStatusCode.ServiceUnavailable,error.StatusCode);
+                    Assert.Null(await cache.TryGetRequiredAsync(AudiomackArtistLocationService.LocationCacheSource,"alikiba",CancellationToken.None));
+                }
+                else
+                {
+                    var bio = await service.ResolveBiographyBySlugAsync("alikiba", "Alikiba", CancellationToken.None, requireFresh:true);
+                    Assert.False(string.IsNullOrWhiteSpace(bio));
+                    var saved = await cache.TryGetRequiredAsync(AudiomackArtistLocationService.LocationCacheSource,"alikiba",CancellationToken.None);
+                    Assert.NotNull(saved);
+                    using var payload=JsonDocument.Parse(saved.PayloadJson);
+                    Assert.Equal("Dar es Salaam",payload.RootElement.GetProperty("city").GetString());
+                    Assert.Equal(bio,payload.RootElement.GetProperty("biography").GetString());
+                }
+            }
+            finally {Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();File.Delete(db);}
+        }
+
         [Fact]
         public async Task ProfileRequestTimeoutReturnsNoMetadataWithoutCachingFailure()
         {

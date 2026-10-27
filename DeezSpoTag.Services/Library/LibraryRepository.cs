@@ -8782,6 +8782,19 @@ ORDER BY name;";
         return artists;
     }
 
+    /// <summary>Refresh Cache may fill an absent/invalid slot only if no concurrent picker save changed it.</summary>
+    public async Task<bool> TryFillArtistVisualPathAsync(long artistId, bool background, string path,
+        string? expectedPath, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var column = background ? "preferred_background_path" : "preferred_image_path";
+        await using var command = new SqliteCommand($"UPDATE artist SET {column} = @path, updated_at = CURRENT_TIMESTAMP WHERE id = @artistId AND {column} IS @expected", connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("path", path);
+        command.Parameters.AddWithValue("expected", (object?)expectedPath ?? DBNull.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task UpdateArtistImagePathAsync(long artistId, string imagePath, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -16764,6 +16777,24 @@ LIMIT 1;";
         return result is null or DBNull ? null : Convert.ToString(result);
     }
 
+    public async Task<IReadOnlyList<ArtistSourceIdentityDto>> GetArtistSourceIdentitiesAsync(
+        long artistId, string source, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT source, source_id, native_name, alias_name, is_primary, verification_state, evidence
+FROM artist_source WHERE artist_id=@artistId AND source=@source ORDER BY is_primary DESC, source_id;", connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("source", source);
+        var identities = new List<ArtistSourceIdentityDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            identities.Add(new ArtistSourceIdentityDto(reader.GetString(0), reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetInt64(4) != 0, reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6)));
+        return identities;
+    }
+
     public async Task<IReadOnlyList<string>> GetArtistSourceIdsAsync(long artistId, string source, CancellationToken cancellationToken = default)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
@@ -16901,7 +16932,7 @@ ORDER BY artist_id;";
         return artistIds;
     }
 
-    public async Task UpsertArtistSourceIdAsync(long artistId, string source, string sourceId, CancellationToken cancellationToken = default)
+    public async Task UpsertArtistSourceIdAsync(long artistId, string source, string sourceId, CancellationToken cancellationToken = default, bool userConfirmed = false, bool preserveExistingOwner = false)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
         {
@@ -16916,7 +16947,7 @@ WHERE id = @artistId
 LIMIT 1;";
         const string upsertSql = @"
 INSERT INTO artist_source (
-    artist_id, source, source_id, is_primary, verification_state, verified_at)
+    artist_id, source, source_id, is_primary, verification_state, evidence, verified_at)
 VALUES (
     @artistId,
     @source,
@@ -16927,10 +16958,13 @@ VALUES (
           AND existing.source = @source
           AND existing.is_primary = 1
     ) THEN 0 ELSE 1 END,
-    'verified',
+    CASE WHEN @userConfirmed = 1 THEN 'user_confirmed' ELSE 'verified' END,
+    CASE WHEN @userConfirmed = 1 THEN 'User confirmed through artist ID editor' ELSE NULL END,
     CURRENT_TIMESTAMP)
 ON CONFLICT(source, source_id) DO UPDATE SET
     artist_id = excluded.artist_id,
+    verification_state = CASE WHEN @userConfirmed = 1 THEN 'user_confirmed' ELSE artist_source.verification_state END,
+    evidence = CASE WHEN @userConfirmed = 1 THEN 'User confirmed through artist ID editor' ELSE artist_source.evidence END,
     url = COALESCE(artist_source.url, excluded.url),
     data = COALESCE(artist_source.data, excluded.data),
     native_name = COALESCE(artist_source.native_name, excluded.native_name),
@@ -16947,9 +16981,19 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         }
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        if (preserveExistingOwner || userConfirmed)
+        {
+            await using var owner = new SqliteCommand("SELECT artist_id FROM artist_source WHERE source=@source AND source_id=@id;", connection, (SqliteTransaction)transaction);
+            owner.Parameters.AddWithValue("source", source);
+            owner.Parameters.AddWithValue("id", sourceId);
+            var existingOwner = await owner.ExecuteScalarAsync(cancellationToken);
+            if (existingOwner is not null && Convert.ToInt64(existingOwner) != artistId)
+                throw new InvalidOperationException("This provider profile belongs to another library artist. Merge those artists explicitly first.");
+        }
         await using (var upsertCommand = new SqliteCommand(upsertSql, connection, (SqliteTransaction)transaction))
         {
             upsertCommand.Parameters.AddWithValue("artistId", artistId);
+            upsertCommand.Parameters.AddWithValue("userConfirmed", userConfirmed ? 1 : 0);
             upsertCommand.Parameters.AddWithValue(SourceField, source);
             upsertCommand.Parameters.AddWithValue(SourceIdField, sourceId);
             try
@@ -22013,119 +22057,119 @@ LIMIT 1;";
     }
 
     public async Task UpsertArtistBiographyCacheAsync(
-        long artistId,
-        string source,
-        string? biography,
-        bool selected,
+        long artistId, string source, string? biography, bool selected,
         CancellationToken cancellationToken = default)
+        => await UpsertArtistBiographyCacheAsync(artistId, source,
+            await GetArtistSourceIdAsync(artistId, source, cancellationToken) ?? "",
+            biography, selected, null, null, cancellationToken);
+
+    public async Task UpsertArtistBiographyCacheAsync(
+        long artistId, string source, string sourceId, string? biography, bool selected,
+        string? nativeName, string? aliasName, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-INSERT INTO artist_biography_cache (artist_id, source, source_id, biography, selected, fetched_at, diagnostic)
-VALUES (
-    @artistId,
-    @source,
-    COALESCE((
-        SELECT source_id
-        FROM artist_source
-        WHERE artist_id = @artistId
-          AND source = @source
-        ORDER BY is_primary DESC, source_id
-        LIMIT 1
-    ), ''),
-    @biography,
-    @selected,
-    CURRENT_TIMESTAMP,
-    CASE WHEN @biography IS NULL OR TRIM(@biography) = '' THEN 'empty' ELSE NULL END)
-ON CONFLICT(artist_id, source, source_id) DO UPDATE SET
-    biography = CASE
-        WHEN excluded.biography IS NULL OR TRIM(excluded.biography) = '' THEN artist_biography_cache.biography
-        ELSE excluded.biography
-    END,
-    diagnostic = CASE
-        WHEN excluded.biography IS NULL OR TRIM(excluded.biography) = '' THEN 'empty'
-        ELSE NULL
-    END,
-    selected = excluded.selected,
-    fetched_at = CURRENT_TIMESTAMP;";
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(@"
+INSERT INTO artist_biography_cache(artist_id,source,source_id,biography,selected,native_name,alias_name,fetched_at,diagnostic)
+VALUES(@artistId,@source,@sourceId,@biography,@selected,@nativeName,@aliasName,CURRENT_TIMESTAMP,
+    CASE WHEN @biography IS NULL OR TRIM(@biography)='' THEN 'empty' ELSE NULL END)
+ON CONFLICT(artist_id,source,source_id) DO UPDATE SET
+ biography=CASE WHEN excluded.biography IS NULL OR TRIM(excluded.biography)='' THEN artist_biography_cache.biography ELSE excluded.biography END,
+ native_name=COALESCE(excluded.native_name,artist_biography_cache.native_name),
+ alias_name=COALESCE(excluded.alias_name,artist_biography_cache.alias_name),
+ selected=CASE WHEN @selected=1 THEN 1 ELSE artist_biography_cache.selected END,
+ fetched_at=CURRENT_TIMESTAMP, diagnostic=excluded.diagnostic;", connection);
         command.Parameters.AddWithValue("artistId", artistId);
         command.Parameters.AddWithValue("source", source);
+        command.Parameters.AddWithValue("sourceId", sourceId);
         command.Parameters.AddWithValue("biography", (object?)biography ?? DBNull.Value);
         command.Parameters.AddWithValue("selected", selected ? 1 : 0);
+        command.Parameters.AddWithValue("nativeName", (object?)nativeName ?? DBNull.Value);
+        command.Parameters.AddWithValue("aliasName", (object?)aliasName ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task RefreshSelectedArtistBiographyAsync(long artistId, CancellationToken cancellationToken = default)
     {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-UPDATE artist_biography_cache
-SET selected = CASE
-    WHEN source = (
-        SELECT source
-        FROM artist_biography_cache
-        WHERE artist_id = @artistId
-          AND biography IS NOT NULL
-          AND TRIM(biography) <> ''
-        ORDER BY
-            CASE lower(source)
-                WHEN 'spotify' THEN 0
-                WHEN 'apple' THEN 1
-                WHEN 'tidal' THEN 2
-                WHEN 'qobuz' THEN 3
-                WHEN 'lastfm' THEN 4
-                ELSE 5
-            END,
-            fetched_at DESC
-        LIMIT 1
-    ) THEN 1
-    ELSE 0
-END
-WHERE artist_id = @artistId;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        // Legacy explicit reset keeps provider ranking; reads and target updates do not call it.
+        var rows = await GetArtistBiographyRowsAsync(artistId, cancellationToken);
+        var provider = rows.Where(row => !string.IsNullOrWhiteSpace(row.Biography))
+            .OrderBy(row => row.Source.ToLowerInvariant() switch
+            { "spotify" => 0, "apple" => 1, "tidal" => 2, "qobuz" => 3, "lastfm" => 4, _ => 5 })
+            .Select(row => row.Source).FirstOrDefault();
+        if (provider is not null)
+            await SelectArtistBiographySourceAsync(artistId, provider, cancellationToken, advanceRotation: false);
     }
 
     public async Task SelectArtistBiographySourceAsync(
-        long artistId,
-        string? requiredSource,
-        CancellationToken cancellationToken = default)
+        long artistId, string? requiredSource, CancellationToken cancellationToken = default,
+        string? sourceId = null, bool advanceRotation = true)
     {
-        var sources = await ListArtistBiographySourcesAsync(artistId, cancellationToken);
-        if (sources.Count == 0)
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var rows = new List<(string Source, string Id, string Text, bool Selected)>();
+        await using (var read = new SqliteCommand(@"
+SELECT b.source,b.source_id,b.biography,b.selected FROM artist_biography_cache b
+WHERE b.artist_id=@artistId AND b.biography IS NOT NULL AND TRIM(b.biography)<>''
+ORDER BY CASE lower(b.source) WHEN 'spotify' THEN 0 WHEN 'apple' THEN 1 WHEN 'tidal' THEN 2 WHEN 'qobuz' THEN 3 WHEN 'lastfm' THEN 4 ELSE 5 END,
+ COALESCE((SELECT is_primary FROM artist_source s WHERE s.artist_id=b.artist_id AND s.source=b.source AND s.source_id=b.source_id),0) DESC,b.source_id;", connection, transaction))
         {
-            return;
+            read.Parameters.AddWithValue("artistId", artistId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3) != 0));
         }
-
-        string next;
-        if (!string.IsNullOrWhiteSpace(requiredSource)
-            && sources.Exists(source => string.Equals(source, requiredSource, StringComparison.OrdinalIgnoreCase)))
+        if (rows.Count == 0) return;
+        string? lastSource = null;
+        var cursors = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+        await using (var read = new SqliteCommand("SELECT last_source,profile_cursors_json FROM artist_biography_rotation WHERE artist_id=@artistId;", connection, transaction))
         {
-            next = requiredSource!;
-        }
-        else
-        {
-            var lastSource = await GetLastBiographySourceAsync(artistId, cancellationToken);
-            next = sources[0];
-            if (!string.IsNullOrWhiteSpace(lastSource) && sources.Count > 1)
+            read.Parameters.AddWithValue("artistId", artistId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
             {
-                var index = sources.FindIndex(source => string.Equals(source, lastSource, StringComparison.OrdinalIgnoreCase));
-                next = sources[(index + 1) % sources.Count];
+                lastSource = reader.GetString(0);
+                try { cursors = new Dictionary<string,string>(JsonSerializer.Deserialize<Dictionary<string,string>>(reader.GetString(1)) ?? new(), StringComparer.OrdinalIgnoreCase); }
+                catch (JsonException) { /* Legacy/bad cursor metadata does not invalidate cached biographies. */ }
             }
         }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-UPDATE artist_biography_cache
-SET selected = CASE WHEN lower(source) = lower(@nextSource) THEN 1 ELSE 0 END
-WHERE artist_id = @artistId;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue("nextSource", next);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        await SetLastBiographySourceAsync(artistId, next, cancellationToken);
+        if (advanceRotation && string.IsNullOrWhiteSpace(requiredSource) && sourceId is null)
+            rows = rows.GroupBy(row => string.Join(" ", row.Text.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries)),StringComparer.Ordinal)
+                .Select(group => group.First()).ToList();
+        var providers = rows.Select(row => row.Source).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var provider = requiredSource;
+        if (!string.IsNullOrWhiteSpace(provider) && !providers.Contains(provider, StringComparer.OrdinalIgnoreCase)) return;
+        if (string.IsNullOrWhiteSpace(provider))
+        {
+            provider = !advanceRotation && rows.Any(row => row.Selected)
+                ? rows.First(row => row.Selected).Source
+                : providers[(providers.FindIndex(value => string.Equals(value,lastSource,StringComparison.OrdinalIgnoreCase)) + 1) % providers.Count];
+        }
+        var eligible = rows.Where(row => string.Equals(row.Source,provider,StringComparison.OrdinalIgnoreCase)).ToList();
+        var candidates = eligible.GroupBy(row => string.Join(" ", row.Text.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries)),StringComparer.Ordinal)
+            .Select(group => group.First()).ToList();
+        var selected = candidates[0];
+        if (sourceId is not null)
+        {
+            var index = eligible.FindIndex(row => row.Id == sourceId);
+            if (index < 0) return;
+            selected = eligible[index];
+        }
+        else if (!advanceRotation && eligible.Any(row => row.Selected)) selected = eligible.First(row => row.Selected);
+        else if (advanceRotation && cursors.TryGetValue(provider!, out var lastId))
+            selected = candidates[(candidates.FindIndex(row => row.Id == lastId) + 1) % candidates.Count];
+        cursors[provider!] = selected.Id;
+        await using var update = new SqliteCommand(@"
+UPDATE artist_biography_cache SET selected=CASE WHEN source=@source AND source_id=@id THEN 1 ELSE 0 END WHERE artist_id=@artistId;
+INSERT INTO artist_biography_rotation(artist_id,last_source,last_source_id,profile_cursors_json,used_at)
+VALUES(@artistId,@source,@id,@cursors,CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id) DO UPDATE SET last_source=excluded.last_source,last_source_id=excluded.last_source_id,
+profile_cursors_json=excluded.profile_cursors_json,used_at=excluded.used_at;",connection,transaction);
+        update.Parameters.AddWithValue("artistId",artistId);
+        update.Parameters.AddWithValue("source",selected.Source);
+        update.Parameters.AddWithValue("id",selected.Id);
+        update.Parameters.AddWithValue("cursors",JsonSerializer.Serialize(cursors));
+        await update.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<string>> GetUsedVisualHashesAsync(
@@ -22251,42 +22295,6 @@ ON CONFLICT(artist_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private async Task<List<string>> ListArtistBiographySourcesAsync(long artistId, CancellationToken cancellationToken)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT source
-FROM artist_biography_cache
-WHERE artist_id = @artistId
-  AND biography IS NOT NULL
-  AND TRIM(biography) <> ''
-ORDER BY
-    CASE lower(source)
-        WHEN 'spotify' THEN 0
-        WHEN 'apple' THEN 1
-        WHEN 'tidal' THEN 2
-        WHEN 'qobuz' THEN 3
-        WHEN 'lastfm' THEN 4
-        ELSE 5
-    END,
-    fetched_at DESC;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var sources = new List<string>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var source = reader.GetString(0);
-            if (!string.IsNullOrWhiteSpace(source)
-                && !sources.Contains(source, StringComparer.OrdinalIgnoreCase))
-            {
-                sources.Add(source);
-            }
-        }
-
-        return sources;
-    }
-
     public async Task<ArtistBiographyCacheDto?> GetArtistBiographyCacheAsync(
         long artistId,
         string? preferredSource,
@@ -22295,15 +22303,15 @@ ORDER BY
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT source, biography, selected, fetched_at
+SELECT source, biography, selected, fetched_at, source_id, native_name, alias_name
 FROM artist_biography_cache
 WHERE artist_id = @artistId
   AND biography IS NOT NULL
   AND TRIM(biography) <> ''
   AND (@allowFallback = 1 OR source = @preferredSource)
 ORDER BY
-    CASE WHEN @preferredSource IS NULL AND selected = 1 THEN 0 ELSE 1 END,
     CASE WHEN @preferredSource IS NOT NULL AND lower(source) = lower(@preferredSource) THEN 0 ELSE 1 END,
+    CASE WHEN selected = 1 THEN 0 ELSE 1 END,
     CASE lower(source)
         WHEN 'spotify' THEN 0
         WHEN 'apple' THEN 1
@@ -22329,7 +22337,7 @@ LIMIT 1;";
             reader.GetString(0),
             reader.GetString(1),
             reader.GetInt64(2) != 0,
-            reader.GetString(3));
+            reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6));
     }
 
     public async Task<IReadOnlyList<ArtistBiographyCacheRowDto>> GetArtistBiographyRowsAsync(
@@ -22343,7 +22351,7 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT source, biography, selected
+SELECT source, biography, selected, source_id, native_name, alias_name
 FROM artist_biography_cache
 WHERE artist_id = @artistId
   AND biography IS NOT NULL
@@ -22367,7 +22375,7 @@ ORDER BY
             rows.Add(new ArtistBiographyCacheRowDto(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
-                reader.GetInt64(2) != 0));
+                reader.GetInt64(2) != 0, reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
         }
 
         return rows;
@@ -22841,7 +22849,10 @@ public sealed record ArtistMetadataPolicyDto(
 public sealed record ArtistBiographyCacheRowDto(
     string Source,
     string? Biography,
-    bool Selected);
+    bool Selected,
+    string SourceId = "",
+    string? NativeName = null,
+    string? AliasName = null);
 
 public sealed record ArtistArtworkCacheUpsertInput(
     long ArtistId,
@@ -22886,7 +22897,10 @@ public sealed record ArtistBiographyCacheDto(
     string Source,
     string Biography,
     bool Selected,
-    string FetchedAt);
+    string FetchedAt,
+    string SourceId = "",
+    string? NativeName = null,
+    string? AliasName = null);
 
 public sealed record ArtistServerSyncStateUpsertInput(
     long ArtistId,

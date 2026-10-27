@@ -136,7 +136,8 @@ public sealed class SpotifyArtistService
                 .Where(candidate => targets.Any(target => IsEquivalentArtistName(candidate.Name, target))).ToList();
             var id = await TrySelectExactCandidateArtistIdAsync(candidates, albums, targets, artistName, cancellationToken);
             if (string.IsNullOrWhiteSpace(id)) continue;
-            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, id, cancellationToken);
+            if (artistId > 0)
+                await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, id, cancellationToken);
             return id;
         }
         return null;
@@ -273,10 +274,10 @@ public sealed class SpotifyArtistService
             artistId,
             includeDeezerLinking,
             includeDiscography,
-            cancellationToken);
+            cancellationToken, required: forceRefresh);
         if (result != null || forceRematch)
         {
-            return result is null ? null : await MergeAliasVisualsAsync(artistId, result, cancellationToken);
+            return result is null ? null : await MergeAliasVisualsAsync(artistId, result, cancellationToken, forceRefresh);
         }
 
         AddActivity("warn", $"[spotify] stored artist id failed fetch, rematching: {artistName} ({spotifyId}).");
@@ -308,6 +309,15 @@ public sealed class SpotifyArtistService
     /// Resolves a Spotify id for the preferred name and for every alias in the same group.
     /// Each id is kept only when its discography shares a local album. Existing sibling ids are not deleted.
     /// </summary>
+    private async Task<HashSet<string>> ReadCachedSpotifyVisualUrlsAsync(string spotifyId, CancellationToken token)
+    {
+        var row = await _cacheRepository.TryGetRequiredAsync(SpotifySource, spotifyId, token);
+        var profile = row is null ? null : DeserializeCached(row.PayloadJson)?.Artist;
+        return profile is null ? new(StringComparer.OrdinalIgnoreCase)
+            : profile.Images.Select(image => image.Url).Concat(profile.Gallery).Append(profile.HeaderImageUrl ?? "")
+                .Where(url => !string.IsNullOrWhiteSpace(url)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     public async Task EnsureAliasSpotifyIdentitiesAsync(long artistId, string artistName, CancellationToken cancellationToken)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
@@ -315,10 +325,19 @@ public sealed class SpotifyArtistService
             return;
         }
 
-        foreach (var existingId in await _libraryRepository.GetArtistSourceIdsAsync(artistId, SpotifySource, cancellationToken))
+        foreach (var identity in await _libraryRepository.GetArtistSourceIdentitiesAsync(artistId, SpotifySource, cancellationToken))
         {
-            if (await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, existingId, cancellationToken))
+            var existingId = identity.SourceId;
+            if (!string.Equals(identity.VerificationState, "user_confirmed", StringComparison.OrdinalIgnoreCase)
+                && await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, existingId, cancellationToken))
             {
+                var rejectedUrls = await ReadCachedSpotifyVisualUrlsAsync(existingId, cancellationToken);
+                // A verified sibling can share an image: do not reject that shared artwork.
+                foreach (var sibling in await _libraryRepository.GetArtistSourceIdentitiesAsync(artistId, SpotifySource, cancellationToken))
+                    if (sibling.SourceId != existingId && sibling.VerificationState is "verified" or "user_confirmed")
+                        rejectedUrls.ExceptWith(await ReadCachedSpotifyVisualUrlsAsync(sibling.SourceId, cancellationToken));
+                await ArtistArtworkCatalogService.RejectSourceArtworkAsync(_libraryRepository, _cacheRepository,
+                    artistId, SpotifySource, existingId, rejectedUrls, cancellationToken);
                 await _libraryRepository.RemoveArtistSourceIdAsync(artistId, SpotifySource, existingId, cancellationToken);
                 AddActivity("warn", $"[spotify] dropped stored id with no album overlap: {existingId}.");
             }
@@ -355,7 +374,7 @@ public sealed class SpotifyArtistService
                 continue;
             }
 
-            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, resolved, cancellationToken);
+            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, resolved, cancellationToken, preserveExistingOwner: true);
             AddActivity("info", $"[spotify] alias identity kept: {name} -> {resolved}.");
             if (string.Equals(ArtistAliasService.NormalizeName(name), preferredNormalizedName, StringComparison.Ordinal))
             {
@@ -422,18 +441,18 @@ public sealed class SpotifyArtistService
     /// on a cache miss. Discography is never requested for a sibling identity: the caller only
     /// needs its images, gallery, header image and biography.
     /// </summary>
-    private async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync(
+    internal async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync(
         long artistId,
         string siblingSpotifyId,
         string artistName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool forceRefresh = false)
     {
         if (string.IsNullOrWhiteSpace(siblingSpotifyId))
         {
             return null;
         }
 
-        var cached = await TryGetCachedArtistPageAsync(siblingSpotifyId, artistName, allowStale: true, cancellationToken);
+        var cached = forceRefresh ? null : await TryGetCachedArtistPageAsync(siblingSpotifyId, artistName, allowStale: true, cancellationToken);
         if (cached is not null)
         {
             return cached;
@@ -446,13 +465,13 @@ public sealed class SpotifyArtistService
             localArtistId: artistId,
             includeDeezerLinking: false,
             includeDiscography: false,
-            cancellationToken);
+            cancellationToken, required: forceRefresh);
     }
 
     public async Task<SpotifyArtistPageResult> MergeAliasVisualsAsync(
         long artistId,
         SpotifyArtistPageResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool forceRefresh = false)
     {
         if (artistId <= 0 || result.Artist is null)
         {
@@ -485,7 +504,7 @@ public sealed class SpotifyArtistService
 
             // A verified secondary identity must not be useless just because its page was never
             // cached, so it is fetched once on a cache miss — without a discography request.
-            var cached = await GetSiblingArtistPageAsync(artistId, id, result.Artist.Name, cancellationToken);
+            var cached = await GetSiblingArtistPageAsync(artistId, id, result.Artist.Name, cancellationToken, forceRefresh);
             if (cached?.Artist is null)
             {
                 continue;
@@ -496,6 +515,7 @@ public sealed class SpotifyArtistService
                 AddImage(image.Url);
             }
 
+            AddImage(cached.Artist.HeaderImageUrl);
             header ??= cached.Artist.HeaderImageUrl;
             foreach (var url in cached.Artist.Gallery ?? new List<string>())
             {
@@ -726,7 +746,7 @@ public sealed class SpotifyArtistService
         long? localArtistId,
         bool includeDeezerLinking,
         bool includeDiscography,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool required = false)
     {
         var (cachedResult, staleCachedPayload) = await TryGetArtistPageFromCacheAsync(
             spotifyId,
@@ -739,13 +759,16 @@ public sealed class SpotifyArtistService
         }
 
         AddActivity("info", $"[spotify] pathfinder fetch: {artistName}.");
-        var artistPage = await TryFetchSpotifyAsync(
+        var artistPage = required
+            ? await _pathfinderMetadataClient.FetchArtistHydratedPageAsync(spotifyId, cancellationToken, includeDiscography, required: true)
+            : await TryFetchSpotifyAsync(
             ct => _pathfinderMetadataClient.FetchArtistHydratedPageAsync(spotifyId, ct, includeDiscography),
             artistName,
             "artist page",
             cancellationToken);
         if (artistPage is null)
         {
+            if (required) throw new InvalidOperationException("Spotify returned no verifiable artist page.");
             if (staleCachedPayload != null)
             {
                 AddActivity("warn", $"[spotify] pathfinder fetch failed; serving stale cache for {artistName}.");
@@ -758,8 +781,12 @@ public sealed class SpotifyArtistService
             spotifyId,
             artistName,
             artistPage,
-            staleCachedPayload,
+            allowCache ? staleCachedPayload : null,
             cancellationToken);
+        if (!includeDiscography && staleCachedPayload is not null)
+        {
+            result = result with { Albums = staleCachedPayload.Albums, AppearsOn = staleCachedPayload.AppearsOn };
+        }
         if (includeDiscography)
         {
             result = result with
@@ -768,7 +795,7 @@ public sealed class SpotifyArtistService
             };
         }
         result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
-        await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken);
+        await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken, required);
         return result;
     }
 
@@ -797,13 +824,13 @@ public sealed class SpotifyArtistService
             return (null, null);
         }
 
+        var cachedPayload = DeserializeCached(cached.PayloadJson);
         if (!allowCache)
         {
             AddActivity("info", $"[spotify] cache bypassed due refresh/rematch: {artistName}.");
-            return (null, null);
+            // Retain only for unrequested fields; requested visual/biography data is fetched fresh.
+            return (null, cachedPayload);
         }
-
-        var cachedPayload = DeserializeCached(cached.PayloadJson);
         if (cachedPayload is null)
         {
             AddActivity("info", $"[spotify] cache invalidated (schema mismatch): {artistName}.");
@@ -1128,14 +1155,18 @@ public sealed class SpotifyArtistService
         string spotifyId,
         string artistName,
         SpotifyArtistPageResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool required = false)
     {
         result = EnsureArtistIdentity(result, artistName);
         var payloadJson = JsonSerializer.Serialize(new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, result), _jsonOptions);
-        await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
-        await _cacheRepository.UpsertGenresAsync(SpotifySource, spotifyId, result.Artist.Genres, cancellationToken);
-        QueueArtistFallbackEnrichment(spotifyId, artistName, result);
-        QueueArtistTopTrackIsrcEnrichment(spotifyId, artistName, result);
+        if (required) await _cacheRepository.UpsertRequiredAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
+        else await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
+        await _cacheRepository.UpsertGenresAsync(SpotifySource, spotifyId, result.Artist.Genres, cancellationToken, required);
+        if (!required)
+        {
+            QueueArtistFallbackEnrichment(spotifyId, artistName, result);
+            QueueArtistTopTrackIsrcEnrichment(spotifyId, artistName, result);
+        }
         AddActivity("info", $"[spotify] data stored: {artistName} (id={spotifyId}).");
         AddActivity("info", $"[spotify] fetch complete: {artistName} (albums={result.Albums.Count}, appears_on={result.AppearsOn.Count}, top_tracks={result.TopTracks.Count}, related={result.RelatedArtists.Count}).");
     }
@@ -3595,6 +3626,9 @@ public sealed class SpotifyArtistService
         string spotifyId,
         CancellationToken cancellationToken)
     {
+        var identities = await _libraryRepository.GetArtistSourceIdentitiesAsync(artistId, SpotifySource, cancellationToken);
+        if (identities.Any(identity => identity.SourceId == spotifyId
+            && string.Equals(identity.VerificationState, "user_confirmed", StringComparison.OrdinalIgnoreCase))) return false;
         var localAlbumTitleSet = FilterResolvableAlbumTitles(
             await TryGetLocalAlbumTitleSetAsync(artistId, cancellationToken));
         if (localAlbumTitleSet.Count == 0)

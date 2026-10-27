@@ -10,7 +10,8 @@ public sealed partial class ArtistArtworkCatalogService
         long artistId,
         string artistName,
         CancellationToken cancellationToken,
-        IReadOnlyList<string>? lookupNames = null)
+        IReadOnlyList<string>? lookupNames = null,
+        IReadOnlySet<string>? allowedProviders = null, ArtistMetadataProviderGate? sharedGate = null)
     {
         var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var titles = await LoadLocalTitlesAsync(artistId, cancellationToken);
@@ -26,9 +27,9 @@ public sealed partial class ArtistArtworkCatalogService
         var localAlbumTitles = await GetLocalAlbumTitlesForOverlapAsync(artistId, cancellationToken);
         var resolvableAlbums = ArtistIdentityTextNormalizer.FilterResolvableTitles(localAlbumTitles);
         var requireOverlap = ArtistIdentityTextNormalizer.ShouldRequireAlbumOverlap(resolvableAlbums);
-        var providerGate = new ArtistMetadataProviderGate(_logger);
+        var providerGate = sharedGate ?? _providerGate;
 
-        if (await MatchSourceIdSafelyAsync(
+        if ((allowedProviders is null || allowedProviders.Contains(SpotifySource)) && await MatchSourceIdSafelyAsync(
                 artistId,
                 SpotifySource,
                 async token =>
@@ -41,7 +42,7 @@ public sealed partial class ArtistArtworkCatalogService
                         return false;
                     }
 
-                    await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, SpotifySource, token);
+                    // Preserve catalog rows and cached bytes; identity eligibility is checked separately.
                     return true;
                 },
                 providerGate,
@@ -50,7 +51,7 @@ public sealed partial class ArtistArtworkCatalogService
             changed.Add(SpotifySource);
         }
 
-        if (await MatchSourceIdSafelyAsync(
+        if ((allowedProviders is null || allowedProviders.Contains(DeezerSource)) && await MatchSourceIdSafelyAsync(
                 artistId,
                 DeezerSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
@@ -65,7 +66,7 @@ public sealed partial class ArtistArtworkCatalogService
             changed.Add(DeezerSource);
         }
 
-        if (await MatchSourceIdSafelyAsync(
+        if ((allowedProviders is null || allowedProviders.Contains(AppleSource)) && await MatchSourceIdSafelyAsync(
                 artistId,
                 AppleSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
@@ -80,7 +81,7 @@ public sealed partial class ArtistArtworkCatalogService
             changed.Add("itunes");
         }
 
-        if (await MatchSourceIdSafelyAsync(
+        if ((allowedProviders is null || allowedProviders.Contains(TidalSource)) && await MatchSourceIdSafelyAsync(
                 artistId,
                 TidalSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
@@ -95,7 +96,7 @@ public sealed partial class ArtistArtworkCatalogService
             changed.Add(TidalSource);
         }
 
-        if (await MatchSourceIdSafelyAsync(
+        if ((allowedProviders is null || allowedProviders.Contains(QobuzSource)) && await MatchSourceIdSafelyAsync(
                 artistId,
                 QobuzSource,
                 async token => await ReplaceSourceIdIfChangedAsync(
@@ -122,7 +123,7 @@ public sealed partial class ArtistArtworkCatalogService
     {
         try
         {
-            return await providerGate.RunAsync(provider, match, cancellationToken);
+            return await providerGate.RunRequiredAsync(provider, match, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -135,7 +136,7 @@ public sealed partial class ArtistArtworkCatalogService
                 "Artist source matcher {Provider} failed for artist {ArtistId}.",
                 provider,
                 artistId);
-            return false;
+            throw;
         }
     }
 
@@ -169,11 +170,7 @@ public sealed partial class ArtistArtworkCatalogService
         }
 
         await _repository.UpsertArtistSourceIdAsync(artistId, source, matchedId, cancellationToken);
-        await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, source, cancellationToken);
-        if (string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase))
-        {
-            await _repository.DeleteArtistArtworkCacheBySourceAsync(artistId, "itunes", cancellationToken);
-        }
+        // Retain existing cached artwork across identity updates.
 
         return true;
     }

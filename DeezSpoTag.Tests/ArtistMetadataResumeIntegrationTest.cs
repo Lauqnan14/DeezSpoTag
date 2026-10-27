@@ -222,7 +222,13 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
             Assert.Equal(17, saved.CacheRequest!.FolderId);
             Assert.Equal("spotify", saved.CacheRequest.Source);
             Assert.Equal(new long[] { 1, 2 }, saved.TargetArtistIds);
-            return await EnqueueTestWork(coordinator, async ct => { started.SetResult(); await finish.Task; return true; }, saved);
+            return await EnqueueTestWork(coordinator, async ct => {
+                started.SetResult(); await finish.Task;
+                foreach (var id in saved.TargetArtistIds!)
+                    await Invoke(coordinator, "RecordArtistOutcomeAsync", new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Succeeded,
+                        CacheWork: new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)}));
+                return true;
+            }, saved);
         }));
         await started.Task;
         Assert.False((await ReadState()).ActiveRun!.Paused);
@@ -251,7 +257,13 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         await coordinator.RecoverRunAsync(CancellationToken.None, async (saved, token) =>
         {
             Assert.Equal("interrupted", saved.RunId);
-            return await EnqueueTestWork(coordinator, async ct => { started.SetResult(); await finish.Task; return true; }, saved);
+            return await EnqueueTestWork(coordinator, async ct => {
+                started.SetResult(); await finish.Task;
+                foreach (var id in saved.TargetArtistIds!)
+                    await Invoke(coordinator, "RecordArtistOutcomeAsync", new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Succeeded,
+                        CacheWork: new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)}));
+                return true;
+            }, saved);
         });
         await started.Task;
         Assert.Equal("running", coordinator.GetStatus().RunState);
@@ -445,7 +457,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
-    public async Task RepeatedRunFailuresPersistAndAbandonAfterThreeAttempts()
+    public async Task RepeatedCacheRunFailuresPersistAndRequireAttentionAfterThreeAttempts()
     {
         var coordinator = CreateCoordinator();
         ArtistMetadataActiveRun? resume = null;
@@ -460,7 +472,12 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
                 Assert.Equal(attempt, state.ActiveRun!.ConsecutiveFailures);
                 resume = state.ActiveRun;
             }
-            else Assert.Null(state.ActiveRun);
+            else
+            {
+                Assert.NotNull(state.ActiveRun);
+                Assert.True(state.ActiveRun.Paused);
+                Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention,state.ActiveRun.Disposition);
+            }
             Assert.Null(state.LastCacheRefreshUtc);
         }
     }

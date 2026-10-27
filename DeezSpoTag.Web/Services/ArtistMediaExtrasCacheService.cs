@@ -70,7 +70,7 @@ public sealed class ArtistMediaExtrasCacheService
         }
     }
 
-    public async Task RefreshAppleAsync(long artistId, string artistName, CancellationToken cancellationToken)
+    public async Task RefreshAppleAsync(long artistId, string artistName, CancellationToken cancellationToken, bool force = false)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName) || AppleCatalogJsonHelper.IsAppleDisabledByEnvironment())
         {
@@ -90,59 +90,79 @@ public sealed class ArtistMediaExtrasCacheService
         }
 
         if (string.IsNullOrWhiteSpace(appleId))
-        {
-            await PersistAsync(
-                artistId,
-                AppleProvider,
-                new ArtistMediaExtrasPayload(null, null, Array.Empty<JsonElement>(), Array.Empty<JsonElement>(), false),
-                cancellationToken);
-            return;
-        }
-
+            throw new InvalidOperationException("Apple artist identity is unresolved; existing extras were retained.");
         var storefront = GetStorefront();
-        var atmos = await LoadAppleAtmosAsync(appleId, storefront, cancellationToken);
-        var (videos, hasMore) = await LoadAppleVideosAsync(appleId, storefront, cancellationToken);
-        await PersistAsync(
-            artistId,
-            AppleProvider,
-            new ArtistMediaExtrasPayload(appleId, null, atmos, videos, hasMore),
-            cancellationToken);
+        await RefreshSectionsAsync(artistId, AppleProvider, appleId, null, force,
+            async () => await LoadAppleAtmosAsync(appleId, storefront, cancellationToken),
+            () => LoadAppleVideosAsync(appleId, storefront, cancellationToken), cancellationToken);
     }
 
-    public async Task RefreshTidalAsync(long artistId, string artistName, CancellationToken cancellationToken)
+    public async Task RefreshTidalAsync(long artistId, string artistName, CancellationToken cancellationToken, bool force = false)
     {
-        if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName)) return;
+        var tidalId = await _repository.GetArtistSourceIdAsync(artistId, TidalProvider, cancellationToken);
+        var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
+        var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken) ?? "US";
+        await RefreshSectionsAsync(artistId, TidalProvider, null, tidalId, force, async () =>
         {
-            return;
-        }
+            var tracks = await SearchTidalAsync("tracks", artistName, 50, token, country, cancellationToken);
+            var albums = await SearchTidalAsync("albums", artistName, 50, token, country, cancellationToken);
+            return MapTidalAtmos(tracks, "track", tidalId, artistName).Concat(MapTidalAtmos(albums, "album", tidalId, artistName)).ToList();
+        }, async () =>
+        {
+            var videos = await SearchTidalAsync("videos", artistName, 50, token, country, cancellationToken);
+            return (MapTidalVideos(videos, tidalId, artistName), false);
+        }, cancellationToken);
+    }
 
-        try
+    private async Task RefreshSectionsAsync(long artistId, string provider, string? appleId, string? tidalId, bool force,
+        Func<Task<IReadOnlyList<JsonElement>>> atmos, Func<Task<(IReadOnlyList<JsonElement> Videos, bool HasMore)>> videos,
+        CancellationToken token)
+    {
+        var current = await TryGetAsync(artistId, provider, token)
+            ?? new ArtistMediaExtrasPayload(appleId, tidalId, [], [], false);
+        Exception? failure = null;
+        foreach (var section in new[] { "atmos", "videos" })
         {
-            var tidalId = await _repository.GetArtistSourceIdAsync(artistId, TidalProvider, cancellationToken);
-            var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
-            var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken) ?? "US";
-            var tracks = await SearchTidalSafelyAsync("tracks", artistId, artistName, 50, token, country, cancellationToken);
-            var albums = await SearchTidalSafelyAsync("albums", artistId, artistName, 50, token, country, cancellationToken);
-            var videos = await SearchTidalSafelyAsync("videos", artistId, artistName, 50, token, country, cancellationToken);
-
-            var atmosTracks = MapTidalAtmos(tracks, "track", tidalId, artistName);
-            var atmosAlbums = MapTidalAtmos(albums, "album", tidalId, artistName);
-            var mappedVideos = MapTidalVideos(videos, tidalId, artistName);
-            await PersistAsync(
-                artistId,
-                TidalProvider,
-                new ArtistMediaExtrasPayload(
-                    null,
-                    tidalId,
-                    atmosTracks.Concat(atmosAlbums).ToList(),
-                    mappedVideos,
-                    false),
-                cancellationToken);
+            var key = $"{artistId}:{provider}:{section}:{appleId ?? tidalId}";
+            var previous = await _cache.TryGetRequiredAsync("artist-media-section", key, token);
+            var completed = previous is not null;
+            if (previous is not null)
+            {
+                using var evidence = JsonDocument.Parse(previous.PayloadJson);
+                // Legacy empty markers were written only on success.
+                completed = !evidence.RootElement.TryGetProperty("complete", out var value) || value.ValueKind == JsonValueKind.True;
+            }
+            if (!force && completed && previous is not null && _cache.IsFresh(previous.FetchedUtc)) continue;
+            try
+            {
+                var replacement = current with { AppleId = appleId, TidalId = tidalId };
+                if (section == "atmos") replacement = replacement with { Atmos = await atmos() };
+                else
+                {
+                    var result = await videos();
+                    replacement = replacement with { Videos = result.Videos, HasMoreVideos = result.HasMore };
+                }
+                await PersistAsync(artistId, provider, replacement, token);
+                await _cache.UpsertRequiredAsync("artist-media-section", key, "{\"complete\":true}", DateTimeOffset.UtcNow, token);
+                current = replacement;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Artist {ArtistId} {Provider}/{Section} extras retained their last-known-good content.", artistId, provider, section);
+                try
+                {
+                    await _cache.UpsertRequiredAsync("artist-media-section", key,
+                        JsonSerializer.Serialize(new { complete = false, reason = ex.GetType().Name, attemptedAtUtc = DateTimeOffset.UtcNow }),
+                        previous?.FetchedUtc ?? DateTimeOffset.MinValue, CancellationToken.None);
+                }
+                catch (Exception saveError) when (ex is OperationCanceledException)
+                { _logger.LogWarning(saveError, "Cancelled artist extras work could not save its retry marker."); }
+                if (ex is OperationCanceledException || ArtistMetadataProviderGate.IsRateLimited(ex)) throw;
+                failure ??= ex;
+            }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Tidal extras cache failed for artist {ArtistId}.", artistId);
-        }
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     private async Task PersistAsync(
@@ -152,7 +172,7 @@ public sealed class ArtistMediaExtrasCacheService
         CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(payload, _json);
-        await _cache.UpsertAsync(CacheSource, BuildCacheId(artistId, provider), json, DateTimeOffset.UtcNow, cancellationToken);
+        await _cache.UpsertRequiredAsync(CacheSource, BuildCacheId(artistId, provider), json, DateTimeOffset.UtcNow, cancellationToken);
     }
 
     private async Task<IReadOnlyList<JsonElement>> LoadAppleAtmosAsync(
@@ -165,7 +185,7 @@ public sealed class ArtistMediaExtrasCacheService
             using var doc = await _appleCatalog.GetArtistAlbumsAsync(appleId, storefront, DefaultLanguage, 100, 0, cancellationToken);
             if (!AppleCatalogJsonHelper.TryGetDataArray(doc.RootElement, out var data))
             {
-                return Array.Empty<JsonElement>();
+                throw new InvalidDataException("Apple Atmos response has no validated data array.");
             }
 
             var items = new List<JsonElement>();
@@ -195,7 +215,7 @@ public sealed class ArtistMediaExtrasCacheService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Apple Atmos extras cache failed for {AppleId}.", appleId);
-            return Array.Empty<JsonElement>();
+            throw;
         }
     }
 
@@ -209,7 +229,7 @@ public sealed class ArtistMediaExtrasCacheService
             using var doc = await _appleCatalog.GetArtistMusicVideosAsync(appleId, storefront, DefaultLanguage, 50, 0, cancellationToken);
             if (!AppleCatalogJsonHelper.TryGetDataArray(doc.RootElement, out var data))
             {
-                return (Array.Empty<JsonElement>(), false);
+                throw new InvalidDataException("Apple videos response has no validated data array.");
             }
 
             var videos = new List<JsonElement>();
@@ -242,7 +262,7 @@ public sealed class ArtistMediaExtrasCacheService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Apple video extras cache failed for {AppleId}.", appleId);
-            return (Array.Empty<JsonElement>(), false);
+            throw;
         }
     }
 
@@ -280,41 +300,14 @@ public sealed class ArtistMediaExtrasCacheService
                 continue;
             }
 
-            if (!response.IsSuccessStatusCode)
-            {
-                return [];
-            }
+            response.EnsureSuccessStatusCode();
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             return ExtractTidalItems(doc.RootElement, endpointType);
         }
 
-        return [];
-    }
-
-    private async Task<List<JsonElement>> SearchTidalSafelyAsync(
-        string endpointType,
-        long artistId,
-        string query,
-        int limit,
-        string token,
-        string country,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await SearchTidalAsync(endpointType, query, limit, token, country, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Tidal {EndpointType} extras lookup failed for artist {ArtistId}.",
-                endpointType,
-                artistId);
-            return [];
-        }
+        throw new HttpRequestException("Tidal authentication did not recover.", null, System.Net.HttpStatusCode.Unauthorized);
     }
 
     private static List<JsonElement> ExtractTidalItems(JsonElement root, string endpointType)
@@ -331,7 +324,7 @@ public sealed class ArtistMediaExtrasCacheService
             return CloneItems(typedItems);
         }
 
-        return [];
+        throw new InvalidDataException("Tidal extras response has no recognised items array.");
     }
 
     private static List<JsonElement> CloneItems(JsonElement items)
@@ -465,7 +458,8 @@ public sealed class ArtistMediaExtrasCacheService
     }
 
     private static string ReadTidalString(JsonElement item, string name)
-        => item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        => item.ValueKind == JsonValueKind.Object
+            && item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() ?? string.Empty
             : string.Empty;
 

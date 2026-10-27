@@ -35,7 +35,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Could not load local album titles for overlap matching. artist={ArtistId}", artistId);
-            return Array.Empty<string>();
+            throw;
         }
     }
 
@@ -180,7 +180,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Deezer artist search failed for {ArtistName}.", artistName);
-            return [];
+            throw;
         }
     }
 
@@ -193,10 +193,7 @@ public sealed partial class ArtistArtworkCatalogService
             using var response = await _httpClients
                 .CreateClient()
                 .GetAsync($"https://api.deezer.com/artist/{Uri.EscapeDataString(candidateId)}/albums?limit={OverlapAlbumFetchLimit}", cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
+            response.EnsureSuccessStatusCode();
 
             var payload = JObject.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             return payload["data"]?
@@ -209,7 +206,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Deezer artist albums fetch failed for {ArtistId}.", candidateId);
-            return null;
+            throw;
         }
     }
 
@@ -228,7 +225,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Qobuz artist search failed for {ArtistName}.", artistName);
-            return [];
+            throw;
         }
     }
 
@@ -243,7 +240,7 @@ public sealed partial class ArtistArtworkCatalogService
 
         try
         {
-            var artist = await _qobuz.GetArtistWithDiscographyAsync(qobuzId, "us-en", cancellationToken);
+            var artist = await _qobuz.GetArtistWithDiscographyAsync(qobuzId, "us-en", cancellationToken, forceRefresh: true);
             return artist?.Albums?.Items
                 .Select(album => album.Title?.Trim())
                 .Where(title => !string.IsNullOrWhiteSpace(title))
@@ -253,7 +250,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Qobuz artist albums fetch failed for {ArtistId}.", candidateId);
-            return null;
+            throw;
         }
     }
 
@@ -271,10 +268,7 @@ public sealed partial class ArtistArtworkCatalogService
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
             using var response = await _httpClients.CreateClient().SendAsync(request, cancellationToken);
             ArtistMetadataProviderGate.ThrowIfRateLimited(response);
-            if (!response.IsSuccessStatusCode)
-            {
-                return [];
-            }
+            response.EnsureSuccessStatusCode();
 
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             if (!document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
@@ -282,21 +276,20 @@ public sealed partial class ArtistArtworkCatalogService
                 return [];
             }
 
-            var candidates = new List<(string, string)>();
-            foreach (var item in items.EnumerateArray())
-            {
-                if (TryReadTidalArtist(item, out var candidateId, out var candidateName))
-                {
-                    candidates.Add((candidateId, candidateName));
-                }
-            }
+            var candidates = items.EnumerateArray()
+                .Select(item => TryReadTidalArtist(item, out var candidateId, out var candidateName)
+                    ? (candidateId, candidateName)
+                    : ((string, string)?)null)
+                .Where(candidate => candidate is not null)
+                .Select(candidate => candidate!.Value)
+                .ToList();
 
             return candidates;
         }
         catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
         {
             _logger.LogDebug(ex, "Tidal artist search failed for {ArtistName}.", artistName);
-            return [];
+            throw;
         }
     }
 
@@ -314,15 +307,12 @@ public sealed partial class ArtistArtworkCatalogService
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
             using var response = await _httpClients.CreateClient().SendAsync(request, cancellationToken);
             ArtistMetadataProviderGate.ThrowIfRateLimited(response);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
+            response.EnsureSuccessStatusCode();
 
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             if (!document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
             {
-                return null;
+                throw new InvalidDataException("Tidal artist albums response has no validated items array.");
             }
 
             var titles = new List<string>();
@@ -340,7 +330,7 @@ public sealed partial class ArtistArtworkCatalogService
         catch (Exception ex) when (ex is not OperationCanceledException && !ArtistMetadataProviderGate.IsRateLimited(ex))
         {
             _logger.LogDebug(ex, "Tidal artist albums fetch failed for {ArtistId}.", candidateId);
-            return null;
+            throw;
         }
     }
 
@@ -389,6 +379,7 @@ public sealed partial class ArtistArtworkCatalogService
                 continue;
             }
 
+            await RejectProvenSourceArtworkAsync(artistId, source, storedId, cancellationToken);
             _logger.LogWarning(
                 "Stored {Source} artist id {StoredId} has no local album overlap; rematching. artist={ArtistId}",
                 source,

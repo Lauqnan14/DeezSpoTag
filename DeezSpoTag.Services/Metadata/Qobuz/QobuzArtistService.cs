@@ -18,16 +18,18 @@ public sealed class QobuzArtistService
         _config = options.Value;
     }
 
-    public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, CancellationToken ct)
+    public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, CancellationToken ct, bool forceRefresh = false)
     {
         var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);
         var cacheKey = $"qobuz_artist_profile_{resolvedStore}_{artistId}";
-        if (_cache.TryGetValue<QobuzArtist>(cacheKey, out var cached))
+        if (!forceRefresh && _cache.TryGetValue<QobuzArtist>(cacheKey, out var cached))
         {
             return cached;
         }
 
-        var artist = await _apiClient.GetArtistAsync(artistId, resolvedStore, offset: 0, limit: 1, ct);
+        var artist = forceRefresh
+            ? await _apiClient.GetArtistRequiredAsync(artistId, resolvedStore, offset: 0, limit: 1, ct)
+            : await _apiClient.GetArtistAsync(artistId, resolvedStore, offset: 0, limit: 1, ct);
         if (artist != null)
         {
             var cacheMinutes = _config.CacheDurationMinutes > 0 ? _config.CacheDurationMinutes : 60;
@@ -37,16 +39,16 @@ public sealed class QobuzArtistService
         return artist;
     }
 
-    public async Task<QobuzArtist?> GetArtistWithDiscographyAsync(int artistId, string store, CancellationToken ct)
+    public async Task<QobuzArtist?> GetArtistWithDiscographyAsync(int artistId, string store, CancellationToken ct, bool forceRefresh = false)
     {
         var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);
         var cacheKey = $"qobuz_artist_{resolvedStore}_{artistId}";
-        if (_cache.TryGetValue<QobuzArtist>(cacheKey, out var cached))
+        if (!forceRefresh && _cache.TryGetValue<QobuzArtist>(cacheKey, out var cached))
         {
             return cached;
         }
 
-        var artist = await FetchArtistDiscographyAsync(artistId, resolvedStore, ct);
+        var artist = await FetchArtistDiscographyAsync(artistId, resolvedStore, ct, forceRefresh);
         if (artist != null)
         {
             var cacheMinutes = _config.CacheDurationMinutes > 0 ? _config.CacheDurationMinutes : 60;
@@ -56,7 +58,7 @@ public sealed class QobuzArtistService
         return artist;
     }
 
-    private async Task<QobuzArtist?> FetchArtistDiscographyAsync(int artistId, string store, CancellationToken ct)
+    private async Task<QobuzArtist?> FetchArtistDiscographyAsync(int artistId, string store, CancellationToken ct, bool required)
     {
         var allAlbums = new List<QobuzAlbum>();
         var offset = 0;
@@ -65,7 +67,9 @@ public sealed class QobuzArtistService
 
         while (true)
         {
-            var response = await _apiClient.GetArtistAsync(artistId, store, offset, limit, ct);
+            var response = required
+                ? await _apiClient.GetArtistRequiredAsync(artistId, store, offset, limit, ct)
+                : await _apiClient.GetArtistAsync(artistId, store, offset, limit, ct);
             if (response == null)
             {
                 return baseArtist;

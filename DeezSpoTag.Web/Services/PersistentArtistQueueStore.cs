@@ -55,10 +55,20 @@ internal static class PersistentArtistQueueStore
             }
 
             queueItems[key] = item;
-            PersistQueueSnapshot(queueItems, queueLock, queuePath);
+            try
+            {
+                PersistQueueSnapshot(queueItems, queueLock, queuePath);
+                if (channel.Writer.TryWrite(item)) return true;
+                queueItems.Remove(key);
+                PersistQueueSnapshot(queueItems, queueLock, queuePath);
+                return false;
+            }
+            catch
+            {
+                queueItems.Remove(key);
+                throw;
+            }
         }
-
-        return channel.Writer.TryWrite(item);
     }
 
     public static void CompleteItem<TItem>(
@@ -70,8 +80,15 @@ internal static class PersistentArtistQueueStore
     {
         lock (queueLock)
         {
-            queueItems.Remove(keySelector(item));
-            PersistQueueSnapshot(queueItems, queueLock, queuePath);
+            var key = keySelector(item);
+            var hadItem = queueItems.TryGetValue(key, out var previous);
+            queueItems.Remove(key);
+            try { PersistQueueSnapshot(queueItems, queueLock, queuePath); }
+            catch
+            {
+                if (hadItem) queueItems[key] = previous!;
+                throw;
+            }
         }
     }
 
@@ -140,14 +157,33 @@ internal static class PersistentArtistQueueStore
         }
     }
 
+    public static bool PersistRetainedQueueSnapshot<TItem>(Dictionary<long, TItem> items,
+        object queueLock, string path, ILogger logger)
+    {
+        try { PersistQueueSnapshot(items, queueLock, path); return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogError(ex, "Retained artist work remains in memory; its queue snapshot could not be saved to {QueuePath}.", path);
+            return false;
+        }
+    }
+
     public static void PersistQueueSnapshot<TItem>(
         Dictionary<long, TItem> queueItems,
         object queueLock,
         string queuePath)
     {
-        var items = queueItems.Values.ToList();
-        var json = JsonSerializer.Serialize(items);
-        Directory.CreateDirectory(Path.GetDirectoryName(queuePath)!);
-        File.WriteAllText(queuePath, json);
+        lock (queueLock)
+        {
+            var json = JsonSerializer.Serialize(queueItems.Values.ToList());
+            Directory.CreateDirectory(Path.GetDirectoryName(queuePath)!);
+            var temporary = queuePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, json);
+                File.Move(temporary, queuePath, overwrite: true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
     }
 }

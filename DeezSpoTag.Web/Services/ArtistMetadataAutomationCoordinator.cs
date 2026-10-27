@@ -16,6 +16,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     /// </summary>
     private const int MaxConsecutiveRunFailures = 3;
     private readonly ArtistMetadataCacheRefreshService _cacheRefresh;
+    private readonly LibraryArtistMetadataQueueService? _artistQueue;
     private readonly ArtistMetadataUpdaterService _targetUpdate;
     private readonly UserPreferencesStore _preferences;
     private readonly ILogger<ArtistMetadataAutomationCoordinator> _logger;
@@ -44,8 +45,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         ArtistMetadataUpdaterService targetUpdate,
         UserPreferencesStore preferences,
         IWebHostEnvironment environment,
-        ILogger<ArtistMetadataAutomationCoordinator> logger)
+        ILogger<ArtistMetadataAutomationCoordinator> logger,
+        LibraryArtistMetadataQueueService? artistQueue = null)
     {
+        _artistQueue = artistQueue;
         _cacheRefresh = cacheRefresh;
         _targetUpdate = targetUpdate;
         _preferences = preferences;
@@ -244,6 +247,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private static void ResetRetryWindow(ArtistMetadataActiveRun run)
     {
         run.TargetAttempts.Clear();
+        run.CacheAttempts.Clear();
         run.NextAttemptUtc = null;
         run.PendingNotice = null;
         run.Disposition = null;
@@ -400,24 +404,30 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         };
     }
 
-    public async Task<bool> EnqueueArtistCacheRefreshAsync(long artistId, CancellationToken cancellationToken)
+    public async Task<(bool Queued, string? RunId)> EnqueueArtistCacheRefreshAsync(long artistId, CancellationToken cancellationToken,
+        ArtistCacheRefreshScope scope = ArtistCacheRefreshScope.Full, bool automatic = false)
     {
         var preferences = await _preferences.LoadAsync();
-        var request = BuildCacheRequest(preferences) with { ArtistId = artistId, FolderId = null };
-        return await EnqueueCacheRefreshAsync(request, cancellationToken);
+        var request = BuildCacheRequest(preferences) with { ArtistId = artistId, FolderId = null, Scope = scope, ForceProviderRefresh = !automatic };
+        if (automatic && await _cacheRefresh.IsCompleteAsync(request, cancellationToken)) return (false, null);
+        if (_artistQueue is null) throw new InvalidOperationException("Artist cache queue is unavailable.");
+        return await _artistQueue.EnqueueRefreshAsync(request, cancellationToken);
     }
+
+    public ArtistMetadataAutomationStatus? GetArtistCacheRefreshStatus(string? runId, long? artistId = null)
+        => _artistQueue?.GetRefreshStatus(runId, artistId);
 
     public Task<bool> EnqueueCacheRefreshAsync(ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken)
         => EnqueueAsync(
             "cache-refresh",
             async token =>
             {
-                await RunCacheRefreshAsync(request, automatic: false, token);
+                await RunCacheRefreshAsync(request with { ForceProviderRefresh = true }, automatic: false, token);
                 return true;
             },
             cancellationToken,
             resuming: null,
-            cacheRequest: request);
+            cacheRequest: request with { ForceProviderRefresh = true });
 
     public Task<bool> EnqueueTargetUpdateAsync(MetadataUpdaterRunRequest request, CancellationToken cancellationToken)
         => EnqueueAsync(
@@ -791,9 +801,17 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 
             var deepRefresh = _checkpoint?.CacheRequest?.ForceProviderRefresh == true;
             var finishedRun = _checkpoint;
+            // A failed append must retain the frozen run, never become an empty successful sweep.
+            if (operation == "cache-refresh") await FlushCheckpointAsync(requireDurable: true);
             await StopCheckpointWritesAsync();
             var state = await LoadStateAsync(CancellationToken.None);
-            if (operation == "cache-refresh")
+            if (operation == "cache-refresh" && finishedRun is not null
+                && RetainUnresolvedCacheWork(finishedRun, ReadRunOutcomes(finishedRun), DateTimeOffset.UtcNow))
+            {
+                state.ActiveRun = SnapshotRun(finishedRun);
+                await SaveStateAsync(state, CancellationToken.None);
+            }
+            else if (operation == "cache-refresh")
             {
                 state.LastCacheRefreshUtc = DateTimeOffset.UtcNow;
                 if (deepRefresh)
@@ -893,11 +911,17 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 {
                     poisoned.ConsecutiveFailures++;
                     failures = poisoned.ConsecutiveFailures;
+                    if (operation == "cache-refresh")
+                    {
+                        poisoned.Disposition = ArtistMetadataRunDispositions.PendingRetry;
+                        poisoned.NextAttemptUtc = DateTimeOffset.UtcNow + PollInterval;
+                        poisoned.PendingNotice = "Refresh Cache could not save completion evidence; unfinished work was retained.";
+                    }
                 }
             }
 
             if (failures >= MaxConsecutiveRunFailures
-                && (ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null }
+                && (operation == "cache-refresh" || ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null }
                     || ex is TimeoutException or OperationCanceledException))
             {
                 lock (_checkpointLock)
@@ -956,7 +980,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                     _activeCts = null;
                     _status = FinalizeOperationStatus(_status, operation,
                         _shutdownRequested || _shutdownToken.IsCancellationRequested, DateTimeOffset.UtcNow);
-                    _status = _status with { RunState = "idle", RunId = null, RunOperation = null };
+                    _status = _status with { RunState = "idle" };
                 }
                 cts.Dispose();
                 if (userCts is not null && !ReferenceEquals(userCts, cts)) userCts.Dispose();
@@ -1027,6 +1051,37 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     /// settled only when no artist still owes a target write; otherwise the run keeps its journal and is
     /// retried at the poll interval, and the success clock is not stamped for it.
     /// </summary>
+    private static bool RetainUnresolvedCacheWork(ArtistMetadataActiveRun run,
+        IReadOnlyList<ArtistRunOutcomeRecord> outcomes, DateTimeOffset nowUtc)
+    {
+        var recorded = outcomes.Select(row => row.ArtistId).ToHashSet();
+        var missing = (run.TargetArtistIds ?? []).Where(id => !recorded.Contains(id))
+            .Select(id => new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Failed,
+                CacheWork: [new ArtistCacheWorkOutcome("local", "artist", ArtistCacheWorkStatus.Failed, ReasonCode: "missing-outcome")]));
+        var pending = outcomes.Concat(missing).SelectMany(row => (row.CacheWork ??
+            [new ArtistCacheWorkOutcome("local", "artist", ArtistCacheWorkStatus.Failed, ReasonCode: "unknown-stage-evidence")])
+            .Where(work => !work.IsComplete).Select(work => (row.ArtistId, Work: work))).ToList();
+        if (pending.Count == 0) return false;
+        var attempts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var entry in pending)
+        {
+            var key = $"{entry.ArtistId}:{entry.Work.Provider}:{entry.Work.Stage}";
+            attempts[key] = run.CacheAttempts.GetValueOrDefault(key) + 1;
+        }
+        run.CacheAttempts = attempts;
+        var needsAttention = pending.Any(item => item.Work.Status == ArtistCacheWorkStatus.AuthenticationRequired)
+            || attempts.Values.Any(attempt => attempt >= MaxAttemptsPerUnresolvedTarget);
+        var retryDue = pending.Where(item => item.Work.RetryAtUtc.HasValue)
+            .Select(item => item.Work.RetryAtUtc!.Value).DefaultIfEmpty(nowUtc + PollInterval).Max();
+        run.NextAttemptUtc = needsAttention ? null : (retryDue > nowUtc + PollInterval ? retryDue : nowUtc + PollInterval);
+        run.Paused = needsAttention;
+        run.Disposition = needsAttention ? ArtistMetadataRunDispositions.NeedsAttention : ArtistMetadataRunDispositions.PendingRetry;
+        run.PendingNotice = needsAttention
+            ? $"Refresh Cache retained {pending.Count} unfinished source update(s). Check provider access, then Resume."
+            : $"Refresh Cache retained {pending.Count} unfinished source update(s) for retry.";
+        return true;
+    }
+
     private RetainedRunDecision RetainUnresolvedTargetWork(ArtistMetadataActiveRun run, DateTimeOffset nowUtc)
     {
         var pairs = ArtistMetadataPendingWork.Collect(ReadRunOutcomes(run), run.TargetAttempts);
@@ -1091,6 +1146,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         TargetRequest = checkpoint.TargetRequest, RunId = checkpoint.RunId,
         TargetArtistIds = checkpoint.TargetArtistIds.ToList(), ConsecutiveFailures = checkpoint.ConsecutiveFailures,
         TargetAttempts = new Dictionary<string, int>(checkpoint.TargetAttempts, StringComparer.Ordinal),
+        CacheAttempts = new Dictionary<string, int>(checkpoint.CacheAttempts, StringComparer.Ordinal),
         NextAttemptUtc = checkpoint.NextAttemptUtc, PendingNotice = checkpoint.PendingNotice,
         Disposition = checkpoint.Disposition,
         UnresolvedAuditArtists = checkpoint.UnresolvedAuditArtists.ToDictionary(pair => pair.Key, pair => new Dictionary<long, string>(pair.Value), StringComparer.OrdinalIgnoreCase),
@@ -1271,7 +1327,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             outcomes.Count(o => o.Outcome == ArtistRunOutcomes.Failed)));
         var progress = new Progress<ArtistMetadataOperationProgress>(UpdateCacheProgress);
         var result = await _cacheRefresh.RefreshAsync(
-            request,
+            outcomes.Count > 0 ? request with { ForceProviderRefresh = false } : request,
             progress,
             resumedRun: resume,
             outcomeSink: NoteArtistOutcome,
@@ -1289,6 +1345,8 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             CurrentArtist = null,
             CompletedAtUtc = DateTimeOffset.UtcNow
         });
+        if (_checkpoint is { } run)
+            await _cacheRefresh.SaveRunResultAsync(run.RunId, request.ArtistId, result, cancellationToken);
         return result;
     }
 
@@ -1676,6 +1734,7 @@ public sealed class ArtistMetadataActiveRun
     /// explicit Resume clears the counters so it starts a new retry window.
     /// </summary>
     public Dictionary<string, int> TargetAttempts { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, int> CacheAttempts { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>When the retained run's next automatic attempt is due. Null when nothing is pending.</summary>
     public DateTimeOffset? NextAttemptUtc { get; set; }
@@ -1780,7 +1839,8 @@ public sealed record ArtistRunOutcomeRecord(
     IReadOnlyList<ArtistTargetResult>? Targets = null,
     MetadataUpdaterTrackedArtist? TrackingState = null,
     IReadOnlyList<ArtistTargetPendingWork>? PendingWork = null,
-    ArtistPushPayload? Payload = null)
+    ArtistPushPayload? Payload = null,
+    IReadOnlyList<ArtistCacheWorkOutcome>? CacheWork = null)
 {
     /// <summary>Never-null view over <see cref="Targets"/> for consumers walking the graph.</summary>
     public IReadOnlyList<ArtistTargetResult> TargetResults => Targets ?? Array.Empty<ArtistTargetResult>();
@@ -1792,7 +1852,7 @@ public sealed record ArtistRunOutcomeRecord(
     /// True when this artist still owes a server write after its last attempt. Only typed outcomes
     /// carry this, so legacy records without per-target evidence never suppress or invent a retry.
     /// </summary>
-    public bool HasUnresolvedWork => PendingWorkList.Count > 0;
+    public bool HasUnresolvedWork => PendingWorkList.Count > 0 || CacheWork?.Any(work => !work.IsComplete) == true;
 }
 
 /// <summary>

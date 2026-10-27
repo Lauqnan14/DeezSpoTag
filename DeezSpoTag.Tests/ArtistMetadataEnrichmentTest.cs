@@ -221,7 +221,9 @@ public sealed class ArtistMetadataEnrichmentTest
             var service = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
             type.GetField("_locationResolver", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(service, resolver);
             type.GetField("_artistPageCache", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(service, cache);
-            await (Task)type.GetMethod("RetainArtistEnrichmentAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(service, new object[] { 7L, "Artist", CancellationToken.None })!;
+            type.GetField("_providerGate", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(service,
+                new DeezSpoTag.Web.Services.ArtistMetadataProviderGate(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, _ => TimeSpan.Zero));
+            await (Task)type.GetMethod("RetainArtistEnrichmentAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(service, new object[] { 7L, "Artist", "auto", CancellationToken.None })!;
             var entry = await cache.TryGetAsync("artist-enrichment", "7", CancellationToken.None);
             using var json = System.Text.Json.JsonDocument.Parse(entry!.PayloadJson);
             Assert.Equal(time, json.RootElement.GetProperty("metadata").GetProperty("Languages")[0].GetProperty("KnownAt").GetDateTimeOffset());

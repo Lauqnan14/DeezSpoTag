@@ -14,6 +14,37 @@ namespace DeezSpoTag.Tests;
 public class ArtistMetadataRunOutcomeTest
 {
     [Fact]
+    public void MissingCacheOutcomeCannotCompleteFrozenTargets()
+    {
+        var run = new ArtistMetadataActiveRun {Operation="cache-refresh",TargetArtistIds=new(){7,8}};
+        var rows = new[]{new ArtistRunOutcomeRecord(7,ArtistRunOutcomes.Succeeded,
+            CacheWork:new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)})};
+        var method=typeof(ArtistMetadataAutomationCoordinator).GetMethod("RetainUnresolvedCacheWork",
+            System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+        Assert.True((bool)method.Invoke(null,new object[]{run,rows,DateTimeOffset.UtcNow})!);
+        Assert.Equal(ArtistMetadataRunDispositions.PendingRetry,run.Disposition);
+    }
+
+    [Fact]
+    public void CacheRetryBudgetRetainsProviderStagesAndStopsAfterThreeAttempts()
+    {
+        var method = typeof(ArtistMetadataAutomationCoordinator).GetMethod("RetainUnresolvedCacheWork",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh" };
+        var work = new[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Failed,
+            CacheWork: new[] { new ArtistCacheWorkOutcome("spotify", "artwork", ArtistCacheWorkStatus.Failed) }) };
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            Assert.True((bool)method!.Invoke(null, new object[] { run, work, DateTimeOffset.UtcNow })!);
+            Assert.Equal(attempt == 3, run.Paused);
+        }
+        Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, run.Disposition);
+        Assert.Null(run.NextAttemptUtc);
+        Assert.True((bool)method!.Invoke(null, new object[] { run, work, DateTimeOffset.UtcNow })!);
+    }
+
+    [Fact]
     public void RetryingAnArtistReplacesItsFailureInsteadOfInflatingProgress()
     {
         var counters = InvokeCounters("FromOutcomes", 1, new[] { new ArtistRunOutcomeRecord(7, ArtistRunOutcomes.Failed) });

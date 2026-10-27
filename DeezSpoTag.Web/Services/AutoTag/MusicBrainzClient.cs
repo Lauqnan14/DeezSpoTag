@@ -9,6 +9,16 @@ public sealed class MusicBrainzClient
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<MusicBrainzClient> _logger;
+    private readonly AsyncLocal<bool> _requiredRefresh = new();
+
+    internal async Task<T> RunRequiredAsync<T>(Func<Task<T>> operation)
+    {
+        var previous = _requiredRefresh.Value;
+        _requiredRefresh.Value = true;
+        try { return await operation(); }
+        finally { _requiredRefresh.Value = previous; }
+    }
+
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -289,12 +299,16 @@ public sealed class MusicBrainzClient
             {
                 response = await _httpClient.GetAsync(path, cancellationToken);
             }
-            catch (Exception ex) when (attempt < 4 && ex is not OperationCanceledException)
+            catch (Exception ex) when (!_requiredRefresh.Value && attempt < 4 && ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "MusicBrainz request failed (attempt {Attempt}): {Detail}", attempt + 1, BuildExceptionDetail(ex));
                 continue;
             }
 
+            if (_requiredRefresh.Value && !response.IsSuccessStatusCode)
+            {
+                using (response) response.EnsureSuccessStatusCode();
+            }
             if (response.StatusCode is HttpStatusCode.ServiceUnavailable or (HttpStatusCode)429)
             {
                 var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds;
@@ -329,7 +343,7 @@ public sealed class MusicBrainzClient
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             return await JsonSerializer.DeserializeAsync<T>(stream, _jsonOptions, cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MusicBrainz response deserialization failed.");
             return default;

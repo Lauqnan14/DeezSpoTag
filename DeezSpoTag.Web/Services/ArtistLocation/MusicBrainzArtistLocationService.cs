@@ -42,6 +42,16 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
     /// </summary>
     private const int ReleaseGroupLimit = 100;
 
+    private readonly AsyncLocal<bool> _requiredRefresh = new();
+
+    public async Task<ArtistLocationResult?> ResolveRequiredAsync(long artistId, string artistName, CancellationToken token)
+    {
+        var previous = _requiredRefresh.Value;
+        _requiredRefresh.Value = true;
+        try { return await _client.RunRequiredAsync(() => ResolveCoreAsync(artistId, artistName, token)); }
+        finally { _requiredRefresh.Value = previous; }
+    }
+
     private readonly MusicBrainzClient _client;
     private readonly LibraryRepository? _repository;
     private readonly ILogger<MusicBrainzArtistLocationService> _logger;
@@ -151,7 +161,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
         {
             artist = await _client.GetArtistAsync(mbid, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MusicBrainz artist lookup failed for {Mbid}.", mbid);
             return null;
@@ -181,7 +191,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .SearchArtistsAsync(artistName, SearchCandidateLimit, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MusicBrainz artist search failed for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             return null;
@@ -348,7 +358,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .Select(title => title.Trim())
                 .ToList();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Album lookup failed for artist {ArtistId}.", artistId);
             return Array.Empty<string>();
@@ -375,7 +385,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .Select(title => title.Trim())
                 .ToList();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "MusicBrainz release-group lookup failed for {Mbid}.", mbid);
             return Array.Empty<string>();
@@ -395,7 +405,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .GetArtistSourceIdAsync(artistId, MusicBrainzSourceName, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MusicBrainz source lookup failed for artist {ArtistId}.", artistId);
             return null;
@@ -415,7 +425,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .UpsertArtistSourceIdAsync(artistId, MusicBrainzSourceName, mbid, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             // Caching the identity is an optimisation; failing to persist it only
             // costs another search next time, so it must not fail the resolution.
@@ -436,7 +446,7 @@ public sealed class MusicBrainzArtistLocationService : IArtistLocationSource
                 .GetArtistMusicBrainzArtistIdAsync(artistId, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!_requiredRefresh.Value && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MusicBrainz tag lookup failed for artist {ArtistId}.", artistId);
             return null;

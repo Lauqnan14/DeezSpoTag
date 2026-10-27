@@ -27,6 +27,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private readonly record struct SpotiFlacCoverUrls(string? Small, string? Medium, string? Large);
 
+    private readonly AsyncLocal<bool> _requiredRefresh = new();
+
     private sealed record PathfinderAuthContext(string AccessToken, string ClientToken, string ClientVersion, string DeviceId);
 
     public sealed record PathfinderAuthFailure(
@@ -883,54 +885,62 @@ public sealed class SpotifyPathfinderMetadataClient
     public async Task<SpotifyArtistHydratedPage?> FetchArtistHydratedPageAsync(
         string artistId,
         CancellationToken cancellationToken,
-        bool includeDiscography = true)
+        bool includeDiscography = true, bool required = false)
     {
-        if (string.IsNullOrWhiteSpace(artistId))
+        var previous = _requiredRefresh.Value;
+        _requiredRefresh.Value = required;
+        try
         {
-            return null;
+            if (string.IsNullOrWhiteSpace(artistId))
+            {
+                return null;
+            }
+            PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
+            if (context is null)
+            {
+                if (required) throw new HttpRequestException("Spotify artist authentication is unavailable.", null, HttpStatusCode.Unauthorized);
+                return null;
+            }
+            Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
+            Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
+            Task<List<SpotifyAlbumSummary>>? discographyTask = includeDiscography
+                ? FetchArtistDiscographyAsync(context, artistId, cancellationToken)
+                : null;
+            if (discographyTask is null)
+            {
+                await Task.WhenAll(artistTask, overviewTask);
+            }
+            else
+            {
+                await Task.WhenAll(artistTask, overviewTask, discographyTask);
+            }
+            JsonElement? artist = await artistTask;
+            JsonElement? overview = await overviewTask;
+            if (!artist.HasValue && !overview.HasValue)
+            {
+                if (required) throw new InvalidDataException("Spotify artist queries returned no verifiable profile.");
+                return null;
+            }
+            JsonElement primaryArtistValue = artist ?? overview ?? default;
+            SpotifyArtistExtras extras = ParseArtistExtras(primaryArtistValue);
+            if (IsPlaceholderBiography(extras.Biography))
+            {
+                extras = await TryHydrateArtistExtrasFromLocalesAsync(context, artistId, extras, cancellationToken);
+            }
+            if (IsPlaceholderBiography(extras.Biography))
+            {
+                _logger.LogDebug("Spotify Pathfinder biography hydration skipped: no alternate auth context available.");
+            }
+            List<SpotifyAlbumSummary> albums = discographyTask is null
+                ? new List<SpotifyAlbumSummary>()
+                : await discographyTask;
+            SpotifyArtistOverview parsedOverview = MergeArtistOverview(artist.HasValue ? ParseArtistOverview(artistId, artist.Value) : null, overview.HasValue ? ParseArtistOverview(artistId, overview.Value) : null) ?? ParseArtistOverview(artistId, primaryArtistValue);
+            List<SpotifyTrackSummary> topTracks = MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
+            List<SpotifyRelatedArtist> relatedArtists = ParseArtistRelatedArtists(primaryArtistValue);
+            List<SpotifyAlbumSummary> appearsOn = ParseArtistAppearsOn(primaryArtistValue);
+            return new SpotifyArtistHydratedPage(parsedOverview, extras, topTracks, relatedArtists, appearsOn, albums);
         }
-        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
-        if (context is null)
-        {
-            return null;
-        }
-        Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
-        Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
-        Task<List<SpotifyAlbumSummary>>? discographyTask = includeDiscography
-            ? FetchArtistDiscographyAsync(context, artistId, cancellationToken)
-            : null;
-        if (discographyTask is null)
-        {
-            await Task.WhenAll(artistTask, overviewTask);
-        }
-        else
-        {
-            await Task.WhenAll(artistTask, overviewTask, discographyTask);
-        }
-        JsonElement? artist = await artistTask;
-        JsonElement? overview = await overviewTask;
-        if (!artist.HasValue && !overview.HasValue)
-        {
-            return null;
-        }
-        JsonElement primaryArtistValue = artist ?? overview ?? default;
-        SpotifyArtistExtras extras = ParseArtistExtras(primaryArtistValue);
-        if (IsPlaceholderBiography(extras.Biography))
-        {
-            extras = await TryHydrateArtistExtrasFromLocalesAsync(context, artistId, extras, cancellationToken);
-        }
-        if (IsPlaceholderBiography(extras.Biography))
-        {
-            _logger.LogDebug("Spotify Pathfinder biography hydration skipped: no alternate auth context available.");
-        }
-        List<SpotifyAlbumSummary> albums = discographyTask is null
-            ? new List<SpotifyAlbumSummary>()
-            : await discographyTask;
-        SpotifyArtistOverview parsedOverview = MergeArtistOverview(artist.HasValue ? ParseArtistOverview(artistId, artist.Value) : null, overview.HasValue ? ParseArtistOverview(artistId, overview.Value) : null) ?? ParseArtistOverview(artistId, primaryArtistValue);
-        List<SpotifyTrackSummary> topTracks = MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
-        List<SpotifyRelatedArtist> relatedArtists = ParseArtistRelatedArtists(primaryArtistValue);
-        List<SpotifyAlbumSummary> appearsOn = ParseArtistAppearsOn(primaryArtistValue);
-        return new SpotifyArtistHydratedPage(parsedOverview, extras, topTracks, relatedArtists, appearsOn, albums);
+        finally { _requiredRefresh.Value = previous; }
     }
 
     public async Task<List<SpotifyAlbumSummary>> FetchArtistDiscographyAllAsync(string artistId, CancellationToken cancellationToken)
@@ -1313,15 +1323,20 @@ public sealed class SpotifyPathfinderMetadataClient
             || !document.RootElement.TryGetProperty("mediaItems", out var items) || items.ValueKind != JsonValueKind.Array)
             throw new JsonException("Spotify Song Radio response is missing its playlist list.");
         if (items.GetArrayLength() == 0) return null;
-        foreach (var item in items.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("uri", out var uri) || uri.ValueKind != JsonValueKind.String) continue;
-            var value = uri.GetString();
-            const string prefix = "spotify:playlist:";
-            if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal)
-                && value.Length == prefix.Length + 22 && value[prefix.Length..].All(char.IsAsciiLetterOrDigit)) return value;
-        }
-        throw new JsonException("Spotify Song Radio response has no valid playlist identity.");
+        const string prefix = "spotify:playlist:";
+        return items.EnumerateArray()
+            .Select(item =>
+            {
+                if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("uri", out var uri) || uri.ValueKind != JsonValueKind.String) return null;
+                return uri.GetString() is { } value
+                    && value.StartsWith(prefix, StringComparison.Ordinal)
+                    && value.Length == prefix.Length + 22
+                    && value[prefix.Length..].All(char.IsAsciiLetterOrDigit)
+                    ? value
+                    : null;
+            })
+            .FirstOrDefault(value => value is not null)
+            ?? throw new JsonException("Spotify Song Radio response has no valid playlist identity.");
     }
 
     public async Task<bool> HasBlobBackedAuthContextAsync(CancellationToken cancellationToken)
@@ -2740,25 +2755,36 @@ public sealed class SpotifyPathfinderMetadataClient
                     (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, queryTimeout.Token);
                 }
             }
+            if (_requiredRefresh.Value && status != HttpStatusCode.OK)
+                throw new HttpRequestException($"Spotify artist query returned HTTP {(int)status}.", null, status);
+            if (_requiredRefresh.Value && string.IsNullOrWhiteSpace(json))
+                throw new InvalidDataException("Spotify artist query returned an empty response.");
             if (ShouldReturnNullFromQueryResponse(status, json, operationName))
             {
                 return null;
             }
             string responseJson = json!;
-            return JsonDocument.Parse(responseJson);
+            var document = JsonDocument.Parse(responseJson);
+            if (_requiredRefresh.Value && document.RootElement.TryGetProperty("errors", out var errors)
+                && errors.ValueKind == JsonValueKind.Array && errors.GetArrayLength() > 0)
+            {
+                document.Dispose();
+                throw new InvalidDataException("Spotify artist query returned GraphQL errors.");
+            }
+            return document;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!_requiredRefresh.Value)
         {
             _logger.LogWarning(
                 "Spotify Pathfinder query exceeded {TimeoutSeconds}s.",
                 PathfinderQueryTimeout.TotalSeconds);
             return null;
         }
-        catch (Exception ex) when (!(ex is OperationCanceledException))
+        catch (Exception ex) when (!_requiredRefresh.Value && !(ex is OperationCanceledException))
         {
             _logger.LogWarning(ex, "Spotify Pathfinder query failed.");
             return null;
@@ -5327,7 +5353,7 @@ public sealed class SpotifyPathfinderMetadataClient
                 requestTimeout.CancelAfter(PathfinderRequestTimeout);
                 using HttpResponseMessage response = await client.SendAsync(request, requestTimeout.Token);
                 string? body = response.Content != null ? await response.Content.ReadAsStringAsync(requestTimeout.Token) : null;
-                if (!IsTransientPathfinderStatus(response.StatusCode) || attempt == 4)
+                if (_requiredRefresh.Value || !IsTransientPathfinderStatus(response.StatusCode) || attempt == 4)
                 {
                     return (Status: response.StatusCode, Json: body);
                 }
@@ -5345,7 +5371,7 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 throw;
             }
-            catch (OperationCanceledException) when (attempt < 4)
+            catch (OperationCanceledException) when (!_requiredRefresh.Value && attempt < 4)
             {
                 _logger.LogWarning(
                     "Spotify Pathfinder request timed out after {TimeoutSeconds}s. Retrying (attempt {Attempt}/{MaxAttempts}).",
@@ -5354,7 +5380,7 @@ public sealed class SpotifyPathfinderMetadataClient
                     4);
                 await Task.Delay(PathfinderTimeoutRetryDelay, cancellationToken);
             }
-            catch (HttpRequestException ex) when (attempt < 4)
+            catch (HttpRequestException ex) when (!_requiredRefresh.Value && attempt < 4)
             {
                 var retryDelay = TimeSpan.FromMilliseconds(250 * Math.Pow(2, attempt - 1));
                 _logger.LogWarning(ex, "Spotify Pathfinder transport failed. Retrying in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).", Math.Round(retryDelay.TotalSeconds, 1), attempt, 4);

@@ -263,6 +263,28 @@ public sealed class ArtistMetadataProviderGateTest
         Assert.DoesNotContain("await operationCancellation.CancelAsync()", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RequiredLookupDistinguishesRateLimitFromEmptySuccess()
+    {
+        var gate = CreateGate();
+        await Assert.ThrowsAsync<HttpRequestException>(() => gate.RunRequiredAsync<int>("tidal",
+            _ => throw new HttpRequestException("limited", null, HttpStatusCode.TooManyRequests), CancellationToken.None));
+        var called = false;
+        await Assert.ThrowsAsync<HttpRequestException>(() => gate.RunRequiredAsync("tidal",
+            _ => { called = true; return Task.FromResult(1); }, CancellationToken.None));
+        Assert.False(called);
+        Assert.Equal(0, await gate.RunRequiredAsync("spotify", _ => Task.FromResult(0), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RequiredLookupRetainsTimeoutClassification()
+    {
+        var gate = CreateGate(operationTimeout: TimeSpan.FromMilliseconds(30));
+        await Assert.ThrowsAsync<TimeoutException>(() => gate.RunRequiredAsync("spotify",
+            async token => { await Task.Delay(Timeout.InfiniteTimeSpan, token); return 1; }, CancellationToken.None));
+        Assert.Equal(2, await gate.RunRequiredAsync("spotify", _ => Task.FromResult(2), CancellationToken.None));
+    }
+
     private static string FindRepoRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

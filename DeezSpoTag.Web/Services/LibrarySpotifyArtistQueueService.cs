@@ -18,6 +18,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     private static readonly TimeSpan BatchInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DispatchInterval = TimeSpan.FromMilliseconds(120);
     private readonly LibraryRepository _repository;
+    private readonly ArtistMetadataCacheRefreshService? _cacheRefresh;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly SpotifyArtistService _spotifyArtistService;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
@@ -36,6 +37,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     public sealed class Dependencies
     {
         public required LibraryRepository Repository { get; init; }
+        public ArtistMetadataCacheRefreshService? CacheRefresh { get; init; }
         public required ArtistPageCacheRepository CacheRepository { get; init; }
         public required SpotifyArtistService SpotifyArtistService { get; init; }
         public required SpotifyPathfinderMetadataClient PathfinderMetadataClient { get; init; }
@@ -49,6 +51,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         ILogger<LibrarySpotifyArtistQueueService> logger)
     {
         _repository = dependencies.Repository;
+        _cacheRefresh = dependencies.CacheRefresh;
         _cacheRepository = dependencies.CacheRepository;
         _spotifyArtistService = dependencies.SpotifyArtistService;
         _pathfinderMetadataClient = dependencies.PathfinderMetadataClient;
@@ -162,6 +165,12 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     {
         try
         {
+            if (item.NeedsAttention) return;
+            if (item.NextAttemptUtc > DateTimeOffset.UtcNow)
+            {
+                _ = EnqueueAfterDelayAsync(item, item.NextAttemptUtc.Value - DateTimeOffset.UtcNow);
+                return;
+            }
             if (await ShouldSkipAsync(item.ArtistId, cancellationToken))
             {
                 CompleteItem(item);
@@ -177,53 +186,14 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             }
 
             await WaitForDispatchSlotAsync(cancellationToken);
-            var result = await _spotifyArtistService.GetArtistPageAsync(
-                item.ArtistId,
-                item.ArtistName,
-                false,
-                false,
-                cancellationToken,
-                includeDeezerLinking: false);
+            if (_cacheRefresh is null) throw new InvalidOperationException("Shared artist cache executor is unavailable.");
+            var request = await _cacheRefresh.BuildAutomaticRequestAsync(item.ArtistId,
+                ArtistCacheRefreshScope.Artwork | ArtistCacheRefreshScope.Biographies | ArtistCacheRefreshScope.ProviderMetadata, "spotify");
+            var outcome = await _cacheRefresh.RefreshArtistWithOutcomeAsync(request, cancellationToken);
+            if (outcome.IsComplete) CompleteItem(item);
+            else ScheduleRetry(item, string.Join(", ", outcome.UnresolvedWork.Select(work => $"{work.Stage}: {work.Status}")));
+            return;
 
-            if (result == null && !await ShouldSkipAsync(item.ArtistId, cancellationToken))
-            {
-                var resolvedSpotifyId = await _repository.GetArtistSourceIdAsync(item.ArtistId, SpotifySource, cancellationToken);
-                if (string.IsNullOrWhiteSpace(resolvedSpotifyId))
-                {
-                    var hasLocalSignals = (await _repository.GetArtistSpotifyMatchSignalsAsync(
-                        item.ArtistId,
-                        limit: 1,
-                        cancellationToken)).Count > 0;
-                    if (!hasLocalSignals)
-                    {
-                        _logger.LogWarning(
-                            "Spotify artist fetch gave up for {ArtistName}: deterministic no-match (spotify artist id unresolved, no local signals).",
-                            item.ArtistName);
-                        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                            DateTimeOffset.UtcNow,
-                            "warn",
-                            $"Spotify fetch gave up for {item.ArtistName}: unresolved Spotify artist id and no local match signals (non-retryable)."));
-                        CompleteItem(item);
-                        return;
-                    }
-
-                    _logger.LogWarning(
-                        "Spotify artist fetch unresolved for {ArtistName}: local match signals exist, scheduling retry.",
-                        item.ArtistName);
-                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                        DateTimeOffset.UtcNow,
-                        "warn",
-                        $"Spotify fetch unresolved for {item.ArtistName}; local match signals exist, retry scheduled."));
-                    ScheduleRetry(item, "spotify artist id unresolved");
-                    return;
-                }
-
-                ScheduleRetry(item, "returned no data");
-            }
-            else
-            {
-                CompleteItem(item);
-            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -259,7 +229,11 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 DateTimeOffset.UtcNow,
                 "warn",
                 $"Spotify fetch gave up for {item.ArtistName} after {MaxRetries} retries ({reason})."));
-            CompleteItem(item);
+            lock (_queueLock)
+            {
+                _queueItems[item.ArtistId] = item with { NeedsAttention = true, Reason = reason, Retry = nextRetry };
+                PersistentArtistQueueStore.PersistRetainedQueueSnapshot(_queueItems, _queueLock, QueuePath, _logger);
+            }
             return;
         }
 
@@ -269,11 +243,11 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             _logger.LogInformation("Scheduling retry {Retry}/{Max} for {ArtistName} in {Delay}", nextRetry, MaxRetries, item.ArtistName, delay);
         }
 
-        var retryItem = item with { Retry = nextRetry };
+        var retryItem = item with { Retry = nextRetry, NextAttemptUtc = DateTimeOffset.UtcNow + delay, Reason = reason };
         lock (_queueLock)
         {
             _queueItems[retryItem.ArtistId] = retryItem;
-            PersistentArtistQueueStore.PersistQueueSnapshot(_queueItems, _queueLock, QueuePath);
+            PersistentArtistQueueStore.PersistRetainedQueueSnapshot(_queueItems, _queueLock, QueuePath, _logger);
         }
 
         _ = EnqueueAfterDelayAsync(retryItem, delay);
@@ -283,8 +257,9 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     {
         lock (_queueLock)
         {
+            item = item with { NextAttemptUtc = DateTimeOffset.UtcNow + delay };
             _queueItems[item.ArtistId] = item;
-            PersistentArtistQueueStore.PersistQueueSnapshot(_queueItems, _queueLock, QueuePath);
+            PersistentArtistQueueStore.PersistRetainedQueueSnapshot(_queueItems, _queueLock, QueuePath, _logger);
         }
 
         _ = EnqueueAfterDelayAsync(item, delay);
@@ -326,28 +301,10 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         _logger.LogWarning("Spotify artist queue paused: no valid Spotify web-player auth context.");
     }
 
-    private async Task<bool> ShouldSkipAsync(long artistId, CancellationToken cancellationToken)
-    {
-        var artist = await _repository.GetArtistAsync(artistId, cancellationToken);
-        if (artist == null)
-        {
-            return true;
-        }
-
-        var spotifyId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", cancellationToken);
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            return false;
-        }
-
-        var cached = await _cacheRepository.TryGetAsync("spotify", spotifyId, cancellationToken);
-        if (cached == null)
-        {
-            return false;
-        }
-
-        return _cacheRepository.IsFresh(cached.FetchedUtc);
-    }
+    private async Task<bool> ShouldSkipAsync(long artistId, CancellationToken token)
+        => _cacheRefresh is not null && await _cacheRefresh.IsCompleteAsync(
+            await _cacheRefresh.BuildAutomaticRequestAsync(artistId,
+                ArtistCacheRefreshScope.Artwork | ArtistCacheRefreshScope.Biographies | ArtistCacheRefreshScope.ProviderMetadata, "spotify"), token);
 
     private bool TryEnqueue(QueueItem item)
     {
@@ -420,5 +377,5 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         return Math.Clamp(Math.Min(DefaultParallelWorkers, batchSize), 1, MaxParallelWorkers);
     }
 
-    private sealed record QueueItem(long ArtistId, string ArtistName, int Retry = 0);
+    private sealed record QueueItem(long ArtistId, string ArtistName, int Retry = 0, DateTimeOffset? NextAttemptUtc = null, bool NeedsAttention = false, string? Reason = null);
 }

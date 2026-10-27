@@ -515,6 +515,8 @@ CREATE TABLE IF NOT EXISTS artist_biography_rotation (
     used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (artist_id)
 );", cancellationToken);
+        await EnsureColumnAsync(connection, "artist_biography_rotation", "last_source_id", "TEXT NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(connection, "artist_biography_rotation", "profile_cursors_json", "TEXT NOT NULL DEFAULT '{}'", cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS artist_server_sync_state (
     artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,

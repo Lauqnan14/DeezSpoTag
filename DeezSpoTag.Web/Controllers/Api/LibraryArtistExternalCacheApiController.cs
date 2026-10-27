@@ -13,19 +13,21 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
     private readonly LibraryConfigStore _configStore;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
     private readonly ArtistMetadataAutomationCoordinator _coordinator;
+    private readonly ArtistMetadataCacheRefreshService _cacheRefresh;
 
     public LibraryArtistExternalCacheApiController(
         LibraryConfigStore configStore,
         DeezSpoTag.Services.Library.LibraryRepository repository,
-        ArtistMetadataAutomationCoordinator coordinator)
+        ArtistMetadataAutomationCoordinator coordinator, ArtistMetadataCacheRefreshService cacheRefresh)
     {
         _configStore = configStore;
         _repository = repository;
         _coordinator = coordinator;
+        _cacheRefresh = cacheRefresh;
     }
 
     [HttpPost("{id:long}/external-cache/refresh")]
-    public async Task<IActionResult> RefreshExternalArtistCache(long id, CancellationToken cancellationToken)
+    public async Task<IActionResult> RefreshExternalArtistCache(long id, CancellationToken cancellationToken, [FromQuery] bool automatic = false)
     {
         if (id <= 0)
         {
@@ -37,13 +39,24 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
         {
             return NotFound("Artist not found.");
         }
-        var queued = await _coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken);
+        var (queued, runId) = await _coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken, automatic: automatic);
 
         if (queued) _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
             $"Artist cache refresh queued for artist {id}."));
 
-        return Ok(new { queued, status = _coordinator.GetStatus() });
+        return Ok(new { queued, runId, status = _coordinator.GetArtistCacheRefreshStatus(runId) ?? _coordinator.GetStatus() });
     }
+    [HttpGet("{id:long}/external-cache/status")]
+    public async Task<IActionResult> Status(long id, [FromQuery] string? runId, CancellationToken cancellationToken)
+    {
+        var request = await _cacheRefresh.BuildAutomaticRequestAsync(id, ArtistCacheRefreshScope.Full);
+        var complete = await _cacheRefresh.IsCompleteAsync(request, cancellationToken);
+        var status = _coordinator.GetArtistCacheRefreshStatus(runId, id) ?? _coordinator.GetStatus();
+        var completed = Guid.TryParseExact(runId, "N", out _) ? await _cacheRefresh.GetRunResultAsync(runId!, cancellationToken) : null;
+        if (completed?.ArtistId != id) completed = null;
+        return Ok(new { complete, status, completed });
+    }
+
 }

@@ -96,6 +96,27 @@ public sealed class ArtistLocationResolver
         };
     }
 
+    /// <summary>Refresh-only resolution: no cross-source requests or swallowed source failures.</summary>
+    public async Task<ArtistLocationResult?> ResolveRequiredAsync(long artistId, string artistName,
+        string? onlySource, ArtistMetadataProviderGate gate, CancellationToken cancellationToken)
+    {
+        var manual = await ResolveManualAsync(artistId, cancellationToken).ConfigureAwait(false);
+        if (manual is not null) return manual;
+        foreach (var source in _sources.Where(source => string.IsNullOrWhiteSpace(onlySource)
+                     || onlySource.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                     || source.SourceName.Equals(onlySource, StringComparison.OrdinalIgnoreCase)))
+        {
+            var result = await gate.RunRequiredAsync(source.SourceName,
+                token => source is MusicBrainzArtistLocationService musicBrainz
+                    ? musicBrainz.ResolveRequiredAsync(artistId, artistName, token)
+                    : source is AudiomackSource audiomack
+                        ? audiomack.ResolveRequiredAsync(artistId, artistName, token)
+                        : source.ResolveAsync(artistId, artistName, token), cancellationToken).ConfigureAwait(false);
+            if (result is not null) return result with { ArtistId = artistId, ArtistName = artistName };
+        }
+        return null;
+    }
+
     public async Task<ArtistLocationResult?> ResolveMatchedArtistAsync(string provider, string providerArtistId,
         string artistName, string? trackUrl, CancellationToken cancellationToken)
     {
@@ -187,6 +208,18 @@ public sealed class ArtistLocationResolver
         public AudiomackSource(AudiomackArtistLocationService inner) => _inner = inner;
 
         public string SourceName => AudiomackApiClient.SourceName;
+
+        public async Task<ArtistLocationResult?> ResolveRequiredAsync(long artistId, string artistName, CancellationToken token)
+        {
+            var profile = await _inner.ResolveProfileRequiredAsync(artistId, artistName, token).ConfigureAwait(false);
+            var location = profile?.Location;
+            return location is null ? null : new ArtistLocationResult(location.RawLocation, location.City, location.Country, location.CountryCode, location.Source)
+            {
+                Region = location.Region, Hometown = location.Hometown, SourceReference = profile!.SourceReference,
+                RetrievedAt = profile.RetrievedAt, KnownAt = profile.RetrievedAt,
+                ResolutionMethod = "matched-audiomack-profile", LocationMeaning = "profile-location"
+            };
+        }
 
         public async Task<ArtistLocationResult?> ResolveMatchedArtistAsync(string artistId, string artistName, string trackUrl, CancellationToken cancellationToken)
         {

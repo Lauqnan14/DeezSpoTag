@@ -26,11 +26,18 @@ public sealed class ArtistPageCacheRepository
 
     public bool IsUsable(DateTimeOffset fetchedUtc) => DateTimeOffset.UtcNow - fetchedUtc <= _maxStale;
 
-    public async Task<ArtistCacheEntry?> TryGetAsync(string source, string sourceId, CancellationToken cancellationToken)
+    public Task<ArtistCacheEntry?> TryGetAsync(string source, string sourceId, CancellationToken cancellationToken)
+        => ReadAsync(source, sourceId, cancellationToken, required: false);
+
+    public Task<ArtistCacheEntry?> TryGetRequiredAsync(string source, string sourceId, CancellationToken cancellationToken)
+        => ReadAsync(source, sourceId, cancellationToken, required: true);
+
+    private async Task<ArtistCacheEntry?> ReadAsync(string source, string sourceId, CancellationToken cancellationToken, bool required)
     {
         var connectionString = GetConnectionString();
         if (string.IsNullOrWhiteSpace(connectionString))
         {
+            if (required) throw new InvalidOperationException("Library cache connection is not configured.");
             return null;
         }
 
@@ -53,18 +60,25 @@ LIMIT 1;";
 
             return new ArtistCacheEntry(cacheRow.PayloadJson, cacheRow.FetchedUtc);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!required && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Artist cache lookup failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
             return null;
         }
     }
 
-    public async Task UpsertAsync(string source, string sourceId, string payloadJson, DateTimeOffset fetchedUtc, CancellationToken cancellationToken)
+    public Task UpsertAsync(string source, string sourceId, string payloadJson, DateTimeOffset fetchedUtc, CancellationToken cancellationToken)
+        => WriteAsync(source, sourceId, payloadJson, fetchedUtc, cancellationToken, required: false);
+
+    public Task UpsertRequiredAsync(string source, string sourceId, string payloadJson, DateTimeOffset fetchedUtc, CancellationToken cancellationToken)
+        => WriteAsync(source, sourceId, payloadJson, fetchedUtc, cancellationToken, required: true);
+
+    private async Task WriteAsync(string source, string sourceId, string payloadJson, DateTimeOffset fetchedUtc, CancellationToken cancellationToken, bool required)
     {
         var connectionString = GetConnectionString();
         if (string.IsNullOrWhiteSpace(connectionString))
         {
+            if (required) throw new InvalidOperationException("Library cache connection is not configured.");
             return;
         }
 
@@ -87,7 +101,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
             command.Parameters.AddWithValue("$fetched_utc", fetchedUtc.ToUniversalTime().ToString("O"));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!required && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Artist cache upsert failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }
@@ -199,11 +213,12 @@ GROUP BY source;";
         }
     }
 
-    public async Task UpsertGenresAsync(string source, string sourceId, IEnumerable<string> genres, CancellationToken cancellationToken)
+    public async Task UpsertGenresAsync(string source, string sourceId, IEnumerable<string> genres, CancellationToken cancellationToken, bool required = false)
     {
         var connectionString = GetConnectionString();
         if (string.IsNullOrWhiteSpace(connectionString))
         {
+            if (required) throw new InvalidOperationException("Artist genre storage is not configured.");
             return;
         }
 
@@ -240,7 +255,7 @@ GROUP BY source;";
 
             await transaction.CommitAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!required && ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Artist genre upsert failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }

@@ -51,6 +51,7 @@ public sealed class AudiomackArtistLocationService
     /// <summary>Songs fetched to learn a search candidate's album catalogue.</summary>
     private const int CandidateCatalogueSearchLimit = 25;
 
+    private readonly AsyncLocal<bool> _requiredRefresh = new();
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ArtistPageCacheRepository _artistPageCache;
     private readonly AudiomackApiClient _apiClient;
@@ -87,6 +88,10 @@ public sealed class AudiomackArtistLocationService
         => (await ResolveProfileAsync(artistName, cancellationToken).ConfigureAwait(false))?.Location;
 
     /// <summary>Biography for a library artist, or null when the profile carries none.</summary>
+    public async Task<string?> ResolveBiographyBySlugAsync(string slug, string? artistName, CancellationToken cancellationToken = default, bool requireFresh = false)
+        => (await ResolveProfileBySlugCoreAsync(slug, artistName, candidate: null, cancellationToken,
+            propagateRateLimits: true, requireFresh: requireFresh).ConfigureAwait(false)).Profile?.Biography;
+
     public async Task<string?> ResolveBiographyAsync(long artistId, string? artistName, CancellationToken cancellationToken = default, IReadOnlyList<string>? lookupNames = null)
         => (await ResolveProfileAsync(artistId, artistName, expectedAlbums: null, lookupNames, cancellationToken).ConfigureAwait(false))?.Biography;
 
@@ -99,6 +104,27 @@ public sealed class AudiomackArtistLocationService
     /// </summary>
     public Task<AudiomackArtistProfile?> ResolveProfileAsync(long artistId, string? artistName, CancellationToken cancellationToken = default)
         => ResolveProfileAsync(artistId, artistName, expectedAlbums: null, cancellationToken);
+
+    public async Task<AudiomackArtistProfile?> ResolveProfileRequiredAsync(long artistId, string artistName, CancellationToken cancellationToken,
+        IReadOnlyList<string>? lookupNames = null)
+    {
+        var previous = _requiredRefresh.Value;
+        _requiredRefresh.Value = true;
+        try
+        {
+            var slug = await TryGetStoredSlugAsync(artistId, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(slug))
+            {
+                var discovered = await ResolveProfileAsync(artistId, artistName, expectedAlbums: null, lookupNames, cancellationToken).ConfigureAwait(false);
+                slug = await TryGetStoredSlugAsync(artistId, cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(slug)) throw new InvalidOperationException("Audiomack profile identity could not be verified.");
+                return discovered;
+            }
+            return (await ResolveProfileBySlugCoreAsync(slug, artistName, null, cancellationToken,
+                propagateRateLimits: true, requireFresh: true).ConfigureAwait(false)).Profile;
+        }
+        finally { _requiredRefresh.Value = previous; }
+    }
 
     /// <summary>
     /// Profile resolution with an explicit album cross-check list. Passing
@@ -302,18 +328,22 @@ public sealed class AudiomackArtistLocationService
         return profile with { SourceReference = ArtistPageBaseUrl + segments[0], RetrievedAt = DateTimeOffset.UtcNow };
     }
 
-    private async Task<ProfileResolution> ResolveProfileBySlugAsync(
+    private Task<ProfileResolution> ResolveProfileBySlugAsync(
+        string slug, string? artistName, AudiomackArtistCandidate? candidate, CancellationToken cancellationToken)
+        => ResolveProfileBySlugCoreAsync(slug, artistName, candidate, cancellationToken, propagateRateLimits: _requiredRefresh.Value, requireFresh: _requiredRefresh.Value);
+
+    private async Task<ProfileResolution> ResolveProfileBySlugCoreAsync(
         string slug,
         string? artistName,
         AudiomackArtistCandidate? candidate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool propagateRateLimits = false, bool requireFresh = false)
     {
-        if (_memoryCache.TryGetValue(slug, out var cached) && DateTimeOffset.UtcNow - cached.FetchedUtc <= MemoryCacheTtl)
+        if (!requireFresh && _memoryCache.TryGetValue(slug, out var cached) && DateTimeOffset.UtcNow - cached.FetchedUtc <= MemoryCacheTtl)
         {
             return new ProfileResolution(cached.Profile, false);
         }
 
-        var (persistentFound, persistentProfile) = await TryReadCachedProfileAsync(slug, cancellationToken).ConfigureAwait(false);
+        var (persistentFound, persistentProfile) = requireFresh ? (false, (AudiomackArtistProfile?)null) : await TryReadCachedProfileAsync(slug, cancellationToken).ConfigureAwait(false);
         if (persistentFound)
         {
             _memoryCache[slug] = (persistentProfile, DateTimeOffset.UtcNow);
@@ -332,9 +362,10 @@ public sealed class AudiomackArtistLocationService
         var fetched = false;
         try
         {
-            (fetched, resolved, info) = await TryFetchProfileAsync(slug, artistName, cancellationToken).ConfigureAwait(false);
+            (fetched, resolved, info) = await TryFetchProfileAsync(slug, artistName, cancellationToken, propagateRateLimits, propagateErrors: requireFresh).ConfigureAwait(false);
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+            && !requireFresh && (!propagateRateLimits || !ArtistMetadataProviderGate.IsRateLimited(ex)))
         {
             _logger.LogWarning(
                 ex,
@@ -365,14 +396,14 @@ public sealed class AudiomackArtistLocationService
         if (resolved is not null) resolved = resolved with
         { SourceReference = $"https://audiomack.com/{slug}", RetrievedAt = DateTimeOffset.UtcNow };
         _memoryCache[slug] = (resolved, DateTimeOffset.UtcNow);
-        await WriteCachedProfileAsync(slug, resolved, cancellationToken).ConfigureAwait(false);
+        await WriteCachedProfileAsync(slug, resolved, cancellationToken, required: requireFresh).ConfigureAwait(false);
         return new ProfileResolution(resolved, false);
     }
 
     private async Task<(bool Fetched, AudiomackArtistProfile? Profile, AudiomackArtistPageInfo? Info)> TryFetchProfileAsync(
         string slug,
         string artistName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool propagateRateLimits = false, bool propagateErrors = false)
     {
         using var httpClient = _httpClientFactory.CreateClient();
         httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
@@ -381,6 +412,8 @@ public sealed class AudiomackArtistLocationService
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(FetchTimeout);
         using var response = await httpClient.GetAsync(ArtistPageBaseUrl + slug, timeoutCts.Token).ConfigureAwait(false);
+        if (propagateRateLimits) ArtistMetadataProviderGate.ThrowIfRateLimited(response);
+        if (propagateErrors) response.EnsureSuccessStatusCode();
         if (!response.IsSuccessStatusCode)
         {
             return (false, null, null);
@@ -388,6 +421,11 @@ public sealed class AudiomackArtistLocationService
 
         var html = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
         var info = AudiomackArtistPageParser.TryExtractArtistPageInfo(html, slug, artistName);
+        // Real artist pages include reCAPTCHA scripts too. A verified profile must not
+        // be rejected merely because its surrounding page mentions captcha.
+        if (propagateErrors && info is null && (html.Contains("Client Challenge", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("captcha", StringComparison.OrdinalIgnoreCase)))
+            throw new HttpRequestException("Audiomack profile could not be verified.", null, System.Net.HttpStatusCode.ServiceUnavailable);
         if (info == null)
         {
             // The page loaded but no object matched (or the matched artist has no
@@ -422,7 +460,7 @@ public sealed class AudiomackArtistLocationService
         {
             return await _libraryRepository.GetArtistSourceIdAsync(artistId, AudiomackApiClient.SourceName, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_requiredRefresh.Value)
         {
             _logger.LogWarning(ex, "Audiomack source lookup failed for artist {ArtistId}", artistId);
             return null;
@@ -440,7 +478,7 @@ public sealed class AudiomackArtistLocationService
         {
             await _libraryRepository.UpsertArtistSourceIdAsync(artistId, AudiomackApiClient.SourceName, slug, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_requiredRefresh.Value)
         {
             _logger.LogWarning(ex, "Audiomack source persist failed for artist {ArtistId}", artistId);
         }
@@ -469,7 +507,7 @@ public sealed class AudiomackArtistLocationService
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_requiredRefresh.Value)
         {
             _logger.LogWarning(ex, "Audiomack expected-album lookup failed for artist {ArtistId}", artistId);
             return Array.Empty<string>();
@@ -508,7 +546,7 @@ public sealed class AudiomackArtistLocationService
 
             return titles;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !_requiredRefresh.Value)
         {
             _logger.LogDebug(
                 ex,
@@ -600,7 +638,7 @@ public sealed class AudiomackArtistLocationService
         => root.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() : null;
 
-    private async Task WriteCachedProfileAsync(string slug, AudiomackArtistProfile? profile, CancellationToken cancellationToken)
+    private async Task WriteCachedProfileAsync(string slug, AudiomackArtistProfile? profile, CancellationToken cancellationToken, bool required = false)
     {
         var payload = profile == null
             ? JsonSerializer.Serialize(new { location_schema = LocationSchemaVersion })
@@ -620,6 +658,7 @@ public sealed class AudiomackArtistLocationService
                 raw_biography = profile.Biography
             });
 
-        await _artistPageCache.UpsertAsync(LocationCacheSource, slug, payload, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        if (required) await _artistPageCache.UpsertRequiredAsync(LocationCacheSource, slug, payload, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        else await _artistPageCache.UpsertAsync(LocationCacheSource, slug, payload, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
     }
 }

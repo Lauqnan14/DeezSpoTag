@@ -2267,6 +2267,10 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
+        var current = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
+        if (current is null) return;
+        bool Valid(string? path) => ArtistArtworkCatalogService.IsUsableArtworkFile(path);
+        if (Valid(current.PreferredImagePath) && Valid(current.PreferredBackgroundPath)) return;
         var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken, ocrTextArtBlockingEnabled);
         List<ArtworkCandidate> SelectCandidates(ArtistArtworkCatalogResult catalog) => catalog.Visuals
             .Where(item => !IsNameOnlyItunesIdentity(item.Identity))
@@ -2289,20 +2293,15 @@ public sealed partial class ArtistMetadataUpdaterService
             return;
         }
 
-        var tracked = new MetadataUpdaterTrackedArtist
-        {
-            ArtistId = artistId,
-            ArtistName = artistName,
-            IncludeAvatar = true,
-            IncludeBackground = true,
-            OcrTextArtBlockingEnabled = ocrTextArtBlockingEnabled
-        };
-        var prepared = await PrepareVisualsAsync(
-            tracked,
-            candidates,
-            cancellationToken,
-            preferExistingSlots: false);
-        await UpdateManagedArtistVisualsAsync(artistId, prepared, cancellationToken);
+        // Select immutable provider files directly. Refresh Cache must not rotate or overwrite
+        // managed slot files: a concurrent manual choice may already refer to those files.
+        var avatar = candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.LocalPath));
+        var background = candidates
+            .FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.LocalPath));
+        if (!Valid(current.PreferredImagePath) && avatar?.LocalPath is { } avatarPath)
+            await _libraryRepository.TryFillArtistVisualPathAsync(artistId, false, avatarPath, current.PreferredImagePath, cancellationToken);
+        if (!Valid(current.PreferredBackgroundPath) && background?.LocalPath is { } backgroundPath)
+            await _libraryRepository.TryFillArtistVisualPathAsync(artistId, true, backgroundPath, current.PreferredBackgroundPath, cancellationToken);
     }
 
     private async Task<PreparedVisuals> PrepareVisualsAsync(

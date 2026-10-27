@@ -4914,7 +4914,8 @@ function initMediaOperationsHelp() {
 
                 <h4>Independent actions</h4>
                 <ul>
-                    <li><strong>Refresh Cache:</strong> Fetches and validates multi-provider artwork and biographies without updating servers.</li>
+                    <li><strong>Refresh Cache:</strong> Fetches and caches artist avatars, backgrounds, gallery images and background information without updating servers. Existing valid images, blocked choices and saved visual selections are preserved.</li>
+                    <li>If a source fails, its unfinished work is retained for retry. Available cached choices remain usable. A partial refresh is not reported as fully successful.</li>
                     <li><strong>Update Server:</strong> Pushes only already-cached artwork and biographies without contacting providers.</li>
                     <li>When both automatic schedules are due together, cache refresh runs first, then target update, even if some cache artists failed.</li>
                 </ul>

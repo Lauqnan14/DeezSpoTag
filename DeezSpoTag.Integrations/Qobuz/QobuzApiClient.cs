@@ -15,6 +15,8 @@ public interface IQobuzApiClient
     Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken);
     Task<List<QobuzTrack>> GetAlbumPageTracksAsync(string albumUrl, CancellationToken cancellationToken);
     Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken);
+    Task<QobuzArtist?> GetArtistRequiredAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Strict Qobuz artist results are not supported by this client.");
     Task<QobuzTrackSearchResponse?> SearchTracksAsync(string query, int limit, int offset, CancellationToken cancellationToken);
     Task<QobuzAlbumSearchResponse?> SearchAlbumsAsync(string query, int limit, int offset, CancellationToken cancellationToken);
     Task<QobuzArtistSearchResponse?> SearchArtistsAsync(string query, int limit, int offset, CancellationToken cancellationToken);
@@ -268,7 +270,13 @@ public sealed class QobuzApiClient : IQobuzApiClient
             : 0;
     }
 
-    public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)
+    public Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)
+        => GetArtistCoreAsync(artistId, store, offset, limit, cancellationToken, required: false);
+
+    public Task<QobuzArtist?> GetArtistRequiredAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)
+        => GetArtistCoreAsync(artistId, store, offset, limit, cancellationToken, required: true);
+
+    private async Task<QobuzArtist?> GetArtistCoreAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken, bool required)
     {
         var resolvedStore = QobuzStoreManager.NormalizeStore(store, _config.DefaultStore);
         var zone = QobuzStoreManager.GetZone(resolvedStore);
@@ -287,17 +295,21 @@ public sealed class QobuzApiClient : IQobuzApiClient
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
+                if (required && response.StatusCode != HttpStatusCode.NotFound) response.EnsureSuccessStatusCode();
                 return null;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            return await JsonSerializer.DeserializeAsync<QobuzArtist>(stream, _serializerOptions, cancellationToken);
+            var result = await JsonSerializer.DeserializeAsync<QobuzArtist>(stream, _serializerOptions, cancellationToken);
+            if (required && (result is null || result.Id != artistId))
+                throw new InvalidDataException("Qobuz returned no verifiable artist profile.");
+            return result;
         }
 
         // The public artist/get endpoint works without store cookies; send them when
         // available but never abort because the discover-page scrape failed.
         var artist = await SendAsync(attachCookies: true);
-        if (artist is null && !string.IsNullOrWhiteSpace(cookies))
+        if (!required && artist is null && !string.IsNullOrWhiteSpace(cookies))
         {
             // Stale cached cookies can trigger 401/403; retry once without them.
             _cache.Remove($"qobuz_store_cookie_{resolvedStore}");

@@ -11,7 +11,6 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
 {
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
-    private readonly ArtistArtworkCatalogService _artworkCatalog;
     private readonly ArtistMetadataCacheRefreshService _cacheRefreshService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IDownloadTagSettingsResolver _profileSettingsResolver;
@@ -28,7 +27,6 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     {
         _repository = dependencies.Repository;
         _configStore = dependencies.ConfigStore;
-        _artworkCatalog = dependencies.ArtworkCatalog;
         _cacheRefreshService = dependencies.CacheRefreshService;
         _settingsService = dependencies.SettingsService;
         _profileSettingsResolver = dependencies.ProfileSettingsResolver;
@@ -118,8 +116,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             return false;
         }
 
-        await ProcessQueueItemAsync(new QueueItem(plan.ArtistId, plan.ArtistName), cancellationToken);
-        return true;
+        return await ProcessQueueItemAsync(new QueueItem(plan.ArtistId, plan.ArtistName), cancellationToken);
     }
 
     public override Task StartAsync(CancellationToken cancellationToken)
@@ -140,84 +137,52 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     {
         await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
         {
+            if (item.NeedsAttention) continue;
+            if (item.NextAttemptUtc > DateTimeOffset.UtcNow) { _ = ReplayWhenDueAsync(item, stoppingToken); continue; }
             try
             {
-                await ProcessQueueItemAsync(item, stoppingToken);
+                if (await ProcessQueueItemAsync(item, stoppingToken)) CompleteItem(item);
+                else Retain(item, "Artwork collection remains incomplete.", stoppingToken);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Artist image fetch failed for {ArtistName}", item.ArtistName);
-                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                    DateTimeOffset.UtcNow,
-                    "error",
-                    $"Artist image fetch failed for {item.ArtistName}: {ex.Message}"));
-            }
-            finally
-            {
-                CompleteItem(item);
+                _logger.LogWarning(ex, "Artist image fetch failed for {ArtistName}; work retained.", item.ArtistName);
+                Retain(item, ex.GetType().Name, stoppingToken);
             }
         }
     }
 
-    private async Task ProcessQueueItemAsync(QueueItem item, CancellationToken cancellationToken)
+    private async Task<bool> ProcessQueueItemAsync(QueueItem item, CancellationToken cancellationToken)
     {
-        if (!await ShouldFetchAsync(item, cancellationToken))
-        {
-            return;
-        }
-
-        var imagePath = await ResolveImagePathAsync(item, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(imagePath))
-        {
-            await _repository.UpdateArtistImagePathAsync(item.ArtistId, imagePath, cancellationToken);
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Artist image saved for {item.ArtistName}."));
-            return;
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "warn",
-            $"Artist image not found for {item.ArtistName}."));
+        var request = await _cacheRefreshService.BuildAutomaticRequestAsync(item.ArtistId, ArtistCacheRefreshScope.Artwork);
+        if (await _cacheRefreshService.IsCompleteAsync(request, cancellationToken)) return true;
+        return (await _cacheRefreshService.RefreshArtistWithOutcomeAsync(request, cancellationToken)).IsComplete;
     }
 
-    private async Task<string?> ResolveImagePathAsync(QueueItem item, CancellationToken cancellationToken)
+    private void Retain(QueueItem item, string reason, CancellationToken token)
     {
-        var settings = _settingsService.LoadSettings();
-        await _cacheRefreshService.RefreshArtistAsync(item.ArtistId, item.ArtistName, "auto", false, cancellationToken);
-        var catalog = await _artworkCatalog.GetAsync(item.ArtistId, cancellationToken);
-        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
-        var selected = order
-            .Select(provider => catalog.Visuals.FirstOrDefault(visual =>
-                string.Equals(visual.Source, provider, StringComparison.OrdinalIgnoreCase)
-                || (string.Equals(provider, "apple", StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(visual.Source, "itunes", StringComparison.OrdinalIgnoreCase))))
-            .FirstOrDefault(visual => visual is not null)
-            ?? catalog.Visuals.FirstOrDefault();
-        if (selected is null || !File.Exists(selected.Path))
+        var retained = item with { Attempts = item.Attempts + 1, NextAttemptUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            NeedsAttention = item.Attempts + 1 >= 3, Reason = reason };
+        lock (_queueLock)
         {
-            return null;
+            _queueItems[item.ArtistId] = retained;
+            PersistentArtistQueueStore.PersistRetainedQueueSnapshot(_queueItems, _queueLock, QueuePath, _logger);
         }
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "warn",
+            $"Artist artwork work retained for {item.ArtistName}: {reason}"));
+        if (!retained.NeedsAttention) _ = ReplayWhenDueAsync(retained, token);
+    }
 
-        await _repository.UpsertArtistArtworkCacheAsync(
-            new ArtistArtworkCacheUpsertInput(
-                item.ArtistId,
-                "avatar",
-                selected.Identity,
-                selected.Source,
-                selected.OriginalUrl,
-                selected.Path,
-                null,
-                selected.Width,
-                selected.Height,
-                "not_scanned",
-                null,
-                false,
-                false),
-            cancellationToken);
-        return selected.Path;
+    private async Task ReplayWhenDueAsync(QueueItem item, CancellationToken token)
+    {
+        try
+        {
+            var delay = (item.NextAttemptUtc ?? DateTimeOffset.UtcNow) - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero) await Task.Delay(delay, token);
+            await _channel.Writer.WriteAsync(item, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
 
     private bool TryEnqueue(QueueItem item)
@@ -231,64 +196,9 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             static queuedItem => queuedItem.ArtistId);
     }
 
-    private async Task<bool> ShouldFetchAsync(QueueItem item, CancellationToken cancellationToken)
-    {
-        var artist = await _repository.GetArtistAsync(item.ArtistId, cancellationToken);
-        if (artist is null)
-        {
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(artist.PreferredImagePath) || !File.Exists(artist.PreferredImagePath))
-        {
-            return true;
-        }
-
-        var dimensions = await DownloadEngineArtworkHelper.ReadSquareArtistArtworkDimensionsAsync(
-            artist.PreferredImagePath,
-            cancellationToken);
-        if (dimensions == null)
-        {
-            return true;
-        }
-
-        var settings = _settingsService.LoadSettings();
-        var preferredProvider = ArtworkFallbackHelper.ResolveArtistOrder(settings).FirstOrDefault();
-        var provenance = await _repository.GetArtistArtworkProvenanceAsync(
-            item.ArtistId,
-            "avatar",
-            artist.PreferredImagePath,
-            cancellationToken);
-        if (!string.IsNullOrWhiteSpace(provenance?.Source)
-            && string.Equals(provenance.Source, preferredProvider, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (provenance == null)
-        {
-            await _repository.UpsertArtistArtworkCacheAsync(
-                new ArtistArtworkCacheUpsertInput(
-                    item.ArtistId,
-                    "avatar",
-                    $"legacy:{Path.GetFileName(artist.PreferredImagePath)}",
-                    "unknown",
-                    null,
-                    artist.PreferredImagePath,
-                    null,
-                    dimensions.Value.Width,
-                    dimensions.Value.Height,
-                    "not_scanned",
-                    null,
-                    false,
-                    false),
-                cancellationToken);
-        }
-
-        return DownloadEngineArtworkHelper.ShouldRefreshExistingArtistArtwork(
-            provenance?.Source,
-            preferredProvider,
-            settings.OverwriteFile);
-    }
+    private async Task<bool> ShouldFetchAsync(QueueItem item, CancellationToken token)
+        => !await _cacheRefreshService.IsCompleteAsync(
+            await _cacheRefreshService.BuildAutomaticRequestAsync(item.ArtistId, ArtistCacheRefreshScope.Artwork), token);
 
     private void CompleteItem(QueueItem item)
     {
@@ -300,7 +210,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             static queuedItem => queuedItem.ArtistId);
     }
 
-    private sealed record QueueItem(long ArtistId, string ArtistName);
+    private sealed record QueueItem(long ArtistId, string ArtistName, int Attempts = 0, DateTimeOffset? NextAttemptUtc = null, bool NeedsAttention = false, string? Reason = null);
 }
 
 public sealed record ArtistArtworkRefreshPlan(

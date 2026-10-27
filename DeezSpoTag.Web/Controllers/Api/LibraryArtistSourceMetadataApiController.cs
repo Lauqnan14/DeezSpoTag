@@ -20,12 +20,13 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     private const string QobuzSource = "qobuz";
     private const string LibraryDbNotConfiguredMessage = "Library DB not configured.";
     private readonly LibraryRepository _repository;
+    private readonly ArtistMetadataCacheRefreshService? _cacheRefresh;
+    private readonly ArtistMetadataAutomationCoordinator? _coordinator;
     private readonly LibraryConfigStore _configStore;
     private readonly SpotifyArtistService _spotifyArtistService;
     private readonly ArtistPageCacheRepository _artistPageCache;
     private readonly SpotifyMetadataCacheRepository _spotifyMetadataCache;
     private readonly LastFmArtistImageService _lastFmArtistImageService;
-    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistSourceMetadataApiController> _logger;
     private readonly DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService _audiomackArtistLocation;
     private readonly DeezSpoTag.Services.Library.ArtistLocationOverrideStore _locationOverrides;
@@ -35,15 +36,17 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         LibraryRepository repository,
         LibraryConfigStore configStore,
         LibraryArtistMetadataServices metadataServices,
-        ILogger<LibraryArtistSourceMetadataApiController> logger)
+        ILogger<LibraryArtistSourceMetadataApiController> logger,
+        ArtistMetadataCacheRefreshService? cacheRefresh = null, ArtistMetadataAutomationCoordinator? coordinator = null)
     {
         _repository = repository;
+        _cacheRefresh = cacheRefresh;
+        _coordinator = coordinator;
         _configStore = configStore;
         _spotifyArtistService = metadataServices.SpotifyArtistService;
         _artistPageCache = metadataServices.ArtistPageCache;
         _spotifyMetadataCache = metadataServices.SpotifyMetadataCache;
         _lastFmArtistImageService = metadataServices.LastFmArtistImageService;
-        _environment = metadataServices.Environment;
         _audiomackArtistLocation = metadataServices.AudiomackArtistLocation;
         _locationOverrides = metadataServices.LocationOverrides;
         _locationResolver = metadataServices.LocationResolver;
@@ -91,10 +94,25 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             {
                 source = row.Source,
                 biography = row.Biography,
-                selected = row.Selected
+                selected = row.Selected,
+                sourceId = row.SourceId,
+                nativeName = row.NativeName,
+                aliasName = row.AliasName
             }),
-            selected
+            selected,
+            selectedSourceId = rows.FirstOrDefault(row => row.Selected)?.SourceId
         });
+    }
+
+    [HttpPost("{id:long}/biographies/refresh")]
+    public async Task<IActionResult> RefreshBiographies(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured) return BadRequest(LibraryDbNotConfiguredMessage);
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null) return NotFound();
+        if (_coordinator is null) return StatusCode(503, new { error = "Metadata refresh service unavailable." });
+        var (queued, runId) = await _coordinator.EnqueueArtistCacheRefreshAsync(id, cancellationToken, ArtistCacheRefreshScope.Biographies);
+        return Ok(new { queued, runId, status = _coordinator.GetArtistCacheRefreshStatus(runId) ?? _coordinator.GetStatus() });
     }
 
     [HttpPost("{id:long}/biographies/select")]
@@ -108,7 +126,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
-        var source = (request?.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (request is null) return BadRequest("source is required.");
+        var source = (request.Source ?? string.Empty).Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(source))
         {
             return BadRequest("source is required.");
@@ -123,13 +142,15 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         // SelectArtistBiographySourceAsync keeps the requested source when it exists in
         // the artist's biography cache; otherwise it leaves the current selection intact.
         var cachedSources = await _repository.GetArtistBiographyRowsAsync(id, cancellationToken);
-        if (!cachedSources.Any(row => string.Equals(row.Source, source, StringComparison.OrdinalIgnoreCase)))
+        if (!cachedSources.Any(row => string.Equals(row.Source, source, StringComparison.OrdinalIgnoreCase)
+            && (request.SourceId is null || row.SourceId == request.SourceId)))
         {
             return BadRequest($"No cached biography for source '{source}'.");
         }
 
-        await _repository.SelectArtistBiographySourceAsync(id, source, cancellationToken);
-        return Ok(new { selected = source });
+        await _repository.SelectArtistBiographySourceAsync(id, source, cancellationToken, sourceId: request.SourceId, advanceRotation: false);
+        var selectedRow = (await _repository.GetArtistBiographyRowsAsync(id, cancellationToken)).FirstOrDefault(row => row.Selected);
+        return Ok(new { selected = source, selectedSourceId = selectedRow?.SourceId });
     }
 
     /// <summary>
@@ -412,19 +433,14 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return NotFound();
         }
 
-        var existingSpotifyId = await _repository.GetArtistSourceIdAsync(id, SpotifySource, cancellationToken);
         var spotifyId = request.SpotifyId.Trim();
         if (!IsValidSpotifyEntityId(spotifyId))
         {
             return BadRequest("Spotify ID should be a 22-character alphanumeric value.");
         }
 
-        await _repository.UpsertArtistSourceIdAsync(id, SpotifySource, spotifyId, cancellationToken);
-
-        if (!string.Equals(existingSpotifyId, spotifyId, StringComparison.OrdinalIgnoreCase))
-        {
-            await PurgeSpotifyVisualFilesAsync(id, existingSpotifyId, cancellationToken);
-        }
+        var profileConflict = await ConfirmProfileAsync(id, SpotifySource, spotifyId, cancellationToken);
+        if (profileConflict is not null) return profileConflict;
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -432,6 +448,17 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             $"[spotify] manual id set for artist {id}."));
 
         return Ok(new { spotifyId });
+    }
+
+    private async Task<IActionResult?> ConfirmProfileAsync(long artistId, string source, string sourceId, CancellationToken token)
+    {
+        try
+        {
+            await _repository.UpsertArtistSourceIdAsync(artistId, source, sourceId, token, userConfirmed: true, preserveExistingOwner: true);
+            await _repository.SetPrimaryArtistSourceIdAsync(artistId, source, sourceId, token);
+            return null;
+        }
+        catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
     }
 
     public sealed record MusicBrainzIdUpdateRequest(string? MusicBrainzId);
@@ -518,16 +545,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return BadRequest("Enter an Audiomack artist slug (letters, numbers, dashes) or a profile URL.");
         }
 
-        var existingAudiomackId = await _repository.GetArtistSourceIdAsync(id, AudiomackSource, cancellationToken);
-        await _repository.UpsertArtistSourceIdAsync(id, AudiomackSource, audiomackId, cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(existingAudiomackId))
-        {
-            await _artistPageCache.ClearEntryAsync(
-                DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService.LocationCacheSource,
-                existingAudiomackId,
-                cancellationToken);
-        }
+        var profileConflict = await ConfirmProfileAsync(id, AudiomackSource, audiomackId, cancellationToken);
+        if (profileConflict is not null) return profileConflict;
 
         await _artistPageCache.ClearEntryAsync(
             DeezSpoTag.Web.Services.Audiomack.AudiomackArtistLocationService.LocationCacheSource,
@@ -632,7 +651,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         }
 
         var appleId = request.AppleId.Trim();
-        await _repository.UpsertArtistSourceIdAsync(id, AppleSource, appleId, cancellationToken);
+        var profileConflict = await ConfirmProfileAsync(id, AppleSource, appleId, cancellationToken);
+        if (profileConflict is not null) return profileConflict;
         await _repository.UpdateArtistAppleBiographyAsync(id, null, DateTimeOffset.MinValue, cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -680,7 +700,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return BadRequest("Tidal artist ID should be numeric.");
         }
 
-        await _repository.UpsertArtistSourceIdAsync(id, TidalSource, tidalId, cancellationToken);
+        var profileConflict = await ConfirmProfileAsync(id, TidalSource, tidalId, cancellationToken);
+        if (profileConflict is not null) return profileConflict;
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -727,7 +748,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return BadRequest("Qobuz artist ID should be numeric.");
         }
 
-        await _repository.UpsertArtistSourceIdAsync(id, QobuzSource, qobuzId, cancellationToken);
+        var profileConflict = await ConfirmProfileAsync(id, QobuzSource, qobuzId, cancellationToken);
+        if (profileConflict is not null) return profileConflict;
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -931,129 +953,6 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return new ArtistLocationPayload(location.City, location.Country, location.CountryCode, location.Source, location.RawLocation, location.Region, location.Hometown);
     }
 
-    private async Task PurgeSpotifyVisualFilesAsync(long artistId, string? previousSpotifyId, CancellationToken cancellationToken)
-    {
-        var spotifyRoot = Path.GetFullPath(Path.Join(AppDataPaths.GetDataRoot(_environment), "library-artist-images", SpotifySource));
-        var artistVisualDir = Path.Join(spotifyRoot, "artists", artistId.ToString());
-        TryDeleteArtistVisualDirectory(artistVisualDir, artistId);
-        RemoveStaleSpotifyCacheFiles(spotifyRoot, previousSpotifyId, artistId);
-        await ClearPreferredArtistVisualsAsync(artistId, spotifyRoot, cancellationToken);
-    }
-
-    private void TryDeleteArtistVisualDirectory(string artistVisualDir, long artistId)
-    {
-        try
-        {
-            if (Directory.Exists(artistVisualDir))
-            {
-                Directory.Delete(artistVisualDir, true);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to remove artist visuals folder for artist {ArtistId}", artistId);
-        }
-    }
-
-    private void RemoveStaleSpotifyCacheFiles(string spotifyRoot, string? previousSpotifyId, long artistId)
-    {
-        var trimmedSpotifyId = (previousSpotifyId ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(trimmedSpotifyId) || !Directory.Exists(spotifyRoot))
-        {
-            return;
-        }
-
-        try
-        {
-            var staleFiles = Directory.GetFiles(spotifyRoot, $"*{trimmedSpotifyId}.*", SearchOption.TopDirectoryOnly);
-            foreach (var file in staleFiles)
-            {
-                TryDeleteFile(file, "stale spotify cache file");
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to remove stale spotify cache files for artist {ArtistId}", artistId);
-        }
-    }
-
-    private async Task ClearPreferredArtistVisualsAsync(long artistId, string spotifyRoot, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var artist = await _repository.GetArtistAsync(artistId, cancellationToken);
-            await ClearPreferredVisualPathAsync(
-                artistId,
-                artist?.PreferredImagePath,
-                spotifyRoot,
-                "preferred spotify image",
-                _repository.UpdateArtistImagePathAsync,
-                cancellationToken);
-            await ClearPreferredVisualPathAsync(
-                artistId,
-                artist?.PreferredBackgroundPath,
-                spotifyRoot,
-                "preferred spotify background",
-                _repository.UpdateArtistBackgroundPathAsync,
-                cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to clear preferred artist visuals for artist {ArtistId}", artistId);
-        }
-    }
-
-    private async Task ClearPreferredVisualPathAsync(
-        long artistId,
-        string? preferredPath,
-        string spotifyRoot,
-        string label,
-        Func<long, string, CancellationToken, Task> clearPathInRepository,
-        CancellationToken cancellationToken)
-    {
-        var trimmedPath = (preferredPath ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(trimmedPath))
-        {
-            return;
-        }
-
-        var fullPath = Path.GetFullPath(trimmedPath);
-        if (!fullPath.StartsWith(spotifyRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        TryDeleteFile(fullPath, label);
-        await clearPathInRepository(artistId, string.Empty, cancellationToken);
-    }
-
-    private void TryDeleteFile(string filePath, string label)
-    {
-        if (!System.IO.File.Exists(filePath))
-        {
-            return;
-        }
-
-        try
-        {
-            System.IO.File.Delete(filePath);
-        }
-        catch (IOException ex)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to remove {Label} {FilePath}", label, filePath);
-            }
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Access denied removing {Label} {FilePath}", label, filePath);
-            }
-        }
-    }
-
     private async Task<string?> ResolveArtistNameAsync(long id, CancellationToken cancellationToken)
     {
         if (_repository.IsConfigured)
@@ -1103,7 +1002,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
     public sealed record QobuzIdUpdateRequest(string QobuzId);
 
-    public sealed record BiographySourceSelectionRequest(string? Source);
+    public sealed record BiographySourceSelectionRequest(string? Source, string? SourceId = null);
 
     private sealed record UnmatchedSpotifyArtistDto(long ArtistId, string ArtistName);
 }
