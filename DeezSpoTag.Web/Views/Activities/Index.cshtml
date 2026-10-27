@@ -4599,8 +4599,24 @@ function buildActivityFetchOptions(options) {
     return requestOptions;
 }
 
-function activityFetch(resource, options) {
-    return activityNativeFetch(resource, buildActivityFetchOptions(options));
+async function activityFetch(resource, options) {
+    const response = await activityNativeFetch(resource, buildActivityFetchOptions(options));
+    if (!response.ok) {
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        const body = await response.clone().text();
+        const htmlResponse = contentType.includes('text/html')
+            || contentType.includes('application/xhtml+xml')
+            || /^\s*(?:<!doctype\s+html\b|<html\b)/i.test(body);
+        if (htmlResponse) {
+            const tunnelUnavailable = /(?:\berrorCode["']?\s*:\s*["']?1033\b|\berror\s+1033\b)/i.test(body);
+            const error = new Error(tunnelUnavailable
+                ? 'Cloudflare tunnel unavailable (error 1033). Retry when the connection is restored.'
+                : `Server returned an HTML error page (HTTP ${response.status}). Please try again.`);
+            error.status = response.status;
+            throw error;
+        }
+    }
+    return response;
 }
 
 /* Media server target awareness, shared by the Meloday and artist metadata cards on this tab.
