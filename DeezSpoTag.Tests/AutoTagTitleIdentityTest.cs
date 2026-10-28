@@ -10,6 +10,37 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagTitleIdentityTest
 {
+    [Theory]
+    [InlineData("Perfectly", "perfectly")]
+    [InlineData("Perfectly", "Perfectly")]
+    [InlineData("Hey, Girl", "Hey Girl")]
+    [InlineData("Hold Me Close", "Hold Me Closer")]
+    [InlineData("Perfectly", "Perfectly (Official Audio)")]
+    public void SoundcloudCannotReplaceAnExistingUsableTitle(string existing, string supplied)
+    {
+        var effective = new TagSettings { Title = true };
+        var incoming = new AutoTagTrack { Title = supplied };
+
+        ApplyTitleLossyOverwriteGuardMethod.Invoke(null, [effective, incoming, existing, "soundcloud"]);
+
+        Assert.False(effective.Title);
+        Assert.Equal(existing, incoming.Title);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Unknown")]
+    public void SoundcloudCanFillAMissingOrPlaceholderTitle(string existing)
+    {
+        var effective = new TagSettings { Title = true };
+        var incoming = new AutoTagTrack { Title = "Perfectly" };
+
+        ApplyTitleLossyOverwriteGuardMethod.Invoke(null, [effective, incoming, existing, "soundcloud"]);
+
+        Assert.True(effective.Title);
+        Assert.Equal("Perfectly", incoming.Title);
+    }
+
     private static readonly MethodInfo ApplyTitleLossyOverwriteGuardMethod =
         typeof(LocalAutoTagRunner).GetMethod(
             "ApplyTitleLossyOverwriteGuard",

@@ -441,7 +441,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string? existingTitle,
         string platformId)
     {
-        _ = platformId;
         if (!effectiveTagSettings.Title
             || string.IsNullOrWhiteSpace(existingTitle)
             || string.IsNullOrWhiteSpace(sourceTrack.Title))
@@ -451,6 +450,17 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         var existing = existingTitle.Trim();
         var incoming = sourceTrack.Title.Trim();
+        // SoundCloud upload titles are not authoritative replacements for usable library
+        // titles. Preserve spelling, casing and edition details even with overwrite enabled.
+        // Missing/placeholder titles can still be filled through the normal write policy.
+        if (string.Equals(platformId, "soundcloud", StringComparison.OrdinalIgnoreCase)
+            && !TrackIdentityTrust.IsWeakMetadataValue(existing))
+        {
+            sourceTrack.Title = existing;
+            effectiveTagSettings.Title = false;
+            return;
+        }
+
         if (string.Equals(existing, incoming, StringComparison.OrdinalIgnoreCase))
         {
             return;

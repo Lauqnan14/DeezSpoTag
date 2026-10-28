@@ -32,6 +32,32 @@ namespace DeezSpoTag.Tests;
 /// </remarks>
 public sealed class SoundCloudAutoTagPipelineTest
 {
+    [Theory]
+    [InlineData("flac", false)]
+    [InlineData("mp3", false)]
+    [InlineData("m4a", false)]
+    [InlineData("flac", true)]
+    public async Task SoundCloudEnrichmentPreservesTheExistingTitleEvenWithOverwriteEnabled(
+        string extension, bool useSavedIdentity)
+    {
+        await WithAudioFile(extension, async (path, directory) =>
+        {
+            // Exercise both search-based enrichment and the saved-identity path.
+            if (useSavedIdentity)
+            {
+                SetIdentity(path, "SOUNDCLOUD_TRACK_ID", "soundcloud:tracks:1");
+            }
+
+            await RunAsync(directory, path, overwrite: true,
+                tags: new[] { "title", "artist", "genre", "url", "trackId" },
+                providerTitle: "example");
+
+            Assert.Equal("Example", ReadTitle(path));
+            Assert.Equal("soundcloud:tracks:1", ReadIdentity(path, "SOUNDCLOUD_TRACK_ID"));
+            Assert.Contains("Hip-Hop", ReadGenres(path));
+        });
+    }
+
     [Fact]
     public async Task ASoundCloudPassWritesItsOwnIdentityFieldsToTheFile()
     {
@@ -148,13 +174,15 @@ public sealed class SoundCloudAutoTagPipelineTest
         string[] tags,
         string[]? overwriteTags = null,
         bool resolveReturnsNull = false,
-        bool mergeGenres = true)
+        bool mergeGenres = true,
+        string providerTitle = "Example")
     {
         var client = new StubClient
         {
+            ProviderTitle = providerTitle,
             SearchResults = resolveReturnsNull
                 ? Array.Empty<SoundCloudTrack>()
-                : new List<SoundCloudTrack> { Track() }
+                : new List<SoundCloudTrack> { Track() with { Title = providerTitle } }
         };
 
         var collaborators =
@@ -329,15 +357,17 @@ public sealed class SoundCloudAutoTagPipelineTest
 
     private sealed class StubClient : ISoundCloudClient
     {
+        public string ProviderTitle { get; init; } = "Example";
+
         public IReadOnlyList<SoundCloudTrack> SearchResults { get; init; } = Array.Empty<SoundCloudTrack>();
 
         public bool ResolveReturnsNull { get; init; }
 
         public Task<SoundCloudTrack?> ResolveTrackAsync(string url, CancellationToken cancellationToken)
-            => Task.FromResult<SoundCloudTrack?>(ResolveReturnsNull ? null : Track());
+            => Task.FromResult<SoundCloudTrack?>(ResolveReturnsNull ? null : Track() with { Title = ProviderTitle });
 
         public Task<SoundCloudTrack?> ResolveTrackByIdAsync(string idOrUrn, CancellationToken cancellationToken)
-            => Task.FromResult<SoundCloudTrack?>(ResolveReturnsNull ? null : Track());
+            => Task.FromResult<SoundCloudTrack?>(ResolveReturnsNull ? null : Track() with { Title = ProviderTitle });
 
         public Task<SoundCloudSet> ResolveSetAsync(string url, CancellationToken cancellationToken)
             => Task.FromResult(new SoundCloudSet());
