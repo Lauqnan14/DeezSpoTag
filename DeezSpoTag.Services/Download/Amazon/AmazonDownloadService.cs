@@ -12,6 +12,7 @@ using System.Diagnostics;
 using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Amazon;
@@ -55,14 +56,17 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private readonly IAmazonPublicProviderRegistry _publicProviderRegistry;
     private readonly HttpClient _client;
     private readonly ZarzSignedSessionCoordinator _zarzSessions;
+    private readonly IAmazonFallbackTrackResolver? _catalogResolver;
     public AmazonDownloadService(
         ILogger<AmazonDownloadService> logger,
         IAmazonPublicProviderRegistry publicProviderRegistry,
-        ZarzSignedSessionCoordinator zarzSessions)
+        ZarzSignedSessionCoordinator zarzSessions,
+        IAmazonFallbackTrackResolver? catalogResolver = null)
     {
         _logger = logger;
         _publicProviderRegistry = publicProviderRegistry;
         _zarzSessions = zarzSessions;
+        _catalogResolver = catalogResolver;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(2)
@@ -113,7 +117,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         var expectedPaths = AudioFilePathHelper.BuildExpectedPaths(expectedPathContext, FlacExtension, ".m4a");
         await EnsureExpectedFinalDestinationsAllowedAsync(request, expectedPaths, cancellationToken);
 
-        var filePath = await DownloadFromServiceAsync(amazonUrl, request.Quality, request.OutputDir, progressCallback, cancellationToken);
+        var filePath = await DownloadFromServiceAsync(amazonUrl, request.Quality, request.OutputDir, progressCallback, cancellationToken, request);
         var durationValidation = AudioDurationGuard.ValidateAgainstPreview(filePath, request.DurationSeconds);
         if (!durationValidation.Success)
         {
@@ -169,7 +173,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         string quality,
         string outputDir,
         Func<double, double, Task>? progressCallback,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AmazonDownloadRequest? recording = null)
     {
         var asin = ExtractAmazonAsin(amazonUrl);
         if (string.IsNullOrWhiteSpace(asin))
@@ -187,19 +192,51 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         Exception? lastError = null;
+        var catalogChecked = false;
         foreach (var provider in providers)
         {
             var stopwatch = Stopwatch.StartNew();
+            using var resolutionDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            resolutionDeadline.CancelAfter(TimeSpan.FromSeconds(60));
+            var resolutionToken = resolutionDeadline.Token;
             try
             {
-                using var response = await SendZarzDownloadRequestAsync(asin, codec, cancellationToken);
+                using var originalResponse = await SendZarzDownloadRequestAsync(asin, codec, resolutionToken);
+                var response = originalResponse;
+                var body = await response.Content.ReadAsStringAsync(resolutionToken);
+                if (!catalogChecked && recording is not null && _catalogResolver is not null
+                    && IsTerminalTrackNotFound(response.StatusCode, body))
+                {
+                    catalogChecked = true;
+                    resolutionToken.ThrowIfCancellationRequested();
+                    var canonical = await _catalogResolver.ResolveAmazonCanonicalTrackAsync(asin,
+                        recording.TrackName, recording.ArtistName, recording.AlbumName,
+                        recording.DurationSeconds > 0 ? checked(recording.DurationSeconds * 1000) : null,
+                        recording.Isrc, resolutionToken);
+                    if (canonical is not null && ExtractAmazonAsin(canonical.Id) == canonical.Id
+                        && !string.Equals(canonical.Id, asin, StringComparison.OrdinalIgnoreCase))
+                    {
+                        asin = canonical.Id;
+                        using var renewed = await SendZarzDownloadRequestAsync(asin, codec, resolutionToken);
+                        body = await renewed.Content.ReadAsStringAsync(resolutionToken);
+                        // Detach the small descriptor response from its request lifetime.
+                        response = new HttpResponseMessage(renewed.StatusCode) { Content = new StringContent(body) };
+                        foreach (var header in renewed.Headers)
+                            response.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
+                using var recoveredResponse = ReferenceEquals(response, originalResponse) ? null : response;
+                resolutionToken.ThrowIfCancellationRequested();
+                // The resolution deadline covers descriptors and canonical-ID recovery,
+                // not the subsequent audio transfer.
+                resolutionDeadline.CancelAfter(Timeout.InfiniteTimeSpan);
                 stopwatch.Stop();
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     var category = ClassifyDownloadFailure(response.StatusCode);
                     await _publicProviderRegistry.RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, cancellationToken);
                     lastError = new HttpRequestException(BuildZarzFailure("Amazon download API", response, body), null, response.StatusCode);
+                    FallbackFailureClassifier.AttachProviderErrorContract(lastError, body);
                     continue;
                 }
 
@@ -213,7 +250,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
                 await _publicProviderRegistry.RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
                 var extension = ResolveAmazonExtension(codec, media.Audio.Codec, media.Audio.Url);
-                var encryptedPath = Path.Join(outputDir, $"{Guid.NewGuid():N}{extension}");
+                var encryptedPath = BuildAcquisitionPath(outputDir, asin, codec, media.Audio.Key, extension, recording);
                 await DownloadFileAsync(media.Audio.Url, encryptedPath, progressCallback, cancellationToken);
                 return string.IsNullOrWhiteSpace(media.Audio.Key)
                     ? encryptedPath
@@ -222,6 +259,12 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException ex) when (resolutionDeadline.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "timeout", stopwatch.ElapsedMilliseconds, cancellationToken);
+                lastError = new TimeoutException("Amazon stream resolution timed out.", ex);
             }
             catch (HttpRequestException ex)
             {
@@ -256,17 +299,42 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         throw lastError ?? new InvalidOperationException("Amazon download URL not available.");
     }
 
+    private static bool IsTerminalTrackNotFound(System.Net.HttpStatusCode status, string body)
+    {
+        if (status != System.Net.HttpStatusCode.NotFound) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+            var contract = ZarzSignedSessionCoordinator.ParseContract(body);
+            return !contract.Retryable && contract.Action is "" or "none"
+                && contract.Origin is "" or "provider"
+                && contract.Code is "" or "TRACK_NOT_FOUND" or "TRACK_UNAVAILABLE" or "TRACK_NOT_AVAILABLE";
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private static string BuildAcquisitionPath(string outputDir, string asin, string codec, string? key,
+        string extension, AmazonDownloadRequest? recording)
+    {
+        var identity = string.Join('\n', asin.ToUpperInvariant(), codec, key ?? "",
+            recording?.TrackName, recording?.ArtistName, recording?.AlbumName, recording?.Isrc,
+            recording?.DurationSeconds.ToString(CultureInfo.InvariantCulture), recording?.Quality);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+        return Path.Join(outputDir, $".amazon-{hash}.source{extension}");
+    }
+
     private async Task<HttpResponseMessage> SendZarzDownloadRequestAsync(
         string asin,
         string codec,
         CancellationToken cancellationToken)
     {
-        var ticket = await RequestZarzTicketAsync(asin, cancellationToken);
-        return await SendZarzSignedRequestAsync(
-            HttpMethod.Post,
-            ZarzDownloadPath,
-            JsonSerializer.SerializeToUtf8Bytes(new { asin, codec }),
-            new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket },
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new { asin, codec });
+        return await ZarzSignedSessionContract.SendTicketedDownloadAsync(
+            token => RequestZarzTicketAsync(asin, token),
+            (ticket, token) => SendZarzSignedRequestAsync(
+                HttpMethod.Post, ZarzDownloadPath, payload,
+                new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket }, token),
             cancellationToken);
     }
 
@@ -725,15 +793,9 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             OperatingSystem.IsWindows() ? FfprobeExecutableNamesWindows : FfprobeExecutableNamesUnix);
     }
 
-    private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
-    {
-        using var request = CreateGetRequestWithRandomUserAgent(url);
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var file = IOFile.Create(outputPath);
-        await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
-    }
+    private Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
+        => DownloadStreamHelper.DownloadFileAsync(_client, url, outputPath, progressCallback, cancellationToken,
+            () => CreateGetRequestWithRandomUserAgent(url));
 
     private static HttpRequestMessage CreateGetRequestWithRandomUserAgent(string url)
     {

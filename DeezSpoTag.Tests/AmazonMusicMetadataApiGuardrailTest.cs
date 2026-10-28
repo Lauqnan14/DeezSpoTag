@@ -20,6 +20,238 @@ namespace DeezSpoTag.Tests;
 public sealed class AmazonMusicMetadataApiGuardrailTest
 {
     [Fact]
+    public async Task PermanentSessionRejection_DoesNotRebootstrapIndefinitely()
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-session-rejection-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            using var handler = new BootstrapHandler(HttpStatusCode.Forbidden);
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => service.SearchAsync("Song Artist", "track", 25, CancellationToken.None));
+            Assert.Equal(HttpStatusCode.Forbidden, failure.StatusCode);
+            Assert.Equal(2, handler.BootstrapCount);
+            Assert.Equal(2, handler.CatalogCount);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StaleAsinDownload_RetriesOneVerifiedIdentityAndProducesValidatedAudio(bool interruptFirstRun)
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-download-recovery-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var fixture = Path.Join(root, "fixture.flac");
+            var start = new System.Diagnostics.ProcessStartInfo("ffmpeg") { RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "flac", "-y", fixture })
+                start.ArgumentList.Add(argument);
+            using (var process = System.Diagnostics.Process.Start(start)!)
+            {
+                var errors = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                Assert.True(process.ExitCode == 0, await errors);
+            }
+            var audio = await File.ReadAllBytesAsync(fixture);
+            using var handler = new AmazonDownloadHandler(audio) { FailTransfers = interruptFirstRun ? 4 : 0 };
+            using var client = new HttpClient(handler);
+            var sessions = new DeezSpoTag.Services.Download.Shared.ZarzSignedSessionCoordinator(
+                NullLogger<DeezSpoTag.Services.Download.Shared.ZarzSignedSessionCoordinator>.Instance);
+            await sessions.EnsureSessionAsync("amazon", (_, _) => Task.FromResult(
+                new DeezSpoTag.Services.Download.Shared.ZarzSessionBootstrapResult(
+                    new DeezSpoTag.Services.Download.Shared.ZarzSignedSession { InstallId = "fixture", SessionId = "fixture",
+                        SessionSecret = "fixture-secret", ExpiresAt = DateTimeOffset.UtcNow.AddDays(2) }, null)), CancellationToken.None);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            using var catalog = new BootstrapHandler { TrackResponseBody = """{"items":[{"deeplink":"/tracks/B000000002","primaryText":"Song","artistName":"Artist","durationMs":1000}]}""" };
+            var resolver = new AmazonMusicMetadataService(catalog, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var downloader = new DeezSpoTag.Services.Download.Amazon.AmazonDownloadService(
+                NullLogger<DeezSpoTag.Services.Download.Amazon.AmazonDownloadService>.Instance, new AmazonRegistry(), sessions, resolver);
+            typeof(DeezSpoTag.Services.Download.Amazon.AmazonDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(downloader, client);
+            var request = new DeezSpoTag.Services.Download.Amazon.AmazonDownloadRequest {
+                AmazonId = "B000000001", TrackName = "Song", ArtistName = "Artist", AlbumName = "Album", DurationSeconds = 1,
+                Quality = "HD_FLAC", OutputDir = Path.Join(root, "downloads"), FilenameFormat = "{artist} - {title}"
+            };
+            if (interruptFirstRun)
+                await Assert.ThrowsAsync<IOException>(() => downloader.DownloadAsync(request, false, null, null, CancellationToken.None));
+            var result = await downloader.DownloadAsync(request, false, null, null, CancellationToken.None);
+            Assert.True(File.Exists(result));
+            using var tagged = TagLib.File.Create(result);
+            // Provider acquisition renames and validates; the queue's existing post-download
+            // stage owns tag writing. Do not invent a second tag writer in this service.
+            Assert.Contains("Song", Path.GetFileName(result));
+            Assert.Contains("Artist", Path.GetFileName(result));
+            Assert.True(tagged.Properties.Duration.TotalSeconds > 0);
+            Assert.Equal(interruptFirstRun ? 2 : 1, catalog.DetailRequests);
+            Assert.Equal(interruptFirstRun ? new[] { "B000000001", "B000000002", "B000000001", "B000000002" }
+                : new[] { "B000000001", "B000000002" }, handler.Asins);
+            Assert.All(handler.Codecs, codec => Assert.Equal("flac", codec));
+            Assert.Equal(interruptFirstRun ? 4 : 2, handler.Tickets);
+            Assert.Equal(interruptFirstRun ? 5 : 1, handler.Transfers);
+            if (interruptFirstRun) Assert.Equal(20, handler.LastOffset);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "TRACK_NOT_FOUND", false, true)]
+    [InlineData(HttpStatusCode.NotFound, "TRACK_UNAVAILABLE", true, false)]
+    [InlineData(HttpStatusCode.NotFound, "QUALITY_UNAVAILABLE", false, false)]
+    [InlineData(HttpStatusCode.NotFound, "VERIFY_REQUIRED", false, false)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "TRACK_NOT_FOUND", false, false)]
+    public void CatalogRecovery_OnlyRunsForTerminalTrackAbsence(HttpStatusCode status, string code, bool retryable, bool expected)
+    {
+        var method = typeof(DeezSpoTag.Services.Download.Amazon.AmazonDownloadService).GetMethod("IsTerminalTrackNotFound", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var body = JsonSerializer.Serialize(new { origin = "provider", code, retryable, retry_mode = "none" });
+        Assert.Equal(expected, method.Invoke(null, new object[] { status, body }));
+    }
+
+    [Fact]
+    public void AmazonTransferPath_IsStableAcrossRetriesAndSeparatesRecordingQualityAndKey()
+    {
+        var method = typeof(DeezSpoTag.Services.Download.Amazon.AmazonDownloadService).GetMethod("BuildAcquisitionPath", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var request = new DeezSpoTag.Services.Download.Amazon.AmazonDownloadRequest { TrackName = "Song", ArtistName = "Artist", Quality = "HD_FLAC" };
+        string PathFor(string asin, string codec, string key) => (string)method.Invoke(null, new object?[] { "/tmp", asin, codec, key, ".flac", request })!;
+        var original = PathFor("B000000001", "flac", "key");
+        Assert.Equal(original, PathFor("B000000001", "flac", "key"));
+        Assert.NotEqual(original, PathFor("B000000002", "flac", "key"));
+        Assert.NotEqual(original, PathFor("B000000001", "eac3", "key"));
+        Assert.NotEqual(original, PathFor("B000000001", "flac", "new-key"));
+        request.Quality = "ULTRA_HD_FLAC";
+        Assert.NotEqual(original, PathFor("B000000001", "flac", "key"));
+    }
+
+    private sealed class AmazonDownloadHandler(byte[] audio) : HttpMessageHandler
+    {
+        public System.Collections.Generic.List<string> Asins { get; } = [];
+        public System.Collections.Generic.List<string> Codecs { get; } = [];
+        public int FailTransfers { get; init; }
+        public long LastOffset { get; private set; }
+        public int Tickets { get; private set; }
+        public int Transfers { get; private set; }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/tickets", StringComparison.Ordinal))
+            {
+                Tickets++;
+                return new(HttpStatusCode.OK) { Content = new StringContent("""{"ticket":"fixture-ticket"}""") };
+            }
+            if (path.EndsWith("/amazeamazeamaze", StringComparison.Ordinal))
+            {
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+                var asin = body.RootElement.GetProperty("asin").GetString()!;
+                Asins.Add(asin);
+                Codecs.Add(body.RootElement.GetProperty("codec").GetString()!);
+                return asin == "B000000001"
+                    ? new(HttpStatusCode.NotFound) { Content = new StringContent("""{"origin":"provider","code":"TRACK_NOT_FOUND","retryable":false,"retry_mode":"none"}""") }
+                    : new(HttpStatusCode.OK) { Content = new StringContent("""{"audio":{"url":"https://audio.invalid/fixture.flac","codec":"flac"}}""") };
+            }
+            Assert.Equal("audio.invalid", request.RequestUri.Host);
+            Transfers++;
+            LastOffset = request.Headers.Range?.Ranges.Single().From ?? 0;
+            var result = new HttpResponseMessage(LastOffset > 0 ? HttpStatusCode.PartialContent : HttpStatusCode.OK)
+            {
+                Content = Transfers <= FailTransfers
+                    ? new StreamContent(new InterruptedAmazonAudio(audio, (int)LastOffset))
+                    : new ByteArrayContent(audio[(int)LastOffset..])
+            };
+            result.Headers.ETag = new System.Net.Http.Headers.EntityTagHeaderValue("\"fixture-recording\"");
+            result.Content.Headers.ContentLength = audio.Length - LastOffset;
+            if (LastOffset > 0) result.Content.Headers.ContentRange =
+                new System.Net.Http.Headers.ContentRangeHeaderValue(LastOffset, audio.Length - 1, audio.Length);
+            return result;
+        }
+    }
+
+    private sealed class InterruptedAmazonAudio(byte[] audio, int offset) : MemoryStream
+    {
+        private bool read;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (read) throw new IOException("Interrupted fixture transfer");
+            audio.AsSpan(offset, 5).CopyTo(buffer.Span);
+            read = true;
+            return ValueTask.FromResult(5);
+        }
+    }
+
+    private sealed class AmazonRegistry : DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry
+    {
+        public Task<System.Collections.Generic.IReadOnlyList<DeezSpoTag.Integrations.Amazon.AmazonPublicProvider>> GetProvidersAsync(CancellationToken ct)
+            => Task.FromResult<System.Collections.Generic.IReadOnlyList<DeezSpoTag.Integrations.Amazon.AmazonPublicProvider>>(
+                [new("fixture", "fixture", "download", "", null, null, true, "ready", null, null, null, null, null, null)]);
+        public Task<System.Collections.Generic.IReadOnlyList<DeezSpoTag.Integrations.Amazon.AmazonPublicProvider>> CheckEnabledProvidersAsync(CancellationToken ct) => GetProvidersAsync(ct);
+        public Task<DeezSpoTag.Integrations.Amazon.AmazonPublicProvider?> SetEnabledAsync(string id, bool enabled, CancellationToken ct) => throw new NotSupportedException();
+        public Task RecordSuccessAsync(string id, long ms, CancellationToken ct) => Task.CompletedTask;
+        public Task RecordFailureAsync(string id, string category, long ms, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Theory]
+    [InlineData("Song", "Artist", 180000, "USABC1234567", true)]
+    [InlineData("Wrong Song", "Artist", 180000, "USABC1234567", false)]
+    [InlineData("Song (Live)", "Artist", 180000, "USABC1234567", false)]
+    [InlineData("Song", "Wrong Artist", 180000, "USABC1234567", false)]
+    [InlineData("Song", "Artist", 185000, "USABC1234567", false)]
+    [InlineData("Song", "Artist", 0, "USABC1234567", false)]
+    [InlineData("Song", "Artist", 180000, "USABC7654321", false)]
+    public async Task CanonicalAsinRecovery_RequiresTheSameRecording(string title, string artist, int duration, string isrc, bool accepted)
+    {
+        var method = typeof(AmazonMusicMetadataService).GetMethod("ResolveAmazonCanonicalTrackAsync");
+        Assert.NotNull(method);
+        var root = Path.Join(Path.GetTempPath(), "amazon-canonical-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            using var handler = new BootstrapHandler { TrackResponseBody = JsonSerializer.Serialize(new { items = new[] {
+                new { deeplink = "/tracks/B000000002", primaryText = title, artistName = artist, durationMs = duration, isrc }
+            } }) };
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            var task = (Task<DeezSpoTag.Services.Download.Fallback.AmazonFallbackTrackResolution?>)method!.Invoke(service,
+                new object?[] { "B000000001", "Song", "Artist", null, 180000, "USABC1234567", CancellationToken.None })!;
+            var result = await task;
+            Assert.Equal(accepted ? "B000000002" : null, result?.Id);
+            Assert.Equal(1, handler.DetailRequests);
+            Assert.Equal(1, handler.CatalogCount);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task RejectedGuestSession_IsRebuiltOnceWithFreshPayloadHeaders(HttpStatusCode rejection)
+    {
+        var root = Path.Join(Path.GetTempPath(), "amazon-session-refresh-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var config = new TestConfigRootScope(root);
+            var auth = new PlatformAuthService(new BootstrapEnvironment(root), NullLogger<PlatformAuthService>.Instance,
+                new EphemeralDataProtectionProvider());
+            await auth.SaveAsync(new PlatformAuthState { AmazonMusic = new AmazonMusicAuth { Host = "music.amazon.co.uk" } });
+            using var handler = new BootstrapHandler { RejectFirstCatalogRequest = rejection };
+            var service = new AmazonMusicMetadataService(handler, auth, NullLogger<AmazonMusicMetadataService>.Instance);
+            await service.SearchAsync("Song Artist", "track", 25, CancellationToken.None);
+            Assert.Equal(2, handler.BootstrapCount);
+            Assert.Equal(2, handler.CatalogCount);
+            Assert.Contains("guest-csrf-2", handler.SearchBody);
+            Assert.Contains("music.amazon.co.uk", handler.BootstrapUri);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void MatchingIsrc_DoesNotOverrideAConflictingAmazonTitle()
     {
         var method = typeof(AmazonMusicMetadataService).GetMethod("IsAcceptedResolvedTrack", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -170,6 +402,9 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
 
     private sealed class BootstrapHandler(HttpStatusCode searchStatus = HttpStatusCode.OK) : HttpMessageHandler, IHttpClientFactory
     {
+        public HttpStatusCode? RejectFirstCatalogRequest { get; set; }
+        public int BootstrapCount { get; private set; }
+        public int CatalogCount { get; private set; }
         public string? SearchResponseBody { get; set; }
         public string? TrackResponseBody { get; set; }
         public int DetailRequests { get; private set; }
@@ -184,6 +419,7 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
             string response;
             if (request.RequestUri!.AbsolutePath == "/config.json")
             {
+                BootstrapCount++;
                 BootstrapMethod = request.Method;
                 BootstrapUri = request.RequestUri.AbsoluteUri;
                 response = request.Method == HttpMethod.Post && request.RequestUri.Query == "?skipToken=false&clientApplication=skyfire"
@@ -192,6 +428,7 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
             }
             else
             {
+                CatalogCount++;
                 SearchBody = await request.Content!.ReadAsStringAsync(token);
                 if (request.RequestUri.AbsolutePath.EndsWith("/searchCatalogTracks", StringComparison.Ordinal))
                     response = SearchResponseBody ?? "{\"methods\":[]}";
@@ -201,7 +438,9 @@ public sealed class AmazonMusicMetadataApiGuardrailTest
                     response = TrackResponseBody ?? "{\"methods\":[]}";
                 }
             }
-            return new HttpResponseMessage(request.RequestUri!.AbsolutePath == "/config.json" ? HttpStatusCode.OK : searchStatus)
+            if (RejectFirstCatalogRequest.HasValue) response = response.Replace("guest-csrf", "guest-csrf-" + BootstrapCount);
+            return new HttpResponseMessage(request.RequestUri!.AbsolutePath == "/config.json" ? HttpStatusCode.OK
+                : CatalogCount == 1 && RejectFirstCatalogRequest.HasValue ? RejectFirstCatalogRequest.Value : searchStatus)
                 { Content = new StringContent(response) };
         }
     }

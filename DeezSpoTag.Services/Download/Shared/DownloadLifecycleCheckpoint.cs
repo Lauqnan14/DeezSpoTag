@@ -168,7 +168,7 @@ internal static class DownloadLifecycleCheckpoint
             uuid = queueUuid,
             status = scheduled ? "retry_waiting" : "failed",
             error = failure.UserMessage,
-            audioAcquired = true,
+            audioAcquired = payload.AudioAcquired,
             finalizationStage = failure.Stage,
             finalizationRetryAtUtc = retryAt
         });
@@ -199,6 +199,7 @@ internal static class DownloadLifecycleCheckpoint
 
 internal static class DownloadFinalizationStage
 {
+    public const string AudioConversion = "audio_conversion";
     public const string ArtworkPrefetch = "artwork_prefetch";
     public const string TagWriting = "tag_writing";
     public const string ArtworkEmbedding = "artwork_embedding";

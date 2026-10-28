@@ -837,7 +837,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         CancellationToken cancellationToken)
     {
         var trackUrl = $"https://open.qobuz.com/track/{trackId}";
-        var ticket = await RequestZarzTicketAsync(trackUrl, cancellationToken);
         var payload = JsonSerializer.SerializeToUtf8Bytes(new
         {
             quality = MapZarzQuality(qualityCode),
@@ -846,11 +845,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             type = "track",
             url = trackUrl
         });
-        using var response = await SendZarzSignedRequestAsync(
-            HttpMethod.Post,
-            ZarzDownloadPath,
-            payload,
-            new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket },
+        using var response = await ZarzSignedSessionContract.SendTicketedDownloadAsync(
+            token => RequestZarzTicketAsync(trackUrl, token),
+            (ticket, token) => SendZarzSignedRequestAsync(
+                HttpMethod.Post, ZarzDownloadPath, payload,
+                new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket }, token),
             cancellationToken);
         var body = await ReadProviderResponseBodyAsync(response, "zarz", cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -1319,18 +1318,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return !string.IsNullOrWhiteSpace(url);
     }
 
-    private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
-    {
-        using var response = await _downloadClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"Qobuz download failed ({(int)response.StatusCode})", null, response.StatusCode);
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var file = IOFile.Create(outputPath);
-        await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
-    }
+    private Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
+        => DownloadStreamHelper.DownloadFileAsync(_downloadClient, url, outputPath, progressCallback, cancellationToken);
 
     private static async Task EnsureFinalDestinationAllowedAsync(
         QobuzDownloadRequest request,

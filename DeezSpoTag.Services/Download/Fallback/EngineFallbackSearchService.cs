@@ -50,6 +50,13 @@ public sealed record AmazonFallbackTrackResolution(
 
 public interface IAmazonFallbackTrackResolver
 {
+    // Direct catalog lookup only: callers use this after a terminal stale-ID 404,
+    // never as permission to search for another recording or downgrade quality.
+    Task<AmazonFallbackTrackResolution?> ResolveAmazonCanonicalTrackAsync(
+        string amazonId, string title, string artist, string? album, int? durationMs,
+        string? isrc, CancellationToken cancellationToken)
+        => Task.FromResult<AmazonFallbackTrackResolution?>(null);
+
     Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
         string title,
         string artist,

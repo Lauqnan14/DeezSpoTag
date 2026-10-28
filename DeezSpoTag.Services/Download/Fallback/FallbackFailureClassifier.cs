@@ -68,7 +68,7 @@ public static class FallbackFailureClassifier
                 || retryable.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
                 || !doc.RootElement.TryGetProperty("retry_mode", out var mode) || mode.ValueKind != JsonValueKind.String)
                 return null;
-            return doc.RootElement.Deserialize<ZarzErrorContract>();
+            return ZarzSignedSessionCoordinator.ParseContract(message[start..(end + 1)]);
         }
         catch (JsonException) { return null; }
     }

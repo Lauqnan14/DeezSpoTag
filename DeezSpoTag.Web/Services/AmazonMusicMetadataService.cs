@@ -295,6 +295,33 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         return await ResolveTrackFromCatalogAsync(title, artist, album, durationMs, isrc, requireAtmos: true, cancellationToken);
     }
 
+    public async Task<AmazonFallbackTrackResolution?> ResolveAmazonCanonicalTrackAsync(
+        string amazonId, string title, string artist, string? album, int? durationMs,
+        string? isrc, CancellationToken cancellationToken)
+    {
+        var id = ExtractAsin(amazonId);
+        if (id is null || string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist)
+            || durationMs is not > 0) return null;
+        var session = await CreateSessionAsync(cancellationToken);
+        using var document = await FetchCatalogDocumentAsync(session, id, "track", BuildCatalogUrl(id, "track")!, cancellationToken);
+        var matches = ExtractTracklistTrackItems(document.RootElement)
+            .Where(candidate => candidate.Type == "track" && ExtractAsin(candidate.Id) == candidate.Id
+                && !string.Equals(candidate.Id, id, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(candidate.Artist) && candidate.DurationMs is > 0
+                && Math.Abs((long)candidate.DurationMs.Value - durationMs.Value) <= 2000
+                && DeezSpoTag.Core.Utils.TrackTitleMatcher.RecordingTitlesMatch(title, candidate.Title)
+                && DeezSpoTag.Core.Utils.TrackTitleMatcher.StrictArtistsMatch(artist, candidate.Artist)
+                && TrackCandidateValidator.Validate(
+                    new TrackMatchSource(isrc, title, artist, album, durationMs),
+                    new TrackMatchCandidate(candidate.Id, candidate.Isrc, candidate.Title, candidate.Artist, candidate.Album, candidate.DurationMs),
+                    new TrackCandidateValidationOptions(RequireCandidateDurationWhenSourceHasDuration: true,
+                        MaxIsrcDurationDifferenceMs: 2000, MaxMetadataDurationDifferenceMs: 2000)).Accepted)
+            .DistinctBy(candidate => candidate.Id, StringComparer.OrdinalIgnoreCase).Take(2).ToArray();
+        // Multiple valid IDs are ambiguous; do not guess which recording to download.
+        return matches.Length == 1 ? new AmazonFallbackTrackResolution(matches[0].Id,
+            BuildCatalogUrl(matches[0].Id, "track")!) : null;
+    }
+
     public async Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
         string title,
         string artist,
@@ -577,12 +604,13 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
     }
 
-    private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken)
+    private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken, AmazonSession? previous = null)
     {
         var auth = (await _platformAuthService.LoadAsync()).AmazonMusic;
-        var host = NormalizeHost(auth?.Host);
+        var host = previous?.Host ?? NormalizeHost(auth?.Host);
         var region = ResolveRegionConfig(host);
-        var locale = string.IsNullOrWhiteSpace(auth?.Locale) ? region.Language : auth.Locale.Trim();
+        var locale = previous?.Locale ?? (string.IsNullOrWhiteSpace(auth?.Locale) ? region.Language : auth.Locale.Trim());
+        var cookie = previous is null ? auth?.Cookie : previous.Cookie;
         var client = _httpClientFactory.CreateClient(nameof(AmazonMusicMetadataService));
         client.Timeout = TimeSpan.FromSeconds(30);
 
@@ -590,7 +618,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         // a usable token. This bootstrap also works without an Amazon account cookie.
         using var request = new HttpRequestMessage(HttpMethod.Post,
             $"https://{host}/config.json?skipToken=false&clientApplication=skyfire");
-        AddAmazonHeaders(request, host, auth?.Cookie);
+        AddAmazonHeaders(request, host, cookie);
         using var response = await client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
@@ -623,7 +651,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             csrfTimestamp,
             csrfNonce,
             version,
-            auth?.Cookie);
+            cookie);
     }
 
     private async Task<JsonDocument> FetchCatalogDocumentAsync(
@@ -720,10 +748,12 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         AmazonSession session,
         string path,
         string pageUrl,
-        object payload,
-        CancellationToken cancellationToken)
+        Dictionary<string, string> payload,
+        CancellationToken cancellationToken,
+        bool sessionRefreshed = false)
     {
         Exception? lastException = null;
+        var replayStarted = false;
         foreach (var baseUrl in session.SkillApiBaseUrls)
         {
             var url = $"{baseUrl.TrimEnd('/')}/{path.TrimStart('/')}";
@@ -739,13 +769,27 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
+                    if (!sessionRefreshed && response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                    {
+                        // Rebuild the issued guest credentials, including the headers embedded
+                        // inside the JSON body. Replaying the old body repeats the rejection.
+                        replayStarted = true;
+                        response.Dispose();
+                        var fresh = await CreateSessionAsync(cancellationToken, session);
+                        var renewedPayload = new Dictionary<string, string>(payload)
+                        {
+                            ["headers"] = BuildAmazonSkillHeaders(fresh, pageUrl)
+                        };
+                        return await PostSkillJsonAsync(fresh, path, pageUrl, renewedPayload, cancellationToken, sessionRefreshed: true);
+                    }
                     _logger.LogDebug("Amazon Music metadata call {Url} failed with HTTP {Status}: {Body}", url, (int)response.StatusCode, TruncateForLog(body));
                     response.EnsureSuccessStatusCode();
                 }
 
                 return JsonDocument.Parse(body);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && !replayStarted
+                && ex is not HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden })
             {
                 lastException = ex;
                 _logger.LogDebug(ex, "Amazon Music metadata endpoint {Url} failed.", url);

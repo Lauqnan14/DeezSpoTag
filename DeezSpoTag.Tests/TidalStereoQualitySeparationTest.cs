@@ -19,8 +19,176 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Fact]
+    public async Task TidalRetainedConversion_RetriesOfflineWithoutDownloadingAudioAgain()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = Path.Combine(Path.GetTempPath(), $"tidal-retained-live-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var previous = Environment.GetEnvironmentVariable("DEEZSPOTAG_FFMPEG_PATH");
+        try
+        {
+            var fixture = Path.Combine(directory, "fixture.flac");
+            await GenerateTestFlacAsync(fixture);
+            var mp4 = Path.Combine(directory, "fixture.m4a");
+            var start = new ProcessStartInfo("ffmpeg") { RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-v", "error", "-y", "-i", fixture, "-c:a", "copy", "-strict", "-2", "-f", "mp4", mp4 }) start.ArgumentList.Add(argument);
+            using (var process = Process.Start(start)!)
+            {
+                var error = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                Assert.True(process.ExitCode == 0, await error);
+            }
+            using var server = new SegmentTestServer(new Dictionary<string, byte[]> { ["init"] = await File.ReadAllBytesAsync(mp4) }, false);
+            server.Start();
+            var manifestRequests = 0;
+            using var client = new HttpClient(new ManifestRefreshHandler(_ =>
+            {
+                manifestRequests++;
+                var manifest = System.Text.Json.JsonSerializer.Serialize(new
+                { mimeType = "audio/mp4", codecs = "flac", encryptionType = "NONE", urls = new[] { server.Url("init") } });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new
+                { manifest = Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest)) })) };
+            }));
+            var authentication = new UnauthenticatedTidalAccessTokenProvider { SessionToken = "local-fixture" };
+            var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+                new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()), authentication,
+                new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+            typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+            var method = typeof(TidalDownloadService).GetMethod("DownloadByUrlAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var request = new TidalDownloadRequest { TidalId = "123456788", OutputDir = directory, TrackName = "Retained", ArtistName = "Fixture", AlbumName = "Fixture", Quality = "LOSSLESS", DurationSeconds = 1 };
+            Task<string> Download() => (Task<string>)method.Invoke(service,
+                [request, "https://listen.tidal.com/track/123456788", null, CancellationToken.None])!;
+            var brokenConverter = Path.Combine(directory, "unavailable-converter");
+            await File.WriteAllTextAsync(brokenConverter, "#!/bin/sh\nif [ \"$1\" = \"-version\" ]; then exit 0; fi\necho simulated-conversion-failure >&2\nexit 1\n");
+            File.SetUnixFileMode(brokenConverter, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_FFMPEG_PATH", brokenConverter);
+            var failure = await Assert.ThrowsAnyAsync<InvalidOperationException>(Download);
+            Assert.Contains("complete source retained", failure.Message);
+            Assert.Single(Directory.GetFiles(directory, "*.m4a.tmp"));
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_FFMPEG_PATH", previous);
+            authentication.SessionToken = "";
+            var output = await service.DownloadAsync(request, false, null, null, CancellationToken.None);
+            using var tagged = TagLib.File.Create(output);
+            Assert.True(tagged.Properties.Duration.TotalSeconds > 0);
+            Assert.True(tagged.Properties.BitsPerSample >= 16);
+            Assert.Equal(1, manifestRequests);
+            Assert.Equal(1, server.RequestCount("init"));
+            Assert.Empty(Directory.GetFiles(directory, "*.m4a.tmp"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_FFMPEG_PATH", previous);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TidalExpiredAsset_RefreshesOnceWithoutChangingRecordingOrQuality(bool stillExpired)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"tidal-expiry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var fixture = Path.Combine(directory, "fixture.flac");
+            await GenerateTestFlacAsync(fixture);
+            using var server = new SegmentTestServer(new Dictionary<string, byte[]> { ["init"] = await File.ReadAllBytesAsync(fixture) }, false)
+            { RejectMedia2 = true };
+            server.Start();
+            var requests = 0;
+            using var client = new HttpClient(new ManifestRefreshHandler(request =>
+            {
+                requests++;
+                Assert.Contains("/tracks/123456789/playbackinfopostpaywall", request.RequestUri!.AbsolutePath);
+                Assert.Contains("audioquality=LOSSLESS", request.RequestUri.Query);
+                var manifest = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    mimeType = "audio/flac", codecs = "flac", encryptionType = "NONE",
+                    urls = new[] { server.Url(requests == 1 || stillExpired ? "media-2" : "init") }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new
+                    { manifest = Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest)) }))
+                };
+            }));
+            var service = new TidalDownloadService(NullLogger<TidalDownloadService>.Instance,
+                new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+                new UnauthenticatedTidalAccessTokenProvider { SessionToken = "local-fixture" },
+                new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
+            typeof(TidalDownloadService).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, client);
+            var method = typeof(TidalDownloadService).GetMethod("DownloadByUrlAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var download = (Task<string>)method.Invoke(service, [new TidalDownloadRequest
+            { OutputDir = directory, TrackName = "Fixture", ArtistName = "Fixture", AlbumName = "Fixture", Quality = "LOSSLESS", DurationSeconds = 1 },
+                "https://listen.tidal.com/track/123456789", null, CancellationToken.None])!;
+            if (stillExpired) await Assert.ThrowsAsync<HttpRequestException>(async () => await download);
+            else Assert.Equal(await File.ReadAllBytesAsync(fixture), await File.ReadAllBytesAsync(await download));
+            Assert.Equal(2, requests);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    private sealed class ManifestRefreshHandler(Func<HttpRequestMessage, HttpResponseMessage> manifest) : DelegatingHandler(new HttpClientHandler())
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => request.RequestUri!.Host == "api.tidal.com"
+                ? Task.FromResult(manifest(request))
+                : base.SendAsync(request, cancellationToken);
+    }
+
+    [Fact]
+    public async Task TidalConversionFailure_PreservesTheCompleteInputForRetry()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"tidal-conversion-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var input = Path.Combine(directory, "complete-source.m4a.tmp");
+        var output = Path.Combine(directory, "output.flac");
+        await File.WriteAllBytesAsync(input, [1, 2, 3, 4]);
+        try
+        {
+            var convert = typeof(TidalDownloadService).GetMethod("ConvertTempToFlacAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await (Task)convert.Invoke(null, [input, output, CancellationToken.None])!);
+            Assert.True(File.Exists(input));
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(input));
+            Assert.False(File.Exists(output));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task TidalDashSegments_RetainCompletedSegmentsAcrossFailedAttempts()
+    {
+        using var server = new SegmentTestServer(simulateFailures: false) { RejectMedia2 = true };
+        var siblingsCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.BeforeMedia2Response = siblingsCompleted.Task;
+        server.Start();
+        var directory = Path.Combine(Path.GetTempPath(), $"tidal-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var output = Path.Combine(directory, "audio.bin");
+        try
+        {
+            await Assert.ThrowsAsync<HttpRequestException>(() => InvokeSegmentDownloadAsync(server, output, ["init", "media-1", "media-2"], (progress, _) =>
+            {
+                if (progress > 60) siblingsCompleted.TrySetResult();
+                return Task.CompletedTask;
+            }));
+            // Let successful parallel siblings settle before checking their retained output.
+            server.RejectMedia2 = false;
+            await InvokeSegmentDownloadAsync(server, output, ["init", "media-1", "media-2"]);
+            Assert.Equal("INIT-ONE-TWO", await File.ReadAllTextAsync(output));
+            Assert.Equal(1, server.RequestCount("init"));
+            Assert.Equal(1, server.RequestCount("media-1"));
+            Assert.Equal(2, server.RequestCount("media-2"));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -927,7 +1095,8 @@ public sealed class TidalStereoQualitySeparationTest
     private static async Task InvokeSegmentDownloadAsync(
         SegmentTestServer server,
         string outputPath,
-        IReadOnlyList<string> paths)
+        IReadOnlyList<string> paths,
+        Func<double, double, Task>? progress = null)
     {
         var service = new TidalDownloadService(
             NullLogger<TidalDownloadService>.Instance,
@@ -941,7 +1110,7 @@ public sealed class TidalStereoQualitySeparationTest
         var urls = paths.Select(server.Url).ToArray();
         var task = Assert.IsAssignableFrom<Task>(method.Invoke(
             service,
-            [urls, outputPath, null, CancellationToken.None]));
+            [urls, outputPath, progress, CancellationToken.None]));
         await task;
     }
 
@@ -983,6 +1152,8 @@ public sealed class TidalStereoQualitySeparationTest
         private readonly IReadOnlyDictionary<string, byte[]>? _payloads;
         private readonly bool _simulateFailures;
         private Task? _acceptLoop;
+        public bool RejectMedia2 { get; set; }
+        public Task? BeforeMedia2Response { get; set; }
 
         public SegmentTestServer(
             IReadOnlyDictionary<string, byte[]>? payloads = null,
@@ -1054,6 +1225,13 @@ public sealed class TidalStereoQualitySeparationTest
                 {
                     count = _requestCounts.GetValueOrDefault(path) + 1;
                     _requestCounts[path] = count;
+                }
+
+                if (RejectMedia2 && path == "media-2")
+                {
+                    if (BeforeMedia2Response != null) await BeforeMedia2Response.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+                    await WriteResponseAsync(stream, "403 Forbidden", [], string.Empty, cancellationToken);
+                    return;
                 }
 
                 if (_simulateFailures && path == "media-1" && count == 1)
@@ -1136,17 +1314,18 @@ public sealed class TidalStereoQualitySeparationTest
     {
         public string CountryCode { get; set; } = "US";
         public int AuthenticationRequests { get; private set; }
+        public string SessionToken { get; set; } = string.Empty;
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
         {
             AuthenticationRequests++;
-            return Task.FromResult(string.Empty);
+            return Task.FromResult(SessionToken);
         }
 
         public Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
             => Task.FromResult(CountryCode);
 
         public Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken)
-            => Task.FromResult(false);
+            => Task.FromResult(!string.IsNullOrEmpty(SessionToken));
 
         public Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
             => Task.FromResult(false);

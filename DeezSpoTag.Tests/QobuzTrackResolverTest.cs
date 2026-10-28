@@ -13,6 +13,66 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzTrackResolverTest
 {
+    [Fact]
+    public async Task AlbumRecovery_RemovesSoundtrackAnnotationAndPreservesEditionAndArtist()
+    {
+        var candidate = new QobuzTrack { Id = 1234, Title = "Signal (Remix)", ISRC = "USABC1234567", Duration = 180,
+            Performer = new QobuzArtist { Name = "Artist" }, Album = new QobuzAlbum { Title = "Race [Deluxe Edition]" } };
+        var metadata = new StubQobuzMetadataService {
+            AlbumSearchHandler = query => query == "race [deluxe edition] Artist" ? [candidate] : [] };
+        var result = await CreateResolver(metadata).ResolveTrackAsync("USABC1234567", "Signal (Remix)", "Artist",
+            "Race (Original Motion Picture Soundtrack) [Deluxe Edition]", 180000, CancellationToken.None);
+        Assert.Equal(1234, result?.Track.Id);
+        Assert.Contains("album:race [deluxe edition] Artist", metadata.Queries);
+        Assert.DoesNotContain("album:race", metadata.Queries);
+    }
+
+    [Fact]
+    public async Task TitleAlternate_VerificationFailureStopsFurtherCandidateRequests()
+    {
+        QobuzTrack Track(int id) => new() { Id = id, Title = "Signal", ISRC = "USABC1234567", Duration = 180,
+            Performer = new QobuzArtist { Name = "Artist" } };
+        var metadata = new StubQobuzMetadataService {
+            TrackHandler = _ => throw new System.Net.Http.HttpRequestException("Verification rejected", null, System.Net.HttpStatusCode.Forbidden),
+            SearchHandler = query => query == "Signal" ? [Track(1234), Track(1235)] : [] };
+        await Assert.ThrowsAsync<AggregateException>(() => CreateResolver(metadata).ResolveTrackAsync("USABC1234567", "Signal", "Artist",
+            null, 180000, CancellationToken.None));
+        Assert.Equal(1, metadata.DetailCalls);
+    }
+
+    [Theory]
+    [InlineData("Signal", "Artist", 180, "USABC1234567", true)]
+    [InlineData("Other Signal", "Artist", 180, "USABC1234567", false)]
+    [InlineData("Signal (Live)", "Artist", 180, "USABC1234567", false)]
+    [InlineData("Signal", "Another Artist", 180, "USABC1234567", false)]
+    [InlineData("Signal", "Artist", 185, "USABC1234567", false)]
+    [InlineData("Signal", "Artist", 0, "USABC1234567", false)]
+    [InlineData("Signal", "Artist", 180, "USABC7654321", false)]
+    public async Task TitleAlternate_RequiresExactIsrcAndVerifiedRecording(string title, string artist, int duration, string isrc, bool accepted)
+    {
+        var candidate = new QobuzTrack { Id = 1234, Title = title, ISRC = isrc, Duration = duration,
+            Performer = new QobuzArtist { Name = artist } };
+        var metadata = new StubQobuzMetadataService { TrackResult = candidate,
+            SearchHandler = query => query == "Signal" ? [candidate] : [] };
+        var result = await CreateResolver(metadata).ResolveTrackAsync("USABC1234567", "Signal", "Artist", null, 180000, CancellationToken.None);
+        Assert.Equal(accepted ? 1234 : (int?)null, result?.Track.Id);
+        Assert.Equal(1, metadata.Queries.FindAll(query => query == "Signal").Count);
+        Assert.Equal(accepted ? 1 : 0, metadata.DetailCalls);
+    }
+
+    [Fact]
+    public async Task TitleAlternate_DoesNotTrustSearchIdentityWhenDetailsContradictIt()
+    {
+        var metadata = new StubQobuzMetadataService {
+            TrackResult = new QobuzTrack { Id = 1234, Title = "Signal (Live)", ISRC = "USABC1234567", Duration = 180,
+                Performer = new QobuzArtist { Name = "Artist" } },
+            SearchHandler = query => query == "Signal" ? [new QobuzTrack { Id = 1234, Title = "Signal", ISRC = "USABC1234567",
+                Duration = 180, Performer = new QobuzArtist { Name = "Artist" } }] : [] };
+        var result = await CreateResolver(metadata).ResolveTrackAsync("USABC1234567", "Signal", "Artist", null, 180000, CancellationToken.None);
+        Assert.Null(result);
+        Assert.Equal(1, metadata.DetailCalls);
+    }
+
     [Theory]
     [InlineData("d32kntyn5grvj", true)]
     [InlineData(null, false)]

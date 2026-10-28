@@ -137,8 +137,31 @@ public sealed class QobuzTrackResolver
                 .Where(static value => !string.IsNullOrWhiteSpace(value)));
             if (string.IsNullOrWhiteSpace(albumQuery)) return PreserveFailureIfUnresolved(null);
             var albumCandidates = await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken, failures);
-            return PreserveFailureIfUnresolved(PickBestCandidate(albumCandidates,
-                isrc, title, artist, album, expectedDurationSec, rejectAmbiguous));
+            var albumMatch = PickBestCandidate(albumCandidates,
+                isrc, title, artist, album, expectedDurationSec, rejectAmbiguous);
+            if (albumMatch is not null) return albumMatch;
+            // A title-only query can expose catalog results hidden by artist tokenization.
+            // It is discovery only; require exact ISRC plus independently verified identity.
+            bool AccessBlocked() => failures.Any(failure =>
+                DeezSpoTag.Services.Download.Fallback.FallbackFailureClassifier.Classify(failure)
+                    is "authentication_required" or "provider_verification_required" or "provider_rate_limited");
+            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist) || expectedDurationSec <= 0 || AccessBlocked())
+                return PreserveFailureIfUnresolved(null);
+            bool SameRecording(QobuzTrack track) => track.Id > 0 && IsExactIsrcMatch(track, isrc)
+                && track.Duration > 0 && Math.Abs((long)track.Duration - expectedDurationSec) <= 2
+                && TrackTitleMatcher.StrictArtistsMatch(artist, GetTrackArtist(track))
+                && TrackTitleMatcher.RecordingTitlesMatch(title, GetTrackMatchTitle(track));
+            var alternate = await SearchTracksSafeAsync(title.Trim(), cancellationToken, failures);
+            var verified = new List<QobuzTrack>();
+            var albumPages = new Dictionary<string, Task<List<QobuzTrack>>>(StringComparer.Ordinal);
+            foreach (var link in alternate.Where(SameRecording).DistinctBy(track => track.Id).Take(4))
+            {
+                var details = await VerifySearchCandidateAsync(link, albumPages, cancellationToken, failures);
+                if (AccessBlocked()) return PreserveFailureIfUnresolved(null);
+                if (details?.Id == link.Id && SameRecording(details)) verified.Add(details);
+            }
+            return PreserveFailureIfUnresolved(PickBestCandidate(verified,
+                isrc, title, artist, album, expectedDurationSec, rejectAmbiguous: true));
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
@@ -150,7 +173,7 @@ public sealed class QobuzTrackResolver
     }
 
     private async Task<QobuzTrack?> VerifySearchCandidateAsync(QobuzTrack link,
-        Dictionary<string, Task<List<QobuzTrack>>> albumPages, CancellationToken cancellationToken)
+        Dictionary<string, Task<List<QobuzTrack>>> albumPages, CancellationToken cancellationToken, ICollection<Exception>? failures = null)
     {
         try
         {
@@ -198,12 +221,14 @@ public sealed class QobuzTrackResolver
             }
             catch (Exception pageException) when (pageException is not OperationCanceledException)
             {
+                failures?.Add(pageException);
                 _logger.LogWarning(pageException, "Qobuz native verification failed for {TrackId}", link.Id);
                 return null;
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            failures?.Add(exception);
             _logger.LogWarning(exception, "Qobuz track verification failed for {TrackId}", link.Id);
             return null;
         }
@@ -751,6 +776,11 @@ public sealed class QobuzTrackResolver
         }
 
         var variants = new List<string> { normalized };
+        // Search the release title without its soundtrack annotation, retaining edition
+        // qualifiers and the artist qualification supplied by the existing query builder.
+        AddAlbumVariant(variants, TrackTitleMatcher.NormalizeText(Regex.Replace(normalized,
+            @"\s*[\(\[]\s*(?:original\s+)?(?:(?:motion\s+picture|movie|film|television|tv|video\s+game)\s+)?soundtrack\s*[\)\]]",
+            " ", RegexOptions.IgnoreCase, RegexTimeout)));
         foreach (var suffix in AlbumReleaseTypeSuffixes)
         {
             AddAlbumVariant(variants, RemoveReleaseTypeSuffix(normalized, suffix));

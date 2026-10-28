@@ -29,6 +29,17 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class EngineFallbackCoordinatorProviderFailureTest : IDisposable
 {
+    [Theory]
+    [InlineData(" track_unavailable ", FallbackFailureClassifier.Unavailable)]
+    [InlineData(" quality_unavailable ", FallbackFailureClassifier.QualityBelowRequested)]
+    public void ProviderContract_NormalizationSurvivesFailureClassification(string code, string expected)
+    {
+        var body = JsonSerializer.Serialize(new { origin = " Provider ", code, retryable = false, retry_mode = " NONE " });
+        var failure = new HttpRequestException("Provider HTTP 404", null, HttpStatusCode.NotFound);
+        FallbackFailureClassifier.AttachProviderErrorContract(failure, body);
+        Assert.Equal(expected, FallbackFailureClassifier.Classify(failure));
+    }
+
     private readonly string _root = Path.Join(Path.GetTempPath(), "fallback-provider-" + Path.GetRandomFileName());
     private readonly TestConfigRootScope _configScope;
     private readonly DownloadQueueRepository _repository;

@@ -405,7 +405,7 @@ public sealed class ZarzSignedSessionCoordinator
         return ZarzResponseDisposition.None;
     }
 
-    private static ZarzErrorContract ParseContract(string responseBody)
+    internal static ZarzErrorContract ParseContract(string responseBody)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
@@ -415,10 +415,10 @@ public sealed class ZarzSignedSessionCoordinator
         try
         {
             var parsed = JsonSerializer.Deserialize<ZarzErrorContract>(responseBody, JsonOptions) ?? new();
-            parsed.Code = parsed.Code.Trim().ToUpperInvariant();
-            parsed.Origin = parsed.Origin.Trim().ToLowerInvariant();
-            parsed.Action = parsed.Action.Trim().ToLowerInvariant();
-            parsed.RetryMode = parsed.RetryMode.Trim().ToLowerInvariant();
+            parsed.Code = (parsed.Code ?? string.Empty).Trim().ToUpperInvariant();
+            parsed.Origin = (parsed.Origin ?? string.Empty).Trim().ToLowerInvariant();
+            parsed.Action = (parsed.Action ?? string.Empty).Trim().ToLowerInvariant();
+            parsed.RetryMode = (parsed.RetryMode ?? string.Empty).Trim().ToLowerInvariant();
             return parsed;
         }
         catch (JsonException)
@@ -674,6 +674,114 @@ public static class ZarzSignedSessionContract
     public const int ExchangeMaxAttempts = 3;
     public static readonly TimeSpan RefreshSkew = TimeSpan.FromHours(1);
     public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromMinutes(5);
+
+    /// <summary>Recover a provider operation without consuming a new ticket unless instructed.</summary>
+    public static Task<HttpResponseMessage> SendTicketedDownloadAsync(
+        Func<CancellationToken, Task<string>> issueTicket,
+        Func<string, CancellationToken, Task<HttpResponseMessage>> send,
+        CancellationToken cancellationToken)
+        => SendTicketedDownloadWithinBudgetAsync(issueTicket, send, TimeSpan.FromSeconds(60), cancellationToken);
+
+    public static async Task<HttpResponseMessage> SendTicketedDownloadWithinBudgetAsync(
+        Func<CancellationToken, Task<string>> issueTicket,
+        Func<string, CancellationToken, Task<HttpResponseMessage>> send,
+        TimeSpan resolutionBudget,
+        CancellationToken cancellationToken)
+    {
+        if (resolutionBudget <= TimeSpan.Zero) throw new TimeoutException("Stream resolution budget exhausted.");
+        var callerToken = cancellationToken;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
+        deadline.CancelAfter(resolutionBudget);
+        cancellationToken = deadline.Token;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            string? ticket = null;
+            for (var attempt = 0; ; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ticket ??= await issueTicket(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                HttpResponseMessage response;
+                try { response = await send(ticket, cancellationToken); }
+                catch (Exception ex) when (attempt < 3 && !cancellationToken.IsCancellationRequested
+                    && (ex is HttpRequestException { StatusCode: null } or TaskCanceledException))
+                {
+                    // Preserve bounded transport recovery for endpoints without an error contract.
+                    // There is no poll_existing instruction authorising reuse of this operation.
+                    ticket = null;
+                    var delay = TimeSpan.FromMilliseconds(500 * (attempt + 1));
+                    if (delay >= resolutionBudget - clock.Elapsed)
+                        throw new TimeoutException("Transport retry exceeds the remaining stream resolution budget.", ex);
+                    await Task.Delay(delay, cancellationToken);
+                    continue;
+                }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    response.Dispose();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                if (response.IsSuccessStatusCode) return response;
+                try
+                {
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                    ZarzErrorContract? contract = null;
+                    var hasContract = false;
+                    try
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        if (document.RootElement.ValueKind == JsonValueKind.Object)
+                        {
+                            hasContract = document.RootElement.TryGetProperty("retryable", out _)
+                                || document.RootElement.TryGetProperty("retry_mode", out _)
+                                || document.RootElement.TryGetProperty("code", out _);
+                            contract = ZarzSignedSessionCoordinator.ParseContract(body);
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        // Body is not a recognizable error contract; fall back to the legacy
+                        // transient heuristics, matching ParseContract's explicit default behavior.
+                        contract = null;
+                        hasContract = false;
+                    }
+                    var legacyTransient = !hasContract
+                        && (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout
+                            || (int)response.StatusCode >= 500);
+                    var mode = legacyTransient ? "new_ticket" : contract?.RetryMode?.Trim().ToLowerInvariant();
+                    var sameOperation = response.StatusCode == HttpStatusCode.ServiceUnavailable
+                        && contract?.Origin == "provider" && contract.Code == "PROVIDER_UNAVAILABLE"
+                        && mode == "same_operation";
+                    if (attempt >= (legacyTransient ? 3 : 2) || (!legacyTransient && contract?.Retryable != true)
+                        || !(sameOperation || mode is "poll_existing" or "new_ticket"))
+                        return response;
+                    var delay = ReadRetryAfterSeconds(response, body) ?? 1;
+                    if (TimeSpan.FromSeconds(delay) >= resolutionBudget - clock.Elapsed)
+                    {
+                        var timeout = new TimeoutException("Provider retry exceeds the remaining stream resolution budget.");
+                        var retryContract = contract ?? new ZarzErrorContract();
+                        retryContract.RetryAfterSeconds = Math.Max(retryContract.RetryAfterSeconds, delay);
+                        timeout.Data["ZarzErrorContract"] = retryContract;
+                        throw timeout;
+                    }
+                    // Do not retry earlier than the provider permits. The caller's cancellation
+                    // deadline remains authoritative, including long advertised waits.
+                    response.Dispose();
+                    await Task.Delay(TimeSpan.FromSeconds(delay), cancellationToken);
+                    if (mode == "new_ticket") ticket = null;
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
+            }
+        }
+        catch (OperationCanceledException ex) when (!callerToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException("Stream resolution budget exhausted.", ex);
+        }
+    }
 
     public static string BuildBootstrapQuery(string installId, string appVersion)
         => string.Join(
