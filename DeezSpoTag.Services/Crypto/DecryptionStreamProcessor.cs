@@ -604,6 +604,7 @@ public class DecryptionStreamProcessor
             Timeout = timeout,
             BufferSize = 2048,
             DropBytes = rangeRequest.DropBytes,
+            InitialDecryptChunkCounter = rangeRequest.UpstreamStartBytes / 2048,
             IsDepadderStart = rangeRequest.RequestedStartBytes == 0
         }, cancellationToken);
     }
@@ -725,17 +726,7 @@ public class DecryptionStreamProcessor
     {
         try
         {
-            using var handler = new HttpClientHandler();
-            TlsPolicy.ApplyIfAllowed(handler, configuration: null);
-            handler.UseCookies = false;
-            handler.AllowAutoRedirect = true;
-            handler.MaxAutomaticRedirections = 10;
-            handler.SslProtocols = sslProtocol;
-            handler.ClientCertificateOptions = ClientCertificateOption.Manual;
-            handler.PreAuthenticate = false;
-            handler.UseDefaultCredentials = false;
-            handler.AutomaticDecompression = DecompressionMethods.None;
-
+            using var handler = CreateFallbackHandler(sslProtocol);
             using var fallbackClient = new HttpClient(handler);
             fallbackClient.DefaultRequestHeaders.Add(UserAgentHeader, userAgent);
             fallbackClient.Timeout = TimeSpan.FromSeconds(30);
@@ -761,6 +752,21 @@ public class DecryptionStreamProcessor
                 _logger.LogDebug(ex, "Fallback SSL protocol {Protocol} failed for {Url}", sslProtocol, url);            }
             return null;
         }
+    }
+
+    protected virtual HttpMessageHandler CreateFallbackHandler(SslProtocols sslProtocol)
+    {
+        var handler = new HttpClientHandler();
+        TlsPolicy.ApplyIfAllowed(handler, configuration: null);
+        handler.UseCookies = false;
+        handler.AllowAutoRedirect = true;
+        handler.MaxAutomaticRedirections = 10;
+        handler.SslProtocols = sslProtocol;
+        handler.ClientCertificateOptions = ClientCertificateOption.Manual;
+        handler.PreAuthenticate = false;
+        handler.UseDefaultCredentials = false;
+        handler.AutomaticDecompression = DecompressionMethods.None;
+        return handler;
     }
 
     private static string ResolveStreamTrackId(Track track)
@@ -809,7 +815,7 @@ public class DecryptionStreamProcessor
             new List<byte>(),
             isDepadderStart: context.IsDepadderStart,
             dropBytes: context.DropBytes,
-            decryptChunkCounter: 0,
+            decryptChunkCounter: context.InitialDecryptChunkCounter,
             flushedFirstChunk: false);
         var bufferSize = context.BufferSize >= 1024 ? context.BufferSize : 1024;
         var buffer = new byte[bufferSize];
@@ -870,6 +876,7 @@ public class DecryptionStreamProcessor
         public required Timer? Timeout { get; init; }
         public required int BufferSize { get; init; }
         public required int DropBytes { get; init; }
+        public long InitialDecryptChunkCounter { get; init; }
         public required bool IsDepadderStart { get; init; }
     }
 
