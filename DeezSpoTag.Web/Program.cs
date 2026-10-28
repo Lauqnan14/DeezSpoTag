@@ -17,6 +17,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -589,6 +590,55 @@ public partial class Program
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
         services.AddHttpClient("YouTubeStreaming", client => client.Timeout = TimeSpan.FromSeconds(30))
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        // Notification webhooks. Redirects are not followed so an accepted endpoint cannot bounce
+        // the delivery to an internal address, and the connection target is re-validated as
+        // permitted (private LAN allowed) so a DNS answer that changed since the URL check cannot
+        // silently retarget the request.
+        services.AddHttpClient(DeezSpoTag.Web.Services.Notifications.NotificationService.WebhookHttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                ConnectCallback = static async (context, cancellationToken) =>
+                {
+                    var host = context.DnsEndPoint.Host;
+                    var port = context.DnsEndPoint.Port;
+                    var probeHost = host.Contains(':') ? $"[{host}]" : host;
+                    if (!await OutboundUrlGuard.IsAllowedRemoteUriAsync(
+                            new UriBuilder("http", probeHost, port).Uri,
+                            null,
+                            cancellationToken,
+                            allowPrivateLan: true))
+                    {
+                        throw new HttpRequestException("Notification webhook destination is not permitted.");
+                    }
+
+                    var permitted = (await Dns.GetHostAddressesAsync(host, cancellationToken))
+                        .Where(address => OutboundUrlGuard.IsAddressPermitted(address, allowPrivateLan: true))
+                        .ToArray();
+                    if (permitted.Length == 0)
+                    {
+                        throw new HttpRequestException("Notification webhook destination is not permitted.");
+                    }
+
+                    Exception? lastError = null;
+                    foreach (var address in permitted)
+                    {
+                        try
+                        {
+                            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                            await socket.ConnectAsync(address, port, cancellationToken);
+                            return new NetworkStream(socket, ownsSocket: true);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            lastError = ex;
+                        }
+                    }
+
+                    throw new HttpRequestException("Notification webhook connection failed.", lastError);
+                }
+            });
           services.AddSingleton<DeezSpoTag.Web.Services.YouTubeMusicTokenProvider>();
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.YouTube.YouTubeMusicPlaylistSyncTarget(

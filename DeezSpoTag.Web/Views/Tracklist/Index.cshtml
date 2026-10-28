@@ -7889,6 +7889,7 @@ async function downloadTracks(trackElements, triggerButton) {
             downloadButton.disabled = true;
         }
         let successCount = 0;
+        let queuedItemCount = 0;
         let deferredCount = 0;
         let alreadyQueuedCount = 0;
         let errorCount = 0;
@@ -8129,7 +8130,12 @@ async function downloadTracks(trackElements, triggerButton) {
                         deferredCount++;
                         downloader.removePendingQueueItem({ url: request.url, bitrate: 0, destinationFolderId: requestDestinationFolderId });
                     } else if (result?.success) {
-                        successCount++;
+                        successCount += 1;
+                        // A single request can expand into several persisted queue entries; report
+                        // those persisted entries, not the requests that succeeded.
+                        queuedItemCount += Array.isArray(result.downloadIds) && result.downloadIds.length > 0
+                            ? result.downloadIds.length
+                            : 1;
                         downloader.removePendingQueueItem({ url: request.url, bitrate: 0, destinationFolderId: requestDestinationFolderId });
                     } else {
                         errorCount++;
@@ -8146,7 +8152,7 @@ async function downloadTracks(trackElements, triggerButton) {
             }
 
             if (successCount > 0) {
-                const message = `Added ${successCount} track(s) to the queue.` +
+                const message = `Added ${queuedItemCount || successCount} track(s) to the queue.` +
                     `${deferredCount > 0 ? ` (${deferredCount} deferred)` : ''}` +
                     `${alreadyQueuedCount > 0 ? ` (${alreadyQueuedCount} already queued)` : ''}` +
                     `${boomplayUnmatchedCount > 0 ? ` (${boomplayUnmatchedCount} skipped: no Deezer match)` : ''}` +

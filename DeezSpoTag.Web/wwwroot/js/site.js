@@ -2445,10 +2445,45 @@ document.addEventListener('DOMContentLoaded', () => {
         actionrequired: 'notifications-item--actionrequired'
     };
 
+    const NOTIFICATIONS_INITIAL_LIMIT = 25;
+    const NOTIFICATIONS_LIMIT_STEP = 25;
+    const NOTIFICATIONS_LIMIT_MAX = 200;
+    // The panel starts with the most recent page; "Show more" grows the window instead of paging
+    // to older entries, so the unread badge always matches what the panel can reach.
+    let notificationsLimit = NOTIFICATIONS_INITIAL_LIMIT;
+
     function escapeText(value) {
         const span = document.createElement('span');
         span.textContent = String(value ?? '');
         return span.innerHTML;
+    }
+
+    function ensureLoadMoreControl(items) {
+        const existing = document.getElementById('notificationsLoadMore');
+        existing?.remove();
+        const list = document.getElementById('notificationsList');
+        if (!list || Array.isArray(items) === false) {
+            return;
+        }
+        if (items.length < notificationsLimit || notificationsLimit >= NOTIFICATIONS_LIMIT_MAX) {
+            return;
+        }
+
+        const panel = list.closest('.notifications-panel') || list.parentNode;
+        if (!panel) {
+            return;
+        }
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = 'notificationsLoadMore';
+        button.className = 'notifications-load-more';
+        button.textContent = 'Show more';
+        button.addEventListener('click', () => {
+            notificationsLimit = Math.min(NOTIFICATIONS_LIMIT_MAX, notificationsLimit + NOTIFICATIONS_LIMIT_STEP);
+            void loadNotifications();
+        });
+        panel.appendChild(button);
     }
 
     function renderNotifications(payload) {
@@ -2493,13 +2528,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="notifications-item-actions">${link}${actions}${clear}</div>
             </div>`;
         }).join('');
+
+        ensureLoadMoreControl(items);
     }
 
     let refreshSequence = 0;
     async function loadNotifications() {
         const sequence = ++refreshSequence;
         try {
-            const response = await fetch('/api/notifications?limit=25');
+            const response = await fetch(`/api/notifications?limit=${notificationsLimit}`);
             if (!response.ok) {
                 return;
             }

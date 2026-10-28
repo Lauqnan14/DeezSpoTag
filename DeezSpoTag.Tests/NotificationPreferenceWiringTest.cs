@@ -24,13 +24,15 @@ public sealed class NotificationPreferenceWiringTest
     [Fact]
     public async System.Threading.Tasks.Task UnresolvedYouTubeRecordingIsNotReportedAsABlocklistMatch()
     {
+        Assert.Contains("Could not find a verified match for this YouTube Music song. Nothing was queued.",
+            ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs"), StringComparison.Ordinal);
         const string script = """
             const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
             const context={document:{addEventListener(){}},console,URL,setTimeout,clearTimeout};
             context.globalThis=context;vm.createContext(context);
             vm.runInContext(fs.readFileSync('DeezSpoTag.Web/wwwroot/js/download-client.js','utf8'),context);
             const client=context.DeezSpoTagDownload;
-            const message='No unambiguous destination recording was found for this YouTube song. Download blocked.';
+            const message='Could not find a verified match for this YouTube Music song. Nothing was queued.';
             assert.equal(client.isSkipReason(['unresolved_engine_identity'],message),false);
             assert.notEqual(client.classifySkipReason(['unresolved_engine_identity'],message),'blocked');
             assert.equal(client.resolveSkipToastMessage(['unresolved_engine_identity'],message),message);
@@ -148,9 +150,9 @@ public sealed class NotificationPreferenceWiringTest
              await context.HomeViewHelpers.downloadYouTubeBrowse(button);
              assert(!notifications.some(n=>n.type==='success'),'HTTP success without queue IDs is not a queued download');
              assert.equal(button.disabled,false);
-             notifications.length=0;response={success:false,queued:[],reasonCodes:['unresolved_engine_identity'],message:'No unambiguous destination recording was found.'};
+             notifications.length=0;response={success:false,queued:[],reasonCodes:['unresolved_engine_identity'],message:'Could not find a verified match for this YouTube Music song. Nothing was queued.'};
              await context.HomeViewHelpers.downloadYouTubeBrowse(button);
-             assert(!notifications.some(n=>n.type==='success'));assert.match(notifications.at(-1).message,/unambiguous/);
+             assert(!notifications.some(n=>n.type==='success'));assert.equal(notifications.at(-1).message,response.message);
              notifications.length=0;response={success:true,queued:[],deferred:true,deferredCount:1};
              await context.HomeViewHelpers.downloadYouTubeBrowse(button);
              assert.equal(notifications.at(-1).type,'warning');assert.match(notifications.at(-1).message,/not yet added/);
@@ -358,6 +360,112 @@ public sealed class NotificationPreferenceWiringTest
         Assert.DoesNotContain("connection.on('toastNotification'", activities, StringComparison.Ordinal);
         Assert.DoesNotContain("withUrl('/deezerQueueHub')", site, StringComparison.Ordinal);
         Assert.Contains("if (!response.ok) throw new Error(`Mark read failed:", site, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task BatchSummaryCountsPersistedItemsAndSilentHandlersStaySilent()
+    {
+        const string script = """
+            const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
+            const notifications=[],requests=[];
+            const context={document:{addEventListener(){},querySelector(){return null;}},console,URL,setTimeout,clearTimeout};
+            context.globalThis=context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync('DeezSpoTag.Web/wwwroot/js/download-client.js','utf8'),context);
+            const client=context.DeezSpoTagDownload;
+            context.DeezSpoTag.ui={showToast:(message,options)=>notifications.push({message,...options})};
+            client.ensureSettingsLoaded=async()=>{};
+            client.getPreferredEngineFromUi=()=> 'qobuz';
+            client.getPreferredQualityForEngine=()=> '27';
+            client.getDestinationFolderId=()=>17;
+            client.logDownloadEvent=()=>{};
+            client.removePendingQueueItem=()=>{};
+            client.enqueuePendingQueueItems=()=>{};
+            client.addPendingQueueIfNeeded=()=>{};
+            let response={queued:['id-1','id-2','id-3']};
+            client.apiFetch=async(endpoint,options)=>{requests.push({endpoint,body:JSON.parse(options.body)});return {ok:true,json:async()=>response};};
+
+            (async()=>{
+             // Two album requests, three persisted entries each: the summary must report six queue items.
+             await client.addMultipleToQueue(['https://www.qobuz.com/album/example/one','https://www.qobuz.com/album/example/two']);
+             const summary=notifications.pop();
+             assert.match(summary.message,/Successfully added 6 item\(s\) to queue/);
+             assert.equal(summary.type,'success');
+             assert.equal(summary.action.label,'View');
+             assert.equal(summary.action.href,'/Activities?tab=downloads-content');
+             assert.equal(notifications.length,0,'A two-album batch produces exactly one aggregate notice; a popped summary must leave nothing behind.');
+
+             // silent:true children of a batch must not leak per-item notices.
+             notifications.length=0;
+             response={queued:['isrc-a','isrc-b','isrc-c']};
+             await client.addMultipleToQueue(['isrc:USAAA0000002','isrc:USAAA0000003']);
+             assert.equal(notifications.length,1,'silent batch children stay silent; only the aggregate remains');
+             assert.match(notifications[0].message,/Successfully added 6 item\(s\) to queue/);
+
+             // A partial result must preserve the skipped outcome for batch aggregation.
+             notifications.length=0;
+             response={queued:['p-1'],skipped:2,reasonCodes:['unresolved_engine_identity']};
+             const partial=await client.addToQueue('https://www.qobuz.com/album/example/partial',0,17,{skipPending:true});
+             assert.equal(notifications.length,1,'a single result still emits exactly one notice');
+             assert.equal(partial.skippedCount,2);
+             assert.equal(partial.queuedCount,1);
+             assert.equal(JSON.stringify(partial.reasonCodes),JSON.stringify(['unresolved_engine_identity']));
+
+             // An HTTP 400 already-queued answer must classify as already queued, not failed.
+             const duplicate=client.handleAlreadyQueuedApiError({status:400},{alreadyQueued:true,message:'Already queued'},{url:'x',options:{silent:true},returnsSuccess:false,linkType:'qobuz'});
+             assert.equal(duplicate.alreadyQueued,true);
+             const counts={success:0,queuedItems:0,deferred:0,failed:0,alreadyQueued:0,skipped:0,errors:[],reasonCounts:{}};
+             client.recordBatchQueueOutcome(counts,duplicate,'url',0,17);
+             assert.equal(counts.failed,0);
+             assert.equal(counts.alreadyQueued,1);
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        await RunNotificationNodeAsync(script);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task VideoBatchWaitsForOutcomesAndNeverAnnouncesEarlySuccess()
+    {
+        const string script = """
+            const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
+            const source=fs.readFileSync('DeezSpoTag.Web/Views/Search/Index.cshtml','utf8');
+            const grab=(name)=>{
+                const start=source.indexOf('async function '+name+'(');assert(start>=0,name);
+                return source.slice(start,source.indexOf('\n}',start)+2);
+            };
+            const notices=[];
+            const videos={console,Set,selectedVideoKeys:new Set(['one','two']),currentSearchSource:'apple',
+                getResultsForType:()=>[{appleUrl:'https://music.apple.com/video/one',key:'one'},{appleUrl:'https://music.apple.com/video/two',key:'two'}],
+                getVideoKey:item=>item.key,resolveResultImageUrl:()=> '',
+                saveSearchPageState(){},updateVideoSelectionBar(){},
+                DeezSpoTag:{ui:{showToast:(message,options)=>notices.push({message,...options})}}};
+            videos.window=videos;
+            vm.createContext(videos);
+            vm.runInContext(grab('downloadAppleVideo'),videos);
+            vm.runInContext(grab('downloadTidalVideoFromSearch'),videos);
+            vm.runInContext(grab('downloadSelectedVideos'),videos);
+            let stubOutcome={success:false,errorMessage:'HTTP 500'};
+            videos.DeezSpoTagDownload={addToQueue:async()=>stubOutcome};
+            (async()=>{
+             // Both submissions fail: the batch must report failure instead of a success it never observed.
+             await videos.downloadSelectedVideos();
+             assert.equal(notices.length,1);
+             assert.equal(notices[0].type,'error');
+             assert.equal(notices[0].message,'HTTP 500');
+             assert(!notices.some(n=>/Started/.test(n.message)),'A failed batch must never announce Started.');
+
+             // One queued, one failed: an honest mixed summary at warning severity.
+             notices.length=0;
+             stubOutcome={success:true,queuedCount:1};
+             let calls=0;
+             videos.DeezSpoTagDownload={addToQueue:async()=>{calls++;return calls===1?stubOutcome:{success:false,errorMessage:'HTTP 502'};},downloadIds:[]};
+             await videos.downloadSelectedVideos();
+             assert.equal(notices.length,1);
+             assert.equal(notices[0].type,'warning');
+             assert.match(notices[0].message,/Started 1 video download\(s\) \(1 failed\)/);
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        await RunNotificationNodeAsync(script);
     }
 
 }

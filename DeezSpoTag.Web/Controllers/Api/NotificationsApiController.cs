@@ -100,44 +100,49 @@ public sealed class NotificationsApiController : ControllerBase
             return BadRequest(new { error = "A preferences payload is required." });
         }
 
-        var preferences = await _store.LoadPreferencesAsync();
-        if (request.Events is not null)
+        // Read, modify and save under one store critical section, so concurrent partial updates
+        // cannot overwrite each other's fields with stale copies.
+        var saved = await _store.PatchPreferencesAsync(preferences =>
         {
-            foreach (var pair in request.Events.Where(pair => NotificationKinds.IsKnown(pair.Key)))
+            if (request.Events is not null)
             {
-                preferences.Events[pair.Key] = new NotificationChannelPreference
+                foreach (var pair in request.Events.Where(pair => NotificationKinds.IsKnown(pair.Key)))
                 {
-                    InApp = pair.Value?.InApp ?? true,
-                    Webhook = pair.Value?.Webhook ?? false
-                };
+                    preferences.Events[pair.Key] = new NotificationChannelPreference
+                    {
+                        InApp = pair.Value?.InApp ?? true,
+                        Webhook = pair.Value?.Webhook ?? false
+                    };
+                }
             }
-        }
 
-        if (request.WebhookUrl is not null)
-        {
-            preferences.WebhookUrl = request.WebhookUrl.Trim();
-        }
+            if (request.WebhookUrl is not null)
+            {
+                preferences.WebhookUrl = request.WebhookUrl.Trim();
+            }
 
-        if (request.Provider is not null)
-        {
-            preferences.Provider = NotificationTransportAdapter.ParseProvider(
-                request.Provider,
-                preferences.ResolvedProvider);
-        }
+            if (request.Provider is not null)
+            {
+                preferences.Provider = NotificationTransportAdapter.ParseProvider(
+                    request.Provider,
+                    preferences.ResolvedProvider);
+            }
 
-        if (request.ApprisePayloadMode is not null)
-        {
-            preferences.AppriseMode = NotificationTransportAdapter.ParsePayloadMode(
-                request.ApprisePayloadMode,
-                preferences.ResolvedApprisePayloadMode);
-        }
+            if (request.ApprisePayloadMode is not null)
+            {
+                preferences.AppriseMode = NotificationTransportAdapter.ParsePayloadMode(
+                    request.ApprisePayloadMode,
+                    preferences.ResolvedApprisePayloadMode);
+            }
 
-        if (request.RetentionDays is { } retention)
-        {
-            preferences.RetentionDays = Math.Clamp(retention, 1, 365);
-        }
+            if (request.RetentionDays is { } retention)
+            {
+                preferences.RetentionDays = Math.Clamp(retention, 1, 365);
+            }
 
-        var saved = await _store.SavePreferencesAsync(preferences);
+            return preferences;
+        });
+
         _service.NotifyChanged();
         return Ok(BuildPreferencesResponse(saved));
     }

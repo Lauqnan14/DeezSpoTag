@@ -59,6 +59,29 @@ public sealed class NotificationStore
         }
     }
 
+    /// <summary>
+    /// Applies a change inside the same critical section that reads and writes the file, so two
+    /// concurrent requests cannot each load the same saved version and let the second write lose
+    /// the first request's change.
+    /// </summary>
+    public async Task<NotificationPreferences> PatchPreferencesAsync(Func<NotificationPreferences, NotificationPreferences> patch)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var preferences = ReadPreferences();
+            preferences.EnsureDefaults();
+            var updated = patch(preferences);
+            updated.EnsureDefaults();
+            await WriteJsonAtomicallyAsync(_preferencesPath, updated).ConfigureAwait(false);
+            return updated;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<NotificationEntry>> GetAsync(bool unreadOnly = false, int limit = 100)
     {
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -349,10 +372,24 @@ public sealed class NotificationStore
         for (var index = 0; index < entries.Count; index++)
         {
             var entry = entries[index];
-            if (matches(entry) && IsPendingVerification(entry))
+            if (!matches(entry))
+            {
+                continue;
+            }
+
+            // Unresolved verifications stay deduplicated across clears, so they are kept but
+            // retired from the visible panel; the same applies to a still-pending external
+            // delivery, which must survive until it is delivered or exhausts retries.
+            if (IsPendingVerification(entry) || entry.WebhookPending)
+            {
                 entries[index] = entry with { DismissedUtc = entry.DismissedUtc ?? now, ReadUtc = entry.ReadUtc ?? now };
+                continue;
+            }
+
+            entries.RemoveAt(index);
+            index--;
         }
-        entries.RemoveAll(entry => matches(entry) && !IsPendingVerification(entry));
+
         return count;
     }
 

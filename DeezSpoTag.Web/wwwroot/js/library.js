@@ -8045,7 +8045,9 @@ async function queueAlbumDownloads(tracks) {
         showToast('No tracks were queued.', true);
         return;
     }
-    showToast(summary);
+    // The summary owns the action's severity: an outcome where nothing was actually queued is a
+    // warning, not a success, and matches the shared client's policy for all-skipped batches.
+    showToast(summary, counts.queuedCount <= 0);
 }
 
 function collectAlbumQueueIntents(tracks) {

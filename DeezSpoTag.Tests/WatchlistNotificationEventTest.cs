@@ -35,7 +35,9 @@ public sealed class WatchlistNotificationEventTest
         Assert.Equal("New release: Alikiba", Read(notification!, "Title"));
         Assert.Equal("3 tracks queued for download.", Read(notification!, "Body"));
         Assert.Equal("artist", Read(notification!, "EntityType"));
-        Assert.Equal("artist_new_release:alikiba", Read(notification!, "DedupeKey"));
+        // The key carries a day bucket: repeats of the same announcement coalesce, while a later
+        // day's distinct update can announce again instead of being suppressed forever.
+        Assert.Matches("^artist_new_release:alikiba:\\d{8}$", Read(notification!, "DedupeKey"));
     }
 
     [Fact]
@@ -48,7 +50,7 @@ public sealed class WatchlistNotificationEventTest
         Assert.Equal("New in playlist: Bongo Hits", Read(notification!, "Title"));
         Assert.Equal("playlist", Read(notification!, "EntityType"));
         Assert.Equal("spotify:37i9dQ", Read(notification!, "EntityId"));
-        Assert.Equal("playlist_updated:spotify:37i9dq", Read(notification!, "DedupeKey"));
+        Assert.Matches("^playlist_updated:spotify:37i9dq:\\d{8}$", Read(notification!, "DedupeKey"));
     }
 
     [Fact]

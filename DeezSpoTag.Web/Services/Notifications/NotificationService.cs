@@ -47,12 +47,18 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             entityId,
             link));
 
-    private static readonly TimeSpan[] WebhookRetryDelays =
-    [
+    private static readonly TimeSpan[] WebhookRetryDelays = [
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(10),
         TimeSpan.FromSeconds(30)
     ];
+
+    /// <summary>
+    /// The named HttpClient used for outbound notification webhooks. It disables redirects and
+    /// re-validates the destination at connection time so a permitted endpoint cannot bounce the
+    /// request at an address the outbound URL guard rejected.
+    /// </summary>
+    public const string WebhookHttpClientName = "NotificationWebhook";
 
     private sealed record NotificationWork(
         NotificationRequest? Raise,
@@ -334,8 +340,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         try
         {
             using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-            using var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(15);
+            using var client = _httpClientFactory.CreateClient(WebhookHttpClientName);
             using var response = await client.PostAsync(url, content, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode) return true;
 

@@ -379,4 +379,55 @@ public sealed class NotificationStoreTest : IDisposable
         Assert.Contains(pending, NotificationStore.Prune(entries, 1));
     }
 
+    [Fact]
+    public async Task ClearingAnAlertDismissesItsPresentationButKeepsPendingWebhookDelivery()
+    {
+        var request = Request("pending-clear");
+        var added = await _store.AddOrCoalesceAsync(request, 30, webhookRequested: true);
+
+        await _store.RemoveAsync([added.Entry.Id]);
+
+        // The alert is gone from the panel, but its external delivery must still be owed.
+        Assert.Single(await _store.GetPendingWebhooksAsync());
+        Assert.Empty(await _store.GetAsync());
+
+        await _store.RecordWebhookAttemptAsync(added.Entry.Id, delivered: true, retryDelay: null);
+
+        Assert.Empty(await _store.GetPendingWebhooksAsync());
+        // Dismissed presentation stays dismissed after delivery; it must not resurface.
+        Assert.Empty(await _store.GetAsync());
+    }
+
+    [Fact]
+    public async Task ClearAllKeepsPendingWebhookDeliveryOwed()
+    {
+        await _store.AddOrCoalesceAsync(Request("pending-clear-all"), 30, webhookRequested: true);
+        await _store.AddOrCoalesceAsync(Request("plain-unread"), 30);
+
+        var removed = await _store.ClearAsync();
+        Assert.Equal(2, removed);
+        Assert.Single(await _store.GetPendingWebhooksAsync());
+        Assert.Empty(await _store.GetAsync());
+    }
+
+    [Fact]
+    public async Task PatchPreferences_PreservesIndependentConcurrentChanges()
+    {
+        var first = _store.PatchPreferencesAsync(preferences =>
+        {
+            preferences.Events[NotificationKinds.DownloadFailed].Webhook = true;
+            return preferences;
+        });
+        var second = _store.PatchPreferencesAsync(preferences =>
+        {
+            preferences.RetentionDays = 60;
+            return preferences;
+        });
+        await Task.WhenAll(first, second);
+
+        var saved = await _store.LoadPreferencesAsync();
+        Assert.True(saved.Events[NotificationKinds.DownloadFailed].Webhook, "The event patch must survive a concurrent retention patch.");
+        Assert.Equal(60, saved.RetentionDays);
+    }
+
 }

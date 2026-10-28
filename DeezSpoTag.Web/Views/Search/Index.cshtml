@@ -4129,8 +4129,8 @@ async function playVideoPreview(url) {
     });
 }
 
-async function downloadAppleVideo(appleUrl, hasAtmos = false) {
-    if (!appleUrl) return;
+async function downloadAppleVideo(appleUrl, hasAtmos = false, options = {}) {
+    if (!appleUrl) return { success: false, errorMessage: 'No Apple URL.' };
     const videoMetadata = {
         isVideo: true,
         collectionType: 'music-video',
@@ -4139,8 +4139,15 @@ async function downloadAppleVideo(appleUrl, hasAtmos = false) {
     };
     try {
         if (window.DeezSpoTagDownload?.addToQueue) {
-            await window.DeezSpoTagDownload.addToQueue(appleUrl, 0, null, { metadata: videoMetadata });
-            return;
+            const result = await window.DeezSpoTagDownload.addToQueue(appleUrl, 0, null, { metadata: videoMetadata, silent: options.silent === true });
+            if (result?.success || result?.alreadyQueued) {
+                return {
+                    success: true,
+                    queuedCount: Number(result.queuedCount
+                        ?? (Array.isArray(result.downloadIds) ? result.downloadIds.length : 0)) || 1
+                };
+            }
+            return { success: false, errorMessage: result?.errorMessage || 'Download failed' };
         }
         const resp = await fetch('/api/apple/videos/download', {
             method: 'POST',
@@ -4154,20 +4161,22 @@ async function downloadAppleVideo(appleUrl, hasAtmos = false) {
         if (!resp.ok || !data?.success) {
             throw new Error(data?.error || 'Download failed');
         }
-        if (window.DeezSpoTag?.ui?.showToast) {
+        if (options.silent !== true && window.DeezSpoTag?.ui?.showToast) {
             window.DeezSpoTag.ui.showToast('Video download started');
         }
+        return { success: true, queuedCount: Array.isArray(data?.queued) ? data.queued.length : 1 };
     } catch (err) {
         console.error('Video download failed', err);
-        if (window.DeezSpoTag?.ui?.showToast) {
+        if (options.silent !== true && window.DeezSpoTag?.ui?.showToast) {
             window.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
         }
+        return { success: false, errorMessage: err?.message || 'Download failed' };
     }
 }
 
-async function downloadTidalVideoFromSearch(tidalUrl, tidalId = '', title = '', artist = '', image = '') {
+async function downloadTidalVideoFromSearch(tidalUrl, tidalId = '', title = '', artist = '', image = '', options = {}) {
     const normalizedUrl = String(tidalUrl || '').trim();
-    if (!normalizedUrl) return;
+    if (!normalizedUrl) return { success: false, errorMessage: 'No Tidal URL.' };
     try {
         const response = await fetch('/api/tidal/download/videos/download', {
             method: 'POST',
@@ -4188,14 +4197,16 @@ async function downloadTidalVideoFromSearch(tidalUrl, tidalId = '', title = '', 
         if (!response.ok || data?.success === false) {
             throw new Error(data?.error || data?.message || 'Download failed');
         }
-        if (window.DeezSpoTag?.ui?.showToast) {
+        if (options.silent !== true && window.DeezSpoTag?.ui?.showToast) {
             window.DeezSpoTag.ui.showToast('Video download started');
         }
+        return { success: true, queuedCount: Array.isArray(data?.queued) ? data.queued.length : 1 };
     } catch (err) {
         console.error('Tidal video download failed', err);
-        if (window.DeezSpoTag?.ui?.showToast) {
+        if (options.silent !== true && window.DeezSpoTag?.ui?.showToast) {
             window.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
         }
+        return { success: false, errorMessage: err?.message || 'Download failed' };
     }
 }
 
@@ -4248,28 +4259,53 @@ async function downloadSelectedVideos() {
         }
     }
 
+    // The batch owns its one outcome: it waits for every submission, aggregates the returned
+    // outcomes, and never announces success before persistence is confirmed elsewhere.
     let started = 0;
+    let failed = 0;
+    let skipped = 0;
+    let lastError = '';
     for (const key of selectedVideoKeys) {
         const item = byKey.get(key);
         const appleUrl = item?.appleUrl;
         const tidalUrl = item?.tidalUrl || item?.externalUrl;
-        if (!appleUrl && !tidalUrl) continue;
-        started++;
-        if (currentSearchSource === 'tidal') {
-            downloadTidalVideoFromSearch(
+        if (!appleUrl && !tidalUrl) { skipped++; continue; }
+        const outcome = currentSearchSource === 'tidal'
+            ? await downloadTidalVideoFromSearch(
                 tidalUrl,
                 item?.tidalId || '',
                 item?.name || '',
                 item?.artist || '',
-                resolveResultImageUrl(item));
+                resolveResultImageUrl(item), { silent: true })
+            : await downloadAppleVideo(appleUrl, false, { silent: true });
+        if (outcome?.success) {
+            started += Number(outcome.queuedCount || 1);
         } else {
-            downloadAppleVideo(appleUrl);
+            failed++;
+            lastError ||= outcome?.errorMessage || '';
         }
     }
+    updateVideoSelectionBar();
+    saveSearchPageState();
 
-    if (started > 0 && window.DeezSpoTag?.ui?.showToast) {
-        window.DeezSpoTag.ui.showToast(`Started ${started} video download(s)`);
+    if (!started && !failed && !skipped) {
+        return; // None of the selected videos had a usable download source.
     }
+
+    if (started > 0) {
+        const failedSummary = failed > 0 ? ` (${failed} failed)` : '';
+        window.DeezSpoTag?.ui?.showToast(
+            `Started ${started} video download(s)${failedSummary}`,
+            failed > 0 ? { type: 'warning' } : undefined);
+        return;
+    }
+
+    if (failed > 0) {
+        window.DeezSpoTag?.ui?.showToast(lastError || `All ${failed} video download(s) failed`, { type: 'error' });
+        return;
+    }
+
+    window.DeezSpoTag?.ui?.showToast('No video downloads were started.', { type: 'warning' });
 }
 
 function toggleViewSelected() {

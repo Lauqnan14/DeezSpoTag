@@ -5903,11 +5903,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var entityId = isPlaylist ? watchlistPlaylistId!.Trim() : label;
         var track = queuedCount == 1 ? "track" : "tracks";
 
+        // The key identifies one announcement, not the artist forever: repeats on the same day
+        // coalesce, but a later day's distinct update must be able to announce again instead of
+        // being suppressed by an incident that is still open.
+        var dayBucket = DateTimeOffset.UtcNow.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+
         return new WatchContentNotification(
             kind,
             isPlaylist ? $"New in playlist: {label}" : $"New release: {label}",
             $"{queuedCount} {track} queued for download.",
-            $"{kind}:{entityId.ToLowerInvariant()}",
+            $"{kind}:{entityId.ToLowerInvariant()}:{dayBucket}",
             isPlaylist ? "playlist" : "artist",
             entityId);
     }

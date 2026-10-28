@@ -16,12 +16,12 @@ public static class OutboundUrlGuard
         => uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
            || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
 
-    public static Task<bool> IsAllowedRemoteUriAsync(Uri uri, ILogger logger, CancellationToken cancellationToken)
+    public static Task<bool> IsAllowedRemoteUriAsync(Uri uri, ILogger? logger, CancellationToken cancellationToken)
         => IsAllowedRemoteUriAsync(uri, logger, cancellationToken, allowPrivateLan: false);
 
     public static async Task<bool> IsAllowedRemoteUriAsync(
         Uri uri,
-        ILogger logger,
+        ILogger? logger,
         CancellationToken cancellationToken,
         bool allowPrivateLan)
     {
@@ -62,12 +62,20 @@ public static class OutboundUrlGuard
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Failed to resolve host for outbound URL validation: {Host}", LogSanitizer.OneLine(host));
+            logger?.LogWarning(ex, "Failed to resolve host for outbound URL validation: {Host}", LogSanitizer.OneLine(host));
             return false;
         }
 
         return true;
     }
+
+    /// <summary>
+    /// Reports whether a single resolved address is permitted for outbound connection. Callers that
+    /// connect by address (rather than by host) validate each candidate here so a DNS answer that
+    /// changes between the URL check and the connect cannot bypass this guard.
+    /// </summary>
+    public static bool IsAddressPermitted(IPAddress address, bool allowPrivateLan = false)
+        => !IsBlockedAddress(address, allowPrivateLan);
 
     private static bool IsBlockedAddress(IPAddress address, bool allowPrivateLan = false)
     {

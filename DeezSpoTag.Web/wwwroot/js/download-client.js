@@ -607,18 +607,15 @@ DeezSpoTag.DownloadClient = {
         }
 
         const resolvedMessage = apiError.message || message;
-        this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
+        if (!options?.silent) {
+            this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
+        }
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        let reasonCodes = [];
-        if (Array.isArray(apiError?.reasonCodes)) {
-            reasonCodes = apiError.reasonCodes;
-        } else if (apiError?.reasonCode) {
-            reasonCodes = [apiError.reasonCode];
-        }
+        const reasonCodes = this.collectReasonCodes({ reasonCodes: apiError?.reasonCodes, reasonCode: apiError?.reasonCode, skippedReasons: apiError?.skippedReasons });
         return returnsSuccess
             ? { success: true, alreadyQueued: true, errorMessage: resolvedMessage, linkType, reasonCodes }
-            : { success: false, errorMessage: resolvedMessage, linkType, reasonCodes };
+            : { success: false, alreadyQueued: true, errorMessage: resolvedMessage, linkType, reasonCodes };
     },
     handleAlreadyQueuedResult(result, {
         url,
@@ -634,17 +631,12 @@ DeezSpoTag.DownloadClient = {
         }
 
         const resolvedMessage = result.message || message;
-        this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
+        if (!options?.silent) {
+            this.notifyAppleAware('failed', resolvedMessage, notificationType, { linkType });
+        }
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        let reasonCodes = [];
-        if (Array.isArray(result?.reasonCodes)) {
-            reasonCodes = result.reasonCodes;
-        } else if (result?.reasonCode) {
-            reasonCodes = [result.reasonCode];
-        } else {
-            reasonCodes = Object.keys(result?.skippedReasons || {});
-        }
+        const reasonCodes = this.collectReasonCodes(result);
         return { success: true, alreadyQueued: true, linkType, reasonCodes };
     },
     handleQueuedResult(result, {
@@ -661,17 +653,22 @@ DeezSpoTag.DownloadClient = {
             return null;
         }
 
-        this.notifyAppleAware(
-            'started',
-            `Added ${result.queued.length} item(s) to the queue`,
-            'success',
-            { engine, queueType, linkType, logLabel });
+        if (!options?.silent) {
+            this.notifyAppleAware(
+                'started',
+                `Added ${result.queued.length} item(s) to the queue`,
+                'success',
+                { engine, queueType, linkType, logLabel });
+        }
         this.logDownloadEvent('success', `added to queue (${logLabel})`);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
         return {
             success: true,
             downloadId: result.queued[0],
             downloadIds: result.queued,
+            queuedCount: result.queued.length,
+            skippedCount: Number.isFinite(result?.skipped) ? Math.max(result.skipped, 0) : 0,
+            reasonCodes: this.collectReasonCodes(result),
             linkType
         };
     },
@@ -952,6 +949,10 @@ DeezSpoTag.DownloadClient = {
                 success: true,
                 downloadId: result.queued[0],
                 downloadIds: result.queued,
+                queuedCount: result.queued.length,
+                skippedCount: Number.isFinite(result?.skipped) ? Math.max(result.skipped, 0) : 0,
+                reasonCodes: this.collectReasonCodes(result),
+                deferredCount: Number.isFinite(result?.deferredCount) ? Math.max(result.deferredCount, 0) : 0,
                 linkType: result.engine || intentContext.preferredEngine || sourceService
             };
         }
@@ -1564,7 +1565,8 @@ DeezSpoTag.DownloadClient = {
             notify(this.resolveSkipToastMessage(error?.reasonCodes || [], errorMessage), 'warning');
             this.logDownloadEvent('warning', `skipped: ${errorMessage}`);
         } else {
-            notify(`Failed to add to queue: ${errorMessage}`, 'error');
+            const unresolvedRecording = (error?.reasonCodes || []).includes('unresolved_engine_identity');
+            notify(unresolvedRecording ? errorMessage : `Failed to add to queue: ${errorMessage}`, 'error');
             this.logDownloadEvent('error', `failed to add: ${errorMessage}`);
         }
         const shouldKeepPending = error?.name === 'AbortError'
@@ -1659,6 +1661,7 @@ DeezSpoTag.DownloadClient = {
 
         const results = {
             success: 0,
+            queuedItems: 0,
             deferred: 0,
             failed: 0,
             alreadyQueued: 0,
@@ -1715,17 +1718,25 @@ DeezSpoTag.DownloadClient = {
             this.mergeBatchReasonCounts(results, outcome);
             return;
         }
-        if (outcome?.skipped) {
-            results.skipped++;
-            this.mergeBatchReasonCounts(results, outcome);
-            return;
-        }
         if (outcome?.deferred) {
             results.deferred++;
             return;
         }
         if (outcome?.success) {
             results.success++;
+            // Count the queue entries that were actually persisted, not the requests that returned
+            // successfully: one request can expand into several queued items (albums, multi-output).
+            results.queuedItems += Number(outcome.queuedCount
+                ?? (Array.isArray(outcome.downloadIds) ? outcome.downloadIds.length : 0)) || 1;
+            if (Number(outcome.skippedCount) > 0) {
+                results.skipped += Number(outcome.skippedCount);
+                this.mergeBatchReasonCounts(results, outcome);
+            }
+            return;
+        }
+        if (outcome?.skipped) {
+            results.skipped++;
+            this.mergeBatchReasonCounts(results, outcome);
             return;
         }
         results.failed++;
@@ -1737,12 +1748,7 @@ DeezSpoTag.DownloadClient = {
         results.errors.push(`${url}: ${error?.message || 'Unknown error'}`);
     },
     mergeBatchReasonCounts(results, outcome) {
-        let reasonCodes = [];
-        if (Array.isArray(outcome?.reasonCodes) && outcome.reasonCodes.length > 0) {
-            reasonCodes = outcome.reasonCodes;
-        } else if (outcome?.reasonCode) {
-            reasonCodes = [outcome.reasonCode];
-        }
+        const reasonCodes = this.collectReasonCodes(outcome);
         reasonCodes.forEach((reasonCode) => {
             const normalized = String(reasonCode || '').trim();
             if (!normalized) {
@@ -1751,8 +1757,20 @@ DeezSpoTag.DownloadClient = {
             results.reasonCounts[normalized] = (results.reasonCounts[normalized] || 0) + 1;
         });
     },
+    collectReasonCodes(result) {
+        if (Array.isArray(result?.reasonCodes) && result.reasonCodes.length > 0) {
+            return result.reasonCodes;
+        }
+        if (result?.reasonCode) {
+            return [result.reasonCode];
+        }
+        if (result?.skippedReasons && typeof result.skippedReasons === 'object') {
+            return Object.keys(result.skippedReasons);
+        }
+        return [];
+    },
     showBatchQueueSummary(results) {
-        if (results.success > 0) {
+        if (results.queuedItems > 0 || results.success > 0) {
             this.showQueueToast(
                 this.buildSuccessfulBatchQueueMessage(results),
                 this.getBatchQueueToastType(results)
@@ -1781,7 +1799,7 @@ DeezSpoTag.DownloadClient = {
         const alreadyQueuedSummary = results.alreadyQueued > 0 ? ` (${results.alreadyQueued} already queued)` : '';
         const skippedSummary = results.skipped > 0 ? ` (${results.skipped} skipped)` : '';
         const failedSummary = results.failed > 0 ? ` (${results.failed} failed)` : '';
-        return `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${skippedSummary}${failedSummary}`;
+        return `Successfully added ${results.queuedItems} item(s) to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${skippedSummary}${failedSummary}`;
     },
     buildDeferredBatchQueueMessage(results) {
         return `Matching pending for ${results.deferred} item(s); not yet added to the download queue.`;

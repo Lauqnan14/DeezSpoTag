@@ -2033,7 +2033,7 @@ public sealed class DownloadIntentService
                 _logger.LogWarning("YouTube recording {VideoId} could not be resolved. Catalog results: {Results}",
                     youtubeId, identity is null ? "no resolution" : string.Join(", ", identity.Candidates.Select(candidate =>
                         candidate.Platform + ": " + candidate.Reason)));
-                throw new InvalidOperationException("No unambiguous destination recording was found for this YouTube song. Download blocked.");
+                throw new InvalidOperationException("Could not find a verified match for this YouTube Music song. Nothing was queued.");
             }
         }
         NormalizeEnqueueSettings(settings);
