@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild runtime.ts --bundle --platform=node --format=esm --outfile=runtime.mjs",
+    "test": "node --test runtime.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

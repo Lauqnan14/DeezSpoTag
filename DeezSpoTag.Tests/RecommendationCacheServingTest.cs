@@ -31,7 +31,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         using var configScope = new TestConfigRootScope(_root);
         var settings = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
         var value = settings.LoadSettings();
-        value.DailyRecommendations = new() { TrackCount = 20, DeezerEnabled = false, DeezerTrackCount = 0,
+        value.DailyRecommendations = new() { TrackCount = 20, ShazamEnabled = false, ShazamTrackCount = 0, DeezerEnabled = false, DeezerTrackCount = 0,
             SpotifyEnabled = false, SpotifyTrackCount = 0, TidalEnabled = true, TidalTrackCount = 20, AiFilterMode = mode };
         settings.SaveSettings(value);
         await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + DatabasePath);
@@ -156,7 +156,7 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         using var configScope=new TestConfigRootScope(_root);
         var settings=new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
         var value=settings.LoadSettings();
-        value.DailyRecommendations=new(){TrackCount=60,DeezerEnabled=true,DeezerTrackCount=60,SpotifyEnabled=false,SpotifyTrackCount=0,TidalEnabled=false,TidalTrackCount=0};
+        value.DailyRecommendations=new(){TrackCount=60,ShazamEnabled=false,ShazamTrackCount=0,DeezerEnabled=true,DeezerTrackCount=60,SpotifyEnabled=false,SpotifyTrackCount=0,TidalEnabled=false,TidalTrackCount=0};
         settings.SaveSettings(value);
         await using var connection=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+DatabasePath);await connection.OpenAsync();
         await using var command=connection.CreateCommand();

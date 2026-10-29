@@ -128,7 +128,11 @@ public sealed class LibraryRecommendationServiceTest
     public async Task DailyCollectionNeverCallsDisabledSources()
     {
         var calls = new List<string>();
-        var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings();
+        var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings
+        {
+            ShazamEnabled = false, ShazamTrackCount = 0,
+            DeezerTrackCount = 20, SpotifyTrackCount = 20, TidalTrackCount = 20
+        };
         await CollectDailySourcesAsync(configuration, (source, count, token) =>
         {
             calls.Add(source);
@@ -139,7 +143,22 @@ public sealed class LibraryRecommendationServiceTest
     }
 
     [Fact]
-    public async Task DailyCollectionNeverCallsUnavailableShazamEvenWithStaleSettings()
+    public async Task DailyCollectionUsesAllFourDefaultSources()
+    {
+        var calls = new List<string>();
+        var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings();
+        await CollectDailySourcesAsync(configuration, (source, count, token) =>
+        {
+            calls.Add(source);
+            Assert.Equal(45, count); // Existing three-times reserve pool for each 15-song allocation.
+            return Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(Array.Empty<RecommendationTrackDto>());
+        }, CancellationToken.None);
+        Assert.Equal(new[] { "shazam", "deezer", "spotify", "tidal" }, calls);
+        Assert.Equal(60, configuration.TrackCount);
+    }
+
+    [Fact]
+    public async Task DailyCollectionCallsEnabledShazamWithConfiguredQuota()
     {
         var calls = new List<string>();
         var configuration = new DeezSpoTag.Core.Models.Settings.DailyRecommendationSettings
@@ -151,7 +170,7 @@ public sealed class LibraryRecommendationServiceTest
             calls.Add(source);
             return Task.FromResult<IReadOnlyList<RecommendationTrackDto>>(Array.Empty<RecommendationTrackDto>());
         }, CancellationToken.None);
-        Assert.Equal(new[] { "deezer", "spotify", "tidal" }, calls);
+        Assert.Equal(new[] { "shazam", "deezer", "spotify", "tidal" }, calls);
     }
     [Fact]
     public void SharedDailyRecordingRetainsAllSeedAndProviderAttribution()
@@ -234,7 +253,7 @@ public sealed class LibraryRecommendationServiceTest
             [2] = new(2, "matched", "shazamseed2", "Seed 2", "Artist", "", new[] { track }, DateTimeOffset.UtcNow, null)
         };
         var method = typeof(LibraryRecommendationService).GetMethod("BuildRecommendationsFromShazamCache", BindingFlags.NonPublic | BindingFlags.Static)!;
-        var rows = (List<RecommendationTrackDto>)method.Invoke(null, [new long[] { 1, 2 }, cache, CancellationToken.None, 20])!;
+        var rows = (List<RecommendationTrackDto>)method.Invoke(null, [new long[] { 1, 2 }, cache, CancellationToken.None])!;
         var selected = Assert.Single(rows);
         Assert.Equal(new long[] { 1, 2 }, selected.Provenance!.Select(p => p.LocalSeedTrackId).OrderBy(n => n));
         Assert.All(selected.Provenance!, p => { Assert.Equal("shazam", p.Provider); Assert.Equal(1, p.ProviderRank); });

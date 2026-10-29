@@ -54,7 +54,7 @@ public sealed class ShazamDiscoveryServiceTimeoutTest
     }
 
     [Fact]
-    public async Task GetRelatedTracksAsync_WhenHttpClientTimesOut_ReturnsEmptyList()
+    public async Task GetRelatedTracksAsync_WhenHelperUnavailable_ReportsFailure()
     {
         using var httpClient = new HttpClient(new DelayedHandler(TimeSpan.FromMilliseconds(200)))
         {
@@ -63,9 +63,7 @@ public sealed class ShazamDiscoveryServiceTimeoutTest
         using var environment = new TestWebHostEnvironment();
         var service = new ShazamDiscoveryService(httpClient, NullLogger<ShazamDiscoveryService>.Instance, environment);
 
-        var tracks = await service.GetRelatedTracksAsync("123456", cancellationToken: CancellationToken.None);
-
-        Assert.Empty(tracks);
+        await Assert.ThrowsAsync<HttpRequestException>(() => service.GetRelatedTracksAsync("123456", cancellationToken: CancellationToken.None));
     }
 
     [Fact]
@@ -77,7 +75,8 @@ public sealed class ShazamDiscoveryServiceTimeoutTest
         };
         using var environment = new TestWebHostEnvironment(createSlowDiscoverScript: true);
         var service = new ShazamDiscoveryService(httpClient, NullLogger<ShazamDiscoveryService>.Instance, environment);
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => service.GetRelatedTracksAsync("123456", cancellationToken: cts.Token));

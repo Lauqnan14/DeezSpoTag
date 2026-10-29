@@ -1693,35 +1693,34 @@
                     <div class="warning-text">Filtering uses verified AI disclosures. Unclassified tracks remain eligible.</div>
                     <div class="warning-text" id="dailyRecommendationPaused" hidden>Daily recommendations are disabled. Enable a source to resume.</div>
                 </div>
-                <div class="warning-text" id="dailyShazamUnavailable">Unavailable — Shazam's similar-song service is not functional.</div>
                 <div class="daily-source-grid">
                     <div class="daily-source-row">
                         <label class="daily-source-label" for="dailyShazamEnabled">
-                            <input type="checkbox" id="dailyShazamEnabled" disabled aria-describedby="dailyShazamUnavailable">
+                            <input type="checkbox" id="dailyShazamEnabled" checked>
                             <span>Shazam</span>
                         </label>
-                        <input type="number" id="dailyShazamTrackCount" min="0" max="100" step="1" value="0" disabled aria-describedby="dailyShazamUnavailable">
+                        <input type="number" id="dailyShazamTrackCount" min="0" max="100" step="1" value="15">
                     </div>
                     <div class="daily-source-row">
                         <label class="daily-source-label" for="dailyDeezerEnabled">
                             <input type="checkbox" id="dailyDeezerEnabled" checked>
                             <span>Deezer</span>
                         </label>
-                        <input type="number" id="dailyDeezerTrackCount" min="0" max="100" step="1" value="20">
+                        <input type="number" id="dailyDeezerTrackCount" min="0" max="100" step="1" value="15">
                     </div>
                     <div class="daily-source-row">
                         <label class="daily-source-label" for="dailySpotifyEnabled">
                             <input type="checkbox" id="dailySpotifyEnabled" checked>
                             <span>Spotify</span>
                         </label>
-                        <input type="number" id="dailySpotifyTrackCount" min="0" max="100" step="1" value="20">
+                        <input type="number" id="dailySpotifyTrackCount" min="0" max="100" step="1" value="15">
                     </div>
                     <div class="daily-source-row">
                         <label class="daily-source-label" for="dailyTidalEnabled">
                             <input type="checkbox" id="dailyTidalEnabled" checked>
                             <span>Tidal</span>
                         </label>
-                        <input type="number" id="dailyTidalTrackCount" min="0" max="100" step="1" value="20">
+                        <input type="number" id="dailyTidalTrackCount" min="0" max="100" step="1" value="15">
                     </div>
                 </div>
                 <div class="recommendations-divider"></div>
@@ -2489,8 +2488,7 @@ function initializeSettingsTooltips() {
 
     document.querySelectorAll('.settings-section .warning-text').forEach((warning) => {
         if (warning.id === 'multiQualitySecondaryFolderWarning'
-            || warning.id === 'dailyRecommendationPaused'
-            || warning.id === 'dailyShazamUnavailable') {
+            || warning.id === 'dailyRecommendationPaused') {
             return;
         }
 
@@ -5031,7 +5029,7 @@ function loadSettings(settings) {
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
     setFieldValue('youTubeMusicCountry', settings.youTubeMusicCountry || '');
-    const dailyRecommendations = settings.dailyRecommendations || { trackCount: 60, shazamEnabled: false, shazamTrackCount: 0, deezerEnabled: true, deezerTrackCount: 20, spotifyEnabled: true, spotifyTrackCount: 20, tidalEnabled: true, tidalTrackCount: 20 };
+    const dailyRecommendations = settings.dailyRecommendations || { trackCount: 60, shazamEnabled: true, shazamTrackCount: 15, deezerEnabled: true, deezerTrackCount: 15, spotifyEnabled: true, spotifyTrackCount: 15, tidalEnabled: true, tidalTrackCount: 15 };
     setFieldValue('dailyRecommendationTrackCount', dailyRecommendations.trackCount ?? 60);
     setFieldValue('dailyRecommendationAiFilterMode', dailyRecommendations.aiFilterMode ?? 1);
     for (const source of ['Shazam', 'Deezer', 'Spotify', 'Tidal']) {
@@ -5039,8 +5037,6 @@ function loadSettings(settings) {
         setCheckboxValue(`daily${source}Enabled`, dailyRecommendations[`${key}Enabled`] === true);
         setFieldValue(`daily${source}TrackCount`, dailyRecommendations[`${key}TrackCount`] ?? 0);
     }
-    setCheckboxValue('dailyShazamEnabled', false);
-    setFieldValue('dailyShazamTrackCount', 0);
     updateDailyRecommendationAllocation();
     loadWeeklyRecommendations(settings.weeklyRecommendations);
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
@@ -5471,8 +5467,6 @@ function collectDailyRecommendations() {
         daily[`${key}Enabled`] = document.getElementById(`daily${source}Enabled`).checked;
         daily[`${key}TrackCount`] = Number(document.getElementById(`daily${source}TrackCount`).value);
     }
-    daily.shazamEnabled = false;
-    daily.shazamTrackCount = 0;
     return daily;
 }
 

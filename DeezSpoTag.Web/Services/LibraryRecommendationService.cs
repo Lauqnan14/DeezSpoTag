@@ -915,7 +915,6 @@ public sealed class LibraryRecommendationService
     private const int ShazamSimilarLookupLimit = 20;
     private const double ShazamDeezerMinTitleSimilarity = 0.62d;
     private const double ShazamDeezerMinArtistSimilarity = 0.52d;
-    private const int ShazamSelectedSeedLimit = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private const int RecommendationExposureRetentionDays = 14;
     private const int MaximumConfiguredDailyTracks = 100;
@@ -995,7 +994,7 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<RecommendationExposureEntryDto> Entries);
     private sealed record RecommendationExposureEntryDto(string TrackId, string Day);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
-    private sealed record ShazamRecommendationBuildResult(List<RecommendationTrackDto> Tracks, string EmptyReasonCode)
+    private sealed record ShazamRecommendationBuildResult(List<RecommendationTrackDto> Tracks, string EmptyReasonCode, int ResolvedSeedCount = 0)
     {
         public static ShazamRecommendationBuildResult Empty(string reasonCode)
             => new(new List<RecommendationTrackDto>(), reasonCode);
@@ -2303,6 +2302,15 @@ public sealed class LibraryRecommendationService
                         rawCounts[source]=rawBefore+fetched.Count;
                         resolvedSeeds[source]=resolvedSeeds.GetValueOrDefault(source)+batch.Count;
                     }
+                    else if (source=="shazam")
+                    {
+                        var shazam = await BuildShazamRecommendationsAsync(scope,batch,token);
+                        fetched = shazam.Tracks;
+                        rawCounts[source]=rawBefore+fetched.Count;
+                        if (shazam.EmptyReasonCode is "shazam_failed" or "shazam_unavailable")
+                            providerFailures[source]="provider_unavailable";
+                        else resolvedSeeds[source]=resolvedSeeds.GetValueOrDefault(source)+shazam.ResolvedSeedCount;
+                    }
                     else fetched=await BuildStreamingDailyRecommendationsAsync(source,batch,desired,configuration.AiFilterMode,
                         mappings,Reject,resolvedSeeds,rawCounts,providerFailures,token,scope);
                     if (providerFailures.TryGetValue(source,out var failure)
@@ -2345,7 +2353,7 @@ public sealed class LibraryRecommendationService
         Func<string,IReadOnlyList<LibraryRecommendationSeedTrackDto>,int,CancellationToken,Task<IReadOnlyList<RecommendationTrackDto>>> fetch,
         Func<IReadOnlyList<RecommendationTrackDto>,Task> checkpoint, CancellationToken cancellationToken)
     {
-        var reserveQuotas = allocations.Where(p => p.Value > 0 && p.Key != "shazam")
+        var reserveQuotas = allocations.Where(p => p.Value > 0)
             .ToDictionary(p => p.Key, p => p.Value * RecommendationPoolMultiplier);
         var target = reserveQuotas.Values.Sum();
         var pool = BuildSavedDailySelection(MergeDailyRecommendationProvenance(initial), reserveQuotas, Math.Max(1,target), day, null, null, DailyRecommendationsPerSeed * RecommendationPoolMultiplier);
@@ -3678,32 +3686,31 @@ public sealed class LibraryRecommendationService
     private async Task<ShazamRecommendationBuildResult> BuildShazamRecommendationsAsync(
         RecommendationScope scope,
         IReadOnlyList<LibraryRecommendationSeedTrackDto> orderedSeeds,
-        CancellationToken cancellationToken, int candidateLimit = MaxDailyRecommendations * 2)
+        CancellationToken cancellationToken)
     {
-        if (!IsShazamRecommendationAvailable())
-        {
-            return ShazamRecommendationBuildResult.Empty("shazam_unavailable");
-        }
+        var canRecognize = IsShazamRecommendationAvailable();
 
         var shazamSeedTrackIds = orderedSeeds
             .Select(seed => seed.TrackId)
-            .Take(Math.Min(DailySeedProbeLimit, Math.Max(ShazamSelectedSeedLimit, (candidateLimit + ShazamRelatedPerSeed - 1) / ShazamRelatedPerSeed)))
             .ToList();
         if (shazamSeedTrackIds.Count == 0)
         {
             return ShazamRecommendationBuildResult.Empty("shazam_no_seed_tracks");
         }
 
-        await RefreshStaleShazamSeedsAsync(scope, shazamSeedTrackIds, cancellationToken);
+        await RefreshStaleShazamSeedsAsync(scope, shazamSeedTrackIds, canRecognize, cancellationToken);
 
         var cacheByTrackId = await _repository.GetShazamTrackCacheByTrackIdForLibraryAsync(
             scope.LibraryId,
             scope.FolderId,
             cancellationToken);
-        var tracks = BuildRecommendationsFromShazamCache(shazamSeedTrackIds, cacheByTrackId, cancellationToken, candidateLimit);
+        var tracks = BuildRecommendationsFromShazamCache(shazamSeedTrackIds, cacheByTrackId, cancellationToken);
+        var hasProviderFailure = shazamSeedTrackIds.Any(id => cacheByTrackId.TryGetValue(id, out var entry)
+            && string.Equals(entry.Status, StatusError, StringComparison.OrdinalIgnoreCase));
         return tracks.Count > 0
-            ? new ShazamRecommendationBuildResult(tracks, "shazam_ok")
-            : ShazamRecommendationBuildResult.Empty(ResolveEmptyShazamReasonCode(shazamSeedTrackIds, cacheByTrackId));
+            ? new ShazamRecommendationBuildResult(tracks, hasProviderFailure ? "shazam_failed" : "shazam_ok",
+                shazamSeedTrackIds.Count(id => cacheByTrackId.TryGetValue(id, out var row) && ShouldIncludeShazamCacheEntry(row)))
+            : ShazamRecommendationBuildResult.Empty(canRecognize || shazamSeedTrackIds.Any(cacheByTrackId.ContainsKey) ? ResolveEmptyShazamReasonCode(shazamSeedTrackIds, cacheByTrackId) : "shazam_unavailable");
     }
 
     private bool IsShazamRecommendationAvailable()
@@ -3720,6 +3727,7 @@ public sealed class LibraryRecommendationService
     private async Task RefreshStaleShazamSeedsAsync(
         RecommendationScope scope,
         IReadOnlyList<long> selectedSeedTrackIds,
+        bool canRecognize,
         CancellationToken cancellationToken)
     {
         var staleBeforeUtc = GetShazamDailyFreshnessBoundary(_timeProvider.GetLocalNow());
@@ -3728,30 +3736,51 @@ public sealed class LibraryRecommendationService
             staleBeforeUtc,
             scope.FolderId,
             cancellationToken: cancellationToken);
-        if (staleTrackIds.Count == 0)
-        {
-            return;
-        }
-
+        var selectedCache = await _repository.GetShazamTrackCacheByTrackIdsAsync(selectedSeedTrackIds, cancellationToken);
         var staleSet = new HashSet<long>(staleTrackIds);
-        var inlineTargets = selectedSeedTrackIds
-            .Where(staleSet.Contains)
-            .ToList();
-
-        if (inlineTargets.Count > 0)
+        foreach (var entry in selectedCache)
+            if (string.Equals(entry.Value.Status, StatusError, StringComparison.OrdinalIgnoreCase)
+                && entry.Value.ScannedAtUtc < _timeProvider.GetUtcNow().AddMinutes(-1)) staleSet.Add(entry.Key);
+        foreach (var trackId in selectedSeedTrackIds)
         {
-            await RefreshShazamCacheForTrackBatchAsync(inlineTargets, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (selectedCache.TryGetValue(trackId, out var cached)
+                && !string.IsNullOrWhiteSpace(cached.ShazamTrackId)
+                && !string.IsNullOrWhiteSpace(cached.Title) && !string.IsNullOrWhiteSpace(cached.Artist)
+                && (staleSet.Contains(trackId) || NeedsShazamRelatedRefresh(cached, _timeProvider.GetUtcNow())))
+            {
+                // A known recognition can refresh related songs without reading/fingerprinting audio again.
+                var recognition = new ShazamRecognitionInfo
+                {
+                    TrackId = cached.ShazamTrackId, Title = cached.Title, Artist = cached.Artist,
+                    Isrc = cached.Isrc, Album = cached.Album
+                };
+                await RefreshShazamRelatedCacheAsync(trackId, new(recognition, cached.ShazamTrackId),
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase), _timeProvider.GetUtcNow(), cancellationToken, cached);
+            }
+            else if (canRecognize && staleSet.Contains(trackId))
+            {
+                await RefreshShazamCacheForTrackBatchAsync([trackId], cancellationToken);
+            }
         }
     }
+
+    private static bool HasUnverifiedShazamProviderIds(ShazamTrackCacheDto cache)
+        => cache.RelatedTracks.Any(track => string.IsNullOrWhiteSpace(track.DeezerId)
+            && (track.Provenance?.Any(p => p.Provider == "shazam" && p.ProviderTrackId == track.Id) ?? false));
+
+    private static bool NeedsShazamRelatedRefresh(ShazamTrackCacheDto cache, DateTimeOffset now)
+        => HasUnverifiedShazamProviderIds(cache)
+            || ((cache.Status == StatusMatchedNoRelated || cache.Status == StatusMatchedNoDeezerResolution)
+                && (!cache.ScannedAtUtc.HasValue || cache.ScannedAtUtc.Value <= now.AddMinutes(-30)));
 
     private static List<RecommendationTrackDto> BuildRecommendationsFromShazamCache(
         IReadOnlyList<long> orderedSeeds,
         IReadOnlyDictionary<long, ShazamTrackCacheDto> cacheByTrackId,
-        CancellationToken cancellationToken, int candidateLimit = MaxDailyRecommendations * 2)
+        CancellationToken cancellationToken)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var results = new List<RecommendationTrackDto>();
-        var maxResults = Math.Clamp(candidateLimit, 1, MaximumConfiguredDailyTracks * RecommendationPoolMultiplier);
 
         foreach (var trackId in orderedSeeds)
         {
@@ -3768,7 +3797,7 @@ public sealed class LibraryRecommendationService
                 var nativeId = relatedTrack.Provenance?.FirstOrDefault(p => p.Provider == "shazam")?.ProviderTrackId ?? string.Empty;
                 var row = relatedTrack with { Provenance = new[] { new RecommendationProvenanceDto("shazam", nativeId,
                     trackId, cache.ShazamTrackId ?? string.Empty, rank + 1) } };
-                if (results.Count < maxResults || seen.Contains(NormalizeId(row.Id))) TryAddShazamRelatedRecommendation(row, seen, results);
+                TryAddShazamRelatedRecommendation(row, seen, results);
             }
         }
 
@@ -3778,7 +3807,7 @@ public sealed class LibraryRecommendationService
     private static bool ShouldIncludeShazamCacheEntry(ShazamTrackCacheDto cache)
     {
         return string.Equals(cache.Status, StatusMatched, StringComparison.OrdinalIgnoreCase)
-               && cache.RelatedTracks.Count > 0;
+               && cache.RelatedTracks.Count > 0 && !HasUnverifiedShazamProviderIds(cache);
     }
 
     private static string ResolveEmptyShazamReasonCode(
@@ -3817,6 +3846,11 @@ public sealed class LibraryRecommendationService
             }
         }
 
+        if (hasError)
+        {
+            return "shazam_failed";
+        }
+
         if (hasNoDeezerResolution)
         {
             return "shazam_no_deezer_resolution";
@@ -3830,11 +3864,6 @@ public sealed class LibraryRecommendationService
         if (hasNoMatch)
         {
             return "shazam_no_match";
-        }
-
-        if (hasError)
-        {
-            return "shazam_failed";
         }
 
         return hasCachedSeed ? "shazam_empty" : "shazam_no_cache";
@@ -3952,7 +3981,14 @@ public sealed class LibraryRecommendationService
         }
 
         await PersistRecognitionSourceLinksAsync(trackId, recognizedTrack.Recognition, cancellationToken);
-        var similarCards = await TryFetchSimilarShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken);
+        await RefreshShazamRelatedCacheAsync(trackId, recognizedTrack, deezerResolveCache, scannedAtUtc, cancellationToken);
+    }
+
+    private async Task RefreshShazamRelatedCacheAsync(
+        long trackId, RecognizedShazamTrack recognizedTrack, IDictionary<string, string> deezerResolveCache,
+        DateTimeOffset scannedAtUtc, CancellationToken cancellationToken, ShazamTrackCacheDto? previous = null)
+    {
+        var similarCards = await TryFetchSimilarShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken, previous);
         if (similarCards is null)
         {
             return;
@@ -3977,7 +4013,8 @@ public sealed class LibraryRecommendationService
             scannedAtUtc,
             status,
             failureReason,
-            cancellationToken);
+            cancellationToken,
+            previous);
     }
 
     private sealed record RecognizedShazamTrack(ShazamRecognitionInfo Recognition, string ShazamTrackId);
@@ -4124,7 +4161,7 @@ public sealed class LibraryRecommendationService
         long trackId,
         RecognizedShazamTrack recognizedTrack,
         DateTimeOffset scannedAtUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ShazamTrackCacheDto? previous = null)
     {
         try
         {
@@ -4154,9 +4191,9 @@ public sealed class LibraryRecommendationService
                 recognizedTrack,
                 Array.Empty<RecommendationTrackDto>(),
                 scannedAtUtc,
-                StatusMatchedNoRelated,
+                StatusError,
                 "Shazam related-track fetch timed out.",
-                cancellationToken);
+                cancellationToken, previous);
             return null;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -4171,9 +4208,9 @@ public sealed class LibraryRecommendationService
                 recognizedTrack,
                 Array.Empty<RecommendationTrackDto>(),
                 scannedAtUtc,
-                StatusMatchedNoRelated,
+                StatusError,
                 BuildPersistedFailureReason("Shazam related-track fetch failed", ex),
-                cancellationToken);
+                cancellationToken, previous);
             return null;
         }
     }
@@ -4182,13 +4219,13 @@ public sealed class LibraryRecommendationService
         long trackId,
         RecognizedShazamTrack recognizedTrack,
         DateTimeOffset scannedAtUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ShazamTrackCacheDto? previous = null)
     {
         // Related-only. Shazam's text-search endpoints are retired, so the search half of
         // the old related+search merge could only ever contribute an empty list while still
         // spending a discover.py process per library track. Related already answers from the
         // same recognition's track id and is the only half that ever returned anything.
-        var relatedCards = await TryFetchRelatedShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken);
+        var relatedCards = await TryFetchRelatedShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken, previous);
         if (relatedCards is null)
         {
             return null;
@@ -4336,7 +4373,7 @@ public sealed class LibraryRecommendationService
             new RecommendationAlbumDto(
                 NormalizeId(card.AlbumAdamId ?? string.Empty),
                 NormalizeText(card.Album, UnknownAlbum),
-                NormalizeCoverMedium(card.ArtworkUrl)), SourceUrl: card.Url, RecommendationOrigin: "shazam"));
+                NormalizeCoverMedium(card.ArtworkUrl)), SourceUrl: card.Url, DeezerId: deezerId, MappingStatus: "matched", RecommendationOrigin: "shazam"));
     }
 
     private async Task PersistMatchedShazamCacheAsync(
@@ -4346,7 +4383,8 @@ public sealed class LibraryRecommendationService
         DateTimeOffset scannedAtUtc,
         string status,
         string? failureReason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ShazamTrackCacheDto? previous = null)
     {
         await _repository.UpsertTrackShazamCacheAsync(
             new LibraryRepository.TrackShazamCacheUpsertInput(
@@ -4358,7 +4396,10 @@ public sealed class LibraryRecommendationService
                 NormalizeText(recognizedTrack.Recognition.Isrc, string.Empty),
                 relatedRecommendations,
                 scannedAtUtc,
-                failureReason),
+                failureReason,
+                previous?.FilePath, previous?.FileSize, previous?.FileModifiedUtc,
+                previous?.SpotifyId, previous?.AppleId, previous?.DeezerId,
+                previous?.Album, previous?.ReleaseDate, previous?.Explicit),
             cancellationToken);
     }
 
@@ -4618,6 +4659,8 @@ public sealed class LibraryRecommendationService
     private static IEnumerable<string> EnumerateShazamDeezerLinks(ShazamTrackCard card)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(card.DeezerUrl) && IsDeezerLinkCandidate(card.DeezerUrl) && seen.Add(card.DeezerUrl))
+            yield return card.DeezerUrl;
         if (card.Tags.TryGetValue("SHAZAM_DEEZER_URL", out var deezerUrls))
         {
             foreach (var normalized in deezerUrls
@@ -4668,9 +4711,9 @@ public sealed class LibraryRecommendationService
             return prefixedId;
         }
 
-        if (TryExtractTrackIdFromDeezerUri(trimmed, out var uriId))
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out _))
         {
-            return uriId;
+            return TryExtractTrackIdFromDeezerUri(trimmed, out var uriId) ? uriId : string.Empty;
         }
 
         if (TryExtractTrackIdFromTrackMarker(trimmed, out var markerId))
@@ -4724,6 +4767,10 @@ public sealed class LibraryRecommendationService
                 return true;
             }
         }
+
+        if ((uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !(uri.Host.Equals("deezer.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.EndsWith(".deezer.com", StringComparison.OrdinalIgnoreCase))) return false;
 
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         for (var i = 0; i < segments.Length - 1; i++)

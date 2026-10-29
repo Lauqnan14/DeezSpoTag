@@ -13,6 +13,18 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DailyRecommendationSettingsTest
 {
+    [Theory]
+    [InlineData(20)]
+    [InlineData(60)]
+    [InlineData(100)]
+    public void ShazamOnlyAllocationsRemainEnabledAndRespectTheTotal(int total)
+    {
+        var settings = new DailyRecommendationSettings { TrackCount = total, ShazamEnabled = true, ShazamTrackCount = total,
+            DeezerEnabled = false, DeezerTrackCount = 0, SpotifyEnabled = false, SpotifyTrackCount = 0, TidalEnabled = false, TidalTrackCount = 0 };
+        Assert.True(settings.TryValidate(out _));
+        Assert.False(settings.IsDisabled);
+        Assert.Equal(total, settings.Allocations()["shazam"]);
+    }
     [Fact]
     public void TooltipInitializationPreservesRecommendationStatusDuringSettingsLoad()
     {
@@ -26,7 +38,7 @@ public sealed class DailyRecommendationSettingsTest
             const view = fs.readFileSync(`${process.argv[1]}/DeezSpoTag.Web/Views/Settings/Index.cshtml`, 'utf8');
             const elements = new Map();
             const label = {};
-            const warnings = ['dailyRecommendationPaused', 'dailyShazamUnavailable', 'multiQualitySecondaryFolderWarning', 'staticHelp'].map(id => {
+            const warnings = ['dailyRecommendationPaused', 'multiQualitySecondaryFolderWarning', 'staticHelp'].map(id => {
                 const warning = {
                     id, hidden: id === 'dailyRecommendationPaused', textContent: 'Help text',
                     getAttribute: () => null,
@@ -58,7 +70,6 @@ public sealed class DailyRecommendationSettingsTest
             context.initializeSettingsTooltips();
             assert.equal(context.updateDailyRecommendationAllocation(), true);
             assert.equal(elements.get('dailyRecommendationPaused').hidden, true);
-            assert.ok(elements.has('dailyShazamUnavailable'));
             assert.ok(elements.has('multiQualitySecondaryFolderWarning'));
             assert.equal(elements.has('staticHelp'), false);
             context.initializeSettingsTooltips();
@@ -68,11 +79,16 @@ public sealed class DailyRecommendationSettingsTest
             }
             assert.equal(context.updateDailyRecommendationAllocation(), true);
             assert.equal(elements.get('dailyRecommendationPaused').hidden, false);
-            assert.ok(elements.has('dailyShazamUnavailable'));
             elements.get('dailyDeezerEnabled').checked = true;
             elements.get('dailyDeezerTrackCount').value = '60';
             assert.equal(context.updateDailyRecommendationAllocation(), true);
             assert.equal(elements.get('dailyRecommendationPaused').hidden, true);
+            elements.get('dailyShazamEnabled').checked = true;
+            elements.get('dailyShazamTrackCount').value = '30';
+            elements.get('dailyDeezerTrackCount').value = '30';
+            assert.equal(context.updateDailyRecommendationAllocation(), true);
+            assert.equal(context.collectDailyRecommendations().shazamEnabled, true);
+            assert.equal(context.collectDailyRecommendations().shazamTrackCount, 30);
             """;
         var start = new System.Diagnostics.ProcessStartInfo("node")
         {
@@ -109,41 +125,41 @@ public sealed class DailyRecommendationSettingsTest
     }
 
     [Fact]
-    public void SettingsKeepShazamVisibleButUnavailableAndShowSixtyTrackDefaults()
+    public void SettingsAllowShazamAndPreserveSixtyTrackDefaults()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !Directory.Exists(Path.Join(root.FullName, "DeezSpoTag.Web", "Views"))) root = root.Parent;
         Assert.NotNull(root);
         var view = File.ReadAllText(Path.Join(root!.FullName, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
-        Assert.Contains("id=\"dailyShazamEnabled\" disabled", view);
-        Assert.Contains("id=\"dailyShazamTrackCount\" min=\"0\" max=\"100\" step=\"1\" value=\"0\" disabled", view);
-        Assert.Contains("Unavailable — Shazam's similar-song service is not functional.", view);
+        Assert.Contains("id=\"dailyShazamEnabled\"", view);
+        Assert.Contains("id=\"dailyShazamTrackCount\" min=\"0\" max=\"100\" step=\"1\" value=\"15\"", view);
+        Assert.DoesNotContain("Shazam's similar-song service is not functional.", view);
         Assert.Contains("id=\"dailyRecommendationTrackCount\" min=\"20\" max=\"100\" step=\"1\" value=\"60\"", view);
-        foreach (var source in new[] { "Deezer", "Spotify", "Tidal" })
+        foreach (var source in new[] { "Shazam", "Deezer", "Spotify", "Tidal" })
         {
             Assert.Contains($"id=\"daily{source}Enabled\" checked", view);
-            Assert.Contains($"id=\"daily{source}TrackCount\" min=\"0\" max=\"100\" step=\"1\" value=\"20\"", view);
+            Assert.Contains($"id=\"daily{source}TrackCount\" min=\"0\" max=\"100\" step=\"1\" value=\"15\"", view);
         }
-        Assert.Contains("setCheckboxValue('dailyShazamEnabled', false)", view);
-        Assert.Contains("setFieldValue('dailyShazamTrackCount', 0)", view);
-        Assert.Contains("daily.shazamEnabled = false", view);
-        Assert.Contains("daily.shazamTrackCount = 0", view);
+        Assert.Contains("setCheckboxValue(`daily${source}Enabled`, dailyRecommendations[`${key}Enabled`] === true)", view);
+        Assert.Contains("setFieldValue(`daily${source}TrackCount`, dailyRecommendations[`${key}TrackCount`] ?? 0)", view);
+        Assert.DoesNotContain("daily.shazamEnabled = false", view);
+        Assert.DoesNotContain("daily.shazamTrackCount = 0", view);
     }
     [Fact]
-    public void LegacySettingsAndDefaultsUseSixtyTracksAcrossAvailableSources()
+    public void MissingSettingsAndDefaultsUseSixtyTracksAcrossFourSources()
     {
         foreach (var settings in new[] { new DeezSpoTagSettings(), JsonSerializer.Deserialize<DeezSpoTagSettings>("{}")!, DeezSpoTagSettingsService.GetStaticDefaultSettings() })
         {
             var daily = settings.DailyRecommendations;
             Assert.Equal(60, daily.TrackCount);
-            Assert.False(daily.ShazamEnabled);
+            Assert.True(daily.ShazamEnabled);
             Assert.True(daily.DeezerEnabled);
-            Assert.Equal(0, daily.ShazamTrackCount);
-            Assert.Equal(20, daily.DeezerTrackCount);
+            Assert.Equal(15, daily.ShazamTrackCount);
+            Assert.Equal(15, daily.DeezerTrackCount);
             Assert.True(daily.SpotifyEnabled);
-            Assert.Equal(20, daily.SpotifyTrackCount);
+            Assert.Equal(15, daily.SpotifyTrackCount);
             Assert.True(daily.TidalEnabled);
-            Assert.Equal(20, daily.TidalTrackCount);
+            Assert.Equal(15, daily.TidalTrackCount);
             Assert.True(daily.TryValidate(out _));
         }
     }
@@ -163,7 +179,7 @@ public sealed class DailyRecommendationSettingsTest
     [Fact]
     public void InvalidAllocationsAreRejectedWithoutRedistribution()
     {
-        var daily = new DailyRecommendationSettings();
+        var daily = new DailyRecommendationSettings { ShazamEnabled = false, ShazamTrackCount = 0 };
         daily.DeezerTrackCount = -1;
         Assert.False(daily.TryValidate(out _));
         daily.DeezerTrackCount = 0;
@@ -197,20 +213,18 @@ public sealed class DailyRecommendationSettingsTest
     [InlineData(true, 20)]
     [InlineData(false, 25)]
     [InlineData(false, -1)]
-    public void UnavailableShazamCannotBeEnabledOrAllocated(bool enabled, int count)
+    public void ShazamUsesNormalAllocationValidation(bool enabled, int count)
     {
         var daily = new DailyRecommendationSettings { TrackCount = 60 + Math.Max(0, count),
             ShazamEnabled = enabled, ShazamTrackCount = count, DeezerEnabled = true, DeezerTrackCount = 20,
             SpotifyEnabled = true, SpotifyTrackCount = 20, TidalEnabled = true, TidalTrackCount = 20 };
-        Assert.False(daily.TryValidate(out var error));
-        Assert.Contains("Shazam", error!);
+        Assert.Equal(enabled && count > 0, daily.TryValidate(out _));
     }
 
     [Theory]
     [InlineData(true, 25, 25, 0, 0)]
     [InlineData(true, 10, 30, 20, 20)]
-    [InlineData(false, 10, 30, 20, 20)]
-    public void SavedShazamAllocationsMigrateAndPersistWithoutChangingAiMode(
+    public void SavedShazamAllocationsArePreservedWithoutChangingAiMode(
         bool shazam, int shazamCount, int deezer, int spotify, int tidal)
     {
         WithSettingsFile((service, path) =>
@@ -225,25 +239,25 @@ public sealed class DailyRecommendationSettingsTest
                 TidalEnabled = tidal > 0, TidalTrackCount = tidal,
                 AiFilterMode = DailyRecommendationAiFilterMode.Strict
             };
-            File.WriteAllText(path, JsonSerializer.Serialize(settings));
+            File.WriteAllText(path, JsonSerializer.Serialize(settings, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
             var migrated = service.LoadSettings().DailyRecommendations;
-            Assert.Equal(60, migrated.TrackCount);
-            Assert.False(migrated.ShazamEnabled);
-            Assert.Equal(0, migrated.ShazamTrackCount);
-            Assert.True(migrated.DeezerEnabled && migrated.SpotifyEnabled && migrated.TidalEnabled);
-            Assert.Equal(20, migrated.DeezerTrackCount);
-            Assert.Equal(20, migrated.SpotifyTrackCount);
-            Assert.Equal(20, migrated.TidalTrackCount);
+            Assert.Equal(shazamCount + deezer + spotify + tidal, migrated.TrackCount);
+            Assert.Equal(shazam, migrated.ShazamEnabled);
+            Assert.Equal(shazamCount, migrated.ShazamTrackCount);
+            Assert.Equal(deezer, migrated.DeezerTrackCount);
+            Assert.Equal(spotify, migrated.SpotifyTrackCount);
+            Assert.Equal(tidal, migrated.TidalTrackCount);
             Assert.Equal(DailyRecommendationAiFilterMode.Strict, migrated.AiFilterMode);
             Assert.True(migrated.TryValidate(out _));
             using var persisted = JsonDocument.Parse(File.ReadAllText(path));
-            Assert.Equal(60, persisted.RootElement.GetProperty("dailyRecommendations").GetProperty("trackCount").GetInt32());
-            Assert.False(persisted.RootElement.GetProperty("dailyRecommendations").GetProperty("shazamEnabled").GetBoolean());
+            Assert.Equal(migrated.TrackCount, persisted.RootElement.GetProperty("dailyRecommendations").GetProperty("trackCount").GetInt32());
+            Assert.Equal(shazam, persisted.RootElement.GetProperty("dailyRecommendations").GetProperty("shazamEnabled").GetBoolean());
             Assert.Equal(JsonSerializer.Serialize(migrated), JsonSerializer.Serialize(service.LoadSettings().DailyRecommendations));
         });
     }
 
     [Theory]
+    [InlineData(60, 20, 20, 20)]
     [InlineData(40, 15, 25, 0)]
     [InlineData(60, 0, 0, 0)]
     public void SavedNonShazamCustomAndAllDisabledAllocationsArePreserved(int total, int deezer, int spotify, int tidal)
@@ -330,7 +344,7 @@ public sealed class DailyRecommendationSettingsTest
             Assert.Equal(100, service.LoadSettings().DailyRecommendations.TrackCount);
             service.SaveSettings(DeezSpoTagSettingsService.GetStaticDefaultSettings());
             Assert.Equal(60, service.LoadSettings().DailyRecommendations.TrackCount);
-            Assert.Equal(0, service.LoadSettings().DailyRecommendations.ShazamTrackCount);
+            Assert.Equal(15, service.LoadSettings().DailyRecommendations.ShazamTrackCount);
         }
         finally { Directory.Delete(root, true); }
     }

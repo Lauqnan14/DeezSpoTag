@@ -30,7 +30,8 @@ public sealed record ShazamTrackCard(
     string? AlbumAdamId,
     List<string> ArtistIds,
     List<string> ArtistAdamIds,
-    Dictionary<string, List<string>> Tags);
+    Dictionary<string, List<string>> Tags,
+    string? DeezerUrl = null);
 
 public sealed partial class ShazamDiscoveryService
 {
@@ -50,6 +51,7 @@ public sealed partial class ShazamDiscoveryService
     private static readonly object SessionCardCacheTrimLock = new();
 
     private readonly HttpClient _httpClient;
+    private readonly ShazamRelatedRuntimeService? _relatedRuntime;
     private readonly ILogger<ShazamDiscoveryService> _logger;
     private readonly IWebHostEnvironment _environment;
     private static readonly ConcurrentDictionary<string, SessionCardCacheEntry> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
@@ -57,11 +59,13 @@ public sealed partial class ShazamDiscoveryService
     public ShazamDiscoveryService(
         HttpClient httpClient,
         ILogger<ShazamDiscoveryService> logger,
-        IWebHostEnvironment environment)
+        IWebHostEnvironment environment,
+        ShazamRelatedRuntimeService? relatedRuntime = null)
     {
         _httpClient = httpClient;
         _logger = logger;
         _environment = environment;
+        _relatedRuntime = relatedRuntime;
         if (_httpClient.Timeout <= TimeSpan.Zero)
         {
             _httpClient.Timeout = TimeSpan.FromSeconds(15);
@@ -101,21 +105,18 @@ public sealed partial class ShazamDiscoveryService
         int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(trackId))
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrEmpty(trackId) || trackId.Length > 20 || trackId.Any(c => c is < '0' or > '9'))
+            throw new ArgumentException("A numeric Shazam ID is required.", nameof(trackId));
+        if (_relatedRuntime is null) throw new HttpRequestException("shazam_helper_unavailable");
+        using var document = await _relatedRuntime.GetRelatedAsync(trackId, Language, Country, cancellationToken);
+        var cards = ParseTrackList(document.RootElement, MaxTrackLimit);
+        for (var index = 0; index < cards.Count; index++)
         {
-            return Array.Empty<ShazamTrackCard>();
+            CacheCard(cards[index]);
+            if (TryGetCachedCard(cards[index].Id, out var cached) && cached is not null) cards[index] = cached;
         }
-
-        trackId = trackId.Trim();
-        if (trackId.StartsWith(AppleMusicIdPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        limit = Math.Clamp(limit, 1, MaxTrackLimit);
-        offset = Math.Max(0, offset);
-
-        return await GetRelatedTracksViaPortedDiscoveryAsync(trackId, limit, offset, cancellationToken);
+        return cards.Skip(Math.Max(0, offset)).Take(Math.Clamp(limit, 1, MaxTrackLimit)).ToList();
     }
 
     public async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksAsync(
@@ -364,45 +365,6 @@ public sealed partial class ShazamDiscoveryService
         return parsed;
     }
 
-    private async Task<IReadOnlyList<ShazamTrackCard>> GetRelatedTracksViaPortedDiscoveryAsync(
-        string trackId,
-        int limit,
-        int offset,
-        CancellationToken cancellationToken)
-    {
-        using var doc = await RunPortedDiscoverAsync("related", trackId, query: null, limit, offset, cancellationToken);
-        if (doc == null)
-        {
-            if (_logger.IsEnabled(LogLevel.Warning))
-            {
-                _logger.LogWarning("Shazam port related lookup returned null document for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
-            }
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        var root = doc.RootElement;
-        if (!TryGetBool(root, "ok", out var ok) || !ok)
-        {
-            if (_logger.IsEnabled(LogLevel.Warning))
-            {
-                _logger.LogWarning("Shazam port related lookup returned non-ok payload for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
-            }
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        var parsed = ParseTrackList(root, limit);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("Shazam port related lookup produced {Count} tracks for trackId {TrackId}.", parsed.Count, DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
-        }
-        foreach (var card in parsed)
-        {
-            CacheCard(card);
-        }
-
-        return parsed;
-    }
-
     private static bool TryGetBool(JsonElement source, string propertyName, out bool value)
     {
         value = false;
@@ -571,8 +533,8 @@ public sealed partial class ShazamDiscoveryService
             TryGetString(track, "url"),
             TryGetNestedString(track, "share", "href"));
 
-        var appleMusicUrl = FindFirstUri(track, uri => uri.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase));
-        var spotifyUrl = FindFirstUri(track, uri => uri.Contains("open.spotify.com", StringComparison.OrdinalIgnoreCase));
+        var appleMusicUrl = FirstNonEmpty(TryGetString(track, "appleMusicUrl"), FindFirstUri(track, uri => uri.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase)));
+        var spotifyUrl = FirstNonEmpty(TryGetString(track, "spotifyUrl"), FindFirstUri(track, uri => uri.Contains("open.spotify.com", StringComparison.OrdinalIgnoreCase)));
         var deezerUrls = FindUris(track, IsDeezerUriCandidate, limit: 8);
         var deezerUrl = deezerUrls.FirstOrDefault();
 
@@ -673,7 +635,8 @@ public sealed partial class ShazamDiscoveryService
             albumAdamId,
             artistIds,
             artistAdamIds,
-            tags);
+            tags,
+            FirstNonEmpty(TryGetString(track, "deezerUrl"), deezerUrl));
     }
 
     private static void CacheCard(ShazamTrackCard card)
@@ -714,7 +677,29 @@ public sealed partial class ShazamDiscoveryService
 
     private static void CacheCardAlias(string key, ShazamTrackCard card)
     {
-        SessionCardCache[key] = new SessionCardCacheEntry(card, DateTimeOffset.UtcNow.Add(SessionCardCacheTtl));
+        var expiry = DateTimeOffset.UtcNow.Add(SessionCardCacheTtl);
+        SessionCardCache.AddOrUpdate(key, new SessionCardCacheEntry(card, expiry), (_, previous) =>
+        {
+            var older = previous.Card;
+            if (previous.ExpiresAtUtc <= DateTimeOffset.UtcNow || !string.Equals(older.Id, card.Id, StringComparison.Ordinal)
+                || (!string.IsNullOrWhiteSpace(older.Isrc) && !string.IsNullOrWhiteSpace(card.Isrc)
+                    && !string.Equals(older.Isrc.Trim(), card.Isrc.Trim(), StringComparison.OrdinalIgnoreCase)))
+                return new SessionCardCacheEntry(card, expiry);
+            // The v2 list can omit links supplied by an earlier detail lookup for this same recording.
+            var tags = new Dictionary<string, List<string>>(card.Tags, StringComparer.OrdinalIgnoreCase);
+            foreach (var name in new[] { "SHAZAM_DEEZER_URL", "SHAZAM_SPOTIFY_URL", "SHAZAM_APPLE_MUSIC_URL" })
+                if (!tags.ContainsKey(name) && older.Tags.TryGetValue(name, out var values)) tags[name] = new List<string>(values);
+            return new SessionCardCacheEntry(card with
+            {
+                Isrc = FirstNonEmpty(card.Isrc, older.Isrc),
+                DurationMs = card.DurationMs ?? older.DurationMs,
+                Url = FirstNonEmpty(card.Url, older.Url),
+                AppleMusicUrl = FirstNonEmpty(card.AppleMusicUrl, older.AppleMusicUrl),
+                SpotifyUrl = FirstNonEmpty(card.SpotifyUrl, older.SpotifyUrl),
+                DeezerUrl = FirstNonEmpty(card.DeezerUrl, older.DeezerUrl),
+                Tags = tags
+            }, expiry);
+        });
     }
 
     private static void TrimSessionCardCacheIfNeeded()

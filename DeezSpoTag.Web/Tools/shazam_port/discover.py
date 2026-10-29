@@ -38,7 +38,7 @@ async def fetch_track(shazam: Shazam, track_id: int) -> Dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Shazam discovery bridge")
-    parser.add_argument("mode", choices=["track", "related", "search"])
+    parser.add_argument("mode", choices=["track", "search"])
     parser.add_argument("--track-id", default="")
     parser.add_argument("--query", default="")
     parser.add_argument("--limit", type=int, default=20)
@@ -62,16 +62,6 @@ async def run_async(args: argparse.Namespace) -> Dict[str, Any]:
             fetch_track(shazam, int(str(args.track_id).strip())), timeout=timeout
         )
         return {"ok": True, "track": payload}
-
-    if args.mode == "related":
-        if not str(args.track_id).strip():
-            return {"ok": True, "tracks": []}
-        payload = await asyncio.wait_for(
-            shazam.related_tracks(track_id=int(str(args.track_id).strip()), limit=limit, offset=offset),
-            timeout=timeout,
-        )
-        tracks = payload.get("tracks") if isinstance(payload, dict) else []
-        return {"ok": True, "tracks": tracks if isinstance(tracks, list) else []}
 
     if not str(args.query).strip():
         return {"ok": True, "tracks": []}

@@ -1,4 +1,6 @@
 using System.Threading.Channels;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Controllers.Api;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -18,7 +20,7 @@ public sealed record ShazamEnrichmentRequest(
 /// <summary>
 /// Runs Shazam result enrichment off the live-capture request path.
 ///
-/// Track, related and search lookups each spawn a Python discovery process. Awaiting them
+/// Track lookups spawn a Python discovery process. Awaiting them
 /// inline kept the user on the "Searching" overlay for seconds after the match was already
 /// known, so recognition now responds immediately and the enriched payload is published to
 /// the result cache here. The results page reads that cache by client request id.
@@ -144,6 +146,7 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         var trackId = request.Recognition.TrackId;
         ShazamTrackCard? track = null;
         IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
+        var relatedStatus = "not_requested";
 
         if (!string.IsNullOrWhiteSpace(trackId))
         {
@@ -151,10 +154,12 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
             var relatedTask = SafeGetRelatedTracksAsync(discovery, trackId, cancellationToken);
             await Task.WhenAll(trackTask, relatedTask);
             track = await trackTask;
-            related = await relatedTask;
+            var relatedResult = await relatedTask;
+            related = relatedResult.Tracks;
+            relatedStatus = relatedResult.Status;
         }
 
-        var payload = ShazamRecognitionApiController.BuildMatchPayload(
+        var matchPayload = ShazamRecognitionApiController.BuildMatchPayload(
             new ShazamRecognitionApiController.ShazamLogoMatchPayload(
                 Recognition: request.Recognition,
                 Query: request.Query,
@@ -165,6 +170,11 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
                 LogoSessionId: request.LogoSessionId,
                 ClientRequestId: request.ClientRequestId));
 
+        stoppingToken.ThrowIfCancellationRequested();
+        // JsonObject preserves its own property names when MVC writes the response.
+        // Use the same web naming policy as the immediate recognition payload.
+        var payload = JsonSerializer.SerializeToNode(matchPayload, JsonSerializerOptions.Web)!.AsObject();
+        payload["enrichment"]!["relatedStatus"] = relatedStatus;
         StoreResult(request.ClientRequestId, payload);
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -188,7 +198,7 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            throw;
+            return null;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -197,23 +207,24 @@ public sealed class ShazamEnrichmentQueueService : BackgroundService
         }
     }
 
-    private async Task<IReadOnlyList<ShazamTrackCard>> SafeGetRelatedTracksAsync(
+    private async Task<(IReadOnlyList<ShazamTrackCard> Tracks, string Status)> SafeGetRelatedTracksAsync(
         ShazamDiscoveryService discovery,
         string trackId,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await discovery.GetRelatedTracksAsync(trackId, MaxDiscoveryResults, offset: 0, cancellationToken);
+            var tracks = await discovery.GetRelatedTracksAsync(trackId, MaxDiscoveryResults, offset: 0, cancellationToken);
+            return (tracks, tracks.Count > 0 ? "ready" : "empty");
         }
         catch (OperationCanceledException)
         {
-            throw;
+            return (Array.Empty<ShazamTrackCard>(), "upstream_unavailable");
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
-            return Array.Empty<ShazamTrackCard>();
+            return (Array.Empty<ShazamTrackCard>(), "upstream_unavailable");
         }
     }
 

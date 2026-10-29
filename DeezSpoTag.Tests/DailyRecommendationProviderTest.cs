@@ -16,20 +16,23 @@ namespace DeezSpoTag.Tests;
 public sealed class DailyRecommendationProviderTest
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void DailySelectionLimitsEverySeedToThreeAcrossProvidersIncludingSavedSelections(bool saved)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void DailySelectionLimitsEverySeedToThreeAcrossProvidersIncludingSavedSelections(bool saved, bool includeShazam)
     {
-        var sources = new[] { "deezer", "spotify", "tidal" };
-        var rows = sources.SelectMany((source, index) => Enumerable.Range(1, 24).SelectMany(seed =>
+        var sources = includeShazam ? new[] { "shazam", "deezer", "spotify", "tidal" } : new[] { "deezer", "spotify", "tidal" };
+        var total = sources.Length * 20;
+        var rows = sources.SelectMany((source, index) => Enumerable.Range(1, includeShazam ? 32 : 24).SelectMany(seed =>
             Enumerable.Range(1, seed == 1 ? 60 : 4).Select(n => new DeezSpoTag.Services.Library.RecommendationTrackDto(
                 $"{index + 1}{seed:D3}{n:D3}", $"Song {source} {seed} {n}", 180, "", n,
                 new($"a{source}{seed}{n}", $"Artist {source} {seed} {n}"), new("album", "Album", ""), RecommendationOrigin: source,
                 Provenance: [new(source, $"native{source}{seed}{n}", seed, "seed" + seed, n)])))).ToArray();
         var quotas = sources.ToDictionary(source => source, _ => 20);
-        var preferred = saved ? rows.Where(t => t.Provenance![0].LocalSeedTrackId == 1).Take(60).Select(t => t.Id).ToArray() : null;
-        var selected = LibraryRecommendationService.BuildSavedDailySelection(rows, quotas, 60, new(2026, 10, 26), null, preferred);
-        Assert.Equal(60, selected.Count);
+        var preferred = saved ? rows.Where(t => t.Provenance![0].LocalSeedTrackId == 1).Take(total).Select(t => t.Id).ToArray() : null;
+        var selected = LibraryRecommendationService.BuildSavedDailySelection(rows, quotas, total, new(2026, 10, 26), null, preferred);
+        Assert.Equal(total, selected.Count);
         Assert.True(LibraryRecommendationService.HasCompleteDailyAllocation(selected, quotas));
         Assert.All(selected.SelectMany(t => t.Provenance!.Select(p => p.LocalSeedTrackId).Distinct()).GroupBy(id => id),
             group => Assert.InRange(group.Count(), 1, 3));

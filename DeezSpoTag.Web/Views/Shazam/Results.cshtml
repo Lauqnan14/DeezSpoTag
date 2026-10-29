@@ -131,6 +131,7 @@
                      data-duration-ms="${durationMsValue}"
                      data-preview-key="${cacheKey}"
                      data-spotify-url="${escapeHtml(item.spotifyUrl || '')}"
+                     data-deezer-url="${escapeHtml(item.deezerUrl || '')}"
                      data-apple-url="${escapeHtml(item.appleMusicUrl || '')}"
                      data-shazam-url="${escapeHtml(item.url || '')}">
                 <div class="shz-card-top">
@@ -267,7 +268,8 @@
         }
     };
 
-    const ENRICHMENT_POLL_ATTEMPTS = 5;
+    // Cover the worker's 45-second enrichment budget, including queue/startup overhead.
+    const ENRICHMENT_POLL_ATTEMPTS = 90;
     const ENRICHMENT_POLL_INTERVAL_MS = 700;
 
     // Recognition answers as soon as the track is identified; the track/related/search
@@ -310,6 +312,7 @@
         return {
             match: payload.track || normalizeRecognitionCard(payload.recognition),
             effectiveTrackId: validation.trackId,
+            relatedStatus: payload.enrichment?.relatedStatus,
             similar: Array.isArray(payload.similar)
                 ? payload.similar
                 : Array.isArray(payload.related) ? payload.related : []
@@ -462,6 +465,10 @@
                 return;
             }
 
+            if (appliedPayload?.relatedStatus === 'upstream_unavailable') {
+                setStatus('Song identified. Similar songs are temporarily unavailable.');
+                return;
+            }
             setStatus(usedLivePayload
                 ? 'Shazam results loaded from live capture.'
                 : 'Shazam results loaded.');

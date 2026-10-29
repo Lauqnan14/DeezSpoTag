@@ -3,21 +3,30 @@
 ARG DOTNET_VERSION=10.0
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 
+FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS youtube-node
+
+FROM youtube-node AS shazam-related
+WORKDIR /helper
+COPY DeezSpoTag.Web/Tools/shazam_related/package*.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY DeezSpoTag.Web/Tools/shazam_related/ ./
+RUN npm run build && npm test
+
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29 AS build
 WORKDIR /src
 
 COPY . .
+COPY --from=shazam-related /helper/runtime.mjs /src/DeezSpoTag.Web/Tools/shazam_related/runtime.mjs
 
 RUN dotnet restore DeezSpoTag.Web/DeezSpoTag.Web.csproj
 RUN --mount=type=secret,id=sixlabors_license,required=true \
     SixLaborsLicenseFile=/run/secrets/sixlabors_license \
-    dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publish --no-restore \
+    dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -p:ShazamHelperPrebuilt=true -c Release -o /app/publish --no-restore \
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
 FROM docker:cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS docker-cli
 
-FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS youtube-node
 
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-proof-runtime
 COPY --from=youtube-node /usr/local/ /usr/local/

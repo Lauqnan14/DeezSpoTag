@@ -1597,6 +1597,8 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner, DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ShazamRecognitionService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ShazamRelatedRuntimeService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRelatedRuntimeService>());
         services.AddHttpClient<DeezSpoTag.Web.Services.ShazamDiscoveryService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ShazamEnrichmentQueueService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.ShazamEnrichmentQueueService>(

@@ -53,6 +53,17 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Remove="Tools/shazam_related/**/*" />
+    <Content Include="Tools/shazam_related/runtime.mjs;Tools/shazam_related/LICENSE;Tools/shazam_related/README.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <ShazamRelatedSources Include="Tools/shazam_related/runtime.ts;Tools/shazam_related/sap/**/*;Tools/shazam_related/package.json;Tools/shazam_related/package-lock.json" />
+  </ItemGroup>
+  <Target Name="BuildShazamRelatedRuntime" BeforeTargets="PrepareForBuild"
+          Condition="'$(ShazamHelperPrebuilt)' != 'true'"
+          Inputs="@(ShazamRelatedSources)" Outputs="$(MSBuildProjectDirectory)/Tools/shazam_related/runtime.mjs">
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)/Tools/shazam_related" Command="npm ci --ignore-scripts --no-audit --no-fund &amp;&amp; npm run build" />
+  </Target>
+
   <UsingTask TaskName="NormalizeRazorGeneratedFields"
              TaskFactory="RoslynCodeTaskFactory"
              AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">

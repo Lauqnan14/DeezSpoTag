@@ -1316,16 +1316,8 @@ public class DeezSpoTagSettingsService : ISettingsService
 
     private static void NormalizeDailyRecommendationSettings(DeezSpoTagSettings settings, SettingsFixTracker fixes)
     {
-        var daily = settings.DailyRecommendations;
-        if (daily is not null && !daily.ShazamEnabled && daily.ShazamTrackCount == 0)
-        {
-            return;
-        }
-
-        settings.DailyRecommendations = new DailyRecommendationSettings
-        {
-            AiFilterMode = daily?.AiFilterMode ?? DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated
-        };
+        if (settings.DailyRecommendations is not null) return;
+        settings.DailyRecommendations = new DailyRecommendationSettings();
         fixes.Mark(nameof(settings.DailyRecommendations));
     }
 

@@ -59,9 +59,9 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
         [FromQuery] int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(trackId))
+        if (string.IsNullOrEmpty(trackId) || trackId.Length > 20 || trackId.Any(c => c is < '0' or > '9'))
         {
-            return BadRequest(new { error = "Track ID is required." });
+            return BadRequest(new { error = "A numeric Shazam track ID is required." });
         }
 
         try
@@ -80,9 +80,10 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
-            return Ok(new
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
             {
                 available = false,
+                error = "upstream_unavailable",
                 tracks = Array.Empty<ShazamTrackCard>()
             });
         }

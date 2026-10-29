@@ -365,21 +365,20 @@ public enum DailyRecommendationAiFilterMode { Allow, BlockAiArtistsAndFullyGener
 public sealed class DailyRecommendationSettings
 {
     public int TrackCount { get; set; } = 60;
-    public bool ShazamEnabled { get; set; }
-    public int ShazamTrackCount { get; set; }
+    public bool ShazamEnabled { get; set; } = true;
+    public int ShazamTrackCount { get; set; } = 15;
     public DailyRecommendationAiFilterMode AiFilterMode { get; set; } = DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated;
-    public bool IsDisabled => !DeezerEnabled && !SpotifyEnabled && !TidalEnabled;
+    public bool IsDisabled => !ShazamEnabled && !DeezerEnabled && !SpotifyEnabled && !TidalEnabled;
     public bool DeezerEnabled { get; set; } = true;
-    public int DeezerTrackCount { get; set; } = 20;
+    public int DeezerTrackCount { get; set; } = 15;
     public bool SpotifyEnabled { get; set; } = true;
-    public int SpotifyTrackCount { get; set; } = 20;
+    public int SpotifyTrackCount { get; set; } = 15;
     public bool TidalEnabled { get; set; } = true;
-    public int TidalTrackCount { get; set; } = 20;
+    public int TidalTrackCount { get; set; } = 15;
 
     public IReadOnlyDictionary<string, int> Allocations() => new Dictionary<string, int>(StringComparer.Ordinal)
     {
-        // Retain the saved source key while its similar-song service is unavailable.
-        ["shazam"] = 0,
+        ["shazam"] = ShazamEnabled ? ShazamTrackCount : 0,
         ["deezer"] = DeezerEnabled ? DeezerTrackCount : 0,
         ["spotify"] = SpotifyEnabled ? SpotifyTrackCount : 0,
         ["tidal"] = TidalEnabled ? TidalTrackCount : 0
@@ -388,9 +387,7 @@ public sealed class DailyRecommendationSettings
     public bool TryValidate(out string? error)
     {
         error = null;
-        if (ShazamEnabled || ShazamTrackCount != 0)
-            error = "Shazam recommendations are unavailable because its similar-song service is not functional.";
-        else if (TrackCount is < 20 or > 100)
+        if (TrackCount is < 20 or > 100)
             error = "Daily recommendations must contain between 20 and 100 tracks.";
         else if (!Valid(ShazamEnabled, ShazamTrackCount) || !Valid(DeezerEnabled, DeezerTrackCount)
             || !Valid(SpotifyEnabled, SpotifyTrackCount) || !Valid(TidalEnabled, TidalTrackCount))
