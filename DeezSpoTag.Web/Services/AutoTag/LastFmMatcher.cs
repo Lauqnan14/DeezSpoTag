@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -52,32 +53,49 @@ public sealed class LastFmMatcher
         var title = NormalizeDisplay(OneTaggerMatching.CleanTitle(info.Title));
         if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title)) return null;
 
-        var cacheKey = $"{NormalizeKey(artist)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{NormalizeRelativeWeight(config.MinRelativeWeight, config.MinRelativeWeightUnit):R}";
-        if (_cache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
+        await ArtistAliasGateway.EnsureLoadedAsync(cancellationToken);
+        var names = await ArtistAliasGateway.GetGroupNamesAsync(artist, cancellationToken);
+        foreach (var lookupName in new[] { artist }.Concat(names).Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            return BuildResult(info, cached.Tags);
-        }
-
-        var response = await FetchTrackTagsAsync(apiKey, artist, title, cancellationToken);
-        if (response?.Error is 6 or 7)
-        {
-            SetCache(cacheKey, Array.Empty<ClassifiedTag>(), NegativeCacheTtl);
-            return null;
-        }
-        if (response is null || response.Error.HasValue || !IdentityMatches(response.Toptags?.Attributes, artist, title)) return null;
-
-        var tags = ClassifyTags(response.Toptags!.Tag, config);
-        if (tags.Length == 0)
-        {
-            var artistResponse = await FetchArtistTagsAsync(apiKey, artist, cancellationToken);
-            if (artistResponse is not null && !artistResponse.Error.HasValue)
+            cancellationToken.ThrowIfCancellationRequested();
+            var cacheKey = $"{NormalizeKey(lookupName)}:{NormalizeKey(title)}:{Math.Clamp(config.MaxTags, 1, 50)}:{Math.Max(0, config.MinTagCount)}:{NormalizeRelativeWeight(config.MinRelativeWeight, config.MinRelativeWeightUnit):R}";
+            if (_cache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
             {
-                tags = ClassifyTags(artistResponse.Toptags?.Tag, config);
+                var result = BuildResult(info, cached.Tags);
+                if (result is not null) return result;
+                continue;
             }
-        }
 
-        SetCache(cacheKey, tags, tags.Length > 0 ? CacheTtl : NegativeCacheTtl);
-        return BuildResult(info, tags);
+            var response = await FetchTrackTagsAsync(apiKey, lookupName, title, cancellationToken);
+            if (response?.Error is 6 or 7)
+            {
+                _logger.LogInformation("Last.fm track lookup missed {Artist} - {Title}; checking remaining saved names.", lookupName, title);
+                SetCache(cacheKey, Array.Empty<ClassifiedTag>(), NegativeCacheTtl);
+                continue;
+            }
+            // Errors/outages must not cause requests under every saved alias.
+            if (response is null || response.Error.HasValue) return null;
+            if (!IdentityMatches(response.Toptags?.Attributes, lookupName, title))
+            {
+                _logger.LogInformation("Last.fm returned no verified recording identity for {Artist} - {Title}.", lookupName, title);
+                continue;
+            }
+
+            var tags = ClassifyTags(response.Toptags!.Tag, config);
+            if (tags.Length == 0)
+            {
+                // Retain the existing artist-tag path only after the track's identity is verified.
+                var artistResponse = await FetchArtistTagsAsync(apiKey, lookupName, cancellationToken);
+                if (artistResponse is null || artistResponse.Error is not (null or 6 or 7)) return null;
+                if (!artistResponse.Error.HasValue && ArtistNamesMatch(artistResponse.Toptags?.Attributes?.Artist, lookupName))
+                    tags = ClassifyTags(artistResponse.Toptags?.Tag, config);
+            }
+
+            SetCache(cacheKey, tags, tags.Length > 0 ? CacheTtl : NegativeCacheTtl);
+            if (tags.Length > 0) return BuildResult(info, tags);
+            _logger.LogInformation("Last.fm verified {Artist} - {Title}, but returned no tags passing the configured filters.", lookupName, title);
+        }
+        return null;
     }
 
     private async Task<LastFmTopTagsResponse?> FetchTrackTagsAsync(string apiKey, string artist, string title, CancellationToken token)
@@ -146,9 +164,14 @@ public sealed class LastFmMatcher
     private static bool IdentityMatches(LastFmTopTagsAttributes? attributes, string artist, string title)
     {
         if (attributes == null || string.IsNullOrWhiteSpace(attributes.Artist) || string.IsNullOrWhiteSpace(attributes.Track)) return false;
-        return NormalizeKey(attributes.Artist) == NormalizeKey(artist)
+        return ArtistNamesMatch(attributes.Artist, artist)
+            && !TrackTitleMatcher.HasVersionDrift(title, attributes.Track)
             && TrackTitleMatcher.HasCompatibleTitleIdentity(title, attributes.Track);
     }
+
+    private static bool ArtistNamesMatch(string? actual, string? expected)
+        => !string.IsNullOrWhiteSpace(actual) && !string.IsNullOrWhiteSpace(expected)
+            && NormalizeKey(ArtistAliasGateway.ResolveCredit(actual)) == NormalizeKey(ArtistAliasGateway.ResolveCredit(expected));
 
     private static ClassifiedTag? Classify(WeightedTag tag)
     {

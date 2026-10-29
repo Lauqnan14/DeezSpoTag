@@ -609,9 +609,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         TagLib.File file,
         string platformId)
     {
-        if (sourceTrack == null
-            || runtimeSettings == null
-            || (!effectiveTagSettings.Artist && !effectiveTagSettings.AlbumArtist && !effectiveTagSettings.Title))
+        if (sourceTrack == null || runtimeSettings == null)
         {
             return;
         }

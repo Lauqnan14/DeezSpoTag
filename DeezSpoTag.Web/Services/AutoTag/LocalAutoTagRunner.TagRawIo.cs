@@ -326,6 +326,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             force |= existingValues.Any(value => NormalizeSpotifyTrackUrl(value) == null);
         }
 
+        force |= IsPreferredArtistAliasCorrection(context.File, tag, values);
         if (!force && !ShouldOverwriteTag(context.Config, tag))
         {
             if (tag == SupportedTag.OtherTags)

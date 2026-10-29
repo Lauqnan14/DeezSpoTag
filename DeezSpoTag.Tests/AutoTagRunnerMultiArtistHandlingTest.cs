@@ -13,6 +13,7 @@ using CoreTrack = DeezSpoTag.Core.Models.Track;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("ArtistAliasGateway")]
 public sealed class AutoTagRunnerMultiArtistHandlingTest
 {
     private static readonly string[] Artists2BabaAndFalz = ["2Baba", "Falz"];

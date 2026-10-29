@@ -147,10 +147,12 @@ public partial class AutoTagService
 
         var beforeTitle = GetMetaFieldValue(diff.Before, AutoTagTitleKey);
         var afterTitle = GetMetaFieldValue(diff.After, AutoTagTitleKey);
-        var beforeArtists = GetMetaFieldValue(diff.Before, AutoTagArtistsKey);
-        var afterArtists = GetMetaFieldValue(diff.After, AutoTagArtistsKey);
-        var beforeAlbumArtists = GetMetaFieldValue(diff.Before, "albumArtists");
-        var afterAlbumArtists = GetMetaFieldValue(diff.After, "albumArtists");
+        // Compare saved aliases as the same identity for every run intent. Keep
+        // the original snapshots intact so history still shows what was written.
+        var beforeArtists = ResolveReviewArtistCredits(GetMetaFieldValue(diff.Before, AutoTagArtistsKey));
+        var afterArtists = ResolveReviewArtistCredits(GetMetaFieldValue(diff.After, AutoTagArtistsKey));
+        var beforeAlbumArtists = ResolveReviewArtistCredits(GetMetaFieldValue(diff.Before, "albumArtists"));
+        var afterAlbumArtists = ResolveReviewArtistCredits(GetMetaFieldValue(diff.After, "albumArtists"));
 
         var artistSimilarity = Math.Max(
             ComputeIdentitySimilarity(beforeArtists, afterArtists),
@@ -175,6 +177,14 @@ public partial class AutoTagService
 
         return $"requires user review: identity changed sharply (title similarity {titleSimilarity:0.000}, artist similarity {artistSimilarity:0.000})";
     }
+
+    private static object? ResolveReviewArtistCredits(object? value)
+        => value switch
+        {
+            string credit => ArtistAliasGateway.ResolveCredit(credit),
+            IEnumerable<string> credits => credits.Select(ArtistAliasGateway.ResolveCredit).ToArray(),
+            _ => value
+        };
 
     private void SaveRunSummary(AutoTagJob job)
     {

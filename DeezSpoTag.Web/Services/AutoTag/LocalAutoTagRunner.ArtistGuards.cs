@@ -283,6 +283,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         string? existingTitle,
         Func<string?, string>? rewriteCredit = null)
     {
+        var rewriteTitle = rewriteCredit ?? DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveTitleCredit;
         rewriteCredit ??= static value => DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(value);
         var originalArtists = existingArtists.ToList();
         var originalAlbumArtists = existingAlbumArtists.ToList();
@@ -290,7 +291,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         var rewrittenAlbumArtists = RewriteCreditList(originalAlbumArtists, rewriteCredit);
         var rewrittenTitle = string.IsNullOrWhiteSpace(existingTitle)
             ? existingTitle
-            : rewriteCredit(existingTitle)?.Trim();
+            : rewriteTitle(existingTitle)?.Trim();
 
         var forcedArtist = rewrittenArtists.Count > 0
             && !AreArtistCreditsEquivalent(originalArtists, rewrittenArtists);
@@ -333,6 +334,29 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return new ArtistAliasOverwriteDecision(forcedArtist, forcedAlbumArtist, forcedTitle, rewrittenTitle);
+    }
+
+    // Only the exact rewrite of an existing credit bypasses the low-level
+    // overwrite guard. An unrelated provider value keeps the normal policy.
+    private static bool IsPreferredArtistAliasCorrection(TagLib.File file, SupportedTag tag, List<string> incoming)
+    {
+        if (tag == SupportedTag.Title)
+        {
+            var existingTitle = file.Tag.Title;
+            var rewrittenTitle = ArtistAliasGateway.ResolveTitleCredit(existingTitle);
+            return !string.Equals(existingTitle, rewrittenTitle, StringComparison.Ordinal)
+                && incoming.Count == 1 && string.Equals(incoming[0], rewrittenTitle, StringComparison.Ordinal);
+        }
+        var existing = tag switch
+        {
+            SupportedTag.Artist => file.Tag.Performers?.ToList(),
+            SupportedTag.AlbumArtist => file.Tag.AlbumArtists?.ToList(),
+            _ => null
+        };
+        if (existing is null || existing.Count == 0) return false;
+        var preferred = RewriteCreditList(existing);
+        return !AreArtistCreditsEquivalent(existing, preferred)
+            && AreArtistCreditsEquivalent(incoming, preferred);
     }
 
     private static void PreserveRicherCreditsWithoutBlockingPreferredWrite(

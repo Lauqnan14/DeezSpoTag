@@ -13,11 +13,63 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using Microsoft.Extensions.Configuration;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("ArtistAliasGateway")]
 public sealed class LastFmAutoTagMatcherTest
 {
+    [Theory]
+    [InlineData("Abbas Kubaff","Chapaa Remix",true,"hip hop")]
+    [InlineData("Unrelated Singer","Chapaa Remix",false,"hip hop")]
+    [InlineData("Abbas Kubaff","Chapaa Remix (Live)",false,"hip hop")]
+    [InlineData("__outage__","Chapaa Remix",false,"hip hop")]
+    [InlineData("Abbas Kubaff","Chapaa Remix",false,"azerbaijan")]
+    [InlineData("Abbas Kubaff","Chapaa Remix",false,"wrong-artist-fallback")]
+    public async Task SavedAliasLookupValidatesReturnedRecording(string returnedArtist,string returnedTitle,bool expected,string tagName)
+    {
+        var db = Path.Combine(Path.GetTempPath(),$"lastfm-alias-{Guid.NewGuid():N}.db");
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string,string?> { ["ConnectionStrings:Library"]=$"Data Source={db}" }).Build();
+        var field = typeof(DeezSpoTag.Services.Library.ArtistAliasGateway).GetField("_service",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+        var previous = field.GetValue(null);
+        try
+        {
+            var aliases = new DeezSpoTag.Services.Library.ArtistAliasService(configuration,NullLogger<DeezSpoTag.Services.Library.ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync("Abbas Doobeez",new[] { "Abbas Kubaff" });
+            DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(aliases);
+            var json=System.Text.Json.JsonSerializer.Serialize(new { toptags = new Dictionary<string,object> {
+                ["@attr"]=new { artist=returnedArtist, track=returnedTitle },["tag"]=new[] { new {name=tagName,count=100} } } });
+            var handler=returnedArtist == "__outage__"
+                ? new StubHandler(Enumerable.Repeat("{\"error\":29}",3))
+                : new StubHandler(tagName == "wrong-artist-fallback"
+                    ? new[] { "{\"error\":6}",json,"{\"toptags\":{\"@attr\":{\"artist\":\"Unrelated Singer\"},\"tag\":[{\"name\":\"hip hop\",\"count\":100}]}}" }
+                    : new[] { "{\"error\":6,\"message\":\"Track not found\"}",json });
+            var (matcher,auth)=CreateMatcher(handler);
+            await auth.UpdateAsync(state=>state.LastFm=new LastFmAuth { ApiKey="test-key" });
+            var result=await matcher.MatchAsync(new AutoTagAudioInfo { Artist="Abbas Doobeez",Title="Chapaa Remix" },new LastFmConfig(),CancellationToken.None);
+            Assert.Equal(expected,result is not null);
+            if (returnedArtist == "__outage__")
+            {
+                Assert.Equal(3,handler.RequestUris.Count);
+                Assert.All(handler.RequestUris,uri => Assert.Contains("Abbas%20Doobeez",uri.AbsoluteUri));
+                return;
+            }
+            Assert.Equal(tagName is "azerbaijan" or "wrong-artist-fallback" ? 3 : 2,handler.RequestUris.Count);
+            Assert.Contains("Abbas%20Kubaff",handler.RequestUris[1].AbsoluteUri);
+            if (expected)
+            {
+                Assert.NotNull(await matcher.MatchAsync(new AutoTagAudioInfo { Artist="Abbas Doobeez",Title="Chapaa Remix" },new LastFmConfig(),CancellationToken.None));
+                Assert.Equal(2,handler.RequestUris.Count); // Negative primary cache must not mask the successful alias.
+            }
+            using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => matcher.MatchAsync(
+                new AutoTagAudioInfo { Artist="Abbas Doobeez",Title="Chapaa Remix" },new LastFmConfig(),cancelled.Token));
+        }
+        finally { field.SetValue(null,previous); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); File.Delete(db); }
+    }
+
     [Theory]
     [InlineData(1, "percent", true)]
     [InlineData(0, "percent", true)]

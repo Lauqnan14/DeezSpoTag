@@ -16932,7 +16932,7 @@ ORDER BY artist_id;";
         return artistIds;
     }
 
-    public async Task UpsertArtistSourceIdAsync(long artistId, string source, string sourceId, CancellationToken cancellationToken = default, bool userConfirmed = false, bool preserveExistingOwner = false)
+    public async Task UpsertArtistSourceIdAsync(long artistId, string source, string sourceId, CancellationToken cancellationToken = default, bool userConfirmed = false, bool preserveExistingOwner = true)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
         {

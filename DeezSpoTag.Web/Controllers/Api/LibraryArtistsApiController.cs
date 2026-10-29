@@ -11,10 +11,12 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class LibraryArtistsApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;
+    private readonly ArtistAliasService _aliases;
 
-    public LibraryArtistsApiController(LibraryRepository repository)
+    public LibraryArtistsApiController(LibraryRepository repository, ArtistAliasService aliases)
     {
         _repository = repository;
+        _aliases = aliases;
     }
 
     [HttpGet]
@@ -99,7 +101,11 @@ public class LibraryArtistsApiController : ControllerBase
             return NotFound();
         }
 
-        return Ok(dbArtist);
+        var names = await _aliases.GetGroupNamesAsync(dbArtist.Name, cancellationToken);
+        var preferredName = names.Count > 0 ? names[0] : dbArtist.Name;
+        var aliases = names.Where(name => ArtistAliasService.NormalizeName(name) != ArtistAliasService.NormalizeName(preferredName))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return Ok(dbArtist with { Name = preferredName, Aliases = aliases });
     }
 
 }

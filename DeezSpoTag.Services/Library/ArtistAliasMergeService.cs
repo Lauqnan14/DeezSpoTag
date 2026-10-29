@@ -4,6 +4,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -35,7 +37,14 @@ public sealed record ArtistAliasMergeResult(
     int ArtworkFilesMoved,
     IReadOnlyList<string> AffectedFilePaths,
     IReadOnlyList<long> AffectedFolderIds,
-    IReadOnlyList<string> Errors);
+    IReadOnlyList<string> Errors)
+{
+    // Job submission is not proof of successful embedded tag writing.
+    public string GetSubmissionStatus(int startedJobCount)
+        => Errors.Count > 0 ? "partial"
+            : AffectedFilePaths.Count == 0 ? "completed"
+            : startedJobCount > 0 ? "tagging_queued" : "partial";
+}
 
 /// <summary>
 /// Executes a user-confirmed artist alias merge:
@@ -74,11 +83,12 @@ public sealed class ArtistAliasMergeService
             .FirstOrDefault(candidate => candidate.Id == groupId)
             ?? throw new InvalidOperationException($"Artist alias group {groupId} was not found.");
 
+        await _aliasService.GetAliasMapAsync(cancellationToken).ConfigureAwait(false);
+
         var aliasNormalized = group.Aliases
             .Select(ArtistAliasService.NormalizeName)
             .Where(name => name.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
-        ArtistAliasService.NormalizeName(group.PreferredName);
         var settings = _settingsService.LoadSettings() ?? new DeezSpoTagSettings();
 
         var errors = new List<string>();
@@ -213,9 +223,9 @@ WHERE id = $id AND name <> $preferred;";
                 // Rewrite tag_artist / tag_album_artist / title strings.
                 foreach (var trackRow in candidateTrackRows)
                 {
-                    var newArtist = RewriteCredit(trackRow.TagArtist, aliasNormalized, group.PreferredName);
-                    var newAlbumArtist = RewriteCredit(trackRow.TagAlbumArtist, aliasNormalized, group.PreferredName);
-                    var newTitle = RewriteCredit(trackRow.Title, aliasNormalized, group.PreferredName);
+                    var newArtist = _aliasService.ResolveCredit(trackRow.TagArtist);
+                    var newAlbumArtist = _aliasService.ResolveCredit(trackRow.TagAlbumArtist);
+                    var newTitle = _aliasService.ResolveTitleCredit(trackRow.Title);
                     if (string.Equals(newArtist, trackRow.TagArtist, StringComparison.Ordinal)
                         && string.Equals(newAlbumArtist, trackRow.TagAlbumArtist, StringComparison.Ordinal)
                         && string.Equals(newTitle, trackRow.Title, StringComparison.Ordinal))
@@ -400,9 +410,43 @@ UPDATE album SET preferred_cover_path = $new WHERE preferred_cover_path = $old;"
     {
         var absorbed = BuildPlaceholders(absorbedArtistIds.Count, "a");
         await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_source SET is_primary=0
+WHERE artist_id IN ({absorbed}) AND EXISTS(
+ SELECT 1 FROM artist_source preferred WHERE preferred.artist_id=$preferred
+ AND preferred.source=artist_source.source AND preferred.is_primary=1);", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        await ExecuteMergeAsync(connection, transaction, $@"
 UPDATE artist_source
 SET artist_id = $preferred
 WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+
+        await ExecuteMergeAsync(connection, transaction, @"
+UPDATE artist_source SET is_primary=CASE WHEN source_id=(
+ SELECT chosen.source_id FROM artist_source chosen WHERE chosen.artist_id=$preferred AND chosen.source=artist_source.source
+ ORDER BY chosen.is_primary DESC,chosen.source_id LIMIT 1) THEN 1 ELSE 0 END
+WHERE artist_id=$preferred;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        // Several absorbed aliases can have the same profile key. Preserve a
+        // nonempty value before collapsing that key, then merge into the owner.
+        await ExecuteMergeAsync(connection, transaction, $@"
+UPDATE artist_biography_cache
+SET biography = COALESCE(NULLIF(TRIM(biography), ''), (
+ SELECT sibling.biography FROM artist_biography_cache sibling
+ WHERE sibling.artist_id IN ({absorbed}) AND sibling.source=artist_biography_cache.source
+ AND sibling.source_id=artist_biography_cache.source_id AND NULLIF(TRIM(sibling.biography),'') IS NOT NULL
+ ORDER BY sibling.fetched_at DESC,sibling.rowid LIMIT 1)),
+ native_name=COALESCE(native_name,(
+ SELECT sibling.native_name FROM artist_biography_cache sibling
+ WHERE sibling.artist_id IN ({absorbed}) AND sibling.source=artist_biography_cache.source
+ AND sibling.source_id=artist_biography_cache.source_id AND sibling.native_name IS NOT NULL
+ ORDER BY sibling.fetched_at DESC,sibling.rowid LIMIT 1)),
+ alias_name=COALESCE(alias_name,(
+ SELECT sibling.alias_name FROM artist_biography_cache sibling
+ WHERE sibling.artist_id IN ({absorbed}) AND sibling.source=artist_biography_cache.source
+ AND sibling.source_id=artist_biography_cache.source_id AND sibling.alias_name IS NOT NULL
+ ORDER BY sibling.fetched_at DESC,sibling.rowid LIMIT 1))
+WHERE artist_id IN ({absorbed});
+DELETE FROM artist_biography_cache WHERE artist_id IN ({absorbed}) AND rowid NOT IN (
+ SELECT MIN(rowid) FROM artist_biography_cache WHERE artist_id IN ({absorbed}) GROUP BY source,source_id);
+", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
 
         await ExecuteMergeAsync(connection, transaction, $@"
 UPDATE artist_biography_cache
@@ -469,7 +513,7 @@ SET user_blocked = CASE
               AND absorbed.text_art_blocked = 1) THEN 1
         ELSE text_art_blocked
     END
-WHERE artist_id = $preferred;", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+WHERE artist_id = $preferred OR artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
 
         await ExecuteMergeAsync(connection, transaction, $@"
 DELETE FROM artist_artwork_cache
@@ -552,6 +596,25 @@ UPDATE artist_server_sync_state
 SET artist_id = $preferred
 WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
 
+        var cursors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        await using (var readCursors = connection.CreateCommand())
+        {
+            readCursors.Transaction = transaction;
+            readCursors.CommandText = $@"SELECT profile_cursors_json FROM artist_biography_rotation
+WHERE artist_id=$preferred OR artist_id IN ({absorbed}) ORDER BY used_at DESC,artist_id DESC;";
+            readCursors.Parameters.AddWithValue("$preferred", preferredArtistId);
+            for (var index=0; index<absorbedArtistIds.Count; index++) readCursors.Parameters.AddWithValue($"$a{index}", absorbedArtistIds[index]);
+            await using var reader = await readCursors.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                try
+                {
+                    foreach (var pair in JsonSerializer.Deserialize<Dictionary<string,string>>(reader.GetString(0)) ?? new())
+                        cursors.TryAdd(pair.Key,pair.Value);
+                }
+                catch (JsonException) { /* Keep other valid saved cursors. */ }
+            }
+        }
         await ExecuteMergeAsync(connection, transaction, $@"
 DELETE FROM artist_biography_rotation
 WHERE (artist_id = $preferred OR artist_id IN ({absorbed}))
@@ -565,6 +628,24 @@ WHERE (artist_id = $preferred OR artist_id IN ({absorbed}))
 UPDATE artist_biography_rotation
 SET artist_id = $preferred
 WHERE artist_id IN ({absorbed});", preferredArtistId, absorbedArtistIds, cancellationToken).ConfigureAwait(false);
+        foreach (var pair in cursors.ToArray())
+        {
+            await using var exists = new SqliteCommand("SELECT 1 FROM artist_biography_cache WHERE artist_id=$artist AND source=$source AND source_id=$id;", connection, transaction);
+            exists.Parameters.AddWithValue("$artist",preferredArtistId);
+            exists.Parameters.AddWithValue("$source",pair.Key);
+            exists.Parameters.AddWithValue("$id",pair.Value);
+            if (await exists.ExecuteScalarAsync(cancellationToken) is null) cursors.Remove(pair.Key);
+        }
+        await using var saveCursors = new SqliteCommand(@"
+UPDATE artist_biography_rotation SET profile_cursors_json=$cursors WHERE artist_id=$preferred;
+UPDATE artist_biography_cache SET selected=CASE WHEN rowid=(
+ SELECT b.rowid FROM artist_biography_cache b WHERE b.artist_id=$preferred AND b.biography IS NOT NULL AND TRIM(b.biography)<>''
+ ORDER BY b.selected DESC,COALESCE((SELECT is_primary FROM artist_source s WHERE s.artist_id=b.artist_id AND s.source=b.source AND s.source_id=b.source_id),0) DESC,b.source,b.source_id LIMIT 1)
+ THEN 1 ELSE 0 END WHERE artist_id=$preferred;", connection, transaction);
+        saveCursors.Parameters.AddWithValue("$preferred",preferredArtistId);
+        saveCursors.Parameters.AddWithValue("$cursors",JsonSerializer.Serialize(cursors));
+        await saveCursors.ExecuteNonQueryAsync(cancellationToken);
+
     }
 
     private static async Task ExecuteMergeAsync(
@@ -872,7 +953,8 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
         }
 
         var changed = false;
-        if (createArtistFolder && segments.Length > 1)
+        if (createArtistFolder && segments.Length > 1
+            && aliasNormalized.Contains(ArtistAliasService.NormalizeName(segments[0])))
         {
             var desired = artistFolderName;
             if (!string.Equals(segments[0], desired, StringComparison.Ordinal))
@@ -882,16 +964,18 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
             }
         }
 
+        // Match the preferred spelling first so an alias contained within it is
+        // never expanded again. A single pass also prevents cascading aliases.
+        var names = new[] { preferredName }.Concat(aliasNormalized.OrderByDescending(name => name.Length))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var pattern = @"(?<![\p{L}\p{N}_])(?:" + string.Join("|", names.Select(Regex.Escape)) + @")(?![\p{L}\p{N}_])";
         for (var index = 1; index < segments.Length; index++)
         {
-            foreach (var alias in aliasNormalized.Where(alias =>
-                segments[index].Contains(alias, StringComparison.OrdinalIgnoreCase)))
-            {
-                segments[index] = segments[index].Replace(alias, preferredName, StringComparison.OrdinalIgnoreCase);
-                changed = true;
-            }
-
-            segments[index] = SanitizeSegment(segments[index]);
+            var rewritten = Regex.Replace(segments[index], pattern, _ => preferredName,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
+            var sanitized = SanitizeSegment(rewritten);
+            changed |= !string.Equals(segments[index], sanitized, StringComparison.Ordinal);
+            segments[index] = sanitized;
         }
 
         var destinationPath = Path.GetFullPath(Path.Join(root, Path.Join(segments)));
@@ -1122,69 +1206,6 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
 
         var cleaned = builder.ToString().Trim();
         return cleaned.Length == 0 ? "_" : cleaned.TrimEnd('.');
-    }
-
-    // ---- Credit rewriting ----------------------------------------------------
-
-    /// <summary>
-    /// Rewrites a credit/title string so every alias part becomes the preferred
-    /// name; separators and surrounding punctuation are preserved. Returns the
-    /// input unchanged when no alias part is present.
-    /// </summary>
-    private static string? RewriteCredit(string? credit, IReadOnlySet<string> aliasNormalized, string preferredName)
-    {
-        if (string.IsNullOrWhiteSpace(credit))
-        {
-            return credit;
-        }
-
-        var trimmed = credit.Trim();
-        var parts = DeezSpoTag.Core.Utils.ArtistNameNormalizer.SplitCombinedNameForRewrite(trimmed, out var separators);
-        if (parts.Count == 0)
-        {
-            return credit;
-        }
-
-        var changed = false;
-        for (var index = 0; index < parts.Count; index++)
-        {
-            var part = parts[index];
-            var direct = ArtistAliasService.NormalizeName(part);
-            if (direct.Length > 0 && aliasNormalized.Contains(direct))
-            {
-                parts[index] = preferredName;
-                changed = true;
-                continue;
-            }
-
-            var trimmedPart = part.Trim(' ', '.', ',', '(', ')', '[', ']', '-', '_', '&', '"', '\'');
-            var trimmedNormalized = ArtistAliasService.NormalizeName(trimmedPart);
-            if (trimmedNormalized.Length > 0
-                && !string.Equals(trimmedNormalized, direct, StringComparison.Ordinal)
-                && aliasNormalized.Contains(trimmedNormalized))
-            {
-                parts[index] = part.Replace(trimmedPart, preferredName, StringComparison.OrdinalIgnoreCase);
-                changed = true;
-            }
-        }
-
-        if (!changed)
-        {
-            return credit;
-        }
-
-        var builder = new StringBuilder();
-        for (var index = 0; index < parts.Count; index++)
-        {
-            if (index > 0 && index - 1 < separators.Count)
-            {
-                builder.Append(separators[index - 1]);
-            }
-
-            builder.Append(parts[index]);
-        }
-
-        return builder.ToString().Trim();
     }
 
     // ---- Plumbing ------------------------------------------------------------

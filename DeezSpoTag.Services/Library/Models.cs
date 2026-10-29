@@ -741,7 +741,8 @@ public sealed record ArtistDetailDto(
     string? PreferredBackgroundPath,
     string? AppleBiography = null,
     DateTimeOffset? AppleBiographyCheckedAt = null,
-    DateTimeOffset? LastFmImagesCheckedAt = null);
+    DateTimeOffset? LastFmImagesCheckedAt = null,
+    IReadOnlyList<string>? Aliases = null);
 
 public sealed record TrackSearchResultDto(
     long TrackId,

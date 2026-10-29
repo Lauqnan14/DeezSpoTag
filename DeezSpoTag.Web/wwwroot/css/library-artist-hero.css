@@ -406,3 +406,13 @@
         font-size: 20px;
     }
 }
+
+.artist-page .hero-modern__identity { min-width: 0; }
+.artist-page .hero-modern__aliases {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+.artist-page .hero-modern__aliases[hidden] { display: none; }

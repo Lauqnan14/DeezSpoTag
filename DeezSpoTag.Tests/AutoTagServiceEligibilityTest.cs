@@ -4,12 +4,14 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("ArtistAliasGateway")]
 public sealed class AutoTagServiceEligibilityTest
 {
     [Fact]
@@ -254,6 +256,65 @@ public sealed class AutoTagServiceEligibilityTest
         var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
 
         Assert.Null(reason);
+    }
+
+    [Theory]
+    [InlineData("default")]
+    [InlineData("download_enrichment")]
+    [InlineData("manual_enrichment")]
+    [InlineData("soulseek_enrichment")]
+    [InlineData("enhancement_only")]
+    [InlineData("enhancement_recent_downloads")]
+    [InlineData("artist_alias_merge")]
+    public async System.Threading.Tasks.Task IdentityReviewHonoursSavedAliasesAcrossRunIntents(string runIntent)
+    {
+        var db = Path.Combine(Path.GetTempPath(), $"alias-review-{Guid.NewGuid():N}.db");
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string,string?> { ["ConnectionStrings:Library"]=$"Data Source={db}" }).Build();
+        var gateway = typeof(DeezSpoTag.Services.Library.ArtistAliasGateway).GetField("_service",BindingFlags.Static|BindingFlags.NonPublic)!;
+        var previous = gateway.GetValue(null);
+        try
+        {
+            var aliases = new DeezSpoTag.Services.Library.ArtistAliasService(config,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync("Abbas Doobeez",new[] { "Abbas","Abbas Kubaff" });
+            DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(aliases);
+            await DeezSpoTag.Services.Library.ArtistAliasGateway.EnsureLoadedAsync();
+            foreach (var pair in new[] {
+                (Before:"Abbas",After:"Abbas Doobeez",Title:"Chapaa Remix"),
+                (Before:"Abbas Kubaff",After:"Abbas Doobeez",Title:"Tokelezea (feat. Chantelle)"),
+                (Before:"Other Artist feat. Abbas",After:"Other Artist feat. Abbas Doobeez",Title:"Song (feat. Abbas)") })
+            {
+                var path = Path.Combine(Path.GetTempPath(),"new-addition.flac");
+                var before = Snapshot(pair.Title,[pair.Before],[pair.Before]);
+                var after = Snapshot(pair.Title.Replace("feat. Abbas)","feat. Abbas Doobeez)",StringComparison.Ordinal),[pair.After],[pair.After]);
+                var diff = new AutoTagTagDiff { Before=before,After=after };
+                var job = new AutoTagJob { RunIntent=runIntent };
+                job.TagDiffs[path]=diff;
+                var status = new TaggingStatusWrap { Platform="itunes", Status=new TaggingStatus { Path=path,Status="ok" } };
+                ServiceMethod("ApplyIdentityReviewGuard").Invoke(null,new object[] { job,status });
+                Assert.Equal("ok",status.Status.Status);
+                Assert.Null(status.Status.Message);
+                Assert.Equal(pair.Before,Assert.Single(before.Meta!.Artists));
+                Assert.Equal(pair.After,Assert.Single(after.Meta!.Artists));
+            }
+            var unrelated = new AutoTagTagDiff {
+                Before=Snapshot("Chapaa Remix",["Abbas"],["Abbas"]),
+                After=Snapshot("Chapaa Remix",["T M Jayarathna"],["T M Jayarathna"]) };
+            Assert.Contains("requires user review",InvokeStatic<string?>("EvaluateIdentityReviewGuard",unrelated)!);
+            // A changed saved preference is used without restarting the host.
+            await aliases.SaveGroupAsync("Abbas Kubaff",new[] { "Abbas","Abbas Doobeez" });
+            await DeezSpoTag.Services.Library.ArtistAliasGateway.EnsureLoadedAsync();
+            Assert.Null(InvokeStatic<string?>("EvaluateIdentityReviewGuard",new AutoTagTagDiff {
+                Before=Snapshot("Chapaa Remix",["Abbas Doobeez"],["Abbas Doobeez"]),
+                After=Snapshot("Chapaa Remix",["Abbas Kubaff"],["Abbas Kubaff"]) }));
+        }
+        finally
+        {
+            gateway.SetValue(null,previous);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(db);
+        }
     }
 
     [Fact]

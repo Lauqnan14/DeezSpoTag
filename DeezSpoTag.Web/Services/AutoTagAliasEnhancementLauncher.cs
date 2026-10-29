@@ -52,14 +52,14 @@ public sealed class AutoTagAliasEnhancementLauncher
     /// <summary>Starts one enhancement job per affected profile. Returns started job ids.</summary>
     public async Task<IReadOnlyList<string>> StartForFilesAsync(
         IReadOnlyList<string> affectedFilePaths,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ICollection<string>? errors = null)
     {
-        var existingPaths = (affectedFilePaths ?? Array.Empty<string>())
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(Path.GetFullPath)
-            .Where(File.Exists)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var requestedPaths = (affectedFilePaths ?? Array.Empty<string>())
+            .Where(path => !string.IsNullOrWhiteSpace(path)).Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var path in requestedPaths.Where(path => !File.Exists(path)))
+            errors?.Add($"Tagging not submitted: file does not exist: {path}");
+        var existingPaths = requestedPaths.Where(File.Exists).ToList();
         if (existingPaths.Count == 0)
         {
             return Array.Empty<string>();
@@ -76,6 +76,7 @@ public sealed class AutoTagAliasEnhancementLauncher
             .ToList();
         if (enabledFolders.Count == 0)
         {
+            errors?.Add("Tagging not submitted: no enabled music library folders.");
             _logger.LogWarning("Alias merge enhancement skipped: no enabled music library folders.");
             return Array.Empty<string>();
         }
@@ -88,6 +89,7 @@ public sealed class AutoTagAliasEnhancementLauncher
                 AutoTagFolderScopeHelper.IsPathUnderRoot(path, folder.RootPath));
             if (folder == null)
             {
+                errors?.Add($"Tagging not submitted: file outside enabled music folders: {path}");
                 _logger.LogInformation(
                     "Alias merge enhancement: file {Path} is not under an enabled music folder; skipped.",
                     path);
@@ -131,6 +133,7 @@ public sealed class AutoTagAliasEnhancementLauncher
                 folder.AutoTagProfileId);
             if (profile == null)
             {
+                errors?.Add($"Tagging not submitted: no AutoTag profile for folder {folder.DisplayName}.");
                 _logger.LogWarning(
                     "Alias merge enhancement: folder {FolderId} ({FolderName}) has no resolvable AutoTag profile; its files were skipped.",
                     folder.Id,
@@ -155,6 +158,7 @@ public sealed class AutoTagAliasEnhancementLauncher
                 var profileConfigJson = _autoTagConfigBuilder.BuildConfigJson(profile);
                 if (string.IsNullOrWhiteSpace(profileConfigJson))
                 {
+                    errors?.Add($"Tagging not submitted: empty configuration for folder {folderName}.");
                     _logger.LogWarning(
                         "Alias merge enhancement: folder {FolderId} ({FolderName}) profile has no AutoTag configuration; its files were skipped.",
                         folderId,
@@ -189,6 +193,7 @@ public sealed class AutoTagAliasEnhancementLauncher
                         FolderStructureOverride: profile.FolderStructure));
                 if (job == null)
                 {
+                    errors?.Add($"Tagging not submitted for folder {folderName}.");
                     _logger.LogWarning(
                         "Alias merge enhancement was not started for folder {FolderName}.",
                         folderName);
@@ -205,6 +210,7 @@ public sealed class AutoTagAliasEnhancementLauncher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                errors?.Add($"Tagging submission failed for folder {folderName}: {ex.Message}");
                 _logger.LogWarning(
                     ex,
                     "Alias merge enhancement failed to start for profile {Profile}.",

@@ -453,9 +453,16 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
         {
             using var file = TagLib.File.Create(context.File);
             var extension = Path.GetExtension(context.File);
+            var aliasOverwrite = ApplyPreferredArtistAliasToExistingCredits(
+                new TagSettings(), new AutoTagTrack(),
+                file.Tag.Performers?.ToList() ?? new List<string>(),
+                file.Tag.AlbumArtists?.ToList() ?? new List<string>(), file.Tag.Title);
             foreach (var tag in configured)
             {
-                if (!ShouldOverwriteTag(context.Plan.Config, tag)
+                var requiresPreferredAlias = (tag == SupportedTag.Artist && aliasOverwrite.ForcedArtist)
+                    || (tag == SupportedTag.AlbumArtist && aliasOverwrite.ForcedAlbumArtist)
+                    || (tag == SupportedTag.Title && aliasOverwrite.ForcedTitle);
+                if (!requiresPreferredAlias && !ShouldOverwriteTag(context.Plan.Config, tag)
                     && HasTag(file, extension, tag, context.Plan.Config, context.Platform))
                 {
                     retained.Add(tag);
@@ -672,15 +679,21 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             track.AlbumArtists = RewriteCreditList(track.AlbumArtists);
             if (!string.IsNullOrWhiteSpace(track.Title))
             {
-                track.Title = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Title);
+                track.Title = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveTitleCredit(track.Title);
             }
 
             if (!string.IsNullOrWhiteSpace(track.Album))
             {
-                track.Album = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveCredit(track.Album);
+                track.Album = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveTitleCredit(track.Album);
             }
 
-            foreach (var key in track.Other.Keys.ToList())
+            foreach (var key in track.Other.Keys.Where(key =>
+                key.Equals("ARTIST", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("ARTISTS", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("ALBUMARTIST", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("ALBUM_ARTIST", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("FEATUREDARTIST", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("FEATURING", StringComparison.OrdinalIgnoreCase)).ToList())
             {
                 track.Other[key] = RewriteCreditList(track.Other[key]);
             }

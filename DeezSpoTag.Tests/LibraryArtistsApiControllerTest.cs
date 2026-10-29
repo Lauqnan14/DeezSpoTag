@@ -147,6 +147,75 @@ public sealed class LibraryArtistsApiControllerTest : IAsyncLifetime
 
         var persisted = await _repository.GetArtistSourceIdAsync(artistId, "spotify", CancellationToken.None);
         Assert.Equal(spotifyId, persisted);
+        var profiles = await _repository.GetArtistSourceIdentitiesAsync(artistId, "spotify");
+        Assert.Equal("user_confirmed", Assert.Single(profiles).VerificationState);
+    }
+
+    [Fact]
+    public async Task UpdateSpotifyId_RejectsProfileOwnedByAnotherArtist()
+    {
+        var first = await SeedLocalArtistAsync("First artist");
+        var second = await SeedLocalArtistAsync("Second artist");
+        const string profile = "31u4mA182lnRN4ZMqE0yp3";
+        await _repository.UpsertArtistSourceIdAsync(first, "spotify", profile);
+        var result = await CreateSourceMetadataController().UpdateSpotifyId(second,
+            new LibraryArtistSourceMetadataApiController.SpotifyIdUpdateRequest(profile), CancellationToken.None);
+        Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(profile, await _repository.GetArtistSourceIdAsync(first, "spotify"));
+        Assert.Empty(await _repository.GetArtistSourceIdsAsync(second, "spotify"));
+    }
+
+    [Fact]
+    public async Task ArtistDetail_ReturnsSavedAliasesWithoutProviderRequests()
+    {
+        var artistId = await SeedLocalArtistAsync("Abbas Kubaff");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        { ["ConnectionStrings:Library"] = $"Data Source={_dbPath}" }).Build();
+        var aliases = new ArtistAliasService(config, NullLogger<ArtistAliasService>.Instance);
+        await aliases.SaveGroupAsync("Abbas Kubaff", new[] { "Abbas Doobeez" });
+        var controller = new LibraryArtistsApiController(_repository, aliases);
+        var result = Assert.IsType<OkObjectResult>(await controller.GetArtist(artistId,CancellationToken.None));
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(result.Value,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        Assert.True(json.TryGetProperty("aliases", out var names));
+        Assert.Equal("Abbas Doobeez", Assert.Single(names.EnumerateArray()).GetString());
+        Assert.Equal("Abbas Kubaff",json.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task BiographyApi_RetainsBothProfilesAndSelectsOnlyAnOwnedExactIdentity()
+    {
+        var artistId = await SeedLocalArtistAsync("Abbas Kubaff");
+        await _repository.UpsertArtistBiographyCacheAsync(artistId, "spotify", "kubaff", "First biography", false, "Abbas Kubaff", null);
+        await _repository.UpsertArtistBiographyCacheAsync(artistId, "spotify", "doobeez", "Second biography", false, "Abbas Doobeez", null);
+        var controller = CreateSourceMetadataController();
+        Assert.IsType<OkObjectResult>(await controller.SelectBiographySource(artistId,
+            new("spotify", "doobeez"), CancellationToken.None));
+        var result = Assert.IsType<OkObjectResult>(await controller.GetBiographies(artistId, CancellationToken.None));
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(result.Value);
+        Assert.Equal(2, json.GetProperty("sources").GetArrayLength());
+        Assert.Equal("doobeez", json.GetProperty("selectedSourceId").GetString());
+        Assert.IsType<BadRequestObjectResult>(await controller.SelectBiographySource(artistId,
+            new("spotify", "unowned-profile"), CancellationToken.None));
+        Assert.IsType<OkObjectResult>(await controller.SelectBiographySource(artistId,
+            new("spotify"), CancellationToken.None));
+        var rows = await _repository.GetArtistBiographyRowsAsync(artistId);
+        Assert.Equal("doobeez", Assert.Single(System.Linq.Enumerable.Where(rows, row => row.Selected)).SourceId);
+    }
+
+    [Fact]
+    public async Task ArtistDetail_EmptyAliasesAndMissingArtistRemainLocal()
+    {
+        var artistId = await SeedLocalArtistAsync("Normal Artist");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        { ["ConnectionStrings:Library"] = $"Data Source={_dbPath}" }).Build();
+        var controller = new LibraryArtistsApiController(_repository,
+            new ArtistAliasService(config, NullLogger<ArtistAliasService>.Instance));
+        var result = Assert.IsType<OkObjectResult>(await controller.GetArtist(artistId, CancellationToken.None));
+        var artist = Assert.IsType<ArtistDetailDto>(result.Value);
+        Assert.Empty(artist.Aliases!);
+        Assert.Equal("Normal Artist", artist.Name);
+        Assert.IsType<NotFoundResult>(await controller.GetArtist(long.MaxValue, CancellationToken.None));
     }
 
     private LibraryArtistSourceMetadataApiController CreateSourceMetadataController()

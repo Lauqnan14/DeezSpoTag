@@ -234,6 +234,80 @@ public class ArtistAliasServiceTest
         }
     }
 
+    [Theory]
+    [InlineData("flac",false)]
+    [InlineData("flac",true)]
+    [InlineData("mp3",false)]
+    [InlineData("mp3",true)]
+    [InlineData("m4a",false)]
+    [InlineData("m4a",true)]
+    public async Task ExistingAlbumArtistAliasOverridesDisabledOverwriteAndWritesPreferredTag(string extension, bool verifyPlanner)
+    {
+        var (aliases, db) = CreateService();
+        var gateway = typeof(ArtistAliasGateway).GetField("_service", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var previous = gateway.GetValue(null);
+        var path = Path.Combine(Path.GetTempPath(), $"alias-retained-{Guid.NewGuid():N}.{extension}");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("ffmpeg") { RedirectStandardError = true, UseShellExecute = false };
+            foreach (var arg in new[] { "-v","error","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-t","0.2","-y",path }) start.ArgumentList.Add(arg);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync(); Assert.True(process.ExitCode == 0, stderr);
+            await aliases.SaveGroupAsync("Abbas Doobeez", new[] { "Abbas" });
+            ArtistAliasGateway.Configure(aliases); await ArtistAliasGateway.EnsureLoadedAsync();
+            using (var seed = TagLib.File.Create(path))
+            { seed.Tag.Performers = new[] { "Abbas Doobeez" }; seed.Tag.AlbumArtists = new[] { "Abbas" }; seed.Save(); }
+            if (verifyPlanner)
+            {
+                var runner = typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner);
+                var configType = runner.GetNestedType("AutoTagRunnerConfig",System.Reflection.BindingFlags.NonPublic)!;
+                var config = Activator.CreateInstance(configType)!;
+                configType.GetProperty("Tags")!.SetValue(config,new List<string> { "albumArtist" });
+                var planType = runner.GetNestedType("AutoTagRunPlan",System.Reflection.BindingFlags.NonPublic)!;
+                var plan = Activator.CreateInstance(planType,true)!;
+                planType.GetProperty("Config")!.SetValue(plan,config);
+                planType.GetProperty("PlatformSupportedTags")!.SetValue(plan,new Dictionary<string,HashSet<DeezSpoTag.Web.Services.AutoTag.SupportedTag>>());
+                var contextType = runner.GetNestedType("AutoTagFileRunContext",System.Reflection.BindingFlags.NonPublic)!;
+                var context = Activator.CreateInstance(contextType,true)!;
+                contextType.GetProperty("Plan")!.SetValue(context,plan);
+                contextType.GetProperty("File")!.SetValue(context,path);
+                contextType.GetProperty("Platform")!.SetValue(context,"spotify");
+                var result = runner.GetMethod("BuildProviderTagPlan",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!.Invoke(null,new[] { context })!;
+                var eligible = (HashSet<DeezSpoTag.Web.Services.AutoTag.SupportedTag>)result.GetType().GetProperty("Eligible")!.GetValue(result)!;
+                Assert.Contains(DeezSpoTag.Web.Services.AutoTag.SupportedTag.AlbumArtist,eligible);
+            }
+            var settings = new DeezSpoTag.Core.Models.Settings.TagSettings { Artist=false,Artists=false,AlbumArtist=false,Title=false };
+            var track = new DeezSpoTag.Web.Services.AutoTag.AutoTagTrack
+            { Artists = new() { "Abbas Doobeez" }, AlbumArtists = new() { "Abbas Doobeez" } };
+            using (var file = TagLib.File.Create(path))
+                typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner).GetMethod("ApplyPreferenceAwareOverwriteGuards",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(null,new object[] { settings,track,new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings(),file,"spotify" });
+            Assert.True(settings.AlbumArtist);
+            Assert.Equal("Abbas Doobeez", Assert.Single(track.AlbumArtists));
+            var collaborators = (DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators)Activator.CreateInstance(
+                typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators))!;
+            collaborators.GetType().GetProperty("Logger")!.SetValue(collaborators,
+                NullLogger<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner>.Instance);
+            var writer = new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner(collaborators);
+            var runtime = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings();
+            var writeConfig = new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.AutoTagRunnerConfig
+            { Tags = new() { "artist", "albumArtist" } };
+            await writer.WriteTagsOnetaggerStyleAsync(
+                new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.TagWriteRequest
+                {
+                    FilePath=path, SourceTrack=track,
+                    CoreTrack=DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.BuildCoreTrack(track,";",false,runtime),
+                    EffectiveTagSettings=settings, Config=writeConfig, Settings=runtime,
+                    PlatformId="spotify", Separator=";"
+                },System.Threading.CancellationToken.None);
+            using var written = TagLib.File.Create(path);
+            Assert.Equal("Abbas Doobeez",Assert.Single(written.Tag.AlbumArtists));
+            Assert.Equal("Abbas Doobeez",Assert.Single(written.Tag.Performers));
+        }
+        finally { gateway.SetValue(null,previous); File.Delete(path); Cleanup(db); }
+    }
+
     [Fact]
     public async Task DeleteGroupAsync_StopsResolution()
     {
@@ -376,6 +450,7 @@ WHERE t.title LIKE 'Test Song%' AND (af.path LIKE '%test song.flac' OR af.path L
             var (aliasService, mergeService) = CreateServices(dbPath);
             var group = await aliasService.SaveGroupAsync("Preferred Artist", new[] { "Old Alias" });
 
+            aliasService.InvalidateCache(); // A merge must also work after a cold host start.
             var result = await mergeService.MergeGroupAsync(group.Id);
 
             Assert.Equal(2, result.FilesMoved);
@@ -482,6 +557,52 @@ WHERE t.title LIKE 'Test Song%' AND (af.path LIKE '%test song.flac' OR af.path L
     }
 
     [Fact]
+    public async Task MergeGroupAsync_FeaturedOnlyCreditStaysInTheOtherMainArtistsFolder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alias-featured-folder-{Guid.NewGuid():N}");
+        var second = Path.Combine(root, "second-library");
+        var dbPath = await CreateLibraryDbAsync(root, second);
+        var featured = CreateAudioFile(Path.Combine(root, "Other Artist", "Other Album"), "featured.flac", 20);
+        try
+        {
+            await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                await connection.OpenAsync();
+                await using var seed = connection.CreateCommand();
+                seed.CommandText = """
+                    INSERT INTO artist(name) VALUES('Other Artist');
+                    INSERT INTO album(artist_id,title) SELECT id,'Other Album' FROM artist WHERE name='Other Artist';
+                    INSERT INTO track(album_id,title,tag_artist,tag_album_artist)
+                    SELECT id,'Song (feat. Old Alias)','Other Artist feat. Old Alias','Other Artist' FROM album WHERE title='Other Album';
+                    INSERT INTO audio_file(path,folder_id,extension) SELECT $path,MIN(id),'.flac' FROM folder;
+                    INSERT INTO track_local(track_id,audio_file_id)
+                    SELECT t.id,f.id FROM track t,audio_file f WHERE t.title='Song (feat. Old Alias)' AND f.path=$path;
+                    """;
+                seed.Parameters.AddWithValue("$path", featured);
+                await seed.ExecuteNonQueryAsync();
+            }
+            var (aliases, merge) = CreateServices(dbPath);
+            var group = await aliases.SaveGroupAsync("Preferred Artist", new[] { "Old Alias" });
+            var result = await merge.MergeGroupAsync(group.Id);
+            Assert.Empty(result.Errors);
+            Assert.Contains(featured, result.AffectedFilePaths);
+            Assert.True(File.Exists(featured));
+            Assert.False(File.Exists(Path.Combine(root, "Preferred Artist", "Other Album", "featured.flac")));
+            await using var check = new SqliteConnection($"Data Source={dbPath}");
+            await check.OpenAsync();
+            await using var command = check.CreateCommand();
+            command.CommandText = "SELECT tag_artist || ':' || tag_album_artist || ':' || title FROM track WHERE title LIKE 'Song%';";
+            Assert.Equal("Other Artist feat. Preferred Artist:Other Artist:Song (feat. Preferred Artist)", await command.ExecuteScalarAsync());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task MergeGroupAsync_RetainsDistinctProviderIdentitiesAndOwnedMetadata()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), $"artist-identity-merge-{Guid.NewGuid():N}.db");
@@ -542,6 +663,8 @@ SELECT id, 'avatar', 'hash-alias' FROM artist WHERE name = 'Old Alias';";
             Assert.Contains("spotnew3333333333333333", survivingIds);
             Assert.Equal("Alias bio", await ReadBiographyAsync(dbPath, "spotalias22222222222222"));
             Assert.Equal("Preferred bio", await ReadBiographyAsync(dbPath, "spotpreferred111111111"));
+            var mergedIdentities = await repository.GetArtistSourceIdentitiesAsync(preferredId.Value, "spotify");
+            Assert.Single(mergedIdentities.Where(identity => identity.IsPrimary));
 
             await using var check = new SqliteConnection($"Data Source={dbPath}");
             await check.OpenAsync();
@@ -610,7 +733,13 @@ INSERT INTO artist (name) VALUES ('Preferred Artist'), ('Old Alias'), ('Second A
 INSERT INTO artist_biography_rotation (artist_id, last_source, used_at)
 SELECT id, 'lastfm', '2026-09-01' FROM artist WHERE name = 'Old Alias';
 INSERT INTO artist_biography_rotation (artist_id, last_source, used_at)
-SELECT id, 'spotify', '2026-09-02' FROM artist WHERE name = 'Second Alias';";
+SELECT id, 'spotify', '2026-09-02' FROM artist WHERE name = 'Second Alias';
+INSERT INTO artist_biography_cache(artist_id,source,source_id,biography,selected)
+SELECT id,'lastfm','old-page','Older text',1 FROM artist WHERE name='Old Alias';
+INSERT INTO artist_biography_cache(artist_id,source,source_id,biography,selected)
+SELECT id,'spotify','sibling-id','Newer text',1 FROM artist WHERE name='Second Alias';
+UPDATE artist_biography_rotation SET profile_cursors_json='{""lastfm"":""old-page"",""qobuz"":""missing""}' WHERE last_source='lastfm';
+UPDATE artist_biography_rotation SET last_source_id='sibling-id',profile_cursors_json='{""spotify"":""sibling-id""}' WHERE last_source='spotify';";
                 await seed.ExecuteNonQueryAsync();
             }
 
@@ -629,6 +758,13 @@ WHERE artist_id = (SELECT id FROM artist WHERE name = 'Preferred Artist');";
             Assert.Equal("spotify", await command.ExecuteScalarAsync());
             command.CommandText = "SELECT COUNT(*) FROM artist_biography_rotation;";
             Assert.Equal(1L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+            command.CommandText = "SELECT profile_cursors_json FROM artist_biography_rotation;";
+            var cursors = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string,string>>((string)(await command.ExecuteScalarAsync())!)!;
+            Assert.Equal("old-page", cursors["lastfm"]);
+            Assert.Equal("sibling-id", cursors["spotify"]);
+            Assert.False(cursors.ContainsKey("qobuz"));
+            command.CommandText = "SELECT COUNT(*) FROM artist_biography_cache WHERE selected=1;";
+            Assert.Equal(1L, Convert.ToInt64(await command.ExecuteScalarAsync()));
         }
         finally
         {
@@ -643,6 +779,221 @@ WHERE artist_id = (SELECT id FROM artist WHERE name = 'Preferred Artist');";
             {
             }
         }
+    }
+
+    [Fact]
+    public async Task BiographyRotationMigration_IsAdditiveAndRepeatable()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"alias-rotation-migration-{Guid.NewGuid():N}.db");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:Library"] = $"Data Source={dbPath}" }).Build();
+        try
+        {
+            var db = new LibraryDbService(config, NullLogger<LibraryDbService>.Instance);
+            await db.EnsureSchemaAsync();
+            await using var connection = new SqliteConnection($"Data Source={dbPath}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE artist_biography_rotation; CREATE TABLE artist_biography_rotation(artist_id INTEGER PRIMARY KEY,last_source TEXT NOT NULL,used_at TEXT); INSERT INTO artist(name) VALUES ('Abbas Kubaff'); INSERT INTO artist_biography_rotation(artist_id,last_source) SELECT id,'spotify' FROM artist;";
+            await command.ExecuteNonQueryAsync();
+            await db.EnsureSchemaAsync();
+            await db.EnsureSchemaAsync();
+            command.CommandText = "SELECT last_source_id || ':' || profile_cursors_json FROM artist_biography_rotation;";
+            Assert.Equal(":{}", await command.ExecuteScalarAsync());
+            command.CommandText = "SELECT last_source FROM artist_biography_rotation;";
+            Assert.Equal("spotify", await command.ExecuteScalarAsync());
+        }
+        finally { SqliteConnection.ClearAllPools(); if (File.Exists(dbPath)) File.Delete(dbPath); }
+    }
+
+    [Fact]
+    public async Task BiographyRotation_SelectsOneProfileAndVisitsBothWithinProvider()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"alias-profile-rotation-{Guid.NewGuid():N}.db");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:Library"] = $"Data Source={dbPath}" }).Build();
+        try
+        {
+            await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using var connection = new SqliteConnection($"Data Source={dbPath}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO artist(id,name) VALUES (1,'Abbas Kubaff'); INSERT INTO artist_biography_cache(artist_id,source,source_id,biography) VALUES (1,'spotify','kubaff','First biography'),(1,'spotify','doobeez','Second biography');";
+            await command.ExecuteNonQueryAsync();
+            var repository = new LibraryRepository(config, NullLogger<LibraryRepository>.Instance);
+            await repository.SelectArtistBiographySourceAsync(1, "spotify");
+            command.CommandText = "SELECT COUNT(*) FROM artist_biography_cache WHERE selected=1;";
+            Assert.Equal(1L, await command.ExecuteScalarAsync());
+            command.CommandText = "SELECT source_id FROM artist_biography_cache WHERE selected=1;";
+            var first = await command.ExecuteScalarAsync();
+            await repository.SelectArtistBiographySourceAsync(1, "spotify");
+            Assert.NotEqual(first, await command.ExecuteScalarAsync());
+            await repository.SelectArtistBiographySourceAsync(1, "spotify");
+            Assert.Equal(first, await command.ExecuteScalarAsync());
+        }
+        finally { SqliteConnection.ClearAllPools(); if (File.Exists(dbPath)) File.Delete(dbPath); }
+    }
+
+    [Fact]
+    public async Task BiographyRotation_PreservesProviderFairnessAndExactSelectionAcrossRestart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alias-fair-rotation-{Guid.NewGuid():N}.db");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:Library"] = $"Data Source={path}" }).Build();
+        try
+        {
+            await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using var connection = new SqliteConnection($"Data Source={path}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO artist(id,name) VALUES(1,'Abbas Kubaff');
+                INSERT INTO artist_biography_cache(artist_id,source,source_id,biography) VALUES
+                (1,'spotify','a','First'),(1,'spotify','b','Second'),(1,'spotify','c','First  '),
+                (1,'lastfm','Abbas Doobeez','Third'),(1,'audiomack','abbas-kubaff','Fourth');
+                INSERT INTO artist_biography_rotation(artist_id,last_source,profile_cursors_json) VALUES(1,'','malformed');
+                """;
+            await command.ExecuteNonQueryAsync();
+            var expected = new[] { "spotify:a", "lastfm:Abbas Doobeez", "audiomack:abbas-kubaff",
+                "spotify:b", "lastfm:Abbas Doobeez", "audiomack:abbas-kubaff", "spotify:a" };
+            command.CommandText = "SELECT source || ':' || source_id FROM artist_biography_cache WHERE selected=1;";
+            foreach (var identity in expected)
+            {
+                // Recreate the repository between turns: the cursor belongs to the database.
+                var repo = new LibraryRepository(config, NullLogger<LibraryRepository>.Instance);
+                await repo.SelectArtistBiographySourceAsync(1, null);
+                Assert.Equal(identity, await command.ExecuteScalarAsync());
+                Assert.Single((await repo.GetArtistBiographyRowsAsync(1)).Where(row => row.Selected));
+            }
+            var repository = new LibraryRepository(config, NullLogger<LibraryRepository>.Instance);
+            await repository.SelectArtistBiographySourceAsync(1, "spotify", sourceId: "b", advanceRotation: false);
+            Assert.Equal("spotify:b", await command.ExecuteScalarAsync());
+            await repository.GetArtistBiographyCacheAsync(1, null, allowFallback: true);
+            await repository.SelectArtistBiographySourceAsync(1, "spotify", advanceRotation: false);
+            Assert.Equal("spotify:b", await command.ExecuteScalarAsync());
+            await repository.SelectArtistBiographySourceAsync(1, "lastfm", sourceId: "b", advanceRotation: false);
+            Assert.Equal("spotify:b", await command.ExecuteScalarAsync());
+            await repository.UpsertArtistBiographyCacheAsync(1, "spotify", "b", null, false, null, null);
+            Assert.Contains(await repository.GetArtistBiographyRowsAsync(1), row => row.SourceId == "b" && row.Biography == "Second");
+        }
+        finally { SqliteConnection.ClearAllPools(); if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task MergeGroupAsync_OverlappingAliasDoesNotRewritePreferredPathAgain()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alias-repeat-{Guid.NewGuid():N}");
+        var other = root + "-other";
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(other);
+        var db = await CreateLibraryDbAsync(root, other);
+        try
+        {
+            foreach (var directory in new[] { root, other })
+            {
+                Directory.Move(Path.Combine(directory, "Old Alias"), Path.Combine(directory, "Abbas"));
+                Directory.Move(Path.Combine(directory, "Abbas", "Test Album"), Path.Combine(directory, "Abbas", "Mister Abbas Doobeez"));
+            }
+            await using var connection = new SqliteConnection($"Data Source={db}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE artist SET name='Abbas' WHERE name='Old Alias';
+                UPDATE artist SET name='Abbas Doobeez' WHERE name='Preferred Artist';
+                UPDATE audio_file SET path=replace(replace(path,'Old Alias','Abbas'),'Test Album','Mister Abbas Doobeez');
+                UPDATE track SET tag_artist='Abbas',tag_album_artist='Abbas';
+                """;
+            await command.ExecuteNonQueryAsync();
+            var (aliases, merge) = CreateServices(db);
+            var group = await aliases.SaveGroupAsync("Abbas Doobeez", new[] { "Abbas" });
+            await merge.MergeGroupAsync(group.Id);
+            await merge.MergeGroupAsync(group.Id);
+            Assert.True(File.Exists(Path.Combine(root, "Abbas Doobeez", "Mister Abbas Doobeez", "test song.flac")));
+            Assert.DoesNotContain(Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories), path => path.Contains("Doobeez Doobeez", StringComparison.Ordinal));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true); Directory.Delete(other, true); File.Delete(db);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MergeGroupAsync_SharedAbsorbedMetadataPreservesTextAndBlocks(bool withBiography)
+    {
+        var db = Path.Combine(Path.GetTempPath(), $"alias-collision-{Guid.NewGuid():N}.db");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+            { ["ConnectionStrings:Library"] = $"Data Source={db}" }).Build();
+        try
+        {
+            await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using var connection = new SqliteConnection($"Data Source={db}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO artist(id,name) VALUES(1,'Preferred'),(2,'Alias One'),(3,'Alias Two');
+                INSERT INTO artist_artwork_cache(artist_id,role,identity,user_blocked,text_art_blocked)
+                VALUES(2,'avatar','same',0,0),(3,'avatar','same',1,1);
+                """;
+            if (withBiography) command.CommandText += """
+                INSERT INTO artist_biography_cache(artist_id,source,source_id,biography,native_name)
+                VALUES(2,'lastfm','shared','',NULL),(3,'lastfm','shared','Keep this biography','Alias Two');
+                """;
+            await command.ExecuteNonQueryAsync();
+            var (aliases, merge) = CreateServices(db);
+            var group = await aliases.SaveGroupAsync("Preferred", new[] { "Alias One", "Alias Two" });
+            var result = await merge.MergeGroupAsync(group.Id);
+            Assert.Empty(result.Errors);
+            command.CommandText = "SELECT user_blocked+text_art_blocked FROM artist_artwork_cache WHERE artist_id=1;";
+            Assert.Equal(2L, await command.ExecuteScalarAsync());
+            if (withBiography)
+            {
+                command.CommandText = "SELECT biography FROM artist_biography_cache WHERE artist_id=1;";
+                Assert.Equal("Keep this biography", await command.ExecuteScalarAsync());
+                command.CommandText = "SELECT native_name FROM artist_biography_cache WHERE artist_id=1;";
+                Assert.Equal("Alias Two", await command.ExecuteScalarAsync());
+            }
+        }
+        finally { SqliteConnection.ClearAllPools(); File.Delete(db); }
+    }
+
+    [Fact]
+    public async Task AutomaticIdentityUpsertCannotTakeAnotherArtistsProfile()
+    {
+        var db = Path.Combine(Path.GetTempPath(), $"alias-owner-{Guid.NewGuid():N}.db");
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+            { ["ConnectionStrings:Library"] = $"Data Source={db}" }).Build();
+        try
+        {
+            await new LibraryDbService(config, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using var connection = new SqliteConnection($"Data Source={db}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO artist(id,name) VALUES(1,'Owner'),(2,'Lookalike');";
+            await command.ExecuteNonQueryAsync();
+            var repo = new LibraryRepository(config, NullLogger<LibraryRepository>.Instance);
+            await repo.UpsertArtistSourceIdAsync(1,"qobuz","shared");
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repo.UpsertArtistSourceIdAsync(2,"qobuz","shared"));
+            Assert.Equal("shared", await repo.GetArtistSourceIdAsync(1,"qobuz"));
+            Assert.Null(await repo.GetArtistSourceIdAsync(2,"qobuz"));
+        }
+        finally { SqliteConnection.ClearAllPools(); File.Delete(db); }
+    }
+
+    [Theory]
+    [InlineData(0, 0, false, "completed")]
+    [InlineData(1, 0, false, "partial")]
+    [InlineData(1, 1, false, "tagging_queued")]
+    [InlineData(1, 1, true, "partial")]
+    [InlineData(0, 0, true, "partial")]
+    public void MergeSubmissionStatusDoesNotClaimTagsAreWritten(int files, int jobs, bool hasErrors, string expected)
+    {
+        var result = new ArtistAliasMergeResult(1,"Preferred",files,0,0,0,0,0,
+            files == 0 ? Array.Empty<string>() : new[] { "file.flac" }, Array.Empty<long>(),
+            hasErrors ? new[] { "File move failed" } : Array.Empty<string>());
+        Assert.Equal(expected, result.GetSubmissionStatus(jobs));
     }
 
     private static async Task<List<string>> ReadSpotifyIdsAsync(string dbPath, long artistId)

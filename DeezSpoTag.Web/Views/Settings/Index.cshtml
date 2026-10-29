@@ -1979,7 +1979,7 @@
                 Artist's Aliases
             </div>
             <div class="settings-content">
-                <div class="warning-text" data-tooltip-target="artistAliasSearch">Merge two or more artist names that refer to the same artist and keep one preferred name. Saving a merge re-points the library, merges folders on disk, rewrites names, and starts a targeted AutoTag run for the affected files (including featured appearances).</div>
+                <div class="warning-text" data-tooltip-target="artistAliasSearch">Merge two or more artist names that refer to the same artist and keep one preferred name. The preferred name is used for main and featured artist tags; confirmed platform profiles remain linked for metadata rotation. Saving a merge re-points the library, merges folders on disk, rewrites names, and starts a targeted AutoTag run for the affected files (including featured appearances).</div>
 
                 <div class="form-group">
                     <div class="form-label">Artists to merge</div>
@@ -5886,7 +5886,14 @@ async function resetSettings() {
                 parts.push(`${merge.trackRowsRewritten} track row(s) updated`);
             }
             parts.push(jobCount === 1 ? 'enhancement job started' : `${jobCount} enhancement jobs started`);
-            statusLabel.textContent = `Merged into "${payload.group?.preferredName || preferred}": ${parts.join(', ')}.`;
+            const preferredLabel = payload.group?.preferredName || preferred;
+            const outcome = payload.status === 'partial' ? `Partially merged into "${preferredLabel}"`
+                : payload.status === 'tagging_queued' ? `Artist records merged into "${preferredLabel}"; tagging queued`
+                : `Merged into "${preferredLabel}"`;
+            statusLabel.textContent = `${outcome}: ${parts.join(', ')}.`;
+            if (merge?.errors?.length) {
+                statusLabel.textContent += ` ${merge.errors.join(' ')}`;
+            }
             if (payload.error) {
                 statusLabel.textContent = payload.error;
             }

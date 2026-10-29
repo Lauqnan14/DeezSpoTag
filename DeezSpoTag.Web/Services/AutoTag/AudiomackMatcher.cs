@@ -1,4 +1,5 @@
 using System.Globalization;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services.Audiomack;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
@@ -47,6 +48,7 @@ public sealed class AudiomackMatcher
         AudiomackMatchConfig config,
         CancellationToken cancellationToken)
     {
+        await ArtistAliasGateway.EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
         var resolvedConfig = NormalizeConfig(config);
         if (!TryGetCoherentTaggedIdentity(info, out var taggedTrackIds, out var taggedSongPaths, out var contradiction))
         {
@@ -100,7 +102,7 @@ public sealed class AudiomackMatcher
                 continue;
             }
 
-            var hydrated = await HydrateSelectedAsync(exact, cancellationToken).ConfigureAwait(false);
+            var hydrated = await HydrateSelectedAsync(exact, cancellationToken, sourceInfo: info, matchingConfig: matchingConfig).ConfigureAwait(false);
             if (hydrated == null || AudiomackTaxonomy.IsNonMusicCandidate(hydrated))
             {
                 continue;
@@ -140,7 +142,7 @@ public sealed class AudiomackMatcher
                 continue;
             }
 
-            var hydrated = await HydrateSelectedAsync(song, cancellationToken, alreadyFetchedSong: true).ConfigureAwait(false);
+            var hydrated = await HydrateSelectedAsync(song, cancellationToken, alreadyFetchedSong: true, sourceInfo: info, matchingConfig: matchingConfig).ConfigureAwait(false);
             if (hydrated == null || AudiomackTaxonomy.IsNonMusicCandidate(hydrated))
             {
                 continue;
@@ -264,16 +266,12 @@ public sealed class AudiomackMatcher
         var specificUrls = ReadTagValues(info, new[] { "AUDIOMACK_URL" });
         var genericUrls = ReadTagValues(info, UrlTagKeys.Where(key => !string.Equals(key, "AUDIOMACK_URL", StringComparison.OrdinalIgnoreCase)).ToArray());
         var usableUrls = specificUrls.Count > 0 ? specificUrls : genericUrls;
-        var paths = new List<string>();
-        foreach (var url in usableUrls)
-        {
-            if (AudiomackIdNormalizer.TryGetCanonicalSongPath(url, out var path))
-            {
-                paths.Add(path);
-            }
-        }
-
-        songPaths = paths.Distinct(StringComparer.Ordinal).ToList();
+        songPaths = usableUrls
+            .Select(url => AudiomackIdNormalizer.TryGetCanonicalSongPath(url, out var path) ? path : null)
+            .Where(path => path is not null)
+            .Select(path => path!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         if (trackIds.Count > 1)
         {
             contradiction = "conflicting-tagged-track-ids";
@@ -303,9 +301,19 @@ public sealed class AudiomackMatcher
             return null;
         }
 
-        var candidates = await _apiClient
-            .SearchSongsAsync(query, Math.Max(config.SearchLimit, 5), cancellationToken)
-            .ConfigureAwait(false);
+        var names = await ArtistAliasGateway.GetGroupNamesAsync(
+            info.Artists.FirstOrDefault() ?? info.Artist, cancellationToken).ConfigureAwait(false);
+        var queries = new[] { query }.Concat(names.Count > 1 ? names.Select(name =>
+            $"{OneTaggerMatching.CleanArtistSearching(name)} {OneTaggerMatching.CleanTitle(info.Title)}".Trim()) : Enumerable.Empty<string>())
+            .Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var candidates = new List<AudiomackSongCandidate>();
+        foreach (var aliasQuery in queries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            candidates.AddRange(await _apiClient.SearchSongsAsync(aliasQuery, Math.Max(config.SearchLimit, 5),
+                cancellationToken, strictErrors: queries.Count > 1).ConfigureAwait(false));
+        }
+        var comparisonInfo = CreateAliasComparisonInfo(info);
         if (candidates.Count == 0)
         {
             return null;
@@ -320,7 +328,12 @@ public sealed class AudiomackMatcher
             .Select(candidate => (Candidate: candidate, Track: ToAutoTagTrack(candidate)))
             .Where(pair => pair.Track != null)
             .Select(pair => (pair.Candidate, Track: pair.Track!))
-            .Where(pair => EvaluateCandidate(info, pair.Candidate, matchingConfig, out _))
+            .Where(pair =>
+            {
+                if (EvaluateCandidate(info, pair.Candidate, matchingConfig, out var reason)) return true;
+                _logger.LogDebug("Audiomack candidate {TrackId} rejected: {Reason}", pair.Candidate.Id, reason);
+                return false;
+            })
             .ToList();
         if (usable.Count == 0)
         {
@@ -341,13 +354,13 @@ public sealed class AudiomackMatcher
         }
 
         var selectors = new OneTaggerMatching.TrackSelectors<AutoTagTrack>(
-            track => track.Title,
+            track => ArtistAliasGateway.ResolveTitleCredit(track.Title),
             _ => null,
-            track => track.Artists.Count > 0 ? track.Artists : track.AlbumArtists,
+            track => CanonicalArtistCredits(track.Artists.Count > 0 ? track.Artists : track.AlbumArtists),
             track => track.Duration,
             track => track.ReleaseDate);
         var ranked = OneTaggerMatching.MatchTrackRanked(
-            info,
+            comparisonInfo,
             unique.Select(pair => pair.Track).ToList(),
             matchingConfig,
             selectors,
@@ -383,7 +396,7 @@ public sealed class AudiomackMatcher
         foreach (var entry in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var hydrated = await HydrateSelectedAsync(entry.Pair.Candidate, cancellationToken).ConfigureAwait(false);
+            var hydrated = await HydrateSelectedAsync(entry.Pair.Candidate, cancellationToken, sourceInfo: info, matchingConfig: matchingConfig).ConfigureAwait(false);
             if (hydrated == null || AudiomackTaxonomy.IsNonMusicCandidate(hydrated))
             {
                 continue;
@@ -403,9 +416,10 @@ public sealed class AudiomackMatcher
                 continue;
             }
 
-            if (!EvaluateCandidate(info, hydrated, matchingConfig, out _))
+            if (!EvaluateCandidate(info, hydrated, matchingConfig, out var rejectionReason))
             {
-                _logger.LogDebug("Audiomack hydrated candidate rejected");
+                _logger.LogDebug("Audiomack hydrated candidate {TrackId} rejected: {Reason}; source ISRC {SourceIsrc}, provider ISRC {ProviderIsrc}",
+                    hydrated.Id, rejectionReason, info.Isrc, hydrated.Isrc);
                 continue;
             }
 
@@ -422,7 +436,7 @@ public sealed class AudiomackMatcher
         // and album information that were absent from the search response.
         var completedByTrack = completed.ToDictionary(pair => pair.Track);
         var finalRanked = OneTaggerMatching.MatchTrackRanked(
-                info, completed.Select(pair => pair.Track).ToList(), matchingConfig, selectors, matchArtist: true)
+                comparisonInfo, completed.Select(pair => pair.Track).ToList(), matchingConfig, selectors, matchArtist: true)
             .DistinctBy(selection => selection.Track)
             .OrderByDescending(selection => HasMatchingIsrc(info, completedByTrack[selection.Track].Candidate))
             .ThenByDescending(selection => selection.Accuracy)
@@ -553,7 +567,8 @@ public sealed class AudiomackMatcher
     private async Task<AudiomackSongCandidate?> HydrateSelectedAsync(
         AudiomackSongCandidate song,
         CancellationToken cancellationToken,
-        bool alreadyFetchedSong = false)
+        bool alreadyFetchedSong = false,
+        AutoTagAudioInfo? sourceInfo = null, AutoTagMatchingConfig? matchingConfig = null)
     {
         var current = song;
         if (!TryResolveSlugs(current, out var artistSlug, out var songSlug))
@@ -568,6 +583,7 @@ public sealed class AudiomackMatcher
                 var detailed = await _apiClient.GetSongAsync(artistSlug, songSlug, cancellationToken).ConfigureAwait(false);
                 if (detailed != null)
                 {
+                    if (HasDurationConflict(detailed, sourceInfo, matchingConfig)) return null;
                     if (AudiomackTaxonomy.TryMerge(current, detailed, out var merged, out var reason))
                     {
                         current = merged;
@@ -603,6 +619,7 @@ public sealed class AudiomackMatcher
             var page = await _apiClient.GetPublicPageSongAsync(current, cancellationToken).ConfigureAwait(false);
             if (page != null)
             {
+                if (HasDurationConflict(page, sourceInfo, matchingConfig)) return null;
                 if (AudiomackTaxonomy.TryMerge(current, page, out var merged, out var reason))
                 {
                     current = merged;
@@ -623,6 +640,15 @@ public sealed class AudiomackMatcher
         }
 
         return current;
+    }
+
+    private bool HasDurationConflict(AudiomackSongCandidate candidate, AutoTagAudioInfo? source, AutoTagMatchingConfig? config)
+    {
+        var conflict = config?.MatchDuration == true && source?.DurationSeconds is > 0
+            && candidate.DurationSeconds is > 0
+            && Math.Abs(source.DurationSeconds.Value - candidate.DurationSeconds.Value) > config.MaxDurationDifferenceSeconds;
+        if (conflict) _logger.LogDebug("Audiomack hydration rejected: duration-mismatch");
+        return conflict;
     }
 
     private static bool TryResolveSlugs(
@@ -690,6 +716,19 @@ public sealed class AudiomackMatcher
     /// that is missing is not a failure; a populated field that conflicts with
     /// the source recording always is.
     /// </summary>
+    private static List<string> CanonicalArtistCredits(IEnumerable<string> artists)
+        => artists.Select(ArtistAliasGateway.ResolveCredit).ToList();
+
+    private static AutoTagAudioInfo CreateAliasComparisonInfo(AutoTagAudioInfo info)
+        => new()
+        {
+            Title = ArtistAliasGateway.ResolveTitleCredit(info.Title), Artist = ArtistAliasGateway.ResolveCredit(info.Artist),
+            Artists = CanonicalArtistCredits(info.Artists.Count > 0 ? info.Artists : new[] { info.Artist }.ToList()),
+            Album = info.Album, DurationSeconds = info.DurationSeconds, Isrc = info.Isrc,
+            TrackNumber = info.TrackNumber, FilePath = info.FilePath, Tags = info.Tags,
+            HasEmbeddedTitle = info.HasEmbeddedTitle, HasEmbeddedArtist = info.HasEmbeddedArtist
+        };
+
     public static bool EvaluateCandidate(
         AutoTagAudioInfo info,
         AudiomackSongCandidate candidate,
@@ -734,7 +773,7 @@ public sealed class AudiomackMatcher
 
         var sourceArtists = info.Artists.Count > 0 ? info.Artists
             : string.IsNullOrWhiteSpace(info.Artist) ? new List<string>() : new List<string> { info.Artist };
-        if (sourceArtists.Count > 0 && !OneTaggerMatching.MatchArtist(sourceArtists, CollectArtists(candidate), config.Strictness))
+        if (sourceArtists.Count > 0 && !OneTaggerMatching.MatchArtist(CanonicalArtistCredits(sourceArtists), CanonicalArtistCredits(CollectArtists(candidate)), config.Strictness))
         {
             rejectionReason = "recording-artist-mismatch";
             return false;
@@ -744,9 +783,9 @@ public sealed class AudiomackMatcher
         {
             var track = ToAutoTagTrack(candidate)!;
             var selectors = new OneTaggerMatching.TrackSelectors<AutoTagTrack>(
-                value => value.Title, _ => null, value => value.Artists,
+                value => ArtistAliasGateway.ResolveTitleCredit(value.Title), _ => null, value => CanonicalArtistCredits(value.Artists),
                 value => value.Duration, value => value.ReleaseDate);
-            if (OneTaggerMatching.MatchTrack(info, new[] { track }, config, selectors, matchArtist: true) == null)
+            if (OneTaggerMatching.MatchTrack(CreateAliasComparisonInfo(info), new[] { track }, config, selectors, matchArtist: true) == null)
             {
                 rejectionReason = "recording-title-mismatch";
                 return false;
@@ -778,14 +817,14 @@ public sealed class AudiomackMatcher
     private static HashSet<string> ParseSourceGuests(AutoTagAudioInfo info)
     {
         var guests = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var guest in AudiomackIdNormalizer.ParseTitleFeaturedGuests(info.Title))
+        foreach (var guest in AudiomackIdNormalizer.ParseTitleFeaturedGuests(ArtistAliasGateway.ResolveTitleCredit(info.Title)))
         {
             guests.Add(guest);
         }
 
         foreach (var artistField in new[] { info.Artist }.Concat(info.Artists))
         {
-            foreach (var guest in AudiomackIdNormalizer.ParseTitleFeaturedGuests(artistField))
+            foreach (var guest in AudiomackIdNormalizer.ParseTitleFeaturedGuests(ArtistAliasGateway.ResolveCredit(artistField)))
             {
                 guests.Add(guest);
             }
@@ -796,8 +835,9 @@ public sealed class AudiomackMatcher
 
     private static HashSet<string> ParseCandidateGuests(AudiomackSongCandidate candidate)
     {
-        var guests = new HashSet<string>(AudiomackIdNormalizer.ParseFeaturedGuests(candidate.Featuring), StringComparer.Ordinal);
-        foreach (var field in new[] { candidate.Title, candidate.Artist }.Concat(candidate.Artists))
+        var guests = new HashSet<string>(AudiomackIdNormalizer.ParseFeaturedGuests(ArtistAliasGateway.ResolveCredit(candidate.Featuring)), StringComparer.Ordinal);
+        foreach (var field in new[] { ArtistAliasGateway.ResolveTitleCredit(candidate.Title), ArtistAliasGateway.ResolveCredit(candidate.Artist) }
+                     .Concat(candidate.Artists.Select(ArtistAliasGateway.ResolveCredit)))
         {
             foreach (var guest in AudiomackIdNormalizer.ParseTitleFeaturedGuests(field))
             {
@@ -856,16 +896,10 @@ public sealed class AudiomackMatcher
 
     private static IReadOnlyList<string> ReadTagValues(AutoTagAudioInfo info, string[] tagKeys)
     {
-        var values = new List<string>();
-        foreach (var key in tagKeys)
-        {
-            if (info.Tags.TryGetValue(key, out var tagged) && tagged is { Count: > 0 })
-            {
-                values.AddRange(tagged.Where(value => !string.IsNullOrWhiteSpace(value)));
-            }
-        }
-
-        return values
+        return tagKeys
+            .SelectMany(key => info.Tags.TryGetValue(key, out var tagged) && tagged is { Count: > 0 }
+                ? tagged.Where(value => !string.IsNullOrWhiteSpace(value))
+                : (IEnumerable<string>)Array.Empty<string>())
             .Select(value => value.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

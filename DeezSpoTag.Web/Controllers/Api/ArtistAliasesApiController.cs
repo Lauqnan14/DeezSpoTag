@@ -124,7 +124,9 @@ public sealed class ArtistAliasesApiController : ControllerBase
         try
         {
             mergeResult = await _mergeService.MergeGroupAsync(group.Id, cancellationToken);
-            jobIds = await _enhancementLauncher.StartForFilesAsync(mergeResult.AffectedFilePaths, cancellationToken);
+            var taggingErrors = new List<string>();
+            jobIds = await _enhancementLauncher.StartForFilesAsync(mergeResult.AffectedFilePaths, cancellationToken, taggingErrors);
+            mergeResult = mergeResult with { Errors = mergeResult.Errors.Concat(taggingErrors).ToArray() };
         }
         catch (OperationCanceledException)
         {
@@ -142,11 +144,10 @@ public sealed class ArtistAliasesApiController : ControllerBase
             });
         }
 
-        var enhancementSubmitted = mergeResult.AffectedFilePaths.Count == 0 || jobIds.Count > 0;
         return Ok(new
         {
             group,
-            status = enhancementSubmitted ? "completed" : "partial",
+            status = mergeResult.GetSubmissionStatus(jobIds.Count),
             merge = new
             {
                 filesScanned = mergeResult.FilesScanned,

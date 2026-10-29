@@ -26,6 +26,15 @@ public static class ArtistAliasGateway
         if (service is not null) await service.GetAliasMapAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public static async Task<System.Collections.Generic.IReadOnlyList<string>> GetGroupNamesAsync(
+        string? name, CancellationToken cancellationToken = default)
+    {
+        var service = _service;
+        return service is null
+            ? new[] { (name ?? string.Empty).Trim() }
+            : await service.GetGroupNamesAsync(name, cancellationToken).ConfigureAwait(false);
+    }
+
     public static string ResolveTitleCredit(string? title)
         => _service?.ResolveTitleCredit(title) ?? title ?? string.Empty;
 

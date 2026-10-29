@@ -53,6 +53,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
+            await ArtistAliasGateway.EnsureLoadedAsync(token);
             var (runPlan, failure) = await PrepareAutoTagRunPlanAsync(jobId, rootPath, configPath, token);
             if (failure != null)
             {
@@ -772,6 +773,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
     {
+        await ArtistAliasGateway.EnsureLoadedAsync(context.Token);
         if (TryHandlePreSkippedFile(context))
         {
             return;
@@ -887,6 +889,12 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
                     "provider_error",
                     tagPlan);
                 return;
+            }
+
+            if (context.MatchFailureOutcome is null && context.Platform is "audiomack" or "lastfm")
+            {
+                context.MatchFailureOutcome = "no_verified_metadata";
+                context.MatchFailureMessage = "No verified recording with usable metadata was found.";
             }
 
             if (isManualEnrichment

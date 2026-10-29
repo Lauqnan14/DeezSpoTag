@@ -330,7 +330,8 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag tag,
             List<string> values)
         {
-            if (!ShouldOverwriteTag(context.Config, tag) && HasTag(context.File, ".mp4", tag, context.Config, context.PlatformId))
+            if (!IsPreferredArtistAliasCorrection(context.File, tag, values)
+                && !ShouldOverwriteTag(context.Config, tag) && HasTag(context.File, ".mp4", tag, context.Config, context.PlatformId))
             {
                 return true;
             }

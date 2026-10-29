@@ -366,7 +366,7 @@ public sealed class AudiomackApiClient
     public async Task<IReadOnlyList<AudiomackSongCandidate>> SearchSongsAsync(
         string? query,
         int limit,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool strictErrors = false)
     {
         var trimmed = query?.Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
@@ -377,7 +377,7 @@ public sealed class AudiomackApiClient
         try
         {
             var credentials = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
-            var songs = await SearchSongsOnceAsync(credentials, trimmed, limit, cancellationToken).ConfigureAwait(false);
+            var songs = await SearchSongsOnceAsync(credentials, trimmed, limit, cancellationToken, strictErrors).ConfigureAwait(false);
             if (songs.Count > 0 || !_credentialsWasRejected)
             {
                 return songs;
@@ -387,9 +387,12 @@ public sealed class AudiomackApiClient
             // concluding there were no results.
             _credentialsProvider.Invalidate();
             var refreshed = await _credentialsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
-            return await SearchSongsOnceAsync(refreshed, trimmed, limit, cancellationToken).ConfigureAwait(false);
+            var retry = await SearchSongsOnceAsync(refreshed, trimmed, limit, cancellationToken, strictErrors).ConfigureAwait(false);
+            if (strictErrors && _credentialsWasRejected)
+                throw new HttpRequestException("Audiomack rejected refreshed credentials.", null, System.Net.HttpStatusCode.Unauthorized);
+            return retry;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !strictErrors)
         {
             _logger.LogWarning(ex, "Audiomack song search failed ({Query})", LogSanitizer.OneLine(trimmed));
             return Array.Empty<AudiomackSongCandidate>();
@@ -400,7 +403,7 @@ public sealed class AudiomackApiClient
         AudiomackWebCredentials credentials,
         string query,
         int limit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool strictErrors)
     {
         _credentialsWasRejected = false;
         using var httpClient = _httpClientFactory.CreateClient();
@@ -424,6 +427,8 @@ public sealed class AudiomackApiClient
 
         if (!response.IsSuccessStatusCode)
         {
+            if (strictErrors && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+                response.EnsureSuccessStatusCode();
             return Array.Empty<AudiomackSongCandidate>();
         }
 

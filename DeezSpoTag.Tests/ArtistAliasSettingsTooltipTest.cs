@@ -7,6 +7,18 @@ namespace DeezSpoTag.Tests;
 public sealed class ArtistAliasSettingsTooltipTest
 {
     [Fact]
+    public void ArtistHeroHasSmallAliasLabelBelowPreferredHeading()
+    {
+        var view = File.ReadAllText(Path.Join(TestSourcePaths.RepositoryRoot,"DeezSpoTag.Web","Views","Library","Artist.cshtml"));
+        var heading = view.IndexOf("id=\"artistName\"", StringComparison.Ordinal);
+        var label = view.IndexOf("id=\"artistAliases\"", StringComparison.Ordinal);
+        var actions = view.IndexOf("hero-modern__actions", StringComparison.Ordinal);
+        Assert.True(heading >= 0 && label > heading && actions > label);
+        var js = File.ReadAllText(Path.Join(TestSourcePaths.RepositoryRoot,"DeezSpoTag.Web","wwwroot","js","library.js"));
+        Assert.Contains("Also known as: ", js, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MergeExplanationTargetsTheArtistSearchLabel()
     {
         var view = File.ReadAllText(Path.Join(

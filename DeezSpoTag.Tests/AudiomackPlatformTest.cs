@@ -11,6 +11,7 @@ using DeezSpoTag.Web.Services.Audiomack;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using Microsoft.Extensions.Configuration;
 
 namespace DeezSpoTag.Tests;
 
@@ -18,6 +19,7 @@ namespace DeezSpoTag.Tests;
 /// Audiomack AutoTag platform: defensive API parsing, song→track mapping, URL slug
 /// extraction, and descriptor honesty (no-auth; only reliably available tags claimed).
 /// </summary>
+[Collection("ArtistAliasGateway")]
 public sealed class AudiomackPlatformTest
 {
     private const string SearchJson = """
@@ -925,6 +927,72 @@ public sealed class AudiomackPlatformTest
         return (new AudiomackMatcher(apiClient, logger), backend, logger);
     }
 
+    [Theory]
+    [InlineData("valid",true)]
+    [InlineData("isrc",false)]
+    [InlineData("duration",false)]
+    [InlineData("version",false)]
+    [InlineData("artist",false)]
+    [InlineData("ambiguous",false)]
+    [InlineData("outage",false)]
+    [InlineData("featured-alias",true)]
+    [InlineData("featured-conflict",false)]
+    public async Task SavedAliasSearchPreservesRecordingChecks(string scenario, bool expected)
+    {
+        var db = Path.Combine(Path.GetTempPath(),$"audiomack-alias-{Guid.NewGuid():N}.db");
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string,string?> { ["ConnectionStrings:Library"]=$"Data Source={db}" }).Build();
+        var field = typeof(DeezSpoTag.Services.Library.ArtistAliasGateway).GetField("_service",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+        var previous = field.GetValue(null);
+        try
+        {
+            var aliases = new DeezSpoTag.Services.Library.ArtistAliasService(configuration,NullLogger<DeezSpoTag.Services.Library.ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync("Abbas Doobeez",new[] { "Abbas Kubaff" });
+            DeezSpoTag.Services.Library.ArtistAliasGateway.Configure(aliases);
+            var backend = new StubAudiomackBackend();
+            var search = LadyGagaSearchHitJson.Replace("Lady Gaga","Abbas Kubaff",StringComparison.Ordinal);
+            var detail = LadyGagaDetailJson.Replace("Lady Gaga","Abbas Kubaff",StringComparison.Ordinal);
+            if (scenario == "isrc") detail=detail.Replace("USUM71700586","USUM79999999",StringComparison.Ordinal);
+            if (scenario == "duration") detail=detail.Replace("271","999",StringComparison.Ordinal);
+            if (scenario == "version") detail=detail.Replace("Always Remember Us This Way","Always Remember Us This Way (Live)",StringComparison.Ordinal);
+            if (scenario == "artist") detail=detail.Replace("Abbas Kubaff","Unrelated Singer",StringComparison.Ordinal);
+            if (scenario is "featured-alias" or "featured-conflict")
+            {
+                var guest=scenario == "featured-alias" ? "Abbas Kubaff" : "Unrelated Singer";
+                search=LadyGagaSearchHitJson.Replace("Always Remember Us This Way",$"Always Remember Us This Way (feat. {guest})",StringComparison.Ordinal);
+                detail=LadyGagaDetailJson.Replace("Always Remember Us This Way",$"Always Remember Us This Way (feat. {guest})",StringComparison.Ordinal);
+                backend.AddSearch("lady gaga",search);
+            }
+            backend.AddSearch("abbas kubaff",search);
+            backend.AddSong("lady-gaga/always-remember-us-this-way",detail);
+            if (scenario == "ambiguous")
+            {
+                backend.AddSearch("abbas doobeez",LadyGagaSearchHitJson.Replace("Lady Gaga","Abbas Doobeez",StringComparison.Ordinal)
+                    .Replace("9394068","9394069",StringComparison.Ordinal).Replace("always-remember-us-this-way","always-remember-us-this-way-two",StringComparison.Ordinal));
+                backend.AddSong("lady-gaga/always-remember-us-this-way-two",LadyGagaDetailJson.Replace("Lady Gaga","Abbas Doobeez",StringComparison.Ordinal)
+                    .Replace("9394068","9394069",StringComparison.Ordinal).Replace("always-remember-us-this-way","always-remember-us-this-way-two",StringComparison.Ordinal));
+            }
+            if (scenario == "outage") backend.SearchFailureStatus=System.Net.HttpStatusCode.ServiceUnavailable;
+            var (matcher,_,diagnostics) = CreateMatcher(backend);
+            var info = LadyGagaSource; info.Artist="Abbas Doobeez"; info.Artists=new() { "Abbas Doobeez" };
+            if (scenario is "featured-alias" or "featured-conflict")
+            { info=LadyGagaSource; info.Title += " (feat. Abbas Doobeez)"; }
+            var originalArtist=info.Artist;
+            if (scenario == "outage")
+            {
+                await Assert.ThrowsAsync<HttpRequestException>(() => matcher.MatchAsync(info,new AutoTagMatchingConfig(),new AudiomackMatchConfig(),CancellationToken.None));
+                Assert.Equal(1,backend.SearchRequests);
+                return;
+            }
+            var result = await matcher.MatchAsync(info,new AutoTagMatchingConfig { Strictness=1,MatchDuration=true,MaxDurationDifferenceSeconds=2 },new AudiomackMatchConfig(),CancellationToken.None);
+            Assert.True(expected == (result is not null),string.Join(Environment.NewLine,diagnostics.Messages));
+            Assert.Equal(originalArtist,info.Artist);
+            if (expected) Assert.Equal(scenario == "featured-alias" ? "Lady Gaga" : "Abbas Kubaff",Assert.Single(result!.Track.Artists));
+            Assert.True(backend.SearchRequests<=2);
+        }
+        finally { field.SetValue(null,previous); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); File.Delete(db); }
+    }
+
     [Fact]
     public async Task TextRoute_SelectsRequestedRecordingAndIgnoresRicherRecommendation()
     {
@@ -1431,6 +1499,7 @@ public sealed class AudiomackPlatformTest
         public int DiscoveryRequests { get; private set; }
 
         public int SearchRequests { get; private set; }
+        public System.Net.HttpStatusCode? SearchFailureStatus { get; set; }
 
         public int SongRequests { get; private set; }
 
@@ -1472,6 +1541,7 @@ public sealed class AudiomackPlatformTest
                 if (segments.Length >= 2 && segments[1].Equals("search", StringComparison.OrdinalIgnoreCase))
                 {
                     SearchRequests++;
+                    if (SearchFailureStatus.HasValue) return new HttpResponseMessage(SearchFailureStatus.Value);
                     var query = System.Web.HttpUtility.ParseQueryString(uri.Query).Get("q") ?? string.Empty;
                     foreach (var (key, json) in _searches)
                     {
