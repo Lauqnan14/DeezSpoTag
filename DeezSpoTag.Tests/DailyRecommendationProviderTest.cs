@@ -16,6 +16,39 @@ namespace DeezSpoTag.Tests;
 public sealed class DailyRecommendationProviderTest
 {
     [Theory]
+    [InlineData(60)]
+    [InlineData(12)]
+    public void PublishedDailyOrderSurvivesReserveChangesAndSmallerPageLimits(int limit)
+    {
+        var sources = new[] { "deezer", "spotify", "tidal", "shazam" };
+        var rows = sources.SelectMany((source, i) => Enumerable.Range(1, 45).Select(n =>
+            new DeezSpoTag.Services.Library.RecommendationTrackDto($"{i + 1}{n:D3}", $"Song {i} {n}", 180, "", n,
+                new($"artist{i}-{n}", $"Artist {i} {n}"), new("album", "Album", ""), RecommendationOrigin: source))).ToArray();
+        var published = Enumerable.Range(1, 15).SelectMany(n => sources.Select((_, i) => $"{i + 1}{n:D3}")).Reverse().ToArray();
+        var result = LibraryRecommendationService.BuildSavedDailySelection(rows.Reverse().ToArray(),
+            sources.ToDictionary(source => source, _ => 15), limit, new(2026, 11, 1), null, published);
+        Assert.Equal(published.Take(limit), result.Select(track => track.Id));
+        Assert.Equal(Enumerable.Range(1, limit), result.Select(track => track.TrackPosition));
+    }
+
+    [Fact]
+    public void DailyReplacementKeepsEverySurvivingSongInItsPublishedSlot()
+    {
+        var rows = Enumerable.Range(1, 90).Select(n => new DeezSpoTag.Services.Library.RecommendationTrackDto(
+            n.ToString(), "Song " + n, 180, "", n, new("artist" + n, "Artist " + n), new("album", "Album", ""),
+            RecommendationOrigin: "deezer")).ToArray();
+        var published = rows.Take(60).Select(track => track.Id).Reverse().ToArray();
+        var excluded = new HashSet<string> { published[5], published[40] };
+        var result = LibraryRecommendationService.BuildSavedDailySelection(rows, new Dictionary<string, int> { ["deezer"] = 60 },
+            60, new(2026, 11, 1), excluded, published);
+        Assert.Equal(60, result.Count);
+        Assert.Equal(60, result.Select(track => track.Id).Distinct().Count());
+        for (var index = 0; index < published.Length; index++)
+            if (!excluded.Contains(published[index])) Assert.Equal(published[index], result[index].Id);
+        Assert.DoesNotContain(result, track => excluded.Contains(track.Id));
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]

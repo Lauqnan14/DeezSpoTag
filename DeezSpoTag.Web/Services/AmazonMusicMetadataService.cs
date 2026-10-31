@@ -284,7 +284,9 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                     directTrack.Cover,
                     directTrack.DurationMs > 0 ? directTrack.DurationMs : null,
                     directTrack.Isrc,
-                    directTrack.HasAtmos);
+                    directTrack.HasAtmos,
+                    directTrack.TrackNumber,
+                    directTrack.DiscNumber);
                 if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, album, durationMs, isrc))
                 {
                     return candidate;
@@ -909,7 +911,9 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                 CoverUrl: NormalizeAmazonImageUrl(FirstImage(node)),
                 DurationMs: ParseClockDurationMs(FirstText(node, "secondaryText3", "tertiaryText")),
                 Isrc: FirstText(node, "isrc", "ISRC"),
-                HasAtmos: JsonElementContainsAtmos(node));
+                HasAtmos: JsonElementContainsAtmos(node),
+                TrackNumber: ReadInt(node, "trackNumber") ?? 0,
+                DiscNumber: ReadInt(node, "discNumber") ?? 0);
         }
     }
 
@@ -1321,7 +1325,9 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             CoverUrl: NormalizeAmazonImageUrl(FirstImage(node)),
             DurationMs: durationMs,
             Isrc: FirstText(node, "isrc", "ISRC"),
-            HasAtmos: JsonElementContainsAtmos(node));
+            HasAtmos: JsonElementContainsAtmos(node),
+            TrackNumber: ReadInt(node, "trackNumber") ?? 0,
+            DiscNumber: ReadInt(node, "discNumber") ?? 0);
     }
 
     private static AmazonCatalogItem? ReadArtistProfile(JsonElement root, string id, string url)
@@ -2280,7 +2286,9 @@ public sealed record AmazonTrack(
     int Position,
     string Isrc,
     string AmazonId,
-    bool HasAtmos);
+    bool HasAtmos,
+    int TrackNumber = 0,
+    int DiscNumber = 0);
 
 public sealed record AmazonCatalogItem(
     string Id,
@@ -2292,7 +2300,9 @@ public sealed record AmazonCatalogItem(
     string CoverUrl,
     int? DurationMs,
     string Isrc,
-    bool HasAtmos)
+    bool HasAtmos,
+    int TrackNumber = 0,
+    int DiscNumber = 0)
 {
     public AmazonTrack ToTrack(int position)
         => new(
@@ -2306,5 +2316,7 @@ public sealed record AmazonCatalogItem(
             position,
             Isrc,
             Id,
-            HasAtmos);
+            HasAtmos,
+            TrackNumber,
+            DiscNumber);
 }

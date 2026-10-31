@@ -1088,7 +1088,10 @@ public sealed class DownloadIntentService
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: DownloadContentTypes.Atmos,
             Album: ResolveResolvedAlbumForAtmos(intent.Album, resolvedAtmosTrack!.Album),
-            AlbumArtist: FirstNonEmpty(intent.AlbumArtist, resolvedAtmosTrack!.Artist, intent.Artist));
+            AlbumArtist: FirstNonEmpty(intent.AlbumArtist, resolvedAtmosTrack!.Artist, intent.Artist),
+            Metadata: new QueuePreResolutionPayload.ResolvedMetadata(
+                TrackNumber: resolvedAtmosTrack.TrackNumber > 0 ? resolvedAtmosTrack.TrackNumber : intent.TrackNumber,
+                DiscNumber: resolvedAtmosTrack.DiscNumber > 0 ? resolvedAtmosTrack.DiscNumber : intent.DiscNumber));
     }
 
     [ExcludeFromCodeCoverage]
@@ -4228,7 +4231,9 @@ public sealed class DownloadIntentService
             && !string.IsNullOrWhiteSpace(intent.Album)
             && !string.IsNullOrWhiteSpace(intent.Isrc)
             && !string.IsNullOrWhiteSpace(intent.Cover)
-            && intent.DurationMs > 0;
+            && intent.DurationMs > 0
+            && (!IsMusicIntent(intent) || intent.TrackNumber > 0
+                || intent.SourceService is SoundCloudPlatform or SoulseekPlatform);
     }
 
     private static bool ShouldOverwriteString(bool overwriteExisting, string? existingValue, string? resolvedValue) =>
@@ -5449,6 +5454,8 @@ public sealed class DownloadIntentService
         ApplyIntentStringValue(false, intent.Cover, track.CoverUrl, value => intent.Cover = value);
         ApplyIntentStringValue(false, intent.Url, track.Url, value => intent.Url = value);
         ApplyIntentIntValue(false, intent.DurationMs, track.DurationMs ?? 0, value => intent.DurationMs = value);
+        ApplyIntentIntValue(false, intent.TrackNumber, track.TrackNumber, value => intent.TrackNumber = value);
+        ApplyIntentIntValue(false, intent.DiscNumber, track.DiscNumber, value => intent.DiscNumber = value);
     }
 
     private static bool IsSpotifySourceUrl(string sourceUrl)
@@ -5498,6 +5505,8 @@ public sealed class DownloadIntentService
         ApplyIntentStringValue(overwriteExisting, intent.Isrc, track.Isrc, value => intent.Isrc = value);
         ApplyIntentStringValue(overwriteExisting, intent.Cover, track.CoverUrl, value => intent.Cover = value);
         ApplyIntentIntValue(overwriteExisting, intent.DurationMs, track.DurationSeconds * 1000, value => intent.DurationMs = value);
+        ApplyIntentIntValue(overwriteExisting, intent.TrackNumber, track.TrackNumber, value => intent.TrackNumber = value);
+        ApplyIntentIntValue(overwriteExisting, intent.DiscNumber, track.DiscNumber, value => intent.DiscNumber = value);
     }
 
     private static readonly Dictionary<string, int> CanonicalQualityRanks =
@@ -6035,7 +6044,10 @@ public sealed class DownloadIntentService
            && !string.IsNullOrWhiteSpace(payload.Album)
            && !string.IsNullOrWhiteSpace(payload.Isrc)
            && !string.IsNullOrWhiteSpace(NormalizeQueueCover(payload.Cover))
-           && payload.DurationSeconds > 0;
+           && payload.DurationSeconds > 0
+           && (payload.TrackNumber > 0 || payload.SpotifyTrackNumber > 0
+               || payload.ContentType is DownloadContentTypes.Podcast or DownloadContentTypes.Video
+               || payload.Engine is SoundCloudPlatform or SoulseekPlatform);
 
     private static void PopulateEngineIdentityFromSourceUrl(EngineQueueItemBase payload, string sourceUrl)
     {
@@ -6700,6 +6712,10 @@ public sealed class DownloadIntentService
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
         payload.TidalId = resolvedTidalAtmosId;
+        if (resolvedAtmosTrack!.TrackNumber > 0)
+            payload.TrackNumber = payload.SpotifyTrackNumber = resolvedAtmosTrack.TrackNumber;
+        if (resolvedAtmosTrack.DiscNumber > 0)
+            payload.DiscNumber = payload.SpotifyDiscNumber = resolvedAtmosTrack.DiscNumber;
         payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc) ?? string.Empty;
         payload.Album = ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album) ?? string.Empty;
         payload.AlbumArtist = FirstNonEmpty(
@@ -6774,6 +6790,10 @@ public sealed class DownloadIntentService
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
         payload.AmazonId = amazonTrack.Id;
+        if (amazonTrack.TrackNumber > 0)
+            payload.TrackNumber = payload.SpotifyTrackNumber = amazonTrack.TrackNumber;
+        if (amazonTrack.DiscNumber > 0)
+            payload.DiscNumber = payload.SpotifyDiscNumber = amazonTrack.DiscNumber;
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
@@ -7154,7 +7174,7 @@ public sealed class DownloadIntentService
         where TPayload : class
     {
         dynamic p = payload;
-        var trackNumber = ResolveIntentTrackNumber(intent, p.SpotifyTrackNumber, p.Position);
+        var trackNumber = ResolveIntentTrackNumber(intent, p.SpotifyTrackNumber);
         var discNumber = ResolveIntentDiscNumber(intent, p.SpotifyDiscNumber);
         var trackTotal = ResolveIntentTrackTotal(intent, p.SpotifyTotalTracks);
 
@@ -7221,7 +7241,7 @@ public sealed class DownloadIntentService
             p.WatchlistUnavailableSettingsFingerprint);
     }
 
-    private static int ResolveIntentTrackNumber(DownloadIntent intent, int existingTrackNumber, int fallbackPosition)
+    private static int ResolveIntentTrackNumber(DownloadIntent intent, int existingTrackNumber)
     {
         if (intent.TrackNumber > 0)
         {
@@ -7233,7 +7253,9 @@ public sealed class DownloadIntentService
             return existingTrackNumber;
         }
 
-        return fallbackPosition > 0 ? fallbackPosition : 0;
+        // Playlist order is not release metadata. Leave an unknown album number unset
+        // so catalog resolution can supply it instead of persisting a fabricated number.
+        return 0;
     }
 
     private static double? ResolveIntentDouble(double? value, double? existing)

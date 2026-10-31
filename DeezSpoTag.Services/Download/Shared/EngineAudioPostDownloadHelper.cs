@@ -1406,7 +1406,7 @@ public static partial class EngineAudioPostDownloadHelper
             return payload.TrackNumber;
         }
 
-        return payload.SpotifyTrackNumber > 0 ? payload.SpotifyTrackNumber : payload.Position;
+        return Math.Max(0, payload.SpotifyTrackNumber);
     }
 
     private static int ResolveDiscNumber(EngineQueueItemBase payload)
@@ -1628,10 +1628,6 @@ public static partial class EngineAudioPostDownloadHelper
             else if (payload.SpotifyTrackNumber > 0)
             {
                 track.TrackNumber = payload.SpotifyTrackNumber;
-            }
-            else if (payload.Position > 0)
-            {
-                track.TrackNumber = payload.Position;
             }
         }
 

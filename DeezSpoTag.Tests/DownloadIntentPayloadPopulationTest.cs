@@ -21,6 +21,51 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadIntentPayloadPopulationTest
 {
+    [Theory]
+    [InlineData(0, "pending")]
+    [InlineData(4, "resolved")]
+    public void VisibleMusicQueueResolvesMissingAlbumNumberBeforeDownloading(int albumNumber, string expectedStatus)
+    {
+        var payload = new TidalQueueItem { Engine = "tidal", SourceUrl = "https://tidal.com/track/123", TidalId = "123",
+            ContentType = "stereo", Title = "Song", Artist = "Artist", Album = "Album", Isrc = "TEST00000001",
+            Cover = "https://example.test/cover.jpg", DurationSeconds = 180, Position = 37, TrackNumber = albumNumber };
+        typeof(DownloadIntentService).GetMethod("ApplyVisiblePayloadResolutionState", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { payload });
+        Assert.Equal(expectedStatus, payload.ResolutionStatus);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(4, true)]
+    public void MusicMetadataWithoutAnAlbumTrackNumberStillRequiresCatalogResolution(int number, bool complete)
+    {
+        var intent = new DownloadIntent { SourceService = "deezer", ContentType = "stereo", Title = "Song", Artist = "Artist",
+            Album = "Album", Isrc = "TEST00000001", Cover = "https://example.test/cover.jpg", DurationMs = 180000, Position = 37,
+            TrackNumber = number };
+        var method = typeof(DownloadIntentService).GetMethod("HasCompleteIntentMetadata", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.Equal(complete, (bool)method.Invoke(null, new object[] { intent })!);
+    }
+
+    [Theory]
+    [InlineData("stereo", 0)]
+    [InlineData("atmos", 0)]
+    [InlineData("stereo", 4)]
+    [InlineData("atmos", 4)]
+    public void QueueAlbumNumberNeverComesFromRecommendationPosition(string contentType, int albumNumber)
+    {
+        var method = typeof(DownloadIntentService).GetMethod("ApplyIntentMetadataToStereoPayload", BindingFlags.Static | BindingFlags.NonPublic)!;
+        foreach (var payload in new EngineQueueItemBase[] { new DeezerQueueItem(), new TidalQueueItem(), new QobuzQueueItem(), new AmazonQueueItem(), new AppleQueueItem() })
+        {
+            payload.Position = 37;
+            payload.ContentType = contentType;
+            method.MakeGenericMethod(payload.GetType()).Invoke(null, new object[] { payload,
+                new DownloadIntent { Position = 37, TrackNumber = albumNumber } });
+            Assert.Equal(albumNumber, payload.TrackNumber);
+            Assert.Equal(albumNumber, payload.SpotifyTrackNumber);
+            Assert.Equal(37, payload.Position);
+        }
+    }
+
     [Fact]
     public void ResolvedCatalogDisplayArtworkSurvivesEveryStandardEngineWithoutBecomingTaggingArtwork()
     {
@@ -282,6 +327,7 @@ public sealed class DownloadIntentPayloadPopulationTest
         payload.Album = "Album";
         payload.Isrc = "USRC17607839";
         payload.DurationSeconds = 240;
+        payload.TrackNumber = 4;
         payload.SourceUrl = $"https://example.test/{engine}/track";
         SetDirectIdentity(payload, engine);
 
@@ -305,6 +351,7 @@ public sealed class DownloadIntentPayloadPopulationTest
         payload.Isrc = "USRC17607839";
         payload.Cover = "https://images.example.test/cover.jpg";
         payload.DurationSeconds = 240;
+        payload.TrackNumber = 4;
         payload.SourceUrl = $"https://example.test/{engine}/track";
         SetDirectIdentity(payload, engine);
 

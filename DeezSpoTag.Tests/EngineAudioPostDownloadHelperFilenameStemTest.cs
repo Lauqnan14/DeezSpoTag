@@ -9,6 +9,49 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EngineAudioPostDownloadHelperFilenameStemTest
 {
+    [Theory]
+    [InlineData("stereo", 0)]
+    [InlineData("atmos", 0)]
+    [InlineData("stereo", 4)]
+    [InlineData("atmos", 4)]
+    public void RecommendationPositionCannotBecomeTheFilenameOrTagTrackNumber(string contentType, int albumNumber)
+    {
+        var settings = CreateSettings();
+        settings.TracknameTemplate = "%tracknumber% - %title%";
+        var processor = new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance);
+        var payload = new TidalQueueItem { Title = "Song", Artist = "Artist", Album = "Album",
+            CollectionType = "album", ContentType = contentType, Position = 37, TrackNumber = albumNumber };
+        var context = EngineAudioPostDownloadHelper.BuildTrackContext(payload, settings, processor, "tidal", "123");
+        Assert.Equal(albumNumber, context.Track.TrackNumber);
+        Assert.DoesNotContain("37", context.PathResult.Filename);
+        Assert.Equal(37, context.Track.Position);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    public void FinalTagSynchronizationDoesNotInventAnAlbumNumber(int albumNumber)
+    {
+        var track = new DeezSpoTag.Core.Models.Track { TrackNumber = albumNumber };
+        EngineAudioPostDownloadHelper.SynchronizeTrackWithPayloadForTagging(track,
+            new TidalQueueItem { Position = 37, Title = "Song", Artist = "Artist", Album = "Album" });
+        Assert.Equal(albumNumber, track.TrackNumber);
+    }
+
+    [Theory]
+    [InlineData(false, 4)]
+    [InlineData(true, 37)]
+    public void ExplicitPlaylistCompilationNumberingRemainsAnIndependentUserSetting(bool compilation, int expected)
+    {
+        var settings = CreateSettings();
+        settings.Tags.SavePlaylistAsCompilation = compilation;
+        var payload = new TidalQueueItem { Title = "Song", Artist = "Artist", Album = "Album", TrackNumber = 4,
+            Position = 37, CollectionType = "playlist", CollectionName = "User playlist" };
+        var context = EngineAudioPostDownloadHelper.BuildTrackContext(payload, settings,
+            new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance), "tidal", "123");
+        Assert.Equal(expected, context.Track.TrackNumber);
+    }
+
     [Fact]
     public void GeneratePaths_UsesTrackTemplateForAlbumDownloads()
     {

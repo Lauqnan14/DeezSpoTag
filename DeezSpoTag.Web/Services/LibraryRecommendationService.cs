@@ -1655,6 +1655,7 @@ public sealed class LibraryRecommendationService
                 var maintenanceToken = work.Token;
                 var pool = await TryLoadPersistedDailyPoolAsync(scope, today, null, maintenanceToken);
                 if (pool is null) return;
+                var publishedTrackIds = pool.Diagnostics?.PublishedTrackIds;
                 var excluded = BuildNormalizedRecommendationIdSet(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(RecommendationSource, scope.StationId, maintenanceToken));
                 excluded.UnionWith(await _repository.GetRecommendationRejectedTrackIdsAsync(scope.LibraryId, scope.FolderId, scope.StationId, maintenanceToken));
                 var eligible = await FilterRecommendationCandidatesThroughDedupeAsync(scope, pool.Tracks.ToList(), maintenanceToken);
@@ -1676,10 +1677,10 @@ public sealed class LibraryRecommendationService
                 var enriched = await EnrichRecommendationMetadataAsync(eligible, maintenanceToken);
                 maintenanceToken.ThrowIfCancellationRequested();
                 if (DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime) != today) return;
-                var selection = pool.DailyAllocations is null ? enriched : BuildSavedDailySelection(enriched, pool.DailyAllocations, pool.DailyTrackCount ?? MaxDailyRecommendations, today, excluded, pool.Diagnostics?.PublishedTrackIds);
+                var selection = pool.DailyAllocations is null ? enriched : BuildSavedDailySelection(enriched, pool.DailyAllocations, pool.DailyTrackCount ?? MaxDailyRecommendations, today, excluded, publishedTrackIds);
                 var complete = pool.DailyAllocations is null || HasCompleteDailyAllocation(selection, pool.DailyAllocations);
                 var missing = pool.DailyAllocations?.ToDictionary(p => p.Key, p => Math.Max(0, p.Value - selection.Count(t => t.RecommendationOrigin == p.Key)));
-                var diagnostics = pool.Diagnostics is null ? null : pool.Diagnostics with { MissingSourceCounts = missing ?? new Dictionary<string, int>(), DestinationCount = selection.Count, OverflowCount = Math.Max(0, enriched.Count - selection.Count), PublishedTrackIds = selection.Select(t=>t.Id).ToArray() };
+                var diagnostics = pool.Diagnostics is null ? null : pool.Diagnostics with { MissingSourceCounts = missing ?? new Dictionary<string, int>(), DestinationCount = selection.Count, OverflowCount = Math.Max(0, enriched.Count - selection.Count), PublishedTrackIds = complete ? selection.Select(t=>t.Id).ToArray() : publishedTrackIds };
                 var payload = JsonSerializer.Serialize(new PersistedDailyPoolDto(pool.GeneratedAtUtc, enriched, pool.Station.ImageUrl,
                     pool.DailyTrackCount, pool.DailyAllocations, pool.DailyAiFilterMode, diagnostics, complete ? "ready" : "partial", pool.ReasonCodes, SeedScopeKey: scope.ScopeKey));
                 await _repository.UpsertPlaylistTrackCandidateCacheAsync(DailyPoolCacheSource, scope.ScopeKey + $":day:{today:yyyyMMdd}",
@@ -2271,7 +2272,8 @@ public sealed class LibraryRecommendationService
                 selected.Count,Math.Max(0,pool.Count-selected.Count),
                 processed.ToDictionary(p=>p.Key,p=>(IReadOnlyList<long>)p.Value.Order().ToArray()), attempts,exhausted,
                 published || (final && complete),
-                published || (final && complete) ? selected.Select(t=>t.Id).ToArray() : null);
+                published && !complete ? previousDiagnostics?.PublishedTrackIds
+                    : published || (final && complete) ? selected.Select(t=>t.Id).ToArray() : null);
             return new(new(scope.StationId,$"Recommendations - {scope.FolderName}",
                     BuildDailyRecommendationDescription(scope.FolderName,dayUtc.DayOfWeek),RecommendationSourceId,
                     scope.FolderName,complete ? selected.Count : 0,stationImageUrl),pool,
@@ -2638,7 +2640,21 @@ public sealed class LibraryRecommendationService
         var selected = assigned.OrderBy(p => p.Key).Select(p => p.Value).ToList();
         var currentSources = MergeRotating(selected.Where(t => t.RecommendationOrigin == "deezer").ToList(), selected.Where(t => t.RecommendationOrigin == "shazam").ToList(), MaximumConfiguredDailyTracks * RecommendationPoolMultiplier, day);
         var addedSources = MergeRotating(selected.Where(t => t.RecommendationOrigin == "spotify").ToList(), selected.Where(t => t.RecommendationOrigin == "tidal").ToList(), MaximumConfiguredDailyTracks * RecommendationPoolMultiplier, day);
-        return MergeRotating(currentSources, addedSources, Math.Clamp(limit, 1, MaximumConfiguredDailyTracks * RecommendationPoolMultiplier), day);
+        var ordered = MergeRotating(currentSources, addedSources, MaximumConfiguredDailyTracks * RecommendationPoolMultiplier, day);
+        if (preferredIds is { Count: > 0 })
+        {
+            // Published IDs are an ordered snapshot, not just a membership preference.
+            // Keep surviving songs in their slots; replacements fill only the vacant slots.
+            // Apply the view limit afterwards so a smaller page is the same snapshot's prefix.
+            var byId = ordered.ToDictionary(track => track.Id, StringComparer.Ordinal);
+            var slotsByPosition = new RecommendationTrackDto?[ordered.Count];
+            for (var index = 0; index < Math.Min(preferredIds.Count, slotsByPosition.Length); index++)
+                if (byId.Remove(preferredIds[index], out var track)) slotsByPosition[index] = track;
+            var replacements = new Queue<RecommendationTrackDto>(ordered.Where(track => byId.ContainsKey(track.Id)));
+            ordered = slotsByPosition.Select(track => track ?? replacements.Dequeue()).ToList();
+        }
+        return ordered.Take(Math.Clamp(limit, 1, MaximumConfiguredDailyTracks * RecommendationPoolMultiplier))
+            .Select((track, index) => track with { TrackPosition = index + 1 }).ToList();
     }
 
     private async Task<List<LibraryRecommendationSeedTrackDto>> GetOrderedRecommendationSeedsAsync(

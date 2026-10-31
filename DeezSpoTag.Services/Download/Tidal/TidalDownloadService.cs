@@ -98,7 +98,9 @@ public sealed class TidalDownloadService
         string Isrc,
         int DurationSeconds,
         string CoverUrl,
-        string ReleaseDate = "");
+        string ReleaseDate = "",
+        int TrackNumber = 0,
+        int DiscNumber = 0);
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
@@ -481,7 +483,9 @@ public sealed class TidalDownloadService
             track.Isrc,
             track.Duration,
             BuildTidalCoverUrl(track.Album?.Cover),
-            track.ReleaseDate ?? track.Album?.ReleaseDate ?? string.Empty);
+            track.ReleaseDate ?? track.Album?.ReleaseDate ?? string.Empty,
+            track.TrackNumber,
+            track.VolumeNumber);
 
     private static string BuildTidalCoverUrl(string? imageId)
     {
@@ -3872,6 +3876,12 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("isrc")]
         public string Isrc { get; set; } = "";
+
+        [JsonPropertyName("trackNumber")]
+        public int TrackNumber { get; set; }
+
+        [JsonPropertyName("volumeNumber")]
+        public int VolumeNumber { get; set; }
 
         [JsonPropertyName("duration")]
         public int Duration { get; set; }

@@ -20,6 +20,18 @@ namespace DeezSpoTag.Tests;
 public sealed class AmazonMusicMetadataApiGuardrailTest
 {
     [Fact]
+    public void NativeAmazonAlbumNumberIsSeparateFromPlaylistPosition()
+    {
+        using var json = JsonDocument.Parse("""{"deeplink":"/tracks/B000000004","primaryText":"Song","artistName":"Artist","trackNumber":4,"discNumber":2}""");
+        var method = typeof(AmazonMusicMetadataService).GetMethod("ReadCatalogItem", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var item = Assert.IsType<AmazonCatalogItem>(method.Invoke(null, new object[] { json.RootElement }));
+        var track = item.ToTrack(37);
+        Assert.Equal(37, track.Position);
+        Assert.Equal(4, track.GetType().GetProperty("TrackNumber")?.GetValue(track));
+        Assert.Equal(2, track.GetType().GetProperty("DiscNumber")?.GetValue(track));
+    }
+
+    [Fact]
     public async Task PermanentSessionRejection_DoesNotRebootstrapIndefinitely()
     {
         var root = Path.Join(Path.GetTempPath(), "amazon-session-rejection-" + Path.GetRandomFileName());

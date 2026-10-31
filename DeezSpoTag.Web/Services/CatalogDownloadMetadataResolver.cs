@@ -28,6 +28,8 @@ public sealed class CatalogDownloadMetadataResolver(string sourceKey, IServicePr
                 if (tidal == null || tidal.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) != id) return;
                 ApplyCatalogTrack(track, tidal.Title, tidal.Artist, tidal.Album, tidal.Isrc,
                     tidal.DurationSeconds, tidal.ReleaseDate, settings);
+                if (tidal.TrackNumber > 0) track.TrackNumber = tidal.TrackNumber;
+                if (tidal.DiscNumber > 0) track.DiscNumber = tidal.DiscNumber;
                 break;
             case "amazon":
                 var amazon = await services.GetRequiredService<AmazonMusicMetadataService>()
@@ -36,6 +38,8 @@ public sealed class CatalogDownloadMetadataResolver(string sourceKey, IServicePr
                 if (song == null) return;
                 ApplyCatalogTrack(track, song.Title, song.Artist, song.Album, song.Isrc,
                     song.DurationMs / 1000, null, settings);
+                if (song.TrackNumber > 0) track.TrackNumber = song.TrackNumber;
+                if (song.DiscNumber > 0) track.DiscNumber = song.DiscNumber;
                 break;
             case "apple":
                 using (var document = await services.GetRequiredService<AppleMusicCatalogService>()

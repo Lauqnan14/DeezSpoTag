@@ -19,6 +19,64 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class RecommendationCacheServingTest : IAsyncLifetime
 {
+    [Fact]
+    public async Task InterruptedDailyRefillRetainsThePublishedSlotMapForRestart()
+    {
+        var clock = new ArtworkClock();
+        var day = DateOnly.FromDateTime(clock.GetUtcNow().DateTime);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var published = Enumerable.Range(1, 60).Select(n => n.ToString()).Reverse().ToArray();
+        var diagnostics = new DailyRecommendationDiagnosticsDto(0, new Dictionary<string, int>(), new Dictionary<string, int>(),
+            new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), 0, 0,
+            InitialSelectionPublished: true, PublishedTrackIds: published);
+        // All candidates have become ineligible and no replacement seeds are available yet.
+        await Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id, $"v1:{day:yyyyMMdd}",
+            JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = clock.GetUtcNow(), Tracks = Array.Empty<RecommendationTrackDto>(),
+                TrackCount = 60, Allocations = new Dictionary<string, int> { ["deezer"] = 60 }, Status = "partial", Diagnostics = diagnostics }),
+            0, null, null, true);
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+        var scope = typeof(LibraryRecommendationService).GetMethod("BuildScope", flags)!.Invoke(null, new object[] { Folder.LibraryId!.Value, Folder });
+        var build = typeof(LibraryRecommendationService).GetMethod("BuildDailyPoolAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        await (Task)build.Invoke(Service(clock), new object?[] { scope, day, null, System.Threading.CancellationToken.None, null, false })!;
+        var saved = await Repository.GetPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id + $":day:{day:yyyyMMdd}");
+        using var document = JsonDocument.Parse(saved!.CandidatesJson);
+        Assert.Equal(published, document.RootElement.GetProperty("Diagnostics").GetProperty("PublishedTrackIds").EnumerateArray().Select(value => value.GetString()));
+    }
+
+    [Fact]
+    public async Task BrowsingReloadAndCacheMaintenancePreservePublishedDailySlots()
+    {
+        var clock = new ArtworkClock();
+        var day = DateOnly.FromDateTime(clock.GetUtcNow().DateTime);
+        var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
+        var rows = Enumerable.Range(1, 90).Select(n => new RecommendationTrackDto(n.ToString(), "Song " + n, 180, "", n,
+            new("artist" + n, "Artist " + n), new("album", "Album", ""), RecommendationOrigin: "deezer")).ToArray();
+        var published = rows.Take(60).Select(track => track.Id).Reverse().ToArray();
+        async Task SaveAsync(IEnumerable<RecommendationTrackDto> tracks)
+        {
+            var payload = JsonSerializer.Serialize(new { GeneratedAtUtc = clock.GetUtcNow(), Tracks = tracks, SeedScopeKey = id,
+                TrackCount = 60, Allocations = new Dictionary<string, int> { ["deezer"] = 60 }, Status = "ready",
+                AiFilterMode = DailyRecommendationAiFilterMode.Allow,
+                Diagnostics = new DailyRecommendationDiagnosticsDto(30, new Dictionary<string, int>(), new Dictionary<string, int>(),
+                    new Dictionary<string, int>(), new Dictionary<string, string>(), new Dictionary<string, int>(), 60, 30,
+                    InitialSelectionPublished: true, PublishedTrackIds: published) });
+            await Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id,
+                $"v1:{day:yyyyMMdd}", payload, 0, null, null, true);
+        }
+        await SaveAsync(rows);
+        var first = await Service(clock).GetRecommendationsAsync(Folder.LibraryId!.Value, id, Folder.Id);
+        Assert.Equal(published, first!.Tracks.Select(track => track.Id));
+        await SaveAsync(rows.Reverse());
+        var reloaded = await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id, Folder.Id);
+        Assert.Equal(published, reloaded!.Tracks.Select(track => track.Id));
+        await Repository.AddRecommendationRejectionAsync(new(Folder.LibraryId.Value, Folder.Id, id, published[7], null, null, null));
+        var replaced = await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id, Folder.Id);
+        Assert.Equal(60, replaced!.Tracks.Count);
+        Assert.DoesNotContain(replaced.Tracks, track => track.Id == published[7]);
+        for (var index = 0; index < 60; index++)
+            if (index != 7) Assert.Equal(published[index], replaced.Tracks[index].Id);
+    }
+
     [Theory]
     [InlineData(DailyRecommendationAiFilterMode.Allow, 20, false)]
     [InlineData(DailyRecommendationAiFilterMode.BlockAiArtistsAndFullyGenerated, 20, false)]

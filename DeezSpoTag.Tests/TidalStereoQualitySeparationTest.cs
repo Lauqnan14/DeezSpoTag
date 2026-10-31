@@ -15,6 +15,7 @@ using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Shared;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -22,6 +23,25 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class TidalStereoQualitySeparationTest
 {
+    [Fact]
+    public async Task NativeTidalAlbumNumbersReachDownloadTaggingMetadata()
+    {
+        using var handler = new ManifestRefreshHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"id":812345678955,"title":"Song","artist":{"name":"Artist"},"album":{"title":"Album"},"duration":180,"trackNumber":4,"volumeNumber":2}""")
+        });
+        var service = CreateRegionalService(handler, "US");
+        var metadata = await service.ResolveTrackMetadataAsync("812345678955", CancellationToken.None);
+        Assert.NotNull(metadata);
+        Assert.Equal(4, metadata.GetType().GetProperty("TrackNumber")?.GetValue(metadata));
+        using var provider = new ServiceCollection().AddSingleton(service).BuildServiceProvider();
+        var track = new DeezSpoTag.Core.Models.Track { Source = "tidal", SourceId = "812345678955", TrackNumber = 37 };
+        await new DeezSpoTag.Web.Services.CatalogDownloadMetadataResolver("tidal", provider)
+            .ResolveTrackAsync(track, new DeezSpoTagSettings(), CancellationToken.None);
+        Assert.Equal(4, track.TrackNumber);
+        Assert.Equal(2, track.DiscNumber);
+    }
+
     [Fact]
     public async Task TidalRetainedConversion_RetriesOfflineWithoutDownloadingAudioAgain()
     {
