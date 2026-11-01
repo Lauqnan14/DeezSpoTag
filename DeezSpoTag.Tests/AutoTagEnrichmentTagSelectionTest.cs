@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -14,6 +15,76 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagEnrichmentTagSelectionTest
 {
+    [Theory]
+    [InlineData("apple", false, false)]
+    [InlineData("itunes", false, false)]
+    [InlineData("spotify", true, false)]
+    [InlineData("spotify", true, true)]
+    [InlineData("apple", true, true)]
+    public async System.Threading.Tasks.Task SharedAutoTagCollectionUsesAppleForMatchedAndIndexedArtists(string provider, bool indexed, bool rejectedAppleIdentity)
+    {
+        using var fixture = new AppleArtistBiographyServiceTest.ArtistHttpFixture();
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string,string?> { ["ConnectionStrings:Library"] = "Data Source=" + Path.Join(fixture.Root,"library.db") }).Build();
+        await new DeezSpoTag.Services.Library.LibraryDbService(config, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance).EnsureSchemaAsync();
+        var repository = new DeezSpoTag.Services.Library.LibraryRepository(config, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.LibraryRepository>.Instance);
+        var cache = new DeezSpoTag.Services.Library.ArtistPageCacheRepository(config, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.ArtistPageCacheRepository>.Instance);
+        var aliases = new DeezSpoTag.Services.Library.ArtistAliasService(config, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.ArtistAliasService>.Instance);
+        if (indexed)
+        {
+            await using var db = new Microsoft.Data.Sqlite.SqliteConnection(config.GetConnectionString("Library"));
+            await db.OpenAsync(); await using var command = db.CreateCommand();
+            command.CommandText = "INSERT INTO artist(id,name) VALUES(1085,'4Mr Frank White');";
+            await command.ExecuteNonQueryAsync();
+            await repository.UpsertArtistSourceIdAsync(1085, "apple", "1623154745", userConfirmed:true);
+            await repository.UpsertArtistSourceIdAsync(1085, provider, "1623154745", userConfirmed:true);
+            var old = new DeezSpoTag.Core.Models.ArtistEnrichmentMetadata(1085,"4Mr Frank White",DeezSpoTag.Core.Models.ArtistMetadataRole.Unknown,
+                "musicbrainz","old-binding",null,new("United Kingdom","London",null,"GB","musicbrainz","old",null,null,null,null),Array.Empty<DeezSpoTag.Core.Models.LanguageMetadataEvidence>());
+            await cache.UpsertRequiredAsync("artist-enrichment","1085",System.Text.Json.JsonSerializer.Serialize(new {version="v1", metadata=old}),DateTimeOffset.UtcNow,default);
+            if (rejectedAppleIdentity)
+            {
+                command.CommandText = "UPDATE artist_source SET verification_state='rejected' WHERE source='apple'";
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+        var gate = new ArtistMetadataProviderGate(Microsoft.Extensions.Logging.Abstractions.NullLogger<ArtistMetadataProviderGate>.Instance,_=>TimeSpan.Zero);
+        var source = DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver.CreateAppleSource(fixture.Service,repository,cache,null!,aliases,gate);
+        var resolver = new DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>.Instance,new[] {source});
+        var runner = (LocalAutoTagRunner)RuntimeHelpers.GetUninitializedObject(typeof(LocalAutoTagRunner));
+        void Set(string name, object? value) => typeof(LocalAutoTagRunner).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(runner,value);
+        Set("_artistLocationResolver",resolver);
+        Set("_logger",Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalAutoTagRunner>.Instance);
+        Set("_artistLibraryRepository",indexed ? repository : null);
+        Set("_artistPageCache",indexed ? cache : null);
+        var track = new AutoTagTrack { Title="A Song", Artists=new(){"4Mr Frank White"},ArtistId="1623154745" };
+        await runner.PopulateArtistMetadataAsync(track,providerId:provider);
+        if (rejectedAppleIdentity)
+        {
+            Assert.Null(track.ArtistMetadata?.Location);
+            Assert.Equal(0,fixture.Handler.Calls);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            return;
+        }
+        Assert.Equal("Nairobi",track.ArtistMetadata?.Location?.City);
+        Assert.Equal("apple",track.ArtistMetadata?.Location?.Source);
+        Assert.Equal("artist-origin",track.ArtistMetadata?.Location?.LocationMeaning);
+        var fieldValues = typeof(LocalAutoTagRunner).GetMethod("GetArtistFieldValues",BindingFlags.Static|BindingFlags.NonPublic)!;
+        Assert.Equal("Kenya",Assert.Single((List<string>)fieldValues.Invoke(null,new object[]{track,"artistCountry"})!));
+        Assert.Equal("Nairobi",Assert.Single((List<string>)fieldValues.Invoke(null,new object[]{track,"artistCity"})!));
+        Assert.Equal("A Song",track.Title);
+        Assert.Equal("4Mr Frank White",Assert.Single(track.Artists));
+        Assert.Equal(1,fixture.Handler.Calls);
+        if (indexed)
+        {
+            await runner.PopulateArtistMetadataAsync(track,providerId:provider);
+            Assert.Equal(1,fixture.Handler.Calls); // The policy change must not cause a request on every file.
+            var saved = await cache.TryGetRequiredAsync("artist-enrichment","1085",default);
+            Assert.Contains("apple-first-v1",saved!.PayloadJson);
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    }
+
     private static readonly string[] ExpectedDownloadEnrichmentTags =
     {
         "artist",

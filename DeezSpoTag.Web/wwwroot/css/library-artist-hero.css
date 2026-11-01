@@ -257,7 +257,7 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
-    max-height: 210px;
+    max-height: 420px;
     overflow: auto;
 }
 
@@ -343,9 +343,14 @@
         gap: 8px;
     }
 
+    .artist-page .actions-dropdown {
+        min-width: 0;
+        width: min(92vw, 340px);
+    }
+
     .artist-page .dropdown-visuals-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        max-height: 156px;
+        max-height: 320px;
     }
 }
 

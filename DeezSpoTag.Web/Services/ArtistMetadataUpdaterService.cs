@@ -984,7 +984,8 @@ public sealed partial class ArtistMetadataUpdaterService
         ApplyConfirmedPushScheduling(tracked, prepared, pendingWork);
         foreach (var target in ResolveTrackedTargets(tracked))
         {
-            var targetResult = MergeTargetResults(prior?.TargetResults, pushed.Targets).FirstOrDefault(candidate =>
+            var mergedResults = MergeTargetResults(prior?.TargetResults, pushed.Targets);
+            var targetResult = mergedResults?.FirstOrDefault(candidate =>
                 string.Equals(candidate.Target, target, StringComparison.OrdinalIgnoreCase));
             var requestedFields = requestedByTarget.TryGetValue(target, out var targetFields)
                 ? targetFields
@@ -2995,13 +2996,12 @@ public sealed partial class ArtistMetadataUpdaterService
                 foreach (var artistId in artistIds)
                 {
                     var uploaded = await _navidromeClient.UpdateArtistImageFromFileAsync(
-                        navidrome.Url,
-                        navidrome.Username,
-                        navidrome.Password,
+                        new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
                         artistId,
                         navidromeImagePath!,
                         null,
-                        cancellationToken, requireSuccessfulResponse: true);
+                        cancellationToken,
+                        requireSuccessfulResponse: true);
                     if (uploaded)
                     {
                         uploadsAccepted++;

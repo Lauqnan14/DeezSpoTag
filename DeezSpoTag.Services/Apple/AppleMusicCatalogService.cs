@@ -500,11 +500,20 @@ public sealed class AppleMusicCatalogService
         string id,
         string storefront,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeArtistDetails = false,
+        bool refresh = false)
     {
         var url =
             $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/artists/{Uri.EscapeDataString(id)}?l={Uri.EscapeDataString(language)}";
-        var cacheKey = $"apple:artist:{storefront}:{id}";
+        if (includeArtistDetails) url += "&extend=artistBio,origin,bornOrFormed,isGroup";
+        var cacheKey = includeArtistDetails ? $"apple:artist-details:{storefront}:{id}:{language}" : $"apple:artist:{storefront}:{id}";
+        if (refresh)
+        {
+            var json = await SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken, preserveProviderErrors: true);
+            _cache.Set(cacheKey, json, TimeSpan.FromMinutes(30));
+            return JsonDocument.Parse(json);
+        }
         return await GetCachedJsonAsync(cacheKey, TimeSpan.FromMinutes(30), () => SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken));
     }
 
@@ -1317,7 +1326,8 @@ public sealed class AppleMusicCatalogService
         HttpMethod method,
         string url,
         CancellationToken cancellationToken,
-        Action<HttpRequestMessage>? configure = null)
+        Action<HttpRequestMessage>? configure = null,
+        bool preserveProviderErrors = false)
     {
         const int maxAttempts = 3;
         var client = _httpClientFactory.CreateClient();
@@ -1330,6 +1340,7 @@ public sealed class AppleMusicCatalogService
             {
                 using var request = BuildCatalogRequest(method, url, token, configure);
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (preserveProviderErrors) response.EnsureSuccessStatusCode();
                 var retryAction = await EvaluateRetryAsync(response, attempt, maxAttempts, url, cancellationToken);
                 if (retryAction == RetryAction.Retry)
                 {
@@ -1344,7 +1355,7 @@ public sealed class AppleMusicCatalogService
 
                 return payload;
             }
-            catch (HttpRequestException ex) when (attempt < maxAttempts - 1)
+            catch (HttpRequestException ex) when (!preserveProviderErrors && attempt < maxAttempts - 1)
             {
                 if (ex.StatusCode == HttpStatusCode.NotFound)
                 {

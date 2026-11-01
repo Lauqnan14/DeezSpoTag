@@ -122,7 +122,7 @@ public sealed partial class ArtistArtworkCatalogService
         var blockedHashes = cached.Where(item => item.UserBlocked && !string.IsNullOrWhiteSpace(item.ContentHash))
             .Select(item => item.ContentHash!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var usable = cached.Where(item => !item.UserBlocked && !blockedHashes.Contains(item.ContentHash ?? "")
-            && IsUsableArtworkFile(item.LocalPath)
+            && IsCataloguedArtworkReady(item)
             && (string.IsNullOrWhiteSpace(item.OriginalUrl) || DeezerImageUrlValidator.IsAllowedDeezerImageUrl(item.OriginalUrl))).ToList();
         var visuals = usable
             .GroupBy(item => item.ContentHash ?? item.Identity, StringComparer.OrdinalIgnoreCase)
@@ -144,16 +144,42 @@ public sealed partial class ArtistArtworkCatalogService
 
         bool ContainsText(ArtistArtworkVisual visual)
         {
+            // The page read uses the flag stored when the file was cached. Decoding every
+            // image here is what made the visuals grid wait before it could paint.
             var known = usable.FirstOrDefault(item => string.Equals(item.LocalPath, visual.Path, StringComparison.OrdinalIgnoreCase));
-            if (known is not null) return known.TextArtBlocked;
-            try
-            {
-                using var image = Image.Load(visual.Path);
-                return ArtistArtworkTextInspector.LikelyContainsOverlayText(image);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or UnknownImageFormatException or InvalidImageContentException)
-            { return true; }
+            return known?.TextArtBlocked == true;
         }
+    }
+
+    /// <summary>
+    /// A catalogued file is ready when it is on disk and, if measured at cache time, large
+    /// enough. The page read does not decode it again.
+    /// </summary>
+    private static bool IsCataloguedArtworkReady(ArtistArtworkCacheDto item)
+    {
+        if (string.IsNullOrWhiteSpace(item.LocalPath) || !File.Exists(item.LocalPath)
+            || DeezerImageUrlValidator.IsArtistPlaceholderFile(item.LocalPath))
+        {
+            return false;
+        }
+
+        if (item.Width is int width && item.Height is int height)
+        {
+            return width >= 128 && height >= 128;
+        }
+
+        return CachedImageExtensions.Contains(Path.GetExtension(item.LocalPath), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCachedImageFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)
+            || DeezerImageUrlValidator.IsArtistPlaceholderFile(path))
+        {
+            return false;
+        }
+
+        return CachedImageExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
     }
 
     internal static bool IsUsableArtworkFile(string? path)
@@ -230,7 +256,7 @@ public sealed partial class ArtistArtworkCatalogService
                     || blockedKeys.Contains(fileName)
                     || blockedKeys.Contains(Path.GetFileName(file))
                     || blockedKeys.Contains(fullPath)
-                    || !IsUsableArtworkFile(fullPath))
+                    || !IsCachedImageFile(fullPath))
                 {
                     continue;
                 }
@@ -370,6 +396,10 @@ public sealed partial class ArtistArtworkCatalogService
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { provider }, _providerGate);
     }
 
+    /// <summary>
+    /// Refresh cache uses this existing matcher for every provider identity. A stored id does not
+    /// exempt the artist: the name-and-title rules still decide which profile belongs here.
+    /// </summary>
     public IReadOnlyList<string> GetRequestedProviders(string? onlyProvider)
         => ResolveArtistArtworkSourceOrder().Select(NormalizeArtworkProvider)
             .Where(provider => string.IsNullOrWhiteSpace(onlyProvider)
@@ -775,7 +805,7 @@ public sealed partial class ArtistArtworkCatalogService
         return false;
     }
 
-    private static string BuildLocalUrl(string path) => $"/api/library/image?path={Uri.EscapeDataString(Path.GetFullPath(path))}&size=640";
+    private static string BuildLocalUrl(string path) => $"/api/library/image?path={Uri.EscapeDataString(Path.GetFullPath(path))}";
     private static string? FirstNonEmpty(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     private sealed record RemoteCandidate(string Provider, string Identity, string Url, int? Width, int? Height);
     private sealed record ProviderResolution(string Provider, IReadOnlyList<RemoteCandidate> Candidates, string? Message, int CachedCount = 0, bool Skipped = false);

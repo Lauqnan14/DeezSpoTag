@@ -7,9 +7,11 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.SoundCloud;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.AutoTag;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -30,8 +32,57 @@ namespace DeezSpoTag.Tests;
 ///         means the per-platform supported-tag intersection cannot narrow the configured tag list.
 ///     </para>
 /// </remarks>
+[Collection("ArtistAliasGateway")]
 public sealed class SoundCloudAutoTagPipelineTest
 {
+    [Theory]
+    [InlineData("flac", false)]
+    [InlineData("flac", true)]
+    [InlineData("mp3", false)]
+    [InlineData("mp3", true)]
+    [InlineData("m4a", false)]
+    [InlineData("m4a", true)]
+    public async Task EndOfRunAlbumReconciliationKeepsPreferredAlbumArtist(string extension, bool overwrite)
+    {
+        var gateway = typeof(ArtistAliasGateway).GetField("_service",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var previous = gateway.GetValue(null);
+        try
+        {
+            await WithAudioFile(extension, async (path, directory) =>
+            {
+                var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                    new Dictionary<string, string?> { ["ConnectionStrings:Library"] = $"Data Source={Path.Combine(directory, "aliases.db")}" }).Build();
+                var aliases = new ArtistAliasService(configuration, NullLogger<ArtistAliasService>.Instance);
+                await aliases.SaveGroupAsync("Preferred Artist", new[] { "Example Artist" });
+                ArtistAliasGateway.Configure(aliases);
+                using (var file = TagLib.File.Create(path))
+                {
+                    file.Tag.Album = "Mister Example Artist";
+                    file.Tag.AlbumArtists = ["Example Artist"];
+                    file.Tag.Year = 2014;
+                    file.Save();
+                }
+                SetIdentity(path, "SPOTIFY_ALBUM_ID", "original-spotify-album");
+                SetIdentity(path, "DEEZER_RELEASE_ID", "123456");
+
+                // Drive matching, normal tag writing AND final batch album reconciliation.
+                await RunAsync(directory, path, overwrite,
+                    tags: new[] { "artist", "albumArtist", "album", "genre", "trackId", "url" });
+
+                using var written = TagLib.File.Create(path);
+                Assert.Equal("Preferred Artist", Assert.Single(written.Tag.Performers));
+                Assert.Equal("Preferred Artist", Assert.Single(written.Tag.AlbumArtists));
+                Assert.Equal("Mister Example Artist", written.Tag.Album);
+                Assert.Equal(2014u, written.Tag.Year);
+                Assert.Equal("original-spotify-album", ReadIdentity(path, "SPOTIFY_ALBUM_ID"));
+                Assert.Equal("123456", ReadIdentity(path, "DEEZER_RELEASE_ID"));
+                Assert.Equal("soundcloud:tracks:1", ReadIdentity(path, "SOUNDCLOUD_TRACK_ID"));
+            });
+        }
+        finally { gateway.SetValue(null, previous); }
+    }
+
     [Theory]
     [InlineData("flac", false)]
     [InlineData("mp3", false)]

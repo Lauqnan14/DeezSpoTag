@@ -172,6 +172,37 @@ public class ArtistAliasServiceTest
     }
 
     [Theory]
+    [InlineData("Mister Old Alias")]
+    [InlineData("Old Alias")]
+    [InlineData("Album (feat. Old Alias)")]
+    public async Task AliasPreferenceNeverRewritesAlbumTitles(string albumTitle)
+    {
+        var (service, dbPath) = CreateService();
+        var gateway = typeof(ArtistAliasGateway).GetField("_service", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var previous = gateway.GetValue(null);
+        try
+        {
+            await service.SaveGroupAsync("Preferred Artist", new[] { "Old Alias" });
+            ArtistAliasGateway.Configure(service);
+            await ArtistAliasGateway.EnsureLoadedAsync();
+            var autoTag = new DeezSpoTag.Web.Services.AutoTag.AutoTagTrack
+            { Title = "Song (feat. Old Alias)", Album = albumTitle, Artists = new() { "Old Alias" } };
+            typeof(DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner).GetMethod("ApplyArtistAliasPreference",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.Invoke(null, new object[] { autoTag });
+            Assert.Equal(albumTitle, autoTag.Album);
+            Assert.Equal("Preferred Artist", Assert.Single(autoTag.Artists));
+            Assert.Equal("Song (feat. Preferred Artist)", autoTag.Title);
+            var download = new DeezSpoTag.Core.Models.Track
+            { Title = "Song", Album = new DeezSpoTag.Core.Models.Album(albumTitle) };
+            typeof(DeezSpoTag.Services.Download.Utils.AudioTagger).GetMethod("ApplyArtistAliasPreference",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.Invoke(null, new object[] { download });
+            Assert.Equal(albumTitle, download.Album.Title);
+        }
+        finally { gateway.SetValue(null, previous); Cleanup(dbPath); }
+    }
+
+
+    [Theory]
     [InlineData("mp3")]
     [InlineData("flac")]
     [InlineData("m4a")]
@@ -877,6 +908,35 @@ WHERE artist_id = (SELECT id FROM artist WHERE name = 'Preferred Artist');";
             Assert.Contains(await repository.GetArtistBiographyRowsAsync(1), row => row.SourceId == "b" && row.Biography == "Second");
         }
         finally { SqliteConnection.ClearAllPools(); if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("Mister Old Alias")]
+    [InlineData("Album (feat. Old Alias)")]
+    public async Task MergeChangesOnlyArtistDirectoryAndPreservesAlbumAndFileNames(string albumName)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alias-album-{Guid.NewGuid():N}");
+        var other = root + "-other";
+        Directory.CreateDirectory(root); Directory.CreateDirectory(other);
+        var db = await CreateLibraryDbAsync(root, other);
+        try
+        {
+            foreach (var directory in new[] { root, other })
+            {
+                Directory.Move(Path.Combine(directory, "Old Alias", "Test Album"), Path.Combine(directory, "Old Alias", albumName));
+                if (directory == root)
+                    File.Move(Path.Combine(directory, "Old Alias", albumName, "test song.flac"), Path.Combine(directory, "Old Alias", albumName, "Old Alias.flac"));
+            }
+            await using var connection = new SqliteConnection($"Data Source={db}"); await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE audio_file SET path=replace(replace(path,'Test Album',$album),'test song.flac','Old Alias.flac');";
+            command.Parameters.AddWithValue("$album", albumName); await command.ExecuteNonQueryAsync();
+            var (aliases, merge) = CreateServices(db);
+            var group = await aliases.SaveGroupAsync("Preferred Artist", new[] { "Old Alias" });
+            await merge.MergeGroupAsync(group.Id); await merge.MergeGroupAsync(group.Id);
+            Assert.True(File.Exists(Path.Combine(root, "Preferred Artist", albumName, "Old Alias.flac")));
+        }
+        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); Directory.Delete(other, true); File.Delete(db); }
     }
 
     [Fact]

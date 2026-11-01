@@ -47,7 +47,6 @@ public sealed class ArtistMetadataCacheRefreshService
         BiographyProvider.Audiomack,
         BiographyProvider.Qobuz
     ];
-    private static readonly TimeSpan ArtistYield = TimeSpan.FromMilliseconds(1);
     private static readonly TimeSpan ArtistRefreshTimeout = TimeSpan.FromMinutes(10);
     private readonly LibraryRepository _repository;
     private readonly ArtistArtworkCatalogService _artworkCatalog;
@@ -109,107 +108,6 @@ public sealed class ArtistMetadataCacheRefreshService
         _artistPageCache = artistPageCache;
     }
 
-    public async Task<ArtistMetadataCacheRefreshResult> RefreshAsync(
-        ArtistMetadataCacheRefreshRequest request,
-        IProgress<ArtistMetadataOperationProgress>? progress,
-        CancellationToken cancellationToken)
-        => await RefreshAsync(request, progress, resumedRun: null, outcomeSink: null, cancellationToken);
-
-    public async Task<ArtistMetadataCacheRefreshResult> RefreshAsync(
-        ArtistMetadataCacheRefreshRequest request,
-        IProgress<ArtistMetadataOperationProgress>? progress,
-        ArtistRunResumeContext? resumedRun,
-        Action<ArtistRunOutcomeRecord>? outcomeSink,
-        CancellationToken cancellationToken,
-        Func<IReadOnlyList<long>, Task>? targetSink = null)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return new ArtistMetadataCacheRefreshResult(0, 0, 1, "Library database is not configured.");
-        }
-
-        var artists = SelectRunArtists(
-            await _repository.GetArtistsAsync("all", request.FolderId, cancellationToken), request, resumedRun);
-        var targetArtistIds = resumedRun is { TargetArtistIds.Count: > 0 }
-            ? resumedRun.TargetArtistIds : artists.Select(artist => artist.Id).ToList();
-        var total = targetArtistIds.Count;
-        if (targetSink is not null) await targetSink(targetArtistIds);
-
-        // Carried-over outcomes seed the tallies so a resumed run reports the same totals as a run
-        // that was never interrupted, instead of counting only the post-resume slice against the
-        // full artist list.
-        // Legacy artist-level success is not evidence that requested cache stages completed.
-        var priorOutcomes = resumedRun?.Outcomes?.Where(outcome => outcome.CacheWork is { Count: > 0 }).ToArray();
-        var prior = CountOutcomes(priorOutcomes);
-        var priorFailures = (priorOutcomes ?? Array.Empty<ArtistRunOutcomeRecord>())
-            .Where(outcome => outcome.Outcome == ArtistRunOutcomes.Failed).Select(outcome => outcome.ArtistId).ToHashSet();
-        var completed = priorOutcomes is { Length: > 0 }
-            ? ArtistRunOutcomes.BuildResumeSkipSet(priorOutcomes!)
-            : new HashSet<long>();
-        var processed = completed.Intersect(targetArtistIds).Count();
-        var succeeded = prior.Succeeded;
-        var failed = prior.Failed;
-        var gate = _providerGate;
-        foreach (var artist in artists)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (completed.Contains(artist.Id))
-            {
-                continue;
-            }
-
-            if (priorFailures.Remove(artist.Id)) failed--;
-            processed++;
-            progress?.Report(new ArtistMetadataOperationProgress(
-                processed, total, artist.Name, null, succeeded, failed));
-            try
-            {
-                var refreshed = await RefreshArtistWithOutcomeAsync(request with
-                {
-                    ArtistId = artist.Id,
-                    ForceProviderRefresh = request.ForceProviderRefresh && resumedRun is null
-                }, cancellationToken);
-                if (refreshed.IsComplete) succeeded++;
-                else failed++;
-                outcomeSink?.Invoke(new ArtistRunOutcomeRecord(artist.Id,
-                    refreshed.IsComplete ? ArtistRunOutcomes.Succeeded : ArtistRunOutcomes.Failed,
-                    CacheWork: refreshed.Work));
-                progress?.Report(new ArtistMetadataOperationProgress(
-                    processed, total, artist.Name, artist.Id, succeeded, failed));
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (TimeoutException)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                failed++;
-                outcomeSink?.Invoke(new ArtistRunOutcomeRecord(
-                    artist.Id, ArtistRunOutcomes.Failed, ArtistRunSkipReasons.Timeout));
-                progress?.Report(new ArtistMetadataOperationProgress(
-                    processed, total, artist.Name, artist.Id, succeeded, failed));
-                _logger.LogWarning(
-                    "Artist metadata cache refresh timed out for artist {ArtistId} ({ArtistName}) after {TimeoutMinutes} minutes.",
-                    artist.Id,
-                    artist.Name,
-                    ArtistRefreshTimeout.TotalMinutes);
-            }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                failed++;
-                outcomeSink?.Invoke(new ArtistRunOutcomeRecord(artist.Id, ArtistRunOutcomes.Failed));
-                progress?.Report(new ArtistMetadataOperationProgress(
-                    processed, total, artist.Name, artist.Id, succeeded, failed));
-                _logger.LogWarning(ex, "Artist metadata cache refresh failed for artist {ArtistId}.", artist.Id);
-            }
-
-            await Task.Delay(ArtistYield, cancellationToken);
-        }
-
-        return new ArtistMetadataCacheRefreshResult(total, succeeded, failed, failed > 0 ? "Some artist cache work remains unresolved." : null);
-    }
-
     private async Task<bool> RetainArtistEnrichmentAsync(long artistId, string artistName, string? source, CancellationToken cancellationToken)
     {
         if (_locationResolver is null || _artistPageCache is null)
@@ -257,7 +155,7 @@ public sealed class ArtistMetadataCacheRefreshService
         await _artistPageCache.UpsertRequiredAsync(
             "artist-enrichment",
             artistId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            JsonSerializer.Serialize(new { version = "v1", metadata, retainedAt = DateTimeOffset.UtcNow }),
+            JsonSerializer.Serialize(new { version = "v1", locationPolicy = ArtistLocation.ArtistLocationResolver.LocationPolicyVersion, metadata, retainedAt = DateTimeOffset.UtcNow }),
             DateTimeOffset.UtcNow,
             cancellationToken).ConfigureAwait(false);
         return true;
@@ -272,30 +170,6 @@ public sealed class ArtistMetadataCacheRefreshService
             .Where(artist => !request.ArtistId.HasValue || artist.Id == request.ArtistId.Value)
             .Where(artist => frozen is null || frozen.Contains(artist.Id))
             .ToList();
-    }
-
-    private static (int Succeeded, int Failed) CountOutcomes(IReadOnlyList<ArtistRunOutcomeRecord>? outcomes)
-    {
-        if (outcomes is null)
-        {
-            return (0, 0);
-        }
-
-        var succeeded = 0;
-        var failed = 0;
-        foreach (var outcome in outcomes)
-        {
-            if (outcome.Outcome == ArtistRunOutcomes.Succeeded || outcome.Outcome == ArtistRunOutcomes.Partial)
-            {
-                succeeded++;
-            }
-            else if (outcome.Outcome == ArtistRunOutcomes.Failed)
-            {
-                failed++;
-            }
-        }
-
-        return (succeeded, failed);
     }
 
     public Task<bool> RefreshArtistAsync(
@@ -338,13 +212,36 @@ public sealed class ArtistMetadataCacheRefreshService
         return row is null ? null : JsonSerializer.Deserialize<ArtistCacheRunResult>(row.PayloadJson);
     }
 
-    public async Task<ArtistMetadataCacheRefreshRequest> BuildAutomaticRequestAsync(long artistId,
-        ArtistCacheRefreshScope scope, string? source = null)
+    public async Task<ArtistMetadataCacheRefreshRequest> BuildRequestAsync(long? artistId, long? folderId,
+        ArtistCacheRefreshScope scope = ArtistCacheRefreshScope.Full, bool forceProviderRefresh = true, string? source = null)
     {
         var preferences = await _preferences.LoadAsync();
-        return new(artistId, null, source ?? preferences.MetadataUpdaterSource,
+        return new(artistId, artistId.HasValue ? null : folderId, source ?? preferences.MetadataUpdaterSource,
             preferences.MetadataUpdaterIncludePopularSongs, preferences.MetadataUpdaterIncludeDiscography,
+            ForceProviderRefresh: forceProviderRefresh,
             OcrTextArtBlockingEnabled: preferences.MetadataUpdaterOcrTextArtBlocking, Scope: scope);
+    }
+
+    public Task<ArtistMetadataCacheRefreshRequest> BuildAutomaticRequestAsync(long artistId,
+        ArtistCacheRefreshScope scope, string? source = null)
+        => BuildRequestAsync(artistId, null, scope, forceProviderRefresh: false, source: source);
+
+    public async Task<ArtistMetadataAutomationState> GetSweepCompletionAsync(CancellationToken token)
+    {
+        if (_artistPageCache is null) throw new InvalidOperationException("Refresh run storage is unavailable.");
+        var row = await _artistPageCache.TryGetRequiredAsync("artist-refresh", "schedule", token);
+        return row is null ? new() : JsonSerializer.Deserialize<ArtistMetadataAutomationState>(row.PayloadJson) ?? new();
+    }
+
+    public async Task<ArtistMetadataAutomationStatus> SaveSweepCompletionAsync(DateTimeOffset completedAt, bool deepRefresh, CancellationToken token)
+    {
+        var state = await GetSweepCompletionAsync(token);
+        state.LastCacheRefreshUtc = completedAt;
+        if (deepRefresh) state.LastDeepRefreshUtc = completedAt;
+        await _artistPageCache!.UpsertRequiredAsync("artist-refresh", "schedule", JsonSerializer.Serialize(state), completedAt, token);
+        var preferences = await _preferences.LoadAsync();
+        return ArtistMetadataAutomationStatus.Idle() with { LastCacheRefreshUtc = completedAt,
+            NextCacheRefreshUtc = preferences.MetadataCacheRefreshIntervalDays <= 0 ? null : completedAt.AddDays(preferences.MetadataCacheRefreshIntervalDays) };
     }
 
     private async Task<string> BuildFingerprintAsync(ArtistMetadataCacheRefreshRequest request, ArtistDetailDto artist,
@@ -353,12 +250,17 @@ public sealed class ArtistMetadataCacheRefreshService
         var identities = new Dictionary<string, IReadOnlyList<string>>();
         foreach (var identitySource in new[] { "spotify", "deezer", "apple", "tidal", "qobuz", "audiomack", "musicbrainz" })
             identities[identitySource] = await _repository.GetArtistSourceIdsAsync(artist.Id, identitySource, token);
-        return JsonSerializer.Serialize(new { Provider = provider, Stage = stage,
-            IncludeDiscography = stage is "metadata" or "extras" && request.IncludeDiscography,
+        var fingerprint = JsonSerializer.Serialize(new { Provider = provider, Stage = stage,
+            // The Spotify catalogue stage always covers all four sections; the updater's
+            // discography option stays relevant only for the extras stage.
+            IncludeDiscography = stage is "extras" && request.IncludeDiscography,
+            IncludeCatalogue = stage == "metadata",
             IncludePopularSongs = stage == "metadata" && request.IncludePopularSongs,
             ArtworkEnabled = stage != "artwork" || _artworkCatalog.GetRequestedProviders(provider).Contains(provider),
             Ocr = stage == "artwork" && (request.OcrTextArtBlockingEnabled ?? preferences.MetadataUpdaterOcrTextArtBlocking),
             Identities = identities.Where(pair => pair.Key == provider).ToArray(), Names = names });
+        // Only location precedence changed. Keep existing artwork/biography/catalogue evidence reusable.
+        return stage == "enrichment" ? fingerprint + "|" + ArtistLocation.ArtistLocationResolver.LocationPolicyVersion : fingerprint;
     }
 
     private IReadOnlyList<string> RequestedArtworkProviders(string source)
@@ -368,18 +270,32 @@ public sealed class ArtistMetadataCacheRefreshService
     }
 
     private static IReadOnlyList<string> RequestedEnrichmentProviders(string source)
-        => source == "auto" ? ["musicbrainz", "audiomack"] : source == "audiomack" ? ["audiomack"] : ["local"];
+        => source == "auto" ? ["apple", "musicbrainz", "audiomack"]
+            : source is "apple" or "musicbrainz" or "audiomack" ? [source] : ["local"];
 
     private IEnumerable<(string Provider, string Stage)> RequestedStages(ArtistMetadataCacheRefreshRequest request)
     {
+        if (request.Source?.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (request.Scope.HasFlag(ArtistCacheRefreshScope.Enrichment)) yield return ("musicbrainz", "enrichment");
+            yield break;
+        }
         var selected = ParseProvider(request.Source);
         var source = selected.HasValue ? ProviderName(selected.Value) : "auto";
         if (request.Scope.HasFlag(ArtistCacheRefreshScope.Artwork))
+        {
             foreach (var provider in RequestedArtworkProviders(source)) yield return (provider, "artwork");
+            yield return ("local", "visual-selection");
+        }
         if (request.Scope.HasFlag(ArtistCacheRefreshScope.Biographies))
             foreach (var provider in selected.HasValue ? [selected.Value] : BiographyProviders) yield return (ProviderName(provider), "biographies");
-        if (request.Scope.HasFlag(ArtistCacheRefreshScope.ProviderMetadata) && selected is null or BiographyProvider.Spotify
-            && (request.IncludeDiscography || request.IncludePopularSongs)) yield return ("spotify", "metadata");
+        // The Spotify catalogue (discography, top songs, appears on, similar artists) is part of
+        // the provider metadata work for every library artist. It is no longer gated on the
+        // updater's popular-songs or discography options: those remain for the target-update
+        // and Apple/Tidal extras behavior.
+        if (request.Scope.HasFlag(ArtistCacheRefreshScope.ProviderMetadata)
+            && selected is null or BiographyProvider.Spotify)
+            yield return ("spotify", "metadata");
         if (request.Scope.HasFlag(ArtistCacheRefreshScope.MediaExtras) && request.IncludeDiscography)
             foreach (var provider in new[] { "apple", "tidal" }.Where(provider => source == "auto" || source == provider)) yield return (provider, "extras");
         if (request.Scope.HasFlag(ArtistCacheRefreshScope.Enrichment))
@@ -406,12 +322,28 @@ public sealed class ArtistMetadataCacheRefreshService
             if (manifest is not { Version: 1, Outcome.IsComplete: true } || manifest.Fingerprint != fingerprint
                 || manifest.CompletedAtUtc <= DateTimeOffset.UtcNow.AddDays(-7)) return false;
             if (stage == "artwork" && manifest.Outcome.Status != ArtistCacheWorkStatus.Disabled && !await _artworkCatalog.HasCompleteArtworkAsync(artist.Id, provider, token)) return false;
+            if (stage == "metadata" && manifest.Outcome.Status != ArtistCacheWorkStatus.Disabled)
+            {
+                // A recorded stage success is complete only while a fully validated Spotify
+                // catalogue for this artist's identity is actually stored.
+                var snapshot = await _spotify.TryReadArtistCatalogueStatusAsync(artist.Id, artist.Name, token);
+                if (snapshot is not { IsComplete: true }) return false;
+            }
         }
         return true;
     }
 
+    public Task<string> GetCachedArtistRevisionAsync(long artistId, CancellationToken token)
+        => (_artistPageCache ?? throw new InvalidOperationException("Artist cache storage is unavailable."))
+            .GetArtistRevisionAsync(artistId, token);
+
     public async Task<ArtistCacheRefreshOutcome> RefreshArtistWithOutcomeAsync(
-        ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken)
+        ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken, Action<string>? artistNameSink = null)
+        => await SpotifyArtistService.RunWithAliasIdentityScopeAsync(
+            () => RefreshArtistCoreAsync(request, cancellationToken, artistNameSink));
+
+    private async Task<ArtistCacheRefreshOutcome> RefreshArtistCoreAsync(
+        ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken, Action<string>? artistNameSink)
     {
         if (request.ArtistId is not > 0) throw new ArgumentException("ArtistId is required.", nameof(request));
         var artistId = request.ArtistId.Value;
@@ -430,10 +362,19 @@ public sealed class ArtistMetadataCacheRefreshService
             var artist = await _repository.GetArtistAsync(artistId, token);
             if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
                 return new(artistId, [new("local", "artist", ArtistCacheWorkStatus.Failed, ReasonCode: "artist-unavailable")]);
+            artistNameSink?.Invoke(artist.Name);
             var preferences = await _preferences.LoadAsync();
             var selected = ParseProvider(request.Source);
             var normalized = selected.HasValue ? ProviderName(selected.Value) : "auto";
+            if (request.Source?.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                normalized = "musicbrainz";
+                request = request with { Scope = request.Scope & ArtistCacheRefreshScope.Enrichment };
+            }
             var names = await ResolveLookupNamesAsync(artist.Name, token);
+            // Identity resolution belongs to each provider stage: one failing identity lookup
+            // must not prevent the other providers from collecting their independent metadata.
+            var appleIdentityValidated = false;
             async Task Stage(string provider, string stage, Func<Task<ArtistCacheWorkOutcome>> action)
             {
                 var key = $"{artistId}:{provider}:{stage}";
@@ -448,7 +389,20 @@ public sealed class ArtistMetadataCacheRefreshService
                         catch (JsonException) { /* Legacy/incomplete evidence is unknown, not success. */ }
                     }
                 }
-                if (!request.ForceProviderRefresh && previous is { Version: 1, Outcome.IsComplete: true }
+                // Keep an authentication failure visible, while allowing all other providers to progress.
+                // Explicit Refresh/Resume forces verification again.
+                if (previous is not null && request.RefreshRunId is not null
+                    && previous.RefreshRunId == request.RefreshRunId
+                    && (request.RetainedStages?.Contains($"{provider}:{stage}") == true
+                        || (!request.ForceProviderRefresh && previous.Outcome.Status == ArtistCacheWorkStatus.AuthenticationRequired)
+                        || (previous.Outcome.RetryAtUtc > DateTimeOffset.UtcNow
+                            && (!request.RevalidateProviderAccess || _providerGate.IsUnavailable(provider)))))
+                {
+                    work.Add(previous.Outcome with { Attempted = false });
+                    return;
+                }
+                if (previous is { Version: 1, Outcome.IsComplete: true }
+                    && (!request.ForceProviderRefresh || (request.RefreshRunId is not null && previous.RefreshRunId == request.RefreshRunId))
                     && previous.Fingerprint == fingerprint && previous.CompletedAtUtc > DateTimeOffset.UtcNow.AddDays(-7)
                     && (stage != "artwork" || previous.Outcome.Status == ArtistCacheWorkStatus.Disabled || await _artworkCatalog.HasCompleteArtworkAsync(artistId, provider, token)))
                 {
@@ -457,7 +411,19 @@ public sealed class ArtistMetadataCacheRefreshService
                 }
                 var attemptedAt = DateTimeOffset.UtcNow;
                 ArtistCacheWorkOutcome outcome;
-                try { outcome = await action(); }
+                try
+                {
+                    if (provider == "apple" && !appleIdentityValidated)
+                    {
+                        await _providerGate.RunRequiredAsync("apple", async ct =>
+                        {
+                            await DropCollaboratorSourceIdsAsync(artistId, names, ct);
+                            return true;
+                        }, token);
+                        appleIdentityValidated = true;
+                    }
+                    outcome = await action();
+                }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
@@ -487,7 +453,7 @@ public sealed class ArtistMetadataCacheRefreshService
                 await _artistPageCache.UpsertRequiredAsync(ManifestSource, key,
                     JsonSerializer.Serialize(new ArtistCacheStageManifest(1, await BuildFingerprintAsync(request, artist, names, preferences, token, provider, stage), outcome, attemptedAt,
                         outcome.IsComplete ? DateTimeOffset.UtcNow : previous?.CompletedAtUtc,
-                        observation?.CandidateIdentities, observation?.RejectedIdentities, observation?.CandidateReasons)), DateTimeOffset.UtcNow, token);
+                        observation?.CandidateIdentities, observation?.RejectedIdentities, observation?.CandidateReasons, RefreshRunId: request.RefreshRunId)), DateTimeOffset.UtcNow, token);
             }
 
             if (request.Scope.HasFlag(ArtistCacheRefreshScope.Artwork))
@@ -507,8 +473,12 @@ public sealed class ArtistMetadataCacheRefreshService
                         return result?.Outcome ?? new(provider, "artwork", ArtistCacheWorkStatus.Disabled);
                     });
                 }
-                await _visualSlots.ApplyCatalogVisualsToSlotsAsync(artistId, artist.Name,
-                    request.OcrTextArtBlockingEnabled ?? preferences.MetadataUpdaterOcrTextArtBlocking, token);
+                await Stage("local", "visual-selection", async () =>
+                {
+                    await _visualSlots.ApplyCatalogVisualsToSlotsAsync(artistId, artist.Name,
+                        request.OcrTextArtBlockingEnabled ?? preferences.MetadataUpdaterOcrTextArtBlocking, token);
+                    return new("local", "visual-selection", ArtistCacheWorkStatus.Succeeded);
+                });
             }
             if (request.Scope.HasFlag(ArtistCacheRefreshScope.Biographies))
             {
@@ -531,13 +501,24 @@ public sealed class ArtistMetadataCacheRefreshService
                     selected.HasValue ? ProviderName(selected.Value) : null, token);
             }
             if (request.Scope.HasFlag(ArtistCacheRefreshScope.ProviderMetadata)
-                && (selected is null or BiographyProvider.Spotify) && (request.IncludePopularSongs || request.IncludeDiscography))
+                && (selected is null or BiographyProvider.Spotify))
             {
                 await Stage("spotify", "metadata", async () =>
                 {
+                    // Refresh ownership: this is the only stage that publishes a new Spotify
+                    // catalogue revision. The full four-section fetch is mandatory and the
+                    // publication only reports complete when validated content is stored.
                     var page = await _providerGate.RunRequiredAsync("spotify", ct => _spotify.GetArtistPageAsync(artistId, artist.Name,
-                        true, false, ct, includeDeezerLinking: false, includeDiscography: request.IncludeDiscography), token);
-                    return new("spotify", "metadata", page is null ? ArtistCacheWorkStatus.Failed : ArtistCacheWorkStatus.Succeeded);
+                        true, false, ct, includeDeezerLinking: false, includeDiscography: true), token);
+                    if (page is null)
+                    {
+                        return new("spotify", "metadata", ArtistCacheWorkStatus.Failed, ReasonCode: "page-unavailable");
+                    }
+
+                    var snapshot = await _spotify.TryReadArtistCatalogueStatusAsync(artistId, artist.Name, token);
+                    return snapshot is { IsComplete: true }
+                        ? new("spotify", "metadata", ArtistCacheWorkStatus.Succeeded)
+                        : new("spotify", "metadata", ArtistCacheWorkStatus.Failed, ReasonCode: "catalogue-unresolved");
                 });
             }
             if (request.Scope.HasFlag(ArtistCacheRefreshScope.MediaExtras) && request.IncludeDiscography)
@@ -804,6 +785,44 @@ public sealed class ArtistMetadataCacheRefreshService
         }
     }
 
+    /// <summary>
+    /// Removes an automatic provider id whose profile is a different person. A second id is kept
+    /// when it is the same artist. A user-confirmed id is never removed here.
+    /// </summary>
+    private async Task DropCollaboratorSourceIdsAsync(long artistId, IReadOnlyList<string> names, CancellationToken token)
+    {
+        if (AppleCatalogJsonHelper.IsAppleDisabledByEnvironment())
+        {
+            return;
+        }
+
+        foreach (var identity in await _repository.GetArtistSourceIdentitiesAsync(artistId, AppleSource, token))
+        {
+            if (string.Equals(identity.VerificationState, "user_confirmed", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var profile = await _apple.ResolveByArtistIdAsync(identity.SourceId, names.FirstOrDefault() ?? identity.SourceId, token, propagatePageErrors: true);
+            if (profile is null || string.IsNullOrWhiteSpace(profile.Name))
+            {
+                continue;
+            }
+
+            if (names.Any(name => ArtistIdentityTextNormalizer.NamesEquivalent(name, profile.Name)))
+            {
+                continue;
+            }
+
+            await _repository.RemoveArtistSourceIdAsync(artistId, AppleSource, identity.SourceId, token);
+            await _repository.RemoveArtistBiographyAsync(artistId, AppleSource, identity.SourceId, token);
+            _configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"[apple] removed collaborator id {identity.SourceId} ({profile.Name}) from artist {artistId}."));
+        }
+    }
+
     private static IReadOnlyList<string> EffectiveLookupNames(string artistName, IReadOnlyList<string>? lookupNames)
         => lookupNames is { Count: > 0 } ? lookupNames : [artistName];
 
@@ -983,7 +1002,10 @@ public sealed record ArtistMetadataCacheRefreshRequest(
     bool IncludeDiscography = false,
     bool ForceProviderRefresh = false,
     bool? OcrTextArtBlockingEnabled = null,
-    ArtistCacheRefreshScope Scope = ArtistCacheRefreshScope.Full);
+    ArtistCacheRefreshScope Scope = ArtistCacheRefreshScope.Full,
+    string? RefreshRunId = null,
+    IReadOnlyList<string>? RetainedStages = null,
+    bool RevalidateProviderAccess = false);
 public sealed record ArtistMetadataCacheRefreshResult(int Total, int Succeeded, int Failed, string? Error);
 public sealed record ArtistMetadataOperationProgress(int Processed, int Total, string? CurrentArtist, long? CompletedArtistId = null, int Succeeded = 0, int Failed = 0);
 
@@ -1001,7 +1023,8 @@ public enum ArtistCacheWorkStatus
 }
 
 public sealed record ArtistCacheWorkOutcome(string Provider, string Stage, ArtistCacheWorkStatus Status,
-    int CandidateCount = 0, int CachedCount = 0, string? ReasonCode = null, DateTimeOffset? RetryAtUtc = null)
+    int CandidateCount = 0, int CachedCount = 0, string? ReasonCode = null, DateTimeOffset? RetryAtUtc = null,
+    bool Attempted = true)
 {
     public bool IsComplete => Status is ArtistCacheWorkStatus.Succeeded or ArtistCacheWorkStatus.NoData
         or ArtistCacheWorkStatus.NotApplicable or ArtistCacheWorkStatus.Disabled;
@@ -1016,6 +1039,6 @@ public sealed record ArtistCacheRefreshOutcome(long ArtistId, IReadOnlyList<Arti
 public sealed record ArtistCacheStageManifest(int Version, string Fingerprint, ArtistCacheWorkOutcome Outcome,
     DateTimeOffset AttemptedAtUtc, DateTimeOffset? CompletedAtUtc,
     IReadOnlyList<string>? CandidateIdentities = null, IReadOnlyList<string>? RejectedIdentities = null,
-    IReadOnlyDictionary<string, string>? CandidateReasons = null);
+    IReadOnlyDictionary<string, string>? CandidateReasons = null, string? RefreshRunId = null);
 
 public sealed record ArtistCacheRunResult(string RunId, long? ArtistId, ArtistMetadataCacheRefreshResult Result, DateTimeOffset CompletedAtUtc);

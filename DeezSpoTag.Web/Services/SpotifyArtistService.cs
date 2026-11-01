@@ -43,7 +43,6 @@ public sealed class SpotifyArtistService
     private const string SpotifyEmbedTrackPathPrefix = "/embed/track/";
     private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _latestDiscographyGates = new(StringComparer.Ordinal);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly Regex SpotifyEmbedArtistUriRegex = new(
         @"spotify:artist:(?<id>[A-Za-z0-9]{22})",
@@ -137,10 +136,46 @@ public sealed class SpotifyArtistService
             var id = await TrySelectExactCandidateArtistIdAsync(candidates, albums, targets, artistName, cancellationToken);
             if (string.IsNullOrWhiteSpace(id)) continue;
             if (artistId > 0)
-                await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, id, cancellationToken);
+                await AttachResolvedSpotifyIdAsync(artistId, artistName, id, cancellationToken);
             return id;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Stores a name-matched Spotify id. A different library row may already hold it under a name
+    /// that is not this artist, as "22 Savage" held the 21 Savage profile. That row does not own
+    /// the profile. Two library rows that actually share the name still have to be merged by hand.
+    /// </summary>
+    private async Task AttachResolvedSpotifyIdAsync(
+        long artistId,
+        string artistName,
+        string spotifyId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("belongs to another library artist", StringComparison.Ordinal))
+        {
+            var ownerId = await _libraryRepository.GetArtistIdBySourceIdAsync(SpotifySource, spotifyId, cancellationToken);
+            var owner = ownerId is > 0
+                ? await _libraryRepository.GetArtistAsync(ownerId.Value, cancellationToken)
+                : null;
+            if (owner is null || ArtistIdentityTextNormalizer.NamesEquivalent(artistName, owner.Name))
+            {
+                throw;
+            }
+
+            await _libraryRepository.UpsertArtistSourceIdAsync(
+                artistId,
+                SpotifySource,
+                spotifyId,
+                cancellationToken,
+                preserveExistingOwner: false);
+            AddActivity("info", $"[spotify] moved id {spotifyId} to {artistName}; '{owner.Name}' does not match that profile.");
+        }
     }
 
     public async Task<string?> EnsureSpotifyArtistIdAsync(long artistId, string artistName, CancellationToken cancellationToken)
@@ -162,7 +197,7 @@ public sealed class SpotifyArtistService
         spotifyId = await ResolveArtistIdBySpotiflacSearchAsync(artistName, artistId, cancellationToken);
         if (!string.IsNullOrWhiteSpace(spotifyId))
         {
-            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
+            await AttachResolvedSpotifyIdAsync(artistId, artistName, spotifyId, cancellationToken);
             await TryRewriteArtistFoldersToCanonicalNameAsync(artistId, artistName, spotifyId, cancellationToken);
             AddActivity("info", $"[spotify] artist id resolved: {artistName} -> {spotifyId}.");
             return spotifyId;
@@ -258,7 +293,7 @@ public sealed class SpotifyArtistService
             spotifyId = await ResolveArtistIdBySpotiflacSearchAsync(artistName, artistId, cancellationToken);
             if (!string.IsNullOrWhiteSpace(spotifyId))
             {
-                await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
+                await AttachResolvedSpotifyIdAsync(artistId, artistName, spotifyId, cancellationToken);
             }
         }
         if (string.IsNullOrWhiteSpace(spotifyId))
@@ -289,7 +324,7 @@ public sealed class SpotifyArtistService
 
         if (!string.Equals(rematchedSpotifyId, spotifyId, StringComparison.Ordinal))
         {
-            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, rematchedSpotifyId, cancellationToken);
+            await AttachResolvedSpotifyIdAsync(artistId, artistName, rematchedSpotifyId, cancellationToken);
             await TryRewriteArtistFoldersToCanonicalNameAsync(artistId, artistName, rematchedSpotifyId, cancellationToken);
             AddActivity("info", $"[spotify] rematched artist id: {artistName} -> {rematchedSpotifyId} (was {spotifyId}).");
         }
@@ -318,6 +353,16 @@ public sealed class SpotifyArtistService
                 .Where(url => !string.IsNullOrWhiteSpace(url)).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
+    private static readonly AsyncLocal<HashSet<(SpotifyArtistService Service, long ArtistId)>?> AliasIdentityScope = new();
+
+    internal static async Task<T> RunWithAliasIdentityScopeAsync<T>(Func<Task<T>> action)
+    {
+        if (AliasIdentityScope.Value is not null) return await action();
+        AliasIdentityScope.Value = new();
+        try { return await action(); }
+        finally { AliasIdentityScope.Value = null; }
+    }
+
     public async Task EnsureAliasSpotifyIdentitiesAsync(long artistId, string artistName, CancellationToken cancellationToken)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
@@ -325,10 +370,15 @@ public sealed class SpotifyArtistService
             return;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+        var completedLookups = AliasIdentityScope.Value;
+        if (completedLookups?.Contains((this, artistId)) == true) return;
+
         foreach (var identity in await _libraryRepository.GetArtistSourceIdentitiesAsync(artistId, SpotifySource, cancellationToken))
         {
             var existingId = identity.SourceId;
             if (!string.Equals(identity.VerificationState, "user_confirmed", StringComparison.OrdinalIgnoreCase)
+                && !await StoredSpotifyIdNamesAliasGroupAsync(artistId, artistName, existingId, cancellationToken)
                 && await StoredSpotifyIdLacksLocalEvidenceAsync(artistId, existingId, cancellationToken))
             {
                 var rejectedUrls = await ReadCachedSpotifyVisualUrlsAsync(existingId, cancellationToken);
@@ -368,13 +418,20 @@ public sealed class SpotifyArtistService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var resolved = await ResolveArtistIdBySpotiflacSearchAsync(name, artistId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolved) && name.Contains(' '))
+            {
+                // A platform may store this artist under an alias whose releases are not in the
+                // local library. The name still has to be that alias. A one-word alias is too
+                // broad to accept without album overlap.
+                resolved = await ResolveAliasNameOnlySpotifyIdAsync(name, cancellationToken);
+            }
             if (string.IsNullOrWhiteSpace(resolved))
             {
                 AddActivity("warn", $"[spotify] alias identity not stored; no album overlap for {name}.");
                 continue;
             }
 
-            await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, resolved, cancellationToken, preserveExistingOwner: true);
+            await AttachResolvedSpotifyIdAsync(artistId, name, resolved, cancellationToken);
             AddActivity("info", $"[spotify] alias identity kept: {name} -> {resolved}.");
             if (string.Equals(ArtistAliasService.NormalizeName(name), preferredNormalizedName, StringComparison.Ordinal))
             {
@@ -397,6 +454,7 @@ public sealed class SpotifyArtistService
                 _logger.LogWarning(ex, "[spotify] could not set the primary identity for artist {ArtistId}.", artistId);
             }
         }
+        completedLookups?.Add((this, artistId));
     }
 
     /// <summary>
@@ -439,13 +497,15 @@ public sealed class SpotifyArtistService
     /// <summary>
     /// A verified secondary identity's artist page, read from cache when possible and fetched
     /// on a cache miss. Discography is never requested for a sibling identity: the caller only
-    /// needs its images, gallery, header image and biography.
+    /// needs its images, gallery, header image and biography. With <paramref name="cachedOnly"/>
+    /// the sibling is never fetched: a missing sibling row is reported as unavailable, so a
+    /// purely cached read cannot trigger provider work.
     /// </summary>
     internal async Task<SpotifyArtistPageResult?> GetSiblingArtistPageAsync(
         long artistId,
         string siblingSpotifyId,
         string artistName,
-        CancellationToken cancellationToken, bool forceRefresh = false)
+        CancellationToken cancellationToken, bool forceRefresh = false, bool cachedOnly = false)
     {
         if (string.IsNullOrWhiteSpace(siblingSpotifyId))
         {
@@ -456,6 +516,11 @@ public sealed class SpotifyArtistService
         if (cached is not null)
         {
             return cached;
+        }
+
+        if (cachedOnly)
+        {
+            return null;
         }
 
         return await GetArtistPageBySpotifyIdInternalAsync(
@@ -471,7 +536,7 @@ public sealed class SpotifyArtistService
     public async Task<SpotifyArtistPageResult> MergeAliasVisualsAsync(
         long artistId,
         SpotifyArtistPageResult result,
-        CancellationToken cancellationToken, bool forceRefresh = false)
+        CancellationToken cancellationToken, bool forceRefresh = false, bool cachedOnly = false)
     {
         if (artistId <= 0 || result.Artist is null)
         {
@@ -504,7 +569,9 @@ public sealed class SpotifyArtistService
 
             // A verified secondary identity must not be useless just because its page was never
             // cached, so it is fetched once on a cache miss — without a discography request.
-            var cached = await GetSiblingArtistPageAsync(artistId, id, result.Artist.Name, cancellationToken, forceRefresh);
+            // With cachedOnly the sibling stays unread when nothing is stored: a cached read
+            // must never trigger provider work.
+            var cached = await GetSiblingArtistPageAsync(artistId, id, result.Artist.Name, cancellationToken, forceRefresh, cachedOnly);
             if (cached?.Artist is null)
             {
                 continue;
@@ -688,7 +755,7 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        var cachedPayload = DeserializeCached(cached.PayloadJson);
+        var cachedPayload = TryDeserializeCachedEnvelope(cached.PayloadJson)?.Payload;
         if (cachedPayload == null)
         {
             return null;
@@ -697,9 +764,12 @@ public sealed class SpotifyArtistService
         return EnsureArtistIdentity(cachedPayload, artistName);
     }
 
-    public async Task<SpotifyArtistPageResult?> RefreshLatestDiscographyAsync(
+    /// <summary>
+    /// The envelope currently stored for a Spotify identity, read directly from the row. Write
+    /// paths re-read it because refreshes and enrichments bypass or race the cache read.
+    /// </summary>
+    private async Task<SpotifyArtistCacheEnvelope?> GetStoredEnvelopeAsync(
         string spotifyId,
-        string artistName,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(spotifyId))
@@ -707,36 +777,34 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        var gate = _latestDiscographyGates.GetOrAdd(spotifyId, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try
+        var stored = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
+        return stored is null ? null : TryDeserializeCachedEnvelope(stored.PayloadJson);
+    }
+
+    /// <summary>
+    /// The stored Spotify identity for a library artist together with its catalogue revision
+    /// metadata. No provider work happens here: metadata completeness is read straight from
+    /// the retained page cache.
+    /// </summary>
+    public async Task<SpotifyArtistCatalogueSnapshot?> TryReadArtistCatalogueStatusAsync(
+        long artistId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        if (artistId <= 0)
         {
-            var cached = await TryGetCachedArtistPageAsync(spotifyId, artistName, allowStale: true, cancellationToken);
-            if (cached is null)
-            {
-                return null;
-            }
-
-            var latestPage = await _pathfinderMetadataClient.FetchArtistLatestDiscographyPageAsync(spotifyId, cancellationToken);
-            if (latestPage.Count == 0)
-            {
-                return cached;
-            }
-
-            var mergedAlbums = MergeAlbums(MapDiscographySummaries(latestPage), cached.Albums);
-            if (DiscographyAlbumsUnchanged(cached.Albums, mergedAlbums))
-            {
-                return cached;
-            }
-
-            var updated = cached with { Albums = mergedAlbums };
-            await PersistArtistPageResultAsync(spotifyId, artistName, updated, cancellationToken);
-            return updated;
+            return null;
         }
-        finally
+
+        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
+        if (string.IsNullOrWhiteSpace(spotifyId))
         {
-            gate.Release();
+            return null;
         }
+
+        var cached = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
+        var metadata = cached is null ? null : TryDeserializeCachedEnvelope(cached.PayloadJson)?.Catalogue;
+        return new SpotifyArtistCatalogueSnapshot(spotifyId, metadata);
     }
 
     private async Task<SpotifyArtistPageResult?> GetArtistPageBySpotifyIdInternalAsync(
@@ -748,14 +816,14 @@ public sealed class SpotifyArtistService
         bool includeDiscography,
         CancellationToken cancellationToken, bool required = false)
     {
-        var (cachedResult, staleCachedPayload) = await TryGetArtistPageFromCacheAsync(
+        var (cachedEnvelope, staleCachedPayload) = await TryGetArtistPageFromCacheAsync(
             spotifyId,
             artistName,
             allowCache,
             cancellationToken);
-        if (cachedResult != null)
+        if (cachedEnvelope is not null && cachedEnvelope.Payload is not null)
         {
-            return cachedResult;
+            return cachedEnvelope.Payload;
         }
 
         AddActivity("info", $"[spotify] pathfinder fetch: {artistName}.");
@@ -777,26 +845,35 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        var result = await BuildArtistPageResultAsync(
-            spotifyId,
-            artistName,
-            artistPage,
-            allowCache ? staleCachedPayload : null,
-            cancellationToken);
-        if (!includeDiscography && staleCachedPayload is not null)
-        {
-            result = result with { Albums = staleCachedPayload.Albums, AppearsOn = staleCachedPayload.AppearsOn };
-        }
+        // A fetch that requests the discography is a catalogue publication attempt (initial
+        // caching or a whole-page refresh); any other fetch may only update profile fields and
+        // must preserve the retained catalogue lists and revision metadata.
         if (includeDiscography)
         {
+            var result = await BuildCataloguePublicationResultAsync(
+                spotifyId,
+                artistName,
+                artistPage,
+                staleCachedPayload,
+                cancellationToken);
             result = result with
             {
                 TopTracks = await EnrichTopTracksWithIsrcsAsync(result.TopTracks, cancellationToken)
             };
+            result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
+            await PersistCatalogueRevisionAsync(spotifyId, artistName, artistPage, result, cancellationToken, required);
+            return result;
         }
-        result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
-        await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken, required);
-        return result;
+
+        var profileResult = await BuildArtistPageResultAsync(
+            spotifyId,
+            artistName,
+            artistPage,
+            staleCachedPayload,
+            cancellationToken);
+        profileResult = await TryEnrichWithDeezerLinksAsync(profileResult, artistName, includeDeezerLinking, localArtistId, cancellationToken);
+        await PersistProfilePreservingCatalogueAsync(spotifyId, artistName, profileResult, cancellationToken, required);
+        return profileResult;
     }
 
     /// <summary>
@@ -812,19 +889,25 @@ public sealed class SpotifyArtistService
         return cached != null && _cacheRepository.IsUsable(cached.FetchedUtc);
     }
 
-    private async Task<(SpotifyArtistPageResult? CachedResult, SpotifyArtistPageResult? StalePayload)> TryGetArtistPageFromCacheAsync(
+    private async Task<(SpotifyArtistCacheEnvelope? CachedEnvelope, SpotifyArtistPageResult? StalePayload)> TryGetArtistPageFromCacheAsync(
         string spotifyId,
         string artistName,
         bool allowCache,
         CancellationToken cancellationToken)
     {
-        var cached = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
-        if (cached is null)
+        var row = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
+        if (row is null)
         {
             return (null, null);
         }
 
-        var cachedPayload = DeserializeCached(cached.PayloadJson);
+        var envelope = TryDeserializeCachedEnvelope(row.PayloadJson);
+        if (envelope is null)
+        {
+            return (null, null);
+        }
+
+        var cachedPayload = envelope.Payload;
         if (!allowCache)
         {
             AddActivity("info", $"[spotify] cache bypassed due refresh/rematch: {artistName}.");
@@ -842,39 +925,39 @@ public sealed class SpotifyArtistService
             spotifyId,
             artistName,
             normalizedCachedPayload,
-            cached.FetchedUtc,
+            row.FetchedUtc,
             cancellationToken);
         await UpsertNormalizedCachePayloadIfChangedAsync(
             spotifyId,
-            cachedPayload,
-            normalizedCachedPayload,
-            cached.FetchedUtc,
+            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, cachedPayload, envelope.Catalogue),
+            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload, envelope.Catalogue),
+            row.FetchedUtc,
             cancellationToken);
 
-        if (_cacheRepository.IsFresh(cached.FetchedUtc))
+        if (_cacheRepository.IsFresh(row.FetchedUtc))
         {
             AddActivity("info", $"[spotify] cache hit (fresh): {artistName}.");
-            return (normalizedCachedPayload, normalizedCachedPayload);
+            return (new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload, envelope.Catalogue), normalizedCachedPayload);
         }
 
         AddActivity("info", $"[spotify] cache hit (serving cached until updater): {artistName}.");
-        return (normalizedCachedPayload, normalizedCachedPayload);
+        return (new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload, envelope.Catalogue), normalizedCachedPayload);
     }
 
     private async Task UpsertNormalizedCachePayloadIfChangedAsync(
         string spotifyId,
-        SpotifyArtistPageResult cachedPayload,
-        SpotifyArtistPageResult normalizedCachedPayload,
+        SpotifyArtistCacheEnvelope cachedEnvelope,
+        SpotifyArtistCacheEnvelope normalizedEnvelope,
         DateTimeOffset fetchedUtc,
         CancellationToken cancellationToken)
     {
-        if (!CachePayloadChanged(cachedPayload, normalizedCachedPayload))
+        if (!CachePayloadChanged(cachedEnvelope.Payload!, normalizedEnvelope.Payload!))
         {
             return;
         }
 
         var normalizedPayloadJson = JsonSerializer.Serialize(
-            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload),
+            normalizedEnvelope,
             _jsonOptions);
         await _cacheRepository.UpsertAsync(
             SpotifySource,
@@ -913,6 +996,30 @@ public sealed class SpotifyArtistService
             topTracks,
             relatedArtists);
         return MergeWithStalePayload(result, staleCachedPayload);
+    }
+
+    /// <summary>
+    /// Builds the result for a catalogue publication attempt: the four sections come strictly
+    /// from the observed fetch (so a verified-empty section replaces older content instead of
+    /// resurrecting it), while retained profile fields remain fill-only fallbacks.
+    /// </summary>
+    private async Task<SpotifyArtistPageResult> BuildCataloguePublicationResultAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistHydratedPage artistPage,
+        SpotifyArtistPageResult? staleCachedPayload,
+        CancellationToken cancellationToken)
+    {
+        var result = await BuildArtistPageResultAsync(spotifyId, artistName, artistPage, null, cancellationToken);
+        if (staleCachedPayload is null)
+        {
+            return result;
+        }
+
+        return result with
+        {
+            Artist = MergeArtistProfileFromFallback(result.Artist, staleCachedPayload.Artist)
+        };
     }
 
     private async Task<SpotifyArtistProfile> BuildArtistProfileAsync(
@@ -958,21 +1065,6 @@ public sealed class SpotifyArtistService
         AddActivity("info", $"[spotify] artist genre fallback: {artistName} -> {string.Join(", ", inferredGenres)}.");
         return profile with { Genres = inferredGenres };
     }
-
-    private static bool DiscographyAlbumsUnchanged(IReadOnlyList<SpotifyAlbum> current, IReadOnlyList<SpotifyAlbum> updated)
-    {
-        if (current.Count != updated.Count)
-        {
-            return false;
-        }
-
-        var currentKeys = current.Select(AlbumDiscographyIdentity).OrderBy(identity => identity, StringComparer.OrdinalIgnoreCase).ToArray();
-        var updatedKeys = updated.Select(AlbumDiscographyIdentity).OrderBy(identity => identity, StringComparer.OrdinalIgnoreCase).ToArray();
-        return currentKeys.SequenceEqual(updatedKeys, StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static string AlbumDiscographyIdentity(SpotifyAlbum album)
-        => $"{album.Id}\n{album.ReleaseDate}\n{album.Name}";
 
     private static List<SpotifyAlbum> MapDiscographySummaries(IReadOnlyList<SpotifyAlbumSummary> summaries)
     {
@@ -1151,14 +1243,37 @@ public sealed class SpotifyArtistService
         }
     }
 
-    private async Task PersistArtistPageResultAsync(
+    /// <summary>
+    /// Profile-only write for fetches that did not request the discography (biography, artwork
+    /// or sibling-visual operations): the retained catalogue lists and their revision metadata
+    /// always survive; only profile fields may change.
+    /// </summary>
+    private async Task PersistProfilePreservingCatalogueAsync(
         string spotifyId,
         string artistName,
-        SpotifyArtistPageResult result,
+        SpotifyArtistPageResult fetched,
         CancellationToken cancellationToken, bool required = false)
     {
+        // Enrichment and biography refreshes bypass the cache read, so the retained row is
+        // re-read here: its catalogue lists and revision metadata always survive a profile
+        // write, whatever the fetch itself returned.
+        var storedEnvelope = await GetStoredEnvelopeAsync(spotifyId, cancellationToken);
+        var result = fetched;
+        if (storedEnvelope?.Payload is not null)
+        {
+            result = result with
+            {
+                Albums = storedEnvelope.Payload.Albums,
+                AppearsOn = storedEnvelope.Payload.AppearsOn,
+                TopTracks = storedEnvelope.Payload.TopTracks,
+                RelatedArtists = storedEnvelope.Payload.RelatedArtists
+            };
+        }
+
         result = EnsureArtistIdentity(result, artistName);
-        var payloadJson = JsonSerializer.Serialize(new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, result), _jsonOptions);
+        var payloadJson = JsonSerializer.Serialize(
+            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, result, storedEnvelope?.Catalogue),
+            _jsonOptions);
         if (required) await _cacheRepository.UpsertRequiredAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
         else await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
         await _cacheRepository.UpsertGenresAsync(SpotifySource, spotifyId, result.Artist.Genres, cancellationToken, required);
@@ -1167,8 +1282,100 @@ public sealed class SpotifyArtistService
             QueueArtistFallbackEnrichment(spotifyId, artistName, result);
             QueueArtistTopTrackIsrcEnrichment(spotifyId, artistName, result);
         }
-        AddActivity("info", $"[spotify] data stored: {artistName} (id={spotifyId}).");
-        AddActivity("info", $"[spotify] fetch complete: {artistName} (albums={result.Albums.Count}, appears_on={result.AppearsOn.Count}, top_tracks={result.TopTracks.Count}, related={result.RelatedArtists.Count}).");
+        AddActivity("info", $"[spotify] profile data stored (catalogue preserved): {artistName} (id={spotifyId}).");
+    }
+
+    /// <summary>
+    /// Publication of a validated catalogue revision. Only fetches that requested the whole
+    /// discography may publish; a publication requires every section observed and the
+    /// discography pagination completed. Unresolved data never overwrites retained content.
+    /// </summary>
+    private async Task PersistCatalogueRevisionAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistHydratedPage artistPage,
+        SpotifyArtistPageResult result,
+        CancellationToken cancellationToken, bool required = false)
+    {
+        var observation = artistPage.Observation;
+        if (observation is null || !observation.IsPublishable)
+        {
+            AddActivity("warn", $"[spotify] catalogue publication withheld; the response left sections unresolved: {artistName}.");
+            if (required)
+            {
+                throw new InvalidOperationException("Spotify sections were unresolved, so the catalogue revision could not be published.");
+            }
+            return;
+        }
+
+        // A refresh run bypasses the cache read, so the retained row is re-read here to keep
+        // the revision counter monotonic across runs.
+        var storedCatalogue = (await GetStoredEnvelopeAsync(spotifyId, cancellationToken))?.Catalogue;
+        result = EnsureArtistIdentity(result, artistName);
+        var revision = Math.Max(
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            (storedCatalogue?.Revision ?? 0) + 1);
+        var metadata = SpotifyArtistCatalogueMetadata.FromObservation(revision, DateTimeOffset.UtcNow, spotifyId, observation);
+        var payloadJson = JsonSerializer.Serialize(
+            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, result, metadata),
+            _jsonOptions);
+        if (required) await _cacheRepository.UpsertRequiredAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
+        else await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
+        await _cacheRepository.UpsertGenresAsync(SpotifySource, spotifyId, result.Artist.Genres, cancellationToken, required);
+        if (!required)
+        {
+            QueueArtistFallbackEnrichment(spotifyId, artistName, result);
+            QueueArtistTopTrackIsrcEnrichment(spotifyId, artistName, result);
+        }
+        AddActivity("info", $"[spotify] catalogue revision published: {artistName} (revision={revision}, albums={result.Albums.Count}, appears_on={result.AppearsOn.Count}, top_tracks={result.TopTracks.Count}, related={result.RelatedArtists.Count}).");
+    }
+
+    /// <summary>
+    /// Unconditional profile-only envelope write (used when no retained row exists yet). The
+    /// catalogue metadata travels with the payload so later profile writes preserve it.
+    /// </summary>
+    private async Task UpsertProfileEnvelopeAsync(
+        string spotifyId,
+        SpotifyArtistPageResult payload,
+        SpotifyArtistCatalogueMetadata? catalogue,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = JsonSerializer.Serialize(
+            new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, payload, catalogue),
+            _jsonOptions);
+        await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
+        await _cacheRepository.UpsertGenresAsync(SpotifySource, spotifyId, payload.Artist.Genres, cancellationToken);
+    }
+
+    /// <summary>
+    /// Conditional profile-only envelope write: publishes only when the stored row is exactly
+    /// the payload this enrichment was based on. A moved row (for example a newer catalogue
+    /// revision) is left untouched instead of being rolled back.
+    /// </summary>
+    private async Task TryUpsertProfileEnvelopeIfUnchangedAsync(
+        string spotifyId,
+        ArtistCacheEntry stored,
+        SpotifyArtistCacheEnvelope candidate)
+    {
+        if (candidate.Payload is null)
+        {
+            return;
+        }
+
+        var payloadJson = JsonSerializer.Serialize(candidate, _jsonOptions);
+        var rowsUpdated = await _cacheRepository.UpsertIfUnchangedAsync(
+            SpotifySource,
+            spotifyId,
+            stored.PayloadJson,
+            payloadJson,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        if (!rowsUpdated && _logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Spotify artist profile enrichment skipped; the stored row changed concurrently (id={SpotifyId}).",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
+        }
     }
 
     private static SpotifyArtistPageResult MergeWithStalePayload(
@@ -1602,6 +1809,11 @@ public sealed class SpotifyArtistService
 
     private SpotifyArtistPageResult? DeserializeCached(string payloadJson)
     {
+        return TryDeserializeCachedEnvelope(payloadJson)?.Payload;
+    }
+
+    private SpotifyArtistCacheEnvelope? TryDeserializeCachedEnvelope(string payloadJson)
+    {
         try
         {
             var envelope = JsonSerializer.Deserialize<SpotifyArtistCacheEnvelope>(payloadJson, _jsonOptions);
@@ -1610,7 +1822,7 @@ public sealed class SpotifyArtistService
                 return null;
             }
 
-            return envelope.Payload;
+            return envelope;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1767,27 +1979,34 @@ public sealed class SpotifyArtistService
                 return;
             }
 
-            var enriched = ApplyArtistFallback(baseResult, fallbackArtist);
-            if (ReferenceEquals(enriched, baseResult))
+            // Enrichment is profile-only and conditional: it enriches whichever payload is
+            // currently stored and is dropped when an unrelated write moved the row, so a
+            // delayed fallback can never roll back a newer catalogue revision.
+            var stored = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, CancellationToken.None);
+            if (stored is null)
+            {
+                var fallbackBase = ApplyArtistFallback(baseResult, fallbackArtist);
+                if (!ReferenceEquals(fallbackBase, baseResult))
+                {
+                    await UpsertProfileEnvelopeAsync(spotifyId, fallbackBase, catalogue: null, CancellationToken.None);
+                    AddActivity("info", $"[spotify] librespot fallback cached lazily: {artistName}.");
+                }
+                return;
+            }
+
+            var storedEnvelope = TryDeserializeCachedEnvelope(stored.PayloadJson);
+            if (storedEnvelope is null)
             {
                 return;
             }
 
-            enriched = EnsureArtistIdentity(enriched, artistName);
-            var payloadJson = JsonSerializer.Serialize(
-                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
-                _jsonOptions);
-            await _cacheRepository.UpsertAsync(
-                SpotifySource,
-                spotifyId,
-                payloadJson,
-                DateTimeOffset.UtcNow,
-                CancellationToken.None);
-            await _cacheRepository.UpsertGenresAsync(
-                SpotifySource,
-                spotifyId,
-                enriched.Artist.Genres,
-                CancellationToken.None);
+            var enriched = ApplyArtistFallback(storedEnvelope.Payload, fallbackArtist);
+            if (ReferenceEquals(enriched, storedEnvelope.Payload))
+            {
+                return;
+            }
+
+            await TryUpsertProfileEnvelopeIfUnchangedAsync(spotifyId, stored, storedEnvelope with { Payload = EnsureArtistIdentity(enriched, artistName) });
             AddActivity("info", $"[spotify] librespot fallback cached lazily: {artistName}.");
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -1818,24 +2037,33 @@ public sealed class SpotifyArtistService
     {
         try
         {
-            var enrichedTopTracks = await EnrichTopTracksWithIsrcsAsync(
-                baseResult.TopTracks,
-                cancellationToken);
-            if (enrichedTopTracks.Count == 0 || !HaveTopTrackIsrcsChanged(baseResult.TopTracks, enrichedTopTracks))
+            // Conditional enrichment: whatever payload is stored right now gets its ISRCs
+            // hydrated in place. Catalogue ordering and membership never change, and a row
+            // moved by an unrelated write is left alone instead of rolled back.
+            var stored = await _cacheRepository.TryGetAsync(SpotifySource, spotifyId, cancellationToken);
+            if (stored is null)
             {
                 return;
             }
 
-            var enriched = baseResult with { TopTracks = enrichedTopTracks };
-            var payloadJson = JsonSerializer.Serialize(
-                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
-                _jsonOptions);
-            await _cacheRepository.UpsertAsync(
-                SpotifySource,
-                spotifyId,
-                payloadJson,
-                DateTimeOffset.UtcNow,
+            var storedEnvelope = TryDeserializeCachedEnvelope(stored.PayloadJson);
+            if (storedEnvelope?.Payload is null)
+            {
+                return;
+            }
+
+            var enrichedTopTracks = await EnrichTopTracksWithIsrcsAsync(
+                storedEnvelope.Payload.TopTracks,
                 cancellationToken);
+            if (enrichedTopTracks.Count == 0 || !HaveTopTrackIsrcsChanged(storedEnvelope.Payload.TopTracks, enrichedTopTracks))
+            {
+                return;
+            }
+
+            await TryUpsertProfileEnvelopeIfUnchangedAsync(
+                spotifyId,
+                stored,
+                storedEnvelope with { Payload = storedEnvelope.Payload with { TopTracks = enrichedTopTracks } });
             AddActivity("info", $"[spotify] top-track ISRCs cached lazily: {artistName}.");
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -3621,6 +3849,35 @@ public sealed class SpotifyArtistService
         return filtered.Count > 0 ? filtered : source;
     }
 
+    private async Task<bool> StoredSpotifyIdNamesAliasGroupAsync(
+        long artistId,
+        string artistName,
+        string spotifyId,
+        CancellationToken cancellationToken)
+    {
+        var cached = await TryGetCachedArtistPageAsync(spotifyId, artistName, allowStale: true, cancellationToken);
+        var profileName = cached?.Artist?.Name;
+        if (string.IsNullOrWhiteSpace(profileName) || _aliasService is null)
+        {
+            return false;
+        }
+
+        var names = await _aliasService.GetGroupNamesAsync(artistName, cancellationToken);
+        return names.Any(name => ArtistIdentityTextNormalizer.NamesEquivalent(name, profileName));
+    }
+
+    /// <summary>
+    /// Exact alias-name Spotify profile, used when that spelling has no local album overlap.
+    /// The candidate name must be that alias. A different person is not saved.
+    /// </summary>
+    private async Task<string?> ResolveAliasNameOnlySpotifyIdAsync(string aliasName, CancellationToken cancellationToken)
+    {
+        var candidates = await _pathfinderMetadataClient.SearchArtistsAsync(aliasName, 5, cancellationToken);
+        var match = candidates.FirstOrDefault(candidate =>
+            ArtistIdentityTextNormalizer.NamesEquivalent(aliasName, candidate.Name));
+        return match?.Id;
+    }
+
     private async Task<bool> StoredSpotifyIdLacksLocalEvidenceAsync(
         long artistId,
         string spotifyId,
@@ -4206,7 +4463,65 @@ public sealed record SpotifyAlbumPage(
 
 public sealed record SpotifyArtistCacheEnvelope(
     int Version,
-    SpotifyArtistPageResult Payload);
+    SpotifyArtistPageResult Payload,
+    SpotifyArtistCatalogueMetadata? Catalogue = null);
+
+/// <summary>
+/// Publication states for one of the four Spotify catalogue sections (discography, top
+/// tracks, related artists, appears on). A stored section is either observed authoritative
+/// data, a verified legitimately-empty section, or (for legacy rows) unobserved.
+/// Consumers must not restore older content for an observed or verified-empty section.
+/// </summary>
+public enum SpotifyCatalogueSectionPublication
+{
+    Unobserved = 0,
+    Observed = 1,
+    VerifiedEmpty = 2
+}
+
+/// <summary>
+/// Metadata written beside the payload when SpotifyArtistService publishes a catalogue
+/// revision. Only a fully validated publication (all four sections observed, discography
+/// pagination completed) produces this record, and only initial caching and Refresh cache
+/// runs may write it. Profile, artwork, biography and enrichment writes must preserve it.
+/// </summary>
+public sealed record SpotifyArtistCatalogueMetadata(
+    long Revision,
+    DateTimeOffset PublishedUtc,
+    string SourceSpotifyId,
+    SpotifyCatalogueSectionPublication Albums,
+    SpotifyCatalogueSectionPublication AppearsOn,
+    SpotifyCatalogueSectionPublication TopTracks,
+    SpotifyCatalogueSectionPublication RelatedArtists)
+{
+    /// <summary>True when all four sections of this identity were observed as authoritative.</summary>
+    public bool IsCompleteFor(string spotifyId)
+        => string.Equals(SourceSpotifyId, spotifyId, StringComparison.OrdinalIgnoreCase)
+            && Albums != SpotifyCatalogueSectionPublication.Unobserved
+            && AppearsOn != SpotifyCatalogueSectionPublication.Unobserved
+            && TopTracks != SpotifyCatalogueSectionPublication.Unobserved
+            && RelatedArtists != SpotifyCatalogueSectionPublication.Unobserved;
+
+    public static SpotifyArtistCatalogueMetadata FromObservation(
+        long revision, DateTimeOffset publishedUtc, string spotifyId,
+        SpotifyArtistCatalogueObservation observation)
+        => new(
+            revision,
+            publishedUtc,
+            spotifyId,
+            observation.AlbumsVerifiedEmpty ? SpotifyCatalogueSectionPublication.VerifiedEmpty : SpotifyCatalogueSectionPublication.Observed,
+            observation.AppearsOnVerifiedEmpty ? SpotifyCatalogueSectionPublication.VerifiedEmpty : SpotifyCatalogueSectionPublication.Observed,
+            observation.TopTracksVerifiedEmpty ? SpotifyCatalogueSectionPublication.VerifiedEmpty : SpotifyCatalogueSectionPublication.Observed,
+            observation.RelatedArtistsVerifiedEmpty ? SpotifyCatalogueSectionPublication.VerifiedEmpty : SpotifyCatalogueSectionPublication.Observed);
+}
+
+/// <summary>Read-only view of a library artist's stored Spotify catalogue state.</summary>
+public sealed record SpotifyArtistCatalogueSnapshot(
+    string? SpotifyId,
+    SpotifyArtistCatalogueMetadata? Metadata)
+{
+    public bool IsComplete => Metadata?.IsCompleteFor(SpotifyId ?? string.Empty) == true;
+}
 
 public sealed record SpotifyArtistServiceDependencies(
     SpotifyPathfinderMetadataClient PathfinderMetadataClient,

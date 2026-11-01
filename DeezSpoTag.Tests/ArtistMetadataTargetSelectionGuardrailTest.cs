@@ -510,7 +510,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
 
         Assert.Contains("ArtistArtworkCatalogService _artworkCatalog", cacheRefresh);
         Assert.Contains("forceProviderRefresh: true", cacheRefresh);
-        Assert.Contains("ForceProviderRefresh = true", coordinator);
+        Assert.Contains("bool forceProviderRefresh = true", cacheRefresh);
         Assert.Contains("allowArtistPageScrape: false", cacheRefresh);
         Assert.Contains("forceRefresh: true", cacheRefresh);
         Assert.Contains("ApplyCatalogVisualsToSlotsAsync", cacheRefresh);
@@ -531,7 +531,11 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.Contains("SaveArtistFolderImage", coordinator);
         Assert.Contains("EnsureMatchedSourceIdsAsync", File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.Matching.cs")));
         Assert.Contains("request.IncludeDiscography", cacheRefresh);
-        Assert.Contains("includeDiscography: request.IncludeDiscography", cacheRefresh);
+        Assert.Contains("includeDiscography: true", cacheRefresh);
+        Assert.DoesNotContain("includeDiscography: request.IncludeDiscography", cacheRefresh);
+        Assert.Contains("IncludeCatalogue = stage == \"metadata\"", cacheRefresh);
+        Assert.Contains("catalogue-unresolved", cacheRefresh);
+        Assert.Contains("TryReadArtistCatalogueStatusAsync", cacheRefresh);
         Assert.Contains("request.Scope.HasFlag(ArtistCacheRefreshScope.MediaExtras) && request.IncludeDiscography", cacheRefresh);
         Assert.DoesNotContain("includeDiscography && normalizedCachedPayload.Albums.Count == 0", spotifyArtist);
         Assert.Contains("includeDeezerLinking: false", cacheRefresh);
@@ -571,7 +575,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTest
         Assert.DoesNotContain("_pathfinderMetadataClient", cachedMethod);
         Assert.DoesNotContain("TryHydrateCachedBiographyAsync", cachedMethod);
 
-        var cacheRun = coordinator.IndexOf("if (cacheDue)", StringComparison.Ordinal);
+        var cacheRun = coordinator.IndexOf("if (cacheDue &&", StringComparison.Ordinal);
         var targetRun = coordinator.IndexOf("if (updateDue)", StringComparison.Ordinal);
         Assert.True(cacheRun >= 0 && targetRun > cacheRun);
         Assert.Contains("public sealed class ArtistMetadataAutomationCoordinator : BackgroundService", coordinator);

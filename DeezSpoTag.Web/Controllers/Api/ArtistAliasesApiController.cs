@@ -64,17 +64,26 @@ public sealed class ArtistAliasesApiController : ControllerBase
             return Ok(Array.Empty<object>());
         }
 
+        var term = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
         var page = await _libraryRepository.GetArtistsPageAsync(
             availability: "all",
             folderId: null,
             page: 1,
             pageSize: safeLimit,
-            search: string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            search: term,
             sort: "name",
             cancellationToken);
+        var mainNames = page.Items.Select(artist => artist.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var featured = string.IsNullOrWhiteSpace(term)
+            ? Array.Empty<string>()
+            : await _libraryRepository.SearchFeaturedArtistNamesAsync(term, safeLimit, cancellationToken);
         return Ok(new
         {
-            items = page.Items.Select(artist => new { id = artist.Id, name = artist.Name })
+            items = page.Items.Select(artist => new { id = artist.Id, name = artist.Name, role = "main" })
+                .Concat(featured
+                    .Where(name => !mainNames.Contains(name))
+                    .Select(name => new { id = 0L, name, role = "featured" }))
+                .Take(safeLimit)
         });
     }
 

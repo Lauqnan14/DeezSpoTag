@@ -13,6 +13,7 @@ globalThis.UserPrefs = (function () {
     const _data = globalThis.__userPrefsData || {};
     let _saveTimer = null;
     let _dirty = false;
+    let _saving = Promise.resolve();
 
     // Map from localStorage string key → DTO camelCase field name
     const KEY_TO_FIELD = {
@@ -61,41 +62,36 @@ globalThis.UserPrefs = (function () {
         _saveTimer = setTimeout(_flush, 1000);
     }
 
-    async function _flush(useBeacon = false) {
-        if (!_dirty) return;
-        const payload = deepClone(_data);
-        _dirty = false;
-        try {
-            const body = JSON.stringify(payload);
-            const headers = { 'Content-Type': 'application/json' };
-            const token = globalThis.document
-                ?.querySelector('meta[name="deezspotag-csrf-token"]')
-                ?.getAttribute('content');
-            if (token) {
-                headers.RequestVerificationToken = token;
-            }
-
-            await fetch('/api/user-preferences', {
-                method: 'POST',
-                headers,
-                body,
-                credentials: 'same-origin',
-                keepalive: useBeacon
+    async function _flush(useBeacon = false, requireSuccess = false) {
+        if (_dirty) {
+            const payload = deepClone(_data);
+            _dirty = false;
+            // Serialize saves so an older request cannot overwrite newer settings. A caller
+            // starting a refresh also waits for a save already in flight when nothing is dirty.
+            _saving = _saving.catch(() => {}).then(async () => {
+                const headers = { 'Content-Type': 'application/json' };
+                const token = globalThis.document
+                    ?.querySelector('meta[name="deezspotag-csrf-token"]')
+                    ?.getAttribute('content');
+                if (token) headers.RequestVerificationToken = token;
+                const response = await fetch('/api/user-preferences', {
+                    method: 'POST', headers, body: JSON.stringify(payload),
+                    credentials: 'same-origin', keepalive: useBeacon
+                });
+                if (!response.ok) throw new Error('Could not save preferences.');
             });
+        }
+        try {
+            await _saving;
+            return true;
         } catch (error) {
             logPreferenceWarning('flush preferences', error);
-            // Silent fail — localStorage was already updated, server will sync next load
             _dirty = true;
+            if (requireSuccess) throw error;
+            return false;
         }
     }
 
-    /**
-     * Set a preference by DTO field name and schedule a server save.
-     * Also keeps localStorage in sync so existing code that reads localStorage continues to work.
-     *
-     * @param {string} field   - DTO camelCase field name (e.g. 'theme', 'previewVolume')
-     * @param {*}      value   - The parsed value (string, number, boolean, object, array)
-     */
     function set(field, value) {
         _data[field] = value;
         _scheduleSave();

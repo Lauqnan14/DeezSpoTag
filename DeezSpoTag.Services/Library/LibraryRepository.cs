@@ -8430,6 +8430,62 @@ RETURNING id;";
         return all;
     }
 
+    /// <summary>
+    /// Featured credits on local tracks whose title or artist tag contains the search.
+    /// These names often have no artist row of their own, so the album-owner search misses them.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> SearchFeaturedArtistNamesAsync(
+        string search,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSearch = (search ?? string.Empty).Trim();
+        if (normalizedSearch.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 50);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT t.title, t.tag_artist
+FROM track t
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+  AND (IFNULL(t.title,'') LIKE @searchPattern ESCAPE '\' COLLATE NOCASE
+    OR IFNULL(t.tag_artist,'') LIKE @searchPattern ESCAPE '\' COLLATE NOCASE)
+LIMIT 400;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("searchPattern", $"%{EscapeLike(normalizedSearch)}%");
+        var names = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            foreach (var field in new[] { reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1) })
+            {
+                foreach (var name in FeaturedTitleMarker.ExtractCreditedNames(field))
+                {
+                    if (name.Contains(normalizedSearch, StringComparison.OrdinalIgnoreCase)
+                        && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        names.Add(name);
+                        if (names.Count >= safeLimit)
+                        {
+                            return names;
+                        }
+                    }
+                }
+            }
+        }
+
+        return names;
+    }
+
+    private static string EscapeLike(string value)
+        => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal);
+
     public async Task<ArtistPageDto> GetArtistsPageAsync(
         string? availability,
         long? folderId,
@@ -22379,6 +22435,27 @@ ORDER BY
         }
 
         return rows;
+    }
+
+    public async Task RemoveArtistBiographyAsync(
+        long artistId,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+DELETE FROM artist_biography_cache
+WHERE artist_id = @artistId AND source = @source AND source_id = @sourceId;", connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("source", source);
+        command.Parameters.AddWithValue("sourceId", sourceId ?? string.Empty);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task UpsertArtistServerSyncStateAsync(

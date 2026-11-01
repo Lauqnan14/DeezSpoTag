@@ -19,7 +19,7 @@ public class ArtistMetadataRunOutcomeTest
         var run = new ArtistMetadataActiveRun {Operation="cache-refresh",TargetArtistIds=new(){7,8}};
         var rows = new[]{new ArtistRunOutcomeRecord(7,ArtistRunOutcomes.Succeeded,
             CacheWork:new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)})};
-        var method=typeof(ArtistMetadataAutomationCoordinator).GetMethod("RetainUnresolvedCacheWork",
+        var method=typeof(LibraryArtistMetadataQueueService).GetMethod("RetainUnresolvedCacheWork",
             System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
         Assert.True((bool)method.Invoke(null,new object[]{run,rows,DateTimeOffset.UtcNow})!);
         Assert.Equal(ArtistMetadataRunDispositions.PendingRetry,run.Disposition);
@@ -28,7 +28,7 @@ public class ArtistMetadataRunOutcomeTest
     [Fact]
     public void CacheRetryBudgetRetainsProviderStagesAndStopsAfterThreeAttempts()
     {
-        var method = typeof(ArtistMetadataAutomationCoordinator).GetMethod("RetainUnresolvedCacheWork",
+        var method = typeof(LibraryArtistMetadataQueueService).GetMethod("RetainUnresolvedCacheWork",
             System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(method);
         var run = new ArtistMetadataActiveRun { Operation = "cache-refresh" };

@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Net.Http;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -38,6 +40,76 @@ public sealed class ArtistLocationResolverTest : IDisposable
         }
 
         GC.SuppressFinalize(this);
+    }
+
+    [Fact]
+    public async Task MissingAppleIdentityDoesNotAcquireTheSameProviderGateTwice()
+    {
+        using var fixture = new AppleArtistBiographyServiceTest.ArtistHttpFixture();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?> {
+            ["ConnectionStrings:Library"]="Data Source="+Path.Join(fixture.Root,"library.db") }).Build();
+        await new LibraryDbService(config,NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+        await using(var db=new Microsoft.Data.Sqlite.SqliteConnection(config.GetConnectionString("Library")))
+        {
+            await db.OpenAsync();await using var command=db.CreateCommand();
+            command.CommandText="INSERT INTO artist(id,name) VALUES(17,'4Mr Frank White'); INSERT INTO album(id,artist_id,title) VALUES(17,17,'Album'); INSERT INTO track(id,album_id,title) VALUES(17,17,'A Song'); INSERT INTO folder(id,root_path,display_name,enabled) VALUES(1,'/fixture','fixture',1); INSERT INTO audio_file(id,path,folder_id) VALUES(17,'/fixture/song.flac',1); INSERT INTO track_local(track_id,audio_file_id) VALUES(17,17);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var repository=new LibraryRepository(config,NullLogger<LibraryRepository>.Instance);
+        var cache=new ArtistPageCacheRepository(config,NullLogger<ArtistPageCacheRepository>.Instance);
+        var gate=new DeezSpoTag.Web.Services.ArtistMetadataProviderGate(NullLogger<DeezSpoTag.Web.Services.ArtistMetadataProviderGate>.Instance,
+            _=>TimeSpan.Zero,TimeSpan.FromSeconds(1));
+        var env=new OriginEnvironment(fixture.Root);
+        var catalog=new DeezSpoTag.Web.Services.ArtistArtworkCatalogService(repository,null!,null!,null!,null!,null!,fixture.Service,null!,fixture.Factory,env,
+            NullLogger<DeezSpoTag.Web.Services.ArtistArtworkCatalogService>.Instance,providerGate:gate,completionCache:cache);
+        var aliases=new ArtistAliasService(config,NullLogger<ArtistAliasService>.Instance);
+        var apple=ArtistLocationResolver.CreateAppleSource(fixture.Service,repository,cache,catalog,aliases,gate);
+        var resolver=new ArtistLocationResolver(NullLogger<ArtistLocationResolver>.Instance,new[]{apple});
+        // Fixture search intentionally has no matching tracks. It must finish as unresolved identity,
+        // after making the search request, rather than timing out waiting on its own gate.
+        var error=await Assert.ThrowsAsync<InvalidOperationException>(()=>resolver.ResolveRequiredAsync(17,"4Mr Frank White","apple",gate,default));
+        Assert.Contains("identity is unresolved",error.Message);
+        Assert.True(fixture.Handler.Calls>0);
+    }
+
+    private sealed class OriginEnvironment(string root) : Microsoft.AspNetCore.Hosting.IWebHostEnvironment, DeezSpoTag.Web.Services.IAppDataRootOverride
+    {
+        public string? AppDataRoot=>root;
+        public string EnvironmentName {get;set;}="Development";
+        public string ApplicationName {get;set;}="Tests";
+        public string ContentRootPath {get;set;}=root;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
+        public string WebRootPath {get;set;}=root;
+        public Microsoft.Extensions.FileProviders.IFileProvider WebRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
+    }
+
+    [Fact]
+    public async Task AppleIsTheFirstOnlineSourceAndAFailureDoesNotBlockOtherServices()
+    {
+        var apple = StubSource.WithAnswer("apple", "Nairobi", "Kenya", "KE");
+        var mb = StubSource.WithAnswer("musicbrainz", "London", "United Kingdom", "GB");
+        var am = StubSource.WithAnswer("audiomack", "Lagos", "Nigeria", "NG");
+        var ctor = typeof(ArtistLocationResolver).GetConstructors().SingleOrDefault(c => c.GetParameters().Length == 5);
+        Assert.NotNull(ctor);
+        var resolver = (ArtistLocationResolver)ctor!.Invoke(new object?[] { NullLogger<ArtistLocationResolver>.Instance, mb, am, null, apple });
+        Assert.Equal("apple", (await resolver.ResolveAsync(1, "Artist"))?.Source);
+        Assert.Equal(0, mb.Calls);
+        Assert.Equal(0, am.Calls);
+        var failing = new FailingAppleSource();
+        resolver = new ArtistLocationResolver(NullLogger<ArtistLocationResolver>.Instance,
+            new IArtistLocationSource[] { failing, mb, am });
+        Assert.Equal("musicbrainz", (await resolver.ResolveAsync(1, "Artist"))?.Source);
+        var gate = new DeezSpoTag.Web.Services.ArtistMetadataProviderGate(
+            NullLogger<DeezSpoTag.Web.Services.ArtistMetadataProviderGate>.Instance, _ => TimeSpan.Zero);
+        Assert.Equal("musicbrainz", (await resolver.ResolveRequiredAsync(1, "Artist", "auto", gate, CancellationToken.None))?.Source);
+        await Assert.ThrowsAsync<HttpRequestException>(() => resolver.ResolveRequiredAsync(1, "Artist", "apple", gate, CancellationToken.None));
+    }
+
+    private sealed class FailingAppleSource : IArtistLocationSource
+    {
+        public string SourceName => "apple";
+        public Task<ArtistLocationResult?> ResolveAsync(long id, string? name, CancellationToken token = default)
+            => Task.FromException<ArtistLocationResult?>(new HttpRequestException("provider down", null, System.Net.HttpStatusCode.ServiceUnavailable));
     }
 
     [Fact]

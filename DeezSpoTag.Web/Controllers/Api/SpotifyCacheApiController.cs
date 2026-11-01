@@ -698,9 +698,7 @@ public class SpotifyCacheApiController : ControllerBase
                 foreach (var artistId in artistIds)
                 {
                     updates.AvatarUpdated = await NavidromeClient.UpdateArtistImageFromFileAsync(
-                        navidrome.Url,
-                        navidrome.Username,
-                        navidrome.Password,
+                        new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
                         artistId,
                         navidromeImage.LocalPath!,
                         null,

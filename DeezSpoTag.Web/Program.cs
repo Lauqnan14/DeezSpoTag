@@ -1777,14 +1777,21 @@ app.MapHub<DeezSpoTag.Web.Hubs.SoulseekHub>("/hubs/soulseek");
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Services.Library.ArtistLocationOverrideStore>();
-        // Artist location precedence: MusicBrainz answers when it can, Audiomack
-        // is the fallback, and a manual override beats both. Registered here,
+        // Artist location precedence: Apple Music, MusicBrainz, then Audiomack.
+        // A manual override beats every online source. Registered here,
         // before the metadata holder that consumes it.
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistLocation.MusicBrainzArtistLocationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>(sp =>
             new DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver(
                 sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver>>(),
                 new DeezSpoTag.Web.Services.ArtistLocation.IArtistLocationSource[] {
+                DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver.CreateAppleSource(
+                    sp.GetRequiredService<AppleArtistBiographyService>(),
+                    sp.GetRequiredService<LibraryRepository>(),
+                    sp.GetRequiredService<ArtistPageCacheRepository>(),
+                    sp.GetRequiredService<ArtistArtworkCatalogService>(),
+                    sp.GetRequiredService<ArtistAliasService>(),
+                    sp.GetRequiredService<ArtistMetadataProviderGate>()),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.ArtistLocation.MusicBrainzArtistLocationService>(),
                 // Audiomack stays as the fallback for the many artists MusicBrainz
                 // has no geography for.

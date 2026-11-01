@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Linq;
 using System.Text.Json;
@@ -27,8 +28,15 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Path.GetTempPath(),
         "deezspotag-artist-resume-" + Guid.NewGuid().ToString("N"));
 
+    // Build the real empty schema once; each test gets an independent database copy.
+    private static readonly Lazy<Task<byte[]>> EmptyLibrarySchema = new(CreateEmptyLibrarySchemaAsync);
+    private Task? _schemaInitialization;
+    private ArtistMetadataCacheRefreshService? _cacheRefreshService;
+    private readonly List<LibraryArtistMetadataQueueService> _queues = new();
+
     public void Dispose()
     {
+        foreach (var queue in _queues) queue.Dispose();
         try
         {
             if (Directory.Exists(_root))
@@ -42,10 +50,180 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(true, "journal")]
+    [InlineData(false, "journal")]
+    [InlineData(true, "inline")]
+    [InlineData(false, "inline")]
+    [InlineData(true, "visited")]
+    [InlineData(false, "visited")]
+    public async Task CacheCheckpointMovesToSharedQueueWithoutLosingScopePauseOrJournal(bool paused, string evidence)
+    {
+        var coordinator = await CreateCoordinatorAsync();
+        var runId = Guid.NewGuid().ToString("N");
+        var request = new ArtistMetadataCacheRefreshRequest(null, 17, "lastfm", true);
+        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = runId, Paused = paused,
+            CacheRequest = request, TargetArtistIds = new() { 1, 2 } };
+        var outcome = new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded,
+            CacheWork: new[] { new ArtistCacheWorkOutcome("lastfm", "biographies", ArtistCacheWorkStatus.Succeeded) });
+        if (evidence == "inline") run.Outcomes = new() { outcome };
+        if (evidence == "visited") run.CompletedArtistIds = new() { 1 };
+        await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = run }));
+        var legacyJournal = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
+        if (evidence == "journal")
+        {
+            await using var journal = await ArtistMetadataOutcomeJournal.OpenAsync(legacyJournal, runId, true, null, CancellationToken.None);
+            await journal.AppendAsync(outcome, CancellationToken.None);
+        }
+        await Invoke(coordinator, "ResumeInterruptedRunAsync", CancellationToken.None);
+        Assert.Null((await ReadState()).ActiveRun);
+        Assert.Null((await ReadState()).LastCacheRefreshUtc);
+        Assert.Null((await _cacheRefreshService!.GetSweepCompletionAsync(CancellationToken.None)).LastCacheRefreshUtc);
+        Assert.False(File.Exists(legacyJournal));
+        var queue = _queues.Last();
+        var status = queue.GetRefreshStatus(runId)!;
+        Assert.Equal(paused ? "paused" : "queued", status.RunState);
+        Assert.Equal(2, status.CacheRefresh.TotalArtists);
+        Assert.Equal(1, status.CacheRefresh.ProcessedArtists);
+        var queuePath = Path.Combine(_root, "artist-metadata-queue.json");
+        using (var document = JsonDocument.Parse(await File.ReadAllTextAsync(queuePath)))
+        {
+            var item = Assert.Single(document.RootElement.EnumerateArray());
+            Assert.Equal(runId, item.GetProperty("RunId").GetString());
+            Assert.Equal(new long[] { 1, 2 }, item.GetProperty("Run").GetProperty("TargetArtistIds").EnumerateArray().Select(value => value.GetInt64()));
+            Assert.Equal(17, item.GetProperty("Request").GetProperty("FolderId").GetInt64());
+            Assert.Equal("lastfm", item.GetProperty("Request").GetProperty("Source").GetString());
+        }
+        var journalPath = Path.Combine(_root, "artist-cache-runs", runId + ".ndjson");
+        Assert.Equal(1, Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, runId)).ArtistId);
+        Assert.False(await queue.ControlAsync("stale", "resume", CancellationToken.None));
+        // Restoring a paused queue must neither fetch nor stamp completion.
+        if (paused)
+        {
+            var restarted = await CreateCoordinatorAsync();
+            var restored = _queues.Last();
+            await restored.StartAsync(CancellationToken.None);
+            try
+            {
+                Assert.Equal("paused", restarted.GetStatus().RunState);
+                Assert.Equal(runId, restarted.GetStatus().RunId);
+                Assert.Equal(1, restarted.GetStatus().CacheRefresh.ProcessedArtists);
+            }
+            finally { await restored.StopAsync(CancellationToken.None); }
+            Assert.True(await restored.ControlAsync(runId, "resume", CancellationToken.None));
+            Assert.False(await restored.ControlAsync(runId, "resume", CancellationToken.None));
+            Assert.Equal("queued", restored.GetRefreshStatus(runId)!.RunState);
+            Assert.Equal(1, Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, runId)).ArtistId);
+        }
+    }
+
+    [Theory]
+    [InlineData("pause")]
+    [InlineData("resume")]
+    [InlineData("cancel")]
+    public async Task CacheControlPersistenceFailureIsNotAcknowledgedOrAllowedToCancelWork(string action)
+    {
+        await CreateCoordinatorAsync();
+        var queue = _queues.Last();
+        var runId = Guid.NewGuid().ToString("N");
+        var request = new ArtistMetadataCacheRefreshRequest(null, 17, "lastfm");
+        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = runId,
+            Paused = action == "resume", CacheRequest = request, TargetArtistIds = new() { 1 } };
+        Assert.True((await queue.EnqueueRefreshAsync(request, CancellationToken.None, run)).Queued);
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var items = (System.Collections.IDictionary)typeof(LibraryArtistMetadataQueueService).GetField("_queueItems", flags)!.GetValue(queue)!;
+        var original = Assert.Single(items.Values.Cast<object>());
+        var key = (long)original.GetType().GetProperty("Key")!.GetValue(original)!;
+        using var cancellation = new CancellationTokenSource();
+        typeof(LibraryArtistMetadataQueueService).GetField("_activeQueueKey", flags)!.SetValue(queue, key);
+        typeof(LibraryArtistMetadataQueueService).GetField("_activeCancellation", flags)!.SetValue(queue, cancellation);
+        var path = Path.Combine(_root, "artist-metadata-queue.json");
+        var saved = await File.ReadAllTextAsync(path);
+        File.Move(path, path + ".saved");
+        Directory.CreateDirectory(path); // Prevent the atomic replacement, after the temporary write.
+        try
+        {
+            var error = await Record.ExceptionAsync(() => queue.ControlAsync(runId, action, CancellationToken.None));
+            Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString() ?? "The failed write was acknowledged.");
+            Assert.False(cancellation.IsCancellationRequested);
+            Assert.Same(original, Assert.Single(items.Values.Cast<object>()));
+            Assert.Equal(saved, await File.ReadAllTextAsync(path + ".saved"));
+        }
+        finally { Directory.Delete(path); File.Move(path + ".saved", path); }
+        Assert.True(await queue.ControlAsync(runId, action, CancellationToken.None));
+        Assert.Equal(action != "resume", cancellation.IsCancellationRequested);
+        Assert.Null((await _cacheRefreshService!.GetSweepCompletionAsync(CancellationToken.None)).LastCacheRefreshUtc);
+    }
+
+    [Theory]
+    [InlineData("journal")]
+    [InlineData("queue")]
+    public async Task CacheMigrationFailureRetainsTheOriginalCheckpointAndInlineOutcomes(string failure)
+    {
+        var coordinator = await CreateCoordinatorAsync();
+        var runId = Guid.NewGuid().ToString("N");
+        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = runId,
+            CacheRequest = new(null, 17, "lastfm"), TargetArtistIds = new() { 1, 2 },
+            Outcomes = new() { new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded) } };
+        await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = run }));
+        var blocked = failure == "journal" ? Path.Combine(_root, "artist-cache-runs", runId + ".ndjson")
+            : Path.Combine(_root, "artist-metadata-queue.json");
+        Directory.CreateDirectory(blocked);
+        var error = await Record.ExceptionAsync(() => Invoke(coordinator, "ResumeInterruptedRunAsync", CancellationToken.None));
+        Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString() ?? "The failed migration was acknowledged.");
+        var retained = (await ReadState()).ActiveRun!;
+        Assert.Equal(runId, retained.RunId);
+        Assert.Equal(new long[] { 1, 2 }, retained.TargetArtistIds);
+        Assert.Equal(1, Assert.Single(retained.Outcomes!).ArtistId);
+        Assert.Null((await ReadState()).LastCacheRefreshUtc);
+        Assert.Null((await _cacheRefreshService!.GetSweepCompletionAsync(CancellationToken.None)).LastCacheRefreshUtc);
+    }
+
+    [Fact]
+    public async Task RepeatedCacheRunFailuresPersistAndRequireAttentionAfterThreeAttempts()
+    {
+        await CreateCoordinatorAsync();
+        var queue = _queues.Last();
+        var runId = Guid.NewGuid().ToString("N");
+        var request = new ArtistMetadataCacheRefreshRequest(null, 17, "lastfm");
+        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = runId,
+            CacheRequest = request, TargetArtistIds = new() { 1 } };
+        Assert.True((await queue.EnqueueRefreshAsync(request, CancellationToken.None, run)).Queued);
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var items = (System.Collections.IDictionary)typeof(LibraryArtistMetadataQueueService).GetField("_queueItems", flags)!.GetValue(queue)!;
+        using var stopping = new CancellationTokenSource();
+        try
+        {
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                // Execute one real attempt at a time. The missing artist is a preparation failure;
+                // the fixture advances attempts without waiting thirty minutes between them.
+                await (Task)typeof(LibraryArtistMetadataQueueService).GetMethod("ProcessNextArtistAsync", flags)!
+                    .Invoke(queue, new[] { Assert.Single(items.Values.Cast<object>()), (object)CancellationToken.None, stopping.Token })!;
+                using var saved = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_root, "artist-metadata-queue.json")));
+                var checkpoint = Assert.Single(saved.RootElement.EnumerateArray()).GetProperty("Run");
+                Assert.Equal(attempt, checkpoint.GetProperty("CacheAttempts").GetProperty("1:local:artist").GetInt32());
+                Assert.Equal(attempt == 3, checkpoint.GetProperty("Paused").GetBoolean());
+            }
+            Assert.Equal("paused", queue.GetRefreshStatus(runId)!.RunState);
+            Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention, queue.GetRefreshStatus(runId)!.RunDisposition);
+            var journalPath = Path.Combine(_root, "artist-cache-runs", runId + ".ndjson");
+            Assert.Equal(ArtistRunOutcomes.Failed, Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, runId)).Outcome);
+            Assert.True(await queue.ControlAsync(runId, "resume", CancellationToken.None));
+            Assert.Equal("queued", queue.GetRefreshStatus(runId)!.RunState);
+            Assert.Equal(ArtistRunOutcomes.Failed, Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, runId)).Outcome);
+            using var resumed = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_root, "artist-metadata-queue.json")));
+            Assert.Empty(Assert.Single(resumed.RootElement.EnumerateArray()).GetProperty("Run").GetProperty("CacheAttempts").EnumerateObject());
+            Assert.Null((await ReadState()).LastCacheRefreshUtc);
+            Assert.Null((await _cacheRefreshService!.GetSweepCompletionAsync(CancellationToken.None)).LastCacheRefreshUtc);
+        }
+        finally { await stopping.CancelAsync(); }
+    }
+
     [Fact]
     public async Task ExplicitCancellationClearsRunEvenWhenWorkThrowsDuringCleanup()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Func<CancellationToken, Task<bool>> work = async token =>
         {
@@ -91,9 +269,9 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
-    public async Task Pause_DrainsAndPersistsWithoutStamping_AndRejectsStaleRun()
+    public async Task TargetPause_DrainsAndPersistsWithoutStamping_AndRejectsStaleRun()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Func<CancellationToken, Task<bool>> work = async token =>
@@ -106,13 +284,13 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.True(await EnqueueTestWork(coordinator, work));
         await started.Task;
         var id = coordinator.GetStatus().RunId!;
-        Assert.False(await coordinator.PauseAsync("target-update", id, CancellationToken.None));
-        Assert.False(await coordinator.PauseAsync("cache-refresh", "old-run", CancellationToken.None));
-        var pause = coordinator.PauseAsync("cache-refresh", id, CancellationToken.None);
+        Assert.False(await coordinator.PauseAsync("cache-refresh", id, CancellationToken.None));
+        Assert.False(await coordinator.PauseAsync("target-update", "old-run", CancellationToken.None));
+        var pause = coordinator.PauseAsync("target-update", id, CancellationToken.None);
         await WaitUntil(() => coordinator.GetStatus().RunState == "pausing");
         Assert.True((await ReadState()).ActiveRun!.Paused);
         Assert.False(await EnqueueTestWork(coordinator, work));
-        var interruptedDuringDrain = CreateCoordinator();
+        var interruptedDuringDrain = await CreateCoordinatorAsync();
         await Invoke(interruptedDuringDrain, "ResumeInterruptedRunAsync", CancellationToken.None);
         Assert.Equal("paused", interruptedDuringDrain.GetStatus().RunState);
         finish.SetResult();
@@ -120,42 +298,42 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.Equal("paused", coordinator.GetStatus().RunState);
         var saved = await ReadState();
         Assert.True(saved.ActiveRun!.Paused);
-        Assert.Null(saved.LastCacheRefreshUtc);
-        Assert.False(await coordinator.PauseAsync("cache-refresh", id, CancellationToken.None));
-        var restarted = CreateCoordinator();
+        Assert.Null(saved.LastTargetUpdateUtc);
+        Assert.False(await coordinator.PauseAsync("target-update", id, CancellationToken.None));
+        var restarted = await CreateCoordinatorAsync();
         await Invoke(restarted, "ResumeInterruptedRunAsync", CancellationToken.None);
         Assert.Equal("paused", restarted.GetStatus().RunState);
         Assert.Equal(id, restarted.GetStatus().RunId);
-        Assert.False(await restarted.ResumeAsync("cache-refresh", "stale", CancellationToken.None));
+        Assert.False(await restarted.ResumeAsync("target-update", "stale", CancellationToken.None));
         Assert.True(await restarted.CancelAsync(CancellationToken.None));
         Assert.Null((await ReadState()).ActiveRun);
-        Assert.Null((await ReadState()).LastCacheRefreshUtc);
-        Assert.Equal("Cache refresh cancelled", restarted.GetStatus().CacheRefresh.Phase);
+        Assert.Null((await ReadState()).LastTargetUpdateUtc);
+        Assert.Equal("Metadata update cancelled", restarted.GetStatus().TargetUpdate.Phase);
     }
 
     [Fact]
-    public async Task PauseRacingWithSuccessfulCompletion_DoesNotRetainCompletedRun()
+    public async Task TargetPauseRacingWithSuccessfulCompletion_DoesNotRetainCompletedRun()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(await EnqueueTestWork(coordinator, async token =>
         { started.SetResult(); await finish.Task; return true; }));
         await started.Task;
-        var pause = coordinator.PauseAsync("cache-refresh", coordinator.GetStatus().RunId!, CancellationToken.None);
+        var pause = coordinator.PauseAsync("target-update", coordinator.GetStatus().RunId!, CancellationToken.None);
         await WaitUntil(() => coordinator.GetStatus().RunState == "pausing");
         finish.SetResult();
         Assert.False(await pause);
         var saved = await ReadState();
         Assert.Null(saved.ActiveRun);
-        Assert.NotNull(saved.LastCacheRefreshUtc);
+        Assert.NotNull(saved.LastTargetUpdateUtc);
         Assert.Equal("idle", coordinator.GetStatus().RunState);
     }
 
     [Fact]
-    public async Task PausePersistenceFailure_IsNotAcknowledgedAndDoesNotCancelWorker()
+    public async Task TargetPausePersistenceFailure_IsNotAcknowledgedAndDoesNotCancelWorker()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         CancellationToken workerToken = default;
@@ -164,7 +342,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         await started.Task;
         Directory.CreateDirectory(StatePath + ".tmp");
         await Assert.ThrowsAnyAsync<UnauthorizedAccessException>(() => coordinator.PauseAsync(
-            "cache-refresh", coordinator.GetStatus().RunId!, CancellationToken.None));
+            "target-update", coordinator.GetStatus().RunId!, CancellationToken.None));
         Assert.False(workerToken.IsCancellationRequested);
         Assert.False((await ReadState()).ActiveRun!.Paused);
         Directory.Delete(StatePath + ".tmp");
@@ -173,7 +351,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
-    public async Task SavedSchedules_ReopenWithSameDueTimes_AndPausedRunBlocksScheduler()
+    public async Task SavedSchedules_ReopenWithSameDueTimes_AndPausedTargetRunRetainsSchedule()
     {
         var env = new TestEnvironment(_root);
         var preferences = new UserPreferencesStore(env, NullLogger<UserPreferencesStore>.Instance);
@@ -187,11 +365,11 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         var state = new ArtistMetadataAutomationState
         {
             LastCacheRefreshUtc = last, LastTargetUpdateUtc = last, LastDeepRefreshUtc = last,
-            ActiveRun = new ArtistMetadataActiveRun { Paused = true, Operation = "cache-refresh", RunId = "saved", TargetArtistIds = new() { 1, 2 } }
+            ActiveRun = new ArtistMetadataActiveRun { Paused = true, Operation = "target-update", RunId = "saved", TargetArtistIds = new() { 1, 2 } }
         };
         Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
         await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(state));
-        var restarted = CreateCoordinator();
+        var restarted = await CreateCoordinatorAsync();
         await Invoke(restarted, "RunScheduledOperationsAsync", CancellationToken.None);
         var status = restarted.GetStatus();
         Assert.Equal("paused", status.RunState);
@@ -199,34 +377,34 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.Equal(last.AddDays(14), status.NextTargetUpdateUtc);
         Assert.Equal(last, (await ReadState()).LastDeepRefreshUtc);
         Assert.True((await ReadState()).ActiveRun!.Paused);
-        Assert.Equal(2, status.CacheRefresh.TotalArtists);
+        Assert.Equal(2, status.TargetUpdate.TotalArtists);
     }
 
     [Fact]
-    public async Task Resume_UsesOriginalCheckpointAndJournal_AndRejectsDuplicateStarts()
+    public async Task TargetResume_UsesOriginalCheckpointAndJournal_AndRejectsDuplicateStarts()
     {
-        var coordinator = CreateCoordinator();
-        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = "retained", Paused = true,
-            TargetArtistIds = new() { 1, 2 }, CacheRequest = new(null, 17, "spotify", true) };
+        var coordinator = await CreateCoordinatorAsync();
+        var run = new ArtistMetadataActiveRun { Operation = "target-update", RunId = "retained", Paused = true,
+            TargetArtistIds = new() { 1, 2 }, TargetRequest = new() { FolderId = 17, Source = "spotify" } };
         Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
         await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = run }));
         var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
         await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(journalPath, run.RunId, true, null, CancellationToken.None))
             await journal.AppendAsync(new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded), CancellationToken.None);
         await Invoke(coordinator, "ResumeInterruptedRunAsync", CancellationToken.None);
-        Assert.Equal(1, coordinator.GetStatus().CacheRefresh.ProcessedArtists);
+        Assert.Equal(1, coordinator.GetStatus().TargetUpdate.ProcessedArtists);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Assert.True(await coordinator.ResumeAsync("cache-refresh", "retained", CancellationToken.None, async (saved, token) =>
+        Assert.True(await coordinator.ResumeAsync("target-update", "retained", CancellationToken.None, async (saved, token) =>
         {
-            Assert.Equal(17, saved.CacheRequest!.FolderId);
-            Assert.Equal("spotify", saved.CacheRequest.Source);
+            Assert.Equal(17, saved.TargetRequest!.FolderId);
+            Assert.Equal("spotify", saved.TargetRequest.Source);
             Assert.Equal(new long[] { 1, 2 }, saved.TargetArtistIds);
             return await EnqueueTestWork(coordinator, async ct => {
                 started.SetResult(); await finish.Task;
                 foreach (var id in saved.TargetArtistIds!)
                     await Invoke(coordinator, "RecordArtistOutcomeAsync", new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Succeeded,
-                        CacheWork: new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)}));
+                        Targets: new[]{new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[]{ArtistTargetFields.Avatar})}));
                 return true;
             }, saved);
         }));
@@ -239,17 +417,17 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.Equal(new long[] { 1, 2 }, (await ReadState()).ActiveRun!.TargetArtistIds);
 
         Assert.Single(ArtistMetadataOutcomeJournal.Read(journalPath, "retained"));
-        Assert.False(await coordinator.ResumeAsync("cache-refresh", "retained", CancellationToken.None));
+        Assert.False(await coordinator.ResumeAsync("target-update", "retained", CancellationToken.None));
         finish.SetResult();
         await WaitUntil(() => coordinator.GetStatus().RunState == "idle");
         Assert.Null((await ReadState()).ActiveRun);
     }
 
     [Fact]
-    public async Task InterruptedRunningCheckpoint_RecoveryEnqueuesSameRun()
+    public async Task TargetInterruptedRunningCheckpoint_RecoveryEnqueuesSameRun()
     {
-        var coordinator = CreateCoordinator();
-        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = "interrupted", TargetArtistIds = new() { 1 } };
+        var coordinator = await CreateCoordinatorAsync();
+        var run = new ArtistMetadataActiveRun { Operation = "target-update", RunId = "interrupted", TargetArtistIds = new() { 1 } };
         Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
         await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = run }));
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -261,7 +439,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
                 started.SetResult(); await finish.Task;
                 foreach (var id in saved.TargetArtistIds!)
                     await Invoke(coordinator, "RecordArtistOutcomeAsync", new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Succeeded,
-                        CacheWork: new[]{new ArtistCacheWorkOutcome("spotify","artwork",ArtistCacheWorkStatus.Succeeded)}));
+                        Targets: new[]{new ArtistTargetResult("plex", ArtistTargetOutcome.Updated, new[]{ArtistTargetFields.Avatar})}));
                 return true;
             }, saved);
         });
@@ -277,7 +455,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task TargetWorkerReturningFalseOnPause_KeepsRunAndCounts()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(await EnqueueTestWork(coordinator, async token =>
         {
@@ -292,7 +470,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         }, operation: "target-update"));
         await started.Task;
         Assert.True(await coordinator.PauseAsync("target-update", coordinator.GetStatus().RunId!, CancellationToken.None));
-        var restarted = CreateCoordinator();
+        var restarted = await CreateCoordinatorAsync();
         await Invoke(restarted, "ResumeInterruptedRunAsync", CancellationToken.None);
         var status = restarted.GetStatus();
         Assert.Equal("paused", status.RunState);
@@ -326,10 +504,10 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
-    public async Task LegacyRecovery_JournalCreationFailureRetainsInlineOutcomes()
+    public async Task TargetLegacyRecovery_JournalCreationFailureRetainsInlineOutcomes()
     {
-        var coordinator = CreateCoordinator();
-        var run = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = "legacy",
+        var coordinator = await CreateCoordinatorAsync();
+        var run = new ArtistMetadataActiveRun { Operation = "target-update", RunId = "legacy",
             Outcomes = new() { new ArtistRunOutcomeRecord(1, ArtistRunOutcomes.Succeeded) },
             TargetArtistIds = new() { 1, 2 } };
         Directory.CreateDirectory(Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson"));
@@ -338,9 +516,9 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     }
 
     [Fact]
-    public async Task Pause_DoesNotAcknowledgeFailedOutcomeDurability()
+    public async Task TargetPause_DoesNotAcknowledgeFailedOutcomeDurability()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(await EnqueueTestWork(coordinator, async token =>
         {
@@ -352,18 +530,18 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         }));
         await started.Task;
         await Assert.ThrowsAnyAsync<IOException>(() => coordinator.PauseAsync(
-            "cache-refresh", coordinator.GetStatus().RunId!, CancellationToken.None));
+            "target-update", coordinator.GetStatus().RunId!, CancellationToken.None));
         Assert.True((await ReadState()).ActiveRun!.Paused);
         Assert.Equal("paused", coordinator.GetStatus().RunState);
     }
 
     [Fact]
-    public async Task Shutdown_CancelsThenDrainsWorkerAndRetainsItsCheckpoint()
+    public async Task TargetShutdown_CancelsThenDrainsWorkerAndRetainsItsCheckpoint()
     {
         var preferences = new UserPreferencesStore(new TestEnvironment(_root), NullLogger<UserPreferencesStore>.Instance);
         await preferences.SaveAsync(new UserPreferencesDto
         { MetadataCacheRefreshIntervalDays = 0, MetadataTargetUpdateIntervalDays = 0, MetadataDeepRefreshIntervalDays = 0 });
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         await coordinator.StartAsync(CancellationToken.None);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -382,13 +560,13 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         var state = await ReadState();
         Assert.Equal(id, state.ActiveRun!.RunId);
         Assert.False(state.ActiveRun.Paused);
-        Assert.Null(state.LastCacheRefreshUtc);
+        Assert.Null(state.LastTargetUpdateUtc);
     }
 
     [Fact]
-    public async Task CancelAlreadyRequested_CannotBeReplacedByPause()
+    public async Task TargetCancelAlreadyRequested_CannotBeReplacedByPause()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(await EnqueueTestWork(coordinator, async token =>
@@ -401,7 +579,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         await started.Task;
         var id = coordinator.GetStatus().RunId!;
         Assert.True(await coordinator.CancelAsync(CancellationToken.None));
-        var attemptedPause = coordinator.PauseAsync("cache-refresh", id, CancellationToken.None);
+        var attemptedPause = coordinator.PauseAsync("target-update", id, CancellationToken.None);
         finish.SetResult();
         Assert.False(await attemptedPause);
         await WaitUntil(() => coordinator.GetStatus().RunState == "idle");
@@ -411,7 +589,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task RepeatedAuditFailureRetainsUnknownEvidenceAfterAttemptLimit()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         ArtistMetadataActiveRun? resume = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
@@ -431,7 +609,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task PartialAuditPersistsUnknownIdsAndPausesOnAuthenticationFailure()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var exception = new DeezSpoTag.Integrations.TargetLookupException("Plex HTTP 401",
             target: "plex", unresolvedArtists: new Dictionary<long, string> { [7] = "HTTP 401" });
         Assert.True(await EnqueueTestWork(coordinator, _ => Task.FromException<bool>(exception), operation: "target-update"));
@@ -446,7 +624,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task StrictLookupFailureUsesCoordinatorRecovery()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         Assert.True(await EnqueueTestWork(coordinator,
             _ => Task.FromException<bool>(new DeezSpoTag.Integrations.TargetLookupException("Preparation lookup failed")),
             operation: "target-update"));
@@ -456,36 +634,11 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
         Assert.Null(state.LastTargetUpdateUtc);
     }
 
-    [Fact]
-    public async Task RepeatedCacheRunFailuresPersistAndRequireAttentionAfterThreeAttempts()
-    {
-        var coordinator = CreateCoordinator();
-        ArtistMetadataActiveRun? resume = null;
-        for (var attempt = 1; attempt <= 3; attempt++)
-        {
-            Assert.True(await EnqueueTestWork(coordinator,
-                _ => Task.FromException<bool>(new IOException("Preparation failed")), resume));
-            await ActiveTask(coordinator);
-            var state = await ReadState();
-            if (attempt < 3)
-            {
-                Assert.Equal(attempt, state.ActiveRun!.ConsecutiveFailures);
-                resume = state.ActiveRun;
-            }
-            else
-            {
-                Assert.NotNull(state.ActiveRun);
-                Assert.True(state.ActiveRun.Paused);
-                Assert.Equal(ArtistMetadataRunDispositions.NeedsAttention,state.ActiveRun.Disposition);
-            }
-            Assert.Null(state.LastCacheRefreshUtc);
-        }
-    }
 
     [Fact]
     public async Task RetainedRunWaitsForItsRetryWindowBeforeItIsRequeued()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var key = ArtistMetadataPendingWork.Key(7, "plex");
         await WriteRetainedStateAsync(new ArtistMetadataActiveRun
         {
@@ -520,7 +673,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task ThreeUnresolvedAttemptsPauseTheRetainedRunAndResumeStartsANewWindow()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var pending = new[]
         {
             new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Background }, ArtistPendingWorkCategories.Transient)
@@ -574,7 +727,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task PauseRetainedRunStopsTheWindowAndResumeRestartsIt()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var journalPath = Path.Combine(_root, "library-artist-images", "metadata-automation-outcomes.ndjson");
         await WriteRetainedStateAsync(new ArtistMetadataActiveRun
         {
@@ -609,7 +762,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task CancellingARetainedRunDiscardsItsOutstandingWork()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         await WriteRetainedStateAsync(new ArtistMetadataActiveRun
         {
             Operation = "target-update", RunId = "retained-run", TargetArtistIds = new List<long> { 7 },
@@ -632,7 +785,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task RunLevelFailuresDoNotConsumeTargetAttempts()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var pending = new[]
         {
             new ArtistTargetPendingWork("plex", new[] { ArtistTargetFields.Avatar }, ArtistPendingWorkCategories.Transient)
@@ -735,7 +888,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task CleanupReadFailureStillReleasesOperationGate()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         Assert.True(await EnqueueTestWork(coordinator, async _ =>
         {
             await File.WriteAllTextAsync(StatePath, "broken JSON");
@@ -816,7 +969,7 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     [Fact]
     public async Task TargetSetPersistenceFailureIsAwaitedBeforeArtistProcessing()
     {
-        var coordinator = CreateCoordinator();
+        var coordinator = await CreateCoordinatorAsync();
         var processed = false;
         Assert.True(await EnqueueTestWork(coordinator, async _ =>
         {
@@ -836,23 +989,60 @@ public class ArtistMetadataResumeIntegrationTest : IDisposable
     private async Task<ArtistMetadataAutomationState> ReadState()
         => JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await File.ReadAllTextAsync(StatePath))!;
 
-    private ArtistMetadataAutomationCoordinator CreateCoordinator()
+    private static async Task<byte[]> CreateEmptyLibrarySchemaAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "artist-resume-schema-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "library.db");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ConnectionStrings:Library"] = "Data Source=" + path + ";Pooling=False" }).Build();
+            await new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+            return await File.ReadAllBytesAsync(path);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private async Task InitializeLibraryAsync()
+    {
+        var schema = await EmptyLibrarySchema.Value;
+        Directory.CreateDirectory(_root);
+        await File.WriteAllBytesAsync(Path.Combine(_root, "library.db"), schema);
+    }
+
+    private async Task<ArtistMetadataAutomationCoordinator> CreateCoordinatorAsync()
     {
         // Only status/cancellation of the updater is used; provider dependencies are never invoked.
         var updater = (ArtistMetadataUpdaterService)RuntimeHelpers.GetUninitializedObject(typeof(ArtistMetadataUpdaterService));
         typeof(ArtistMetadataUpdaterService).GetField("_statusLock", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(updater, new object());
         typeof(ArtistMetadataUpdaterService).GetField("_status", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(updater, MetadataUpdaterStatusSnapshot.Idle());
         var env = new TestEnvironment(_root);
-        return new ArtistMetadataAutomationCoordinator(null!, updater,
-            new UserPreferencesStore(env, NullLogger<UserPreferencesStore>.Instance), env,
-            NullLogger<ArtistMetadataAutomationCoordinator>.Instance);
+        var preferences = new UserPreferencesStore(env, NullLogger<UserPreferencesStore>.Instance);
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ConnectionStrings:Library"] = "Data Source=" + Path.Combine(_root, "library.db") + ";Pooling=False" }).Build();
+        _schemaInitialization ??= InitializeLibraryAsync();
+        await _schemaInitialization;
+        Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+        if (!File.Exists(StatePath)) await File.WriteAllTextAsync(StatePath, JsonSerializer.Serialize(new ArtistMetadataAutomationState()));
+        var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+        var cache = new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance);
+        var refresh = new ArtistMetadataCacheRefreshService(repository, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            preferences, null!, NullLogger<ArtistMetadataCacheRefreshService>.Instance, artistPageCache: cache);
+        _cacheRefreshService = refresh;
+        var queue = new LibraryArtistMetadataQueueService(repository, null!, refresh, cache, env,
+            NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        _queues.Add(queue);
+        return new ArtistMetadataAutomationCoordinator(refresh, updater, preferences, env,
+            NullLogger<ArtistMetadataAutomationCoordinator>.Instance, queue);
     }
 
     private static Task<bool> EnqueueTestWork(ArtistMetadataAutomationCoordinator coordinator,
-        Func<CancellationToken, Task<bool>> work, ArtistMetadataActiveRun? resuming = null, string operation = "cache-refresh")
+        Func<CancellationToken, Task<bool>> work, ArtistMetadataActiveRun? resuming = null, string operation = "target-update")
         => (Task<bool>)typeof(ArtistMetadataAutomationCoordinator).GetMethod("EnqueueAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(coordinator, new object?[] { operation, work, CancellationToken.None, resuming,
-                new ArtistMetadataCacheRefreshRequest(null, null, "auto", false), null, false })!;
+                null, resuming?.TargetRequest ?? new MetadataUpdaterRunRequest(), false })!;
 
     private static Task Invoke(ArtistMetadataAutomationCoordinator coordinator, string method, params object[] args)
         => (Task)typeof(ArtistMetadataAutomationCoordinator).GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(coordinator, args)!;

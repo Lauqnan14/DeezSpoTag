@@ -550,107 +550,6 @@ function clearLibrarySpotifyArtistState(artistId) {
     }
 }
 
-function countArtistPageReleases(payload) {
-    const releases = payload?.releases;
-    if (!releases || typeof releases !== 'object') {
-        return 0;
-    }
-    return Object.values(releases).reduce((count, value) => count + (Array.isArray(value) ? value.length : 0), 0);
-}
-
-function mergeArtistPagePayload(primary, fallback) {
-    if (!primary || typeof primary !== 'object') {
-        return fallback || primary;
-    }
-    if (!fallback || typeof fallback !== 'object') {
-        return primary;
-    }
-
-    const merged = { ...primary };
-    const releaseCounts = [countArtistPageReleases(primary), countArtistPageReleases(fallback)];
-    if (releaseCounts[0] === 0 && releaseCounts[1] > 0) {
-        merged.releases = fallback.releases;
-    }
-
-    [
-        ['top_tracks', Array.isArray(primary.top_tracks) ? primary.top_tracks : [], Array.isArray(fallback.top_tracks) ? fallback.top_tracks : []],
-        ['related', Array.isArray(primary.related) ? primary.related : [], Array.isArray(fallback.related) ? fallback.related : []]
-    ].forEach(([key, currentItems, fallbackItems]) => {
-        if (currentItems.length === 0 && fallbackItems.length > 0) {
-            merged[key] = fallbackItems;
-        }
-    });
-
-    ['picture_xl', 'picture_big', 'picture_medium'].forEach((key) => {
-        if (!merged[key] && fallback[key]) {
-            merged[key] = fallback[key];
-        }
-    });
-
-    return merged;
-}
-
-function mergeSpotifyArtistPayload(primary, fallback) {
-    if (!primary || typeof primary !== 'object') {
-        return fallback || primary;
-    }
-    if (!fallback || typeof fallback !== 'object') {
-        return primary;
-    }
-
-    const merged = { ...primary };
-    merged.artistPage = mergeArtistPagePayload(primary.artistPage, fallback.artistPage);
-    merged.albums = mergeSpotifyAlbums(
-        Array.isArray(primary.albums) ? primary.albums : [],
-        Array.isArray(fallback.albums) ? fallback.albums : []
-    );
-    merged.topTracks = mergeSpotifyTopTracks(
-        Array.isArray(primary.topTracks) ? primary.topTracks : [],
-        Array.isArray(fallback.topTracks) ? fallback.topTracks : []
-    );
-    if ((!Array.isArray(primary.relatedArtists) || primary.relatedArtists.length === 0) && Array.isArray(fallback.relatedArtists) && fallback.relatedArtists.length > 0) {
-        merged.relatedArtists = fallback.relatedArtists;
-    }
-    if ((!Array.isArray(primary.appearsOn) || primary.appearsOn.length === 0) && Array.isArray(fallback.appearsOn) && fallback.appearsOn.length > 0) {
-        merged.appearsOn = fallback.appearsOn;
-    }
-
-    merged.artist = mergeSpotifyArtistProfile(merged.artist, fallback.artist);
-
-    return merged;
-}
-
-function mergeSpotifyArtistProfile(primaryArtist, fallbackArtist) {
-    if ((!primaryArtist || typeof primaryArtist !== 'object') && fallbackArtist && typeof fallbackArtist === 'object') {
-        return fallbackArtist;
-    }
-    if (!primaryArtist || typeof primaryArtist !== 'object' || !fallbackArtist || typeof fallbackArtist !== 'object') {
-        return primaryArtist;
-    }
-
-    const artist = { ...primaryArtist };
-    [
-        ['biography', fallbackArtist.biography],
-        ['headerImageUrl', fallbackArtist.headerImageUrl]
-    ].forEach(([key, fallbackValue]) => {
-        if (!artist[key] && fallbackValue) {
-            artist[key] = fallbackValue;
-        }
-    });
-
-    [
-        ['gallery', fallbackArtist.gallery],
-        ['images', fallbackArtist.images],
-        ['genres', fallbackArtist.genres]
-    ].forEach(([key, fallbackValue]) => {
-        if ((!Array.isArray(artist[key]) || artist[key].length === 0) && Array.isArray(fallbackValue) && fallbackValue.length > 0) {
-            artist[key] = fallbackValue;
-        }
-    });
-
-    return artist;
-}
-
 function buildSpotifyAlbumMergeKey(album) {
     const id = (album?.id || '').toString().trim();
     if (id) {
@@ -718,41 +617,6 @@ function mergeSpotifyAlbums(primaryAlbums, fallbackAlbums) {
     });
 
     return merged;
-}
-
-function mergeSpotifyTopTracks(primaryTracks, fallbackTracks) {
-    if (!Array.isArray(primaryTracks) || primaryTracks.length === 0) {
-        return Array.isArray(fallbackTracks) ? [...fallbackTracks] : [];
-    }
-    if (!Array.isArray(fallbackTracks) || fallbackTracks.length === 0) {
-        return [...primaryTracks];
-    }
-
-    const fallbackById = new Map();
-    fallbackTracks.forEach((track) => {
-        const id = (track?.id || '').toString().trim();
-        if (id && !fallbackById.has(id)) {
-            fallbackById.set(id, track);
-        }
-    });
-
-    return primaryTracks.map((track) => {
-        const id = (track?.id || '').toString().trim();
-        if (!id || !fallbackById.has(id)) {
-            return track;
-        }
-
-        const fallback = fallbackById.get(id);
-        return {
-            ...track,
-            releaseDate: track.releaseDate || fallback.releaseDate || '',
-            albumName: track.albumName || fallback.albumName || '',
-            albumId: track.albumId || fallback.albumId || '',
-            albumGroup: track.albumGroup || fallback.albumGroup || '',
-            releaseType: track.releaseType || fallback.releaseType || '',
-            albumTrackTotal: Number(track.albumTrackTotal) > 0 ? track.albumTrackTotal : (fallback.albumTrackTotal || null)
-        };
-    });
 }
 
 function getImageCacheKey() {
@@ -4389,6 +4253,7 @@ async function loadAlbums(artistId) {
     bindArtistMediaSourceControls(artistIdValue);
     initAppleLazyLoad(resolvedArtist?.name, storedIds.appleId);
     await loadArtistBiographiesFromCache(artistIdValue);
+    resumeArtistCacheRun(artistIdValue).catch(error => console.warn('Could not reconnect to artist cache refresh.', error));
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
     initQobuzIdEditor(artistIdValue);
@@ -4598,16 +4463,13 @@ function buildSpotifyArtistRequestQuery(artistId, options) {
     return params.toString();
 }
 
-function selectSpotifyPayloadForRender(spotifyData, browserCached) {
-    const mergedPayload = mergeSpotifyArtistPayload(spotifyData, browserCached);
-    const effectivePayload = safeNormalizeLibrarySpotifyPayload(mergedPayload, 'merged');
-    if (effectivePayload && typeof effectivePayload === 'object') {
-        return effectivePayload;
-    }
+function selectSpotifyPayloadForRender(spotifyData, browserCached = null) {
+    // Server revisions are authoritative: browser content is never merged back into a
+    // successful server response, so a verified-empty server section replaces older lists.
     if (spotifyData && typeof spotifyData === 'object') {
         return spotifyData;
     }
-    return browserCached;
+    return browserCached || spotifyData;
 }
 
 function prepareSpotifyArtistRenderPayload(payloadForRender) {
@@ -4615,10 +4477,8 @@ function prepareSpotifyArtistRenderPayload(payloadForRender) {
         return null;
     }
 
-    const incomingAlbums = Array.isArray(payloadForRender.albums) ? payloadForRender.albums : [];
-    const hasExistingAlbums = Array.isArray(libraryState.spotifyAlbums) && libraryState.spotifyAlbums.length > 0;
-    const preserveExistingAlbums = incomingAlbums.length === 0 && hasExistingAlbums;
-    const effectiveAlbums = preserveExistingAlbums ? libraryState.spotifyAlbums : incomingAlbums;
+    // A successful server response replaces every list, including valid empty ones.
+    const effectiveAlbums = Array.isArray(payloadForRender.albums) ? payloadForRender.albums : [];
     const topTracks = hydrateTopTracksWithAlbumDates(
         Array.isArray(payloadForRender.topTracks) ? payloadForRender.topTracks : [],
         effectiveAlbums
@@ -4628,7 +4488,7 @@ function prepareSpotifyArtistRenderPayload(payloadForRender) {
         payloadForRender,
         effectiveAlbums,
         topTracks,
-        preserveExistingAlbums
+        preserveExistingAlbums: false
     };
 }
 
@@ -4697,11 +4557,9 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
         }
 
         const spotifyData = safeNormalizeLibrarySpotifyPayload(spotifyDataRaw, 'api-response');
+        // Server content is authoritative, including legitimately empty sections. Every
+        // populated section renders even when the others are empty.
         const payloadForRender = selectSpotifyPayloadForRender(spotifyData, browserCached);
-        if (cacheOnly && (!Array.isArray(payloadForRender?.albums) || payloadForRender.albums.length === 0)) {
-            setSpotifyCacheStatus('Spotify refresh: cache warmup');
-            return;
-        }
 
         const renderState = prepareSpotifyArtistRenderPayload(payloadForRender);
         if (!renderState) {
@@ -4721,10 +4579,6 @@ async function loadSpotifyArtist(artistId, forceRefresh = false, forceRematch = 
     } catch (error) {
         if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
         handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly);
-    } finally {
-        if (String(getCurrentLibraryArtistId()) === String(artistId) && cacheOnly && !forceRefresh && !forceRematch) {
-            queueDiscographyBackgroundRefresh(artistId);
-        }
     }
 }
 
@@ -5996,9 +5850,21 @@ async function initSpotifyIdEditor() {
         const currentText = spotifyIdEl.textContent?.trim() || '';
         const current = spotifyIdEl.dataset.spotifyId
             || (/^[A-Za-z0-9]{22}$/.test(currentText) ? currentText : '');
+        const listed = await fetchJsonOptional(`/api/library/artists/${artistIdValue}/source-ids?source=spotify`);
+        const storedIds = Array.isArray(listed?.ids) ? listed.ids.map(id => String(id || '').trim()).filter(Boolean) : [];
+        const which = storedIds.length > 1
+            ? await DeezSpoTag.ui.prompt(`Which Spotify ID to edit?\n${storedIds.join('\n')}`, {
+                title: 'Edit a Spotify ID',
+                value: current || storedIds[0],
+                placeholder: 'Existing 22-character Spotify ID'
+            })
+            : (storedIds[0] || current);
+        if (which === null) {
+            return;
+        }
         const updated = await DeezSpoTag.ui.prompt('Spotify artist ID (22 chars)', {
             title: 'Update Spotify ID',
-            value: current,
+            value: which || current,
             placeholder: '22-character Spotify ID'
         });
         if (updated === null) {
@@ -6019,7 +5885,7 @@ async function initSpotifyIdEditor() {
             await fetchJson(`/api/library/artists/${artistIdValue}/spotify-id`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ spotifyId: trimmed })
+                body: JSON.stringify({ spotifyId: trimmed, replaceSpotifyId: which || null })
             });
             spotifyIdEl.dataset.spotifyId = trimmed;
             spotifyIdEl.href = `https://open.spotify.com/artist/${trimmed}`;
@@ -6750,7 +6616,8 @@ async function loadArtistBiographiesFromCache(artistId) {
         });
         const chosen = libraryState.cachedBiographyProfiles.find(row => selector?.dataset.userSelected
             && row.source === previousSource && row.sourceId === previousId)
-            || libraryState.cachedBiographyProfiles.find(row => row.selected);
+            || libraryState.cachedBiographyProfiles.find(row => row.selected)
+            || libraryState.cachedBiographyProfiles.find(row => normalizeArtistBiographyForSync(row.biography || ''));
         if (chosen && selector) Array.from(selector.options).forEach(option => {
             option.selected = option.value === chosen.source && option.dataset.sourceId === chosen.sourceId;
         });
@@ -6788,49 +6655,76 @@ const artistCacheRuns = new Map();
 
 async function reloadCachedArtistPanels(artistId) {
     if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
-    const cached = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/artwork`);
-    if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
-    mergeArtistVisualPickerResult(libraryState.artistVisuals, cached);
-    renderArtistVisualPicker(artistId);
-    await loadArtistBiographiesFromCache(artistId);
-    if (String(getCurrentLibraryArtistId()) === String(artistId))
-        await loadSpotifyArtist(artistId, false, false, true);
+    const results = await Promise.allSettled([
+        (async () => {
+            const cached = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/artwork`);
+            if (String(getCurrentLibraryArtistId()) !== String(artistId)) return;
+            mergeArtistVisualPickerResult(libraryState.artistVisuals, cached);
+            renderArtistVisualPicker(artistId);
+        })(),
+        loadArtistBiographiesFromCache(artistId),
+        loadSpotifyArtist(artistId, false, false, true)
+    ]);
+    results.forEach(result => {
+        if (result.status === 'rejected') console.warn('Cached artist panel update failed; keeping displayed content.', result.reason);
+    });
+    if (String(getCurrentLibraryArtistId()) === String(artistId)) applySelectedArtistBiographySource();
+}
+
+async function resumeArtistCacheRun(artistId) {
+    const key = String(artistId);
+    if (artistCacheRuns.has(key) || String(getCurrentLibraryArtistId()) !== key) return;
+    const response = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status`);
+    if (String(getCurrentLibraryArtistId()) !== key || artistCacheRuns.has(key)) return;
+    if (response?.runId && ['running', 'queued'].includes(response?.status?.runState))
+        await followArtistCacheRun(artistId, { queued: true, runId: response.runId });
 }
 
 async function followArtistCacheRun(artistId, submission) {
     const runId = submission?.runId || submission?.status?.runId;
     if (!submission?.queued || !runId) throw new Error('The cache refresh request was not accepted. Cached content has been retained.');
     const key = String(artistId);
-    artistCacheRuns.set(key, runId);
+    const watcher = { runId };
+    artistCacheRuns.set(key, watcher);
     libraryState.artistCacheStatus = { artistId: key, runId, message: null };
     const statusEl = document.getElementById('spotify-cache-status');
     let failures = 0;
-    while (artistCacheRuns.get(key) === runId && String(getCurrentLibraryArtistId()) === key) {
-        try {
-            const response = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status?runId=${encodeURIComponent(runId)}`);
-            if (artistCacheRuns.get(key) !== runId || String(getCurrentLibraryArtistId()) !== key) return;
-            const status = response?.status;
-            const sameRun = status?.runId === runId;
-            const pending = sameRun && ['pending-retry', 'paused'].includes(status?.runState);
-            const finished = sameRun && status?.runState === 'idle';
-            if (pending || finished || (!sameRun && response?.completed)) {
-                await reloadCachedArtistPanels(artistId);
-                const incomplete = pending || (sameRun ? Number(status?.cacheRefresh?.failedArtists || 0) > 0 : Number(response?.completed?.result?.failed || 0) > 0);
-                if (String(getCurrentLibraryArtistId()) !== key || artistCacheRuns.get(key) !== runId) return;
-                libraryState.artistCacheStatus = { artistId: key, runId, message: incomplete
-                    ? `Source cache: ${(sameRun ? status?.runPendingNotice : response?.completed?.result?.error) || 'some source work is unfinished'}`
-                    : 'Source cache: updated' };
-                const settledStatusEl = document.getElementById('spotify-cache-status');
-                if (settledStatusEl) setSpotifyCacheStatus(libraryState.artistCacheStatus.message);
-                return;
+    let revision = null;
+    try {
+        while (artistCacheRuns.get(key) === watcher && String(getCurrentLibraryArtistId()) === key) {
+            try {
+                const response = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status?runId=${encodeURIComponent(runId)}`);
+                if (artistCacheRuns.get(key) !== watcher || String(getCurrentLibraryArtistId()) !== key) return;
+                if (response?.revision && response.revision !== revision) {
+                    await reloadCachedArtistPanels(artistId);
+                    if (artistCacheRuns.get(key) !== watcher || String(getCurrentLibraryArtistId()) !== key) return;
+                    revision = response.revision;
+                }
+                const status = response?.status;
+                const sameRun = status?.runId === runId;
+                const pending = sameRun && ['pending-retry', 'paused'].includes(status?.runState);
+                const finished = sameRun && status?.runState === 'idle';
+                if (pending || finished || (!sameRun && response?.completed)) {
+                    await reloadCachedArtistPanels(artistId);
+                    const incomplete = pending || (sameRun ? Number(status?.cacheRefresh?.failedArtists || 0) > 0 : Number(response?.completed?.result?.failed || 0) > 0);
+                    if (String(getCurrentLibraryArtistId()) !== key || artistCacheRuns.get(key) !== watcher) return;
+                    libraryState.artistCacheStatus = { artistId: key, runId, message: incomplete
+                        ? `Source cache: ${(sameRun ? status?.runPendingNotice : response?.completed?.result?.error) || 'some source work is unfinished'}`
+                        : 'Source cache: updated' };
+                    const settledStatusEl = document.getElementById('spotify-cache-status');
+                    if (settledStatusEl) setSpotifyCacheStatus(libraryState.artistCacheStatus.message);
+                    return;
+                }
+                if (!sameRun && !response?.completed) throw new Error('Refresh status is unavailable; cached content has been retained.');
+                if (statusEl) statusEl.textContent = `Source cache: ${status?.cacheRefresh?.currentArtist || 'updating'}`;
+                failures = 0;
+            } catch (error) {
+                if (++failures >= 3) throw error;
             }
-            if (!sameRun && !response?.completed) throw new Error('Refresh status is unavailable; cached content has been retained.');
-            if (statusEl) statusEl.textContent = `Source cache: ${status?.cacheRefresh?.currentArtist || 'updating'}`;
-            failures = 0;
-        } catch (error) {
-            if (++failures >= 3) throw error;
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    } finally {
+        if (artistCacheRuns.get(key) === watcher) artistCacheRuns.delete(key);
     }
 }
 
@@ -7175,27 +7069,12 @@ async function loadExternalArtistVisuals(artistName, artistId) {
     visuals.externalLoading = true;
     const requestId = (visuals.externalRequestId || 0) + 1;
     visuals.externalRequestId = requestId;
-    renderArtistVisualPicker(artistId);
     try {
         const cached = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/artwork`);
         if (visuals.externalRequestId !== requestId) {
             return;
         }
         mergeArtistVisualPickerResult(visuals, cached);
-        renderArtistVisualPicker(artistId);
-        const key = String(artistId);
-        if (!artistCacheRuns.has(key)) {
-            const state = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/status`);
-            if (!state?.complete && visuals.externalRequestId === requestId) {
-                artistCacheRuns.set(key, 'submitting');
-                const submission = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh?automatic=true`, { method: 'POST' });
-                if (submission?.queued) void followArtistCacheRun(artistId, submission).catch(error => {
-                    artistCacheRuns.delete(key);
-                    console.warn('Artist cache recovery remains incomplete.', error);
-                });
-                else artistCacheRuns.delete(key);
-            }
-        }
     } catch (error) {
         console.warn('Failed to load cached artist artwork.', error);
     } finally {
@@ -7284,7 +7163,9 @@ function renderArtistVisualPicker(artistId) {
     });
 
     if (deduped.length === 0) {
-        grid.innerHTML = '<div class="empty-card">No visuals available yet.</div>';
+        grid.innerHTML = libraryState.artistVisuals.externalLoading
+            ? '<div class="empty-card">Loading cached visuals…</div>'
+            : '<div class="empty-card">No visuals available yet.</div>';
         return;
     }
 
@@ -7298,10 +7179,11 @@ function renderArtistVisualPicker(artistId) {
         return `
             <div class="visual-tile" title="${safeLabel}">
                 <img src="${escapeHtml(src)}" alt="${safeLabel}" loading="lazy" decoding="async" />
+                <span class="visual-tile__source">${safeSource}</span>
                 <div class="visual-tile__actions">
-                    <button class="action-btn action-btn-sm" type="button" data-visual-action="avatar" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set avatar</button>
-                    <button class="action-btn action-btn-sm btn-secondary" type="button" data-visual-action="background" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set background</button>
-                    <button class="action-btn action-btn-sm btn-secondary" type="button" data-visual-block="true" data-visual-identity="${safeIdentity}">Block art</button>
+                    <button class="visual-tile__btn" type="button" data-visual-action="avatar" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Avatar</button>
+                    <button class="visual-tile__btn" type="button" data-visual-action="background" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Background</button>
+                    <button class="visual-tile__btn visual-tile__btn--block" type="button" data-visual-block="true" data-visual-identity="${safeIdentity}">Block</button>
                 </div>
             </div>
         `;
@@ -7917,45 +7799,6 @@ function renderDiscographyAlbumCard(album, availabilityFilter) {
             ${subtitleMarkup}
         </div>
     `;
-}
-
-const discographyBackgroundRefreshIds = new Set();
-
-function queueDiscographyBackgroundRefresh(artistId) {
-    const id = String(artistId || '').trim();
-    if (!id || discographyBackgroundRefreshIds.has(id) || !document.getElementById('discographyGrid')) {
-        return;
-    }
-
-    discographyBackgroundRefreshIds.add(id);
-    fetchJson(`/api/library/artists/${encodeURIComponent(id)}/spotify/discography/refresh`, { method: 'POST' })
-        .then((payload) => {
-            const currentArtistId = document.querySelector('[data-artist-id]')?.dataset.artistId || '';
-            if (String(currentArtistId) !== id || !payload || isSpotifyPayloadUnavailable(payload)) {
-                return;
-            }
-
-            const normalized = safeNormalizeLibrarySpotifyPayload(payload, 'discography-refresh');
-            const payloadForRender = selectSpotifyPayloadForRender(normalized, loadLibrarySpotifyArtistCache(id));
-            const renderState = prepareSpotifyArtistRenderPayload(payloadForRender);
-            if (!renderState) {
-                return;
-            }
-
-            renderSpotifyArtistPayload(
-                id,
-                renderState.payloadForRender,
-                renderState.effectiveAlbums,
-                renderState.topTracks,
-                renderState.preserveExistingAlbums
-            );
-        })
-        .catch((error) => {
-            console.warn('Background discography refresh failed.', error);
-        })
-        .finally(() => {
-            discographyBackgroundRefreshIds.delete(id);
-        });
 }
 
 function tryRenderDiscography() {

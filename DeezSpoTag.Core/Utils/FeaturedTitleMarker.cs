@@ -98,9 +98,7 @@ public static class FeaturedTitleMarker
 
         return NormalizeRegex.Replace(title, match =>
         {
-            var creditedNames = match.Groups["n1"].Success ? match.Groups["n1"].Value
-                : match.Groups["n2"].Success ? match.Groups["n2"].Value
-                : match.Groups["n3"].Value;
+            var creditedNames = GetCreditedNames(match);
 
             if (string.IsNullOrWhiteSpace(creditedNames))
             {
@@ -110,4 +108,52 @@ public static class FeaturedTitleMarker
             return $"({CanonicalKeyword} {creditedNames.Trim()})";
         });
     }
+
+    /// <summary>
+    /// The individual featured names in a title or artist credit, split on the same
+    /// joiners the rest of the app uses. A main artist who is not inside a featured
+    /// credit is not returned.
+    /// </summary>
+    public static IReadOnlyList<string> ExtractCreditedNames(string? text)
+    {
+        if (!HasCredit(text))
+        {
+            return Array.Empty<string>();
+        }
+
+        var names = new List<string>();
+        foreach (Match match in NormalizeRegex.Matches(text!))
+        {
+            var credited = GetCreditedNames(match);
+            if (string.IsNullOrWhiteSpace(credited))
+            {
+                continue;
+            }
+
+            foreach (var part in ArtistNameNormalizer.ExpandArtistNames(new[] { credited }))
+            {
+                var trimmed = part.Trim();
+                if (trimmed.Length > 0 && !names.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                {
+                    names.Add(trimmed);
+                }
+            }
+        }
+
+        return names;
+    }
+
+    private static string GetCreditedNames(Match match)
+    {
+        foreach (var groupName in new[] { "n1", "n2", "n3" })
+        {
+            if (match.Groups[groupName].Success)
+            {
+                return match.Groups[groupName].Value;
+            }
+        }
+
+        return string.Empty;
+    }
+
 }

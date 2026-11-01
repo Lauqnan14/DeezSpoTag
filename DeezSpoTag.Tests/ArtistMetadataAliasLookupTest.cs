@@ -264,7 +264,8 @@ public sealed class ArtistMetadataAliasLookupTest
 
         var wrapper = ExtractMethodBody(source, "public async Task<bool> RefreshArtistAsync");
         Assert.Contains("RefreshArtistWithOutcomeAsync", wrapper, StringComparison.Ordinal);
-        var body = ExtractMethodBody(source, "public async Task<ArtistCacheRefreshOutcome> RefreshArtistWithOutcomeAsync");
+        Assert.Contains("SpotifyArtistService.RunWithAliasIdentityScopeAsync", source, StringComparison.Ordinal);
+        var body = ExtractMethodBody(source, "private async Task<ArtistCacheRefreshOutcome> RefreshArtistCoreAsync");
         Assert.Contains("var artist = await _repository.GetArtistAsync(artistId, token);", body, StringComparison.Ordinal);
         Assert.Contains("await _artworkCatalog.RefreshAsync(artistId, artist.Name,", body, StringComparison.Ordinal);
         Assert.Contains("CacheBiographiesAsync(artistId, artist.Name, provider, names, _providerGate, token)", body, StringComparison.Ordinal);
@@ -378,6 +379,40 @@ public sealed class ArtistMetadataAliasLookupTest
             Assert.Equal(2, rows.Count);
             Assert.Contains(rows, row => row.SourceId == Canonical && row.Biography == Canonical + " biography.");
             Assert.Contains(rows, row => row.SourceId == Alias && row.Biography == Alias + " biography.");
+        }
+        finally { TryDelete(dbPath); }
+    }
+
+    [Fact]
+    public async Task SpotifyAliasDiscoveryIsReusedWithinOneRefreshButNotAcrossRefreshes()
+    {
+        var (configuration, dbPath) = CreateLibrary();
+        try
+        {
+            await EnsureSchemaAsync(configuration);
+            await SeedArtistAsync(dbPath, Canonical);
+            var repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+            var cache = new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance);
+            var aliases = new ArtistAliasService(configuration, NullLogger<ArtistAliasService>.Instance);
+            await aliases.SaveGroupAsync(Canonical, new[] { Alias });
+            var factory = new AliasSpotifyFactory();
+            var service = CreateFreshSpotifyService(repository, cache, dbPath, factory, aliases);
+            var scope = typeof(SpotifyArtistService).GetMethod("RunWithAliasIdentityScopeAsync", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(scope);
+            var requests = 0;
+            Func<Task<bool>> pass = async () =>
+            {
+                await service.EnsureAliasSpotifyIdentitiesAsync(ArtistId, Canonical, CancellationToken.None);
+                requests = factory.Calls;
+                Assert.True(requests > 0);
+                await service.EnsureAliasSpotifyIdentitiesAsync(ArtistId, Canonical, CancellationToken.None);
+                Assert.Equal(requests, factory.Calls);
+                return true;
+            };
+            await (Task<bool>)scope!.MakeGenericMethod(typeof(bool)).Invoke(null, new object[] { pass })!;
+            var firstPassCalls = requests;
+            await (Task<bool>)scope.MakeGenericMethod(typeof(bool)).Invoke(null, new object[] { pass })!;
+            Assert.True(requests > firstPassCalls, "A new refresh must recheck aliases rather than reuse an older refresh's discovery.");
         }
         finally { TryDelete(dbPath); }
     }
@@ -1141,10 +1176,10 @@ public sealed class ArtistMetadataAliasLookupTest
         finally{SqliteConnection.ClearAllPools();File.Delete(dbPath);}
     }
 
-    private static SpotifyArtistService CreateFreshSpotifyService(LibraryRepository repository, ArtistPageCacheRepository cache, string dbPath)
+    private static SpotifyArtistService CreateFreshSpotifyService(LibraryRepository repository, ArtistPageCacheRepository cache, string dbPath, AliasSpotifyFactory? factory = null, ArtistAliasService? aliases = null)
     {
         var environment=new AliasEnvironment(dbPath+".cache");Directory.CreateDirectory(environment.ContentRootPath);
-        var pathfinder=new SpotifyPathfinderMetadataClient(null!,null!,null!,new AliasUser(),new AliasSpotifyFactory(),NullLogger<SpotifyPathfinderMetadataClient>.Instance);
+        var pathfinder=new SpotifyPathfinderMetadataClient(null!,null!,null!,new AliasUser(),factory ?? new AliasSpotifyFactory(),NullLogger<SpotifyPathfinderMetadataClient>.Instance);
         const string path="alias-refresh-fixture";
         SetField(pathfinder,"_backgroundUserBlobCachedPath",path);
         SetField(pathfinder,"_backgroundUserBlobCheckedAt",DateTimeOffset.UtcNow);
@@ -1156,19 +1191,23 @@ public sealed class ArtistMetadataAliasLookupTest
         stateType.GetProperty("AccessTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
         stateType.GetProperty("ClientTokenExpiresAt")!.SetValue(state,DateTimeOffset.UtcNow.AddHours(1));
         ((IDictionary)type.GetField("_blobAuthStates",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(pathfinder)!).Add(path,state);
-        return new SpotifyArtistService(repository,cache,new LibraryConfigStore(repository,NullLogger<LibraryConfigStore>.Instance,environment),null!,null!,
+        return new SpotifyArtistService(repository,cache,new LibraryConfigStore(repository,NullLogger<LibraryConfigStore>.Instance,environment),null!,aliases!,
             new SpotifyArtistServiceDependencies(pathfinder,null!,null!,null!,null!),NullLogger<SpotifyArtistService>.Instance);
     }
     private sealed class AliasUser : ISpotifyUserContextAccessor {public string? UserId=>null;}
     private sealed class AliasSpotifyFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name)=>new(new NativeHandler());
-        private sealed class NativeHandler : HttpMessageHandler
+        public int Calls;
+        public HttpClient CreateClient(string name)=>new(new NativeHandler(this));
+        private sealed class NativeHandler(AliasSpotifyFactory owner) : HttpMessageHandler
         {
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
             {
+                owner.Calls++;
                 using var payload=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
-                var id=payload.RootElement.GetProperty("variables").GetProperty("uri").GetString()!.Split(':').Last();
+                if (!payload.RootElement.GetProperty("variables").TryGetProperty("uri", out var uri))
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"data\":{\"searchV2\":{\"artists\":{\"items\":[]}}}}", Encoding.UTF8, "application/json") };
+                var id=uri.GetString()!.Split(':').Last();
                 var primary=id=="31u4mA182lnRN4ZMqE0yp3";
                 var json=JsonSerializer.Serialize(new {data=new {artistUnion=new {profile=new {name=primary?Canonical:Alias,
                     biography=new {text=primary?"Kubaff biography.":"Doobeez biography."},genres=new[]{"hip hop"}}}}});

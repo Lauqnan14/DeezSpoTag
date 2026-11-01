@@ -16,6 +16,14 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class FeaturedTitleMoveModeTest
 {
+    [Fact]
+    public void ExtractCreditedNames_SplitsAFeaturedCreditWithoutTheMainArtist()
+    {
+        var names = FeaturedTitleMarker.ExtractCreditedNames("pop ur shit (feat. Young Thug, Metro Boomin)");
+        Assert.Equal(new[] { "Young Thug", "Metro Boomin" }, names);
+        Assert.Empty(FeaturedTitleMarker.ExtractCreditedNames("Bamboo"));
+    }
+
     private static Track MakeTrack(string title, IReadOnlyList<string> main, IReadOnlyList<string> featured)
     {
         var artist = new Dictionary<string, List<string>> { ["Main"] = new List<string>(main) };

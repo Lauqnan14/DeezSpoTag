@@ -1300,11 +1300,11 @@ public sealed class AudiomackPlatformTest
     }
 
     [Fact]
-    public void EvaluateCandidate_RejectsConflictingIsrc()
+    public void EvaluateCandidate_AllowsDifferentIsrcWhenTheRecordingAgrees()
     {
         var candidate = LadyGagaCandidate with { Isrc = "GBUM71507956" };
-        Assert.False(AudiomackMatcher.EvaluateCandidate(LadyGagaSource, candidate, new AutoTagMatchingConfig(), out var reason));
-        Assert.Equal("isrc-mismatch", reason);
+        Assert.True(AudiomackMatcher.EvaluateCandidate(LadyGagaSource, candidate, new AutoTagMatchingConfig(), out var reason));
+        Assert.Null(reason);
     }
 
     [Fact]

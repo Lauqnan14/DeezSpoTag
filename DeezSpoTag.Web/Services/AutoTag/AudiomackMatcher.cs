@@ -370,7 +370,8 @@ public sealed class AudiomackMatcher
             return null;
         }
 
-        var byTrack = unique.ToDictionary(pair => pair.Track, ReferenceEqualityComparer.Instance);
+        var byTrack = unique.ToDictionary(pair => pair.Track,
+            (IEqualityComparer<AutoTagTrack>)ReferenceEqualityComparer.Instance);
         // MatchTrackRanked can list the same track twice (exact fallback plus its
         // fuzzy entry). Hydrate each Audiomack identity exactly once.
         var ordered = new List<(OneTaggerMatching.MatchSelection<AutoTagTrack> Selection, (AudiomackSongCandidate Candidate, AutoTagTrack Track) Pair)>();
@@ -737,12 +738,9 @@ public sealed class AudiomackMatcher
     {
         var sourceIsrc = AudiomackIdNormalizer.NormalizeIsrc(info.Isrc);
         var candidateIsrc = AudiomackIdNormalizer.NormalizeIsrc(candidate.Isrc);
-        if (sourceIsrc is not null && candidateIsrc is not null
-            && !string.Equals(sourceIsrc, candidateIsrc, StringComparison.Ordinal))
-        {
-            rejectionReason = "isrc-mismatch";
-            return false;
-        }
+        // A different ISRC is not a different recording. Spotify and the other taggers
+        // accept that when the title, artist, and version already agree. A matching ISRC
+        // still ranks higher. An introduced guest still has to prove itself below.
 
         if (string.IsNullOrWhiteSpace(candidate.Title))
         {

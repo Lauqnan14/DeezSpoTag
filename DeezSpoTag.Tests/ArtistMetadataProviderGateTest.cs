@@ -12,6 +12,25 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ArtistMetadataProviderGateTest
 {
+    [Fact]
+    public async Task PriorityCancellationStillPreservesProviderRequestSpacing()
+    {
+        var interval = TimeSpan.FromMilliseconds(250);
+        var gate = new ArtistMetadataProviderGate(NullLogger.Instance, _ => interval);
+        using var cancellation = new CancellationTokenSource();
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = cancellation.Token.Register(() => completion.TrySetCanceled(cancellation.Token));
+        var first = gate.RunRequiredAsync("spotify", _ => { entered.SetResult(); return completion.Task; }, cancellation.Token);
+        await entered.Task;
+        var cancelledAt = DateTimeOffset.UtcNow;
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        var secondStartedAt = await gate.RunRequiredAsync("spotify", _ => Task.FromResult(DateTimeOffset.UtcNow), CancellationToken.None);
+        Assert.True(secondStartedAt - cancelledAt >= interval - TimeSpan.FromMilliseconds(25),
+            "Cancelling background work must not let a manual request bypass provider pacing.");
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

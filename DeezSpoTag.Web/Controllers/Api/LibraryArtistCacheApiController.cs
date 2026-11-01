@@ -20,8 +20,15 @@ public class LibraryArtistCacheApiController : ControllerBase
     [HttpPost("clear")]
     public async Task<IActionResult> Clear([FromQuery] string? source, CancellationToken cancellationToken)
     {
-        await _artistPageCache.ClearAsync(source?.Trim(), cancellationToken);
-        return Ok(new { ok = true, source = source ?? "all" });
+        // Retained Spotify catalogue rows survive cache clearing: only a Refresh cache run
+        // may replace or discard the four catalogue sections.
+        await _artistPageCache.ClearAsync(source?.Trim(), cancellationToken, preserveSource: "spotify");
+        return Ok(new
+        {
+            ok = true,
+            source = source ?? "all",
+            retained = new[] { "spotify" }
+        });
     }
 
     [HttpGet("stats")]

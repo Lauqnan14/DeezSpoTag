@@ -1,3 +1,5 @@
+using DeezSpoTag.Web.Services.ArtistLocation;
+using DeezSpoTag.Web.Services.Audiomack;
 using System.Net;
 using System.Text.Json;
 using DeezSpoTag.Services.Apple;
@@ -50,7 +52,8 @@ public sealed class AppleArtistBiographyService
         }
 
         var storefront = GetStorefront();
-        using var doc = await _catalog.GetArtistAsync(id, storefront, DefaultLanguage, cancellationToken);
+        using var doc = await _catalog.GetArtistAsync(id, storefront, DefaultLanguage, cancellationToken,
+            includeArtistDetails: true, refresh: propagatePageErrors);
         if (!AppleCatalogJsonHelper.TryGetDataArray(doc.RootElement, out var dataArr)
             || dataArr.GetArrayLength() == 0)
         {
@@ -58,6 +61,8 @@ public sealed class AppleArtistBiographyService
         }
 
         var item = dataArr[0];
+        if (!TryGetNonEmptyString(item, "id", out var returnedId) || returnedId != id)
+            return null;
         var attrs = item.TryGetProperty(AttributesField, out var attributes) && attributes.ValueKind == JsonValueKind.Object
             ? attributes
             : default;
@@ -75,7 +80,8 @@ public sealed class AppleArtistBiographyService
             allowArtistPageScrape,
             cancellationToken,
             propagatePageErrors);
-        return new AppleArtistBiographyResult(id, name, image, biography ?? string.Empty);
+        return new AppleArtistBiographyResult(id, name, image, biography ?? string.Empty)
+        { Location = ResolveAppleArtistLocation(item, id) };
     }
 
     public async Task<AppleArtistBiographyResult?> ResolveByExactArtistNameAsync(
@@ -215,7 +221,7 @@ public sealed class AppleArtistBiographyService
                 continue;
             }
 
-            if (TryReadRelatedArtistId(item, out var appleId))
+            if (TryReadMatchingRelatedArtistId(item, normalizedArtistName, out var appleId))
             {
                 return appleId;
             }
@@ -229,7 +235,7 @@ public sealed class AppleArtistBiographyService
             using var songDoc = await _catalog.GetSongAsync(songId, storefront, DefaultLanguage, cancellationToken);
             if (AppleCatalogJsonHelper.TryGetDataArray(songDoc.RootElement, out var songData)
                 && songData.GetArrayLength() > 0
-                && TryReadRelatedArtistId(songData[0], out appleId))
+                && TryReadMatchingRelatedArtistId(songData[0], normalizedArtistName, out appleId))
             {
                 return appleId;
             }
@@ -238,10 +244,15 @@ public sealed class AppleArtistBiographyService
         return null;
     }
 
-    private static bool TryReadRelatedArtistId(JsonElement songItem, out string appleId)
+    /// <summary>
+    /// The related artist whose name is this artist. A collaboration lists every credit, and the
+    /// first one is often a different person. That id is not a second identity for this artist.
+    /// </summary>
+    private static bool TryReadMatchingRelatedArtistId(JsonElement songItem, string normalizedArtistName, out string appleId)
     {
         appleId = string.Empty;
-        if (!songItem.TryGetProperty("relationships", out var relationships)
+        if (string.IsNullOrWhiteSpace(normalizedArtistName)
+            || !songItem.TryGetProperty("relationships", out var relationships)
             || relationships.ValueKind != JsonValueKind.Object
             || !relationships.TryGetProperty("artists", out var artists)
             || artists.ValueKind != JsonValueKind.Object
@@ -259,7 +270,9 @@ public sealed class AppleArtistBiographyService
             }
 
             var id = idElement.GetString()?.Trim();
-            if (!string.IsNullOrWhiteSpace(id))
+            var name = ReadRelatedArtistName(artist);
+            if (!string.IsNullOrWhiteSpace(id)
+                && string.Equals(NormalizeArtistName(name), normalizedArtistName, StringComparison.OrdinalIgnoreCase))
             {
                 appleId = id;
                 return true;
@@ -267,6 +280,18 @@ public sealed class AppleArtistBiographyService
         }
 
         return false;
+    }
+
+    private static string ReadRelatedArtistName(JsonElement artist)
+    {
+        if (artist.TryGetProperty(AttributesField, out var attributes)
+            && attributes.ValueKind == JsonValueKind.Object
+            && attributes.TryGetProperty(NameField, out var nameElement))
+        {
+            return nameElement.GetString() ?? string.Empty;
+        }
+
+        return artist.TryGetProperty(NameField, out var directName) ? directName.GetString() ?? string.Empty : string.Empty;
     }
 
     private static bool TryGetAppleSongsData(JsonElement root, out JsonElement data)
@@ -300,6 +325,11 @@ public sealed class AppleArtistBiographyService
         bool propagatePageErrors)
     {
         var editorialNotes = ResolveEditorialNotes(attributes);
+        if (string.IsNullOrWhiteSpace(editorialNotes)
+            && attributes.ValueKind == JsonValueKind.Object
+            && TryGetNonEmptyString(attributes, "artistBio", out var artistBio)
+            && !IsAppleArtistPageMarketingDescription(artistBio, artistName))
+            editorialNotes = NormalizeBiography(artistBio);
         if (!string.IsNullOrWhiteSpace(editorialNotes))
         {
             return editorialNotes;
@@ -349,6 +379,22 @@ public sealed class AppleArtistBiographyService
             _logger.LogDebug(ex, "Apple artist biography page fetch failed for artist Id");
             return null;
         }
+    }
+
+    internal static ArtistLocationResult? ResolveAppleArtistLocation(JsonElement item, string expectedId)
+    {
+        if (item.ValueKind != JsonValueKind.Object || !TryGetNonEmptyString(item, "id", out var id) || id != expectedId
+            || !item.TryGetProperty(AttributesField, out var attrs) || attrs.ValueKind != JsonValueKind.Object
+            || !TryGetNonEmptyString(attrs, "origin", out var origin)) return null;
+        var location = AudiomackLocationNormalizer.Normalize(origin);
+        if (location is null) return null;
+        var now = DateTimeOffset.UtcNow;
+        return new ArtistLocationResult(origin, location.City, location.Country, location.CountryCode, "apple")
+        {
+            Region = location.Region, ArtistName = TryGetNonEmptyString(attrs, "name", out var name) ? name : null,
+            SourceReference = TryGetNonEmptyString(attrs, "url", out var url) ? url : $"https://music.apple.com/artist/{id}",
+            RetrievedAt = now, KnownAt = now, ResolutionMethod = "matched-apple-artist-id", LocationMeaning = "artist-origin"
+        };
     }
 
     private string GetStorefront()
@@ -599,4 +645,7 @@ public sealed class AppleArtistBiographyService
         => values.Select(value => (value ?? string.Empty).Trim()).FirstOrDefault(value => value.Length > 0) ?? string.Empty;
 }
 
-public sealed record AppleArtistBiographyResult(string AppleId, string Name, string Image, string Biography);
+public sealed record AppleArtistBiographyResult(string AppleId, string Name, string Image, string Biography)
+{
+    public ArtistLocationResult? Location { get; init; }
+}

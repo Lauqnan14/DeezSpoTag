@@ -317,7 +317,9 @@ public static class AudiomackNextDataExtractor
         {
             if (property.Value is JsonArray rightArray && merged[property.Key] is JsonArray leftArray)
             {
-                var seen = new HashSet<string>(leftArray.Select(item => item?.ToJsonString()));
+                var seen = new HashSet<string>(leftArray
+                    .Where(item => item is not null)
+                    .Select(item => item!.ToJsonString()));
                 foreach (var item in rightArray
                     .Where(item => item is not null && seen.Add(item.ToJsonString())))
                 {

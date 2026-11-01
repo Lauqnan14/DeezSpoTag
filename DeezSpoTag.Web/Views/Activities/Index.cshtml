@@ -5444,17 +5444,16 @@ function initMetadataUpdater() {
         refreshCacheButton.addEventListener('click', async () => {
             await runMetadataControlAction('cache-refresh', async () => {
                 try {
+                    await persistMetadataUpdaterSettings();
+                    if (!window.UserPrefs) throw new Error('Preferences are unavailable.');
+                    await window.UserPrefs.flush(false, true);
                     const folderId = Number(folderSelect?.value || 0);
                     const response = await activityFetch('/api/library/artist-metadata/cache/refresh', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             artistId: null,
-                            folderId: folderId > 0 ? folderId : null,
-                            source: sourceSelect?.value || 'auto',
-                            includePopularSongs: popularSongsCheckbox?.checked === true,
-                            includeDiscography: discographyCheckbox?.checked === true,
-                            ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false
+                            folderId: folderId > 0 ? folderId : null
                         }),
                         keepalive: true
                     });
@@ -5868,23 +5867,36 @@ let metadataStatusVersion = 0;
 let metadataPollSequence = 0;
 let metadataAppliedSequence = 0;
 
+function getMetadataOperationRun(status, operation) {
+    if (operation === 'cache-refresh' && status?.cacheRefresh?.runId) {
+        return { runId: status.cacheRefresh.runId, runState: status.cacheRefresh.runState || 'idle' };
+    }
+    const active = status?.runOperation || status?.activeOperation;
+    return active === operation
+        ? { runId: status?.runId, runState: status?.runState || 'running' }
+        : { runId: null, runState: 'idle' };
+}
+
 function applyMetadataRunControls() {
     const status = metadataAutomationStatus;
-    const state = status?.runState || (status?.activeOperation ? 'running' : 'idle');
-    const operation = status?.runOperation || status?.activeOperation;
-    const retained = state !== 'idle';
+    const cacheRetained = getMetadataOperationRun(status, 'cache-refresh').runState !== 'idle';
+    const targetRetained = getMetadataOperationRun(status, 'target-update').runState !== 'idle';
     for (const [id, ownOperation, startLabel] of [
         ['metadata-refresh-cache-button', 'cache-refresh', 'Refresh Cache'],
         ['metadata-update-button', 'target-update', 'Update Server']]) {
         const button = document.getElementById(id);
         if (!button) continue;
-        const ownRun = retained && operation === ownOperation;
+        const { runState: state } = getMetadataOperationRun(status, ownOperation);
+        const ownRun = state !== 'idle';
         button.textContent = ownRun
-            ? ({ running: 'Pause', pausing: 'Pausing…', paused: 'Resume', resuming: 'Resuming…' }[state] || startLabel)
+            ? ({ queued: 'Pause', running: 'Pause', 'pending-retry': 'Pause', pausing: 'Pausing…', paused: 'Resume', resuming: 'Resuming…' }[state] || startLabel)
             : startLabel;
-        button.disabled = !status || metadataActionPending || (retained && !ownRun)
-            || state === 'pausing' || state === 'resuming';
+        // Cache work is independent of retained server writes, for either artist scope.
+        button.disabled = !status || metadataActionPending || state === 'pausing' || state === 'resuming'
+            || (ownOperation === 'target-update' && !ownRun && cacheRetained);
     }
+    const state = status?.runState;
+    const retained = cacheRetained || targetRetained;
     const cancel = document.getElementById('metadata-cancel-button');
     if (cancel) cancel.disabled = !retained || metadataActionPending || state === 'pausing' || state === 'resuming';
 }
@@ -5912,8 +5924,8 @@ async function runMetadataControlAction(operation, startRun) {
     if (!metadataAutomationStatus) await refreshLibraryScanAndMetadataStatus();
     if (!metadataAutomationStatus) return;
     const status = metadataAutomationStatus;
-    const state = status.runState || (status.activeOperation ? 'running' : 'idle');
-    if (state !== 'idle' && (status.runOperation !== operation || !['running', 'paused'].includes(state))) return;
+    const { runState: state, runId } = getMetadataOperationRun(status, operation);
+    if (state !== 'idle' && !['queued', 'pending-retry', 'running', 'paused'].includes(state)) return;
     metadataActionPending = true;
     metadataStatusVersion++;
     applyMetadataRunControls();
@@ -5924,10 +5936,13 @@ async function runMetadataControlAction(operation, startRun) {
         } else {
             const action = state === 'paused' ? 'resume' : 'pause';
             const route = operation === 'cache-refresh' ? 'cache' : 'targets';
-            applyMetadataAutomationStatus({ ...status, runState: action === 'pause' ? 'pausing' : 'resuming' });
+            const transition = action === 'pause' ? 'pausing' : 'resuming';
+            applyMetadataAutomationStatus(operation === 'cache-refresh' && status.cacheRefresh?.runId
+                ? { ...status, cacheRefresh: { ...status.cacheRefresh, runState: transition } }
+                : { ...status, runState: transition });
             const response = await activityFetch(`/api/library/artist-metadata/${route}/${action}`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ runId: status.runId })
+                body: JSON.stringify({ runId })
             });
             const payload = await response.json();
             if (payload?.status) applyMetadataAutomationStatus(payload.status);

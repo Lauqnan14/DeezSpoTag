@@ -667,7 +667,7 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
 
     /// <summary>
     /// Rewrites the track's artist credits, album artists, featured names, and
-    /// "feat." strings inside track/album titles so every user-defined alias
+    /// "feat." strings inside track titles so every user-defined alias
     /// becomes its preferred name before tags are written. Applies to every
     /// tagging run — enrichment, enhancement, and merge-triggered runs alike.
     /// </summary>
@@ -680,11 +680,6 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             if (!string.IsNullOrWhiteSpace(track.Title))
             {
                 track.Title = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveTitleCredit(track.Title);
-            }
-
-            if (!string.IsNullOrWhiteSpace(track.Album))
-            {
-                track.Album = DeezSpoTag.Services.Library.ArtistAliasGateway.ResolveTitleCredit(track.Album);
             }
 
             foreach (var key in track.Other.Keys.Where(key =>

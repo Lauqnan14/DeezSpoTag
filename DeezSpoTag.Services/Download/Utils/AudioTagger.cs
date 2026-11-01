@@ -145,7 +145,7 @@ public class AudioTagger
 
     /// <summary>
     /// Rewrites the track's artist credits, main/album artist names, and
-    /// "feat." strings inside track/album titles so every user-defined alias
+    /// "feat." strings inside track titles so every user-defined alias
     /// becomes its preferred name before tags are written. Independent of
     /// enrichment settings: downloads always honor the alias preference.
     /// </summary>
@@ -188,11 +188,6 @@ public class AudioTagger
             if (!string.IsNullOrWhiteSpace(track.Title))
             {
                 track.Title = Library.ArtistAliasGateway.ResolveTitleCredit(track.Title);
-            }
-
-            if (!string.IsNullOrWhiteSpace(track.Album?.Title))
-            {
-                track.Album.Title = Library.ArtistAliasGateway.ResolveTitleCredit(track.Album.Title);
             }
 
             if (track.Album != null)

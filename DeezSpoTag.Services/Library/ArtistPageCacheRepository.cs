@@ -22,6 +22,37 @@ public sealed class ArtistPageCacheRepository
         _logger = logger;
     }
 
+    // A scoped, read-only token: polling does not revalidate providers or rebuild stage fingerprints.
+    public async Task<string> GetArtistRevisionAsync(long artistId, CancellationToken token)
+    {
+        await using var connection = new SqliteConnection(GetConnectionString());
+        await connection.OpenAsync(token);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT 'biography', source || ':' || source_id,
+                json_array(biography, language, selected, native_name, alias_name, fetched_at)
+            FROM artist_biography_cache WHERE artist_id = $artist
+            UNION ALL
+            SELECT 'artwork', role || ':' || identity,
+                json_array(local_path, content_hash, ocr_status, text_art_blocked, user_blocked, last_seen_at)
+            FROM artist_artwork_cache WHERE artist_id = $artist
+            UNION ALL
+            SELECT 'stage', source_id, json_array(fetched_utc, payload_json)
+            FROM artist_page_cache WHERE source = 'artist-refresh' AND source_id >= $start AND source_id < $end
+            ORDER BY 1, 2;
+            """;
+        command.Parameters.AddWithValue("$artist", artistId);
+        var id = artistId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        command.Parameters.AddWithValue("$start", id + ":");
+        command.Parameters.AddWithValue("$end", id + ";");
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        await using var reader = await command.ExecuteReaderAsync(token);
+        while (await reader.ReadAsync(token))
+            hash.AppendData(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new[]
+                { reader.GetString(0), reader.GetString(1), reader.GetString(2) }));
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
     public bool IsFresh(DateTimeOffset fetchedUtc) => DateTimeOffset.UtcNow - fetchedUtc <= _ttl;
 
     public bool IsUsable(DateTimeOffset fetchedUtc) => DateTimeOffset.UtcNow - fetchedUtc <= _maxStale;
@@ -107,7 +138,52 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         }
     }
 
-    public async Task ClearAsync(string? source, CancellationToken cancellationToken)
+    /// <summary>
+    /// Conditional update: the new payload is written only when the stored row still holds
+    /// <paramref name="expectedPayloadJson"/>. Used by lazy enrichment writes so a background
+    /// write cannot roll back a newer catalogue revision that was published meanwhile.
+    /// </summary>
+    public async Task<bool> UpsertIfUnchangedAsync(
+        string source,
+        string sourceId,
+        string expectedPayloadJson,
+        string payloadJson,
+        DateTimeOffset fetchedUtc,
+        CancellationToken cancellationToken)
+    {
+        var connectionString = GetConnectionString();
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return false;
+        }
+
+        const string sql = @"
+UPDATE artist_page_cache
+SET payload_json = $payload_json,
+    fetched_utc = $fetched_utc,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = $source AND source_id = $source_id AND payload_json = $expected_payload_json;";
+
+        try
+        {
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue(SourceParameterName, source);
+            command.Parameters.AddWithValue(SourceIdParameterName, sourceId);
+            command.Parameters.AddWithValue("$payload_json", payloadJson);
+            command.Parameters.AddWithValue("$expected_payload_json", expectedPayloadJson);
+            command.Parameters.AddWithValue("$fetched_utc", fetchedUtc.ToUniversalTime().ToString("O"));
+            return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Artist cache conditional upsert failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
+            return false;
+        }
+    }
+
+    public async Task ClearAsync(string? source, CancellationToken cancellationToken, string? preserveSource = null)
     {
         var connectionString = GetConnectionString();
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -115,9 +191,20 @@ ON CONFLICT(source, source_id) DO UPDATE SET
             return;
         }
 
-        var sql = string.IsNullOrWhiteSpace(source)
-            ? "DELETE FROM artist_page_cache;"
-            : "DELETE FROM artist_page_cache WHERE source = $source;";
+        var preserve = string.IsNullOrWhiteSpace(preserveSource) ? null : preserveSource.Trim();
+        if (!string.IsNullOrWhiteSpace(source) && preserve is not null
+            && string.Equals(source.Trim(), preserve, StringComparison.OrdinalIgnoreCase))
+        {
+            // Clearing exactly the preserved source would erase the retained catalogue.
+            return;
+        }
+        var sql = source is null
+            ? (preserve is null
+                ? "DELETE FROM artist_page_cache;"
+                : "DELETE FROM artist_page_cache WHERE source <> $preserve_source;")
+            : (preserve is null
+                ? "DELETE FROM artist_page_cache WHERE source = $source;"
+                : "DELETE FROM artist_page_cache WHERE source = $source AND source <> $preserve_source;");
 
         try
         {
@@ -128,11 +215,15 @@ ON CONFLICT(source, source_id) DO UPDATE SET
             {
                 command.Parameters.AddWithValue(SourceParameterName, source);
             }
+            if (preserve is not null)
+            {
+                command.Parameters.AddWithValue("$preserve_source", preserve);
+            }
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist cache clear failed (source={Source})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source));
+            _logger.LogWarning(ex, "Artist cache clear failed (source={Source}, preserve={Preserve})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(preserve));
         }
     }
 

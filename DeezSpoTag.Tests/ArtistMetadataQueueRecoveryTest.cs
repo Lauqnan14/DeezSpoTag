@@ -13,6 +13,88 @@ public sealed class ArtistMetadataQueueRecoveryTest
     public sealed record Item(long ArtistId, string Name, int Attempts = 0, DateTimeOffset? NextAttemptUtc = null, bool NeedsAttention = false);
 
     [Fact]
+    public void ExhaustedServiceAndLongCooldownDoNotDelayAnEligibleService()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var run = new ArtistMetadataActiveRun { Automatic = true, TargetArtistIds = new() {1085},
+            CacheAttempts = new() { ["1085:apple:artwork"] = 3 } };
+        var rows = new[] { new ArtistRunOutcomeRecord(1085, ArtistRunOutcomes.Failed, CacheWork:new ArtistCacheWorkOutcome[] {
+            new("apple","artwork",ArtistCacheWorkStatus.Failed,RetryAtUtc:now.AddDays(2)),
+            new("audiomack","biographies",ArtistCacheWorkStatus.Failed) }) };
+        var method=typeof(LibraryArtistMetadataQueueService).GetMethod("RetainUnresolvedCacheWork",BindingFlags.Static|BindingFlags.NonPublic)!;
+        method.Invoke(null,new object[]{run,rows,now});
+        Assert.False(run.Paused);
+        Assert.InRange(run.NextAttemptUtc!.Value,now,now.AddMinutes(30));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AuthenticationFailureInOneServiceDoesNotPauseOtherUnfinishedServices(bool automatic)
+    {
+        var run = new ArtistMetadataActiveRun { Automatic = automatic, TargetArtistIds = new() { 1085 } };
+        var rows = new[] { new ArtistRunOutcomeRecord(1085, ArtistRunOutcomes.Failed, CacheWork: new ArtistCacheWorkOutcome[] {
+            new("apple", "enrichment", ArtistCacheWorkStatus.AuthenticationRequired),
+            new("audiomack", "biographies", ArtistCacheWorkStatus.Failed),
+            new("spotify", "biographies", ArtistCacheWorkStatus.Succeeded) }) };
+        var method = typeof(LibraryArtistMetadataQueueService).GetMethod("RetainUnresolvedCacheWork", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.True((bool)method.Invoke(null, new object[] { run, rows, DateTimeOffset.UtcNow })!);
+        Assert.False(run.Paused);
+        Assert.NotNull(run.NextAttemptUtc);
+        Assert.DoesNotContain("1085:spotify:biographies", run.CacheAttempts.Keys);
+    }
+
+    [Fact]
+    public void ExhaustedLegacyAutomaticWorkRecoversAfterCooldown()
+    {
+        var due = DateTimeOffset.Parse("2026-11-01T08:00:00Z");
+        var recovered = Recover("""
+            {"ArtistId":1085,"ArtistName":"4Mr Frank White","Attempts":3,
+             "NeedsAttention":true,"NextAttemptUtc":"2026-10-29T07:56:19Z"}
+            """, due);
+        Assert.NotNull(recovered);
+        Assert.False((bool)Property(recovered!, "NeedsAttention")!);
+        Assert.Equal(0, Property(recovered!, "Attempts"));
+        Assert.Equal(1085L, Property(recovered!, "ArtistId"));
+    }
+
+    [Fact]
+    public void RecoveryRespectsCooldownAndDoesNotReviveUserPausesOrAuthenticationFailures()
+    {
+        var now = DateTimeOffset.Parse("2026-11-01T08:00:00Z");
+        var recovered = Recover("""
+            {"ArtistId":1085,"ArtistName":"Artist","Attempts":3,"NeedsAttention":true,
+             "NextAttemptUtc":"2026-11-01T07:00:00Z"}
+            """, now);
+        Assert.NotNull(recovered);
+        Assert.True((DateTimeOffset)Property(recovered!, "NextAttemptUtc")! > now);
+        Assert.Null(Recover("""
+            {"ArtistId":1085,"ArtistName":"Artist","NeedsAttention":true,"UserPaused":true}
+            """, now));
+        Assert.Null(Recover("""
+            {"ArtistId":1085,"ArtistName":"Artist","NeedsAttention":true,"AuthenticationBlocked":true}
+            """, now));
+        Assert.Null(Recover("""
+            {"ArtistId":1085,"ArtistName":"Artist","Run":{"Automatic":true,"Paused":true}}
+            """, now)); // Legacy structured pause has unknown user intent.
+        Assert.Null(Recover("""
+            {"ArtistId":1085,"ArtistName":"Artist","UserPaused":false,"Run":{"Automatic":false,"Paused":true}}
+            """, now));
+    }
+
+    private static object? Recover(string json, DateTimeOffset now)
+    {
+        var type = typeof(LibraryArtistMetadataQueueService);
+        var itemType = type.GetNestedType("QueueItem", BindingFlags.NonPublic)!;
+        var item = System.Text.Json.JsonSerializer.Deserialize(json, itemType)!;
+        var method = type.GetMethod("RecoverAutomaticItem", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return method!.Invoke(null, new[] { item, (object)now });
+    }
+
+    private static object? Property(object item, string name) => item.GetType().GetProperty(name)!.GetValue(item);
+
+    [Fact]
     public void RetainedRetryStateSurvivesQueueRestart()
     {
         var root=Path.Combine(Path.GetTempPath(),"artist-replay-"+Guid.NewGuid().ToString("N"));

@@ -72,6 +72,41 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Choices for the biography picker. A second id stays when it is another identity of this
+    /// artist (an alias or a merged profile). A detached collaborator id does not, and a blank
+    /// legacy row is not a second choice beside a named row for the same source.
+    /// </summary>
+    private async Task<IReadOnlyList<ArtistBiographyCacheRowDto>> BiographyChoicesAsync(
+        long artistId,
+        CancellationToken cancellationToken)
+    {
+        var rows = await _repository.GetArtistBiographyRowsAsync(artistId, cancellationToken);
+        var choices = new List<ArtistBiographyCacheRowDto>();
+        foreach (var group in rows.GroupBy(row => row.Source, StringComparer.OrdinalIgnoreCase))
+        {
+            var attached = (await _repository.GetArtistSourceIdentitiesAsync(artistId, group.Key, cancellationToken))
+                .Select(identity => identity.SourceId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var candidates = group.ToList();
+            if (attached.Count > 0)
+            {
+                candidates = candidates
+                    .Where(row => !string.IsNullOrWhiteSpace(row.SourceId) && attached.Contains(row.SourceId))
+                    .ToList();
+            }
+
+            if (candidates.Any(row => !string.IsNullOrWhiteSpace(row.SourceId)))
+            {
+                candidates = candidates.Where(row => !string.IsNullOrWhiteSpace(row.SourceId)).ToList();
+            }
+
+            choices.AddRange(candidates);
+        }
+
+        return choices;
+    }
+
     [HttpGet("{id:long}/biographies")]
     public async Task<IActionResult> GetBiographies(long id, CancellationToken cancellationToken)
     {
@@ -86,7 +121,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return NotFound();
         }
 
-        var rows = await _repository.GetArtistBiographyRowsAsync(id, cancellationToken);
+        var rows = await BiographyChoicesAsync(id, cancellationToken);
         var selected = rows.FirstOrDefault(row => row.Selected)?.Source;
         return Ok(new
         {
@@ -141,7 +176,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
         // SelectArtistBiographySourceAsync keeps the requested source when it exists in
         // the artist's biography cache; otherwise it leaves the current selection intact.
-        var cachedSources = await _repository.GetArtistBiographyRowsAsync(id, cancellationToken);
+        var cachedSources = await BiographyChoicesAsync(id, cancellationToken);
         if (!cachedSources.Any(row => string.Equals(row.Source, source, StringComparison.OrdinalIgnoreCase)
             && (request.SourceId is null || row.SourceId == request.SourceId)))
         {
@@ -362,20 +397,33 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     [HttpPost("{id:long}/spotify/discography/refresh")]
     public async Task<IActionResult> RefreshSpotifyDiscography(long id, CancellationToken cancellationToken)
     {
-        var resolvedArtistName = await ResolveArtistNameAsync(id, cancellationToken);
-        var spotifyId = await _repository.GetArtistSourceIdAsync(id, SpotifySource, cancellationToken);
-        if (string.IsNullOrWhiteSpace(spotifyId))
+        // Latest-discography top-ups no longer publish page data directly: the shared refresh
+        // lifecycle is the only writer of the retained Spotify catalogue. Queuing here covers
+        // the required sections through the existing refresh executor.
+        if (_coordinator is null)
         {
             return CreateSpotifyUnavailableResult();
         }
 
-        var refreshed = await _spotifyArtistService.RefreshLatestDiscographyAsync(
-            spotifyId,
-            string.IsNullOrWhiteSpace(resolvedArtistName) ? spotifyId : resolvedArtistName,
-            cancellationToken);
-        return refreshed is null
-            ? CreateSpotifyUnavailableResult()
-            : await CreateSpotifyArtistResultAsync(id, refreshed, attachLocation: false, cancellationToken: cancellationToken);
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
+        {
+            return NotFound();
+        }
+
+        var (queued, runId) = await _coordinator.EnqueueArtistCacheRefreshAsync(
+            id, cancellationToken, ArtistCacheRefreshScope.ProviderMetadata, automatic: false);
+        if (queued) _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Spotify discography refresh routed to the shared artist cache lifecycle for artist {id}."));
+        return Ok(new
+        {
+            queued,
+            runId,
+            status = _coordinator.GetArtistCacheRefreshStatus(runId, id) ?? _coordinator.GetStatus(),
+            lifecycle = true
+        });
     }
 
     [HttpPost("{id:long}/spotify-reset")]
@@ -395,7 +443,9 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         var existingSpotifyIds = await _repository.GetArtistSourceIdsAsync(id, SpotifySource, cancellationToken);
         foreach (var existingSpotifyId in existingSpotifyIds)
         {
-            await _artistPageCache.ClearEntryAsync(SpotifySource, existingSpotifyId, cancellationToken);
+            // Matching reset must not erase the retained Spotify catalogue rows: the four
+            // sections stay readable until the next refresh publishes a validated revision
+            // for the newly selected identity.
             await _spotifyMetadataCache.ClearEntryAsync("artist", existingSpotifyId, cancellationToken);
         }
 
@@ -404,14 +454,32 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"[spotify] reset match requested for artist {id}."));
+            $"[spotify] reset match requested for artist {id} (retained Spotify catalogue kept until the next refresh)."));
 
         return Ok(new
         {
             reset = true,
             artistId = id,
-            artistName = artist.Name
+            artistName = artist.Name,
+            retainedCatalogue = true
         });
+    }
+
+    [HttpGet("{id:long}/source-ids")]
+    public async Task<IActionResult> GetSourceIds(long id, [FromQuery] string source, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(new { ids = Array.Empty<string>() });
+        }
+
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return BadRequest("source is required.");
+        }
+
+        var ids = await _repository.GetArtistSourceIdsAsync(id, source.Trim(), cancellationToken);
+        return Ok(new { ids });
     }
 
     [HttpPut("{id:long}/spotify-id")]
@@ -439,8 +507,23 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             return BadRequest("Spotify ID should be a 22-character alphanumeric value.");
         }
 
-        var profileConflict = await ConfirmProfileAsync(id, SpotifySource, spotifyId, cancellationToken);
+        var replacing = request.ReplaceSpotifyId?.Trim();
+        var replacedWasPrimary = false;
+        if (!string.IsNullOrWhiteSpace(replacing))
+        {
+            var existing = await _repository.GetArtistSourceIdentitiesAsync(id, SpotifySource, cancellationToken);
+            replacedWasPrimary = existing.Any(identity =>
+                string.Equals(identity.SourceId, replacing, StringComparison.Ordinal)
+                && identity.IsPrimary);
+        }
+
+        var profileConflict = await ConfirmProfileAsync(id, SpotifySource, spotifyId, cancellationToken, setPrimary: string.IsNullOrWhiteSpace(replacing) || replacedWasPrimary);
         if (profileConflict is not null) return profileConflict;
+        if (!string.IsNullOrWhiteSpace(replacing)
+            && !string.Equals(replacing, spotifyId, StringComparison.Ordinal))
+        {
+            await _repository.RemoveArtistSourceIdAsync(id, SpotifySource, replacing, cancellationToken);
+        }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -450,12 +533,15 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return Ok(new { spotifyId });
     }
 
-    private async Task<IActionResult?> ConfirmProfileAsync(long artistId, string source, string sourceId, CancellationToken token)
+    private async Task<IActionResult?> ConfirmProfileAsync(long artistId, string source, string sourceId, CancellationToken token, bool setPrimary = true)
     {
         try
         {
             await _repository.UpsertArtistSourceIdAsync(artistId, source, sourceId, token, userConfirmed: true, preserveExistingOwner: true);
-            await _repository.SetPrimaryArtistSourceIdAsync(artistId, source, sourceId, token);
+            if (setPrimary)
+            {
+                await _repository.SetPrimaryArtistSourceIdAsync(artistId, source, sourceId, token);
+            }
             return null;
         }
         catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
@@ -785,7 +871,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         // catalogue return without an Audiomack lookup.
         return cached is null
             ? CreateSpotifyUnavailableResult()
-            : await CreateSpotifyArtistResultAsync(id, cached, attachLocation: false, cancellationToken: cancellationToken);
+            : await CreateSpotifyArtistResultAsync(id, cached, attachLocation: false, cachedComposition: true, cancellationToken: cancellationToken);
     }
 
     private async Task<SpotifyArtistPageResult?> ResolveSpotifyArtistPageResultAsync(
@@ -848,9 +934,13 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         long artistId,
         SpotifyArtistPageResult result,
         bool attachLocation = true,
+        bool cachedComposition = false,
         CancellationToken cancellationToken = default)
     {
-        result = await _spotifyArtistService.MergeAliasVisualsAsync(artistId, result, cancellationToken);
+        // Cached page reads compose from stored content only: a missing sibling row or
+        // Audiomack lookup must never trigger provider work during a cached render.
+        result = await _spotifyArtistService.MergeAliasVisualsAsync(artistId, result, cancellationToken, cachedOnly: cachedComposition);
+        var catalogue = await _spotifyArtistService.TryReadArtistCatalogueStatusAsync(artistId, result.Artist?.Name ?? artistId.ToString(), cancellationToken);
         var artistPagePayload = SpotifyArtistPagePayloadMapper.Build(result);
         var artistNode = attachLocation
             ? await AttachArtistLocationToArtistNodeAsync(artistId, result)
@@ -863,7 +953,10 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             appearsOn = result.AppearsOn,
             topTracks = result.TopTracks,
             relatedArtists = result.RelatedArtists,
-            artistPage = artistPagePayload
+            artistPage = artistPagePayload,
+            catalogue = catalogue is null
+                ? null
+                : new { complete = catalogue.IsComplete, revision = catalogue.Metadata?.Revision, publishedAtUtc = catalogue.Metadata?.PublishedUtc, spotifyId = catalogue.SpotifyId }
         });
     }
 
@@ -935,7 +1028,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     /// must leave existing metadata untouched.
     /// </summary>
     /// <remarks>
-    /// The precedence itself — manual override, then MusicBrainz, then Audiomack
+    /// The precedence itself — manual override, then Apple Music, MusicBrainz and Audiomack
     /// as the fallback — lives in <see cref="ArtistLocationResolver"/>, so the
     /// page and the route can never disagree about which source answered.
     /// </remarks>
@@ -992,7 +1085,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return value.All(char.IsLetterOrDigit);
     }
 
-    public sealed record SpotifyIdUpdateRequest(string SpotifyId);
+    public sealed record SpotifyIdUpdateRequest(string SpotifyId, string? ReplaceSpotifyId = null);
 
     public sealed record AppleIdUpdateRequest(string AppleId);
 

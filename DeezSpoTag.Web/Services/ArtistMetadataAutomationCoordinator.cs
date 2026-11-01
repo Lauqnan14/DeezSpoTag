@@ -62,7 +62,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     {
         lock (_statusLock)
         {
-            if (_status.RunState == "paused") return _status;
+            if (_status.RunState == "paused") return WithCacheQueueStatus(_status);
             var target = _targetUpdate.GetStatus();
             // Preparation clears the worker snapshot. Retain the same run's recovered progress
             // until the worker has rebuilt its counters from the journal.
@@ -82,12 +82,27 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             }
             if (_status.RunOperation == "target-update" && _checkpoint is { } run)
                 target = target with { StartedAtUtc = run.StartedAtUtc };
-            return _status with { TargetUpdate = target };
+            return WithCacheQueueStatus(_status with { TargetUpdate = target });
         }
+    }
+
+    private ArtistMetadataAutomationStatus WithCacheQueueStatus(ArtistMetadataAutomationStatus status)
+    {
+        var cache = _artistQueue?.GetLibraryRefreshStatus();
+        if (cache is null) return status;
+        var merged = status with { CacheRefresh = cache.CacheRefresh };
+        if (cache.LastCacheRefreshUtc > (status.LastCacheRefreshUtc ?? DateTimeOffset.MinValue))
+            merged = merged with { LastCacheRefreshUtc = cache.LastCacheRefreshUtc, NextCacheRefreshUtc = cache.NextCacheRefreshUtc };
+        if (status.RunOperation == "target-update" && (status.RunState != "idle"
+            || (cache.RunState == "idle" && status.TargetUpdate.CompletedAtUtc > cache.CacheRefresh.CompletedAtUtc))) return merged;
+        return merged with { RunId = cache.RunId, RunOperation = cache.RunOperation, RunState = cache.RunState,
+            ActiveOperation = cache.ActiveOperation, RunDisposition = cache.RunDisposition,
+            RunNextAttemptUtc = cache.RunNextAttemptUtc, RunPendingNotice = cache.RunPendingNotice };
     }
 
     public async Task<bool> PauseAsync(string operation, string runId, CancellationToken cancellationToken)
     {
+        if (operation == "cache-refresh") return await CacheQueue.ControlAsync(runId, "pause", cancellationToken);
         if (!await _transitionGate.WaitAsync(0, cancellationToken)) return false;
         try
         {
@@ -157,7 +172,8 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     }
 
     public Task<bool> ResumeAsync(string operation, string runId, CancellationToken cancellationToken)
-        => ResumeAsync(operation, runId, cancellationToken, ResumeRunAsync);
+        => operation == "cache-refresh" ? CacheQueue.ControlAsync(runId, "resume", cancellationToken)
+            : ResumeAsync(operation, runId, cancellationToken, ResumeRunAsync);
 
     internal async Task<bool> ResumeAsync(string operation, string runId, CancellationToken cancellationToken,
         Func<ArtistMetadataActiveRun, CancellationToken, Task<bool>> enqueue)
@@ -204,6 +220,9 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 
     public async Task<bool> CancelAsync(CancellationToken cancellationToken)
     {
+        var activeStatus = GetStatus();
+        if (activeStatus is { RunOperation: "cache-refresh", RunState: not "idle", RunId: not null })
+            return await CacheQueue.ControlAsync(activeStatus.RunId, "cancel", cancellationToken);
         if (!await _transitionGate.WaitAsync(0, cancellationToken)) return false;
         try
         {
@@ -220,9 +239,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 {
                     ActiveOperation = null, RunId = null, RunOperation = null, RunState = "idle", ResumeNotice = null,
                     RunDisposition = null, RunNextAttemptUtc = null, RunPendingNotice = null,
-                    CacheRefresh = operation == "cache-refresh" ? _status.CacheRefresh with
-                    { Phase = "Cache refresh cancelled", Message = "The cache refresh was cancelled.", CompletedAtUtc = DateTimeOffset.UtcNow }
-                        : _status.CacheRefresh,
                     TargetUpdate = operation == "target-update" ? _status.TargetUpdate with
                     { Phase = "Metadata update cancelled", Message = "The metadata update was cancelled.", CompletedAtUtc = DateTimeOffset.UtcNow }
                         : _status.TargetUpdate
@@ -314,10 +330,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 RunState = paused ? "paused" : "pending-retry",
                 RunDisposition = disposition, RunNextAttemptUtc = run.NextAttemptUtc, RunPendingNotice = run.PendingNotice,
                 ResumeNotice = notice,
-                CacheRefresh = run.Operation == "cache-refresh"
-                    ? new ArtistMetadataCacheStatus(false, run.Automatic, "Cache refresh paused", null,
-                        processed, run.TargetArtistIds.Count, null, run.StartedAtUtc, null, succeeded, failed)
-                    : _status.CacheRefresh,
                 TargetUpdate = run.Operation == "target-update"
                     ? new MetadataUpdaterStatusSnapshot(false, "Metadata update paused", null, run.StartedAtUtc, null,
                         run.TargetArtistIds.Count, processed, succeeded, failed,
@@ -354,7 +366,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         return requested || running;
     }
 
-    private static bool TryCancel(CancellationTokenSource? cts)
+    internal static bool TryCancel(CancellationTokenSource? cts)
     {
         if (cts is null)
         {
@@ -395,6 +407,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             {
                 Running = false,
                 Phase = interruptedByShutdown ? "Cache refresh interrupted" : "Cache refresh cancelled",
+                RunState = interruptedByShutdown ? "queued" : "idle",
                 Message = interruptedByShutdown
                     ? "The cache refresh was interrupted and will resume after restart."
                     : "The cache refresh was cancelled.",
@@ -407,27 +420,22 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     public async Task<(bool Queued, string? RunId)> EnqueueArtistCacheRefreshAsync(long artistId, CancellationToken cancellationToken,
         ArtistCacheRefreshScope scope = ArtistCacheRefreshScope.Full, bool automatic = false)
     {
-        var preferences = await _preferences.LoadAsync();
-        var request = BuildCacheRequest(preferences) with { ArtistId = artistId, FolderId = null, Scope = scope, ForceProviderRefresh = !automatic };
+        var request = await _cacheRefresh.BuildRequestAsync(artistId, null, scope, forceProviderRefresh: !automatic);
         if (automatic && await _cacheRefresh.IsCompleteAsync(request, cancellationToken)) return (false, null);
-        if (_artistQueue is null) throw new InvalidOperationException("Artist cache queue is unavailable.");
-        return await _artistQueue.EnqueueRefreshAsync(request, cancellationToken);
+        return await CacheQueue.EnqueueRefreshAsync(request, cancellationToken, automatic: automatic);
     }
+
+    private LibraryArtistMetadataQueueService CacheQueue => _artistQueue
+        ?? throw new InvalidOperationException("Artist cache queue is unavailable.");
 
     public ArtistMetadataAutomationStatus? GetArtistCacheRefreshStatus(string? runId, long? artistId = null)
         => _artistQueue?.GetRefreshStatus(runId, artistId);
 
-    public Task<bool> EnqueueCacheRefreshAsync(ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken)
-        => EnqueueAsync(
-            "cache-refresh",
-            async token =>
-            {
-                await RunCacheRefreshAsync(request with { ForceProviderRefresh = true }, automatic: false, token);
-                return true;
-            },
-            cancellationToken,
-            resuming: null,
-            cacheRequest: request with { ForceProviderRefresh = true });
+    public async Task<bool> EnqueueCacheRefreshAsync(ArtistMetadataCacheRefreshRequest scope, CancellationToken cancellationToken)
+    {
+        var request = await _cacheRefresh.BuildRequestAsync(scope.ArtistId, scope.FolderId, scope.Scope);
+        return (await CacheQueue.EnqueueRefreshAsync(request, cancellationToken)).Queued;
+    }
 
     public Task<bool> EnqueueTargetUpdateAsync(MetadataUpdaterRunRequest request, CancellationToken cancellationToken)
         => EnqueueAsync(
@@ -556,6 +564,26 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
 
         UpdateScheduleStatus(state, await _preferences.LoadAsync(), DateTimeOffset.UtcNow);
+        if (run.Operation == "cache-refresh")
+        {
+            var request = run.CacheRequest ?? await _cacheRefresh.BuildRequestAsync(null, null, forceProviderRefresh: false);
+            // Use the existing resume reader so inline outcomes and visited-only legacy
+            // checkpoints become durable journal records before queue ownership changes.
+            var outcomes = BuildResumeContext(run)?.Outcomes ?? Array.Empty<ArtistRunOutcomeRecord>();
+            if (!Guid.TryParseExact(run.RunId, "N", out _))
+            {
+                run.RunId = Guid.NewGuid().ToString("N");
+                state.ActiveRun = run;
+                await SaveStateAsync(state, cancellationToken);
+            }
+            if ((await CacheQueue.EnqueueRefreshAsync(request, cancellationToken, run, outcomes, run.Automatic)).Queued)
+            {
+                state.ActiveRun = null;
+                await SaveStateAsync(state, cancellationToken);
+                DeleteOutcomeJournal();
+            }
+            return;
+        }
         if (run.Paused)
         {
             RestorePausedStatus(run);
@@ -575,15 +603,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private async Task<bool> ResumeRunAsync(ArtistMetadataActiveRun run, CancellationToken cancellationToken)
     {
         var preferences = await _preferences.LoadAsync();
-        if (string.Equals(run.Operation, "cache-refresh", StringComparison.Ordinal))
-        {
-            var cacheRequest = run.CacheRequest ?? BuildCacheRequest(preferences);
-            return await EnqueueAsync("cache-refresh", async token =>
-            {
-                await RunCacheRefreshAsync(cacheRequest, run.Automatic, token);
-                return true;
-            }, cancellationToken, resuming: run);
-        }
         var targetRequest = run.TargetRequest ?? BuildTargetRequest(preferences);
         return await EnqueueAsync("target-update",
             token => RunTargetUpdateAsync(targetRequest, run.Automatic, run, token),
@@ -599,6 +618,13 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 
         var preferences = await _preferences.LoadAsync();
         var state = await LoadStateAsync(cancellationToken);
+        var completion = await _cacheRefresh.GetSweepCompletionAsync(cancellationToken);
+        if (completion.LastCacheRefreshUtc > (state.LastCacheRefreshUtc ?? DateTimeOffset.MinValue))
+        {
+            state.LastCacheRefreshUtc = completion.LastCacheRefreshUtc;
+            state.LastDeepRefreshUtc = completion.LastDeepRefreshUtc ?? state.LastDeepRefreshUtc;
+            await SaveStateAsync(state, cancellationToken);
+        }
         var now = DateTimeOffset.UtcNow;
 
         // A run left incomplete stays resumable: continue it on the next tick rather than waiting
@@ -619,26 +645,19 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             return;
         }
 
-        if (cacheDue)
+        if (cacheDue && _artistQueue?.GetLibraryRefreshStatus() is not { RunState: not "idle" })
         {
-            var cacheRequest = deepRefreshDue
-                ? BuildCacheRequest(preferences) with { ForceProviderRefresh = true }
-                : BuildCacheRequest(preferences);
-            if (await EnqueueAsync(
-                    "cache-refresh",
-                    async token =>
-                    {
-                        await RunCacheRefreshAsync(cacheRequest, automatic: true, token);
-                        return true;
-                    },
-                    cancellationToken,
-                    cacheRequest: cacheRequest,
-                    automatic: true))
-            {
-                await WaitForActiveOperationAsync();
-            }
+            var cacheRequest = await _cacheRefresh.BuildRequestAsync(null, ParseFolderId(preferences.MetadataUpdaterFolderId),
+                forceProviderRefresh: deepRefreshDue);
+            var queued = await CacheQueue.EnqueueRefreshAsync(cacheRequest, cancellationToken, automatic: true);
+            if (!queued.Queued || !await CacheQueue.WaitForAttemptAsync(queued.RunId!, cancellationToken)) return;
+            var completed = await _cacheRefresh.GetSweepCompletionAsync(cancellationToken);
+            state.LastCacheRefreshUtc = completed.LastCacheRefreshUtc;
+            state.LastDeepRefreshUtc = completed.LastDeepRefreshUtc;
+            await SaveStateAsync(state, cancellationToken);
         }
 
+        if (_artistQueue?.GetLibraryRefreshStatus() is { RunState: not "idle" }) return;
         if (updateDue)
         {
             var targetRequest = BuildTargetRequest(preferences);
@@ -799,32 +818,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 return;
             }
 
-            var deepRefresh = _checkpoint?.CacheRequest?.ForceProviderRefresh == true;
             var finishedRun = _checkpoint;
-            // A failed append must retain the frozen run, never become an empty successful sweep.
-            if (operation == "cache-refresh") await FlushCheckpointAsync(requireDurable: true);
             await StopCheckpointWritesAsync();
             var state = await LoadStateAsync(CancellationToken.None);
-            if (operation == "cache-refresh" && finishedRun is not null
-                && RetainUnresolvedCacheWork(finishedRun, ReadRunOutcomes(finishedRun), DateTimeOffset.UtcNow))
-            {
-                state.ActiveRun = SnapshotRun(finishedRun);
-                await SaveStateAsync(state, CancellationToken.None);
-            }
-            else if (operation == "cache-refresh")
-            {
-                state.LastCacheRefreshUtc = DateTimeOffset.UtcNow;
-                if (deepRefresh)
-                {
-                    state.LastDeepRefreshUtc = DateTimeOffset.UtcNow;
-                }
-                state.ActiveRun = null;
-                await SaveStateAsync(state, CancellationToken.None);
-                // The run finished, so its outcome journal is no longer needed. Leaving it would let it
-                // accumulate; a stale one is discarded by the run id header regardless.
-                DeleteOutcomeJournal();
-            }
-            else if (finishedRun is not null && RetainUnresolvedTargetWork(finishedRun, DateTimeOffset.UtcNow) is { Retain: true } decision)
+            if (finishedRun is not null && RetainUnresolvedTargetWork(finishedRun, DateTimeOffset.UtcNow) is { Retain: true } decision)
             {
                 // The sweep ended with unresolved target/field work. Keep the run and its journal so the
                 // work is retried at the poll interval, and do not stamp the success clock for it.
@@ -893,7 +890,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                     }
                 }
             }
-            RecordOperationFailure(operation, ex.Message);
+            RecordOperationFailure(ex.Message);
             await FlushCheckpointAsync();
 
             if (_checkpoint?.Paused == true)
@@ -911,17 +908,11 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
                 {
                     poisoned.ConsecutiveFailures++;
                     failures = poisoned.ConsecutiveFailures;
-                    if (operation == "cache-refresh")
-                    {
-                        poisoned.Disposition = ArtistMetadataRunDispositions.PendingRetry;
-                        poisoned.NextAttemptUtc = DateTimeOffset.UtcNow + PollInterval;
-                        poisoned.PendingNotice = "Refresh Cache could not save completion evidence; unfinished work was retained.";
-                    }
                 }
             }
 
             if (failures >= MaxConsecutiveRunFailures
-                && (operation == "cache-refresh" || ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null }
+                && (ex is DeezSpoTag.Integrations.TargetLookupException { UnresolvedArtists: not null }
                     || ex is TimeoutException or OperationCanceledException))
             {
                 lock (_checkpointLock)
@@ -1000,26 +991,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
     }
 
-    private void RecordOperationFailure(string operation, string message)
+    private void RecordOperationFailure(string message)
     {
         lock (_statusLock)
         {
-            if (operation == "cache-refresh")
-            {
-                _status = _status with
-                {
-                    CacheRefresh = _status.CacheRefresh with
-                    {
-                        Running = false,
-                        Phase = "Cache refresh failed",
-                        Message = message,
-                        CurrentArtist = null,
-                        CompletedAtUtc = DateTimeOffset.UtcNow
-                    }
-                };
-                return;
-            }
-
             // Target status is owned by ArtistMetadataUpdaterService and merged in GetStatus.
             _status = _status with
             {
@@ -1051,37 +1026,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     /// settled only when no artist still owes a target write; otherwise the run keeps its journal and is
     /// retried at the poll interval, and the success clock is not stamped for it.
     /// </summary>
-    private static bool RetainUnresolvedCacheWork(ArtistMetadataActiveRun run,
-        IReadOnlyList<ArtistRunOutcomeRecord> outcomes, DateTimeOffset nowUtc)
-    {
-        var recorded = outcomes.Select(row => row.ArtistId).ToHashSet();
-        var missing = (run.TargetArtistIds ?? []).Where(id => !recorded.Contains(id))
-            .Select(id => new ArtistRunOutcomeRecord(id, ArtistRunOutcomes.Failed,
-                CacheWork: [new ArtistCacheWorkOutcome("local", "artist", ArtistCacheWorkStatus.Failed, ReasonCode: "missing-outcome")]));
-        var pending = outcomes.Concat(missing).SelectMany(row => (row.CacheWork ??
-            [new ArtistCacheWorkOutcome("local", "artist", ArtistCacheWorkStatus.Failed, ReasonCode: "unknown-stage-evidence")])
-            .Where(work => !work.IsComplete).Select(work => (row.ArtistId, Work: work))).ToList();
-        if (pending.Count == 0) return false;
-        var attempts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var entry in pending)
-        {
-            var key = $"{entry.ArtistId}:{entry.Work.Provider}:{entry.Work.Stage}";
-            attempts[key] = run.CacheAttempts.GetValueOrDefault(key) + 1;
-        }
-        run.CacheAttempts = attempts;
-        var needsAttention = pending.Any(item => item.Work.Status == ArtistCacheWorkStatus.AuthenticationRequired)
-            || attempts.Values.Any(attempt => attempt >= MaxAttemptsPerUnresolvedTarget);
-        var retryDue = pending.Where(item => item.Work.RetryAtUtc.HasValue)
-            .Select(item => item.Work.RetryAtUtc!.Value).DefaultIfEmpty(nowUtc + PollInterval).Max();
-        run.NextAttemptUtc = needsAttention ? null : (retryDue > nowUtc + PollInterval ? retryDue : nowUtc + PollInterval);
-        run.Paused = needsAttention;
-        run.Disposition = needsAttention ? ArtistMetadataRunDispositions.NeedsAttention : ArtistMetadataRunDispositions.PendingRetry;
-        run.PendingNotice = needsAttention
-            ? $"Refresh Cache retained {pending.Count} unfinished source update(s). Check provider access, then Resume."
-            : $"Refresh Cache retained {pending.Count} unfinished source update(s) for retry.";
-        return true;
-    }
-
     private RetainedRunDecision RetainUnresolvedTargetWork(ArtistMetadataActiveRun run, DateTimeOffset nowUtc)
     {
         var pairs = ArtistMetadataPendingWork.Collect(ReadRunOutcomes(run), run.TargetAttempts);
@@ -1139,7 +1083,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         return $"Update Servers retained {scope} for another attempt.";
     }
 
-    private static ArtistMetadataActiveRun SnapshotRun(ArtistMetadataActiveRun checkpoint, bool preserveLegacy = false) => new()
+    internal static ArtistMetadataActiveRun SnapshotRun(ArtistMetadataActiveRun checkpoint, bool preserveLegacy = false) => new()
     {
         Operation = checkpoint.Operation, Automatic = checkpoint.Automatic, Paused = checkpoint.Paused,
         StartedAtUtc = checkpoint.StartedAtUtc, CacheRequest = checkpoint.CacheRequest,
@@ -1312,42 +1256,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
         if (requireDurable && _journalFailure is { } failure)
             throw new IOException("The artist metadata outcome journal could not be saved durably.", failure);
-    }
-
-    private async Task<ArtistMetadataCacheRefreshResult> RunCacheRefreshAsync(
-        ArtistMetadataCacheRefreshRequest request,
-        bool automatic,
-        CancellationToken cancellationToken)
-    {
-        var resume = BuildResumeContext(_checkpoint);
-        var outcomes = resume?.Outcomes ?? Array.Empty<ArtistRunOutcomeRecord>();
-        UpdateCacheStatus(new ArtistMetadataCacheStatus(true, automatic, "Refreshing artist metadata cache", null,
-            outcomes.Count, resume?.TargetArtistIds?.Count ?? 0, null, _checkpoint?.StartedAtUtc ?? DateTimeOffset.UtcNow, null,
-            outcomes.Count(o => o.Outcome is ArtistRunOutcomes.Succeeded or ArtistRunOutcomes.Partial),
-            outcomes.Count(o => o.Outcome == ArtistRunOutcomes.Failed)));
-        var progress = new Progress<ArtistMetadataOperationProgress>(UpdateCacheProgress);
-        var result = await _cacheRefresh.RefreshAsync(
-            outcomes.Count > 0 ? request with { ForceProviderRefresh = false } : request,
-            progress,
-            resumedRun: resume,
-            outcomeSink: NoteArtistOutcome,
-            cancellationToken,
-            targetSink: PersistRunTargetsAsync);
-        UpdateCacheStatus(GetStatus().CacheRefresh with
-        {
-            Running = false,
-            Phase = result.Error is null ? "Cache refresh completed" : "Cache refresh failed",
-            Message = result.Error ?? $"{result.Succeeded} succeeded, {result.Failed} failed.",
-            ProcessedArtists = result.Succeeded + result.Failed,
-            TotalArtists = result.Total,
-            SuccessfulArtists = result.Succeeded,
-            FailedArtists = result.Failed,
-            CurrentArtist = null,
-            CompletedAtUtc = DateTimeOffset.UtcNow
-        });
-        if (_checkpoint is { } run)
-            await _cacheRefresh.SaveRunResultAsync(run.RunId, request.ArtistId, result, cancellationToken);
-        return result;
     }
 
     private async Task<bool> RunTargetUpdateAsync(
@@ -1528,37 +1436,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
     }
 
-    private void UpdateCacheProgress(ArtistMetadataOperationProgress value)
-    {
-        lock (_statusLock)
-        {
-            if (!_status.CacheRefresh.Running)
-            {
-                return;
-            }
-
-            _status = _status with
-            {
-                CacheRefresh = _status.CacheRefresh with
-                {
-                    ProcessedArtists = value.Processed,
-                    TotalArtists = value.Total,
-                    CurrentArtist = value.CurrentArtist,
-                    SuccessfulArtists = value.Succeeded,
-                    FailedArtists = value.Failed
-                }
-            };
-        }
-    }
-
-    private void UpdateCacheStatus(ArtistMetadataCacheStatus status)
-    {
-        lock (_statusLock)
-        {
-            _status = _status with { CacheRefresh = status, ActiveOperation = status.Running ? "cache-refresh" : _status.ActiveOperation };
-        }
-    }
-
     private void UpdateScheduleStatus(ArtistMetadataAutomationState state, UserPreferencesDto preferences, DateTimeOffset now)
     {
         lock (_statusLock)
@@ -1590,16 +1467,6 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             };
         }
     }
-
-    private static ArtistMetadataCacheRefreshRequest BuildCacheRequest(UserPreferencesDto preferences)
-        => new(
-            null,
-            ParseFolderId(preferences.MetadataUpdaterFolderId),
-            preferences.MetadataUpdaterSource,
-            preferences.MetadataUpdaterIncludePopularSongs,
-            preferences.MetadataUpdaterIncludeDiscography,
-            ForceProviderRefresh: false,
-            OcrTextArtBlockingEnabled: preferences.MetadataUpdaterOcrTextArtBlocking);
 
     private static MetadataUpdaterRunRequest BuildTargetRequest(UserPreferencesDto preferences)
         => new()
@@ -2045,7 +1912,9 @@ public sealed record ArtistMetadataCacheStatus(
     DateTimeOffset? StartedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     int SuccessfulArtists = 0,
-    int FailedArtists = 0)
+    int FailedArtists = 0,
+    string? RunId = null,
+    string? RunState = null)
 {
     public static ArtistMetadataCacheStatus Idle() => new(false, false, "Idle", null, 0, 0, null, null, null);
 }

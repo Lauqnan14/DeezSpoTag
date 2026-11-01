@@ -87,7 +87,7 @@ public sealed partial class LocalAutoTagRunner
             location = _artistLocationResolver is not null && artistId is { } id
                 ? await _artistLocationResolver.ResolveAsync(id, artistName, cancellationToken).ConfigureAwait(false)
                 : null;
-            if (location is null && _artistLocationResolver is not null && providerId is not null && !string.IsNullOrWhiteSpace(track.ArtistId))
+            if (location is null && artistId is null && _artistLocationResolver is not null && providerId is not null && !string.IsNullOrWhiteSpace(track.ArtistId))
                 location = await _artistLocationResolver.ResolveMatchedArtistAsync(providerId, track.ArtistId, artistName, track.Url, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -130,6 +130,7 @@ public sealed partial class LocalAutoTagRunner
                 var payload = new
                 {
                     version = ArtistEnrichmentCacheVersion,
+                    locationPolicy = ArtistLocationResolver.LocationPolicyVersion,
                     metadata,
                     retainedAt = DateTimeOffset.UtcNow
                 };

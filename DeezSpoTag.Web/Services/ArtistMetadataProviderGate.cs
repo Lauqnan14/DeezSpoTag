@@ -104,6 +104,7 @@ public sealed class ArtistMetadataProviderGate
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                RecordRequest(provider);
                 operationCancellation.Cancel();
                 throw;
             }

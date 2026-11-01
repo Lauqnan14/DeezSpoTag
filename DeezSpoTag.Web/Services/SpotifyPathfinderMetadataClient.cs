@@ -116,6 +116,12 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record DiscographyPageResult(JsonElement DiscographyAll, List<JsonElement> Items);
 
+    /// <summary>A discography page: success means the envelope was parseable (items may be empty).</summary>
+    private readonly record struct DiscographyPageOutcome(bool Succeeded, DiscographyPageResult Page)
+    {
+        public static DiscographyPageOutcome Unresolved => default;
+    }
+
     private sealed record RelatedArtistArrays(JsonElement? RelatedContent, JsonElement? Direct);
 
     private sealed record PlaylistTrackProjection(SpotifyTrackSummary Summary, JsonElement TrackData);
@@ -903,8 +909,8 @@ public sealed class SpotifyPathfinderMetadataClient
             }
             Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
             Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
-            Task<List<SpotifyAlbumSummary>>? discographyTask = includeDiscography
-                ? FetchArtistDiscographyAsync(context, artistId, cancellationToken)
+            Task<SpotifyFetchedDiscography>? discographyTask = includeDiscography
+                ? FetchArtistDiscographyObservedAsync(context, artistId, cancellationToken)
                 : null;
             if (discographyTask is null)
             {
@@ -931,14 +937,44 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 _logger.LogDebug("Spotify Pathfinder biography hydration skipped: no alternate auth context available.");
             }
-            List<SpotifyAlbumSummary> albums = discographyTask is null
-                ? new List<SpotifyAlbumSummary>()
+            SpotifyFetchedDiscography discography = discographyTask is null
+                ? new SpotifyFetchedDiscography(new List<SpotifyAlbumSummary>(), Completed: false, VerifiedEmpty: true)
                 : await discographyTask;
             SpotifyArtistOverview parsedOverview = MergeArtistOverview(artist.HasValue ? ParseArtistOverview(artistId, artist.Value) : null, overview.HasValue ? ParseArtistOverview(artistId, overview.Value) : null) ?? ParseArtistOverview(artistId, primaryArtistValue);
-            List<SpotifyTrackSummary> topTracks = MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
+            List<SpotifyTrackSummary> topTracks;
+            bool topTracksObserved;
+            bool topTracksVerifiedEmpty;
+            if (artist.HasValue)
+            {
+                (topTracks, topTracksObserved) = ParseArtistTopTracksObserved(artist.Value);
+                if (overview.HasValue)
+                {
+                    (List<SpotifyTrackSummary> overviewItems, bool overviewObserved) = ParseArtistTopTracksObserved(overview.Value);
+                    topTracks = MergeTopTrackSummaries(topTracks, overviewItems);
+                    topTracksObserved |= overviewObserved;
+                }
+                topTracksVerifiedEmpty = topTracks.Count == 0 && topTracksObserved;
+            }
+            else
+            {
+                (topTracks, topTracksObserved) = ParseArtistTopTracksObserved(overview!.Value);
+                topTracksVerifiedEmpty = topTracks.Count == 0 && topTracksObserved;
+            }
             List<SpotifyRelatedArtist> relatedArtists = ParseArtistRelatedArtists(primaryArtistValue);
+            bool relatedArtistsObserved = HasRelatedArtistsNode(primaryArtistValue);
             List<SpotifyAlbumSummary> appearsOn = ParseArtistAppearsOn(primaryArtistValue);
-            return new SpotifyArtistHydratedPage(parsedOverview, extras, topTracks, relatedArtists, appearsOn, albums);
+            bool appearsOnObserved = HasAppearsOnNode(primaryArtistValue);
+            var observation = new SpotifyArtistCatalogueObservation(
+                AlbumsObserved: discographyTask is not null,
+                DiscographyCompleted: discography.Completed,
+                AlbumsVerifiedEmpty: discographyTask is not null && discography.VerifiedEmpty,
+                TopTracksObserved: topTracksObserved,
+                TopTracksVerifiedEmpty: topTracksVerifiedEmpty,
+                RelatedArtistsObserved: relatedArtistsObserved,
+                RelatedArtistsVerifiedEmpty: relatedArtistsObserved && relatedArtists.Count == 0,
+                AppearsOnObserved: appearsOnObserved,
+                AppearsOnVerifiedEmpty: appearsOnObserved && appearsOn.Count == 0);
+            return new SpotifyArtistHydratedPage(parsedOverview, extras, topTracks, relatedArtists, appearsOn, discography.Albums, observation);
         }
         finally { _requiredRefresh.Value = previous; }
     }
@@ -970,14 +1006,14 @@ public sealed class SpotifyPathfinderMetadataClient
             return new List<SpotifyAlbumSummary>();
         }
 
-        DiscographyPageResult? page = await QueryArtistDiscographyPageAsync(context, artistId, 0, cancellationToken);
-        if (page is null || page.Items.Count == 0)
+        DiscographyPageOutcome page = await QueryArtistDiscographyPageAsync(context, artistId, 0, cancellationToken);
+        if (!page.Succeeded)
         {
             return new List<SpotifyAlbumSummary>();
         }
 
         List<SpotifyAlbumSummary> albums = new List<SpotifyAlbumSummary>();
-        AppendDiscographyReleases(albums, new HashSet<string>(StringComparer.OrdinalIgnoreCase), page.Items);
+        AppendDiscographyReleases(albums, new HashSet<string>(StringComparer.OrdinalIgnoreCase), page.Page.Items);
         return albums;
     }
 
@@ -5930,30 +5966,49 @@ public sealed class SpotifyPathfinderMetadataClient
         return text.Equals("N/A", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Compatibility wrapper for callers that only need the release list. The catalogue
+    /// publication path uses <see cref="FetchArtistDiscographyObservedAsync"/> because it must
+    /// distinguish a legitimately empty discography from a failed or incomplete pagination.
+    /// </summary>
     private async Task<List<SpotifyAlbumSummary>> FetchArtistDiscographyAsync(PathfinderAuthContext context, string artistId, CancellationToken cancellationToken)
+    {
+        return (await FetchArtistDiscographyObservedAsync(context, artistId, cancellationToken)).Albums;
+    }
+
+    /// <summary>
+    /// Paginates the full artist discography and reports whether the walk completed on its own
+    /// success conditions. A page whose envelope is missing aborts the walk: the result is then
+    /// incomplete and must never be published as a catalogue revision. An empty first page is a
+    /// legitimately empty discography.
+    /// </summary>
+    private async Task<SpotifyFetchedDiscography> FetchArtistDiscographyObservedAsync(PathfinderAuthContext context, string artistId, CancellationToken cancellationToken)
     {
         List<SpotifyAlbumSummary> albums = new List<SpotifyAlbumSummary>();
         HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int offset = 0;
         while (true)
         {
-            DiscographyPageResult? page = await QueryArtistDiscographyPageAsync(context, artistId, offset, cancellationToken);
-            if (page == null || page.Items.Count == 0)
+            DiscographyPageOutcome page = await QueryArtistDiscographyPageAsync(context, artistId, offset, cancellationToken);
+            if (!page.Succeeded)
             {
-                break;
+                return new SpotifyFetchedDiscography(albums, Completed: false, VerifiedEmpty: false);
             }
-            AppendDiscographyReleases(albums, seen, page.Items);
-            int totalCount = TryGetInt(page.DiscographyAll, TotalCountKey) ?? page.Items.Count;
-            if (seen.Count >= totalCount || page.Items.Count < 50)
+            AppendDiscographyReleases(albums, seen, page.Page.Items);
+            if (page.Page.Items.Count == 0)
             {
-                break;
+                return new SpotifyFetchedDiscography(albums, Completed: true, VerifiedEmpty: albums.Count == 0);
+            }
+            int totalCount = TryGetInt(page.Page.DiscographyAll, TotalCountKey) ?? page.Page.Items.Count;
+            if (seen.Count >= totalCount || page.Page.Items.Count < 50)
+            {
+                return new SpotifyFetchedDiscography(albums, Completed: true, VerifiedEmpty: albums.Count == 0);
             }
             offset += 50;
         }
-        return albums;
     }
 
-    private async Task<DiscographyPageResult?> QueryArtistDiscographyPageAsync(PathfinderAuthContext context, string artistId, int offset, CancellationToken cancellationToken)
+    private async Task<DiscographyPageOutcome> QueryArtistDiscographyPageAsync(PathfinderAuthContext context, string artistId, int offset, CancellationToken cancellationToken)
     {
         PersistedQueryOverride persisted = GetPersistedQuery("queryArtistDiscographyAll", 1, "5e07d323febb57b4a56a42abbf781490e58764aa45feb6e3dc0591564fc56599");
         var payload = new
@@ -5978,10 +6033,17 @@ public sealed class SpotifyPathfinderMetadataClient
         using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
         if (doc is null || !TryGetNested(doc.RootElement, out JsonElement discographyAll, DataKey, ArtistUnionKey, DiscographyKey, "all"))
         {
-            return null;
+            return DiscographyPageOutcome.Unresolved;
         }
         List<JsonElement> itemList = ExtractClonedItems(discographyAll, ItemsKey);
-        return itemList.Count == 0 ? null : new DiscographyPageResult(discographyAll.Clone(), itemList);
+        bool itemsPresent = GetArray(discographyAll, ItemsKey).HasValue;
+        if (!itemsPresent)
+        {
+            // The discography node exists but its item array is missing: the page is unresolved,
+            // not empty. Treating this as the end of pagination used to silently truncate.
+            return DiscographyPageOutcome.Unresolved;
+        }
+        return new DiscographyPageOutcome(true, new DiscographyPageResult(discographyAll.Clone(), itemList));
     }
 
     private static void AppendDiscographyReleases(List<SpotifyAlbumSummary> albums, HashSet<string> seen, IEnumerable<JsonElement> items)
@@ -6089,13 +6151,21 @@ public sealed class SpotifyPathfinderMetadataClient
     }
 
     private static List<SpotifyTrackSummary> ParseArtistTopTracks(JsonElement artistUnion)
+        => ParseArtistTopTracksObserved(artistUnion).Items;
+
+    /// <summary>
+    /// Parses top tracks and reports whether the response carried a top-tracks node at all:
+    /// a missing node is unobserved data, while a present-but-empty node is a verified empty
+    /// section. Only unobserved data may fall back to retained content.
+    /// </summary>
+    private static (List<SpotifyTrackSummary> Items, bool Observed) ParseArtistTopTracksObserved(JsonElement artistUnion)
     {
         List<SpotifyTrackSummary> list = new List<SpotifyTrackSummary>();
         HashSet<string> hashSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, SpotifyAlbumReference> albumLookup = BuildArtistAlbumLookup(artistUnion);
         if (!TryGetNested(artistUnion, out var value, DiscographyKey, "topTracks", ItemsKey) || value.ValueKind != JsonValueKind.Array)
         {
-            return list;
+            return (list, Observed: false);
         }
         foreach (JsonElement item in value.EnumerateArray())
         {
@@ -6134,7 +6204,7 @@ public sealed class SpotifyPathfinderMetadataClient
                 list.Add(spotifyTrackSummary);
             }
         }
-        return list;
+        return (list, Observed: true);
     }
 
     private static List<SpotifyTrackSummary> MergeTopTrackSummaries(List<SpotifyTrackSummary>? primary, List<SpotifyTrackSummary>? fallback)
@@ -6341,6 +6411,13 @@ public sealed class SpotifyPathfinderMetadataClient
         return list;
     }
 
+    /// <summary>A present related-artists node is observed even when it legitimately has no items.</summary>
+    private static bool HasRelatedArtistsNode(JsonElement artistUnion)
+    {
+        RelatedArtistArrays arrays = GetRelatedArtistArrays(artistUnion);
+        return arrays.RelatedContent.HasValue || arrays.Direct.HasValue;
+    }
+
     private static List<SpotifyAlbumSummary> ParseArtistAppearsOn(JsonElement artistUnion)
     {
         List<SpotifyAlbumSummary> list = new List<SpotifyAlbumSummary>();
@@ -6357,6 +6434,13 @@ public sealed class SpotifyPathfinderMetadataClient
             }
         }
         return list;
+    }
+
+    /// <summary>A present appears-on node is observed even when it legitimately has no items.</summary>
+    private static bool HasAppearsOnNode(JsonElement artistUnion)
+    {
+        return (TryGetNested(artistUnion, out var value, "relatedContent", "appearsOn", ItemsKey) && value.ValueKind == JsonValueKind.Array)
+            || (TryGetNested(artistUnion, out value, "appearsOn", ItemsKey) && value.ValueKind == JsonValueKind.Array);
     }
 
     private static int? SumArtistDiscographyTotal(JsonElement artistUnion)
@@ -8247,7 +8331,39 @@ public sealed record SpotifyArtistHydratedPage(
     List<SpotifyTrackSummary> TopTracks,
     List<SpotifyRelatedArtist> RelatedArtists,
     List<SpotifyAlbumSummary> AppearsOn,
-    List<SpotifyAlbumSummary> Albums);
+    List<SpotifyAlbumSummary> Albums,
+    SpotifyArtistCatalogueObservation? Observation = null);
+
+/// <summary>
+/// Per-section evidence of one Spotify artist fetch. A section is observed when its response
+/// node was present (with or without items); absent or failed data is unobserved. The
+/// discography additionally reports whether whole-discography pagination completed, because a
+/// mid-walk failure truncates the list without an empty result.
+/// A catalogue revision may only be published when every section is observed and pagination
+/// completed; unobserved data must not overwrite retained content.
+/// </summary>
+public sealed record SpotifyArtistCatalogueObservation(
+    bool AlbumsObserved,
+    bool DiscographyCompleted,
+    bool AlbumsVerifiedEmpty,
+    bool TopTracksObserved,
+    bool TopTracksVerifiedEmpty,
+    bool RelatedArtistsObserved,
+    bool RelatedArtistsVerifiedEmpty,
+    bool AppearsOnObserved,
+    bool AppearsOnVerifiedEmpty)
+{
+    public bool IsPublishable =>
+        AlbumsObserved && DiscographyCompleted
+        && TopTracksObserved && RelatedArtistsObserved && AppearsOnObserved;
+}
+
+/// <summary>Outcome of the whole-discography walk: the releases plus completion evidence.</summary>
+public sealed record SpotifyFetchedDiscography(
+    List<SpotifyAlbumSummary> Albums,
+    bool Completed,
+    bool VerifiedEmpty);
+
 
 public sealed record SpotifyArtistOverview(
     string Id,

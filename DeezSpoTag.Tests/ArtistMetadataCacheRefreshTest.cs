@@ -15,6 +15,89 @@ namespace DeezSpoTag.Tests;
 
 public class ArtistMetadataCacheRefreshTest
 {
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    public async System.Threading.Tasks.Task OnlyArtistPageRefreshRestartsAnExistingRetainedRequest(
+        bool artistScoped, bool automatic, bool hasRun)
+    {
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "artist-manual-priority-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(root);
+        try
+        {
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ConnectionStrings:Library"] = "Data Source=" + System.IO.Path.Combine(root, "library.db") + ";Pooling=False" }).Build();
+            await new DeezSpoTag.Services.Library.LibraryDbService(config,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance).EnsureSchemaAsync();
+            await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(config["ConnectionStrings:Library"]))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = @"INSERT INTO artist(id,name) VALUES(1475,'Abbas Doobeez');
+INSERT INTO folder(id,root_path,display_name,enabled) VALUES(1,'/fixture','fixture',1);
+INSERT INTO album(id,artist_id,title) VALUES(1,1475,'');
+INSERT INTO track(id,album_id,title) VALUES(1,1,'');
+INSERT INTO audio_file(id,path,folder_id) VALUES(1,'/fixture/track.flac',1);
+INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
+                await command.ExecuteNonQueryAsync();
+            }
+            var repository = new DeezSpoTag.Services.Library.LibraryRepository(config,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.LibraryRepository>.Instance);
+            using var queue = new LibraryArtistMetadataQueueService(repository, null!, null!, null!, new ProfileEnvironment(root),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+            var request = new ArtistMetadataCacheRefreshRequest(artistScoped ? 1475 : null, null, "auto", ForceProviderRefresh: true);
+            var runId = Guid.NewGuid().ToString("N");
+            var retained = hasRun ? new ArtistMetadataActiveRun { RunId = runId, CacheRequest = request,
+                TargetArtistIds = new() { 1475 }, Paused = true, Automatic = automatic,
+                NextAttemptUtc = DateTimeOffset.UtcNow.AddDays(1), ConsecutiveFailures = 3,
+                CacheAttempts = new() { ["1475:lastfm:biographies"] = 3 } } : null;
+            var itemType = typeof(LibraryArtistMetadataQueueService).GetNestedType("QueueItem", System.Reflection.BindingFlags.NonPublic)!;
+            var item = JsonSerializer.Deserialize(JsonSerializer.Serialize(new { ArtistId = artistScoped ? 1475 : 0,
+                ArtistName = "Abbas Doobeez", Attempts = 3, NeedsAttention = true, Request = request,
+                NextAttemptUtc = DateTimeOffset.UtcNow.AddDays(1), RunId = runId, QueueKey = -9,
+                Run = retained, UserPaused = true, AuthenticationBlocked = true, RecoveryAfterUtc = DateTimeOffset.UtcNow.AddDays(2) }), itemType)!;
+            var field = typeof(LibraryArtistMetadataQueueService).GetField("_queueItems", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var items = (System.Collections.IDictionary)field.GetValue(queue)!;
+            items.Add(-9L, item);
+            var result = await queue.EnqueueRefreshAsync(request, System.Threading.CancellationToken.None, automatic: automatic);
+            Assert.True(result.Queued);
+            Assert.Equal(runId, result.RunId);
+            var updated = JsonSerializer.SerializeToElement(items[-9L], itemType);
+            if (artistScoped && !automatic)
+            {
+                Assert.False(updated.GetProperty("NeedsAttention").GetBoolean());
+                Assert.Equal(0, updated.GetProperty("Attempts").GetInt32());
+                Assert.Equal(JsonValueKind.Null, updated.GetProperty("NextAttemptUtc").ValueKind);
+                Assert.False(updated.GetProperty("UserPaused").GetBoolean());
+                Assert.False(updated.GetProperty("AuthenticationBlocked").GetBoolean());
+                Assert.Equal(JsonValueKind.Null, updated.GetProperty("RecoveryAfterUtc").ValueKind);
+                Assert.False(updated.GetProperty("Run").GetProperty("Paused").GetBoolean());
+                Assert.Empty(updated.GetProperty("Run").GetProperty("CacheAttempts").EnumerateObject());
+                Assert.Equal("queued", queue.GetRefreshStatus(runId)!.RunState);
+                var saved = await System.IO.File.ReadAllTextAsync(System.IO.Path.Combine(root, "artist-metadata-queue.json"));
+                Assert.Contains(runId, saved);
+            }
+            else Assert.Same(item, items[-9L]);
+        }
+        finally { System.IO.Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("auto", "apple,musicbrainz,audiomack")]
+    [InlineData("apple", "apple")]
+    [InlineData("musicbrainz", "musicbrainz")]
+    [InlineData("audiomack", "audiomack")]
+    public void EnrichmentStagesShareTheRequestedLocationPrecedence(string source, string expected)
+    {
+        var method = typeof(ArtistMetadataCacheRefreshService).GetMethod("RequestedEnrichmentProviders", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        var result = (System.Collections.Generic.IReadOnlyList<string>)method.Invoke(null, new object[] { source })!;
+        Assert.Equal(expected, string.Join(",", result));
+    }
+
     [Fact]
     public void ExplicitDeezerSelectionMustNotBecomeAuto()
     {
@@ -132,8 +215,14 @@ public class ArtistMetadataCacheRefreshTest
             var statePath = System.IO.Path.Combine(folder, "metadata-automation-state.json");
             var retained = JsonSerializer.Serialize(new ArtistMetadataAutomationState { ActiveRun = new ArtistMetadataActiveRun
                 { Operation = "cache-refresh", RunId = "retained-bulk", Paused = true,
-                    CacheRequest = new(null, null, "auto"), PendingNotice = "unfinished source work" } });
+                    CacheRequest = new(null, null, "auto"), TargetArtistIds = new() { 17 }, PendingNotice = "unfinished source work",
+                    CacheAttempts = new() { ["17:lastfm:biographies"] = 2 } } });
             await System.IO.File.WriteAllTextAsync(statePath, retained);
+            var legacyJournalPath = System.IO.Path.Combine(folder, "metadata-automation-outcomes.ndjson");
+            await using (var journal = await ArtistMetadataOutcomeJournal.OpenAsync(legacyJournalPath, "retained-bulk", true,
+                new[] { new ArtistRunOutcomeRecord(17, ArtistRunOutcomes.Failed,
+                    CacheWork: new[] { new ArtistCacheWorkOutcome("lastfm", "biographies", ArtistCacheWorkStatus.Failed) }) }, System.Threading.CancellationToken.None))
+                await journal.FlushAsync(System.Threading.CancellationToken.None);
             var env = new ProfileEnvironment(root);
             var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
                 { ["ConnectionStrings:Library"] = "Data Source=" + System.IO.Path.Combine(root,"library.db") }).Build();
@@ -145,8 +234,8 @@ public class ArtistMetadataCacheRefreshTest
                 await using var command = connection.CreateCommand();
                 command.CommandText = @"INSERT INTO artist(id,name) VALUES(17,'Fixture Artist');
 INSERT INTO folder(id,root_path,display_name,enabled) VALUES(1,'/fixture','fixture',1);
-INSERT INTO album(id,artist_id,title) VALUES(1,17,'Fixture Album');
-INSERT INTO track(id,album_id,title) VALUES(1,1,'Fixture Track');
+INSERT INTO album(id,artist_id,title) VALUES(1,17,'');
+INSERT INTO track(id,album_id,title) VALUES(1,1,'');
 INSERT INTO audio_file(id,path,folder_id) VALUES(1,'/fixture/track.flac',1);
 INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 await command.ExecuteNonQueryAsync();
@@ -155,8 +244,10 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.LibraryRepository>.Instance);
             var queue = new LibraryArtistMetadataQueueService(repository, null!, null!, null!, env,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
-            var coordinator = new ArtistMetadataAutomationCoordinator(null!, null!,
-                new UserPreferencesStore(env, Microsoft.Extensions.Logging.Abstractions.NullLogger<UserPreferencesStore>.Instance), env,
+            var preferences = new UserPreferencesStore(env, Microsoft.Extensions.Logging.Abstractions.NullLogger<UserPreferencesStore>.Instance);
+            var refresh = new ArtistMetadataCacheRefreshService(repository, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+                preferences, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<ArtistMetadataCacheRefreshService>.Instance);
+            var coordinator = new ArtistMetadataAutomationCoordinator(refresh, null!, preferences, env,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<ArtistMetadataAutomationCoordinator>.Instance, queue);
             var (queued, runId) = await coordinator.EnqueueArtistCacheRefreshAsync(17, System.Threading.CancellationToken.None,
                 ArtistCacheRefreshScope.Artwork);
@@ -171,8 +262,27 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 ArtistCacheRefreshScope.Biographies);
             Assert.True(other.Queued);
             Assert.NotEqual(runId,other.RunId);
+            await using (var outside = new Microsoft.Data.Sqlite.SqliteConnection(config["ConnectionStrings:Library"]))
+            {
+                await outside.OpenAsync(); await using var sql = outside.CreateCommand();
+                sql.CommandText = "INSERT INTO folder(id,root_path,display_name,enabled) VALUES(2,'/other','other',1); INSERT INTO artist(id,name) VALUES(19,'Outside Scope'); INSERT INTO album(id,artist_id,title) VALUES(19,19,''); INSERT INTO track(id,album_id,title) VALUES(19,19,''); INSERT INTO audio_file(id,path,folder_id) VALUES(19,'/other/outside.flac',2); INSERT INTO track_local(track_id,audio_file_id) VALUES(19,19);";
+                await sql.ExecuteNonQueryAsync();
+            }
+            Assert.True(await coordinator.EnqueueCacheRefreshAsync(new(null, 1, "ignored"), System.Threading.CancellationToken.None));
+            var bulk = queue.GetLibraryRefreshStatus()!;
+            Assert.Equal(1, bulk.CacheRefresh.TotalArtists);
+            Assert.NotEqual(runId, bulk.RunId);
+            // New library additions cannot silently change an already accepted scope.
+            await using (var added = new Microsoft.Data.Sqlite.SqliteConnection(config["ConnectionStrings:Library"]))
+            {
+                await added.OpenAsync(); await using var sql = added.CreateCommand();
+                sql.CommandText = "INSERT INTO artist(id,name) VALUES(18,'Added Later'); INSERT INTO album(id,artist_id,title) VALUES(2,18,''); INSERT INTO track(id,album_id,title) VALUES(2,2,''); INSERT INTO audio_file(id,path,folder_id) VALUES(2,'/fixture/later.flac',1); INSERT INTO track_local(track_id,audio_file_id) VALUES(2,2);";
+                await sql.ExecuteNonQueryAsync();
+            }
             using var snapshot = JsonDocument.Parse(await System.IO.File.ReadAllTextAsync(System.IO.Path.Combine(root,"artist-metadata-queue.json")));
-            Assert.Equal(2,snapshot.RootElement.GetArrayLength());
+            Assert.Equal(3,snapshot.RootElement.GetArrayLength());
+            var frozen = snapshot.RootElement.EnumerateArray().Single(item => item.GetProperty("RunId").GetString() == bulk.RunId);
+            Assert.Equal(new[] {17L}, frozen.GetProperty("Run").GetProperty("TargetArtistIds").EnumerateArray().Select(id => id.GetInt64()));
             Assert.All(snapshot.RootElement.EnumerateArray(),item=>Assert.True(item.GetProperty("Request").GetProperty("ForceProviderRefresh").GetBoolean()));
             var restored = new LibraryArtistMetadataQueueService(repository, null!, null!, null!, env,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
@@ -181,8 +291,37 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             try { await restored.StartAsync(cancelled.Token); } catch (OperationCanceledException) { }
             Assert.Equal(runId,restored.GetRefreshStatus(runId)!.RunId);
             Assert.Equal(other.RunId,restored.GetRefreshStatus(other.RunId)!.RunId);
+            Assert.Equal(1, restored.GetRefreshStatus(bulk.RunId)!.CacheRefresh.TotalArtists);
             restored.Dispose();
             Assert.Equal(retained, await System.IO.File.ReadAllTextAsync(statePath));
+            Assert.True(await queue.ControlAsync(runId!, "pause", System.Threading.CancellationToken.None));
+            var queuePath = System.IO.Path.Combine(root, "artist-metadata-queue.json");
+            var pausedSnapshot = await System.IO.File.ReadAllTextAsync(queuePath);
+            System.IO.File.Delete(queuePath); System.IO.Directory.CreateDirectory(queuePath);
+            try
+            {
+                await Assert.ThrowsAnyAsync<System.IO.IOException>(() => queue.ControlAsync(runId!, "resume", System.Threading.CancellationToken.None));
+                Assert.Equal("paused", queue.GetRefreshStatus(runId)!.RunState);
+            }
+            finally { System.IO.Directory.Delete(queuePath); await System.IO.File.WriteAllTextAsync(queuePath, pausedSnapshot); }
+            Assert.True(await queue.ControlAsync(runId!, "resume", System.Threading.CancellationToken.None));
+            Assert.True(await queue.ControlAsync(bulk.RunId!, "cancel", System.Threading.CancellationToken.None));
+            Assert.NotNull(queue.GetRefreshStatus(runId)); Assert.NotNull(queue.GetRefreshStatus(other.RunId));
+            // Paused legacy sweeps migrate into the same queue without unpausing or widening them.
+            await (System.Threading.Tasks.Task)typeof(ArtistMetadataAutomationCoordinator)
+                .GetMethod("ResumeInterruptedRunAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .Invoke(coordinator, new object[] {System.Threading.CancellationToken.None})!;
+            var migrated = JsonSerializer.Deserialize<ArtistMetadataAutomationState>(await System.IO.File.ReadAllTextAsync(statePath))!;
+            Assert.Null(migrated.ActiveRun);
+            using var migratedQueue = JsonDocument.Parse(await System.IO.File.ReadAllTextAsync(System.IO.Path.Combine(root,"artist-metadata-queue.json")));
+            var legacy = migratedQueue.RootElement.EnumerateArray().Single(item => item.GetProperty("Run").GetProperty("Paused").GetBoolean());
+            Assert.Equal(new[] {17L}, legacy.GetProperty("Run").GetProperty("TargetArtistIds").EnumerateArray().Select(id => id.GetInt64()));
+            Assert.Equal("unfinished source work", legacy.GetProperty("Run").GetProperty("PendingNotice").GetString());
+            Assert.Equal(2, legacy.GetProperty("Run").GetProperty("CacheAttempts").GetProperty("17:lastfm:biographies").GetInt32());
+            var migratedId = legacy.GetProperty("RunId").GetString()!;
+            var evidence = ArtistMetadataOutcomeJournal.Read(System.IO.Path.Combine(root, "artist-cache-runs", migratedId + ".ndjson"), migratedId);
+            Assert.Equal("lastfm", Assert.Single(Assert.Single(evidence).CacheWork!).Provider);
+            Assert.False(System.IO.File.Exists(legacyJournalPath));
         }
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); System.IO.Directory.Delete(root, true); }
     }
@@ -206,8 +345,8 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 await using var command = connection.CreateCommand();
                 command.CommandText = @"INSERT INTO artist(id,name) VALUES(17,'21 Savage');
 INSERT INTO folder(id,root_path,display_name,enabled) VALUES(1,'/fixture','fixture',1);
-INSERT INTO album(id,artist_id,title) VALUES(1,17,'Fixture Album');
-INSERT INTO track(id,album_id,title) VALUES(1,1,'Fixture Track');
+INSERT INTO album(id,artist_id,title) VALUES(1,17,'');
+INSERT INTO track(id,album_id,title) VALUES(1,1,'');
 INSERT INTO audio_file(id,path,folder_id) VALUES(1,'/fixture/track.flac',1);
 INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 await command.ExecuteNonQueryAsync();
@@ -224,6 +363,8 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 entry.Value = "{\"data\":[{\"id\":\"894820464\",\"attributes\":{\"name\":\"21 Savage\"}}]}";
             var factory = new AppleBiographyPageFactory(scenario);
             var catalog = new DeezSpoTag.Services.Apple.AppleMusicCatalogService(factory,settings,Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Apple.AppleMusicCatalogService>.Instance,memory);
+            catalog.GetType().GetField("_cachedToken", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(catalog,"fixture-token");
+            catalog.GetType().GetField("_cachedTokenExpiresAt", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(catalog,DateTimeOffset.UtcNow.AddHours(1));
             var apple = new AppleArtistBiographyService(catalog,settings,factory,Microsoft.Extensions.Logging.Abstractions.NullLogger<AppleArtistBiographyService>.Instance);
             var cache = new DeezSpoTag.Services.Library.ArtistPageCacheRepository(config,Microsoft.Extensions.Logging.Abstractions.NullLogger<DeezSpoTag.Services.Library.ArtistPageCacheRepository>.Instance);
             var artwork = new ArtistArtworkCatalogService(repository,null!,null!,null!,null!,null!,apple,null!,factory,new ProfileEnvironment(root),
@@ -261,6 +402,12 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
         {
             protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,System.Threading.CancellationToken token)
             {
+                if (request.RequestUri!.Host == "amp-api.music.apple.com")
+                {
+                    Assert.Contains("extend=artistBio,origin,bornOrFormed,isGroup", request.RequestUri.Query);
+                    return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    { Content = new System.Net.Http.StringContent("{\"data\":[{\"id\":\"894820464\",\"attributes\":{\"name\":\"21 Savage\"}}]}") });
+                }
                 owner.Calls++;
                 Assert.Equal("https://music.apple.com/us/artist/894820464",request.RequestUri!.AbsoluteUri);
                 var description = owner.Scenario == "placeholder" ? "Listen to music by 21 Savage on Apple Music. Find top songs and albums by 21 Savage." : "A genuine artist biography.";
@@ -290,8 +437,8 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 await using var command = connection.CreateCommand();
                 command.CommandText = @"INSERT INTO artist(id,name) VALUES(17,'Fixture Artist');
 INSERT INTO folder(id,root_path,display_name,enabled) VALUES(1,'/fixture','fixture',1);
-INSERT INTO album(id,artist_id,title) VALUES(1,17,'Fixture Album');
-INSERT INTO track(id,album_id,title) VALUES(1,1,'Fixture Track');
+INSERT INTO album(id,artist_id,title) VALUES(1,17,'');
+INSERT INTO track(id,album_id,title) VALUES(1,1,'');
 INSERT INTO audio_file(id,path,folder_id) VALUES(1,'/fixture/track.flac',1);
 INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 await command.ExecuteNonQueryAsync();
@@ -320,12 +467,34 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             Assert.True(recovered.IsComplete, diagnostic.Last?.ToString() ?? JsonSerializer.Serialize(recovered));
             Assert.Equal(noBiography ? ArtistCacheWorkStatus.NoData : ArtistCacheWorkStatus.Succeeded, Assert.Single(recovered.Work).Status);
             Assert.True(await service.IsCompleteAsync(request with { ForceProviderRefresh = false }, System.Threading.CancellationToken.None));
-            var legacyOutcomes = new List<ArtistRunOutcomeRecord>();
-            await service.RefreshAsync(request, null,
-                new ArtistRunResumeContext(new[] {new ArtistRunOutcomeRecord(17, ArtistRunOutcomes.Succeeded)}, new long[] {17}),
-                legacyOutcomes.Add, System.Threading.CancellationToken.None);
-            Assert.NotEmpty(Assert.Single(legacyOutcomes).CacheWork!);
+            // Legacy visited-only evidence must be upgraded by the same durable worker.
+            var configStore = new LibraryConfigStore(repository, Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryConfigStore>.Instance, env);
+            using (var legacyQueue = new LibraryArtistMetadataQueueService(repository, configStore, service, cache, env,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance))
+            {
+                var imported = new ArtistMetadataActiveRun { Operation = "cache-refresh", RunId = Guid.NewGuid().ToString("N"),
+                    CacheRequest = request, TargetArtistIds = new() { 17 } };
+                await legacyQueue.EnqueueRefreshAsync(request, System.Threading.CancellationToken.None, imported,
+                    new[] { new ArtistRunOutcomeRecord(17, ArtistRunOutcomes.Succeeded) });
+                await legacyQueue.StartAsync(System.Threading.CancellationToken.None);
+                Assert.True(await legacyQueue.WaitForAttemptAsync(imported.RunId, System.Threading.CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(10)));
+                await legacyQueue.StopAsync(System.Threading.CancellationToken.None);
+                Assert.Equal(0, (await service.GetRunResultAsync(imported.RunId, System.Threading.CancellationToken.None))!.Result.Failed);
+            }
             var calls = factory.Calls;
+            var revision = await cache.GetArtistRevisionAsync(17, default);
+            Assert.Equal(revision, await cache.GetArtistRevisionAsync(17, default));
+            var otherArtistRevision = await cache.GetArtistRevisionAsync(999, default);
+            await using (var revisionConnection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={db}"))
+            {
+                await revisionConnection.OpenAsync();
+                await using var update = revisionConnection.CreateCommand();
+                update.CommandText = "UPDATE artist_biography_cache SET biography = biography || ' Updated', selected = 1 - selected WHERE artist_id = 17;";
+                await update.ExecuteNonQueryAsync();
+            }
+            Assert.NotEqual(revision, await cache.GetArtistRevisionAsync(17, default));
+            Assert.Equal(otherArtistRevision, await cache.GetArtistRevisionAsync(999, default));
             var cached = await service.RefreshArtistWithOutcomeAsync(request with { ForceProviderRefresh = false }, System.Threading.CancellationToken.None);
             Assert.True(cached.IsComplete);
             Assert.Equal(calls, factory.Calls);
@@ -350,7 +519,11 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             Assert.True((await first).IsComplete);Assert.True((await second).IsComplete);
             Assert.Equal(afterFirst,factory.Calls);
             factory.Entered=null;factory.Release=null;
+            await VerifyBulkScopeAndRestartAsync(service, cache, env, factory, request, repository);
+            await VerifyManualPriorityAsync(service, cache, env, factory, request, repository);
+            await VerifyManualPreemptionAsync(service, cache, env, factory, request, repository);
             await VerifyHttpJobRecoveryAsync(service, cache, env, factory, request, repository);
+            await VerifyLegacyAutomaticRecoveryAsync(service, cache, env, factory, repository);
             var primary = new LocationSource("musicbrainz", true);
             var secondary = new LocationSource("audiomack", false, hasLocation: true);
             var resolver = new DeezSpoTag.Web.Services.ArtistLocation.ArtistLocationResolver(
@@ -361,7 +534,8 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 locationResolver: resolver, artistPageCache: cache, providerGate: gate);
             var enrichmentRequest = request with {Source="auto",Scope=ArtistCacheRefreshScope.Enrichment};
             var enriched = await enrichedService.RefreshArtistWithOutcomeAsync(enrichmentRequest, System.Threading.CancellationToken.None);
-            Assert.Equal(2,enriched.Work.Count);
+            Assert.Equal(3,enriched.Work.Count);
+            Assert.Equal("apple", enriched.Work[0].Provider);
             Assert.Contains(enriched.Work,work=>work.Provider=="musicbrainz"&&!work.IsComplete);
             Assert.Contains(enriched.Work,work=>work.Provider=="audiomack"&&work.Status==ArtistCacheWorkStatus.Succeeded);
             Assert.NotNull(await cache.TryGetRequiredAsync("artist-enrichment","17",System.Threading.CancellationToken.None));
@@ -376,6 +550,195 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => service.RefreshArtistWithOutcomeAsync(request, System.Threading.CancellationToken.None));
         }
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); System.IO.Directory.Delete(root, true); }
+    }
+
+    private static async System.Threading.Tasks.Task VerifyBulkScopeAndRestartAsync(ArtistMetadataCacheRefreshService service,
+        DeezSpoTag.Services.Library.ArtistPageCacheRepository cache, ProfileEnvironment env, ProfileFactory provider,
+        ArtistMetadataCacheRefreshRequest request, DeezSpoTag.Services.Library.LibraryRepository repository)
+    {
+        await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + System.IO.Path.Combine(env.ContentRootPath, "library.db")))
+        {
+            await connection.OpenAsync(); await using var sql = connection.CreateCommand();
+            sql.CommandText = "INSERT INTO folder(id,root_path,display_name,enabled) VALUES(2,'/other','other',1); INSERT INTO artist(id,name) VALUES(18,'Second Artist'),(19,'Outside Artist'); INSERT INTO album(id,artist_id,title) VALUES(18,18,''),(19,19,''); INSERT INTO track(id,album_id,title) VALUES(18,18,''),(19,19,''); INSERT INTO audio_file(id,path,folder_id) VALUES(18,'/fixture/second.flac',1),(19,'/other/outside.flac',2); INSERT INTO track_local(track_id,audio_file_id) VALUES(18,18),(19,19);";
+            await sql.ExecuteNonQueryAsync();
+        }
+        var queueEnv = new ProfileEnvironment(System.IO.Path.Combine(env.ContentRootPath, "bulk-fixture"));
+        var configStore = new LibraryConfigStore(repository, Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryConfigStore>.Instance, queueEnv);
+        LibraryArtistMetadataQueueService CreateQueue() => new(repository, configStore, service, cache, queueEnv,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        var wasEmpty = provider.Empty;
+        provider.Empty = false;
+        provider.Failed = false; provider.Delay = false; provider.Release = null; provider.Entered = null;
+        using var queue = CreateQueue();
+        var bulk = await queue.EnqueueRefreshAsync(request with { ArtistId = null, FolderId = 1 }, System.Threading.CancellationToken.None);
+        Assert.Equal(2, queue.GetRefreshStatus(bulk.RunId)!.CacheRefresh.TotalArtists);
+        Assert.Equal(bulk.RunId, queue.GetRefreshStatus(null, 17)!.RunId);
+        Assert.Equal(1, queue.GetRefreshStatus(bulk.RunId, 17)!.CacheRefresh.TotalArtists);
+        Assert.Null(queue.GetRefreshStatus(bulk.RunId, 19));
+        Assert.True(await queue.ControlAsync(bulk.RunId!, "pause", System.Threading.CancellationToken.None));
+        await queue.StartAsync(System.Threading.CancellationToken.None);
+        // A paused library run must not retain the global lock or block an artist request.
+        var artist = await queue.EnqueueRefreshAsync(request, System.Threading.CancellationToken.None);
+        Assert.True(await queue.WaitForAttemptAsync(artist.RunId!, System.Threading.CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal("paused", queue.GetRefreshStatus(bulk.RunId)!.RunState);
+        var secondStarted = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        var batchCalls = 0;
+        provider.OnRequest = () => { if (++batchCalls == 2) {provider.Release = release;secondStarted.TrySetResult();} };
+        Assert.True(await queue.ControlAsync(bulk.RunId!, "resume", System.Threading.CancellationToken.None));
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("Second Artist", queue.GetRefreshStatus(bulk.RunId)!.CacheRefresh.CurrentArtist);
+        Assert.Equal("idle", queue.GetRefreshStatus(bulk.RunId, 17)!.RunState);
+        Assert.Equal("running", queue.GetRefreshStatus(bulk.RunId, 18)!.RunState);
+        // Stop during the second artist. The first must already have durable completion evidence.
+        await queue.StopAsync(System.Threading.CancellationToken.None);
+        Assert.Equal(2, batchCalls);
+        provider.OnRequest = null; provider.Release = null;
+        var beforeRestart = provider.Calls;
+        using var restored = CreateQueue();
+        await restored.StartAsync(System.Threading.CancellationToken.None);
+        try
+        {
+            Assert.True(await restored.WaitForAttemptAsync(bulk.RunId!, System.Threading.CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal(beforeRestart + 1, provider.Calls);
+            var completed = await service.GetRunResultAsync(bulk.RunId!, System.Threading.CancellationToken.None);
+            Assert.Null(completed!.ArtistId);
+            Assert.Equal(2, completed.Result.Total); Assert.Equal(2, completed.Result.Succeeded); Assert.Equal(0, completed.Result.Failed);
+            Assert.NotEmpty(await repository.GetArtistBiographyRowsAsync(18));
+            Assert.Empty(await repository.GetArtistBiographyRowsAsync(19));
+        }
+        finally { await restored.StopAsync(System.Threading.CancellationToken.None); provider.OnRequest = null; provider.Release = null; provider.Empty = wasEmpty; }
+    }
+
+    private static async System.Threading.Tasks.Task VerifyManualPriorityAsync(ArtistMetadataCacheRefreshService service,
+        DeezSpoTag.Services.Library.ArtistPageCacheRepository cache, ProfileEnvironment env, ProfileFactory provider,
+        ArtistMetadataCacheRefreshRequest request, DeezSpoTag.Services.Library.LibraryRepository repository)
+    {
+        var queueEnvironment = new ProfileEnvironment(System.IO.Path.Combine(env.ContentRootPath, "priority-fixture"));
+        var configStore = new LibraryConfigStore(repository, Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryConfigStore>.Instance, queueEnvironment);
+        using var queue = new LibraryArtistMetadataQueueService(repository, configStore, service, cache, queueEnvironment,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        provider.Failed = false;
+        provider.Delay = false;
+        queue.EnqueueArtists(new[] { new DeezSpoTag.Services.Library.NewlyIndexedArtist(17, "Fixture Artist") });
+        var manual = await queue.EnqueueRefreshAsync(request, System.Threading.CancellationToken.None);
+        bool? firstWasManual = null;
+        provider.OnRequest = () => firstWasManual ??= queue.GetRefreshStatus(manual.RunId)?.RunState == "running";
+        await queue.StartAsync(System.Threading.CancellationToken.None);
+        try
+        {
+            Assert.True(await queue.WaitForAttemptAsync(manual.RunId!, System.Threading.CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.True(firstWasManual, "A manual request must run before the automatic backlog.");
+        }
+        finally { await queue.StopAsync(System.Threading.CancellationToken.None); provider.OnRequest = null; }
+
+        // Reproduce the actual retained snapshot: an exhausted structured request with no Run.
+        var restoredRoot = System.IO.Path.Combine(env.ContentRootPath, "manual-legacy-fixture");
+        System.IO.Directory.CreateDirectory(restoredRoot);
+        var retainedId = Guid.NewGuid().ToString("N");
+        var pausedId = Guid.NewGuid().ToString("N");
+        await System.IO.File.WriteAllTextAsync(System.IO.Path.Combine(restoredRoot, "artist-metadata-queue.json"),
+            JsonSerializer.Serialize(new object[] {
+                new { ArtistId = 17, ArtistName = "Fixture Artist", Attempts = 3, NeedsAttention = true,
+                    Request = request, RunId = retainedId, QueueKey = -9, NextAttemptUtc = DateTimeOffset.UtcNow.AddDays(1) },
+                new { ArtistId = 17, ArtistName = "Other paused scope", UserPaused = true,
+                    Request = request with { Scope = ArtistCacheRefreshScope.Artwork }, RunId = pausedId, QueueKey = -10,
+                    Run = new ArtistMetadataActiveRun { RunId = pausedId, Paused = true, TargetArtistIds = new() { 17 } } }
+            }));
+        using var restored = new LibraryArtistMetadataQueueService(repository, configStore, service, cache,
+            new ProfileEnvironment(restoredRoot), Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        await restored.StartAsync(System.Threading.CancellationToken.None);
+        try
+        {
+            var before = provider.Calls;
+            var resumed = await restored.EnqueueRefreshAsync(request, System.Threading.CancellationToken.None);
+            Assert.Equal(retainedId, resumed.RunId);
+            Assert.True(await restored.WaitForAttemptAsync(retainedId, System.Threading.CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.True(provider.Calls > before, "The restored artist request must actually fetch its biography.");
+            Assert.Equal("paused", restored.GetRefreshStatus(pausedId)!.RunState);
+            Assert.Contains(pausedId, await System.IO.File.ReadAllTextAsync(System.IO.Path.Combine(restoredRoot, "artist-metadata-queue.json")));
+        }
+        finally { await restored.StopAsync(System.Threading.CancellationToken.None); }
+    }
+
+    private static async System.Threading.Tasks.Task VerifyManualPreemptionAsync(ArtistMetadataCacheRefreshService service,
+        DeezSpoTag.Services.Library.ArtistPageCacheRepository cache, ProfileEnvironment env, ProfileFactory provider,
+        ArtistMetadataCacheRefreshRequest request, DeezSpoTag.Services.Library.LibraryRepository repository)
+    {
+        var queueEnvironment = new ProfileEnvironment(System.IO.Path.Combine(env.ContentRootPath, "preemption-fixture"));
+        var configStore = new LibraryConfigStore(repository, Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryConfigStore>.Instance, queueEnvironment);
+        using var queue = new LibraryArtistMetadataQueueService(repository, configStore, service, cache, queueEnvironment,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        var entered = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new System.Threading.Tasks.TaskCompletionSource(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        provider.Entered = entered; provider.Release = release; provider.Failed = false; provider.Delay = false;
+        var automatic = await queue.EnqueueRefreshAsync(request with { ArtistId = 17, ForceProviderRefresh = true }, default, automatic: true);
+        await queue.StartAsync(default);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The active HTTP request keeps its captured release task; later requests may finish.
+            provider.Release = null;
+            var manual = await queue.EnqueueRefreshAsync(request with { ArtistId = 18, ForceProviderRefresh = true }, default);
+            Assert.True(await queue.WaitForAttemptAsync(manual.RunId!, default).WaitAsync(TimeSpan.FromSeconds(5)),
+                "The artist-page refresh must not wait for the current background artist to finish.");
+            Assert.True(await queue.WaitForAttemptAsync(automatic.RunId!, default).WaitAsync(TimeSpan.FromSeconds(5)),
+                "Yielding must preserve and resume the interrupted background artist.");
+            Assert.Equal(0, (await service.GetRunResultAsync(automatic.RunId!, default))!.Result.Failed);
+        }
+        finally
+        {
+            release.TrySetResult(); provider.Release = null; provider.Entered = null;
+            await queue.StopAsync(default);
+        }
+    }
+
+    private static async System.Threading.Tasks.Task VerifyLegacyAutomaticRecoveryAsync(ArtistMetadataCacheRefreshService service,
+        DeezSpoTag.Services.Library.ArtistPageCacheRepository cache, ProfileEnvironment env, ProfileFactory provider,
+        DeezSpoTag.Services.Library.LibraryRepository repository)
+    {
+        var root = System.IO.Path.Join(env.AppDataRoot,"legacy-automatic-recovery");
+        System.IO.Directory.CreateDirectory(root);
+        var workerEnv = new ProfileEnvironment(root);
+        var preferences = new UserPreferencesStore(env,Microsoft.Extensions.Logging.Abstractions.NullLogger<UserPreferencesStore>.Instance);
+        var saved = await preferences.LoadAsync();
+        saved.MetadataUpdaterSource = "lastfm";
+        await preferences.SaveAsync(saved);
+        await cache.ClearEntryAsync("artist-refresh","17:lastfm:biographies",default);
+        await System.IO.File.WriteAllTextAsync(System.IO.Path.Join(root,"artist-metadata-queue.json"),
+            "[{\"ArtistId\":17,\"ArtistName\":\"Fixture Artist\",\"Attempts\":3,\"NeedsAttention\":true,\"NextAttemptUtc\":\"2026-01-01T00:00:00Z\"}]");
+        var configStore = new LibraryConfigStore(repository,Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryConfigStore>.Instance,workerEnv);
+        using var queue = new LibraryArtistMetadataQueueService(repository,configStore,service,cache,workerEnv,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance);
+        var freshEnv = new ProfileEnvironment(System.IO.Path.Join(root,"fresh"));
+        using (var freshQueue = new LibraryArtistMetadataQueueService(repository,configStore,service,cache,freshEnv,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryArtistMetadataQueueService>.Instance))
+        {
+            var flags=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
+            var type=typeof(LibraryArtistMetadataQueueService);
+            var item=JsonSerializer.Deserialize("{\"ArtistId\":17,\"ArtistName\":\"Fixture Artist\"}",type.GetNestedType("QueueItem",System.Reflection.BindingFlags.NonPublic)!)!;
+            var preparation=(System.Threading.Tasks.Task)type.GetMethod("PrepareAsync",flags)!.Invoke(freshQueue,new object[]{item,System.Threading.CancellationToken.None})!;
+            await preparation;
+            var prepared=preparation.GetType().GetProperty("Result")!.GetValue(preparation)!;
+            Assert.Equal(false,prepared.GetType().GetProperty("UserPaused")!.GetValue(prepared));
+        }
+        provider.Failed=false;provider.Delay=false;
+        var before = provider.Calls;
+        await queue.StartAsync(default);
+        try
+        {
+            var deadline=DateTimeOffset.UtcNow.AddSeconds(10);
+            while(DateTimeOffset.UtcNow<deadline)
+            {
+                var completed = await cache.TryGetRequiredAsync("artist-refresh","17:lastfm:biographies",default);
+                if (completed is not null && provider.Calls>before) break;
+                await System.Threading.Tasks.Task.Delay(20);
+            }
+            Assert.True(provider.Calls>before,"The stranded automatic job never resumed provider work.");
+            Assert.NotNull(await cache.TryGetRequiredAsync("artist-refresh","17:lastfm:biographies",default));
+            Assert.NotEmpty(await repository.GetArtistBiographyRowsAsync(17));
+        }
+        finally { await queue.StopAsync(default); }
     }
 
     private static async System.Threading.Tasks.Task VerifyHttpJobRecoveryAsync(ArtistMetadataCacheRefreshService service,
@@ -393,6 +756,11 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
         ArtistMetadataAutomationCoordinator Create() => new(service, updater, preferences, env,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ArtistMetadataAutomationCoordinator>.Instance, queue);
         var coordinator = Create();
+        var sharedPreferences = await preferences.LoadAsync();
+        sharedPreferences.MetadataUpdaterSource = "lastfm";
+        await preferences.SaveAsync(sharedPreferences);
+        request = request with { ArtistId = null, FolderId = 1 };
+        await queue.StartAsync(System.Threading.CancellationToken.None);
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions {EnvironmentName="Development", ContentRootPath=env.ContentRootPath});
         builder.WebHost.UseKestrel().UseUrls("http://127.0.0.1:0");
         builder.Services.AddSingleton(coordinator);
@@ -414,14 +782,19 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             using var client = new System.Net.Http.HttpClient {BaseAddress=new Uri(address)};
             async System.Threading.Tasks.Task WaitJob()
             {
-                var task = (System.Threading.Tasks.Task)typeof(ArtistMetadataAutomationCoordinator).GetField("_activeOperation", flags)!.GetValue(coordinator)!;
-                await task.WaitAsync(TimeSpan.FromSeconds(10));
+                var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+                while (DateTimeOffset.UtcNow < deadline)
+                {
+                    if (coordinator.GetStatus().RunState is "pending-retry" or "paused" or "idle") return;
+                    await System.Threading.Tasks.Task.Delay(20);
+                }
+                Assert.Fail("Shared cache job did not reach a persisted outcome.");
             }
             foreach (var failure in new[] {"http503", "http429", "timeout", "required-write", "journal"})
             {
                 var priorClock = coordinator.GetStatus().LastCacheRefreshUtc;
-                provider.OnRequest = failure == "journal" ? () => typeof(ArtistMetadataAutomationCoordinator)
-                    .GetField("_journalFailure",flags)!.SetValue(coordinator,new System.IO.IOException("fixture journal unavailable")) : null;
+                provider.OnRequest = failure == "journal" ? () => System.IO.Directory.CreateDirectory(
+                    System.IO.Path.Combine(env.ContentRootPath, "artist-cache-runs", coordinator.GetStatus().RunId + ".ndjson")) : null;
                 provider.Failed = failure is "http503" or "http429";
                 provider.FailureStatus = failure == "http429" ? System.Net.HttpStatusCode.TooManyRequests : System.Net.HttpStatusCode.ServiceUnavailable;
                 provider.Delay = failure == "timeout";
@@ -441,13 +814,15 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 Assert.Equal(priorClock,coordinator.GetStatus().LastCacheRefreshUtc);
                 var runId = coordinator.GetStatus().RunId!;
                 var result = await service.GetRunResultAsync(runId, System.Threading.CancellationToken.None);
-                Assert.Equal(failure == "journal" ? 0 : 1, result!.Result.Failed);
+                if (failure == "journal") Assert.Null(result);
+                else Assert.Equal(result!.Result.Total, result.Result.Failed);
                 var restarted = Create();
                 await (System.Threading.Tasks.Task)typeof(ArtistMetadataAutomationCoordinator).GetMethod("ResumeInterruptedRunAsync", flags)!
                     .Invoke(restarted, new object[] {System.Threading.CancellationToken.None})!;
                 Assert.Equal(runId, restarted.GetStatus().RunId);
                 Assert.Equal("pending-retry", restarted.GetStatus().RunState);
                 if (failure == "required-write") await RenameBiographyTable(true);
+                if (failure == "journal") System.IO.Directory.Delete(System.IO.Path.Combine(env.ContentRootPath, "artist-cache-runs", runId + ".ndjson"));
                 provider.OnRequest=null;
                 provider.Failed = false;
                 provider.Delay = false;
@@ -458,14 +833,16 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                     var backoff=(Dictionary<string,DateTimeOffset>)typeof(ArtistMetadataProviderGate).GetField("_rateLimitedUntil",flags)!.GetValue(gate)!;
                     lock(backoff) backoff["lastfm"]=DateTimeOffset.UtcNow.AddMinutes(-1);
                 }
+                var callsBeforeResume = provider.Calls;
                 var paused = await client.PostAsJsonAsync("/api/library/artist-metadata/cache/pause", new {runId});
                 Assert.True(paused.IsSuccessStatusCode, await paused.Content.ReadAsStringAsync());
                 var resumed = await client.PostAsJsonAsync("/api/library/artist-metadata/cache/resume", new {runId});
                 resumed.EnsureSuccessStatusCode();
                 await WaitJob();
                 Assert.Equal("idle", coordinator.GetStatus().RunState);
-                Assert.NotNull(coordinator.GetStatus().LastCacheRefreshUtc);
+                Assert.NotNull((await service.GetSweepCompletionAsync(System.Threading.CancellationToken.None)).LastCacheRefreshUtc);
                 Assert.Equal(0,(await service.GetRunResultAsync(runId, System.Threading.CancellationToken.None))!.Result.Failed);
+                if (failure == "journal") Assert.Equal(callsBeforeResume + 1, provider.Calls); // Only the not-yet-visited second artist is fetched.
             }
             // Artist-page requests must operate independently of a retained bulk sweep, while
             // using the same provider executor and retaining partial work for explicit retry.
@@ -475,6 +852,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             var statePath = System.IO.Path.Combine(env.ContentRootPath,"library-artist-images","metadata-automation-state.json");
             var retained = JsonSerializer.Serialize(new ArtistMetadataAutomationState {ActiveRun = new ArtistMetadataActiveRun {
                 Operation="cache-refresh",RunId="retained-fixture",Paused=true,CacheRequest=new(null,null,"auto") }});
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(statePath)!);
             await System.IO.File.WriteAllTextAsync(statePath,retained);
             async System.Threading.Tasks.Task<string> SubmitArtistPage()
             {
@@ -497,14 +875,11 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 Assert.Fail("Artist-page job did not reach its expected persisted state.");
             }
             provider.Failed=false;provider.Delay=false;provider.OnRequest=null;
+            // Manual-first scheduling itself is checked with a stopped queue in the scoped queue test.
             queue.EnqueueArtists(new[] {new DeezSpoTag.Services.Library.NewlyIndexedArtist(17,"Fixture Artist")});
             var pageRun=await SubmitArtistPage();
-            bool? firstWasManual=null;
-            provider.OnRequest=()=>{firstWasManual ??= queue.GetRefreshStatus(pageRun)?.RunState=="running";};
-            await queue.StartAsync(System.Threading.CancellationToken.None);
             await WaitArtistPage(pageRun,true);
             provider.OnRequest=null;
-            Assert.True(firstWasManual,"A manual request must run before the automatic backlog.");
             Assert.Equal(retained,await System.IO.File.ReadAllTextAsync(statePath));
             provider.Failed=true;
             var failedPageRun=await SubmitArtistPage();
@@ -515,7 +890,18 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 using var status=JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 Assert.Equal(failedPageRun,status.RootElement.GetProperty("status").GetProperty("runId").GetString());
                 Assert.Equal("pending-retry",status.RootElement.GetProperty("status").GetProperty("runState").GetString());
+                Assert.Equal(64, status.RootElement.GetProperty("revision").GetString()!.Length);
+                Assert.Equal(failedPageRun, status.RootElement.GetProperty("runId").GetString());
             }
+            var callsBeforeStatus = provider.Calls;
+            using (var response = await client.GetAsync("/api/library/artists/17/external-cache/status"))
+            {
+                response.EnsureSuccessStatusCode();
+                using var status = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.Equal(failedPageRun, status.RootElement.GetProperty("runId").GetString());
+                Assert.False(status.RootElement.GetProperty("complete").GetBoolean());
+            }
+            Assert.Equal(callsBeforeStatus, provider.Calls); // Reopening observes cached work; it does not fetch providers.
             provider.Failed=false;
             Assert.Equal(failedPageRun,await SubmitArtistPage());
             await WaitArtistPage(failedPageRun,true);
@@ -563,7 +949,8 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             owner.Entered?.TrySetResult();
             if(owner.Release is not null) await owner.Release.Task.WaitAsync(token);
             if(owner.Delay) await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(2),token);
-            var json = JsonSerializer.Serialize(new { artist = new { name = "Fixture Artist", bio = new { content = owner.Empty ? "" : "Freshly verified biography." } } });
+            var requestedArtist = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri!.Query)["artist"].FirstOrDefault() ?? "Fixture Artist";
+            var json = JsonSerializer.Serialize(new { artist = new { name = requestedArtist, bio = new { content = owner.Empty ? "" : "Freshly verified biography." } } });
             return new System.Net.Http.HttpResponseMessage(owner.Failed ? owner.FailureStatus : System.Net.HttpStatusCode.OK)
                 { Content = new System.Net.Http.StringContent(json) };
         }

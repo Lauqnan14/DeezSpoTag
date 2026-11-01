@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -279,7 +278,7 @@ WHERE id = $id;";
             try
             {
                 var outcome = await MoveFileAsync(
-                    fileRow, artistFolderName, createArtistFolder, aliasNormalized, group.PreferredName,
+                    fileRow, artistFolderName, createArtistFolder, aliasNormalized,
                     cancellationToken).ConfigureAwait(false);
                 if (outcome == null)
                 {
@@ -929,7 +928,6 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
         string artistFolderName,
         bool createArtistFolder,
         IReadOnlySet<string> aliasNormalized,
-        string preferredName,
         CancellationToken cancellationToken)
     {
         var sourcePath = Path.GetFullPath(fileRow.Path);
@@ -964,19 +962,8 @@ WHERE file_path IS NOT NULL AND file_path = $old;";
             }
         }
 
-        // Match the preferred spelling first so an alias contained within it is
-        // never expanded again. A single pass also prevents cascading aliases.
-        var names = new[] { preferredName }.Concat(aliasNormalized.OrderByDescending(name => name.Length))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        var pattern = @"(?<![\p{L}\p{N}_])(?:" + string.Join("|", names.Select(Regex.Escape)) + @")(?![\p{L}\p{N}_])";
-        for (var index = 1; index < segments.Length; index++)
-        {
-            var rewritten = Regex.Replace(segments[index], pattern, _ => preferredName,
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
-            var sanitized = SanitizeSegment(rewritten);
-            changed |= !string.Equals(segments[index], sanitized, StringComparison.Ordinal);
-            segments[index] = sanitized;
-        }
+        // Only the artist directory is an artist credit. Album directories and
+        // file names may contain the same words as an alias and must stay intact.
 
         var destinationPath = Path.GetFullPath(Path.Join(root, Path.Join(segments)));
         if (!destinationPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)

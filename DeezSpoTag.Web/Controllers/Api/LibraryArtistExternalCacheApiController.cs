@@ -51,12 +51,18 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
     [HttpGet("{id:long}/external-cache/status")]
     public async Task<IActionResult> Status(long id, [FromQuery] string? runId, CancellationToken cancellationToken)
     {
-        var request = await _cacheRefresh.BuildAutomaticRequestAsync(id, ArtistCacheRefreshScope.Full);
-        var complete = await _cacheRefresh.IsCompleteAsync(request, cancellationToken);
-        var status = _coordinator.GetArtistCacheRefreshStatus(runId, id) ?? _coordinator.GetStatus();
-        var completed = Guid.TryParseExact(runId, "N", out _) ? await _cacheRefresh.GetRunResultAsync(runId!, cancellationToken) : null;
-        if (completed?.ArtistId != id) completed = null;
-        return Ok(new { complete, status, completed });
+        var scopedStatus = _coordinator.GetArtistCacheRefreshStatus(runId, id);
+        var activeRunId = scopedStatus?.RunId ?? runId;
+        var complete = scopedStatus is not null
+            ? scopedStatus.RunState == "idle" && scopedStatus.CacheRefresh.FailedArtists == 0
+            : await _cacheRefresh.IsCompleteAsync(
+                await _cacheRefresh.BuildAutomaticRequestAsync(id, ArtistCacheRefreshScope.Full), cancellationToken);
+        var status = scopedStatus ?? _coordinator.GetStatus();
+        var completed = Guid.TryParseExact(activeRunId, "N", out _)
+            ? await _cacheRefresh.GetRunResultAsync(activeRunId!, cancellationToken) : null;
+        if (completed?.ArtistId is { } completedArtist && completedArtist != id) completed = null;
+        var revision = await _cacheRefresh.GetCachedArtistRevisionAsync(id, cancellationToken);
+        return Ok(new { complete, runId = scopedStatus?.RunId, revision, status, completed });
     }
 
 }

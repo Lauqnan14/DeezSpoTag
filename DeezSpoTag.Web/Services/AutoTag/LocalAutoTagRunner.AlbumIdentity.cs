@@ -287,7 +287,9 @@ public sealed partial class LocalAutoTagRunner : IAutoTagRunner
             if (enabled.Contains(AlbumArtistTag)
                 && !string.IsNullOrWhiteSpace(identity.CanonicalAlbumArtist))
             {
-                file.Tag.AlbumArtists = [identity.CanonicalAlbumArtist];
+                // The stored release identity may retain a provider's native artist name.
+                // Final reconciliation must preserve the user's preferred credit too.
+                file.Tag.AlbumArtists = [ArtistAliasGateway.ResolveCredit(identity.CanonicalAlbumArtist)];
             }
 
             if (enabled.Contains(ReleaseDateTag)
