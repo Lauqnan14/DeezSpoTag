@@ -324,22 +324,25 @@ public sealed class LibraryRecommendationServiceTest
         BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly string[] GenerationQueuedReasonCodes = ["generation_queued"];
 
-    [Fact]
-    public async System.Threading.Tasks.Task PreviousDailySelectionIsExpiredInsteadOfServedForToday()
+    [Theory]
+    [InlineData(12, "generating")]
+    [InlineData(23, "waiting")]
+    public async System.Threading.Tasks.Task PreviousDailySelectionIsExpiredInsteadOfServedForToday(int hour, string expectedStatus)
     {
+        var clock = new DailyExpiryClock(hour);
         var fixture = new RecommendationCacheServingTest();
         await fixture.InitializeAsync();
         try
         {
-            var savedDay = DateOnly.FromDateTime(DateTime.Now).AddDays(-1);
+            var savedDay = DateOnly.FromDateTime(clock.GetLocalNow().DateTime).AddDays(-1);
             var id = $"daily-rotation:l{fixture.Folder.LibraryId}:f{fixture.Folder.Id}";
             var tracks = Enumerable.Range(1, 80).Select(i => new RecommendationTrackDto(i.ToString(), $"Track {i}", 180, "", i,
                 new((i % 8).ToString(), $"Artist {i % 8}"), new("1", "Album", ""))).ToList();
             var generated = new DateTimeOffset(savedDay.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
             await fixture.Repository.UpsertPlaylistTrackCandidateCacheAsync("recommendations-daily-pool", id, $"v1:{savedDay:yyyyMMdd}",
                 System.Text.Json.JsonSerializer.Serialize(new { GeneratedAtUtc = generated, Tracks = tracks }), 0, null, null, true);
-            var response = await fixture.Service().GetRecommendationsAsync(fixture.Folder.LibraryId!.Value, id);
-            Assert.Equal("generating", response!.Status);
+            var response = await fixture.Service(clock).GetRecommendationsAsync(fixture.Folder.LibraryId!.Value, id);
+            Assert.Equal(expectedStatus, response!.Status);
             Assert.Empty(response.Tracks);
             Assert.Equal(savedDay.AddDays(1), response.DailyDateLocal);
             Assert.Equal(0, response.Station.TrackCount);
@@ -616,5 +619,10 @@ public sealed class LibraryRecommendationServiceTest
         public string EnvironmentName { get; set; } = "Development";
         public string WebRootPath { get; set; }
         public IFileProvider WebRootFileProvider { get; set; }
+    }
+    private sealed class DailyExpiryClock(int hour) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(2026, 11, 1, hour, 0, 0, TimeSpan.Zero);
+        public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
     }
 }
