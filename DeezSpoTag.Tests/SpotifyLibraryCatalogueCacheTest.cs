@@ -175,7 +175,7 @@ public class SpotifyLibraryCatalogueCacheTest
     }
 
     [Fact]
-    public void ConditionalUpsert_WritesOnlyWhenStoredPayloadMatches()
+    public async Task ConditionalUpsert_WritesOnlyWhenStoredPayloadMatches()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), $"artist-catalogue-{Guid.NewGuid():N}.db");
         try
@@ -183,23 +183,20 @@ public class SpotifyLibraryCatalogueCacheTest
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Library"] = "Data Source=" + dbPath })
                 .Build();
-            new DeezSpoTag.Services.Library.LibraryDbService(configuration, NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance)
-                .EnsureSchemaAsync().GetAwaiter().GetResult();
+            await new DeezSpoTag.Services.Library.LibraryDbService(configuration, NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance)
+                .EnsureSchemaAsync();
             var cache = new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance);
-            cache.UpsertAsync("spotify", "fixture", "stored-json", DateTimeOffset.UtcNow, CancellationToken.None)
-                .GetAwaiter().GetResult();
+            await cache.UpsertAsync("spotify", "fixture", "stored-json", DateTimeOffset.UtcNow, CancellationToken.None);
 
-            Assert.True(cache.UpsertIfUnchangedAsync(
-                "spotify", "fixture", "stored-json", "expected-json", DateTimeOffset.UtcNow, CancellationToken.None)
-                .GetAwaiter().GetResult());
-            var expected = cache.TryGetAsync("spotify", "fixture", CancellationToken.None).GetAwaiter().GetResult();
+            Assert.True(await cache.UpsertIfUnchangedAsync(
+                "spotify", "fixture", "stored-json", "expected-json", DateTimeOffset.UtcNow, CancellationToken.None));
+            var expected = await cache.TryGetAsync("spotify", "fixture", CancellationToken.None);
             Assert.Equal("expected-json", expected!.PayloadJson);
 
             // A row moved by an unrelated write is left alone instead of rolled back.
-            Assert.False(cache.UpsertIfUnchangedAsync(
-                "spotify", "fixture", "stored-json", "rollback-json", DateTimeOffset.UtcNow, CancellationToken.None)
-                .GetAwaiter().GetResult());
-            var after = cache.TryGetAsync("spotify", "fixture", CancellationToken.None).GetAwaiter().GetResult();
+            Assert.False(await cache.UpsertIfUnchangedAsync(
+                "spotify", "fixture", "stored-json", "rollback-json", DateTimeOffset.UtcNow, CancellationToken.None));
+            var after = await cache.TryGetAsync("spotify", "fixture", CancellationToken.None);
             Assert.Equal("expected-json", after!.PayloadJson);
         }
         finally
@@ -210,7 +207,7 @@ public class SpotifyLibraryCatalogueCacheTest
     }
 
     [Fact]
-    public void Clear_RetainsSpotifyCatalogueRows()
+    public async Task Clear_RetainsSpotifyCatalogueRows()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), $"artist-catalogue-clear-{Guid.NewGuid():N}.db");
         try
@@ -218,23 +215,23 @@ public class SpotifyLibraryCatalogueCacheTest
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Library"] = "Data Source=" + dbPath })
                 .Build();
-            new DeezSpoTag.Services.Library.LibraryDbService(configuration, NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance)
-                .EnsureSchemaAsync().GetAwaiter().GetResult();
+            await new DeezSpoTag.Services.Library.LibraryDbService(configuration, NullLogger<DeezSpoTag.Services.Library.LibraryDbService>.Instance)
+                .EnsureSchemaAsync();
             var cache = new ArtistPageCacheRepository(configuration, NullLogger<ArtistPageCacheRepository>.Instance);
-            cache.UpsertAsync("spotify", "keep", "spotify-json", DateTimeOffset.UtcNow, CancellationToken.None).GetAwaiter().GetResult();
-            cache.UpsertAsync("apple", "drop", "apple-json", DateTimeOffset.UtcNow, CancellationToken.None).GetAwaiter().GetResult();
+            await cache.UpsertAsync("spotify", "keep", "spotify-json", DateTimeOffset.UtcNow, CancellationToken.None);
+            await cache.UpsertAsync("apple", "drop", "apple-json", DateTimeOffset.UtcNow, CancellationToken.None);
 
-            cache.ClearAsync(null, CancellationToken.None, preserveSource: "spotify").GetAwaiter().GetResult();
+            await cache.ClearAsync(null, CancellationToken.None, preserveSource: "spotify");
 
             // Spotify catalogue rows survive a cache clear: only a Refresh cache run replaces them.
-            Assert.NotNull(cache.TryGetAsync("spotify", "keep", CancellationToken.None).GetAwaiter().GetResult());
-            Assert.Null(cache.TryGetAsync("apple", "drop", CancellationToken.None).GetAwaiter().GetResult());
+            Assert.NotNull(await cache.TryGetAsync("spotify", "keep", CancellationToken.None));
+            Assert.Null(await cache.TryGetAsync("apple", "drop", CancellationToken.None));
 
             // Clearing exactly the preserved source would erase the catalogue, so it is a no-op.
-            cache.UpsertAsync("apple", "other", "apple-json", DateTimeOffset.UtcNow, CancellationToken.None).GetAwaiter().GetResult();
-            cache.ClearAsync("spotify", CancellationToken.None, preserveSource: "spotify").GetAwaiter().GetResult();
-            Assert.NotNull(cache.TryGetAsync("spotify", "keep", CancellationToken.None).GetAwaiter().GetResult());
-            Assert.NotNull(cache.TryGetAsync("apple", "other", CancellationToken.None).GetAwaiter().GetResult());
+            await cache.UpsertAsync("apple", "other", "apple-json", DateTimeOffset.UtcNow, CancellationToken.None);
+            await cache.ClearAsync("spotify", CancellationToken.None, preserveSource: "spotify");
+            Assert.NotNull(await cache.TryGetAsync("spotify", "keep", CancellationToken.None));
+            Assert.NotNull(await cache.TryGetAsync("apple", "other", CancellationToken.None));
         }
         finally
         {
