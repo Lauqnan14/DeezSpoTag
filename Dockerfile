@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
-ARG DOTNET_VERSION=10.0
+ARG DOTNET_VERSION=10.0.14
+ARG DOTNET_SDK_VERSION=10.0.403
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 
-FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS youtube-node
+FROM node:24-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS youtube-node
 
 FROM youtube-node AS shazam-related
 WORKDIR /helper
@@ -12,7 +13,7 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY DeezSpoTag.Web/Tools/shazam_related/ ./
 RUN npm run build && npm test
 
-FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29 AS build
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_SDK_VERSION}@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 WORKDIR /src
 
 COPY . .
@@ -25,17 +26,17 @@ RUN --mount=type=secret,id=sixlabors_license,required=true \
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
-FROM docker:cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS docker-cli
+FROM docker:cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
 
 
-FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-proof-runtime
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS youtube-proof-runtime
 COPY --from=youtube-node /usr/local/ /usr/local/
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 make g++ pkg-config libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev && rm -rf /var/lib/apt/lists/*
 COPY scripts/setup-youtube-playback-runtime.sh /setup/setup-youtube-playback-runtime.sh
 RUN bash /setup/setup-youtube-playback-runtime.sh /opt/youtube-playback-runtime \
     && cd /opt/youtube-playback-runtime/server && npm prune --omit=dev --no-audit --no-fund
 
-FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS youtube-tools
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS youtube-tools
 COPY --from=youtube-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=youtube-proof-runtime /opt/youtube-playback-runtime /app/Tools/youtube_playback_runtime
 RUN apt-get update && apt-get install -y --no-install-recommends libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libjpeg8 libgif7 librsvg2-2 && rm -rf /var/lib/apt/lists/*
@@ -50,7 +51,7 @@ RUN apt-get update -o Acquire::Retries=5 \
     && /opt/youtube-venv/bin/python3 -m pip uninstall --yes pip \
     && rm -rf /var/lib/apt/lists/*
 
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS apple-wrapper-build
+FROM golang:1.27.3-bookworm@sha256:05237276236793ebedaf0b87dab86add9ec9adc66ebef2dbc3107c18254cde1c AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
 
@@ -61,7 +62,7 @@ RUN set -eux; \
     target_arch="${TARGETARCH:-amd64}"; \
     CGO_ENABLED=0 GOOS=linux GOARCH="${target_arch}" go build -trimpath -ldflags "-s -w" -o /out/apple-wrapper-runv2 .
 
-FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS runtime
 WORKDIR /app
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 ARG DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=1

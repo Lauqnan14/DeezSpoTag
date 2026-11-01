@@ -28,6 +28,20 @@ with zipfile.ZipFile(path) as source, zipfile.ZipFile(path + '.tmp', 'w') as tar
 os.replace(path + '.tmp', path)
 PY
 cd "$runtime_dir/server"
+# The checksum-verified upstream lockfile predates these security patches. Keep
+# its other overrides and locked dependencies while replacing the affected leaves.
+node --input-type=commonjs <<'JS'
+const fs = require('node:fs');
+const path = 'package.json';
+const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+manifest.overrides = {
+  ...manifest.overrides,
+  undici: '7.30.1',
+  'follow-redirects': '1.16.2'
+};
+fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
+JS
+npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 npm ci --no-audit --no-fund
 ./node_modules/.bin/tsc
 node -e 'await import("canvas"); await import("bgutils-js/webpo")'

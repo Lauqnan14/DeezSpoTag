@@ -75,7 +75,7 @@ public sealed class PublishingWorkflowGuardrailTest
         Assert.DoesNotContain("apt-get upgrade", dockerfile, StringComparison.Ordinal);
         Assert.Matches("FROM mcr\\.microsoft\\.com/dotnet/sdk:[^\\s]+@sha256:[0-9a-f]{64} AS build", dockerfile);
         Assert.Matches("FROM docker:cli@sha256:[0-9a-f]{64} AS docker-cli", dockerfile);
-        Assert.Matches("FROM golang:1\\.26\\.6-bookworm@sha256:[0-9a-f]{64} AS apple-wrapper-build", dockerfile);
+        Assert.Matches("FROM golang:1\\.27\\.3-bookworm@sha256:[0-9a-f]{64} AS apple-wrapper-build", dockerfile);
         Assert.Matches("FROM mcr\\.microsoft\\.com/dotnet/aspnet:[^\\s]+@sha256:[0-9a-f]{64} AS runtime", dockerfile);
     }
 
