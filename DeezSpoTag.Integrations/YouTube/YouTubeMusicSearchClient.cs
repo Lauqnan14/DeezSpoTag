@@ -1,4 +1,6 @@
 using System;
+using Microsoft.Extensions.Configuration;
+using System.Text.Json.Nodes;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -44,11 +46,30 @@ public sealed record YouTubeNonMusicSegment(string Uuid, double StartSeconds, do
 
 public sealed class YouTubeMusicSearchClient
 {
-    /// <summary>The Innertube endpoint the web client uses. Not the Data API, and not quota'd.</summary>
-    private const string SearchUrl =
-        "https://music.youtube.com/youtubei/v1/search?alt=json&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
+    private const string VideoIdPattern = "^[A-Za-z0-9_-]{11}$";
+    private const string MusicClientName = "WEB_REMIX";
+    private const string ClientVersionDateFormat = "yyyyMMdd";
+    private const string ClientVersionSuffix = ".01.00";
+    private const string JsonContentType = "application/json";
+    private const string OriginHeader = "Origin";
+    private const string UserAgentHeader = "User-Agent";
+    private const string TitleProperty = "title";
+    private const string BrowseProperty = "browse";
+    private const string ContentsProperty = "contents";
+    private const string PlaylistType = "playlist";
+    private const string AlbumType = "album";
+    private const string VideoIdProperty = "videoId";
+    private const string ItemsProperty = "items";
+    private const string VideoType = "video";
+    private const string TrackType = "track";
+    private const string BrowseIdProperty = "browseId";
+    private const string SubtitleProperty = "subtitle";
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
-    private const string Origin = "https://music.youtube.com";
+    private static readonly string Origin = new UriBuilder(Uri.UriSchemeHttps, "music.youtube.com").Uri.GetLeftPart(UriPartial.Authority);
+    private readonly string _origin;
+    private readonly string _searchUrl;
+    private readonly string _sponsorBlockUrl;
 
     private const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0";
@@ -74,56 +95,66 @@ public sealed class YouTubeMusicSearchClient
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-    private static readonly Regex DurationRun = new(@"^(\d+:)*\d+:\d+$", RegexOptions.Compiled);
+    private static readonly Regex DurationRun = new(@"^(\d+:)*\d+:\d+$", RegexOptions.Compiled, RegexTimeout);
 
-    private static readonly Regex YearRun = new(@"^\d{4}$", RegexOptions.Compiled);
+    private static readonly Regex YearRun = new(@"^\d{4}$", RegexOptions.Compiled, RegexTimeout);
 
     /// <summary>A leading views word, a locale's colon, or a bidi mark, up to the first digit.</summary>
     private static readonly Regex ViewsPrefix =
-        new("^\\D*?[\\s:\\uFF1A\\u200E-\\u200F\\u202A-\\u202E]", RegexOptions.Compiled);
+        new("^\\D*?[\\s:\\uFF1A\\u200E-\\u200F\\u202A-\\u202E]", RegexOptions.Compiled, RegexTimeout);
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<YouTubeMusicSearchClient>? _logger;
 
     private readonly IMemoryCache? _metadataCache;
 
-    public YouTubeMusicSearchClient(HttpClient httpClient, ILogger<YouTubeMusicSearchClient>? logger = null, IMemoryCache? metadataCache = null)
+    public YouTubeMusicSearchClient(HttpClient httpClient, ILogger<YouTubeMusicSearchClient>? logger = null, IMemoryCache? metadataCache = null, IConfiguration? configuration = null)
     {
+        _origin = configuration?["YouTube:MusicOrigin"] ?? Origin;
+        _searchUrl = configuration?["YouTube:MusicSearchUrl"] ?? _origin + "/youtubei/v1/search?alt=json&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
+        _sponsorBlockUrl = configuration?["YouTube:SponsorBlockUrl"] ?? new UriBuilder(Uri.UriSchemeHttps, "sponsor.ajay.app") { Path = "/api/skipSegments" }.Uri.AbsoluteUri;
         _metadataCache = metadataCache;
         _httpClient = httpClient;
         _logger = logger;
     }
 
-    // URL/resource parsing follows the reference idonthavespotify parser's source-ID approach;
-    // converted destination IDs must still pass the app's strict recording validator.
     public static string? GetVideoId(string? value)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https" || !string.IsNullOrEmpty(uri.UserInfo)) return null;
+        var id = uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)
+            ? uri.AbsolutePath.Trim('/') : ReadWatchQueryId(uri);
+        return id is not null && Regex.IsMatch(id, VideoIdPattern, RegexOptions.CultureInvariant, RegexTimeout) ? id : null;
+    }
+
+    private static string? ReadWatchQueryId(Uri uri)
+    {
+        if (!new[] { "music.youtube.com", "www.youtube.com", "youtube.com" }.Contains(uri.Host.ToLowerInvariant()) || uri.AbsolutePath != "/watch") return null;
         string? id = null;
-        if (uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)) id = uri.AbsolutePath.Trim('/');
-        else if (new[] { "music.youtube.com", "www.youtube.com", "youtube.com" }.Contains(uri.Host.ToLowerInvariant()) && uri.AbsolutePath == "/watch")
-            foreach (var part in uri.Query.TrimStart('?').Split('&'))
-            {
-                var pair = part.Split('=', 2);
-                if (pair.Length == 2 && pair[0] == "v") { if (id is not null) return null; id = Uri.UnescapeDataString(pair[1]); }
-            }
-        return id is not null && Regex.IsMatch(id, "^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)) ? id : null;
+        foreach (var part in uri.Query.TrimStart('?').Split('&'))
+        {
+            var pair = part.Split('=', 2);
+            if (pair.Length != 2 || pair[0] != "v") continue;
+            if (id is not null) return null;
+            id = Uri.UnescapeDataString(pair[1]);
+        }
+        return id;
     }
 
     public async Task<YouTubeMusicSearchResult> GetQueueSongMetadataAsync(string videoId, string? country, string language, CancellationToken cancellationToken)
     {
-        if (!Regex.IsMatch(videoId, "^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))) throw new ArgumentException("Invalid YouTube video ID.");
-        if ((country is not null && !Regex.IsMatch(country, "^[A-Z]{2}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))
-            || !Regex.IsMatch(language, "^[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))) throw new ArgumentException("Invalid YouTube Music market or language.");
+        if (!Regex.IsMatch(videoId, VideoIdPattern, RegexOptions.CultureInvariant, RegexTimeout)) throw new ArgumentException("Invalid YouTube video ID.");
+        if ((country is not null && !Regex.IsMatch(country, "^[A-Z]{2}$", RegexOptions.CultureInvariant, RegexTimeout))
+            || !Regex.IsMatch(language, "^[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?$", RegexOptions.CultureInvariant, RegexTimeout)) throw new ArgumentException("Invalid YouTube Music market or language.");
         var key = $"youtube:queue-metadata:v1:{country}:{language}:{videoId}";
         if (_metadataCache?.TryGetValue<YouTubeMusicSearchResult>(key, out var cached) == true && cached is not null) return cached;
-        using var request = new HttpRequestMessage(HttpMethod.Post, Origin + "/youtubei/v1/music/get_queue?alt=json");
-        request.Content = new StringContent(JsonSerializer.Serialize(new {
-            context = new { client = new { clientName = "WEB_REMIX", clientVersion = "1." + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".01.00", gl = country, hl = language } },
+        using var request = new HttpRequestMessage(HttpMethod.Post, _origin + "/youtubei/v1/music/get_queue?alt=json");
+        request.Content = new StringContent(JsonSerializer.Serialize(new
+        {
+            context = new { client = new { clientName = MusicClientName, clientVersion = "1." + DateTime.UtcNow.ToString(ClientVersionDateFormat, CultureInfo.InvariantCulture) + ClientVersionSuffix, gl = country, hl = language } },
             videoIds = new[] { videoId }
-        }, new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }), Encoding.UTF8, "application/json");
-        request.Headers.TryAddWithoutValidation("Origin", Origin);
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+        }, new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }), Encoding.UTF8, JsonContentType);
+        request.Headers.TryAddWithoutValidation(OriginHeader, _origin);
+        request.Headers.TryAddWithoutValidation(UserAgentHeader, UserAgent);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
@@ -134,23 +165,23 @@ public sealed class YouTubeMusicSearchClient
 
     public static YouTubeMusicSearchResult ParseQueueSongMetadata(JsonElement root, string videoId)
     {
-        var renderer = BrowseNodes(root, "playlistPanelVideoRenderer").FirstOrDefault(row => row.TryGetProperty("videoId", out var id) && id.GetString() == videoId);
+        var renderer = BrowseNodes(root, "playlistPanelVideoRenderer").FirstOrDefault(row => row.TryGetProperty(VideoIdProperty, out var id) && id.GetString() == videoId);
         if (renderer.ValueKind != JsonValueKind.Object) throw new JsonException("YouTube song identity unavailable.");
         var runs = ReadRunList(renderer, "longBylineText");
         var info = runs is null ? null : ParseMetadataRuns(runs);
-        return new YouTubeMusicSearchResult(videoId, renderer.TryGetProperty("title", out var title) ? BrowseText(title) : "", JoinNames(runs?.Where(run => run.TryGetValue("browse", out var browse) && browse.StartsWith("UC", StringComparison.Ordinal)).Select(run => run["text"]).ToList()), info?.Album, renderer.TryGetProperty("lengthText", out var length) ? ParseDurationSeconds(BrowseText(length)) : null);
+        return new YouTubeMusicSearchResult(videoId, renderer.TryGetProperty(TitleProperty, out var title) ? BrowseText(title) : "", JoinNames(runs?.Where(run => run.TryGetValue(BrowseProperty, out var browse) && browse.StartsWith("UC", StringComparison.Ordinal)).Select(run => run["text"]).ToList()), info?.Album, renderer.TryGetProperty("lengthText", out var length) ? ParseDurationSeconds(BrowseText(length)) : null);
     }
 
     // Adapted from Vivi Music 6.0.8 SponsorBlockApi.kt, vivimusic Project (C) 2026,
     // GPL-3.0. Non-music timestamps only; never applied to downloaded audio.
     public async Task<IReadOnlyList<YouTubeNonMusicSegment>> GetNonMusicSegmentsAsync(string videoId, CancellationToken cancellationToken)
     {
-        if (!Regex.IsMatch(videoId, "^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))) throw new ArgumentException("Invalid YouTube video ID.");
+        if (!Regex.IsMatch(videoId, VideoIdPattern, RegexOptions.CultureInvariant, RegexTimeout)) throw new ArgumentException("Invalid YouTube video ID.");
         var key = "youtube:non-music:v1:" + videoId;
         if (_metadataCache?.TryGetValue<IReadOnlyList<YouTubeNonMusicSegment>>(key, out var cached) == true && cached is not null) return cached;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
-        using var response = await _httpClient.GetAsync("https://sponsor.ajay.app/api/skipSegments?videoID=" + videoId + "&categories=" + Uri.EscapeDataString("[\"music_offtopic\"]"), timeout.Token);
+        using var response = await _httpClient.GetAsync(_sponsorBlockUrl + "?videoID=" + videoId + "&categories=" + Uri.EscapeDataString("[\"music_offtopic\"]"), timeout.Token);
         var segments = new List<YouTubeNonMusicSegment>();
         if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
         {
@@ -176,19 +207,19 @@ public sealed class YouTubeMusicSearchClient
 
     public async Task<YouTubeMusicSearchResult> GetSongMetadataAsync(string videoId, CancellationToken cancellationToken)
     {
-        if (!Regex.IsMatch(videoId, "^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))) throw new ArgumentException("Invalid YouTube video ID.");
+        if (!Regex.IsMatch(videoId, VideoIdPattern, RegexOptions.CultureInvariant, RegexTimeout)) throw new ArgumentException("Invalid YouTube video ID.");
         var cacheKey = "youtube:recording-metadata:queue-v3:" + videoId;
         if (_metadataCache?.TryGetValue<YouTubeMusicSearchResult>(cacheKey, out var cached) == true && cached is not null) return cached;
-        using var request = new HttpRequestMessage(HttpMethod.Post, Origin + "/youtubei/v1/player?alt=json");
-        request.Content = new StringContent(JsonSerializer.Serialize(new { context = new { client = new { clientName = "WEB", clientVersion = "2." + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".01.00" } }, videoId }), Encoding.UTF8, "application/json");
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-        request.Headers.TryAddWithoutValidation("Origin", Origin);
+        using var request = new HttpRequestMessage(HttpMethod.Post, _origin + "/youtubei/v1/player?alt=json");
+        request.Content = new StringContent(JsonSerializer.Serialize(new { context = new { client = new { clientName = "WEB", clientVersion = "2." + DateTime.UtcNow.ToString(ClientVersionDateFormat, CultureInfo.InvariantCulture) + ClientVersionSuffix } }, videoId }), Encoding.UTF8, JsonContentType);
+        request.Headers.TryAddWithoutValidation(UserAgentHeader, UserAgent);
+        request.Headers.TryAddWithoutValidation(OriginHeader, _origin);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var hasDetails = document.RootElement.TryGetProperty("videoDetails", out var details);
         if (hasDetails && (details.ValueKind != JsonValueKind.Object
-            || !details.TryGetProperty("videoId", out var returnedId) || returnedId.GetString() != videoId))
+            || !details.TryGetProperty(VideoIdProperty, out var returnedId) || returnedId.GetString() != videoId))
             throw new JsonException("YouTube song identity unavailable.");
         var seconds = hasDetails && details.TryGetProperty("lengthSeconds", out var length) && int.TryParse(length.GetString(), out var duration) ? duration : (int?)null;
         // Exact Music queue credits identify the recording; video descriptions may
@@ -226,32 +257,32 @@ public sealed class YouTubeMusicSearchClient
        SOFTWARE. */
     public static string? ReadConversionArtist(string? description)
     {
-        var match = Regex.Match(description ?? "", @"(?:·|&)\s*([^·&℗]+)", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-        return match.Success ? match.Groups[1].Value.Trim().Split('\n', '\r')[0].Trim() : null;
+        var match = Regex.Match(description ?? "", @"(?:·|&)\s*([^·&℗]+)", RegexOptions.None, RegexTimeout);
+        return match.Success ? match.Groups[1].Value.Trim().Split(new[] { '\n', '\r' }, StringSplitOptions.None)[0].Trim() : null;
     }
 
     public static string BuildConversionQuery(string title, string? description)
     {
         // Match the supplied YouTube parser's ASCII title processing and first credited artist.
-        var processed = Regex.Replace(title, @"[^A-Za-z0-9_\s]", " ");
-        var credit = Regex.Match(description ?? "", @"(?:·|&)\s*([^·&℗]+)", RegexOptions.None, TimeSpan.FromMilliseconds(250));
+        var processed = Regex.Replace(title, @"[^A-Za-z0-9_\s]", " ", RegexOptions.None, RegexTimeout);
+        var credit = Regex.Match(description ?? "", @"(?:·|&)\s*([^·&℗]+)", RegexOptions.None, RegexTimeout);
         var artist = credit.Success ? credit.Groups[1].Value.Trim() : null;
         return CleanConversionQuery(processed + (artist is null ? "" : " " + artist));
     }
 
     public static string CleanConversionQuery(string query)
     {
-        query = Regex.Replace(query, "[\u201E\u201C\u201D\u00AB\u00BB\u2039\u203A\u300E\u300F\u300C\u300D]", "");
-        query = Regex.Replace(query, "[\u2018\u2019\u201A\u201B]", "'").Replace('·', ' ');
-        query = Regex.Replace(query, "[\u2013\u2014\u2015]", "-");
-        query = Regex.Replace(query, "[\u200B-\u200D\uFEFF]", "");
-        return Regex.Replace(query, @"\s+", " ").Trim();
+        query = Regex.Replace(query, "[\u201E\u201C\u201D\u00AB\u00BB\u2039\u203A\u300E\u300F\u300C\u300D]", "", RegexOptions.None, RegexTimeout);
+        query = Regex.Replace(query, "[\u2018\u2019\u201A\u201B]", "'", RegexOptions.None, RegexTimeout).Replace('·', ' ');
+        query = Regex.Replace(query, "[\u2013\u2014\u2015]", "-", RegexOptions.None, RegexTimeout);
+        query = Regex.Replace(query, "[\u200B-\u200D\uFEFF]", "", RegexOptions.None, RegexTimeout);
+        return Regex.Replace(query, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
     }
 
     public static double ConversionScore(string title, string? artist, string query)
     {
-        var left = Regex.Replace(CleanConversionQuery(title + (string.IsNullOrWhiteSpace(artist) ? "" : " " + artist)).ToLowerInvariant(), @"\s+", "");
-        var right = Regex.Replace(CleanConversionQuery(query).ToLowerInvariant(), @"\s+", "");
+        var left = Regex.Replace(CleanConversionQuery(title + (string.IsNullOrWhiteSpace(artist) ? "" : " " + artist)).ToLowerInvariant(), @"\s+", "", RegexOptions.None, RegexTimeout);
+        var right = Regex.Replace(CleanConversionQuery(query).ToLowerInvariant(), @"\s+", "", RegexOptions.None, RegexTimeout);
         if (left == right) return 1;
         if (left.Length < 2 || right.Length < 2) return 0;
         var pairs = new Dictionary<string, int>();
@@ -278,53 +309,42 @@ public sealed class YouTubeMusicSearchClient
 
     public async Task<JsonDocument> BrowseAsync(string browseId, string country, string language, string? parameters, CancellationToken cancellationToken, string? chartSelection = null)
     {
-        if (chartSelection is not null && (browseId != "FEmusic_charts" || !Regex.IsMatch(chartSelection, "^[A-Z]{2}$"))) throw new ArgumentException("Invalid chart selection.");
-        if (!Regex.IsMatch(country, "^[A-Z]{2}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))
-            || !Regex.IsMatch(browseId, "^(FEmusic_[a-z_]+|VL[A-Za-z0-9_-]+|MPRE[A-Za-z0-9_-]+)$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))
-            || (parameters is not null && (parameters.Length > 4096 || !Regex.IsMatch(parameters, "^[A-Za-z0-9_%=+-]*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))))
+        if (chartSelection is not null && (browseId != "FEmusic_charts" || !Regex.IsMatch(chartSelection, "^[A-Z]{2}$", RegexOptions.CultureInvariant, RegexTimeout))) throw new ArgumentException("Invalid chart selection.");
+        if (!Regex.IsMatch(country, "^[A-Z]{2}$", RegexOptions.CultureInvariant, RegexTimeout)
+            || !Regex.IsMatch(browseId, "^(FEmusic_[a-z_]+|VL[A-Za-z0-9_-]+|MPRE[A-Za-z0-9_-]+)$", RegexOptions.CultureInvariant, RegexTimeout)
+            || (parameters is not null && (parameters.Length > 4096 || !Regex.IsMatch(parameters, "^[A-Za-z0-9_%=+-]*$", RegexOptions.CultureInvariant, RegexTimeout))))
             throw new ArgumentException("Unsupported YouTube Music country or browse destination.");
-        var body = new System.Text.Json.Nodes.JsonObject {
-            ["context"] = new System.Text.Json.Nodes.JsonObject { ["client"] = new System.Text.Json.Nodes.JsonObject {
-                ["clientName"] = "WEB_REMIX", ["clientVersion"] = "1." + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".01.00", ["gl"] = country, ["hl"] = language } },
-            ["browseId"] = browseId
+        var body = new System.Text.Json.Nodes.JsonObject
+        {
+            ["context"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["client"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["clientName"] = MusicClientName,
+                    ["clientVersion"] = "1." + DateTime.UtcNow.ToString(ClientVersionDateFormat, CultureInfo.InvariantCulture) + ClientVersionSuffix,
+                    ["gl"] = country,
+                    ["hl"] = language
+                }
+            },
+            [BrowseIdProperty] = browseId
         };
         if (!string.IsNullOrWhiteSpace(parameters)) body["params"] = parameters;
         if (browseId == "FEmusic_charts") body["formData"] = new System.Text.Json.Nodes.JsonObject { ["selectedValues"] = new System.Text.Json.Nodes.JsonArray(chartSelection ?? country) };
-        using var request = new HttpRequestMessage(HttpMethod.Post, Origin + "/youtubei/v1/browse?alt=json") { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
-        request.Headers.TryAddWithoutValidation("Origin", Origin);
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+        using var request = new HttpRequestMessage(HttpMethod.Post, _origin + "/youtubei/v1/browse?alt=json") { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, JsonContentType) };
+        request.Headers.TryAddWithoutValidation(OriginHeader, _origin);
+        request.Headers.TryAddWithoutValidation(UserAgentHeader, UserAgent);
         request.Headers.TryAddWithoutValidation("Cookie", "SOCS=CAI");
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         try
         {
-            if (!document.RootElement.TryGetProperty("contents", out _))
+            if (!document.RootElement.TryGetProperty(ContentsProperty, out _))
             {
                 throw new JsonException("YouTube Music browse content unavailable.");
             }
 
-            if (browseId == "FEmusic_charts")
-            {
-                var selected = BrowseNodes(document.RootElement, "musicMultiSelectMenuItemRenderer")
-                    .FirstOrDefault(item => !item.TryGetProperty("selectedCommand", out _) && item.TryGetProperty("formItemEntityKey", out _));
-                var selectedCountry = "";
-                if (selected.ValueKind == JsonValueKind.Object)
-                {
-                    try {
-                        var entity = Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(selected.GetProperty("formItemEntityKey").GetString()!)));
-                        selectedCountry = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)).Groups[1].Value;
-                    } catch (FormatException)
-                    {
-                        // A malformed entity key just means the country cannot be read from the menu
-                        // label; selectedCountry stays empty and the comparison below reports it.
-                    }
-                }
-                if (selectedCountry != (chartSelection ?? country))
-                {
-                    throw new JsonException("YouTube Music charts are unavailable for the requested country.");
-                }
-            }
+            if (browseId == "FEmusic_charts") ValidateChartCountry(document.RootElement, chartSelection ?? country);
 
             return document;
         }
@@ -335,12 +355,36 @@ public sealed class YouTubeMusicSearchClient
         }
     }
 
+    private static void ValidateChartCountry(JsonElement root, string expectedCountry)
+    {
+        var selected = BrowseNodes(root, "musicMultiSelectMenuItemRenderer")
+            .FirstOrDefault(item => !item.TryGetProperty("selectedCommand", out _) && item.TryGetProperty("formItemEntityKey", out _));
+        var selectedCountry = "";
+        if (selected.ValueKind == JsonValueKind.Object)
+        {
+            try
+            {
+                var entity = Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(selected.GetProperty("formItemEntityKey").GetString()!)));
+                selectedCountry = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, RegexTimeout).Groups[1].Value;
+            }
+            catch (FormatException)
+            {
+                // A malformed entity key just means the country cannot be read from the menu
+                // label; selectedCountry stays empty and the comparison below reports it.
+            }
+        }
+        if (selectedCountry != expectedCountry)
+        {
+            throw new JsonException("YouTube Music charts are unavailable for the requested country.");
+        }
+    }
+
     public static string NormalizeCollectionId(string id, string type)
     {
-        if (type is not ("playlist" or "album")) throw new ArgumentException("Unsupported YouTube Music collection type.");
+        if (type is not (PlaylistType or AlbumType)) throw new ArgumentException("Unsupported YouTube Music collection type.");
         id = id.Trim();
-        if (type == "playlist" && !id.StartsWith("VL", StringComparison.Ordinal)) id = "VL" + id;
-        if (!Regex.IsMatch(id, type == "album" ? "^MPRE[A-Za-z0-9_-]+$" : "^VL[A-Za-z0-9_-]{10,}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))
+        if (type == PlaylistType && !id.StartsWith("VL", StringComparison.Ordinal)) id = "VL" + id;
+        if (!Regex.IsMatch(id, type == AlbumType ? "^MPRE[A-Za-z0-9_-]+$" : "^VL[A-Za-z0-9_-]{10,}$", RegexOptions.CultureInvariant, RegexTimeout))
             throw new ArgumentException("Invalid YouTube Music collection ID.");
         return id;
     }
@@ -351,7 +395,7 @@ public sealed class YouTubeMusicSearchClient
         using var first = await BrowseAsync(id, country, language, null, cancellationToken);
         var root = first.RootElement;
         var header = BrowseNodes(root, "musicResponsiveHeaderRenderer").Concat(BrowseNodes(root, "musicDetailHeaderRenderer")).FirstOrDefault();
-        var title = header.ValueKind == JsonValueKind.Object && header.TryGetProperty("title", out var titleNode) ? BrowseText(titleNode) : "";
+        var title = header.ValueKind == JsonValueKind.Object && header.TryGetProperty(TitleProperty, out var titleNode) ? BrowseText(titleNode) : "";
         if (string.IsNullOrWhiteSpace(title)) throw new JsonException("YouTube Music collection header unavailable.");
         var shelves = BrowseNodes(root, "musicPlaylistShelfRenderer").Concat(BrowseNodes(root, "musicShelfRenderer")).ToArray();
         if (shelves.Length == 0) throw new JsonException("YouTube Music collection tracks unavailable.");
@@ -360,43 +404,84 @@ public sealed class YouTubeMusicSearchClient
         var cover = coverNode.ValueKind == JsonValueKind.Array && coverNode.GetArrayLength() > 0 ? coverNode[coverNode.GetArrayLength() - 1].GetProperty("url").GetString() : "";
         var tokens = new HashSet<string>(StringComparer.Ordinal);
         string? continuation = null;
-        void Append(JsonElement page)
-        {
-            foreach (var row in BrowseNodes(page, "musicResponsiveListItemRenderer"))
-            {
-                var song = ParseResponsiveRow(row);
-                if (song is null || !Regex.IsMatch(song.VideoId, "^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))
-                    throw new JsonException("YouTube Music collection contains an unavailable recording.");
-                var thumbnail = BrowseNodes(row, "thumbnails").FirstOrDefault();
-                var image = thumbnail.ValueKind == JsonValueKind.Array && thumbnail.GetArrayLength() > 0 ? thumbnail[thumbnail.GetArrayLength()-1].GetProperty("url").GetString() : cover;
-                rows.Add(new System.Text.Json.Nodes.JsonObject {
-                    ["id"] = "", ["videoId"] = song.VideoId, ["title"] = song.Title,
-                    ["artist"] = new System.Text.Json.Nodes.JsonObject { ["name"] = song.Artist ?? "" },
-                    ["album"] = new System.Text.Json.Nodes.JsonObject { ["title"] = song.Album ?? (type == "album" ? title : ""), ["cover_medium"] = image, ["cover_big"] = image },
-                    ["duration"] = song.DurationSeconds ?? ParseCollectionDuration(row), ["link"] = Origin + "/watch?v=" + song.VideoId,
-                    ["preview"] = "/api/youtube/browse/stream?id=" + song.VideoId });
-            }
-            continuation = BrowseNodes(page, "nextContinuationData").Select(n => n.TryGetProperty("continuation", out var value) ? value.GetString() : null).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))
-                ?? BrowseNodes(page, "continuationItemRenderer").SelectMany(n => BrowseNodes(n, "continuationCommand")).Select(n => n.TryGetProperty("token", out var value) ? value.GetString() : null).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-        }
-        foreach (var shelf in shelves) Append(shelf);
+        foreach (var shelf in shelves) continuation = AppendCollectionRows(shelf, rows, cover, type, title);
         while (!string.IsNullOrWhiteSpace(continuation))
         {
-            if (!tokens.Add(continuation) || tokens.Count > 100) throw new JsonException("YouTube Music collection pagination did not finish.");
-            var body = new System.Text.Json.Nodes.JsonObject { ["context"] = new System.Text.Json.Nodes.JsonObject { ["client"] = new System.Text.Json.Nodes.JsonObject {
-                ["clientName"] = "WEB_REMIX", ["clientVersion"] = "1." + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".01.00", ["gl"] = country, ["hl"] = language } }, ["continuation"] = continuation };
-            using var request = new HttpRequestMessage(HttpMethod.Post, Origin + "/youtubei/v1/browse?alt=json") { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
-            request.Headers.TryAddWithoutValidation("Origin", Origin); request.Headers.TryAddWithoutValidation("User-Agent", UserAgent); request.Headers.TryAddWithoutValidation("Cookie", "SOCS=CAI");
+            ValidateContinuation(tokens, continuation);
+            var body = new System.Text.Json.Nodes.JsonObject
+            {
+                ["context"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["client"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["clientName"] = MusicClientName,
+                        ["clientVersion"] = "1." + DateTime.UtcNow.ToString(ClientVersionDateFormat, CultureInfo.InvariantCulture) + ClientVersionSuffix,
+                        ["gl"] = country,
+                        ["hl"] = language
+                    }
+                },
+                ["continuation"] = continuation
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, _origin + "/youtubei/v1/browse?alt=json") { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, JsonContentType) };
+            request.Headers.TryAddWithoutValidation(OriginHeader, _origin); request.Headers.TryAddWithoutValidation(UserAgentHeader, UserAgent); request.Headers.TryAddWithoutValidation("Cookie", "SOCS=CAI");
             using var response = await _httpClient.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode();
             using var page = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             var contents = BrowseNodes(page.RootElement, "musicPlaylistShelfContinuation").Concat(BrowseNodes(page.RootElement, "musicShelfContinuation")).Concat(BrowseNodes(page.RootElement, "appendContinuationItemsAction")).Concat(BrowseNodes(page.RootElement, "reloadContinuationItemsCommand")).ToArray();
             if (contents.Length != 1) throw new JsonException("YouTube Music collection continuation unavailable.");
-            Append(contents[0]);
+            continuation = AppendCollectionRows(contents[0], rows, cover, type, title);
         }
-        return new System.Text.Json.Nodes.JsonObject { ["id"] = id, ["title"] = title, ["source_url"] = type == "playlist" ? Origin + "/playlist?list=" + id[2..] : Origin + "/browse/" + id,
+        return new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = id,
+            [TitleProperty] = title,
+            ["source_url"] = type == PlaylistType ? Origin + "/playlist?list=" + id[2..] : Origin + "/browse/" + id,
             ["description"] = BrowseText(BrowseNodes(header, "musicDescriptionShelfRenderer").Select(n => n.TryGetProperty("description", out var value) ? value : default).FirstOrDefault()),
-            ["creator"] = new System.Text.Json.Nodes.JsonObject { ["name"] = header.TryGetProperty("straplineText", out var creator) ? BrowseText(creator) : "YouTube Music" }, ["cover_big"] = cover, ["nb_tracks"] = rows.Count, ["tracks"] = rows,
-            ["country"] = country, ["language"] = language, ["complete"] = true };
+            ["creator"] = new System.Text.Json.Nodes.JsonObject { ["name"] = header.TryGetProperty("straplineText", out var creator) ? BrowseText(creator) : "YouTube Music" },
+            ["cover_big"] = cover,
+            ["nb_tracks"] = rows.Count,
+            ["tracks"] = rows,
+            ["country"] = country,
+            ["language"] = language,
+            ["complete"] = true
+        };
+    }
+
+    private static void ValidateContinuation(HashSet<string> tokens, string continuation)
+    {
+        if (!tokens.Add(continuation) || tokens.Count > 100)
+            throw new JsonException("YouTube Music collection pagination did not finish.");
+    }
+
+    private static string? AppendCollectionRows(JsonElement page, JsonArray rows, string? cover, string type, string title)
+    {
+        foreach (var row in BrowseNodes(page, "musicResponsiveListItemRenderer"))
+        {
+            var song = ParseResponsiveRow(row);
+            ValidateCollectionSong(song);
+            var thumbnail = BrowseNodes(row, "thumbnails").FirstOrDefault();
+            var image = thumbnail.ValueKind == JsonValueKind.Array && thumbnail.GetArrayLength() > 0 ? thumbnail[thumbnail.GetArrayLength() - 1].GetProperty("url").GetString() : cover;
+            var album = song.Album;
+            if (album is null) album = type == AlbumType ? title : "";
+            rows.Add(new JsonObject
+            {
+                ["id"] = "",
+                [VideoIdProperty] = song.VideoId,
+                [TitleProperty] = song.Title,
+                ["artist"] = new JsonObject { ["name"] = song.Artist ?? "" },
+                [AlbumType] = new JsonObject { [TitleProperty] = album, ["cover_medium"] = image, ["cover_big"] = image },
+                ["duration"] = song.DurationSeconds ?? ParseCollectionDuration(row),
+                ["link"] = Origin + "/watch?v=" + song.VideoId,
+                ["preview"] = "/api/youtube/browse/stream?id=" + song.VideoId
+            });
+        }
+        return BrowseNodes(page, "nextContinuationData").Select(n => n.TryGetProperty("continuation", out var value) ? value.GetString() : null).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))
+            ?? BrowseNodes(page, "continuationItemRenderer").SelectMany(n => BrowseNodes(n, "continuationCommand")).Select(n => n.TryGetProperty("token", out var value) ? value.GetString() : null).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+    }
+
+    private static void ValidateCollectionSong([System.Diagnostics.CodeAnalysis.NotNull] YouTubeMusicSearchResult? song)
+    {
+        if (song is null || !Regex.IsMatch(song.VideoId, VideoIdPattern, RegexOptions.CultureInvariant, RegexTimeout))
+            throw new JsonException("YouTube Music collection contains an unavailable recording.");
     }
 
     private static int ParseCollectionDuration(JsonElement row)
@@ -416,98 +501,202 @@ public sealed class YouTubeMusicSearchClient
     {
         foreach (var item in BrowseNodes(root, "musicMultiSelectMenuItemRenderer"))
         {
-            if (!item.TryGetProperty("title", out var title) || !BrowseText(title).Equals("Global", StringComparison.OrdinalIgnoreCase)
+            if (!item.TryGetProperty(TitleProperty, out var title) || !BrowseText(title).Equals("Global", StringComparison.OrdinalIgnoreCase)
                 || !item.TryGetProperty("formItemEntityKey", out var key)) continue;
             var entity = Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(key.GetString()!)));
-            var match = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
+            var match = Regex.Match(entity, @"explore_charts_country_menu_[0-9]+([A-Z]{2}) ", RegexOptions.CultureInvariant, RegexTimeout);
             if (match.Success) return match.Groups[1].Value;
         }
         return null;
     }
 
-    public static System.Text.Json.Nodes.JsonArray MapBrowseSections(JsonElement root, bool categoriesOnly = false)
+    public static JsonArray MapBrowseSections(JsonElement root, bool categoriesOnly = false)
     {
-        var sections = new System.Text.Json.Nodes.JsonArray();
-        if (categoriesOnly)
-        {
-            foreach (var grid in BrowseNodes(root, "gridRenderer"))
-            {
-                if (!grid.TryGetProperty("header", out var header) || !grid.TryGetProperty("items", out var entries)) continue;
-                var title = BrowseText(BrowseNodes(header, "title").FirstOrDefault());
-                if (string.IsNullOrWhiteSpace(title)) continue;
-                var categories = new System.Text.Json.Nodes.JsonArray();
-                foreach (var navigation in BrowseNodes(entries, "musicNavigationButtonRenderer"))
-                    if (MapBrowseItem(navigation, "browse-category") is { } item)
-                    {
-                        if (navigation.TryGetProperty("solid", out var solid) && solid.TryGetProperty("leftStripeColor", out var color) && color.TryGetInt64(out var number)) item["stripeColor"] = number;
-                        categories.Add(item);
-                    }
-                if (categories.Count > 0) sections.Add(new System.Text.Json.Nodes.JsonObject { ["title"] = title, ["items"] = categories });
-            }
-            return sections;
-        }
+        if (categoriesOnly) return MapCategorySections(root);
+        var sections = new JsonArray();
         foreach (var shelf in BrowseNodes(root, "musicCarouselShelfRenderer"))
         {
             if (!shelf.TryGetProperty("header", out var header)) continue;
-            var title = BrowseText(BrowseNodes(header, "title").FirstOrDefault());
-            var items = new System.Text.Json.Nodes.JsonArray();
-            if (shelf.TryGetProperty("contents", out var contents))
-                foreach (var entry in contents.EnumerateArray())
-                    foreach (var property in entry.EnumerateObject())
-                        if (MapBrowseItem(property.Value, title.Contains("video", StringComparison.OrdinalIgnoreCase) ? "video" : null) is { } item) items.Add(item);
-            if (items.Count > 0) sections.Add(new System.Text.Json.Nodes.JsonObject { ["title"] = title, ["role"] = title.Contains("video", StringComparison.OrdinalIgnoreCase) ? (items.All(item => item?["type"]?.GetValue<string>() == "playlist") ? "video-charts" : "videos") : title.Equals("Trending", StringComparison.OrdinalIgnoreCase) ? "trending" : "", ["items"] = items });
+            var title = BrowseText(BrowseNodes(header, TitleProperty).FirstOrDefault());
+            var items = MapShelfItems(shelf, title);
+            if (items.Count > 0) sections.Add(new JsonObject { [TitleProperty] = title, ["role"] = GetSectionRole(title, items), [ItemsProperty] = items });
         }
-        if (sections.Count == 0)
+        if (sections.Count > 0) return sections;
+        var tracks = new JsonArray();
+        foreach (var renderer in BrowseNodes(root, "musicResponsiveListItemRenderer"))
         {
-            var items = new System.Text.Json.Nodes.JsonArray();
-            foreach (var renderer in BrowseNodes(root, "musicResponsiveListItemRenderer"))
-                if (MapBrowseItem(renderer, "track") is { } item) items.Add(item);
-            if (items.Count > 0) sections.Add(new System.Text.Json.Nodes.JsonObject { ["title"] = "Tracks", ["items"] = items });
+            if (MapBrowseItem(renderer, TrackType) is { } item) tracks.Add(item);
+        }
+        if (tracks.Count > 0) sections.Add(new JsonObject { [TitleProperty] = "Tracks", [ItemsProperty] = tracks });
+        return sections;
+    }
+
+    private static JsonArray MapCategorySections(JsonElement root)
+    {
+        var sections = new JsonArray();
+        foreach (var grid in BrowseNodes(root, "gridRenderer"))
+        {
+            if (!grid.TryGetProperty("header", out var header) || !grid.TryGetProperty(ItemsProperty, out var entries)) continue;
+            var title = BrowseText(BrowseNodes(header, TitleProperty).FirstOrDefault());
+            if (string.IsNullOrWhiteSpace(title)) continue;
+            var categories = MapCategoryItems(entries);
+            if (categories.Count > 0) sections.Add(new JsonObject { [TitleProperty] = title, [ItemsProperty] = categories });
         }
         return sections;
     }
 
-    private static System.Text.Json.Nodes.JsonObject? MapBrowseItem(JsonElement item, string? forcedType)
+    private static JsonArray MapCategoryItems(JsonElement entries)
     {
-        var titleNode = item.TryGetProperty("title", out var title) ? title : item.TryGetProperty("buttonText", out var button) ? button : BrowseNodes(item, "text").FirstOrDefault(e => e.ValueKind == JsonValueKind.Object);
-        var name = BrowseText(titleNode);
-        var watch = BrowseNodes(item, "watchEndpoint").FirstOrDefault(e => e.TryGetProperty("videoId", out _));
-        var browse = item.TryGetProperty("navigationEndpoint", out var navigation) && navigation.TryGetProperty("browseEndpoint", out var directBrowse) ? directBrowse : BrowseNodes(item, "browseEndpoint").FirstOrDefault();
-        var id = watch.ValueKind == JsonValueKind.Object ? watch.GetProperty("videoId").GetString() : browse.ValueKind == JsonValueKind.Object && browse.TryGetProperty("browseId", out var browseId) ? browseId.GetString() : null;
-        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name)) return null;
-        if (watch.ValueKind != JsonValueKind.Object && !id.StartsWith("VL", StringComparison.Ordinal) && !id.StartsWith("MPRE", StringComparison.Ordinal) && !id.StartsWith("FEmusic_", StringComparison.Ordinal)) return null;
-        var type = watch.ValueKind == JsonValueKind.Object ? forcedType == "video" ? "video" : "track" : id.StartsWith("VL", StringComparison.Ordinal) ? "playlist" : forcedType == "browse-category" || id.StartsWith("FEmusic_", StringComparison.Ordinal) ? "browse-category" : "album";
-        if (!Regex.IsMatch(id, "^[A-Za-z0-9_-]+$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))) return null;
-        var thumbnail = BrowseNodes(item, "thumbnails").FirstOrDefault();
-        var image = thumbnail.ValueKind == JsonValueKind.Array && thumbnail.GetArrayLength() > 0 && thumbnail[thumbnail.GetArrayLength()-1].TryGetProperty("url", out var imageUrl) ? imageUrl.GetString() : "";
-        var subtitle = item.TryGetProperty("subtitle", out var sub) ? BrowseText(sub) : "";
-        // Charts put artist credits in flexColumns, not subtitle. Reuse the existing
-        // song parser instead of losing the second line expected by the shared renderer.
-        var song = item.TryGetProperty("flexColumns", out _) ? ParseResponsiveRow(item) : null;
-        var subtitleMetadata = song is null && (type is "track" or "video") && ReadRunList(item, "subtitle") is { } runs ? ParseMetadataRuns(SkipTypeSpecifier(runs)) : null;
-        var artist = song?.Artist ?? JoinNames(subtitleMetadata?.Artists);
-        if (type is "track" or "video" && !string.IsNullOrWhiteSpace(artist)) subtitle = artist;
-        if (song is not null) name = song.Title;
-        var parameters = browse.ValueKind == JsonValueKind.Object && browse.TryGetProperty("params", out var p) ? p.GetString() : null;
-        return new System.Text.Json.Nodes.JsonObject { ["source"] = "ytmusic", ["id"] = id, ["title"] = name, ["subtitle"] = subtitle, ["artist"] = artist, ["albumName"] = song?.Album ?? subtitleMetadata?.Album, ["durationSeconds"] = song?.DurationSeconds ?? subtitleMetadata?.DurationSeconds, ["type"] = type, ["coverUrl"] = image,
-            ["browseId"] = browse.ValueKind == JsonValueKind.Object && browse.TryGetProperty("browseId", out var bid) ? bid.GetString() : null, ["params"] = parameters,
-            ["url"] = type is "track" or "video" ? Origin + "/watch?v=" + Uri.EscapeDataString(id) : type == "playlist" ? Origin + "/playlist?list=" + Uri.EscapeDataString(id[2..]) : Origin + "/browse/" + Uri.EscapeDataString(id) };
+        var categories = new JsonArray();
+        foreach (var navigation in BrowseNodes(entries, "musicNavigationButtonRenderer"))
+        {
+            if (MapBrowseItem(navigation, "browse-category") is not { } item) continue;
+            if (navigation.TryGetProperty("solid", out var solid) && solid.TryGetProperty("leftStripeColor", out var color) && color.TryGetInt64(out var number)) item["stripeColor"] = number;
+            categories.Add(item);
+        }
+        return categories;
     }
 
-    private static string BrowseText(JsonElement value) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Array
-        ? string.Concat(runs.EnumerateArray().Select(run => run.TryGetProperty("text", out var text) ? text.GetString() : "")) : value.ValueKind == JsonValueKind.Object && value.TryGetProperty("simpleText", out var simple) ? simple.GetString() ?? "" : "";
+    private static JsonArray MapShelfItems(JsonElement shelf, string title)
+    {
+        var items = new JsonArray();
+        if (!shelf.TryGetProperty(ContentsProperty, out var contents)) return items;
+        var forcedType = title.Contains(VideoType, StringComparison.OrdinalIgnoreCase) ? VideoType : null;
+        foreach (var entry in contents.EnumerateArray())
+        {
+            foreach (var property in entry.EnumerateObject())
+            {
+                if (MapBrowseItem(property.Value, forcedType) is { } item) items.Add(item);
+            }
+        }
+        return items;
+    }
+
+    private static string GetSectionRole(string title, JsonArray items)
+    {
+        if (title.Contains(VideoType, StringComparison.OrdinalIgnoreCase))
+            return items.All(item => item?["type"]?.GetValue<string>() == PlaylistType) ? "video-charts" : "videos";
+        return title.Equals("Trending", StringComparison.OrdinalIgnoreCase) ? "trending" : "";
+    }
+
+    private static JsonObject? MapBrowseItem(JsonElement item, string? forcedType)
+    {
+        var name = BrowseText(ReadBrowseTitle(item));
+        var watch = BrowseNodes(item, "watchEndpoint").FirstOrDefault(e => e.TryGetProperty(VideoIdProperty, out _));
+        var browse = ReadBrowseEndpoint(item);
+        var id = ReadBrowseIdentity(watch, browse);
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name)) return null;
+        if (!IsSupportedBrowseIdentity(id, watch)) return null;
+        if (!Regex.IsMatch(id, "^[A-Za-z0-9_-]+$", RegexOptions.CultureInvariant, RegexTimeout)) return null;
+        var type = GetBrowseItemType(id, watch, forcedType);
+        var subtitle = item.TryGetProperty(SubtitleProperty, out var sub) ? BrowseText(sub) : "";
+        var song = item.TryGetProperty("flexColumns", out _) ? ParseResponsiveRow(item) : null;
+        var metadata = ReadBrowseMetadata(item, type, song);
+        var artist = song?.Artist ?? JoinNames(metadata?.Artists);
+        if (type is TrackType or VideoType && !string.IsNullOrWhiteSpace(artist)) subtitle = artist;
+        if (song is not null) name = song.Title;
+        return new JsonObject
+        {
+            ["source"] = "ytmusic",
+            ["id"] = id,
+            [TitleProperty] = name,
+            [SubtitleProperty] = subtitle,
+            ["artist"] = artist,
+            ["albumName"] = song?.Album ?? metadata?.Album,
+            ["durationSeconds"] = song?.DurationSeconds ?? metadata?.DurationSeconds,
+            ["type"] = type,
+            ["coverUrl"] = ReadBrowseImage(item),
+            [BrowseIdProperty] = ReadOptionalBrowseString(browse, BrowseIdProperty),
+            ["params"] = ReadOptionalBrowseString(browse, "params"),
+            ["url"] = BuildBrowseItemUrl(id, type)
+        };
+    }
+
+    private static ParsedRuns? ReadBrowseMetadata(JsonElement item, string type, YouTubeMusicSearchResult? song)
+    {
+        if (song is null && type is TrackType or VideoType && ReadRunList(item, SubtitleProperty) is { } runs)
+            return ParseMetadataRuns(SkipTypeSpecifier(runs));
+        return null;
+    }
+
+    private static JsonElement ReadBrowseTitle(JsonElement item)
+    {
+        if (item.TryGetProperty(TitleProperty, out var title)) return title;
+        if (item.TryGetProperty("buttonText", out var button)) return button;
+        return BrowseNodes(item, "text").FirstOrDefault(e => e.ValueKind == JsonValueKind.Object);
+    }
+
+    private static JsonElement ReadBrowseEndpoint(JsonElement item)
+    {
+        if (item.TryGetProperty("navigationEndpoint", out var navigation) && navigation.TryGetProperty("browseEndpoint", out var direct)) return direct;
+        return BrowseNodes(item, "browseEndpoint").FirstOrDefault();
+    }
+
+    private static string? ReadBrowseIdentity(JsonElement watch, JsonElement browse)
+    {
+        if (watch.ValueKind == JsonValueKind.Object) return watch.GetProperty(VideoIdProperty).GetString();
+        return ReadOptionalBrowseString(browse, BrowseIdProperty);
+    }
+
+    private static string? ReadOptionalBrowseString(JsonElement browse, string property)
+        => browse.ValueKind == JsonValueKind.Object && browse.TryGetProperty(property, out var value) ? value.GetString() : null;
+
+    private static bool IsSupportedBrowseIdentity(string id, JsonElement watch)
+        => watch.ValueKind == JsonValueKind.Object || id.StartsWith("VL", StringComparison.Ordinal)
+            || id.StartsWith("MPRE", StringComparison.Ordinal) || id.StartsWith("FEmusic_", StringComparison.Ordinal);
+
+    private static string GetBrowseItemType(string id, JsonElement watch, string? forcedType)
+    {
+        if (watch.ValueKind == JsonValueKind.Object) return forcedType == VideoType ? VideoType : TrackType;
+        if (id.StartsWith("VL", StringComparison.Ordinal)) return PlaylistType;
+        if (forcedType == "browse-category" || id.StartsWith("FEmusic_", StringComparison.Ordinal)) return "browse-category";
+        return AlbumType;
+    }
+
+    private static string? ReadBrowseImage(JsonElement item)
+    {
+        var thumbnail = BrowseNodes(item, "thumbnails").FirstOrDefault();
+        if (thumbnail.ValueKind == JsonValueKind.Array && thumbnail.GetArrayLength() > 0 && thumbnail[thumbnail.GetArrayLength() - 1].TryGetProperty("url", out var image)) return image.GetString();
+        return "";
+    }
+
+    private static string BuildBrowseItemUrl(string id, string type)
+    {
+        if (type is TrackType or VideoType) return Origin + "/watch?v=" + Uri.EscapeDataString(id);
+        if (type == PlaylistType) return Origin + "/playlist?list=" + Uri.EscapeDataString(id[2..]);
+        return Origin + "/browse/" + Uri.EscapeDataString(id);
+    }
+
+    private static string BrowseText(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object) return "";
+        if (value.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Array)
+            return string.Concat(runs.EnumerateArray().Select(run => run.TryGetProperty("text", out var text) ? text.GetString() : ""));
+        return value.TryGetProperty("simpleText", out var simple) ? simple.GetString() ?? "" : "";
+    }
 
     private static IEnumerable<JsonElement> BrowseNodes(JsonElement value, string name, int depth = 0)
     {
         if (depth > 24) yield break;
         if (value.ValueKind == JsonValueKind.Object)
-            foreach (var property in value.EnumerateObject())
-            {
-                if (property.Name == name) yield return property.Value;
-                else foreach (var found in BrowseNodes(property.Value, name, depth + 1)) yield return found;
-            }
-        else if (value.ValueKind == JsonValueKind.Array)
-            foreach (var item in value.EnumerateArray()) foreach (var found in BrowseNodes(item, name, depth + 1)) yield return found;
+        {
+            foreach (var found in BrowseObjectNodes(value, name, depth)) yield return found;
+            yield break;
+        }
+        if (value.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var item in value.EnumerateArray())
+        {
+            foreach (var found in BrowseNodes(item, name, depth + 1)) yield return found;
+        }
+    }
+
+    private static IEnumerable<JsonElement> BrowseObjectNodes(JsonElement value, string name, int depth)
+    {
+        foreach (var property in value.EnumerateObject())
+        {
+            if (property.Name == name) yield return property.Value;
+            else foreach (var found in BrowseNodes(property.Value, name, depth + 1)) yield return found;
+        }
     }
 
     /// <summary>
@@ -550,10 +739,10 @@ public sealed class YouTubeMusicSearchClient
             {
                 client = new
                 {
-                    clientName = "WEB_REMIX",
+                    clientName = MusicClientName,
                     clientVersion = "1."
-                        + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture)
-                        + ".01.00",
+                        + DateTime.UtcNow.ToString(ClientVersionDateFormat, CultureInfo.InvariantCulture)
+                        + ClientVersionSuffix,
                     hl = "en"
                 },
                 user = new { }
@@ -599,16 +788,16 @@ public sealed class YouTubeMusicSearchClient
         CancellationToken cancellationToken)
     {
         var url = continuation is null
-            ? SearchUrl
-            : $"{SearchUrl}&ctoken={Uri.EscapeDataString(continuation)}&continuation={Uri.EscapeDataString(continuation)}";
+            ? _searchUrl
+            : $"{_searchUrl}&ctoken={Uri.EscapeDataString(continuation)}&continuation={Uri.EscapeDataString(continuation)}";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = new StringContent(body, Encoding.UTF8, "application/json")
+            Content = new StringContent(body, Encoding.UTF8, JsonContentType)
         };
         request.Headers.TryAddWithoutValidation("Accept", "*/*");
-        request.Headers.TryAddWithoutValidation("Origin", Origin);
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+        request.Headers.TryAddWithoutValidation(OriginHeader, _origin);
+        request.Headers.TryAddWithoutValidation(UserAgentHeader, UserAgent);
         // SOCS is the consent cookie Google sets for a visitor with no stored preferences. Sending
         // it reads as "already answered" instead of a consent interstitial where the payload was.
         request.Headers.TryAddWithoutValidation("Cookie", "SOCS=CAI");
@@ -623,7 +812,7 @@ public sealed class YouTubeMusicSearchClient
         }
 
         using var document = JsonDocument.Parse(text);
-        if (!document.RootElement.TryGetProperty("contents", out var contents))
+        if (!document.RootElement.TryGetProperty(ContentsProperty, out var contents))
         {
             // "No contents" is this endpoint's own spelling of "no results", not a failure.
             return null;
@@ -666,7 +855,7 @@ public sealed class YouTubeMusicSearchClient
     private static IReadOnlyList<JsonElement> SectionsOf(JsonElement content)
     {
         if (content.TryGetProperty("sectionListRenderer", out var sections)
-            && sections.TryGetProperty("contents", out var list)
+            && sections.TryGetProperty(ContentsProperty, out var list)
             && list.ValueKind == JsonValueKind.Array)
         {
             return list.EnumerateArray().ToList();
@@ -676,13 +865,13 @@ public sealed class YouTubeMusicSearchClient
     }
 
     /// <summary>Parses one shelf's rows, then reports its continuation token.</summary>
-    private string? ReadShelf(
+    private static string? ReadShelf(
         JsonElement shelf,
         List<YouTubeMusicSearchResult> results,
         HashSet<string> seen,
         int limit)
     {
-        if (!shelf.TryGetProperty("contents", out var rows) || rows.ValueKind != JsonValueKind.Array)
+        if (!shelf.TryGetProperty(ContentsProperty, out var rows) || rows.ValueKind != JsonValueKind.Array)
         {
             return null;
         }
@@ -730,15 +919,15 @@ public sealed class YouTubeMusicSearchClient
     /// <summary>A "Top result" card: title and video id live on the card itself, not in columns.</summary>
     private static YouTubeMusicSearchResult? ParseCard(JsonElement card)
     {
-        var title = ReadNodeText(card, "title");
+        var title = ReadNodeText(card, TitleProperty);
         if (string.IsNullOrWhiteSpace(title) || ReadVideoId(card) is not { } videoId)
         {
             return null;
         }
 
-        var runs = ReadRunList(card, "subtitle");
+        var runs = ReadRunList(card, SubtitleProperty);
         var info = runs is null ? null : ParseMetadataRuns(SkipTypeSpecifier(runs));
-        return new YouTubeMusicSearchResult(videoId, title!, JoinNames(info?.Artists), info?.Album, info?.DurationSeconds);
+        return new YouTubeMusicSearchResult(videoId, title, JoinNames(info?.Artists), info?.Album, info?.DurationSeconds);
     }
 
     /// <summary>
@@ -767,7 +956,7 @@ public sealed class YouTubeMusicSearchClient
         var runs = ReadColumnRuns(row, 1);
         if (runs is null)
         {
-            return new YouTubeMusicSearchResult(videoId, title!, null, null, null);
+            return new YouTubeMusicSearchResult(videoId, title, null, null, null);
         }
 
         var second = ReadColumnRuns(row, 2);
@@ -778,7 +967,7 @@ public sealed class YouTubeMusicSearchClient
         }
 
         var info = ParseMetadataRuns(SkipTypeSpecifier(runs));
-        return new YouTubeMusicSearchResult(videoId, title!, JoinNames(info?.Artists), info?.Album, info?.DurationSeconds);
+        return new YouTubeMusicSearchResult(videoId, title, JoinNames(info?.Artists), info?.Album, info?.DurationSeconds);
     }
 
     /// <summary>
@@ -790,7 +979,7 @@ public sealed class YouTubeMusicSearchClient
         IReadOnlyList<Dictionary<string, string>> runs)
     {
         if (runs.Count <= 2
-            || runs[0].ContainsKey("browse")
+            || runs[0].ContainsKey(BrowseProperty)
             || Classify(runs[0]) != RunKind.Artist
             || !string.Equals(runs[1].TryGetValue("text", out var separator) ? separator : null, " • ", StringComparison.Ordinal)
             || Classify(runs[2]) == RunKind.Album)
@@ -859,7 +1048,7 @@ public sealed class YouTubeMusicSearchClient
     /// </summary>
     private static RunKind Classify(Dictionary<string, string> run)
     {
-        if (run.TryGetValue("browse", out var browseId))
+        if (run.TryGetValue(BrowseProperty, out var browseId))
         {
             return browseId.StartsWith("MPRE", StringComparison.Ordinal)
                    || browseId.Contains("release_detail", StringComparison.Ordinal)
@@ -893,7 +1082,7 @@ public sealed class YouTubeMusicSearchClient
         }
 
         var prefixed = false;
-        if (!Regex.IsMatch(text, "[a-zA-Z]"))
+        if (!Regex.IsMatch(text, "[a-zA-Z]", RegexOptions.CultureInvariant, RegexTimeout))
         {
             var match = ViewsPrefix.Match(text);
             if (match.Success)
@@ -996,9 +1185,9 @@ public sealed class YouTubeMusicSearchClient
 
         if (run.TryGetProperty("navigationEndpoint", out var navigation)
             && navigation.TryGetProperty("browseEndpoint", out var browse)
-            && browse.TryGetProperty("browseId", out var browseId))
+            && browse.TryGetProperty(BrowseIdProperty, out var browseId))
         {
-            flattened["browse"] = browseId.ToString();
+            flattened[BrowseProperty] = browseId.ToString();
         }
 
         return flattened;
@@ -1033,7 +1222,7 @@ public sealed class YouTubeMusicSearchClient
     private static string? ReadVideoId(JsonElement row)
     {
         if (row.TryGetProperty("playlistItemData", out var item)
-            && item.TryGetProperty("videoId", out var direct)
+            && item.TryGetProperty(VideoIdProperty, out var direct)
             && IsUsable(direct.ToString()))
         {
             return direct.ToString();
@@ -1045,7 +1234,7 @@ public sealed class YouTubeMusicSearchClient
             && content.TryGetProperty("musicPlayButtonRenderer", out var playButton)
             && playButton.TryGetProperty("playNavigationEndpoint", out var playEndpoint)
             && playEndpoint.TryGetProperty("watchEndpoint", out var watch)
-            && watch.TryGetProperty("videoId", out var watched)
+            && watch.TryGetProperty(VideoIdProperty, out var watched)
             && IsUsable(watched.ToString()))
         {
             return watched.ToString();
@@ -1071,7 +1260,7 @@ public sealed class YouTubeMusicSearchClient
                 {
                     if (property.NameEquals("watchEndpoint")
                         && property.Value.ValueKind == JsonValueKind.Object
-                        && property.Value.TryGetProperty("videoId", out var videoId)
+                        && property.Value.TryGetProperty(VideoIdProperty, out var videoId)
                         && IsUsable(videoId.ToString()))
                     {
                         return videoId.ToString();
@@ -1086,18 +1275,19 @@ public sealed class YouTubeMusicSearchClient
 
                 return null;
             case JsonValueKind.Array:
-                foreach (var element in node.EnumerateArray())
-                {
-                    var found = FindWatchVideoId(element, depth + 1);
-                    if (IsUsable(found))
-                    {
-                        return found;
-                    }
-                }
-
-                return null;
+                return FindWatchVideoIdInArray(node, depth);
             default:
                 return null;
         }
     }
+    private static string? FindWatchVideoIdInArray(JsonElement node, int depth)
+    {
+        foreach (var element in node.EnumerateArray())
+        {
+            var found = FindWatchVideoId(element, depth + 1);
+            if (IsUsable(found)) return found;
+        }
+        return null;
+    }
+
 }

@@ -18,6 +18,7 @@ namespace DeezSpoTag.Integrations.Deezer;
 /// </summary>
 public sealed class DeezerClient : IDisposable
 {
+    private const string TrackSearchEndpoint = "search/track";
     private const string SessionManagerNotSetMessage = "Session manager not set";
     private const string TrackEntity = "track";
     private const string AlbumEntity = "album";
@@ -333,7 +334,7 @@ public sealed class DeezerClient : IDisposable
     }
 
     public Task<DeezerSearchResult> SearchTrackAsync(string query, ApiOptions? options = null)
-        => SearchEndpointAsync("search/track", query, options);
+        => SearchEndpointAsync(TrackSearchEndpoint, query, options);
 
     public async Task<DeezerSearchResult> SearchTracksAsync(string query, ApiOptions? options = null)
     {
@@ -355,7 +356,7 @@ public sealed class DeezerClient : IDisposable
     {
         var options = new ApiOptions { Limit = limit };
         var result = await SearchEndpointForCountryAsync(
-                "search/track",
+                TrackSearchEndpoint,
                 GenerateSearchArgs(query, options),
                 country)
             .WaitAsync(cancellationToken);
@@ -547,12 +548,7 @@ public sealed class DeezerClient : IDisposable
     /// </remarks>
     private static string FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!))
-        {
-            return value;
-        }
-
-        return string.Empty;
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
     }
 
     private readonly record struct MetadataSearchInput(string Artist, string Track, string Album, int? DurationSeconds);
@@ -643,7 +639,7 @@ public sealed class DeezerClient : IDisposable
         string country)
     {
         var result = await SearchEndpointForCountryAsync(
-            "search/track",
+            TrackSearchEndpoint,
             GenerateSearchArgs(attempt.Query, new ApiOptions { Limit = attempt.Limit, Strict = attempt.Strict }),
             country);
         return SelectBestMetadataMatch(result.Data, input.Artist, attempt.MatchTrack, attempt.MatchAlbum, input.DurationSeconds);
@@ -663,7 +659,7 @@ public sealed class DeezerClient : IDisposable
         foreach (var query in BuildFastMetadataQueries(artist, track))
         {
             var result = await SearchEndpointForCountryAsync(
-                "search/track",
+                TrackSearchEndpoint,
                 GenerateSearchArgs(query, new ApiOptions { Limit = 3, Strict = true }),
                 country);
             foreach (var candidate in DeezerMetadataMatchHelper.ConvertSearchResults(result.Data))
@@ -759,31 +755,34 @@ public sealed class DeezerClient : IDisposable
         return new SongSeekCandidateMatch(bestId, bestScore);
     }
 
+    private sealed record MetadataMatchContext(
+        string SourceTitle,
+        string Artist,
+        string Title,
+        string TitleWithoutFeaturedArtists,
+        string Album,
+        int? DurationSeconds,
+        bool SourceAllowsDerivative);
+
     private static ApiTrack? FindBestExactMetadataMatch(
         IReadOnlyCollection<ApiTrack> candidates,
-        string sourceTitle,
-        string normalizedArtist,
-        string normalizedTitle,
-        string normalizedTitleNoFeat,
-        string normalizedAlbum,
-        int? durationSeconds,
-        bool sourceAllowsDerivative)
+        MetadataMatchContext context)
     {
         ApiTrack? bestMatch = null;
         var bestScore = int.MinValue;
 
         foreach (var track in candidates)
         {
-            if (!CanUseMetadataCandidate(track, sourceTitle, sourceAllowsDerivative) ||
-                !DeezerMetadataMatchHelper.IsArtistMatch(normalizedArtist, track) ||
-                !DeezerMetadataMatchHelper.IsTitleMatch(normalizedTitle, normalizedTitleNoFeat, track) ||
-                !HasMatchingDuration(durationSeconds, track.Duration) ||
-                !HasMatchingAlbum(normalizedAlbum, track.Album?.Title))
+            if (!CanUseMetadataCandidate(track, context.SourceTitle, context.SourceAllowsDerivative) ||
+                !DeezerMetadataMatchHelper.IsArtistMatch(context.Artist, track) ||
+                !DeezerMetadataMatchHelper.IsTitleMatch(context.Title, context.TitleWithoutFeaturedArtists, track) ||
+                !HasMatchingDuration(context.DurationSeconds, track.Duration) ||
+                !HasMatchingAlbum(context.Album, track.Album?.Title))
             {
                 continue;
             }
 
-            var score = ScoreExactMetadataMatch(track, normalizedTitle, normalizedAlbum, durationSeconds);
+            var score = ScoreExactMetadataMatch(track, context.Title, context.Album, context.DurationSeconds);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -796,43 +795,37 @@ public sealed class DeezerClient : IDisposable
 
     private static ApiTrack? FindBestFuzzyMetadataMatch(
         IReadOnlyCollection<ApiTrack> candidates,
-        string sourceTitle,
-        string normalizedArtist,
-        string normalizedTitle,
-        string normalizedTitleNoFeat,
-        string normalizedAlbum,
-        int? durationSeconds,
-        bool sourceAllowsDerivative)
+        MetadataMatchContext context)
     {
         ApiTrack? bestFuzzy = null;
         var bestScore = double.MinValue;
 
         foreach (var track in candidates)
         {
-            if (!CanUseMetadataCandidate(track, sourceTitle, sourceAllowsDerivative))
+            if (!CanUseMetadataCandidate(track, context.SourceTitle, context.SourceAllowsDerivative))
             {
                 continue;
             }
 
-            var titleScore = DeezerMetadataMatchHelper.GetBestTitleSimilarity(normalizedTitle, normalizedTitleNoFeat, track);
+            var titleScore = DeezerMetadataMatchHelper.GetBestTitleSimilarity(context.Title, context.TitleWithoutFeaturedArtists, track);
             if (titleScore < MinTitleSimilarity)
             {
                 continue;
             }
 
-            var artistScore = DeezerMetadataMatchHelper.GetBestArtistSimilarity(normalizedArtist, track);
-            var durationDiff = GetAllowedDurationDifference(durationSeconds, track.Duration);
+            var artistScore = DeezerMetadataMatchHelper.GetBestArtistSimilarity(context.Artist, track);
+            var durationDiff = GetAllowedDurationDifference(context.DurationSeconds, track.Duration);
             if (durationDiff == int.MinValue)
             {
                 continue;
             }
 
-            if (!HasAcceptableArtistSimilarity(normalizedArtist, artistScore, titleScore, durationDiff == null ? null : durationDiff.Value))
+            if (!HasAcceptableArtistSimilarity(context.Artist, artistScore, titleScore, durationDiff == null ? null : durationDiff.Value))
             {
                 continue;
             }
 
-            var score = ScoreFuzzyMetadataMatch(track, normalizedAlbum, titleScore, artistScore, durationDiff);
+            var score = ScoreFuzzyMetadataMatch(track, context.Album, titleScore, artistScore, durationDiff);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -970,30 +963,15 @@ public sealed class DeezerClient : IDisposable
             return bestSongSeek.Id;
         }
 
-        var bestExact = FindBestExactMetadataMatch(
-            candidates,
-            title,
-            normalizedArtist,
-            normalizedTitle,
-            normalizedTitleNoFeat,
-            normalizedAlbum,
-            durationSeconds,
-            sourceAllowsDerivative);
-
+        var context = new MetadataMatchContext(title, normalizedArtist, normalizedTitle,
+            normalizedTitleNoFeat, normalizedAlbum, durationSeconds, sourceAllowsDerivative);
+        var bestExact = FindBestExactMetadataMatch(candidates, context);
         if (bestExact != null)
         {
             return bestExact.Id;
         }
 
-        return FindBestFuzzyMetadataMatch(
-            candidates,
-            title,
-            normalizedArtist,
-            normalizedTitle,
-            normalizedTitleNoFeat,
-            normalizedAlbum,
-            durationSeconds,
-            sourceAllowsDerivative)?.Id;
+        return FindBestFuzzyMetadataMatch(candidates, context)?.Id;
     }
 
     #endregion
@@ -1174,7 +1152,8 @@ public sealed class DeezerClient : IDisposable
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Retrieved {TotalReleases} releases with role IDs: {RoleIdCounts}",
-                releases.Count, string.Join(", ", roleIdCounts.Select(kvp => $"{kvp.Key}:{kvp.Value}")));        }
+                releases.Count, string.Join(", ", roleIdCounts.Select(kvp => $"{kvp.Key}:{kvp.Value}")));
+        }
 
         var processedIds = new HashSet<string>();
         foreach (var release in releases.Where(release => processedIds.Add(release.AlbId)))
@@ -1241,7 +1220,8 @@ public sealed class DeezerClient : IDisposable
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Unhandled ROLE_ID {RoleId} for release {AlbumId}", release.RoleId, release.AlbId);        }
+            _logger.LogDebug("Unhandled ROLE_ID {RoleId} for release {AlbumId}", release.RoleId, release.AlbId);
+        }
     }
 
     private static bool IsMainArtistDiscographyRelease(string artistId, GwAlbumRelease release)
@@ -1263,7 +1243,8 @@ public sealed class DeezerClient : IDisposable
         releases.Add(mappedAlbum);
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Added to main releases: {RecordType}", recordType);        }
+            _logger.LogDebug("Added to main releases: {RecordType}", recordType);
+        }
     }
 
     /// <summary>

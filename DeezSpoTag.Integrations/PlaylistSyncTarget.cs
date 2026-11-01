@@ -255,6 +255,7 @@ public interface IPlaylistSyncTarget
 public sealed class PlaylistSyncTargetRegistry
 {
     private readonly Dictionary<string, IPlaylistSyncTarget> _targets;
+    private readonly IReadOnlyList<IPlaylistSyncTarget> _registeredTargets;
 
     public PlaylistSyncTargetRegistry(IEnumerable<IPlaylistSyncTarget> targets)
     {
@@ -263,12 +264,14 @@ public sealed class PlaylistSyncTargetRegistry
         {
             _targets[target.TargetId] = target;
         }
+
+        _registeredTargets = _targets.Values.ToList().AsReadOnly();
     }
 
     public IReadOnlyCollection<string> TargetIds => _targets.Keys;
 
     /// <summary>Every registered destination. Callers read <see cref="IPlaylistSyncTarget.TargetKind"/> from these.</summary>
-    public IReadOnlyList<IPlaylistSyncTarget> Targets => _targets.Values.ToList();
+    public IReadOnlyList<IPlaylistSyncTarget> Targets => _registeredTargets;
 
     /// <summary>Destinations of one kind, so a caller can offer libraries and platforms separately.</summary>
     public IReadOnlyList<IPlaylistSyncTarget> OfKind(PlaylistTargetKind kind)

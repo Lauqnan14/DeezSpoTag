@@ -97,7 +97,8 @@ public sealed class YouTubeMusicFavoritesService : IFavoritesProvider
         int limit,
         CancellationToken cancellationToken)
     {
-        var items = await _client.GetPlaylistItemsAsync(accessToken, playlistId, PageSize, null, cancellationToken);
+        var items = await _client.GetPlaylistItemsAsync(accessToken, playlistId, PageSize, null, cancellationToken)
+            ?? [];
         var tracks = new List<FavoriteItem>();
         foreach (var item in items)
         {

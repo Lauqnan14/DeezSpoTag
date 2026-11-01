@@ -105,6 +105,8 @@ public sealed class NavidromeApiClientHistoryTest
     {
         using var handler = new StubHandler(request =>
         {
+            if (request.RequestUri!.AbsolutePath == "/auth/login")
+                return Json("{\"token\":\"jwt-token\"}");
             Assert.EndsWith("/rest/getMusicFolders.view", request.RequestUri!.AbsolutePath, StringComparison.Ordinal);
             Assert.Contains("u=listener", request.RequestUri.Query, StringComparison.Ordinal);
             return Json("""

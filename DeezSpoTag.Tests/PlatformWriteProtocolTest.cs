@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -27,6 +28,27 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class PlatformWriteProtocolTest
 {
+    [Fact]
+    public async Task SpotifyPathfinderEndpointCanBeConfiguredWithoutChangingItsRequest()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK,
+            """{"data":{"playlistV2":{"uri":"spotify:playlist:42"}}}"""));
+        using var http = new HttpClient(handler);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Spotify:PathfinderUrl"] = "https://spotify.test/query"
+        }).Build();
+        var client = new SpotifyPlaylistWriteClient(http,
+            _ => Task.FromResult<SpotifyPlaylistWriteClient.SpotifyWebPlayerSession?>(new("token", "client", "version")),
+            configuration);
+        await client.FetchPlaylistAsync("spotify:playlist:42", CancellationToken.None);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://spotify.test/query", request.Url);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Contains("fetchPlaylist", request.Body!);
+        Assert.Contains("spotify:playlist:42", request.Body!);
+    }
+
     [Theory]
     [InlineData("qobuz", "description")]
     [InlineData("qobuz", "")]
@@ -242,7 +264,7 @@ public sealed class PlatformWriteProtocolTest
 
             return request.RequestUri.AbsolutePath.EndsWith("/rootlist", StringComparison.Ordinal)
                 ? (HttpStatusCode.OK, """{"revision":"rev-1"}""")
-                : (HttpStatusCode.OK, """{"me":{"profile":{"username":"edzoh"}}}""");
+                : (HttpStatusCode.OK, """{"me":{"profile":{"username":"test-user"}}}""");
         });
 
         var created = await Spotify(handler).CreatePlaylistAsync("Roadtrip", null, CancellationToken.None);

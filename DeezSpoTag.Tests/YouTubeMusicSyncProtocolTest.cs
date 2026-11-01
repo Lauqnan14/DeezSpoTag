@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -24,6 +25,28 @@ namespace DeezSpoTag.Tests;
 /// </summary>
 public sealed class YouTubeMusicSyncProtocolTest
 {
+    [Fact]
+    public async Task ConfiguredDataAndAuthorizationEndpointsAreUsed()
+    {
+        var handler = new RecordingHandler((_, _) => (HttpStatusCode.OK, "{\"items\":[]}"));
+        using var http = new HttpClient(handler);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["YouTube:DataApiBaseUrl"] = "https://youtube.test/v3",
+            ["YouTube:AuthorizeUrl"] = "https://accounts.test/authorize"
+        }).Build();
+        var client = new YouTubeDataApiClient(http, configuration: configuration);
+        var playlists = await client.GetMyPlaylistsAsync("token");
+        Assert.Empty(playlists);
+        var request = Assert.Single(handler.Requests);
+        Assert.StartsWith("https://youtube.test/v3/playlists?", request.Url);
+        Assert.Contains("mine=true", request.Url);
+        var authorization = new Uri(client.BuildAuthorizeUrl("client", "https://app.test/callback", "state"));
+        Assert.Equal("accounts.test", authorization.Host);
+        Assert.Equal("/authorize", authorization.AbsolutePath);
+        Assert.Contains("state=state", authorization.Query);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("Updated")]

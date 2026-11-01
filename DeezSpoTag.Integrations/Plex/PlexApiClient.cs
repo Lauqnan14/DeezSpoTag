@@ -15,6 +15,7 @@ namespace DeezSpoTag.Integrations.Plex;
 /// </summary>
 public class PlexApiClient
 {
+    private const string ArtistType = "artist";
     private const string DirectoryElementName = "Directory";
     private const string RatingKeyAttributeName = "ratingKey";
     private const string TitleAttributeName = "title";
@@ -62,7 +63,8 @@ public class PlexApiClient
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl));                }
+                    _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl));
+                }
                 return true;
             }
 
@@ -184,13 +186,14 @@ public class PlexApiClient
                 {
                     Key = "1",
                     Title = "Music",
-                    Type = "artist"
+                    Type = ArtistType
                 }
             };
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Retrieved {LibraryCount} music libraries from Plex", libraries.Count);            }
+                _logger.LogDebug("Retrieved {LibraryCount} music libraries from Plex", libraries.Count);
+            }
             return libraries;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -209,7 +212,8 @@ public class PlexApiClient
         {
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Refreshing Plex library section {LibraryKey}", libraryKey);            }
+                _logger.LogInformation("Refreshing Plex library section {LibraryKey}", libraryKey);
+            }
 
             // This would make actual API call to refresh library
             // For now, just simulate the operation
@@ -217,7 +221,8 @@ public class PlexApiClient
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Successfully triggered refresh for library section {LibraryKey}", libraryKey);            }
+                _logger.LogDebug("Successfully triggered refresh for library section {LibraryKey}", libraryKey);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -253,7 +258,8 @@ public class PlexApiClient
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Triggered Plex library refresh for section {LibraryKey}", libraryKey);            }
+                _logger.LogInformation("Triggered Plex library refresh for section {LibraryKey}", libraryKey);
+            }
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -360,7 +366,7 @@ public class PlexApiClient
 
         var baseUrl = serverUrl.TrimEnd('/');
         var encodedArtist = Uri.EscapeDataString(artistName.Trim());
-        var candidates = await CollectArtistCandidatesAsync(baseUrl, token, encodedArtist, targetName, targetLoose, sections, cancellationToken, requireSuccessfulResponse);
+        var candidates = await CollectArtistCandidatesAsync(baseUrl, token, encodedArtist, (targetName, targetLoose), sections, cancellationToken, requireSuccessfulResponse);
 
         if (candidates.Count == 0)
         {
@@ -586,8 +592,7 @@ public class PlexApiClient
             token,
             ratingKey,
             filePath,
-            "posters",
-            "upload artist poster",
+            ("posters", "upload artist poster"),
             cancellationToken, requireSuccessfulResponse);
 
     /// <summary>
@@ -599,8 +604,7 @@ public class PlexApiClient
             token,
             ratingKey,
             filePath,
-            "arts",
-            "upload artist art",
+            ("arts", "upload artist art"),
             cancellationToken, requireSuccessfulResponse);
 
     private async Task<bool> UpdateArtistImageFromFileAsync(
@@ -608,10 +612,10 @@ public class PlexApiClient
         string token,
         string ratingKey,
         string filePath,
-        string mediaEndpoint,
-        string operation,
+        (string Endpoint, string Operation) media,
         CancellationToken cancellationToken, bool requireSuccessfulResponse)
     {
+        var (mediaEndpoint, operation) = media;
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey) || !File.Exists(filePath))
         {
             return false;
@@ -911,7 +915,7 @@ public class PlexApiClient
             ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
             var keys = doc.Descendants(DirectoryElementName)
                 .Where(element =>
-                    string.Equals(element.Attribute("type")?.Value, "artist", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.Attribute("type")?.Value, ArtistType, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(element.Attribute("type")?.Value, "music", StringComparison.OrdinalIgnoreCase))
                 .Select(element => element.Attribute("key")?.Value)
                 .Where(key => !string.IsNullOrWhiteSpace(key))
@@ -942,7 +946,8 @@ public class PlexApiClient
             var tracks = await SearchTracksInternalAsync(serverUrl, token, query, cancellationToken);
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Found {TrackCount} Plex tracks for query: {Query}", tracks.Count, query);            }
+                _logger.LogDebug("Found {TrackCount} Plex tracks for query: {Query}", tracks.Count, query);
+            }
             return tracks;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -967,50 +972,42 @@ public class PlexApiClient
             return new List<PlexTrack>();
         }
 
-        try
+        var normalizedOffset = Math.Max(offset, 0);
+        var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(500), 1, 500);
+        var baseUrl = serverUrl.TrimEnd('/');
+        var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
+        var url = $"{baseUrl}/library/sections/{encodedSection}/all?type=10&X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={normalizedOffset}&X-Plex-Container-Size={normalizedLimit}";
+        using var response = await _httpClient.GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode)
         {
-            var normalizedOffset = Math.Max(offset, 0);
-            var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(500), 1, 500);
-            var baseUrl = serverUrl.TrimEnd('/');
-            var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
-            var url = $"{baseUrl}/library/sections/{encodedSection}/all?type=10&X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={normalizedOffset}&X-Plex-Container-Size={normalizedLimit}";
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning(
-                    "Failed to load Plex tracks for section {SectionKey}: {StatusCode}",
-                    sectionKey,
-                    response.StatusCode);
-                response.EnsureSuccessStatusCode();
-            }
-
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                throw new InvalidOperationException("Plex track listing returned an empty response.");
-            }
-
-            var doc = XDocument.Parse(content);
-            if (doc.Root?.Name.LocalName != "MediaContainer")
-                throw new InvalidOperationException("Plex track listing did not contain a MediaContainer.");
-            var tracks = doc.Descendants(TrackElementName).Select(MapTrack).ToList();
-            if (tracks.Any(static track => string.IsNullOrWhiteSpace(track.RatingKey)))
-                throw new InvalidOperationException("Plex track listing contained an item without a track ID.");
-            return tracks;
+            _logger.LogWarning(
+                "Failed to load Plex tracks for section {SectionKey}: {StatusCode}",
+                sectionKey,
+                response.StatusCode);
+            response.EnsureSuccessStatusCode();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(content))
         {
-            _logger.LogWarning(ex, "Failed reading Plex tracks for section {SectionKey}", sectionKey);
-            throw;
+            throw new InvalidOperationException("Plex track listing returned an empty response.");
         }
+
+        var doc = XDocument.Parse(content);
+        if (doc.Root?.Name.LocalName != "MediaContainer")
+            throw new InvalidOperationException("Plex track listing did not contain a MediaContainer.");
+        var tracks = doc.Descendants(TrackElementName).Select(MapTrack).ToList();
+        if (tracks.Any(static track => string.IsNullOrWhiteSpace(track.RatingKey)))
+            throw new InvalidOperationException("Plex track listing contained an item without a track ID.");
+        return tracks;
+
     }
 
     private async Task<Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)>> CollectArtistCandidatesAsync(
         string baseUrl,
         string token,
         string encodedArtist,
-        string targetName,
-        string targetLoose,
+        (string Name, string Loose) target,
         IReadOnlyList<string> sections,
         CancellationToken cancellationToken,
         bool requireSuccessfulResponse)
@@ -1018,7 +1015,7 @@ public class PlexApiClient
         var candidates = new Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)>(StringComparer.OrdinalIgnoreCase);
         foreach (var query in BuildArtistCandidateQueries(baseUrl, token, encodedArtist, sections))
         {
-            await CollectArtistCandidatesFromQueryAsync(query.url, query.sectionKeyHint, targetName, targetLoose, sections, candidates, cancellationToken, requireSuccessfulResponse);
+            await CollectArtistCandidatesFromQueryAsync(query.url, query.sectionKeyHint, target, sections, candidates, cancellationToken, requireSuccessfulResponse);
         }
 
         return candidates;
@@ -1038,8 +1035,7 @@ public class PlexApiClient
     private async Task CollectArtistCandidatesFromQueryAsync(
         string url,
         string? sectionKeyHint,
-        string targetName,
-        string targetLoose,
+        (string Name, string Loose) target,
         IReadOnlyList<string> sections,
         Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)> candidates,
         CancellationToken cancellationToken,
@@ -1084,23 +1080,14 @@ public class PlexApiClient
                 throw new TargetLookupException("Plex artist candidate query returned an empty response.");
             }
 
-            XDocument doc;
-            try
+            var doc = ParseArtistCandidateDocument(content, requireSuccessfulResponse);
+            if (doc is null)
             {
-                doc = XDocument.Parse(content);
-            }
-            catch (System.Xml.XmlException ex)
-            {
-                if (!requireSuccessfulResponse)
-                {
-                    return;
-                }
-
-                throw new TargetLookupException("Plex artist candidate response was not valid XML.", ex);
+                return;
             }
 
             ValidateArtistResponseEnvelope(doc, requireSuccessfulResponse);
-            foreach (var candidate in EnumerateArtistCandidates(doc, targetName, targetLoose, sections, sectionKeyHint)
+            foreach (var candidate in EnumerateArtistCandidates(doc, target.Name, target.Loose, sections, sectionKeyHint)
                 .Where(candidate => !candidates.TryGetValue(candidate.ratingKey, out var existing) ||
                     candidate.score > existing.score ||
                     (candidate.score == existing.score && candidate.lengthDelta < existing.lengthDelta)))
@@ -1112,6 +1099,24 @@ public class PlexApiClient
         {
             response.Dispose();
         }
+    }
+
+    private static XDocument? ParseArtistCandidateDocument(string content, bool requireSuccessfulResponse)
+    {
+        try
+        {
+            return XDocument.Parse(content);
+        }
+        catch (System.Xml.XmlException ex)
+        {
+            if (!requireSuccessfulResponse)
+            {
+                return null;
+            }
+
+            throw new TargetLookupException("Plex artist candidate response was not valid XML.", ex);
+        }
+
     }
 
     private static IEnumerable<(string ratingKey, int score, int lengthDelta, string sectionKey, string title)> EnumerateArtistCandidates(
@@ -1151,7 +1156,7 @@ public class PlexApiClient
     private static bool IsArtistDirectory(XElement directory)
     {
         var type = directory.Attribute("type")?.Value;
-        return string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase) ||
+        return string.Equals(type, ArtistType, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(type, "music", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1210,7 +1215,8 @@ public class PlexApiClient
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);                }
+                    _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);
+                }
                 return null;
             }
 
@@ -1228,7 +1234,8 @@ public class PlexApiClient
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);                }
+                    _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);
+                }
                 return null;
             }
         }
@@ -1425,7 +1432,7 @@ public class PlexApiClient
             {
                 var type = directory.Attribute("type")?.Value ?? string.Empty;
                 var title = directory.Attribute(TitleAttributeName)?.Value ?? string.Empty;
-                if (!string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase)
+                if (!string.Equals(type, ArtistType, StringComparison.OrdinalIgnoreCase)
                     || title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -1871,7 +1878,8 @@ public class PlexApiClient
     {
         var tracks = new List<PlexPlaylistTrack>();
         string? lastEndpoint = null;
-        for (var offset = 0; ; offset += PlaylistItemsPageSize)
+        var offset = 0;
+        while (true)
         {
             var url = BuildPlaylistItemsUrl(serverUrl, token, playlistId, playlistItemsPath, offset);
             lastEndpoint = SanitizePlexEndpoint(url);
@@ -1890,6 +1898,7 @@ public class PlexApiClient
             var doc = XDocument.Parse(content);
             var pageTracks = ParsePlaylistTracks(doc, serverUrl, token);
             tracks.AddRange(pageTracks);
+            offset += PlaylistItemsPageSize;
 
             var totalSize = ParseInt(doc.Root?.Attribute("totalSize")?.Value);
             if (pageTracks.Count < PlaylistItemsPageSize
@@ -1932,9 +1941,9 @@ public class PlexApiClient
         var query = queryIndex >= 0 ? normalized[queryIndex..] : string.Empty;
         if (!path.StartsWith('/'))
         {
-            path = "/" + path.TrimStart('/');
+            path = new UriBuilder { Path = path }.Uri.AbsolutePath;
         }
-        return path.Contains("..", StringComparison.Ordinal) ? "/" : path + query;
+        return path.Contains("..", StringComparison.Ordinal) ? new UriBuilder().Uri.AbsolutePath : path + query;
     }
 
     private static string SanitizePlexEndpoint(string url)
@@ -2168,7 +2177,7 @@ public class PlexApiClient
         var appendMissingOnly = options?.AppendMissingOnly ?? false;
         var forcedPlaylistId = string.IsNullOrWhiteSpace(options?.ExistingPlaylistId)
             ? null
-            : options!.ExistingPlaylistId!.Trim();
+            : options.ExistingPlaylistId.Trim();
 
         TargetPlaylistLookup<PlexPlaylist>? existingLookup = null;
         string? playlistId = null;
@@ -2309,11 +2318,11 @@ public class PlexApiClient
         var afterAdd = afterAddResult.Tracks;
         var expectedSet = normalizedRatingKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var retained = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in afterAdd.Where(item =>
-                     !expectedSet.Contains(item.Id) || !retained.Add(item.Id)))
+        foreach (var playlistItemId in afterAdd.Where(item =>
+                     !expectedSet.Contains(item.Id) || !retained.Add(item.Id)).Select(item => item.PlaylistItemId))
         {
-            if (string.IsNullOrWhiteSpace(item.PlaylistItemId)
-                || !await RemovePlaylistItemAsync(serverUrl, token, playlistId, item.PlaylistItemId, cancellationToken))
+            if (string.IsNullOrWhiteSpace(playlistItemId)
+                || !await RemovePlaylistItemAsync(serverUrl, token, playlistId, playlistItemId, cancellationToken))
             {
                 return false;
             }
@@ -2901,7 +2910,7 @@ public class PlexApiClient
                 var sections = await GetLibrarySectionsAsync(baseUrl, token, cancellationToken);
                 musicSectionKeys = sections
                     .Where(static section =>
-                        string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase)
+                        string.Equals(section.Type, ArtistType, StringComparison.OrdinalIgnoreCase)
                         || string.Equals(section.Type, "music", StringComparison.OrdinalIgnoreCase))
                     .Select(static section => section.Key)
                     .Where(static key => !string.IsNullOrWhiteSpace(key))
@@ -2971,9 +2980,7 @@ public class PlexApiClient
             var offset = 0;
             while (!maxItems.HasValue || items.Count < maxItems.Value)
             {
-                var requestedSize = maxItems.HasValue
-                    ? Math.Min(HistoryPageSize, maxItems.Value - items.Count)
-                    : HistoryPageSize;
+                var requestedSize = GetHistoryPageSize(maxItems, items.Count);
                 var url = BuildHistoryUrl(baseUrl, endpoint, sectionKey, viewedSinceUtc);
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
@@ -2998,31 +3005,11 @@ public class PlexApiClient
                 var doc = XDocument.Parse(content);
                 var root = doc.Root;
                 var pageElements = root?.Elements().ToList() ?? [];
-                foreach (var track in pageElements.Where(static element => element.Name.LocalName == TrackElementName))
-                {
-                    var part = track.Descendants("Part").FirstOrDefault();
-                    items.Add(new PlexHistoryItem
-                    {
-                        RatingKey = track.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty,
-                        Title = track.Attribute(TitleAttributeName)?.Value ?? string.Empty,
-                        Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
-                        Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
-                        ViewedAtUtc = ParseUnixTime(track.Attribute("viewedAt")?.Value),
-                        DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
-                        FilePath = part?.Attribute("file")?.Value,
-                        LibrarySectionId = track.Attribute("librarySectionID")?.Value ?? sectionKey
-                    });
-                    if (maxItems.HasValue && items.Count >= maxItems.Value)
-                    {
-                        break;
-                    }
-                }
+                AddHistoryPageItems(pageElements, sectionKey, maxItems, items);
 
                 var totalSize = ParseInt(root?.Attribute("totalSize")?.Value);
                 offset += requestedSize;
-                if (pageElements.Count == 0
-                    || (totalSize > 0 && offset >= totalSize)
-                    || (totalSize == 0 && pageElements.Count < requestedSize))
+                if (IsHistoryPageComplete(pageElements.Count, totalSize, offset, requestedSize))
                 {
                     break;
                 }
@@ -3030,6 +3017,38 @@ public class PlexApiClient
         }
 
         return new PlexHistoryLoadResult(true, items);
+    }
+
+    private static int GetHistoryPageSize(int? maxItems, int count)
+        => maxItems.HasValue ? Math.Min(HistoryPageSize, maxItems.Value - count) : HistoryPageSize;
+
+    private static bool IsHistoryPageComplete(int count, int totalSize, int offset, int requestedSize)
+        => count == 0 || (totalSize > 0 && offset >= totalSize)
+            || (totalSize == 0 && count < requestedSize);
+
+    private static void AddHistoryPageItems(
+        IReadOnlyList<XElement> pageElements, string? sectionKey, int? maxItems, List<PlexHistoryItem> items)
+    {
+        foreach (var track in pageElements.Where(static element => element.Name.LocalName == TrackElementName))
+        {
+            var part = track.Descendants("Part").FirstOrDefault();
+            items.Add(new PlexHistoryItem
+            {
+                RatingKey = track.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty,
+                Title = track.Attribute(TitleAttributeName)?.Value ?? string.Empty,
+                Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
+                Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
+                ViewedAtUtc = ParseUnixTime(track.Attribute("viewedAt")?.Value),
+                DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
+                FilePath = part?.Attribute("file")?.Value,
+                LibrarySectionId = track.Attribute("librarySectionID")?.Value ?? sectionKey
+            });
+            if (maxItems.HasValue && items.Count >= maxItems.Value)
+            {
+                break;
+            }
+        }
+
     }
 
     private static string BuildHistoryUrl(
@@ -3056,12 +3075,12 @@ public class PlexApiClient
     {
         return new PlexPlaylist
         {
-	            Id = element.Attribute(RatingKeyAttributeName)?.Value
-	                 ?? element.Attribute("key")?.Value
-	                 ?? string.Empty,
-	            Key = element.Attribute("key")?.Value ?? string.Empty,
-	            Content = element.Attribute("content")?.Value ?? string.Empty,
-	            Title = element.Attribute(TitleAttributeName)?.Value ?? string.Empty,
+            Id = element.Attribute(RatingKeyAttributeName)?.Value
+                     ?? element.Attribute("key")?.Value
+                     ?? string.Empty,
+            Key = element.Attribute("key")?.Value ?? string.Empty,
+            Content = element.Attribute("content")?.Value ?? string.Empty,
+            Title = element.Attribute(TitleAttributeName)?.Value ?? string.Empty,
             Summary = element.Attribute("summary")?.Value ?? string.Empty,
             TrackCount = ParseInt(element.Attribute("leafCount")?.Value),
             DurationMs = ParseLong(element.Attribute(DurationAttributeName)?.Value),

@@ -88,32 +88,44 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
             return TargetPlaylistLookup<string>.Unavailable();
         }
 
-        var headers = Headers(credentials!);
-
         if (!string.IsNullOrWhiteSpace(playlistId))
         {
-            // playlist/get is not scoped to the caller's own playlists, so one call answers both
-            // "is it there" and "what is it called".
-            var byId = await _transport.GetAsync(
-                $"{ApiBase}/playlist/get?playlist_id={Uri.EscapeDataString(playlistId)}&extra=tracks",
-                headers,
-                cancellationToken);
-            if (!byId.Reached)
-            {
-                return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
-            }
-
-            if (byId.IsAuthRejection)
-            {
-                return TargetPlaylistLookup<string>.Unavailable(byId.Status);
-            }
-
-            var id = byId.TryParseJson()?.ReadString("id");
-            return string.IsNullOrWhiteSpace(id)
-                ? TargetPlaylistLookup<string>.Missing()
-                : TargetPlaylistLookup<string>.Found(id);
+            return await FindPlaylistByIdAsync(playlistId, credentials!, cancellationToken);
         }
 
+        return await FindPlaylistByNameAsync(name, credentials!, cancellationToken);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByIdAsync(
+        string playlistId, QobuzTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
+        // playlist/get is not scoped to the caller's own playlists, so one call answers both
+        // "is it there" and "what is it called".
+        var byId = await _transport.GetAsync(
+            $"{ApiBase}/playlist/get?playlist_id={Uri.EscapeDataString(playlistId)}&extra=tracks",
+            headers,
+            cancellationToken);
+        if (!byId.Reached)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
+        }
+
+        if (byId.IsAuthRejection)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byId.Status);
+        }
+
+        var id = byId.TryParseJson()?.ReadString("id");
+        return string.IsNullOrWhiteSpace(id)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(id);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByNameAsync(
+        string name, QobuzTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
         var wanted = name?.Trim() ?? string.Empty;
         if (wanted.Length == 0)
         {
@@ -124,9 +136,9 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
         var total = int.MaxValue;
         while (offset < total)
         {
-            var userClause = string.IsNullOrWhiteSpace(credentials!.UserId)
+            var userClause = string.IsNullOrWhiteSpace(credentials.UserId)
                 ? string.Empty
-                : $"&user_id={Uri.EscapeDataString(credentials.UserId!)}";
+                : $"&user_id={Uri.EscapeDataString(credentials.UserId)}";
             var page = await _transport.GetAsync(
                 $"{ApiBase}/playlist/getUserPlaylists?limit=100&offset={offset}{userClause}",
                 headers,
@@ -144,19 +156,16 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
             // Qobuz returns the container under "playlists", or at the root for some responses.
             var container = json.ReadObject("playlists") ?? json;
             var items = container.ReadArray("items");
-            foreach (var matchId in items
-                         .Where(playlist => string.Equals(playlist.ReadString("name")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase)
-                             && playlist.ReadString("id") is { Length: > 0 })
-                         .Select(playlist => playlist.ReadString("id")!))
+            var matchId = items
+                .Where(playlist => string.Equals(playlist.ReadString("name")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase))
+                .Select(playlist => playlist.ReadString("id"))
+                .FirstOrDefault(id => id is { Length: > 0 });
+            if (matchId is not null)
             {
                 return TargetPlaylistLookup<string>.Found(matchId);
             }
 
-            if (container.ReadString("total") is { Length: > 0 } totalText
-                && int.TryParse(totalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            {
-                total = parsed;
-            }
+            total = ReadTotal(container, total);
 
             if (items.Count == 0)
             {
@@ -184,7 +193,7 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
         };
         if (!string.IsNullOrWhiteSpace(description))
         {
-            fields["description"] = description!;
+            fields["description"] = description;
         }
 
         var created = await _transport.PostAsync(
@@ -241,11 +250,7 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
                 .Where(static id => !string.IsNullOrWhiteSpace(id))
                 .Select(static id => id!));
 
-            if (container.ReadString("total") is { Length: > 0 } totalText
-                && int.TryParse(totalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            {
-                total = parsed;
-            }
+            total = ReadTotal(container, total);
 
             if (items.Count == 0)
             {
@@ -271,38 +276,13 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         var headers = Headers(credentials!);
-        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
 
         if (!write.AppendMissingOnly)
         {
-            // Qobuz deletes by playlist_track_id, the per-entry id. The caller's current ids are
-            // catalog ids, so the entry ids are re-read here rather than guessed from them.
-            var entries = await ReadEntryIdsAsync(write.PlaylistId, credentials!, cancellationToken);
-            if (entries is null)
+            var removalFailure = await RemoveStaleItemsAsync(write, credentials!, cancellationToken);
+            if (removalFailure is not null)
             {
-                return PlaylistMembershipWriteResult.Failed(
-                    "Qobuz playlist could not be read, so nothing was written.");
-            }
-
-            foreach (var stale in entries.Where(entry => !wanted.Contains(entry.CatalogTrackId)))
-            {
-                var removed = await _transport.PostAsync(
-                    $"{ApiBase}/playlist/deleteTracks",
-                    formFields: new Dictionary<string, string>
-                    {
-                        ["playlist_id"] = write.PlaylistId,
-                        ["playlist_track_ids"] = stale.EntryId,
-                    },
-                    headers: headers,
-                    cancellationToken: cancellationToken);
-
-                if (!removed.Success)
-                {
-                    return PlaylistMembershipWriteResult.Failed(
-                        removed.IsAuthRejection
-                            ? "Qobuz rejected the removal. Reconnect it in Login."
-                            : "Qobuz failed to write the playlist.");
-                }
+                return removalFailure;
             }
         }
 
@@ -350,6 +330,45 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
         return PlaylistMembershipWriteResult.Ok(added, 0);
     }
 
+    private async Task<PlaylistMembershipWriteResult?> RemoveStaleItemsAsync(
+        PlaylistMembershipWrite write, QobuzTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
+        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
+
+        // Qobuz deletes by playlist_track_id, the per-entry id. The caller's current ids are
+        // catalog ids, so the entry ids are re-read here rather than guessed from them.
+        var entries = await ReadEntryIdsAsync(write.PlaylistId, credentials, cancellationToken);
+        if (entries is null)
+        {
+            return PlaylistMembershipWriteResult.Failed(
+                "Qobuz playlist could not be read, so nothing was written.");
+        }
+
+        foreach (var stale in entries.Where(entry => !wanted.Contains(entry.CatalogTrackId)))
+        {
+            var removed = await _transport.PostAsync(
+                $"{ApiBase}/playlist/deleteTracks",
+                formFields: new Dictionary<string, string>
+                {
+                    ["playlist_id"] = write.PlaylistId,
+                    ["playlist_track_ids"] = stale.EntryId,
+                },
+                headers: headers,
+                cancellationToken: cancellationToken);
+
+            if (!removed.Success)
+            {
+                return PlaylistMembershipWriteResult.Failed(
+                    removed.IsAuthRejection
+                        ? "Qobuz rejected the removal. Reconnect it in Login."
+                        : "Qobuz failed to write the playlist.");
+            }
+        }
+
+        return null;
+    }
+
     private sealed record QobuzPlaylistEntry(string EntryId, string CatalogTrackId);
 
     /// <summary>
@@ -379,25 +398,12 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
 
             var container = json.ReadObject("tracks") ?? json;
             var items = container.ReadArray("items");
-            foreach (var item in items)
+            if (!AppendEntries(items, entries))
             {
-                var entryId = item.ReadString("playlist_track_id");
-                var trackId = item.ReadString("id");
-                if (string.IsNullOrWhiteSpace(entryId) || string.IsNullOrWhiteSpace(trackId))
-                {
-                    // Without both ids the entry cannot be retired individually, and deleting by
-                    // catalog id would take every copy. Reported as an unreadable playlist instead.
-                    return null;
-                }
-
-                entries.Add(new QobuzPlaylistEntry(entryId!, trackId!));
+                return null;
             }
 
-            if (container.ReadString("total") is { Length: > 0 } totalText
-                && int.TryParse(totalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            {
-                total = parsed;
-            }
+            total = ReadTotal(container, total);
 
             if (items.Count == 0)
             {
@@ -409,6 +415,30 @@ public sealed class QobuzPlaylistSyncTarget : IPlaylistSyncTarget
 
         return entries;
     }
+
+    private static bool AppendEntries(
+        IReadOnlyList<System.Text.Json.JsonElement> items, List<QobuzPlaylistEntry> entries)
+    {
+        foreach (var item in items)
+        {
+            var entryId = item.ReadString("playlist_track_id");
+            var trackId = item.ReadString("id");
+            if (string.IsNullOrWhiteSpace(entryId) || string.IsNullOrWhiteSpace(trackId))
+            {
+                // Deleting without both identities could remove every copy of a catalog track.
+                return false;
+            }
+
+            entries.Add(new QobuzPlaylistEntry(entryId, trackId));
+        }
+
+        return true;
+    }
+
+    private static int ReadTotal(System.Text.Json.JsonElement container, int currentTotal)
+        => container.ReadString("total") is { Length: > 0 } text
+            && int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var total)
+                ? total : currentTotal;
 
     private async Task<QobuzTargetCredentials?> ResolveAsync(CancellationToken cancellationToken)
         => await _credentials(cancellationToken);

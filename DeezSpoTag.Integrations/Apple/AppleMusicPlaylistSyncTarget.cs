@@ -17,7 +17,7 @@ public sealed record AppleTargetCredentials(string AuthorizationToken, string Me
             && !string.IsNullOrWhiteSpace(credentials.MediaUserToken);
 
     /// <summary>Where the account's catalog lives. The default is only a last resort.</summary>
-    public string Store => string.IsNullOrWhiteSpace(Storefront) ? "us" : Storefront!.Trim().ToLowerInvariant();
+    public string Store => string.IsNullOrWhiteSpace(Storefront) ? "us" : Storefront.Trim().ToLowerInvariant();
 }
 
 /// <summary>
@@ -108,27 +108,39 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
         if (!string.IsNullOrWhiteSpace(playlistId))
         {
-            var byId = await _transport.GetAsync(
-                $"{AmpApiBase}/me/library/playlists/{Uri.EscapeDataString(playlistId)}",
-                headers: Headers(credentials!),
-                cancellationToken: cancellationToken);
-            if (!byId.Reached)
-            {
-                return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
-            }
-
-            if (byId.TryParseJson() is not { } json)
-            {
-                return TargetPlaylistLookup<string>.Unavailable();
-            }
-
-            var data = json.ReadArray("data");
-            var id = data.Count > 0 ? data[0].ReadString("id") : null;
-            return string.IsNullOrWhiteSpace(id)
-                ? TargetPlaylistLookup<string>.Missing()
-                : TargetPlaylistLookup<string>.Found(id);
+            return await FindPlaylistByIdAsync(playlistId, credentials!, cancellationToken);
         }
 
+        return await FindPlaylistByNameAsync(name, credentials!, cancellationToken);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByIdAsync(
+        string playlistId, AppleTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var byId = await _transport.GetAsync(
+            $"{AmpApiBase}/me/library/playlists/{Uri.EscapeDataString(playlistId)}",
+            headers: Headers(credentials),
+            cancellationToken: cancellationToken);
+        if (!byId.Reached)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
+        }
+
+        if (byId.TryParseJson() is not { } json)
+        {
+            return TargetPlaylistLookup<string>.Unavailable();
+        }
+
+        var data = json.ReadArray("data");
+        var id = data.Count > 0 ? data[0].ReadString("id") : null;
+        return string.IsNullOrWhiteSpace(id)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(id);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByNameAsync(
+        string name, AppleTargetCredentials credentials, CancellationToken cancellationToken)
+    {
         var wanted = name?.Trim() ?? string.Empty;
         if (wanted.Length == 0)
         {
@@ -141,11 +153,11 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
         {
             var page = await _transport.GetAsync(
                 $"{AmpApiBase}/me/library/playlists?limit=100&offset={offset}&extend=tags",
-                headers: Headers(credentials!),
+                headers: Headers(credentials),
                 cancellationToken: cancellationToken);
             if (!page.Reached)
             {
-                return TargetPlaylistLookup<string>.Unavailable(page.Status == 0 ? null : page.Status);
+                return UnavailablePlaylistPage(page.Status);
             }
 
             if (page.TryParseJson() is not { } json)
@@ -154,16 +166,10 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
             }
 
             var rows = json.ReadArray("data");
-            foreach (var playlist in rows)
+            var matchId = FindNamedPlaylist(rows, wanted);
+            if (matchId is not null)
             {
-                if (string.Equals(
-                        playlist.ReadString("attributes.name")?.Trim(),
-                        wanted,
-                        StringComparison.OrdinalIgnoreCase)
-                    && playlist.ReadString("id") is { Length: > 0 } matchId)
-                {
-                    return TargetPlaylistLookup<string>.Found(matchId);
-                }
+                return TargetPlaylistLookup<string>.Found(matchId);
             }
 
             total = json.ReadInt("meta.total");
@@ -181,6 +187,17 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
         return TargetPlaylistLookup<string>.Missing();
     }
 
+    private static TargetPlaylistLookup<string> UnavailablePlaylistPage(int status)
+        => TargetPlaylistLookup<string>.Unavailable(status == 0 ? null : status);
+
+    private static string? FindNamedPlaylist(IReadOnlyList<JsonElement> rows, string wanted)
+    {
+        return rows
+                .Where(playlist => string.Equals(playlist.ReadString("attributes.name")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase))
+                .Select(playlist => playlist.ReadString("id"))
+                .FirstOrDefault(id => id is { Length: > 0 });
+    }
+
     public async Task<string?> CreatePlaylistAsync(string name, string? description, CancellationToken cancellationToken)
     {
         var credentials = await ResolveAsync(cancellationToken);
@@ -192,7 +209,7 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
         var attributes = new Dictionary<string, string>(StringComparer.Ordinal) { ["name"] = name ?? string.Empty };
         if (!string.IsNullOrWhiteSpace(description))
         {
-            attributes["description"] = description!;
+            attributes["description"] = description;
         }
 
         var created = await _transport.PostAsync(
@@ -268,36 +285,45 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
             }
 
             var rows = json.ReadArray("data");
-            foreach (var row in rows)
+            if (!AppendEntries(rows, entries))
             {
-                // Without the library song id the entry cannot be retired at all.
-                if (row.ReadString("id") is not { Length: > 0 } librarySongId)
-                {
-                    return null;
-                }
-
-                entries.Add(new ApplePlaylistEntry(
-                    librarySongId,
-                    // Apple prefixes catalog ids with "i." and library ids with "p.". Anything that
-                    // is not a catalog id is recorded as absent rather than assumed.
-                    row.ReadString("attributes.playParameters.catalogId") is { Length: > 0 } catalogId
-                            && catalogId.StartsWith("i.", StringComparison.Ordinal)
-                        ? catalogId
-                        : null));
+                return null;
             }
 
             total = json.ReadInt("meta.total");
             if (rows.Count == 0)
             {
-                return json.ReadString("next") is { Length: > 0 } && total > offset
-                    ? null
-                    : entries;
+                return ReadEmptyEntriesPage(json, total, offset, entries);
             }
 
             offset += rows.Count;
         }
 
         return entries;
+    }
+
+    private static IReadOnlyList<ApplePlaylistEntry>? ReadEmptyEntriesPage(
+        JsonElement json, int total, int offset, IReadOnlyList<ApplePlaylistEntry> entries)
+        => json.ReadString("next") is { Length: > 0 } && total > offset ? null : entries;
+
+    private static bool AppendEntries(IReadOnlyList<JsonElement> rows, List<ApplePlaylistEntry> entries)
+    {
+        foreach (var row in rows)
+        {
+            // Without the library song id the entry cannot be retired at all.
+            if (row.ReadString("id") is not { Length: > 0 } librarySongId)
+            {
+                return false;
+            }
+
+            var catalogId = row.ReadString("attributes.playParameters.catalogId");
+            // Apple prefixes catalog ids with i.; other identities are recorded as absent.
+            entries.Add(new ApplePlaylistEntry(librarySongId,
+                catalogId is { Length: > 0 } && catalogId.StartsWith("i.", StringComparison.Ordinal)
+                    ? catalogId : null));
+        }
+
+        return true;
     }
 
     public async Task<PlaylistMembershipWriteResult> WriteMembershipAsync(
@@ -329,20 +355,10 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
 
         if (!write.AppendMissingOnly)
         {
-            // Remove by the entry's own catalog identity so a row is only retired when the track it
-            // holds is genuinely not wanted.
-            foreach (var entry in entries.Where(entry =>
-                         entry.CatalogSongId is { Length: > 0 }
-                         && !write.OrderedItemIds.Contains(entry.CatalogSongId, StringComparer.Ordinal)))
+            var removalFailure = await RemoveStaleItemsAsync(write, entries, tracksUrl, headers, cancellationToken);
+            if (removalFailure is not null)
             {
-                var removed = await _transport.DeleteAsync(
-                    $"{tracksUrl}?ids[library-songs]={Uri.EscapeDataString(entry.LibrarySongId)}&mode=all",
-                    headers,
-                    cancellationToken);
-                if (!removed.Success)
-                {
-                    return PlaylistMembershipWriteResult.Failed(DescribeFailure(removed, "removal"));
-                }
+                return removalFailure;
             }
         }
 
@@ -394,6 +410,29 @@ public sealed class AppleMusicPlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         return PlaylistMembershipWriteResult.Ok(added, 0);
+    }
+
+    private async Task<PlaylistMembershipWriteResult?> RemoveStaleItemsAsync(
+        PlaylistMembershipWrite write, IReadOnlyList<ApplePlaylistEntry> entries, string tracksUrl,
+        IReadOnlyDictionary<string, string> headers, CancellationToken cancellationToken)
+    {
+        // Remove by the entry's own catalog identity so a row is only retired when the track it
+        // holds is genuinely not wanted.
+        foreach (var entry in entries.Where(entry =>
+                     entry.CatalogSongId is { Length: > 0 }
+                     && !write.OrderedItemIds.Contains(entry.CatalogSongId, StringComparer.Ordinal)))
+        {
+            var removed = await _transport.DeleteAsync(
+                $"{tracksUrl}?ids[library-songs]={Uri.EscapeDataString(entry.LibrarySongId)}&mode=all",
+                headers,
+                cancellationToken);
+            if (!removed.Success)
+            {
+                return PlaylistMembershipWriteResult.Failed(DescribeFailure(removed, "removal"));
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -34,7 +34,7 @@ public sealed class PlatformAuthDisconnectTest : IDisposable
 
         var payload = JsonSerializer.Serialize(new
         {
-            url = "http://192.168.28.24:8096",
+            url = "http://192.0.2.10:8096",
             apiKey = "nas-key",
             username = "nas-user"
         });

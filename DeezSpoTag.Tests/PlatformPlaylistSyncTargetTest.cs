@@ -61,7 +61,11 @@ public sealed class PlatformPlaylistSyncTargetTest
         var result = await target.FindPlaylistAsync(byId ? "requested-id" : null, "Roadtrip", default);
         Assert.Equal(string.IsNullOrWhiteSpace(returnedId) ? TargetLookupStatus.NotFound : TargetLookupStatus.Success, result.Status);
         Assert.Equal(string.IsNullOrWhiteSpace(returnedId) ? null : returnedId, result.Value);
-        Assert.All(handler.Requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+        Assert.All(handler.Requests.Where(request => !request.Url.EndsWith("/auth/login", StringComparison.Ordinal)),
+            request => Assert.Equal(HttpMethod.Get, request.Method));
+        if (platform == "navidrome")
+            Assert.All(handler.Requests.Where(request => request.Url.EndsWith("/auth/login", StringComparison.Ordinal)),
+                request => Assert.Equal(HttpMethod.Post, request.Method));
     }
 
     [Theory]
@@ -77,7 +81,11 @@ public sealed class PlatformPlaylistSyncTargetTest
         Assert.Equal(TargetLookupStatus.Transient, result.Status);
         Assert.Equal(503, result.HttpStatusCode);
         Assert.Null(result.Value);
-        Assert.All(handler.Requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+        Assert.All(handler.Requests.Where(request => !request.Url.EndsWith("/auth/login", StringComparison.Ordinal)),
+            request => Assert.Equal(HttpMethod.Get, request.Method));
+        if (platform == "navidrome")
+            Assert.All(handler.Requests.Where(request => request.Url.EndsWith("/auth/login", StringComparison.Ordinal)),
+                request => Assert.Equal(HttpMethod.Post, request.Method));
     }
 
     private static IPlaylistSyncTarget LibraryTarget(string platform, HttpClient http)
@@ -114,6 +122,9 @@ public sealed class PlatformPlaylistSyncTargetTest
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken);
             Requests.Add((request.Method, request.RequestUri!.ToString(), body));
+
+            if (request.RequestUri!.AbsolutePath == "/auth/login")
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"token\":\"jwt-token\"}") };
 
             // A transport failure is simulated by throwing, which is what the transport has to
             // survive as well as an HTTP error.

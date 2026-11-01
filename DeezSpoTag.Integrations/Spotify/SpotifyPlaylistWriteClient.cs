@@ -1,4 +1,5 @@
 using System;
+using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -44,8 +45,12 @@ public sealed class SpotifyPlaylistWriteClient
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
-    private const string PathfinderUrl = "https://api-partner.spotify.com/pathfinder/v2/query";
-    private const string WebPlayerUrl = "https://open.spotify.com/";
+    private readonly string _pathfinderUrl;
+    private readonly string _webPlayerUrl;
+    private readonly string _imageUploadUrl;
+    private const string LibraryOperation = "libraryV3";
+    private const string JsonContentType = "application/json";
+    private const string BearerScheme = "Bearer";
 
     /// <summary>
     /// The web player's own backend. Used for the calls that are plain REST rather than
@@ -81,7 +86,7 @@ public sealed class SpotifyPlaylistWriteClient
         ["fetchPlaylistContents"] = nameof(PersistedHashes.PlaylistRead),
         ["fetchPlaylist"] = nameof(PersistedHashes.PlaylistRead),
         ["profileAttributes"] = nameof(PersistedHashes.Profile),
-        ["libraryV3"] = nameof(PersistedHashes.Library),
+        [LibraryOperation] = nameof(PersistedHashes.Library),
         ["fetchLibraryTracks"] = nameof(PersistedHashes.LibraryTracks),
     };
 
@@ -92,10 +97,17 @@ public sealed class SpotifyPlaylistWriteClient
 
     public SpotifyPlaylistWriteClient(
         HttpClient httpClient,
-        Func<CancellationToken, Task<SpotifyWebPlayerSession?>> session)
+        Func<CancellationToken, Task<SpotifyWebPlayerSession?>> session,
+        IConfiguration? configuration = null)
     {
         _httpClient = httpClient;
         _session = session;
+        _pathfinderUrl = configuration?["Spotify:PathfinderUrl"]
+            ?? new UriBuilder(Uri.UriSchemeHttps, "api-partner.spotify.com") { Path = "pathfinder/v2/query" }.Uri.AbsoluteUri;
+        _webPlayerUrl = configuration?["Spotify:WebPlayerUrl"]
+            ?? new UriBuilder(Uri.UriSchemeHttps, "open.spotify.com").Uri.AbsoluteUri;
+        _imageUploadUrl = configuration?["Spotify:ImageUploadUrl"]
+            ?? new UriBuilder(Uri.UriSchemeHttps, "image-upload.spotify.com") { Path = "v4/playlist" }.Uri.AbsoluteUri;
     }
 
     /// <summary>What the web player needs on every call.</summary>
@@ -136,8 +148,6 @@ public sealed class SpotifyPlaylistWriteClient
             return null;
         }
 
-        // An attribute-op document rather than a field set. This is the shape the endpoint expects;
-        // anything else is accepted and produces a playlist with no name.
         var body = JsonSerializer.Serialize(new
         {
             ops = new[]
@@ -164,11 +174,11 @@ public sealed class SpotifyPlaylistWriteClient
             {
                 Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
             };
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue(JsonContentType)
             {
                 CharSet = "UTF-8",
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, session.AccessToken);
             request.Headers.UserAgent.ParseAdd(UserAgent);
             response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
@@ -229,52 +239,25 @@ public sealed class SpotifyPlaylistWriteClient
         if (!SpotifyWebPlayerSession.IsUsable(session))
             return PlaylistMetadataWriteResult.Failed(write, "Spotify web session is unavailable.");
 
+        var messages = new List<string>();
+        var id = Uri.EscapeDataString(ToPlaylistUri(write.PlaylistId).Split(':')[^1]);
+        var picture = write.Artwork is null ? null
+            : await UploadArtworkAsync(session, write.Artwork, id, messages, cancellationToken).ConfigureAwait(false);
+
+        return await ApplyMetadataAttributesAsync(write, session, id, picture, messages, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PlaylistMetadataWriteResult> ApplyMetadataAttributesAsync(
+        PlaylistMetadataWrite write, SpotifyWebPlayerSession session, string id, string? picture,
+        List<string> messages, CancellationToken cancellationToken)
+    {
         var description = write.Description is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed;
         var artwork = write.Artwork is null ? PlaylistMetadataFieldStatus.NotRequested : PlaylistMetadataFieldStatus.Failed;
-        var messages = new List<string>();
-        var id = Uri.EscapeDataString(ToPlaylistUri(write.PlaylistId).Split(':').Last());
-        string? picture = null;
-        if (write.Artwork is not null)
-        {
-            if (write.Artwork.ContentType != "image/jpeg" || write.Artwork.Bytes.Length == 0
-                || Convert.ToBase64String(write.Artwork.Bytes).Length > 256 * 1024)
-            {
-                messages.Add("Spotify artwork must be a JPEG within the supported image payload limit.");
-            }
-            else
-            {
-                var uploaded = await SendMetadataRequestAsync(session, "https://image-upload.spotify.com/v4/playlist",
-                    write.Artwork.Bytes, "image/jpeg", cancellationToken).ConfigureAwait(false);
-                var token = uploaded?.ReadString("uploadToken");
-                if (!string.IsNullOrWhiteSpace(token))
-                {
-                    var registered = await SendMetadataRequestAsync(session, $"{SpclientBase}/playlist/v2/playlist/{id}/register-image",
-                        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { uploadToken = token })), "application/json", cancellationToken).ConfigureAwait(false);
-                    picture = registered?.ReadString("picture");
-                }
-                if (string.IsNullOrWhiteSpace(picture)) messages.Add("Spotify artwork upload or registration failed.");
-            }
-        }
-
         if (write.Description is not null || !string.IsNullOrWhiteSpace(picture))
         {
-            var values = new Dictionary<string, object> { ["formatAttributes"] = Array.Empty<object>(), ["pictureSize"] = Array.Empty<object>() };
-            var noValue = new List<string>();
-            if (write.Description is not null)
-            {
-                if (write.Description.Length == 0) noValue.Add("LIST_DESCRIPTION");
-                else values["description"] = write.Description;
-            }
-            if (!string.IsNullOrWhiteSpace(picture)) values["picture"] = picture;
-            var body = JsonSerializer.Serialize(new
-            {
-                deltas = new[] { new { ops = new[] { new { kind = "UPDATE_LIST_ATTRIBUTES",
-                    updateListAttributes = new { newAttributes = new { values, noValue } } } },
-                    info = new { source = new { client = "WEBPLAYER" } } } },
-                wantResultingRevisions = false, wantSyncResult = false, nonces = Array.Empty<object>()
-            });
+            var body = BuildAttributeChange(write.Description, picture);
             var changed = await SendMetadataRequestAsync(session, $"{SpclientBase}/playlist/v2/playlist/{id}/changes",
-                Encoding.UTF8.GetBytes(body), "application/json", cancellationToken).ConfigureAwait(false);
+                Encoding.UTF8.GetBytes(body), JsonContentType, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(changed?.ReadString("revision")))
             {
                 if (write.Description is not null) description = PlaylistMetadataFieldStatus.Applied;
@@ -285,6 +268,53 @@ public sealed class SpotifyPlaylistWriteClient
         return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
     }
 
+    private async Task<string?> UploadArtworkAsync(
+        SpotifyWebPlayerSession session, PlaylistArtworkPayload artwork, string id,
+        List<string> messages, CancellationToken cancellationToken)
+    {
+        string? picture = null;
+        if (artwork.ContentType != "image/jpeg" || artwork.Bytes.Length == 0
+            || Convert.ToBase64String(artwork.Bytes).Length > 256 * 1024)
+        {
+            messages.Add("Spotify artwork must be a JPEG within the supported image payload limit.");
+        }
+        else
+        {
+            var uploaded = await SendMetadataRequestAsync(session, _imageUploadUrl,
+                artwork.Bytes, "image/jpeg", cancellationToken).ConfigureAwait(false);
+            var token = uploaded?.ReadString("uploadToken");
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                var registered = await SendMetadataRequestAsync(session, $"{SpclientBase}/playlist/v2/playlist/{id}/register-image",
+                    Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { uploadToken = token })), JsonContentType, cancellationToken).ConfigureAwait(false);
+                picture = registered?.ReadString("picture");
+            }
+            if (string.IsNullOrWhiteSpace(picture)) messages.Add("Spotify artwork upload or registration failed.");
+        }
+        return picture;
+    }
+
+    private static string BuildAttributeChange(string? description, string? picture)
+    {
+        var values = new Dictionary<string, object> { ["formatAttributes"] = Array.Empty<object>(), ["pictureSize"] = Array.Empty<object>() };
+        var noValue = new List<string>();
+        if (description is not null)
+        {
+            if (description.Length == 0) noValue.Add("LIST_DESCRIPTION");
+            else values["description"] = description;
+        }
+        if (!string.IsNullOrWhiteSpace(picture)) values["picture"] = picture;
+        return JsonSerializer.Serialize(new
+        {
+            deltas = new[] { new { ops = new[] { new { kind = "UPDATE_LIST_ATTRIBUTES",
+                updateListAttributes = new { newAttributes = new { values, noValue } } } },
+                info = new { source = new { client = "WEBPLAYER" } } } },
+            wantResultingRevisions = false,
+            wantSyncResult = false,
+            nonces = Array.Empty<object>()
+        });
+    }
+
     private async Task<JsonElement?> SendMetadataRequestAsync(SpotifyWebPlayerSession session, string url,
         byte[] bytes, string contentType, CancellationToken cancellationToken)
     {
@@ -292,7 +322,7 @@ public sealed class SpotifyPlaylistWriteClient
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(bytes) };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, session.AccessToken);
             request.Headers.TryAddWithoutValidation("client-token", session.ClientToken);
             request.Headers.UserAgent.ParseAdd(UserAgent);
             using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -326,13 +356,13 @@ public sealed class SpotifyPlaylistWriteClient
 
         try
         {
-            var userId = await ReadCurrentUserIdAsync(session, cancellationToken).ConfigureAwait(false);
+            var userId = await ReadCurrentUserIdAsync(cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(userId))
             {
                 return;
             }
 
-            var rootlistUrl = $"{SpclientBase}/playlist/v2/user/{Uri.EscapeDataString(userId!)}/rootlist";
+            var rootlistUrl = $"{SpclientBase}/playlist/v2/user/{Uri.EscapeDataString(userId)}/rootlist";
             string revision;
             using (var read = await SendSpclientAsync(HttpMethod.Get, rootlistUrl, session, null, cancellationToken)
                        .ConfigureAwait(false))
@@ -392,9 +422,7 @@ public sealed class SpotifyPlaylistWriteClient
     }
 
     /// <summary>The signed-in account's own id, or null.</summary>
-    private async Task<string?> ReadCurrentUserIdAsync(
-        SpotifyWebPlayerSession session,
-        CancellationToken cancellationToken)
+    private async Task<string?> ReadCurrentUserIdAsync(CancellationToken cancellationToken)
     {
         var payload = await RunAsync(
             "profileAttributes",
@@ -429,13 +457,13 @@ public sealed class SpotifyPlaylistWriteClient
         if (body is not null)
         {
             request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue(JsonContentType)
             {
                 CharSet = "UTF-8",
             };
         }
 
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+        request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, session.AccessToken);
         request.Headers.UserAgent.ParseAdd(UserAgent);
         return await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
@@ -548,10 +576,7 @@ public sealed class SpotifyPlaylistWriteClient
                 return null;
             }
 
-            var content = page.Value.TryGetProperty("playlistV2", out var v2)
-                && v2.TryGetProperty("content", out var inner)
-                    ? inner
-                    : default;
+            var content = ReadPlaylistContent(page.Value);
             if (content.ValueKind == JsonValueKind.Undefined)
             {
                 return null;
@@ -569,16 +594,7 @@ public sealed class SpotifyPlaylistWriteClient
                 return null;
             }
 
-            foreach (var row in rows)
-            {
-                var uid = row.TryGetProperty("uid", out var uidValue) ? uidValue.ToString() : null;
-                var uri = row.TryGetProperty("itemV2", out var item)
-                          && item.TryGetProperty("data", out var data)
-                          && data.TryGetProperty("uri", out var uriValue)
-                    ? uriValue.ToString()
-                    : null;
-                items.Add(new SpotifyPlaylistItem(uid, uri));
-            }
+            items.AddRange(rows.Select(ReadPlaylistItem));
 
             if (rows.Count == 0)
             {
@@ -589,6 +605,19 @@ public sealed class SpotifyPlaylistWriteClient
         }
 
         return items;
+    }
+
+    private static JsonElement ReadPlaylistContent(JsonElement page)
+        => page.TryGetProperty("playlistV2", out var playlist)
+            && playlist.TryGetProperty("content", out var content) ? content : default;
+
+    private static SpotifyPlaylistItem ReadPlaylistItem(JsonElement row)
+    {
+        var uid = row.TryGetProperty("uid", out var uidValue) ? uidValue.ToString() : null;
+        var uri = row.TryGetProperty("itemV2", out var item)
+            && item.TryGetProperty("data", out var data)
+            && data.TryGetProperty("uri", out var uriValue) ? uriValue.ToString() : null;
+        return new SpotifyPlaylistItem(uid, uri);
     }
 
     /// <summary>A playlist in the signed-in account's own library.</summary>
@@ -623,7 +652,7 @@ public sealed class SpotifyPlaylistWriteClient
         while (true)
         {
             var page = await RunAsync(
-                "libraryV3",
+                LibraryOperation,
                 new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
                     ["filters"] = new[] { "Playlists" },
@@ -640,23 +669,17 @@ public sealed class SpotifyPlaylistWriteClient
                 isMutation: false,
                 cancellationToken).ConfigureAwait(false);
 
-            if (!page.Success
-                || page.Value.ValueKind != JsonValueKind.Object
-                || !page.Value.TryGetProperty("me", out var me)
-                || !me.TryGetProperty("libraryV3", out var library))
+            if (!TryReadLibraryPage(page, out var library))
             {
                 return null;
             }
 
-            var rows = library.TryGetProperty("items", out var items)
-                ? items.EnumerateArray().ToList()
-                : new List<JsonElement>();
+            var rows = ReadLibraryItems(library);
 
             // As with the contents read, totalCount is what makes a short page detectable. Its
             // absence means the listing is not trustworthy, and neither is a page that came back
             // short of a total that says more is coming.
-            if (!library.TryGetProperty("totalCount", out var totalValue)
-                || !int.TryParse(totalValue.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var total))
+            if (!TryReadLibraryTotal(library, out var total))
             {
                 return null;
             }
@@ -668,68 +691,8 @@ public sealed class SpotifyPlaylistWriteClient
 
             foreach (var row in rows)
             {
-                if (!row.TryGetProperty("item", out var item))
-                {
-                    partial = true;
-                    continue;
-                }
-
-                var data = item.TryGetProperty("data", out var dataValue) ? dataValue : default;
-                var rowType = data.ValueKind == JsonValueKind.Object
-                              && data.TryGetProperty("__typename", out var typeValue)
-                    ? typeValue.ToString()
-                    : null;
-
-                // A deleted or inaccessible playlist leaves a typed NotFound tombstone in an
-                // otherwise complete page. That is an absence, not a row that failed to resolve.
-                if (string.Equals(rowType, "NotFound", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                if (!string.Equals(rowType, "Playlist", StringComparison.Ordinal))
-                {
-                    // A Folder is an expected row in a flattened listing and says nothing about
-                    // completeness. Anything else is an unresolved row.
-                    if (!string.Equals(rowType, "Folder", StringComparison.Ordinal))
-                    {
-                        partial = true;
-                    }
-
-                    continue;
-                }
-
-                var uri = (data.TryGetProperty("uri", out var uriValue) ? uriValue.ToString() : null)
-                          ?? (item.TryGetProperty("_uri", out var fallbackUri) ? fallbackUri.ToString() : null);
-                var id = uri is not null && uri.StartsWith("spotify:playlist:", StringComparison.Ordinal)
-                    ? uri["spotify:playlist:".Length..]
-                    : null;
-
-                // A playlist id containing a further colon is a follow-uri, not an addressable
-                // playlist, and would be written to as if it were one.
-                if (string.IsNullOrWhiteSpace(id) || id!.Contains(':', StringComparison.Ordinal))
-                {
-                    partial = true;
-                    continue;
-                }
-
-                var name = data.TryGetProperty("name", out var nameValue) ? nameValue.ToString() : null;
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    partial = true;
-                    name = $"Untitled playlist ({id})";
-                }
-
-                var editable = data.TryGetProperty("currentUserCapabilities", out var capabilities)
-                               && capabilities.ValueKind == JsonValueKind.Object
-                               && capabilities.TryGetProperty("canEditItems", out var canEdit)
-                               && canEdit.ValueKind == JsonValueKind.True;
-
-                playlists.Add(new SpotifyLibraryPlaylist(
-                    id,
-                    name,
-                    editable,
-                    data.TryGetProperty("revisionId", out var revision) ? revision.ToString() : null));
+                var playlist = ReadLibraryPlaylist(row, ref partial);
+                if (playlist is not null) playlists.Add(playlist);
             }
 
             offset += rows.Count;
@@ -779,27 +742,6 @@ public sealed class SpotifyPlaylistWriteClient
             ? playlistId
             : "spotify:playlist:" + playlistId;
 
-    private static string? ReadPlaylistUri(SpotifyPayload payload)
-    {
-        if (payload.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        var uri = payload.Value.TryGetProperty("playlistUri", out var direct)
-            ? direct.ToString()
-            : null;
-        if (!string.IsNullOrWhiteSpace(uri))
-        {
-            return uri;
-        }
-
-        return payload.Value.TryGetProperty("playlistV2", out var v2)
-               && v2.TryGetProperty("uri", out var nested)
-            ? nested.ToString()
-            : null;
-    }
-
     /// <summary>Whether a call succeeded, and why not when it did not.</summary>
     public readonly record struct SpotifyPayload(bool Success, JsonElement Value, string? Error, bool AuthFailure = false);
 
@@ -845,18 +787,7 @@ public sealed class SpotifyPlaylistWriteClient
             HttpResponseMessage? response = null;
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, PathfinderUrl)
-                {
-                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
-                };
-                request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
-                request.Headers.Add("Client-Token", session.ClientToken);
-                request.Headers.Add("Spotify-App-Version", session.ClientVersion);
-                request.Headers.Add("App-Platform", "WebPlayer");
-                request.Headers.UserAgent.ParseAdd(UserAgent);
-
-                response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                response = await SendPathfinderRequestAsync(body, session, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -864,24 +795,8 @@ public sealed class SpotifyPlaylistWriteClient
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TimeoutException)
             {
-                // Deliberately not retried for a mutation. The request may have reached Spotify
-                // before the connection dropped, and replaying it would append the track twice.
-                if (isMutation)
-                {
-                    return new SpotifyPayload(
-                        false,
-                        default,
-                        "Spotify's connection dropped during the write. The change may or may not "
-                        + "have been applied, so nothing further was written.");
-                }
-
-                if (attempt == 2)
-                {
-                    return new SpotifyPayload(false, default, "Spotify could not be reached.");
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(Math.Min(Math.Pow(2, attempt), 8)), cancellationToken)
-                    .ConfigureAwait(false);
+                var failure = await HandleTransportFailureAsync(isMutation, attempt, cancellationToken).ConfigureAwait(false);
+                if (failure is not null) return failure.Value;
                 continue;
             }
 
@@ -894,59 +809,186 @@ public sealed class SpotifyPlaylistWriteClient
                     continue;
                 }
 
-                var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                JsonDocument? document2 = null;
-                try
-                {
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        document2 = JsonDocument.Parse(text);
-                    }
-                }
-                catch (JsonException)
-                {
-                    document2 = null;
-                }
-
-                var root = document2?.RootElement ?? default;
-                if (IsPersistedQueryMissing(root) && !refreshed)
+                var root = await ReadResponseBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                if (ShouldRefreshHashes(root, refreshed))
                 {
                     refreshed = true;
                     await RefreshHashesAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("errors", out var errors)
-                    && errors.ValueKind == JsonValueKind.Array
-                    && errors.GetArrayLength() > 0)
-                {
-                    return new SpotifyPayload(false, root, "Spotify refused the request: " + errors[0]);
-                }
+                return ClassifyResponse(response, root);
 
-                if (!response.IsSuccessStatusCode)
-                {
-                    return new SpotifyPayload(
-                        false,
-                        root,
-                        response.StatusCode == HttpStatusCode.Forbidden
-                            // A 403 here is almost always the wrong account: the web session can only
-                            // write to playlists that account owns.
-                            ? "Spotify refused the change. The signed-in account must own the playlist."
-                            : $"Spotify returned {(int)response.StatusCode}.",
-                        response.StatusCode == HttpStatusCode.Forbidden);
-                }
-
-                if (root.ValueKind != JsonValueKind.Object)
-                {
-                    return new SpotifyPayload(false, root, "Spotify returned an unexpected response.");
-                }
-
-                return new SpotifyPayload(true, root, null);
             }
         }
 
         return new SpotifyPayload(false, default, "Spotify rejected the request after several attempts.");
+    }
+
+    private static bool ShouldRefreshHashes(JsonElement root, bool refreshed)
+        => !refreshed && IsPersistedQueryMissing(root);
+
+    private static async Task<SpotifyPayload?> HandleTransportFailureAsync(bool isMutation, int attempt, CancellationToken cancellationToken)
+    {
+        // A lost mutation response is ambiguous: replaying it could append twice.
+        if (isMutation)
+            return new SpotifyPayload(false, default,
+                "Spotify's connection dropped during the write. The change may or may not "
+                + "have been applied, so nothing further was written.");
+        if (attempt == 2) return new SpotifyPayload(false, default, "Spotify could not be reached.");
+        await Task.Delay(TimeSpan.FromSeconds(Math.Min(Math.Pow(2, attempt), 8)), cancellationToken).ConfigureAwait(false);
+        return null;
+    }
+
+    private async Task<HttpResponseMessage> SendPathfinderRequestAsync(
+        string body, SpotifyWebPlayerSession session, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, _pathfinderUrl)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(JsonContentType);
+        request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, session.AccessToken);
+        request.Headers.Add("Client-Token", session.ClientToken);
+        request.Headers.Add("Spotify-App-Version", session.ClientVersion);
+        request.Headers.Add("App-Platform", "WebPlayer");
+        request.Headers.UserAgent.ParseAdd(UserAgent);
+
+        return await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<JsonElement> ReadResponseBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(text)) return default;
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
+    }
+
+    private static SpotifyPayload ClassifyResponse(HttpResponseMessage response, JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("errors", out var errors)
+            && errors.ValueKind == JsonValueKind.Array
+            && errors.GetArrayLength() > 0)
+        {
+            return new SpotifyPayload(false, root, "Spotify refused the request: " + errors[0]);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new SpotifyPayload(
+                false,
+                root,
+                response.StatusCode == HttpStatusCode.Forbidden
+                    // A 403 here is almost always the wrong account: the web session can only
+                    // write to playlists that account owns.
+                    ? "Spotify refused the change. The signed-in account must own the playlist."
+                    : $"Spotify returned {(int)response.StatusCode}.",
+                response.StatusCode == HttpStatusCode.Forbidden);
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return new SpotifyPayload(false, root, "Spotify returned an unexpected response.");
+        }
+
+        return new SpotifyPayload(true, root, null);
+    }
+
+    private static List<JsonElement> ReadLibraryItems(JsonElement library)
+        => library.TryGetProperty("items", out var items) ? items.EnumerateArray().ToList() : new();
+
+    private static bool TryReadLibraryTotal(JsonElement library, out int total)
+    {
+        total = 0;
+        return library.TryGetProperty("totalCount", out var value)
+            && int.TryParse(value.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out total);
+    }
+
+    private static bool CanEditLibraryPlaylist(JsonElement data)
+        => data.TryGetProperty("currentUserCapabilities", out var capabilities)
+            && capabilities.ValueKind == JsonValueKind.Object
+            && capabilities.TryGetProperty("canEditItems", out var canEdit)
+            && canEdit.ValueKind == JsonValueKind.True;
+
+    private static bool TryReadLibraryPage(SpotifyPayload page, out JsonElement library)
+    {
+        library = default;
+        return page.Success && page.Value.ValueKind == JsonValueKind.Object
+            && page.Value.TryGetProperty("me", out var me)
+            && me.TryGetProperty(LibraryOperation, out library);
+    }
+
+    private static string? ReadLibraryRowType(JsonElement data)
+        => data.ValueKind == JsonValueKind.Object && data.TryGetProperty("__typename", out var typeValue)
+            ? typeValue.ToString() : null;
+
+    private static SpotifyLibraryPlaylist? ReadLibraryPlaylist(JsonElement row, ref bool partial)
+    {
+        if (!row.TryGetProperty("item", out var item))
+        {
+            partial = true;
+            return null;
+        }
+
+        var data = item.TryGetProperty("data", out var dataValue) ? dataValue : default;
+        var rowType = ReadLibraryRowType(data);
+
+        // A deleted or inaccessible playlist leaves a typed NotFound tombstone in an
+        // otherwise complete page. That is an absence, not a row that failed to resolve.
+        if (string.Equals(rowType, "NotFound", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!string.Equals(rowType, "Playlist", StringComparison.Ordinal))
+        {
+            // A Folder is an expected row in a flattened listing and says nothing about
+            // completeness. Anything else is an unresolved row.
+            if (!string.Equals(rowType, "Folder", StringComparison.Ordinal))
+            {
+                partial = true;
+            }
+
+            return null;
+        }
+
+        var uri = (data.TryGetProperty("uri", out var uriValue) ? uriValue.ToString() : null)
+                  ?? (item.TryGetProperty("_uri", out var fallbackUri) ? fallbackUri.ToString() : null);
+        var id = uri is not null && uri.StartsWith("spotify:playlist:", StringComparison.Ordinal)
+            ? uri["spotify:playlist:".Length..]
+            : null;
+
+        // A playlist id containing a further colon is a follow-uri, not an addressable
+        // playlist, and would be written to as if it were one.
+        if (string.IsNullOrWhiteSpace(id) || id.Contains(':', StringComparison.Ordinal))
+        {
+            partial = true;
+            return null;
+        }
+
+        var name = data.TryGetProperty("name", out var nameValue) ? nameValue.ToString() : null;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            partial = true;
+            name = $"Untitled playlist ({id})";
+        }
+
+        var editable = CanEditLibraryPlaylist(data);
+
+        return new SpotifyLibraryPlaylist(
+            id,
+            name,
+            editable,
+            data.TryGetProperty("revisionId", out var revision) ? revision.ToString() : null);
     }
 
     private string ResolveHash(string document) => document switch
@@ -987,7 +1029,7 @@ public sealed class SpotifyPlaylistWriteClient
         await _hashGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            using var shellRequest = new HttpRequestMessage(HttpMethod.Get, WebPlayerUrl);
+            using var shellRequest = new HttpRequestMessage(HttpMethod.Get, _webPlayerUrl);
             shellRequest.Headers.UserAgent.ParseAdd(UserAgent);
             using var shell = await _httpClient.SendAsync(shellRequest, cancellationToken).ConfigureAwait(false);
             if (!shell.IsSuccessStatusCode)
@@ -1041,7 +1083,7 @@ public sealed class SpotifyPlaylistWriteClient
                 PlaylistMut: Find("addToPlaylist") ?? _hashes.PlaylistMut,
                 PlaylistRead: Find("fetchPlaylistContents") ?? _hashes.PlaylistRead,
                 Profile: Find("profileAttributes") ?? _hashes.Profile,
-                Library: Find("libraryV3") ?? _hashes.Library,
+                Library: Find(LibraryOperation) ?? _hashes.Library,
                 LibraryTracks: Find("fetchLibraryTracks") ?? _hashes.LibraryTracks,
                 LibraryMut: Find("addToLibrary") ?? _hashes.LibraryMut);
         }

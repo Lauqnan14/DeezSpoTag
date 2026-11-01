@@ -15,6 +15,234 @@ namespace DeezSpoTag.Tests;
 public sealed class NavidromeApiClientPlaylistTest
 {
     [Fact]
+    public async Task SubsonicReadsReuseNativeJwtAndNeverSendPasswordOrMd5Parameters()
+    {
+        using var handler = new JwtAuthenticationHandler();
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http);
+        Assert.NotNull(await client.PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(TargetLookupStatus.Success, (await client.GetPlaylistsResult("http://navidrome.local", "user", "secret")).Status);
+        Assert.Equal(TargetLookupStatus.Success, (await client.GetPlaylistResult("http://navidrome.local", "user", "secret", "playlist-1")).Status);
+        Assert.Equal(new[] { "Album" }, await client.GetArtistAlbumTitlesAsync("http://navidrome.local", "user", "secret", "artist-1"));
+        var cover = await client.BuildCoverArtRequestUrlAsync("http://navidrome.local", "user", "secret", "cover-1", size: 9999);
+        Assert.Equal(handler.Token, GetQueryValues(cover!, "jwt").Single());
+        Assert.Equal("2000", GetQueryValues(cover!, "size").Single());
+        Assert.Equal(1, handler.LoginCount);
+        Assert.Equal(4, handler.SubsonicRequests.Count);
+        Assert.All(handler.SubsonicRequests, url =>
+        {
+            Assert.Equal(handler.Token, GetQueryValues(url, "jwt").Single());
+            Assert.Equal("user", GetQueryValues(url, "u").Single());
+            Assert.Empty(GetQueryValues(url, "p"));
+            Assert.Empty(GetQueryValues(url, "t"));
+            Assert.Empty(GetQueryValues(url, "s"));
+            Assert.DoesNotContain("secret", url, StringComparison.Ordinal);
+        });
+        using var body = System.Text.Json.JsonDocument.Parse(Assert.Single(handler.LoginBodies));
+        Assert.Equal("user", body.RootElement.GetProperty("username").GetString());
+        Assert.Equal("secret", body.RootElement.GetProperty("password").GetString());
+    }
+
+    [Fact]
+    public async Task ConcurrentSubsonicRequestsShareOneJwtLogin()
+    {
+        using var handler = new JwtAuthenticationHandler { HoldLogin = true };
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http);
+        var first = client.PingAsync("http://navidrome.local", "user", "secret");
+        await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var pending = Enumerable.Range(0, 20).Select(_ => client.PingAsync("http://navidrome.local", "user", "secret")).ToArray();
+        handler.ReleaseLogin.TrySetResult();
+        Assert.NotNull(await first);
+        Assert.All(await Task.WhenAll(pending), result => Assert.NotNull(result));
+        Assert.Equal(1, handler.LoginCount);
+        Assert.Equal(21, handler.SubsonicRequests.Count);
+    }
+
+    [Theory]
+    [InlineData(120, 100)]
+    [InlineData(3600, 301)]
+    public async Task JwtIsRenewedBeforeExpiryAndHasBoundedCacheLifetime(int validitySeconds, int elapsedSeconds)
+    {
+        var clock = new JwtTestClock();
+        using var handler = new JwtAuthenticationHandler { TokenFactory = index => CreateJwt(clock.GetUtcNow().AddSeconds(validitySeconds), index) };
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http, timeProvider: clock);
+        Assert.NotNull(await client.PingAsync("http://navidrome.local", "user", "secret"));
+        var firstToken = handler.Token;
+        clock.Now = clock.Now.AddSeconds(elapsedSeconds);
+        var cover = await client.BuildCoverArtRequestUrlAsync("http://navidrome.local", "user", "secret", "cover-1");
+        Assert.Equal(2, handler.LoginCount);
+        Assert.NotEqual(firstToken, handler.Token);
+        Assert.Equal(handler.Token, GetQueryValues(cover!, "jwt").Single());
+        Assert.NotNull(await client.PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(2, handler.LoginCount);
+    }
+
+    [Fact]
+    public async Task ChangedCredentialsOrServerCannotReuseAnotherJwt()
+    {
+        using var handler = new JwtAuthenticationHandler();
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http);
+        foreach (var (server, user, password) in new[]
+                 { ("http://one.local", "user", "first"), ("http://one.local", "user", "second"),
+                   ("http://one.local", "other", "second"), ("http://two.local", "other", "second") })
+            Assert.NotNull(await client.PingAsync(server, user, password));
+        Assert.Equal(4, handler.LoginCount);
+        Assert.Equal(4, handler.SubsonicRequests.Select(url => GetQueryValues(url, "jwt").Single()).Distinct().Count());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitJwtRejectionRenewsOnce(bool applicationError)
+    {
+        using var handler = new JwtAuthenticationHandler
+        {
+            Respond = index => index == 1 ? JwtRejection(applicationError) : JwtSuccess()
+        };
+        using var http = new HttpClient(handler);
+        var result = await new NavidromeApiClient(http).StartScanAsync("http://navidrome.local", "user", "secret");
+        Assert.True(result);
+        Assert.Equal(2, handler.LoginCount);
+        Assert.Equal(2, handler.SubsonicRequests.Count);
+        Assert.NotEqual(GetQueryValues(handler.SubsonicRequests[0], "jwt").Single(),
+            GetQueryValues(handler.SubsonicRequests[1], "jwt").Single());
+    }
+
+    [Fact]
+    public async Task RepeatedJwtRejectionDoesNotLoop()
+    {
+        using var handler = new JwtAuthenticationHandler { Respond = _ => JwtRejection(true) };
+        using var http = new HttpClient(handler);
+        Assert.Null(await new NavidromeApiClient(http).PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(2, handler.LoginCount);
+        Assert.Equal(2, handler.SubsonicRequests.Count);
+    }
+
+    [Theory]
+    [InlineData(403)]
+    [InlineData(500)]
+    [InlineData(503)]
+    [InlineData(0)]
+    public async Task AmbiguousWriteFailuresAndPermissionDenialsAreNeverReplayed(int status)
+    {
+        using var handler = new JwtAuthenticationHandler
+        {
+            Respond = _ => status == 0 ? throw new HttpRequestException("Connection lost after sending")
+                : new HttpResponseMessage((HttpStatusCode)status)
+        };
+        using var http = new HttpClient(handler);
+        Assert.False(await new NavidromeApiClient(http).StartScanAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(1, handler.LoginCount);
+        Assert.Single(handler.SubsonicRequests, url => new Uri(url).AbsolutePath == "/rest/startScan.view");
+        Assert.Single(handler.SubsonicRequests, url => new Uri(url).AbsolutePath == "/rest/getScanStatus.view");
+        Assert.Equal(2, handler.SubsonicRequests.Count);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(503)]
+    public async Task FailedNativeLoginNeverSendsASubsonicRequest(int status)
+    {
+        using var handler = new JwtAuthenticationHandler { LoginStatus = (HttpStatusCode)status };
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http);
+        Assert.Null(await client.PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(TargetLookupStatus.Transient, (await client.GetPlaylistsResult("http://navidrome.local", "user", "secret")).Status);
+        await Assert.ThrowsAsync<TargetLookupException>(() => client.GetArtistAlbumTitlesAsync(
+            "http://navidrome.local", "user", "secret", "artist", requireSuccessfulResponse: true));
+        Assert.Empty(handler.SubsonicRequests);
+    }
+
+    [Fact]
+    public async Task CancellingAQueuedJwtWaitDoesNotCancelTheSharedLoginOrCorruptItsGate()
+    {
+        using var handler = new JwtAuthenticationHandler { HoldLogin = true };
+        using var http = new HttpClient(handler);
+        var client = new NavidromeApiClient(http);
+        var first = client.PingAsync("http://navidrome.local", "user", "secret");
+        await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancelled = new CancellationTokenSource();
+        var second = client.PingAsync("http://navidrome.local", "user", "secret", cancelled.Token);
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
+        handler.ReleaseLogin.TrySetResult();
+        Assert.NotNull(await first);
+        Assert.NotNull(await client.PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Equal(1, handler.LoginCount);
+    }
+
+    [Fact]
+    public async Task ExpiredLoginJwtIsRejectedBeforeSendingAnySubsonicRequest()
+    {
+        using var handler = new JwtAuthenticationHandler { TokenFactory = index => CreateJwt(DateTimeOffset.UtcNow.AddHours(-1), index) };
+        using var http = new HttpClient(handler);
+        Assert.Null(await new NavidromeApiClient(http).PingAsync("http://navidrome.local", "user", "secret"));
+        Assert.Empty(handler.SubsonicRequests);
+    }
+
+    private sealed class JwtTestClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = DateTimeOffset.Parse("2026-10-28T12:00:00Z");
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private static string CreateJwt(DateTimeOffset expiresAt, int generation)
+    {
+        static string Encode(string text) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return Encode("{\"alg\":\"HS256\"}") + "." + Encode("{\"exp\":" + expiresAt.ToUnixTimeSeconds() + ",\"jti\":" + generation + "}") + ".signature";
+    }
+
+    private static HttpResponseMessage JwtSuccess()
+        => new(HttpStatusCode.OK) { Content = new StringContent("""{"subsonic-response":{"status":"ok","serverVersion":"0.64.2","type":"navidrome","playlists":{"playlist":[]},"playlist":{"id":"playlist-1","name":"List","entry":[]},"artist":{"album":[{"name":"Album"}]}}}""") };
+
+    private static HttpResponseMessage JwtRejection(bool applicationError)
+        => applicationError
+            ? new(HttpStatusCode.OK) { Content = new StringContent("""{"subsonic-response":{"status":"failed","error":{"code":40,"message":"Invalid JWT"}}}""") }
+            : new(HttpStatusCode.Unauthorized);
+
+    private sealed class JwtAuthenticationHandler : HttpMessageHandler
+    {
+        public string Token { get; private set; } = string.Empty;
+        public int LoginCount;
+        public List<string> LoginBodies { get; } = new();
+        public List<string> SubsonicRequests { get; } = new();
+        public Func<int, string> TokenFactory { get; set; } = index => CreateJwt(DateTimeOffset.UtcNow.AddHours(1), index);
+        public Func<int, HttpResponseMessage> Respond { get; set; } = _ => JwtSuccess();
+        public HttpStatusCode LoginStatus { get; set; } = HttpStatusCode.OK;
+        public bool HoldLogin { get; set; }
+        public TaskCompletionSource LoginStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseLogin { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/auth/login")
+            {
+                var index = Interlocked.Increment(ref LoginCount);
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                lock (LoginBodies) LoginBodies.Add(body);
+                LoginStarted.TrySetResult();
+                if (HoldLogin) await ReleaseLogin.Task.WaitAsync(cancellationToken);
+                Token = TokenFactory(index);
+                return new HttpResponseMessage(LoginStatus)
+                {
+                    Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { token = Token }))
+                };
+            }
+            int count;
+            lock (SubsonicRequests)
+            {
+                SubsonicRequests.Add(request.RequestUri.ToString());
+                count = SubsonicRequests.Count;
+            }
+            return Respond(count);
+        }
+    }
+
+    [Fact]
     public async Task CreateOrUpdatePlaylistAsync_AppendsWithUpdatePlaylistSongIdToAdd()
     {
         using var handler = new NavidromePlaylistHandler();
@@ -22,9 +250,7 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
             "Gold School",
             new[] { "song-1", "song-2" },
             existingPlaylistId: "playlist-1",
@@ -48,9 +274,7 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
             "Gold School",
             new[] { "song-1" },
             existingPlaylistId: null,
@@ -75,9 +299,7 @@ public sealed class NavidromeApiClientPlaylistTest
         var songIds = Enumerable.Range(1, 250).Select(index => $"track-{index}").ToList();
 
         var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
             "Gold School",
             songIds,
             existingPlaylistId: "playlist-1",
@@ -236,13 +458,11 @@ public sealed class NavidromeApiClientPlaylistTest
             var client = new NavidromeApiClient(httpClient);
 
             var updated = await client.UpdateArtistImageFromFileAsync(
-                "http://navidrome.local",
-                "user",
-                "pass",
-                "artist-1",
-                imagePath,
-                "image/jpeg",
-                CancellationToken.None);
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
+            "artist-1",
+            imagePath,
+            "image/jpeg",
+            CancellationToken.None);
 
             Assert.True(updated);
             Assert.Contains(handler.RequestedUrls, url => url.EndsWith("/auth/login", StringComparison.Ordinal));
@@ -289,9 +509,7 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
             "Gold School",
             new[] { "song-1" },
             existingPlaylistId: "gone",
@@ -314,9 +532,7 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var playlistId = await client.CreateOrUpdatePlaylistAsync(
-            "http://navidrome.local",
-            "user",
-            "pass",
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
             "Gold School",
             new[] { "song-1" },
             existingPlaylistId: "gone",
@@ -351,8 +567,12 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var ordered = await client.ReplacePlaylistTracksInOrderAsync(
-            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
-            "A reliable playlist description", ["song-2", "song-1"], CancellationToken.None);
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
+            "playlist-1",
+            "Gold School",
+            "A reliable playlist description",
+            ["song-2", "song-1"],
+            CancellationToken.None);
 
         Assert.True(ordered);
         Assert.Equal(["song-2", "song-1"], handler.StoredSongIds);
@@ -370,8 +590,12 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var ordered = await client.ReplacePlaylistTracksInOrderAsync(
-            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
-            null, ["song-2", "song-1"], CancellationToken.None);
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
+            "playlist-1",
+            "Gold School",
+            null,
+            ["song-2", "song-1"],
+            CancellationToken.None);
 
         Assert.False(ordered);
         Assert.Equal(["song-1", "song-2"], handler.StoredSongIds);
@@ -386,8 +610,12 @@ public sealed class NavidromeApiClientPlaylistTest
         var client = new NavidromeApiClient(httpClient);
 
         var ordered = await client.ReplacePlaylistTracksInOrderAsync(
-            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
-            null, ["song-2", "song-1"], CancellationToken.None);
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
+            "playlist-1",
+            "Gold School",
+            null,
+            ["song-2", "song-1"],
+            CancellationToken.None);
 
         Assert.False(ordered);
         Assert.Equal(["song-1", "song-2"], handler.StoredSongIds);
@@ -404,8 +632,12 @@ public sealed class NavidromeApiClientPlaylistTest
         var desired = handler.StoredSongIds.AsEnumerable().Reverse().ToList();
 
         var ordered = await client.ReplacePlaylistTracksInOrderAsync(
-            "http://navidrome.local", "user", "pass", "playlist-1", "Gold School",
-            null, desired, CancellationToken.None);
+            new NavidromeTargetConnection("http://navidrome.local", "user", "pass"),
+            "playlist-1",
+            "Gold School",
+            null,
+            desired,
+            CancellationToken.None);
 
         Assert.True(ordered);
         Assert.Equal(desired, handler.StoredSongIds);

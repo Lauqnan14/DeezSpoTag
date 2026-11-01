@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -66,35 +67,47 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
 
         if (!string.IsNullOrWhiteSpace(playlistId))
         {
-            // Deezer's playlist endpoint is not scoped to the caller's library, so one GET answers
-            // both "is it there" and "what is it called".
-            var byId = await _transport.GetAsync(
-                WithToken($"{ApiBase}/playlist/{Uri.EscapeDataString(playlistId)}", session!),
-                headers: Token(session!),
-                cancellationToken: cancellationToken);
-            if (!byId.Reached)
-            {
-                return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
-            }
-
-            if (HasApiError(byId))
-            {
-                return TargetPlaylistLookup<string>.Missing();
-            }
-
-            var id = byId.TryParseJson()?.ReadString("id");
-            return string.IsNullOrWhiteSpace(id)
-                ? TargetPlaylistLookup<string>.Missing()
-                : TargetPlaylistLookup<string>.Found(id);
+            return await FindPlaylistByIdAsync(playlistId, session!, cancellationToken);
         }
 
+        return await FindPlaylistByNameAsync(name, session!, cancellationToken);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByIdAsync(
+        string playlistId, DeezerTargetSession session, CancellationToken cancellationToken)
+    {
+        // Deezer's playlist endpoint is not scoped to the caller's library, so one GET answers
+        // both "is it there" and "what is it called".
+        var byId = await _transport.GetAsync(
+            WithToken($"{ApiBase}/playlist/{Uri.EscapeDataString(playlistId)}", session),
+            headers: Token(session),
+            cancellationToken: cancellationToken);
+        if (!byId.Reached)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
+        }
+
+        if (HasApiError(byId))
+        {
+            return TargetPlaylistLookup<string>.Missing();
+        }
+
+        var id = byId.TryParseJson()?.ReadString("id");
+        return string.IsNullOrWhiteSpace(id)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(id);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByNameAsync(
+        string name, DeezerTargetSession session, CancellationToken cancellationToken)
+    {
         var wanted = name?.Trim() ?? string.Empty;
         if (wanted.Length == 0)
         {
             return TargetPlaylistLookup<string>.Missing();
         }
 
-        var userId = session!.UserId ?? await ResolveUserIdAsync(session, cancellationToken);
+        var userId = session.UserId ?? await ResolveUserIdAsync(session, cancellationToken);
         if (string.IsNullOrWhiteSpace(userId))
         {
             return TargetPlaylistLookup<string>.Unavailable();
@@ -109,7 +122,7 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
                 cancellationToken: cancellationToken);
             if (!page.Reached)
             {
-                return TargetPlaylistLookup<string>.Unavailable(page.Status == 0 ? null : page.Status);
+                return UnavailablePlaylistPage(page.Status);
             }
 
             if (page.TryParseJson() is not { } json)
@@ -117,10 +130,7 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
                 return TargetPlaylistLookup<string>.Unavailable();
             }
 
-            var matchId = json.ReadArray("data")
-                .Where(playlist => string.Equals(playlist.ReadString("title")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase))
-                .Select(playlist => playlist.ReadString("id"))
-                .FirstOrDefault(id => id is { Length: > 0 });
+            var matchId = FindNamedPlaylist(json, wanted);
             if (matchId is not null)
             {
                 return TargetPlaylistLookup<string>.Found(matchId);
@@ -143,6 +153,17 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
         }
     }
 
+    private static TargetPlaylistLookup<string> UnavailablePlaylistPage(int status)
+        => TargetPlaylistLookup<string>.Unavailable(status == 0 ? null : status);
+
+    private static string? FindNamedPlaylist(JsonElement json, string wanted)
+    {
+        return json.ReadArray("data")
+                .Where(playlist => string.Equals(playlist.ReadString("title")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase))
+                .Select(playlist => playlist.ReadString("id"))
+                .FirstOrDefault(id => id is { Length: > 0 });
+    }
+
     public async Task<string?> CreatePlaylistAsync(string name, string? description, CancellationToken cancellationToken)
     {
         var session = await ResolveAsync(cancellationToken);
@@ -156,7 +177,7 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
         {
             // Deezer's create endpoint accepts a description, but the read endpoint returns an
             // object for it, so it is only sent when there is one to send.
-            fields["description"] = description!;
+            fields["description"] = description;
         }
 
         var created = await _transport.PostAsync(
@@ -241,38 +262,13 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
 
         var headers = Token(session!);
         var escaped = Uri.EscapeDataString(write.PlaylistId);
-        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
 
         if (!write.AppendMissingOnly)
         {
-            var duplicates = write.CurrentItemIds
-                .GroupBy(static id => id, StringComparer.Ordinal)
-                .Where(static group => group.Count() > 1)
-                .Select(static group => group.Key)
-                .ToHashSet(StringComparer.Ordinal);
-
-            foreach (var stale in write.CurrentItemIds.Where(id => !wanted.Contains(id)))
+            var removalFailure = await RemoveStaleItemsAsync(write, session!, cancellationToken);
+            if (removalFailure is not null)
             {
-                if (duplicates.Contains(stale))
-                {
-                    // Deezer's delete addresses the catalog track, not the entry, so removing a
-                    // track that is present twice removes both copies. Refuse rather than lose one.
-                    return PlaylistMembershipWriteResult.Failed(
-                        "Deezer holds a duplicated track that is no longer wanted. "
-                        + "Deezer can only remove every copy of a track, so nothing was written.");
-                }
-
-                var removed = await _transport.DeleteAsync(
-                    WithToken($"{ApiBase}/playlist/{escaped}/tracks?songs={Uri.EscapeDataString(stale)}", session!),
-                    headers,
-                    cancellationToken);
-                if (!removed.Success)
-                {
-                    return PlaylistMembershipWriteResult.Failed(
-                        removed.IsAuthRejection
-                            ? "Deezer rejected the removal; reconnect the account in Login."
-                            : "Deezer failed to write the playlist.");
-                }
+                return removalFailure;
             }
         }
 
@@ -322,6 +318,46 @@ public sealed class DeezerPlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         return PlaylistMembershipWriteResult.Ok(added, 0);
+    }
+
+    private async Task<PlaylistMembershipWriteResult?> RemoveStaleItemsAsync(
+        PlaylistMembershipWrite write, DeezerTargetSession session, CancellationToken cancellationToken)
+    {
+        var headers = Token(session);
+        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
+        var escaped = Uri.EscapeDataString(write.PlaylistId);
+
+        var duplicates = write.CurrentItemIds
+            .GroupBy(static id => id, StringComparer.Ordinal)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var stale in write.CurrentItemIds.Where(id => !wanted.Contains(id)))
+        {
+            if (duplicates.Contains(stale))
+            {
+                // Deezer's delete addresses the catalog track, not the entry, so removing a
+                // track that is present twice removes both copies. Refuse rather than lose one.
+                return PlaylistMembershipWriteResult.Failed(
+                    "Deezer holds a duplicated track that is no longer wanted. "
+                    + "Deezer can only remove every copy of a track, so nothing was written.");
+            }
+
+            var removed = await _transport.DeleteAsync(
+                WithToken($"{ApiBase}/playlist/{escaped}/tracks?songs={Uri.EscapeDataString(stale)}", session),
+                headers,
+                cancellationToken);
+            if (!removed.Success)
+            {
+                return PlaylistMembershipWriteResult.Failed(
+                    removed.IsAuthRejection
+                        ? "Deezer rejected the removal; reconnect the account in Login."
+                        : "Deezer failed to write the playlist.");
+            }
+        }
+
+        return null;
     }
 
     private async Task<DeezerTargetSession?> ResolveAsync(CancellationToken cancellationToken)

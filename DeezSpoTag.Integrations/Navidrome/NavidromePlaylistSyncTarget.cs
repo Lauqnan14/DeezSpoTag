@@ -121,9 +121,7 @@ public sealed class NavidromePlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         var playlistId = await _client.CreateOrUpdatePlaylistAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
+            new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
             write.PlaylistName,
             write.OrderedItemIds,
             string.IsNullOrWhiteSpace(write.PlaylistId) ? null : write.PlaylistId,

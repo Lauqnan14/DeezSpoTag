@@ -1,3 +1,4 @@
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
@@ -884,7 +885,7 @@ public class AutoPlaylistsApiController : ControllerBase
         [FromQuery] string? tag,
         CancellationToken cancellationToken)
     {
-        var proxyContext = await ResolvePlaylistImageProxyContextAsync(server, path, tag);
+        var proxyContext = await ResolvePlaylistImageProxyContextAsync(server, path, tag, cancellationToken);
         if (proxyContext.ErrorResult != null)
         {
             return proxyContext.ErrorResult;
@@ -931,7 +932,7 @@ public class AutoPlaylistsApiController : ControllerBase
         [FromHeader(Name = "Range")] string? rangeHeader,
         CancellationToken cancellationToken)
     {
-        var proxyContext = await ResolvePlaylistImageProxyContextAsync(server, path, tag: null);
+        var proxyContext = await ResolvePlaylistImageProxyContextAsync(server, path, tag: null, cancellationToken);
         if (proxyContext.ErrorResult != null)
         {
             return proxyContext.ErrorResult;
@@ -970,7 +971,8 @@ public class AutoPlaylistsApiController : ControllerBase
     private async Task<(string TargetUrl, IActionResult? ErrorResult)> ResolvePlaylistImageProxyContextAsync(
         string? server,
         string? path,
-        string? tag)
+        string? tag,
+        CancellationToken cancellationToken)
     {
         var normalizedServer = (server ?? PlexServer).Trim().ToLowerInvariant();
         var state = await _authService.LoadAsync();
@@ -1006,14 +1008,22 @@ public class AutoPlaylistsApiController : ControllerBase
                 return (string.Empty, NotFound());
             }
 
-            var targetUrl = _navidromeApiClient.BuildCoverArtRequestUrl(
-                navidrome.Url,
-                navidrome.Username,
-                navidrome.Password,
-                path);
-            return string.IsNullOrWhiteSpace(targetUrl)
-                ? (string.Empty, BadRequest("Invalid path"))
-                : (targetUrl, null);
+            try
+            {
+                var targetUrl = await _navidromeApiClient.BuildCoverArtRequestUrlAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    path, cancellationToken: cancellationToken);
+                return string.IsNullOrWhiteSpace(targetUrl)
+                    ? (string.Empty, BadRequest("Invalid path"))
+                    : (targetUrl, null);
+            }
+            catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+            {
+                _logger?.LogWarning(ex, "Navidrome playlist artwork authentication failed.");
+                return (string.Empty, StatusCode(StatusCodes.Status502BadGateway));
+            }
         }
 
         var normalizedPath = NormalizePlexImagePath(path);

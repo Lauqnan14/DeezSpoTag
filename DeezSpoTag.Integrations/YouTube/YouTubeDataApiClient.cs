@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Security;
 using System;
+using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -32,10 +33,14 @@ namespace DeezSpoTag.Integrations.YouTube;
 public sealed class YouTubeDataApiClient
 {
     public const string ServiceName = "ytmusic";
-    public const string DefaultTokenUrl = "https://oauth2.googleapis.com/token";
-    public const string DefaultAuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth";
-    public const string DefaultRevokeUrl = "https://oauth2.googleapis.com/revoke";
-    private const string ApiBase = "https://www.googleapis.com/youtube/v3";
+    public static readonly string DefaultTokenUrl = new UriBuilder(Uri.UriSchemeHttps, "oauth2.googleapis.com") { Path = "/token" }.Uri.AbsoluteUri;
+    public static readonly string DefaultAuthorizeUrl = new UriBuilder(Uri.UriSchemeHttps, "accounts.google.com") { Path = "/o/oauth2/v2/auth" }.Uri.AbsoluteUri;
+    public static readonly string DefaultRevokeUrl = new UriBuilder(Uri.UriSchemeHttps, "oauth2.googleapis.com") { Path = "/revoke" }.Uri.AbsoluteUri;
+    private readonly string _apiBase;
+    private readonly string _authorizeUrl;
+    private readonly string _tokenUrl;
+    private readonly string _revokeUrl;
+    private readonly string _uploadUrl;
 
     /// <summary>
     /// A read stops being trustworthy well before this. It exists only so a provider that keeps
@@ -59,8 +64,13 @@ public sealed class YouTubeDataApiClient
     /// </summary>
     public TimeSpan AddPacing { get; set; } = TimeSpan.FromSeconds(1);
 
-    public YouTubeDataApiClient(HttpClient httpClient, ILogger<YouTubeDataApiClient>? logger = null)
+    public YouTubeDataApiClient(HttpClient httpClient, ILogger<YouTubeDataApiClient>? logger = null, IConfiguration? configuration = null)
     {
+        _apiBase = configuration?["YouTube:DataApiBaseUrl"] ?? new UriBuilder(Uri.UriSchemeHttps, "www.googleapis.com") { Path = "/youtube/v3" }.Uri.AbsoluteUri;
+        _authorizeUrl = configuration?["YouTube:AuthorizeUrl"] ?? DefaultAuthorizeUrl;
+        _tokenUrl = configuration?["YouTube:TokenUrl"] ?? DefaultTokenUrl;
+        _revokeUrl = configuration?["YouTube:RevokeUrl"] ?? DefaultRevokeUrl;
+        _uploadUrl = configuration?["YouTube:UploadUrl"] ?? new UriBuilder(Uri.UriSchemeHttps, "www.googleapis.com") { Path = "/upload/youtube/v3/playlistImages", Query = "uploadType=multipart&part=snippet" }.Uri.AbsoluteUri;
         _httpClient = httpClient;
         _logger = logger;
     }
@@ -95,7 +105,7 @@ public sealed class YouTubeDataApiClient
             query.Add(new KeyValuePair<string, string>("login_hint", loginHint.Trim()));
         }
 
-        var builder = new UriBuilder($"{DefaultAuthorizeUrl}?{BuildQuery(query)}");
+        var builder = new UriBuilder($"{_authorizeUrl}?{BuildQuery(query)}");
         return builder.Uri.ToString();
     }
 
@@ -181,7 +191,7 @@ public sealed class YouTubeDataApiClient
         {
             using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = token });
             using var response = await _httpClient.PostAsync(
-                string.IsNullOrWhiteSpace(revokeUrl) ? DefaultRevokeUrl : revokeUrl,
+                string.IsNullOrWhiteSpace(revokeUrl) ? _revokeUrl : revokeUrl,
                 content,
                 cancellationToken);
             return response.IsSuccessStatusCode;
@@ -221,28 +231,7 @@ public sealed class YouTubeDataApiClient
 
             var response = await GetAsync("playlists", query, accessToken, cancellationToken);
             var items = response?.Items;
-            if (items is not null)
-            {
-                foreach (var item in items)
-                {
-                    var playlist = new YouTubePlaylist(
-                        item.Id ?? string.Empty,
-                        item.Snippet?.Title ?? string.Empty,
-                        item.Snippet?.Description,
-                        item.Snippet?.Thumbnails?.Maxres?.Url ?? item.Snippet?.Thumbnails?.Medium?.Url,
-                        item.ContentDetails?.ItemCount);
-                    if (string.IsNullOrWhiteSpace(playlist.Id))
-                    {
-                        continue;
-                    }
-
-                    collected.Add(playlist);
-                    if (collected.Count >= maxResults)
-                    {
-                        return collected;
-                    }
-                }
-            }
+            if (AppendPlaylists(items, collected, maxResults)) return collected;
 
             // A body with no items array is read as an empty list, exactly as before: this is the
             // playlist LIST, where an unrecognised response means "nothing this call can offer"
@@ -263,6 +252,21 @@ public sealed class YouTubeDataApiClient
         }
 
         return collected;
+    }
+
+    private static bool AppendPlaylists(List<YouTubePlaylistPayload>? items, List<YouTubePlaylist> collected, int maxResults)
+    {
+        if (items is null) return false;
+        foreach (var item in items)
+        {
+            var playlist = new YouTubePlaylist(item.Id ?? string.Empty, item.Snippet?.Title ?? string.Empty,
+                item.Snippet?.Description, item.Snippet?.Thumbnails?.Maxres?.Url ?? item.Snippet?.Thumbnails?.Medium?.Url,
+                item.ContentDetails?.ItemCount);
+            if (string.IsNullOrWhiteSpace(playlist.Id)) continue;
+            collected.Add(playlist);
+            if (collected.Count >= maxResults) return true;
+        }
+        return false;
     }
 
     public async Task<YouTubePlaylist?> GetPlaylistAsync(
@@ -302,36 +306,27 @@ public sealed class YouTubeDataApiClient
         if (string.IsNullOrWhiteSpace(accessToken))
             return PlaylistMetadataWriteResult.Failed(write, "YouTube Music is not connected.");
         if (write.Description is not null)
-        {
-            try
-            {
-                var (applied, message) = await UpdatePlaylistDescriptionAsync(accessToken, write, cancellationToken).ConfigureAwait(false);
-                description = applied ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
-                if (message is not null) messages.Add(message);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or TimeoutException
-                || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
-            {
-                description = PlaylistMetadataFieldStatus.Failed;
-                messages.Add("YouTube playlist description request did not complete.");
-            }
-        }
+            description = await WriteMetadataFieldAsync(() => UpdatePlaylistDescriptionAsync(accessToken, write, cancellationToken), "description", messages, cancellationToken).ConfigureAwait(false);
         if (write.Artwork is not null)
-        {
-            try
-            {
-                var (applied, message) = await UpdatePlaylistArtworkAsync(accessToken, write, cancellationToken).ConfigureAwait(false);
-                artwork = applied ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
-                if (message is not null) messages.Add(message);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or TimeoutException
-                || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
-            {
-                artwork = PlaylistMetadataFieldStatus.Failed;
-                messages.Add("YouTube playlist artwork request did not complete.");
-            }
-        }
+            artwork = await WriteMetadataFieldAsync(() => UpdatePlaylistArtworkAsync(accessToken, write, cancellationToken), "artwork", messages, cancellationToken).ConfigureAwait(false);
         return new(description, artwork, messages.Count == 0 ? null : string.Join(" ", messages));
+    }
+
+    private static async Task<PlaylistMetadataFieldStatus> WriteMetadataFieldAsync(
+        Func<Task<(bool Applied, string? Message)>> update, string field, List<string> messages, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (applied, message) = await update().ConfigureAwait(false);
+            if (message is not null) messages.Add(message);
+            return applied ? PlaylistMetadataFieldStatus.Applied : PlaylistMetadataFieldStatus.Failed;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TimeoutException
+            || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            messages.Add($"YouTube playlist {field} request did not complete.");
+            return PlaylistMetadataFieldStatus.Failed;
+        }
     }
 
     private async Task<(bool Applied, string? Message)> UpdatePlaylistDescriptionAsync(
@@ -387,7 +382,8 @@ public sealed class YouTubeDataApiClient
         media.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
         content.Add(media);
         using var request = new HttpRequestMessage(imageId is null ? HttpMethod.Post : HttpMethod.Put,
-            "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=multipart&part=snippet") { Content = content };
+            _uploadUrl)
+        { Content = content };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -477,24 +473,7 @@ public sealed class YouTubeDataApiClient
                 return null;
             }
 
-            foreach (var item in response.Items)
-            {
-                var parsed = new YouTubePlaylistItem(
-                    item.Id ?? string.Empty,
-                    item.Snippet?.ResourceId?.VideoId ?? string.Empty,
-                    item.Snippet?.Title ?? string.Empty,
-                    item.Snippet is null ? null : int.TryParse(item.Snippet.Position, NumberStyles.Integer, CultureInfo.InvariantCulture, out var position) ? position : null);
-                if (string.IsNullOrWhiteSpace(parsed.VideoId))
-                {
-                    continue;
-                }
-
-                collected.Add(parsed);
-                if (collected.Count >= maxResults)
-                {
-                    return collected;
-                }
-            }
+            if (AppendPlaylistItems(response.Items, collected, maxResults)) return collected;
 
             var next = response.NextPageToken;
             if (string.IsNullOrWhiteSpace(next))
@@ -518,6 +497,21 @@ public sealed class YouTubeDataApiClient
             LogSanitizer.OneLine(playlistId),
             MaxPlaylistPages);
         return null;
+    }
+
+    private static bool AppendPlaylistItems(List<YouTubePlaylistPayload> items, List<YouTubePlaylistItem> collected, int maxResults)
+    {
+        foreach (var item in items)
+        {
+            int? position = null;
+            if (item.Snippet is not null && int.TryParse(item.Snippet.Position, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedPosition)) position = parsedPosition;
+            var parsed = new YouTubePlaylistItem(item.Id ?? string.Empty, item.Snippet?.ResourceId?.VideoId ?? string.Empty,
+                item.Snippet?.Title ?? string.Empty, position);
+            if (string.IsNullOrWhiteSpace(parsed.VideoId)) continue;
+            collected.Add(parsed);
+            if (collected.Count >= maxResults) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -621,9 +615,9 @@ public sealed class YouTubeDataApiClient
         {
             return JsonSerializer.Deserialize<YouTubeListResponse>(body, SerializerOptions);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            _logger?.LogWarning("YouTube {Path} returned a body that could not be read.", path);
+            _logger?.LogWarning(ex, "YouTube {Path} returned a body that could not be read.", path);
             return null;
         }
     }
@@ -635,7 +629,7 @@ public sealed class YouTubeDataApiClient
         string? jsonBody,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(method, $"{ApiBase}/{pathAndQuery}");
+        using var request = new HttpRequestMessage(method, $"{_apiBase.TrimEnd('/')}/{pathAndQuery}");
         if (!string.IsNullOrWhiteSpace(accessToken))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -649,8 +643,8 @@ public sealed class YouTubeDataApiClient
         return await _httpClient.SendAsync(request, cancellationToken);
     }
 
-    private static string NormalizeTokenUrl(string? tokenUrl)
-        => string.IsNullOrWhiteSpace(tokenUrl) ? DefaultTokenUrl : tokenUrl.Trim();
+    private string NormalizeTokenUrl(string? tokenUrl)
+        => string.IsNullOrWhiteSpace(tokenUrl) ? _tokenUrl : tokenUrl.Trim();
 
     private static string BuildQuery(IEnumerable<KeyValuePair<string, string>> values)
         => string.Join('&', values.Select(pair =>

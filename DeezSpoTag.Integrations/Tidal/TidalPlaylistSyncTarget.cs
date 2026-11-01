@@ -18,7 +18,7 @@ public sealed record TidalTargetCredentials(string AccessToken, string? CountryC
     /// account's country is required. Falls back to the widely valid default rather than failing
     /// a pass outright, since a playlist read is still more useful than none.
     /// </summary>
-    public string Country => string.IsNullOrWhiteSpace(CountryCode) ? "US" : CountryCode!.Trim().ToUpperInvariant();
+    public string Country => string.IsNullOrWhiteSpace(CountryCode) ? "US" : CountryCode.Trim().ToUpperInvariant();
 }
 
 /// <summary>
@@ -120,28 +120,40 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
             return TargetPlaylistLookup<string>.Unavailable();
         }
 
-        var headers = Headers(credentials!);
-
         if (!string.IsNullOrWhiteSpace(playlistId))
         {
-            // The single-resource route is not owner-filtered, so it also reaches a playlist the
-            // account can read but does not own.
-            var byId = await _transport.GetAsync(
-                $"{ApiBase}/playlists/{Uri.EscapeDataString(playlistId)}?countryCode={credentials!.Country}",
-                headers,
-                cancellationToken);
-            if (!byId.Reached)
-            {
-                return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
-            }
-
-            var data = byId.TryParseJson()?.ReadObject("data");
-            var id = data?.ReadString("id");
-            return string.IsNullOrWhiteSpace(id)
-                ? TargetPlaylistLookup<string>.Missing()
-                : TargetPlaylistLookup<string>.Found(id);
+            return await FindPlaylistByIdAsync(playlistId, credentials!, cancellationToken);
         }
 
+        return await FindPlaylistByNameAsync(name, credentials!, cancellationToken);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByIdAsync(
+        string playlistId, TidalTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
+        // The single-resource route is not owner-filtered, so it also reaches a playlist the
+        // account can read but does not own.
+        var byId = await _transport.GetAsync(
+            $"{ApiBase}/playlists/{Uri.EscapeDataString(playlistId)}?countryCode={credentials.Country}",
+            headers,
+            cancellationToken);
+        if (!byId.Reached)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byId.Status == 0 ? null : byId.Status);
+        }
+
+        var data = byId.TryParseJson()?.ReadObject("data");
+        var id = data?.ReadString("id");
+        return string.IsNullOrWhiteSpace(id)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(id);
+    }
+
+    private async Task<TargetPlaylistLookup<string>> FindPlaylistByNameAsync(
+        string name, TidalTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
         var wanted = name?.Trim() ?? string.Empty;
         if (wanted.Length == 0)
         {
@@ -150,7 +162,7 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
 
         // filter[owners.id]=me is the owner's own playlists, which is the collection a destination
         // is written to.
-        var url = $"{ApiBase}/playlists?filter[owners.id]=me&countryCode={credentials!.Country}"
+        var url = $"{ApiBase}/playlists?filter[owners.id]=me&countryCode={credentials.Country}"
             + $"&include=coverArt&page[limit]=100";
 
         while (!string.IsNullOrWhiteSpace(url))
@@ -166,18 +178,17 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
                 return TargetPlaylistLookup<string>.Unavailable();
             }
 
-            foreach (var playlist in json.ReadArray("data")
-                         .Where(playlist => string.Equals(
-                             playlist.ReadString("attributes.name")?.Trim(),
-                             wanted,
-                             StringComparison.OrdinalIgnoreCase)
-                             && playlist.ReadString("id") is { Length: > 0 }))
+            var matchId = json.ReadArray("data")
+                .Where(playlist => string.Equals(playlist.ReadString("attributes.name")?.Trim(), wanted, StringComparison.OrdinalIgnoreCase))
+                .Select(playlist => playlist.ReadString("id"))
+                .FirstOrDefault(id => id is { Length: > 0 });
+            if (matchId is not null)
             {
-                return TargetPlaylistLookup<string>.Found(playlist.ReadString("id")!);
+                return TargetPlaylistLookup<string>.Found(matchId);
             }
 
             var next = json.ReadString("links.next");
-            url = string.IsNullOrWhiteSpace(next) ? null : next;
+            url = NormalizeNextPageUrl(next);
         }
 
         return TargetPlaylistLookup<string>.Missing();
@@ -199,7 +210,7 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
         };
         if (!string.IsNullOrWhiteSpace(description))
         {
-            attributes["description"] = description!;
+            attributes["description"] = description;
         }
 
         var created = await _transport.PostAsync(
@@ -237,56 +248,13 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         var headers = Headers(credentials!);
-        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
 
         if (!write.AppendMissingOnly)
         {
-            var (items, failed) = await ReadItemsAsync(write.PlaylistId, cancellationToken);
-            if (failed || items is null)
+            var removalFailure = await RemoveStaleItemsAsync(write, credentials!, cancellationToken);
+            if (removalFailure is not null)
             {
-                return PlaylistMembershipWriteResult.Failed(
-                    "TIDAL playlist could not be read, so nothing was written.");
-            }
-
-            foreach (var stale in items.Where(item => !wanted.Contains(item.CatalogTrackId)))
-            {
-                if (string.IsNullOrWhiteSpace(stale.EntryId))
-                {
-                    // Without the item id the deletion would address the catalog track and take out
-                    // every copy. Refuse rather than lose one.
-                    return PlaylistMembershipWriteResult.Failed(
-                        "TIDAL did not return the playlist entry id for a track that is no longer "
-                        + "wanted, so nothing was written.");
-                }
-
-                var removed = await _transport.DeleteAsync(
-                    $"{ApiBase}/playlists/{Uri.EscapeDataString(write.PlaylistId)}/relationships/items"
-                    + $"?countryCode={credentials!.Country}",
-                    headers: WithIdempotencyKey(headers),
-                    cancellationToken: cancellationToken,
-                    jsonBody: JsonBody(new Dictionary<string, object>(StringComparer.Ordinal)
-                    {
-                        ["data"] = new[]
-                        {
-                            new Dictionary<string, object>(StringComparer.Ordinal)
-                            {
-                                ["type"] = "tracks",
-                                ["id"] = stale.CatalogTrackId,
-                                ["meta"] = new Dictionary<string, object>(StringComparer.Ordinal)
-                                {
-                                    ["itemId"] = stale.EntryId!,
-                                },
-                            },
-                        },
-                    }));
-
-                if (!removed.Success)
-                {
-                    return PlaylistMembershipWriteResult.Failed(
-                        removed.IsAuthRejection
-                            ? "TIDAL rejected the removal. Reconnect it in Login."
-                            : "TIDAL failed to write the playlist.");
-                }
+                return removalFailure;
             }
         }
 
@@ -338,6 +306,63 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
         return PlaylistMembershipWriteResult.Ok(added, 0);
     }
 
+    private async Task<PlaylistMembershipWriteResult?> RemoveStaleItemsAsync(
+        PlaylistMembershipWrite write, TidalTargetCredentials credentials, CancellationToken cancellationToken)
+    {
+        var headers = Headers(credentials);
+        var wanted = new HashSet<string>(write.OrderedItemIds, StringComparer.Ordinal);
+
+        var (items, failed) = await ReadItemsAsync(write.PlaylistId, cancellationToken);
+        if (failed || items is null)
+        {
+            return PlaylistMembershipWriteResult.Failed(
+                "TIDAL playlist could not be read, so nothing was written.");
+        }
+
+        foreach (var stale in items.Where(item => !wanted.Contains(item.CatalogTrackId)))
+        {
+            if (string.IsNullOrWhiteSpace(stale.EntryId))
+            {
+                // Without the item id the deletion would address the catalog track and take out
+                // every copy. Refuse rather than lose one.
+                return PlaylistMembershipWriteResult.Failed(
+                    "TIDAL did not return the playlist entry id for a track that is no longer "
+                    + "wanted, so nothing was written.");
+            }
+
+            var removed = await _transport.DeleteAsync(
+                $"{ApiBase}/playlists/{Uri.EscapeDataString(write.PlaylistId)}/relationships/items"
+                + $"?countryCode={credentials.Country}",
+                headers: WithIdempotencyKey(headers),
+                cancellationToken: cancellationToken,
+                jsonBody: JsonBody(new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["data"] = new[]
+                    {
+                        new Dictionary<string, object>(StringComparer.Ordinal)
+                        {
+                            ["type"] = "tracks",
+                            ["id"] = stale.CatalogTrackId,
+                            ["meta"] = new Dictionary<string, object>(StringComparer.Ordinal)
+                            {
+                                ["itemId"] = stale.EntryId,
+                            },
+                        },
+                    },
+                }));
+
+            if (!removed.Success)
+            {
+                return PlaylistMembershipWriteResult.Failed(
+                    removed.IsAuthRejection
+                        ? "TIDAL rejected the removal. Reconnect it in Login."
+                        : "TIDAL failed to write the playlist.");
+            }
+        }
+
+        return null;
+    }
+
     private sealed record TidalPlaylistItem(string EntryId, string CatalogTrackId);
 
     /// <summary>
@@ -350,6 +375,15 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
     /// failure means the engine can never populate what it just created.
     /// </para>
     /// </summary>
+    private static string? NormalizeNextPageUrl(string? next)
+        => string.IsNullOrWhiteSpace(next) ? null : next;
+
+    private static bool IsCompleteOrPopulatedPage(int count, string? nextUrl)
+        => count != 0 || nextUrl is null;
+
+    private static bool CanReadPlaylistPage(HashSet<string> visited, string url, int pages)
+        => visited.Add(url) && pages <= MaxPlaylistPages;
+
     private async Task<(IReadOnlyList<TidalPlaylistItem>? Items, bool Failed)> ReadItemsAsync(
         string playlistId,
         CancellationToken cancellationToken)
@@ -373,7 +407,8 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
             // Asking for a URL already asked for would repeat the same answer forever, and a page
             // budget stops a provider that invents a fresh one each time. Either way the read is
             // reported as failed rather than as the partial membership collected so far.
-            if (!visited.Add(url) || ++pages > MaxPlaylistPages)
+            pages++;
+            if (!CanReadPlaylistPage(visited, url, pages))
             {
                 return (null, true);
             }
@@ -390,22 +425,15 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
             }
 
             var rows = json.ReadArray("data");
-            foreach (var row in rows)
+            if (!AppendItems(rows, items))
             {
-                if (row.ReadString("id") is not { Length: > 0 } trackId)
-                {
-                    return (null, true);
-                }
-
-                items.Add(new TidalPlaylistItem(
-                    row.ReadString("meta.itemId") ?? string.Empty,
-                    trackId));
+                return (null, true);
             }
 
             var next = json.ReadString("links.next");
-            url = string.IsNullOrWhiteSpace(next) ? null : next;
+            url = NormalizeNextPageUrl(next);
 
-            if (rows.Count != 0 || url is null)
+            if (IsCompleteOrPopulatedPage(rows.Count, url))
             {
                 // Either content came back, or the list is complete. The latter includes the
                 // empty playlist: a full read that ends with nothing in it is empty, not broken.
@@ -424,6 +452,22 @@ public sealed class TidalPlaylistSyncTarget : IPlaylistSyncTarget
         }
 
         return (items, false);
+    }
+
+    private static bool AppendItems(
+        IReadOnlyList<System.Text.Json.JsonElement> rows, List<TidalPlaylistItem> items)
+    {
+        foreach (var row in rows)
+        {
+            if (row.ReadString("id") is not { Length: > 0 } trackId)
+            {
+                return false;
+            }
+
+            items.Add(new TidalPlaylistItem(row.ReadString("meta.itemId") ?? string.Empty, trackId));
+        }
+
+        return true;
     }
 
     private async Task<TidalTargetCredentials?> ResolveAsync(CancellationToken cancellationToken)

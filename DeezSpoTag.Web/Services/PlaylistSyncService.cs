@@ -611,9 +611,7 @@ public sealed class PlaylistSyncService
         }
 
         await _jellyfinApiClient.UpdateItemMetadataAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
+            new JellyfinTargetConnection(jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId),
             playlistId,
             request.PlaylistName,
             request.Description,
@@ -644,9 +642,7 @@ public sealed class PlaylistSyncService
 
         var existingPlaylistId = await FindGeneratedNavidromePlaylistIdAsync(navidrome, request, cancellationToken);
         var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
+            new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
             request.PlaylistName,
             itemIds,
             existingPlaylistId,
@@ -2254,9 +2250,7 @@ public sealed class PlaylistSyncService
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
-                navidrome.Url,
-                navidrome.Username,
-                navidrome.Password,
+                new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
                 ResolvePlaylistName(playlist),
                 songIds: [],
                 existingPlaylistId: null,
@@ -3442,9 +3436,7 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
+            new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
             ResolvePlaylistName(playlist),
             Array.Empty<string>(),
             existingPlaylistId,
@@ -3883,9 +3875,7 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         return await _navidromeApiClient.ReplacePlaylistTracksInOrderAsync(
-            navidrome.Url,
-            navidrome.Username,
-            navidrome.Password,
+            new NavidromeTargetConnection(navidrome.Url, navidrome.Username, navidrome.Password),
             playlistId,
             playlistName,
             playlistComment,
@@ -4549,9 +4539,7 @@ public sealed class PlaylistSyncService
         var playlistName = ResolvePlaylistName(playlist);
         var description = string.IsNullOrWhiteSpace(playlist.Description) ? null : playlist.Description.Trim();
         var updated = await _jellyfinApiClient.UpdateItemMetadataAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
+            new JellyfinTargetConnection(jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId),
             playlistId,
             playlistName,
             description,

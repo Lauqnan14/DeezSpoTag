@@ -176,21 +176,26 @@ public class JellyfinApiClient
 
         foreach (var task in document.RootElement.EnumerateArray())
         {
-            var key = task.TryGetProperty("Key", out var keyProperty) ? keyProperty.GetString() ?? string.Empty : string.Empty;
-            var name = task.TryGetProperty("Name", out var nameProperty) ? nameProperty.GetString() ?? string.Empty : string.Empty;
-            var state = task.TryGetProperty("State", out var stateProperty) ? stateProperty.GetString() ?? string.Empty : string.Empty;
-            var isLibraryRefresh = key.Contains("RefreshLibrary", StringComparison.OrdinalIgnoreCase)
-                                   || name.Contains("Scan media library", StringComparison.OrdinalIgnoreCase)
-                                   || name.Contains("library scan", StringComparison.OrdinalIgnoreCase);
-            if (isLibraryRefresh
-                && (string.Equals(state, "Running", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(state, "Cancelling", StringComparison.OrdinalIgnoreCase)))
+            if (IsRunningLibraryRefresh(task))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static bool IsRunningLibraryRefresh(JsonElement task)
+    {
+        var key = task.TryGetProperty("Key", out var keyProperty) ? keyProperty.GetString() ?? string.Empty : string.Empty;
+        var name = task.TryGetProperty("Name", out var nameProperty) ? nameProperty.GetString() ?? string.Empty : string.Empty;
+        var state = task.TryGetProperty("State", out var stateProperty) ? stateProperty.GetString() ?? string.Empty : string.Empty;
+        var isLibraryRefresh = key.Contains("RefreshLibrary", StringComparison.OrdinalIgnoreCase)
+                               || name.Contains("Scan media library", StringComparison.OrdinalIgnoreCase)
+                               || name.Contains("library scan", StringComparison.OrdinalIgnoreCase);
+        return isLibraryRefresh
+            && (string.Equals(state, "Running", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(state, "Cancelling", StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<List<JellyfinLibrarySection>> GetLibrariesAsync(
@@ -454,17 +459,7 @@ public class JellyfinApiClient
                 throw new TargetLookupException("Jellyfin artist album listing did not contain an Items array.");
             }
 
-            var titles = new List<string>();
-            foreach (var item in items.EnumerateArray())
-            {
-                var title = item.TryGetProperty("Name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
-                if (!string.IsNullOrWhiteSpace(title))
-                {
-                    titles.Add(title);
-                }
-            }
-
-            return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return ReadAlbumTitles(items);
         }
         catch (TargetLookupException)
         {
@@ -480,6 +475,21 @@ public class JellyfinApiClient
             // Cancellation is never swallowed; malformed payloads and transport failures classify.
             throw new TargetLookupException("Jellyfin artist album titles read did not produce a usable response.", ex);
         }
+    }
+
+    private static IReadOnlyList<string> ReadAlbumTitles(JsonElement items)
+    {
+        var titles = new List<string>();
+        foreach (var item in items.EnumerateArray())
+        {
+            var title = item.TryGetProperty("Name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                titles.Add(title);
+            }
+        }
+
+        return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public async Task<List<JellyfinAudioTrack>> SearchTracksAsync(
@@ -864,7 +874,7 @@ public class JellyfinApiClient
         => (await GetPlaylistItemsAsync(serverUrl, apiKey, userId, playlistId, cancellationToken))
             .Select(static item => new JellyfinPlaylistEntry(
                 item.Id!,
-                string.IsNullOrWhiteSpace(item.PlaylistItemId) ? item.Id! : item.PlaylistItemId!))
+                string.IsNullOrWhiteSpace(item.PlaylistItemId) ? item.Id! : item.PlaylistItemId))
             .ToList();
 
     /// <summary>
@@ -1201,17 +1211,22 @@ public class JellyfinApiClient
         string? name,
         string? overview,
         CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
-        => await UpdateItemMetadataAsync(serverUrl, apiKey, userId: null, itemId, name, overview, cancellationToken, requireSuccessfulResponse);
+        => await UpdateItemMetadataAsync(
+            new JellyfinTargetConnection(serverUrl, apiKey, string.Empty),
+            itemId,
+            name,
+            overview,
+            cancellationToken,
+            requireSuccessfulResponse);
 
     public async Task<bool> UpdateItemMetadataAsync(
-        string serverUrl,
-        string apiKey,
-        string? userId,
+        JellyfinTargetConnection connection,
         string itemId,
         string? name,
         string? overview,
         CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
+        var (serverUrl, apiKey, userId) = connection;
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(itemId)
@@ -1235,6 +1250,21 @@ public class JellyfinApiClient
         }
 
         var itemJson = await getResponse.Content.ReadAsStringAsync(cancellationToken);
+        var updatedJson = await BuildUpdatedMetadataJsonAsync(itemJson, name, overview, cancellationToken);
+        var postUrl = BuildUrl(serverUrl, $"/Items/{itemId}");
+        using var postRequest = new HttpRequestMessage(HttpMethod.Post, postUrl)
+        {
+            Content = new StringContent(updatedJson, Encoding.UTF8, "application/json")
+        };
+        ApplyAuthorization(postRequest, apiKey);
+        using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
+        if (requireSuccessfulResponse) postResponse.EnsureSuccessStatusCode();
+        return postResponse.IsSuccessStatusCode;
+    }
+
+    private static async Task<string> BuildUpdatedMetadataJsonAsync(
+        string itemJson, string? name, string? overview, CancellationToken cancellationToken)
+    {
         using var doc = JsonDocument.Parse(itemJson);
         using var ms = new MemoryStream();
         await using var writer = new Utf8JsonWriter(ms);
@@ -1268,16 +1298,7 @@ public class JellyfinApiClient
         writer.WriteEndObject();
         await writer.FlushAsync(cancellationToken);
 
-        var updatedJson = Encoding.UTF8.GetString(ms.ToArray());
-        var postUrl = BuildUrl(serverUrl, $"/Items/{itemId}");
-        using var postRequest = new HttpRequestMessage(HttpMethod.Post, postUrl)
-        {
-            Content = new StringContent(updatedJson, Encoding.UTF8, "application/json")
-        };
-        ApplyAuthorization(postRequest, apiKey);
-        using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
-        if (requireSuccessfulResponse) postResponse.EnsureSuccessStatusCode();
-        return postResponse.IsSuccessStatusCode;
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     public async Task<JellyfinMediaItem?> GetItemAsync(
@@ -1351,15 +1372,14 @@ public class JellyfinApiClient
         => count <= 0 ? 0 : Math.Clamp(newIndex, 0, count - 1);
 
     public async Task<JellyfinPlaylistMoveResult> MovePlaylistItemAsync(
-        string serverUrl,
-        string apiKey,
-        string userId,
+        JellyfinTargetConnection connection,
         string playlistId,
         string playlistEntryId,
         int newIndex,
         int itemCount,
         CancellationToken cancellationToken = default)
     {
+        var (serverUrl, apiKey, userId) = connection;
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(playlistId)
@@ -1432,14 +1452,12 @@ public class JellyfinApiClient
 
             var newIndex = ClampPlaylistMoveIndex(targetIndex, current.Count);
             var moved = await MovePlaylistItemAsync(
-                serverUrl,
-                apiKey,
-                userId,
-                playlistId,
-                entryId,
-                newIndex,
-                current.Count,
-                cancellationToken);
+            new JellyfinTargetConnection(serverUrl, apiKey, userId),
+            playlistId,
+            entryId,
+            newIndex,
+            current.Count,
+            cancellationToken);
             if (moved.Status != JellyfinPlaylistMoveStatus.Moved)
             {
                 return moved;

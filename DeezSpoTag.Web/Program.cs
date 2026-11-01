@@ -717,7 +717,7 @@ public partial class Program
                               session.AccessToken,
                               session.ClientToken,
                               session.ClientVersion);
-                  });
+                  }, sp.GetRequiredService<IConfiguration>());
           });
           services.AddSingleton<IPlaylistSyncTarget>(sp =>
               new DeezSpoTag.Integrations.Spotify.SpotifyPlaylistSyncTarget(

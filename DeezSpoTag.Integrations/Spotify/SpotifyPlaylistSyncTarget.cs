@@ -96,7 +96,7 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
             var id = ReadPlaylistId(uri) ?? playlistId;
             return string.IsNullOrWhiteSpace(id)
                 ? TargetPlaylistLookup<string>.Missing()
-                : TargetPlaylistLookup<string>.Found(id!);
+                : TargetPlaylistLookup<string>.Found(id);
         }
 
         var wanted = name?.Trim() ?? string.Empty;
@@ -190,49 +190,13 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
                 .ToList();
             if (stale.Count > 0)
             {
-                // The uids are only in the occurrence read, and they are the only handle that can
-                // address ONE copy. Re-reading here rather than trusting a cached one is what makes
-                // the positions below trustworthy: they are evaluated against a single snapshot, so
-                // the removal cannot shift its own targets.
-                var contents = await ReadContentsAsync(write.PlaylistId, cancellationToken).ConfigureAwait(false);
-                if (contents is null)
+                var removal = await RemoveStaleItemsAsync(write.PlaylistId, playlistUri, stale, cancellationToken);
+                if (removal.Failure is not null)
                 {
-                    return PlaylistMembershipWriteResult.Failed(
-                        "Spotify's playlist could not be read, so nothing was removed.");
+                    return removal.Failure;
                 }
 
-                var visible = contents
-                    .Where(static item => !string.IsNullOrWhiteSpace(ReadTrackId(item.TrackUri)))
-                    .ToList();
-
-                var uids = new List<string>();
-                // Every visible copy of a stale id is stale: the source no longer wants that
-                // track at all, so retiring all of them is correct, not over-removal.
-                foreach (var occurrences in stale.Select(id => visible
-                    .Where(item => string.Equals(ReadTrackId(item.TrackUri), id, StringComparison.Ordinal))
-                    .ToList()))
-                {
-                    if (occurrences.Any(static occurrence => string.IsNullOrWhiteSpace(occurrence.Uid)))
-                    {
-                        return PlaylistMembershipWriteResult.Failed(
-                            "Spotify returned a playlist entry without an occurrence id. Removing by track id "
-                            + "would delete every copy of a duplicated track, so nothing was written.");
-                    }
-
-                    uids.AddRange(occurrences.Select(static occurrence => occurrence.Uid!));
-                }
-
-                if (uids.Count > 0)
-                {
-                    var removal = await _client.RemoveItemsAsync(playlistUri, uids, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!removal.Success)
-                    {
-                        return PlaylistMembershipWriteResult.Failed(Describe(removal));
-                    }
-
-                    removedCount = uids.Count;
-                }
+                removedCount = removal.RemovedCount;
             }
         }
 
@@ -254,6 +218,55 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
         return PlaylistMembershipWriteResult.Ok(toAdd.Count, removedCount);
     }
 
+    private async Task<(int RemovedCount, PlaylistMembershipWriteResult? Failure)> RemoveStaleItemsAsync(
+        string playlistId, string playlistUri, IReadOnlyList<string> stale, CancellationToken cancellationToken)
+    {
+        // The uids are only in the occurrence read, and they are the only handle that can
+        // address ONE copy. Re-reading here rather than trusting a cached one is what makes
+        // the positions below trustworthy: they are evaluated against a single snapshot, so
+        // the removal cannot shift its own targets.
+        var contents = await ReadContentsAsync(playlistId, cancellationToken).ConfigureAwait(false);
+        if (contents is null)
+        {
+            return (0, PlaylistMembershipWriteResult.Failed(
+                "Spotify's playlist could not be read, so nothing was removed."));
+        }
+
+        var visible = contents
+            .Where(static item => !string.IsNullOrWhiteSpace(ReadTrackId(item.TrackUri)))
+            .ToList();
+
+        var uids = new List<string>();
+        // Every visible copy of a stale id is stale: the source no longer wants that
+        // track at all, so retiring all of them is correct, not over-removal.
+        foreach (var occurrences in stale.Select(id => visible
+            .Where(item => string.Equals(ReadTrackId(item.TrackUri), id, StringComparison.Ordinal))
+            .ToList()))
+        {
+            if (occurrences.Any(static occurrence => string.IsNullOrWhiteSpace(occurrence.Uid)))
+            {
+                return (0, PlaylistMembershipWriteResult.Failed(
+                    "Spotify returned a playlist entry without an occurrence id. Removing by track id "
+                    + "would delete every copy of a duplicated track, so nothing was written."));
+            }
+
+            uids.AddRange(occurrences.Select(static occurrence => occurrence.Uid!));
+        }
+
+        if (uids.Count > 0)
+        {
+            var removal = await _client.RemoveItemsAsync(playlistUri, uids, cancellationToken)
+                .ConfigureAwait(false);
+            if (!removal.Success)
+            {
+                return (0, PlaylistMembershipWriteResult.Failed(Describe(removal)));
+            }
+
+            return (uids.Count, null);
+        }
+        return (0, null);
+    }
+
     private async Task<IReadOnlyList<SpotifyPlaylistWriteClient.SpotifyPlaylistItem>?> ReadContentsAsync(
         string playlistId,
         CancellationToken cancellationToken)
@@ -271,7 +284,7 @@ public sealed class SpotifyPlaylistSyncTarget : IPlaylistSyncTarget
     private static string Describe(SpotifyPlaylistWriteClient.SpotifyPayload payload)
         => string.IsNullOrWhiteSpace(payload.Error)
             ? "Spotify failed to write the playlist."
-            : payload.Error!;
+            : payload.Error;
 
     /// <summary>
     /// The playlist id out of a Spotify uri. Returns null for anything that is not a playlist uri,

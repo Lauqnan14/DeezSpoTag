@@ -47,9 +47,7 @@ public sealed class JellyfinPlaylistBatchingTest
         var api = new JellyfinApiClient(client);
 
         var moved = await api.MovePlaylistItemAsync(
-            "http://jellyfin.local",
-            "key",
-            "user",
+            new JellyfinTargetConnection("http://jellyfin.local", "key", "user"),
             "playlist",
             "entry-9",
             newIndex: 99,
@@ -71,9 +69,7 @@ public sealed class JellyfinPlaylistBatchingTest
         var api = new JellyfinApiClient(client);
 
         var moved = await api.MovePlaylistItemAsync(
-            "http://jellyfin.local",
-            "key",
-            "user",
+            new JellyfinTargetConnection("http://jellyfin.local", "key", "user"),
             "playlist",
             "entry-1",
             newIndex: 0,

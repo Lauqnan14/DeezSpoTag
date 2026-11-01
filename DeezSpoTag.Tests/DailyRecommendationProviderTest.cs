@@ -211,6 +211,8 @@ public sealed class DailyRecommendationProviderTest
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"mixes\":{\"TRACK_MIX\":{}}}")]
+    [InlineData("{\"mixes\":{\"TRACK_MIX\":123}}")]
+    [InlineData("{\"mixes\":{\"TRACK_MIX\":\" \"}}")]
     public async Task TidalMissingMixIsAnExplicitFailureWithoutAnotherRoute(string body)
     {
         using var handler = new Handler((_, _) => Json(body));

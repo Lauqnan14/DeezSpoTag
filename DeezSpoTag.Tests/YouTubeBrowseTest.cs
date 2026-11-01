@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -22,6 +23,24 @@ namespace DeezSpoTag.Tests;
 
 public sealed class YouTubeBrowseTest
 {
+    [Fact]
+    public async Task BrowseUsesConfiguredMusicOriginAndKeepsTheRequestedMarket()
+    {
+        using var handler = new Handler();
+        using var http = new HttpClient(handler);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["YouTube:MusicOrigin"] = "https://music.test"
+        }).Build();
+        var client = new YouTubeMusicSearchClient(http, configuration: configuration);
+        using var document = await client.BrowseAsync("FEmusic_home", "KE", "sw", null, CancellationToken.None);
+        Assert.Equal("https://music.test/youtubei/v1/browse?alt=json", Assert.Single(handler.RequestUris).AbsoluteUri);
+        using var body = JsonDocument.Parse(Assert.Single(handler.Bodies));
+        Assert.Equal("KE", body.RootElement.GetProperty("context").GetProperty("client").GetProperty("gl").GetString());
+        Assert.Equal("sw", body.RootElement.GetProperty("context").GetProperty("client").GetProperty("hl").GetString());
+        Assert.True(document.RootElement.TryGetProperty("contents", out _));
+    }
+
     [Theory]
     [InlineData("https://music.youtube.com/watch?v=_POKM8PhWrA&list=PLabcdefghij&si=share", "_POKM8PhWrA", "track")]
     [InlineData("https://music.youtube.com/playlist?list=PLabcdefghij&si=share", "PLabcdefghij", "playlist")]
@@ -568,8 +587,10 @@ public sealed class YouTubeBrowseTest
 
     private sealed class Handler : HttpMessageHandler
     {
+        public List<Uri> RequestUris { get; } = [];
         public List<string> Bodies {get;}=[]; public bool Fail; public bool WrongChart;
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancellationToken) {
+            RequestUris.Add(request.RequestUri!);
             Bodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
             var payload=JsonNode.Parse(Fixture)!;
             using var body=JsonDocument.Parse(Bodies[^1]);

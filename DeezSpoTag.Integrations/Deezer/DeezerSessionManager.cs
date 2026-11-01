@@ -100,7 +100,7 @@ public sealed class DeezerSessionManager : IDisposable
     {
         get
         {
-            var cookies = _sharedCookieContainer.GetCookies(new Uri("https://www.deezer.com"));
+            var cookies = _sharedCookieContainer.GetCookies(new UriBuilder(DeezerScheme, DeezerWebHost).Uri);
             return cookies["arl"]?.Value;
         }
     }
@@ -160,7 +160,8 @@ public sealed class DeezerSessionManager : IDisposable
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Set ARL cookie: {ArlLength} characters", arl.Trim().Length);            }
+                _logger.LogDebug("Set ARL cookie: {ArlLength} characters", arl.Trim().Length);
+            }
 
             // Get user data to validate login - this will also set the API token
             var userData = await GetUserDataAsync(cancellationToken);
@@ -186,7 +187,8 @@ public sealed class DeezerSessionManager : IDisposable
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Successfully logged in as user: {UserName} (ID: {UserId})",
-                    CurrentUser?.Name, CurrentUser?.Id);            }
+                    CurrentUser?.Name, CurrentUser?.Id);
+            }
 
             return true;
         }
@@ -257,7 +259,7 @@ public sealed class DeezerSessionManager : IDisposable
             {
                 lastFailure = ex;
                 _logger.LogInformation(
-                    "Deezer gateway method {Method} was unavailable for country {Country}; retrying country {FallbackCountry}.",
+                    ex, "Deezer gateway method {Method} was unavailable for country {Country}; retrying country {FallbackCountry}.",
                     method,
                     countries[index],
                     countries[index + 1]);
@@ -335,7 +337,7 @@ public sealed class DeezerSessionManager : IDisposable
             {
                 lastFailure = ex;
                 _logger.LogInformation(
-                    "Deezer public endpoint {Endpoint} was unavailable for country {Country}; retrying country {FallbackCountry}.",
+                    ex, "Deezer public endpoint {Endpoint} was unavailable for country {Country}; retrying country {FallbackCountry}.",
                     LogSanitizer.OneLine(endpoint),
                     LogSanitizer.OneLine(countries[index]),
                     LogSanitizer.OneLine(countries[index + 1]));
@@ -599,7 +601,7 @@ public sealed class DeezerSessionManager : IDisposable
             catch (DeezerException ex) when (ex.ErrorCode == "WrongGeolocation" && index + 1 < countries.Count)
             {
                 _logger.LogInformation(
-                    "Deezer media was geoblocked for country {Country}; retrying country {FallbackCountry}.",
+                    ex, "Deezer media was geoblocked for country {Country}; retrying country {FallbackCountry}.",
                     countries[index],
                     countries[index + 1]);
             }
@@ -722,7 +724,8 @@ public sealed class DeezerSessionManager : IDisposable
             var url = data.Media[0].Sources[0].Url;
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Got media URL: {Url}", url);            }
+                _logger.LogDebug("Got media URL: {Url}", url);
+            }
             return new DeezerMediaResult { Url = url };
         }
 
@@ -788,9 +791,9 @@ public sealed class DeezerSessionManager : IDisposable
             Children.AddRange(familyAccounts);
             UpdateChildAccounts();
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
-            _logger.LogInformation("Deezer family account discovery was cancelled after the primary account connected.");
+            _logger.LogInformation(ex, "Deezer family account discovery was cancelled after the primary account connected.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -873,7 +876,8 @@ public sealed class DeezerSessionManager : IDisposable
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Changed to account: {UserName} (Index: {Index})", CurrentUser.Name, SelectedAccount);        }
+            _logger.LogDebug("Changed to account: {UserName} (Index: {Index})", CurrentUser.Name, SelectedAccount);
+        }
     }
 
     /// <summary>
@@ -1025,7 +1029,8 @@ public sealed class DeezerSessionManager : IDisposable
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Deezer GW missing track data: {Error}", errorJson);            }
+                _logger.LogDebug("Deezer GW missing track data: {Error}", errorJson);
+            }
         }
         else
         {

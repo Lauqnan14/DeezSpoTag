@@ -198,9 +198,7 @@ public sealed class JellyfinApiClientUserResolutionTest
         var client = CreateClient(handler);
 
         var updated = await client.UpdateItemMetadataAsync(
-            "http://jellyfin.local",
-            "api-key",
-            "user-1",
+            new JellyfinTargetConnection("http://jellyfin.local", "api-key", "user-1"),
             "playlist-1",
             "Bongo Pop",
             "Bongo sounds",

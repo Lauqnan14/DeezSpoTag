@@ -160,6 +160,8 @@ public sealed class NavidromeApiClientArtistLookupTest
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(responder(request));
+            => Task.FromResult(request.RequestUri!.AbsolutePath == "/auth/login"
+                ? Json("{\"token\":\"jwt-token\"}")
+                : responder(request));
     }
 }

@@ -15,16 +15,21 @@ namespace DeezSpoTag.Integrations.Navidrome;
 public sealed class NavidromeApiClient
 {
     private const int PlaylistWriteBatchSize = 100;
+    private const string UpdatePlaylistMethod = "updatePlaylist";
     private const string ClientName = "DeezSpoTag";
     private const string ApiVersion = "1.16.1";
     private const string NativeAuthorizationHeader = "X-ND-Authorization";
     private const int DefaultHistoryPageSize = 500;
     private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _jwtGate = new(1, 1);
+    private readonly TimeProvider _timeProvider;
+    private JwtSession? _jwtSession;
     private readonly ILogger<NavidromeApiClient> _logger;
 
-    public NavidromeApiClient(HttpClient httpClient, ILogger<NavidromeApiClient>? logger = null)
+    public NavidromeApiClient(HttpClient httpClient, ILogger<NavidromeApiClient>? logger = null, TimeProvider? timeProvider = null)
     {
         _httpClient = httpClient;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<NavidromeApiClient>.Instance;
     }
 
@@ -67,7 +72,7 @@ public sealed class NavidromeApiClient
                 folder.Id!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 string.IsNullOrWhiteSpace(folder.Name)
                     ? folder.Id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    : folder.Name!))
+                    : folder.Name))
             .ToList() ?? new List<NavidromeLibrary>();
     }
 
@@ -134,10 +139,7 @@ public sealed class NavidromeApiClient
         var page = await GetNativeSongsPageAsync(
             serverUrl,
             token,
-            offset,
-            Math.Clamp(pageSize, 1, 500),
-            sort: "id",
-            order: "ASC",
+            (offset, Math.Clamp(pageSize, 1, 500), "id", "ASC"),
             libraryId: null,
             cancellationToken,
             throwOnFailure: true);
@@ -172,10 +174,7 @@ public sealed class NavidromeApiClient
         var page = await GetNativeSongsPageAsync(
             serverUrl,
             nativeApiToken,
-            offset,
-            Math.Clamp(pageSize, 1, 500),
-            sort: "id",
-            order: "ASC",
+            (offset, Math.Clamp(pageSize, 1, 500), "id", "ASC"),
             libraryId: null,
             cancellationToken,
             throwOnFailure: true);
@@ -257,7 +256,8 @@ public sealed class NavidromeApiClient
         var normalizedPageSize = Math.Clamp(pageSize, 1, 5000);
         var normalizedSinceUtc = playedSinceUtc?.ToUniversalTime();
         var history = new List<NavidromeHistoryItem>();
-        for (var offset = 0; ; offset += normalizedPageSize)
+        var offset = 0;
+        while (true)
         {
             var page = await GetNativeSongHistoryPageAsync(
                 serverUrl,
@@ -271,38 +271,9 @@ public sealed class NavidromeApiClient
                 break;
             }
 
-            var reachedImportBoundary = false;
-            foreach (var song in page)
-            {
-                if (!song.PlayDate.HasValue)
-                {
-                    reachedImportBoundary = true;
-                    continue;
-                }
+            var reachedImportBoundary = AddHistoryPage(page, normalizedSinceUtc, libraryId, history);
 
-                var playedAtUtc = song.PlayDate.Value.ToUniversalTime();
-                if (normalizedSinceUtc.HasValue && playedAtUtc < normalizedSinceUtc.Value)
-                {
-                    reachedImportBoundary = true;
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(song.Id))
-                {
-                    continue;
-                }
-
-                history.Add(new NavidromeHistoryItem(
-                    song.Id,
-                    song.Title ?? string.Empty,
-                    song.Artist ?? string.Empty,
-                    song.Duration.HasValue ? (int?)Math.Round(song.Duration.Value * 1000d) : null,
-                    ResolveNativeSongPath(song.LibraryPath, song.Path),
-                    playedAtUtc,
-                    song.PlayCount,
-                    song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? libraryId));
-            }
-
+            offset += normalizedPageSize;
             if (reachedImportBoundary || page.Count < normalizedPageSize)
             {
                 break;
@@ -310,6 +281,47 @@ public sealed class NavidromeApiClient
         }
 
         return history;
+    }
+
+    private static bool AddHistoryPage(
+        IReadOnlyList<NavidromeNativeSong> page,
+        DateTimeOffset? normalizedSinceUtc,
+        string? libraryId,
+        List<NavidromeHistoryItem> history)
+    {
+        var reachedImportBoundary = false;
+        foreach (var song in page)
+        {
+            if (!song.PlayDate.HasValue)
+            {
+                reachedImportBoundary = true;
+                continue;
+            }
+
+            var playedAtUtc = song.PlayDate.Value.ToUniversalTime();
+            if (normalizedSinceUtc.HasValue && playedAtUtc < normalizedSinceUtc.Value)
+            {
+                reachedImportBoundary = true;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(song.Id))
+            {
+                continue;
+            }
+
+            history.Add(new NavidromeHistoryItem(
+                song.Id,
+                song.Title ?? string.Empty,
+                song.Artist ?? string.Empty,
+                song.Duration.HasValue ? (int?)Math.Round(song.Duration.Value * 1000d) : null,
+                ResolveNativeSongPath(song.LibraryPath, song.Path),
+                playedAtUtc,
+                song.PlayCount,
+                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? libraryId));
+        }
+
+        return reachedImportBoundary;
     }
 
     public async Task<List<NavidromeArtistSummary>> SearchArtistsAsync(
@@ -399,8 +411,9 @@ public sealed class NavidromeApiClient
 
         try
         {
-            var url = BuildUrl(serverUrl, "getArtist", username, password, new[] { new KeyValuePair<string, string?>("id", artistId.Trim()) });
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            using var response = await SendSubsonicRequestAsync(
+                new NavidromeTargetConnection(serverUrl, username, password), "getArtist",
+                new[] { new KeyValuePair<string, string?>("id", artistId.Trim()) }, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 if (!requireSuccessfulResponse)
@@ -414,56 +427,7 @@ public sealed class NavidromeApiClient
 
             using var document = await System.Text.Json.JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
-            var albumContainer = document.RootElement;
-            if (albumContainer.TryGetProperty("subsonic-response", out var subsonic))
-            {
-                albumContainer = subsonic;
-            }
-
-            if (albumContainer.TryGetProperty("status", out var statusElement)
-                && string.Equals(statusElement.GetString(), "failed", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!requireSuccessfulResponse)
-                {
-                    return Array.Empty<string>();
-                }
-
-                var errorText = albumContainer.TryGetProperty("error", out var errorElement)
-                    && errorElement.TryGetProperty("message", out var messageElement)
-                    ? messageElement.GetString()
-                    : null;
-                throw new TargetLookupException(
-                    $"Navidrome reported an application error for getArtist: {(string.IsNullOrWhiteSpace(errorText) ? "the server did not describe the error." : errorText)}");
-            }
-
-            if (!albumContainer.TryGetProperty("artist", out var artist)
-                || !artist.TryGetProperty("album", out var albums)
-                || albums.ValueKind != System.Text.Json.JsonValueKind.Array)
-            {
-                if (!requireSuccessfulResponse)
-                {
-                    return Array.Empty<string>();
-                }
-
-                throw new TargetLookupException("Navidrome artist listing did not contain an artist album list.");
-            }
-
-            var titles = new List<string>();
-            foreach (var album in albums.EnumerateArray())
-            {
-                var title = album.TryGetProperty("name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
-                if (string.IsNullOrWhiteSpace(title) && album.TryGetProperty("title", out var titleElement))
-                {
-                    title = titleElement.GetString()?.Trim();
-                }
-
-                if (!string.IsNullOrWhiteSpace(title))
-                {
-                    titles.Add(title);
-                }
-            }
-
-            return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return ReadArtistAlbumTitles(document.RootElement, requireSuccessfulResponse);
         }
         catch (TargetLookupException)
         {
@@ -478,6 +442,65 @@ public sealed class NavidromeApiClient
 
             throw new TargetLookupException("Navidrome artist read did not produce a usable response.", ex);
         }
+    }
+
+    private static IReadOnlyList<string> ReadArtistAlbumTitles(JsonElement root, bool requireSuccessfulResponse)
+    {
+        var albumContainer = root;
+        if (albumContainer.TryGetProperty("subsonic-response", out var subsonic))
+        {
+            albumContainer = subsonic;
+        }
+
+        if (albumContainer.TryGetProperty("status", out var statusElement)
+            && string.Equals(statusElement.GetString(), "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            var errorText = albumContainer.TryGetProperty("error", out var errorElement)
+                && errorElement.TryGetProperty("message", out var messageElement)
+                ? messageElement.GetString()
+                : null;
+            throw new TargetLookupException(
+                $"Navidrome reported an application error for getArtist: {(string.IsNullOrWhiteSpace(errorText) ? "the server did not describe the error." : errorText)}");
+        }
+
+        if (!albumContainer.TryGetProperty("artist", out var artist)
+            || !artist.TryGetProperty("album", out var albums)
+            || albums.ValueKind != System.Text.Json.JsonValueKind.Array)
+        {
+            if (!requireSuccessfulResponse)
+            {
+                return Array.Empty<string>();
+            }
+
+            throw new TargetLookupException("Navidrome artist listing did not contain an artist album list.");
+        }
+
+        return ReadAlbumTitles(albums);
+    }
+
+    private static IReadOnlyList<string> ReadAlbumTitles(JsonElement albums)
+    {
+        var titles = new List<string>();
+        foreach (var album in albums.EnumerateArray())
+        {
+            var title = album.TryGetProperty("name", out var nameElement) ? nameElement.GetString()?.Trim() : null;
+            if (string.IsNullOrWhiteSpace(title) && album.TryGetProperty("title", out var titleElement))
+            {
+                title = titleElement.GetString()?.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                titles.Add(title);
+            }
+        }
+
+        return titles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public async Task<NavidromeArtistInfo?> GetArtistInfoAsync(
@@ -543,15 +566,11 @@ public sealed class NavidromeApiClient
             return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Missing();
         }
 
-        var requestUrl = BuildUrl(
-            serverUrl,
-            "getPlaylists",
-            username,
-            password,
-            Array.Empty<KeyValuePair<string, string?>>());
         try
         {
-            using var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            using var response = await SendSubsonicRequestAsync(
+                new NavidromeTargetConnection(serverUrl, username, password), "getPlaylists",
+                Array.Empty<KeyValuePair<string, string?>>(), cancellationToken);
             var statusCode = (int)response.StatusCode;
             var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
             if (classified != TargetLookupStatus.Success)
@@ -583,8 +602,8 @@ public sealed class NavidromeApiClient
             var playlists = subsonic.Playlists?.Playlists?
                 .Where(static playlist => !string.IsNullOrWhiteSpace(playlist.Id))
                 .Select(static playlist => new NavidromePlaylistSummary(
-                    playlist.Id!,
-                    playlist.Name ?? playlist.Id!,
+                    playlist.Id ?? throw new JsonException("Navidrome playlist is missing an ID."),
+                    playlist.Name ?? playlist.Id ?? string.Empty,
                     playlist.SongCount,
                     playlist.Comment,
                     playlist.CoverArt))
@@ -700,9 +719,7 @@ public sealed class NavidromeApiClient
     }
 
     public async Task<string?> CreateOrUpdatePlaylistAsync(
-        string serverUrl,
-        string username,
-        string password,
+        NavidromeTargetConnection connection,
         string playlistName,
         IReadOnlyCollection<string> songIds,
         string? existingPlaylistId,
@@ -710,6 +727,7 @@ public sealed class NavidromeApiClient
         CancellationToken cancellationToken = default,
         string? playlistComment = null)
     {
+        var (serverUrl, username, password) = connection;
         var targetIds = songIds
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Select(static id => id.Trim())
@@ -753,52 +771,45 @@ public sealed class NavidromeApiClient
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            var firstBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
-            var create = await SendAsync<NavidromePlaylistUpdateResponse>(
-                serverUrl,
-                username,
-                password,
-                "createPlaylist",
-                BuildPlaylistParameters(null, playlistName, firstBatch),
-                cancellationToken);
-            if (create?.SubsonicResponse?.Status is not "ok")
-            {
-                return null;
-            }
-
-            var createdPlaylistId = !string.IsNullOrWhiteSpace(create.SubsonicResponse.Playlist?.Id)
-                ? create.SubsonicResponse.Playlist.Id
-                : await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(createdPlaylistId)
-                && !await AppendPlaylistItemsInBatchesAsync(
-                    serverUrl,
-                    username,
-                    password,
-                    createdPlaylistId,
-                    playlistName,
-                    targetIds.Skip(firstBatch.Count).ToList(),
-                    playlistComment,
-                    cancellationToken))
-            {
-                return null;
-            }
-            if (!string.IsNullOrWhiteSpace(createdPlaylistId)
-                && !string.IsNullOrWhiteSpace(playlistComment))
-            {
-                await UpdatePlaylistMetadataAsync(
-                    serverUrl,
-                    username,
-                    password,
-                    createdPlaylistId,
-                    playlistName,
-                    playlistComment,
-                    cancellationToken);
-            }
-
-            return createdPlaylistId;
+            return await CreatePlaylistAsync(connection, playlistName, targetIds, playlistComment, cancellationToken);
         }
 
         var existingEntries = await GetPlaylistEntriesAsync(serverUrl, username, password, playlistId, cancellationToken);
+        var (missingIds, removalIndexes) = PreparePlaylistChanges(existingEntries, targetIds, appendMissingOnly);
+        targetIds = missingIds;
+
+        if (removalIndexes.Count == 0 && targetIds.Count == 0)
+        {
+            return playlistId;
+        }
+
+        var firstUpdateBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
+        var update = await SendAsync<NavidromePlaylistUpdateResponse>(
+            serverUrl,
+            username,
+            password,
+            UpdatePlaylistMethod,
+            BuildPlaylistUpdateParameters(playlistId, playlistName, firstUpdateBatch, playlistComment, removalIndexes),
+            cancellationToken);
+        if (update?.SubsonicResponse?.Status is not "ok")
+        {
+            return null;
+        }
+
+        return await AppendPlaylistItemsInBatchesAsync(
+            new NavidromeTargetConnection(serverUrl, username, password),
+            playlistId,
+            playlistName,
+            targetIds.Skip(firstUpdateBatch.Count).ToList(),
+            playlistComment,
+            cancellationToken)
+            ? playlistId
+            : null;
+    }
+
+    private static (List<string> MissingIds, List<int> RemovalIndexes) PreparePlaylistChanges(
+        IReadOnlyList<NavidromePlaylistEntry> existingEntries, List<string> targetIds, bool appendMissingOnly)
+    {
         var removalIndexes = new List<int>();
         if (appendMissingOnly)
         {
@@ -823,47 +834,18 @@ public sealed class NavidromeApiClient
             targetIds = targetIds.Where(id => !retained.Contains(id)).ToList();
         }
 
-        if (removalIndexes.Count == 0 && targetIds.Count == 0)
-        {
-            return playlistId;
-        }
-
-        var firstUpdateBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
-        var update = await SendAsync<NavidromePlaylistUpdateResponse>(
-            serverUrl,
-            username,
-            password,
-            "updatePlaylist",
-            BuildPlaylistUpdateParameters(playlistId, playlistName, firstUpdateBatch, playlistComment, removalIndexes),
-            cancellationToken);
-        if (update?.SubsonicResponse?.Status is not "ok")
-        {
-            return null;
-        }
-
-        return await AppendPlaylistItemsInBatchesAsync(
-            serverUrl,
-            username,
-            password,
-            playlistId,
-            playlistName,
-            targetIds.Skip(firstUpdateBatch.Count).ToList(),
-            playlistComment,
-            cancellationToken)
-            ? playlistId
-            : null;
+        return (targetIds, removalIndexes);
     }
 
     private async Task<bool> AppendPlaylistItemsInBatchesAsync(
-        string serverUrl,
-        string username,
-        string password,
+        NavidromeTargetConnection connection,
         string playlistId,
         string playlistName,
         IReadOnlyList<string> songIds,
         string? playlistComment,
         CancellationToken cancellationToken)
     {
+        var (serverUrl, username, password) = connection;
         for (var offset = 0; offset < songIds.Count; offset += PlaylistWriteBatchSize)
         {
             var batch = songIds.Skip(offset).Take(PlaylistWriteBatchSize).ToList();
@@ -871,7 +853,7 @@ public sealed class NavidromeApiClient
                 serverUrl,
                 username,
                 password,
-                "updatePlaylist",
+                UpdatePlaylistMethod,
                 BuildPlaylistUpdateParameters(playlistId, playlistName, batch, playlistComment),
                 cancellationToken);
             if (update?.SubsonicResponse?.Status is not "ok")
@@ -881,6 +863,57 @@ public sealed class NavidromeApiClient
         }
 
         return true;
+    }
+
+    private async Task<string?> CreatePlaylistAsync(
+        NavidromeTargetConnection connection,
+        string playlistName,
+        IReadOnlyList<string> targetIds,
+        string? playlistComment,
+        CancellationToken cancellationToken)
+    {
+        var (serverUrl, username, password) = connection;
+        var firstBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
+        var create = await SendAsync<NavidromePlaylistUpdateResponse>(
+            serverUrl,
+            username,
+            password,
+            "createPlaylist",
+            BuildPlaylistParameters(null, playlistName, firstBatch),
+            cancellationToken);
+        if (create?.SubsonicResponse?.Status is not "ok")
+        {
+            return null;
+        }
+
+        var createdPlaylistId = !string.IsNullOrWhiteSpace(create.SubsonicResponse.Playlist?.Id)
+            ? create.SubsonicResponse.Playlist.Id
+            : await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(createdPlaylistId)
+            && !await AppendPlaylistItemsInBatchesAsync(
+        new NavidromeTargetConnection(serverUrl, username, password),
+        createdPlaylistId,
+        playlistName,
+        targetIds.Skip(firstBatch.Count).ToList(),
+        playlistComment,
+        cancellationToken))
+        {
+            return null;
+        }
+        if (!string.IsNullOrWhiteSpace(createdPlaylistId)
+            && !string.IsNullOrWhiteSpace(playlistComment))
+        {
+            await UpdatePlaylistMetadataAsync(
+                serverUrl,
+                username,
+                password,
+                createdPlaylistId,
+                playlistName,
+                playlistComment,
+                cancellationToken);
+        }
+
+        return createdPlaylistId;
     }
 
     public async Task<bool> UpdatePlaylistMetadataAsync(
@@ -901,18 +934,19 @@ public sealed class NavidromeApiClient
             serverUrl,
             username,
             password,
-            "updatePlaylist",
+            UpdatePlaylistMethod,
             BuildPlaylistUpdateParameters(playlistId, playlistName, Array.Empty<string>(), playlistComment),
             cancellationToken);
         return update?.SubsonicResponse?.Status is "ok";
     }
 
-    public string? BuildCoverArtRequestUrl(
+    public async Task<string?> BuildCoverArtRequestUrlAsync(
         string serverUrl,
         string username,
         string password,
         string coverArtId,
-        int size = 420)
+        int size = 420,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
@@ -922,11 +956,12 @@ public sealed class NavidromeApiClient
             return null;
         }
 
+        var jwt = await GetSessionJwtAsync(new NavidromeTargetConnection(serverUrl, username, password), cancellationToken);
         return BuildUrl(
             serverUrl,
             "getCoverArt",
             username,
-            password,
+            jwt,
             [
                 new KeyValuePair<string, string?>("id", coverArtId.Trim()),
                 new KeyValuePair<string, string?>("size", Math.Clamp(size, 1, 2000).ToString(System.Globalization.CultureInfo.InvariantCulture))
@@ -948,9 +983,7 @@ public sealed class NavidromeApiClient
         }
 
         return await UploadNativeImageAsync(
-            serverUrl,
-            username,
-            password,
+            new NavidromeTargetConnection(serverUrl, username, password),
             $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image",
             imagePath,
             contentType,
@@ -958,38 +991,35 @@ public sealed class NavidromeApiClient
     }
 
     public async Task<bool> UpdateArtistImageFromFileAsync(
-        string serverUrl,
-        string username,
-        string password,
+        NavidromeTargetConnection connection,
         string artistId,
         string imagePath,
         string? contentType = null,
         CancellationToken cancellationToken = default, bool requireSuccessfulResponse = false)
     {
+        var (serverUrl, username, password) = connection;
         if (string.IsNullOrWhiteSpace(artistId))
         {
             return false;
         }
 
         return await UploadNativeImageAsync(
-            serverUrl,
-            username,
-            password,
+            new NavidromeTargetConnection(serverUrl, username, password),
             $"/api/artist/{Uri.EscapeDataString(artistId)}/image",
             imagePath,
             contentType,
-            cancellationToken, requireSuccessfulResponse);
+            cancellationToken,
+            requireSuccessfulResponse);
     }
 
     private async Task<bool> UploadNativeImageAsync(
-        string serverUrl,
-        string username,
-        string password,
+        NavidromeTargetConnection connection,
         string path,
         string imagePath,
         string? contentType,
         CancellationToken cancellationToken, bool requireSuccessfulResponse = false)
     {
+        var (serverUrl, username, password) = connection;
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
             || string.IsNullOrWhiteSpace(password)
@@ -1116,16 +1146,16 @@ public sealed class NavidromeApiClient
             .Where(static entry => !string.IsNullOrWhiteSpace(entry.Id))
             .Select(static entry => new NavidromePlaylistTrack(
                 entry.Id!,
-                string.IsNullOrWhiteSpace(entry.Title) ? "Unknown" : entry.Title!,
-                string.IsNullOrWhiteSpace(entry.Artist) ? "Unknown" : entry.Artist!,
+                string.IsNullOrWhiteSpace(entry.Title) ? "Unknown" : entry.Title,
+                string.IsNullOrWhiteSpace(entry.Artist) ? "Unknown" : entry.Artist,
                 entry.Duration.HasValue ? entry.Duration.Value * 1000 : null,
                 entry.Path,
                 entry.MusicFolderId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
             .ToList() ?? new List<NavidromePlaylistTrack>();
 
         var details = new NavidromePlaylistDetails(
-            playlist.Id!,
-            string.IsNullOrWhiteSpace(playlist.Name) ? playlist.Id! : playlist.Name!,
+            playlist.Id,
+            string.IsNullOrWhiteSpace(playlist.Name) ? playlist.Id : playlist.Name,
             playlist.Comment,
             playlist.SongCount ?? tracks.Count,
             tracks.Select(static track => new NavidromePlaylistEntry(track.Id)).ToList());
@@ -1147,15 +1177,11 @@ public sealed class NavidromeApiClient
             return TargetPlaylistLookup<NavidromePlaylistDetails>.Missing();
         }
 
-        var requestUrl = BuildUrl(
-            serverUrl,
-            "getPlaylist",
-            username,
-            password,
-            new[] { new KeyValuePair<string, string?>("id", playlistId) });
         try
         {
-            using var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            using var response = await SendSubsonicRequestAsync(
+                new NavidromeTargetConnection(serverUrl, username, password), "getPlaylist",
+                new[] { new KeyValuePair<string, string?>("id", playlistId) }, cancellationToken);
             var statusCode = (int)response.StatusCode;
             var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
             if (classified != TargetLookupStatus.Success)
@@ -1198,8 +1224,8 @@ public sealed class NavidromeApiClient
                 .ToList() ?? new List<NavidromePlaylistEntry>();
             return TargetPlaylistLookup<NavidromePlaylistDetails>.Found(
                 new NavidromePlaylistDetails(
-                    playlist.Id!,
-                    playlist.Name ?? playlist.Id!,
+                    playlist.Id ?? throw new JsonException("Navidrome playlist is missing an ID."),
+                    playlist.Name ?? playlist.Id ?? string.Empty,
                     playlist.Comment,
                     playlist.SongCount,
                     entries),
@@ -1212,15 +1238,14 @@ public sealed class NavidromeApiClient
     }
 
     public async Task<bool> ReplacePlaylistTracksInOrderAsync(
-        string serverUrl,
-        string username,
-        string password,
+        NavidromeTargetConnection connection,
         string playlistId,
         string playlistName,
         string? playlistComment,
         IReadOnlyList<string> trackIds,
         CancellationToken cancellationToken = default)
     {
+        var (serverUrl, username, password) = connection;
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
             || string.IsNullOrWhiteSpace(password)
@@ -1251,7 +1276,7 @@ public sealed class NavidromeApiClient
             var firstIndex = Math.Max(0, lastIndex - PlaylistWriteBatchSize + 1);
             var indexes = Enumerable.Range(firstIndex, lastIndex - firstIndex + 1).ToList();
             var update = await SendAsync<NavidromePlaylistUpdateResponse>(
-                serverUrl, username, password, "updatePlaylist",
+                serverUrl, username, password, UpdatePlaylistMethod,
                 BuildPlaylistUpdateParameters(playlistId, playlistName, [], playlistComment, indexes),
                 cancellationToken);
             if (update?.SubsonicResponse?.Status is not "ok")
@@ -1261,7 +1286,12 @@ public sealed class NavidromeApiClient
         }
 
         if (!await AppendPlaylistItemsInBatchesAsync(
-                serverUrl, username, password, playlistId, playlistName, orderedIds, playlistComment, cancellationToken))
+            new NavidromeTargetConnection(serverUrl, username, password),
+            playlistId,
+            playlistName,
+            orderedIds,
+            playlistComment,
+            cancellationToken))
         {
             return false;
         }
@@ -1293,11 +1323,11 @@ public sealed class NavidromeApiClient
             return default;
         }
 
-        var requestUrl = BuildUrl(serverUrl, method, username, password, parameters);
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            response = await SendSubsonicRequestAsync(
+                new NavidromeTargetConnection(serverUrl, username, password), method, parameters, cancellationToken);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -1331,41 +1361,47 @@ public sealed class NavidromeApiClient
                 return default;
             }
 
-            T? payload;
-            try
-            {
-                payload = await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
-            }
-            catch (JsonException ex)
-            {
-                if (requireSuccessfulResponse)
-                {
-                    throw new TargetLookupException($"Navidrome {method} response was not valid JSON.", ex);
-                }
-
-                return default;
-            }
-
-            // A Subsonic application error can arrive with HTTP 200: only a strict caller treats the
-            // envelope as untrustworthy evidence instead of an empty success.
-            var subsonic = payload?.GetType().GetProperty("SubsonicResponse")?.GetValue(payload);
-            var status = subsonic is NavidromeBaseResponse baseResponse ? baseResponse.Status : null;
-            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
-            {
-                if (requireSuccessfulResponse)
-                {
-                    throw new TargetLookupException(
-                        $"Navidrome reported an application error for {method}: {DescribeNavidromeError(payload)}.");
-                }
-
-                return default;
-            }
-
-            if (requireSuccessfulResponse && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
-                throw new TargetLookupException($"Navidrome {method} response has no successful Subsonic envelope.");
-
-            return payload;
+            return await ReadSubsonicResponseAsync<T>(response, method, cancellationToken, requireSuccessfulResponse);
         }
+    }
+
+    private static async Task<T?> ReadSubsonicResponseAsync<T>(
+        HttpResponseMessage response, string method, CancellationToken cancellationToken, bool requireSuccessfulResponse)
+    {
+        T? payload;
+        try
+        {
+            payload = await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            if (requireSuccessfulResponse)
+            {
+                throw new TargetLookupException($"Navidrome {method} response was not valid JSON.", ex);
+            }
+
+            return default;
+        }
+
+        // A Subsonic application error can arrive with HTTP 200: only a strict caller treats the
+        // envelope as untrustworthy evidence instead of an empty success.
+        var subsonic = payload?.GetType().GetProperty("SubsonicResponse")?.GetValue(payload);
+        var status = subsonic is NavidromeBaseResponse baseResponse ? baseResponse.Status : null;
+        if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (requireSuccessfulResponse)
+            {
+                throw new TargetLookupException(
+                    $"Navidrome reported an application error for {method}: {DescribeNavidromeError(payload)}.");
+            }
+
+            return default;
+        }
+
+        if (requireSuccessfulResponse && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+            throw new TargetLookupException($"Navidrome {method} response has no successful Subsonic envelope.");
+
+        return payload;
     }
 
     /// <summary>Extracts the Subsonic error text from a parsed response, when present.</summary>
@@ -1392,28 +1428,13 @@ public sealed class NavidromeApiClient
     {
         try
         {
-            using var response = await _httpClient.PostAsJsonAsync(
-                BuildNativeUrl(serverUrl, "/auth/login"),
-                new { username, password },
-                cancellationToken);
-            if (requireSuccessfulResponse) response.EnsureSuccessStatusCode();
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var login = await response.Content.ReadFromJsonAsync<NavidromeNativeLoginResponse>(cancellationToken: cancellationToken);
-            return login?.Token;
+            return await RequestNativeJwtAsync(new NavidromeTargetConnection(serverUrl, username, password), cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return null;
         }
         catch (HttpRequestException) when (!requireSuccessfulResponse)
-        {
-            return null;
-        }
-        catch (JsonException) when (!requireSuccessfulResponse)
         {
             return null;
         }
@@ -1429,24 +1450,19 @@ public sealed class NavidromeApiClient
         => GetNativeSongsPageAsync(
             serverUrl,
             token,
-            offset,
-            pageSize,
-            sort: "playDate",
-            order: "DESC",
+            (offset, pageSize, "playDate", "DESC"),
             libraryId,
             cancellationToken);
 
     private async Task<List<NavidromeNativeSong>> GetNativeSongsPageAsync(
         string serverUrl,
         string token,
-        int offset,
-        int pageSize,
-        string sort,
-        string order,
+        (int Offset, int PageSize, string Sort, string Order) pageRequest,
         string? libraryId,
         CancellationToken cancellationToken,
         bool throwOnFailure = false)
     {
+        var (offset, pageSize, sort, order) = pageRequest;
         var queryParts = new List<string>
         {
             $"_start={offset}",
@@ -1516,20 +1532,138 @@ public sealed class NavidromeApiClient
         return $"{libraryPath.Trim().TrimEnd('/', '\\')}/{normalizedSongPath.TrimStart('/', '\\')}";
     }
 
+    // Keep one bounded session per client. Credentials are fingerprinted, never retained in the cache key.
+    private sealed record JwtSession(string CredentialsKey, string Token, DateTimeOffset ReuseUntil);
+
+    private async Task<string> GetSessionJwtAsync(
+        NavidromeTargetConnection connection, CancellationToken cancellationToken, string? rejectedToken = null)
+    {
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            connection.Url.TrimEnd('/') + "\0" + connection.Username + "\0" + connection.Password)));
+        await _jwtGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var now = _timeProvider.GetUtcNow();
+            if (_jwtSession is { } cached && cached.CredentialsKey == key
+                && cached.Token != rejectedToken && cached.ReuseUntil > now)
+                return cached.Token;
+
+            _jwtSession = null;
+            var token = await RequestNativeJwtAsync(connection, cancellationToken).ConfigureAwait(false);
+            var reuseUntil = GetJwtReuseDeadline(token, _timeProvider.GetUtcNow());
+            _jwtSession = new JwtSession(key, token, reuseUntil);
+            return token;
+        }
+        finally
+        {
+            _jwtGate.Release();
+        }
+    }
+
+    private async Task<string> RequestNativeJwtAsync(NavidromeTargetConnection connection, CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.PostAsJsonAsync(
+            BuildNativeUrl(connection.Url, "/auth/login"),
+            new { username = connection.Username, password = connection.Password }, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        try
+        {
+            var login = await response.Content.ReadFromJsonAsync<NavidromeNativeLoginResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(login?.Token))
+                throw new HttpRequestException("Navidrome login returned no session token.");
+            return login.Token;
+        }
+        catch (JsonException ex)
+        {
+            throw new HttpRequestException("Navidrome login returned invalid JSON.", ex);
+        }
+    }
+
+    private static DateTimeOffset GetJwtReuseDeadline(string token, DateTimeOffset now)
+    {
+        // This only schedules cache expiry; Navidrome verifies the token's signature and claims.
+        var parts = token.Split('.');
+        if (parts.Length != 3) return now;
+        try
+        {
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight((payload.Length + 3) / 4 * 4, '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            if (!document.RootElement.TryGetProperty("exp", out var expiry) || !expiry.TryGetInt64(out var seconds))
+                return now;
+            var expiresAt = DateTimeOffset.FromUnixTimeSeconds(seconds);
+            if (expiresAt <= now) throw new HttpRequestException("Navidrome login returned an expired session token.");
+            var boundedDeadline = now.AddMinutes(5);
+            var safeExpiry = expiresAt.AddSeconds(-30);
+            return safeExpiry < boundedDeadline ? safeExpiry : boundedDeadline;
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException or ArgumentOutOfRangeException or InvalidOperationException)
+        {
+            // A token with no readable expiry can be used for this request, but is never cached.
+            return now;
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendSubsonicRequestAsync(
+        NavidromeTargetConnection connection, string method,
+        IEnumerable<KeyValuePair<string, string?>> parameters, CancellationToken cancellationToken)
+    {
+        var token = await GetSessionJwtAsync(connection, cancellationToken).ConfigureAwait(false);
+        var arguments = parameters.ToArray();
+        var response = await _httpClient.GetAsync(
+            BuildUrl(connection.Url, method, connection.Username, token, arguments), cancellationToken).ConfigureAwait(false);
+        bool rejected;
+        try
+        {
+            rejected = await IsJwtRejectionAsync(response, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
+        if (!rejected) return response;
+
+        // An explicit authentication rejection happens before the server operation executes.
+        // Transport errors, timeouts, permission failures and ambiguous writes are never replayed.
+        response.Dispose();
+        token = await GetSessionJwtAsync(connection, cancellationToken, rejectedToken: token).ConfigureAwait(false);
+        return await _httpClient.GetAsync(
+            BuildUrl(connection.Url, method, connection.Username, token, arguments), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> IsJwtRejectionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized) return true;
+        if (!response.IsSuccessStatusCode) return false;
+        var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("subsonic-response", out var envelope)
+                && envelope.ValueKind == JsonValueKind.Object
+                && envelope.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String && status.GetString() == "failed"
+                && envelope.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object
+                && error.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var number) && number == 40;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static string BuildUrl(
         string serverUrl,
         string method,
         string username,
-        string password,
+        string jwt,
         IEnumerable<KeyValuePair<string, string?>> parameters)
     {
-        var salt = Guid.NewGuid().ToString("N");
-        var token = ToMd5Hex(password + salt);
         var query = new List<KeyValuePair<string, string?>>
         {
             new("u", username),
-            new("t", token),
-            new("s", salt),
+            new("jwt", jwt),
             new("v", ApiVersion),
             new("c", ClientName),
             new("f", "json")
@@ -1597,11 +1731,7 @@ public sealed class NavidromeApiClient
         };
     }
 
-    private static string ToMd5Hex(string value)
-    {
-        var bytes = MD5.HashData(Encoding.UTF8.GetBytes(value));
-        return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
+
 }
 
 public sealed record NavidromeSystemInfo(string? Version, string ServerName);

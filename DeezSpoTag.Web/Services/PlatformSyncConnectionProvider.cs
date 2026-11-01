@@ -110,11 +110,12 @@ public sealed class PlatformSyncConnectionProvider
         }
 
         // An access token already established at login is used as-is.
-        if (!string.IsNullOrWhiteSpace(_deezerSessionManager.AccessToken))
+        var accessToken = _deezerSessionManager.AccessToken;
+        if (!string.IsNullOrWhiteSpace(accessToken))
         {
             return new DeezerTargetSession(
-                _deezerSessionManager.AccessToken!,
-                _deezerSessionManager.CurrentUser?.Id.ToString());
+                accessToken,
+                _deezerSessionManager.CurrentUser?.Id);
         }
 
         var arl = _deezerSessionManager.Arl;
@@ -130,7 +131,7 @@ public sealed class PlatformSyncConnectionProvider
                 .ConfigureAwait(false);
             return string.IsNullOrWhiteSpace(bearer)
                 ? null
-                : new DeezerTargetSession(bearer!, _deezerSessionManager.CurrentUser?.Id.ToString());
+                : new DeezerTargetSession(bearer, _deezerSessionManager.CurrentUser?.Id);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
