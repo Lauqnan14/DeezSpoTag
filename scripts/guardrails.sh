@@ -128,6 +128,34 @@ if [[ "$MODE" == "changed" ]]; then
       *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
       scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|.gitea/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      DeezSpoTag.Core/Models/Album.cs|DeezSpoTag.Core/Utils/AlbumTitleNormalizer.cs)
+        add_tests_matching '^AlbumAwarenessTest$' ;;
+      DeezSpoTag.Core/Utils/FeaturedTitleMarker.cs)
+        add_tests_matching '^(FeaturedTitleMoveMode|ArtistAliasService)Test$' ;;
+      DeezSpoTag.Core/Models/Settings/DeezSpoTagSettings.cs|DeezSpoTag.Core/Models/Settings/MultiQualityDownloadSettings.cs|DeezSpoTag.Services/Settings/DeezSpoTagSettingsService.cs)
+        add_tests_matching '^(DailyRecommendationSettings|DownloadEngineSettingsHelper|DeezSpoTagSettingsServiceLyricsFallbackOrder|LyricsSettingsPolicy)Test$' ;;
+      DeezSpoTag.Integrations/Deezer/DeezerClient.cs|DeezSpoTag.Integrations/Deezer/DeezerSessionManager.cs)
+        add_tests_matching '^(DeezerAuthenticationPathGuardrail|DeezerLoginStatusBehavior|ApiControllerDeezerRecovery)Test$' ;;
+      DeezSpoTag.Web/Controllers/Api/AutoPlaylistsApiController.cs)
+        add_tests_matching '^(AutoPlaylistsControllerBehavior|RecommendationCacheServing)Test$' ;;
+      DeezSpoTag.Web/Services/Audiomack/AudiomackApiClient.cs|DeezSpoTag.Web/Services/Audiomack/AudiomackNextDataExtractor.cs)
+        add_tests_matching '^(AudiomackPlatform|AudiomackArtistLocation|ArtistMetadataAliasLookup)Test$' ;;
+      DeezSpoTag.Web/Services/PlatformSyncConnectionProvider.cs)
+        add_tests_matching '^(PlaylistSyncReadiness|PlatformPlaylistSyncTarget|NavidromeApiClientPlaylist)Test$' ;;
+      DeezSpoTag.Web/Controllers/Api/ShazamDiscoveryApiController.cs|DeezSpoTag.Web/Services/Shazam*.cs|DeezSpoTag.Web/Tools/shazam_port/discover.py|DeezSpoTag.Web/Tools/shazam_related/*|DeezSpoTag.Web/Views/Shazam/Results.cshtml)
+        add_tests_matching '^(Shazam|DailyRecommendationSettings|RecommendationCacheServing)' ;;
+      DeezSpoTag.Web/Tools/spotify_librespot/deezspot-spotizerr-phoenix/deezspot_spotizerr_phoenix.egg-info/*)
+        add_tests_matching '^(SpotifyCredentialsGenerationGuardrail|TidalSpotifyResolutionGuardrail)Test$' ;;
+      DeezSpoTag.Web/Views/Library/Artist.cshtml|DeezSpoTag.Web/wwwroot/css/library-artist-hero.css|DeezSpoTag.Web/wwwroot/css/library.css)
+        add_tests_matching '^(ArtistMetadataAliasLookup|ArtistVisualPickerNoDeletionGuardrail|ArtistMetadataAutomationResilience|LibraryArtistCatalogueBrowser|PlaylistRemovalSafety)Test$' ;;
+      DeezSpoTag.Web/wwwroot/css/themes.css)
+        add_tests_matching '^(NotificationPreferenceWiring|NotificationSinkDispatch)Test$' ;;
+      DeezSpoTag.Web/wwwroot/js/user-preferences.js)
+        add_tests_matching '^(ArtistMetadataAutomationResilience|TabPreferenceConsolidationGuardrail|DailyRecommendationSettings)Test$' ;;
+      Tools/AppleMusicWrapper/runv2/go.mod)
+        add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      'navidrome plugin/deezspotag-metadata/'*)
+        add_tests_matching '^(MetadataAgentArtistResolution|NavidromeApiClientArtistLookup)Test$' ;;
       DeezSpoTag.Integrations/Qobuz/QobuzApiClient.cs|DeezSpoTag.Services/Metadata/Qobuz/IQobuzMetadataService.cs|DeezSpoTag.Services/Metadata/Qobuz/QobuzArtistService.cs)
         add_tests_matching '^(QobuzMetadataService|QobuzTrackResolver)Test$' ;;
       DeezSpoTag.Services/Download/Identity/TrackIdentityResolution.cs|DeezSpoTag.Web/Services/TrackIdentityResolver.cs)
