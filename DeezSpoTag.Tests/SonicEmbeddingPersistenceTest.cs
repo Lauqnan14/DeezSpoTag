@@ -29,6 +29,7 @@ public sealed class SonicEmbeddingPersistenceTest : IAsyncLifetime
     private string _dbPath = string.Empty;
     private IConfiguration _configuration = default!;
     private LibraryRepository _repository = default!;
+    private long _nextLibraryId = 9000;
 
     public async Task InitializeAsync()
     {
@@ -209,11 +210,33 @@ UPDATE track_sonic_embedding
     }
 
     [Fact]
+    public async Task CollidingTitleHashes_DoNotMergeDistinctTestLibraries()
+    {
+        var titles = Enumerable.Range(0, 501)
+            .Select(index => $"Collision Library {index}")
+            .GroupBy(title => Math.Abs(title.GetHashCode(StringComparison.Ordinal) % 500))
+            .First(group => group.Count() > 1)
+            .Take(2).ToArray();
+        var (firstLibrary, firstTrack) = await SeedTrackAsync(titles[0]);
+        var (secondLibrary, secondTrack) = await SeedTrackAsync(titles[1]);
+        Assert.NotEqual(firstLibrary, secondLibrary);
+
+        await _repository.UpsertSonicEmbeddingAsync(Create(firstTrack, firstLibrary, NormalizedVector(seed: 91)));
+        await _repository.UpsertSonicEmbeddingAsync(Create(secondTrack, secondLibrary, NormalizedVector(seed: 92)));
+
+        var forFirst = await _repository.GetLibrarySonicEmbeddingsAsync(firstLibrary, ModelId, ModelVersion, EmbeddingVersion);
+        var forSecond = await _repository.GetLibrarySonicEmbeddingsAsync(secondLibrary, ModelId, ModelVersion, EmbeddingVersion);
+        Assert.Equal(firstTrack, Assert.Single(forFirst).TrackId);
+        Assert.Equal(secondTrack, Assert.Single(forSecond).TrackId);
+    }
+
+    [Fact]
     public async Task LibraryBulkRead_IsScopedToOneLibrary()
     {
         // A similarity index must never see another library's vectors.
         var (firstLibrary, firstTrack) = await SeedTrackAsync("Library One A");
         var (secondLibrary, secondTrack) = await SeedTrackAsync("Library Two A");
+        Assert.NotEqual(firstLibrary, secondLibrary);
         await _repository.UpsertSonicEmbeddingAsync(
             Create(firstTrack, firstLibrary, NormalizedVector(seed: 91)));
         await _repository.UpsertSonicEmbeddingAsync(
@@ -226,6 +249,8 @@ UPDATE track_sonic_embedding
 
         Assert.All(forFirst, embedding => Assert.Equal(firstLibrary, embedding.LibraryId));
         Assert.All(forSecond, embedding => Assert.Equal(secondLibrary, embedding.LibraryId));
+        Assert.Equal(firstTrack, Assert.Single(forFirst).TrackId);
+        Assert.Equal(secondTrack, Assert.Single(forSecond).TrackId);
         Assert.DoesNotContain(forFirst, embedding => embedding.TrackId == secondTrack);
     }
 
@@ -357,8 +382,7 @@ UPDATE track_analysis
             libraryCommand.CommandText = @"
 INSERT INTO library (id, name) VALUES ($id, $name)
 ON CONFLICT(id) DO NOTHING;";
-            libraryId = intoLibraryId
-                ?? 9000 + Math.Abs(title.GetHashCode(StringComparison.Ordinal) % 500);
+            libraryId = intoLibraryId ?? ++_nextLibraryId;
             libraryCommand.Parameters.AddWithValue("$id", libraryId);
             libraryCommand.Parameters.AddWithValue("$name", $"Sonic Test Library {libraryId}");
             await libraryCommand.ExecuteNonQueryAsync();
