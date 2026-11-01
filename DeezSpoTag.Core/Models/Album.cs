@@ -6,7 +6,6 @@ namespace DeezSpoTag.Core.Models;
 
 public class Album
 {
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly string[] BlockedGenres = ["other", "others"];
     public string Id { get; set; }
     public string Title { get; set; }

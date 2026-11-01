@@ -3269,6 +3269,11 @@ internal sealed class WatchlistEngine : IWatchlistTrackCandidateSource
     /// </summary>
     private async Task<(string, string, string)?> ResolveLibraryServerAsync(string source)
     {
+        if (_platformAuthService is null)
+        {
+            return null;
+        }
+
         var state = await _platformAuthService.LoadAsync();
         return source.ToLowerInvariant() switch
         {

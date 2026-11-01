@@ -6,6 +6,7 @@ namespace DeezSpoTag.Core.Utils;
 
 public static class TrackTitleMatcher
 {
+    private const string JacksonFiveName = "jackson 5";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
     private static readonly string[] RemovableVersionMarkers =
@@ -67,15 +68,8 @@ public static class TrackTitleMatcher
             return false;
         }
 
-        foreach (Match match in FeaturedCreditClauseRegex.Matches(title))
-        {
-            if (ArtistsMatch(artist, match.Groups[1].Value))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return FeaturedCreditClauseRegex.Matches(title)
+            .Any(match => ArtistsMatch(artist, match.Groups[1].Value));
     }
 
     private static string StripFeaturedCredits(string? title)
@@ -216,7 +210,7 @@ public static class TrackTitleMatcher
 
         return expectedArtists.Any(exp => actualArtists.Any(act =>
             exp == act
-            || (exp != "jackson 5" && act != "jackson 5"
+            || (exp != JacksonFiveName && act != JacksonFiveName
                 && (exp.Contains(act, StringComparison.Ordinal)
                     || act.Contains(exp, StringComparison.Ordinal)))));
     }
@@ -321,8 +315,8 @@ public static class TrackTitleMatcher
             RegexOptions.None,
             RegexTimeout).Trim();
 
-        return identity is "the jackson five" or "jackson five" or "the jackson 5" or "jackson 5"
-            ? "jackson 5"
+        return identity is "the jackson five" or "jackson five" or "the jackson 5" or JacksonFiveName
+            ? JacksonFiveName
             : identity;
     }
 

@@ -150,7 +150,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
                     item,
                     resolvedTrack,
                     result,
-                    item.AllowFallbackSearch ? strictMode : true,
+                    !item.AllowFallbackSearch || strictMode,
                     attempt,
                     stoppingToken))
             {

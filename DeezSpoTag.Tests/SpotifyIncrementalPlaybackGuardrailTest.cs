@@ -203,7 +203,7 @@ public sealed class SpotifyIncrementalPlaybackGuardrailTest
 
         Assert.Contains("allowFallbackSearch: false", controller, StringComparison.Ordinal);
         Assert.Contains("PreferIsrcOnly: !item.AllowFallbackSearch", background, StringComparison.Ordinal);
-        Assert.Contains("item.AllowFallbackSearch ? strictMode : true", background, StringComparison.Ordinal);
+        Assert.Contains("!item.AllowFallbackSearch || strictMode", background, StringComparison.Ordinal);
         Assert.Contains("ShouldRunTerminalMetadataPass(result)", background, StringComparison.Ordinal);
         Assert.Contains("strictMode: terminalStrictMode", background, StringComparison.Ordinal);
     }

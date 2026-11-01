@@ -93,9 +93,7 @@ public sealed class MultiQualityDownloadSettingsJsonConverter : JsonConverter<Mu
                     settings.SecondaryDestinationFolderId = ReadNullableInt64(ref reader);
                     break;
                 case "atmosengine":
-                    settings.AtmosEngine = reader.TokenType == JsonTokenType.Null
-                        ? "apple"
-                        : reader.GetString() ?? "apple";
+                    settings.AtmosEngine = ReadAtmosEngine(ref reader);
                     break;
                 case "atmosfallbackenabled":
                     canonicalFallbackSeen = true;
@@ -106,9 +104,7 @@ public sealed class MultiQualityDownloadSettingsJsonConverter : JsonConverter<Mu
                     legacyFallback |= reader.GetBoolean();
                     break;
                 default:
-                    using (JsonDocument.ParseValue(ref reader))
-                    {
-                    }
+                    reader.Skip();
                     break;
             }
         }
@@ -130,6 +126,9 @@ public sealed class MultiQualityDownloadSettingsJsonConverter : JsonConverter<Mu
         writer.WriteBoolean("atmosFallbackEnabled", value.AtmosFallbackEnabled);
         writer.WriteEndObject();
     }
+
+    private static string ReadAtmosEngine(ref Utf8JsonReader reader)
+        => reader.TokenType == JsonTokenType.Null ? "apple" : reader.GetString() ?? "apple";
 
     private static long? ReadNullableInt64(ref Utf8JsonReader reader)
         => reader.TokenType == JsonTokenType.Null ? null : reader.GetInt64();

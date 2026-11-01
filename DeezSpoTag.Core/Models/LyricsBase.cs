@@ -182,8 +182,8 @@ public abstract class LyricsBase
         var builder = new System.Text.StringBuilder();
         builder.Append(lyric.LrcTimestamp);
         var words = lyric.Words?
-            .OrderBy(static word => word.StartMilliseconds)
             .Where(static word => !string.IsNullOrEmpty(word.Text))
+            .OrderBy(static word => word.StartMilliseconds)
             .ToList();
         if (words == null || words.Count == 0)
         {

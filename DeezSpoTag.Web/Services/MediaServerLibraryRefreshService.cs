@@ -711,7 +711,7 @@ public sealed class MediaServerLibraryRefreshService
     {
         var normalizedService = (service ?? string.Empty).Trim().ToLowerInvariant();
         var deleted = 0;
-        IReadOnlyList<long> verifiedTrackIds = [];
+        IReadOnlyList<long> verifiedTrackIds;
         var gate = _identityRefreshGates.GetOrAdd(normalizedService, static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try

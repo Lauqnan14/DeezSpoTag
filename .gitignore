@@ -159,3 +159,30 @@ DeezSpoTag.Web/wwwroot/images/meloday/generated/
 /tmp/recommendations-section-mockup.html
 # Prepared proof-token dependencies; installed only during setup/build.
 DeezSpoTag.Web/Tools/youtube_playback_runtime/
+
+# JS test tooling (Sonar coverage campaign, approved 2026-10-28)
+tests-js/node_modules/
+tests-js/artifacts/
+
+# Local genre research documents and scratch files
+/DEEZSPO_TAG_STYLE_RESEARCH_SUMMARY.txt
+/DeezSpoTag_Style_Research_50_Entries.xlsx
+/DeezSpoTag_genre_style_research_corrections.xlsx
+/assign_parents.py
+/mb2_out.txt
+
+# Soulseek audit/working documents — local only, never tracked or committed
+/docs/soulseek-audit-*.md
+
+# Generated dependency metadata and bundles; source manifests stay tracked.
+**/node_modules/
+**/*.egg-info/
+/DeezSpoTag.Web/Tools/shazam_related/runtime.mjs
+
+# Local implementation reports and taxonomy import diagnostics.
+/DeezSpoTag.Web/Reports/
+/DeezSpoTag.Services/Genre/Data/genre-intelligence-taxonomy-import-diff.json
+
+# Rebuildable Navidrome plugin binaries can embed local build paths.
+/navidrome plugin/deezspotag-metadata/plugin.wasm
+/navidrome plugin/deezspotag-metadata/*.ndp

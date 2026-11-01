@@ -12,12 +12,13 @@ namespace DeezSpoTag.Core.Utils;
 /// </summary>
 public static class AlbumTitleNormalizer
 {
+    private const string AnniversaryMarker = "anniversary";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
     /// <summary>Edition markers recognized in album titles ("Album (Deluxe Edition)").</summary>
     private static readonly string[] EditionMarkers =
     {
-        "deluxe", "expanded", "anniversary", "remaster", "collector", "special edition",
+        "deluxe", "expanded", AnniversaryMarker, "remaster", "collector", "special edition",
         "limited edition", "bonus track", "bonus disc", "super deluxe", "deluxe edition",
         "expanded edition", "complete edition", "ultimate edition", "mono", "stereo",
         "clean", "explicit", "edition"
@@ -94,7 +95,7 @@ public static class AlbumTitleNormalizer
         }
 
         AddIntent(intent, normalized, "expanded", "expanded");
-        AddIntent(intent, normalized, "anniversary", "anniversary");
+        AddIntent(intent, normalized, AnniversaryMarker, AnniversaryMarker);
         AddIntent(intent, normalized, "remaster", "remaster");
         AddIntent(intent, normalized, "collector", "collector");
         AddIntent(intent, normalized, "special edition", "special");
@@ -114,7 +115,7 @@ public static class AlbumTitleNormalizer
                 intent.Add(match.Value);
             }
 
-            if (intent.Contains("anniversary"))
+            if (intent.Contains(AnniversaryMarker))
             {
                 foreach (Match match in Regex.Matches(normalized, @"\b\d+(?:st|nd|rd|th)\b", RegexOptions.None, RegexTimeout))
                 {

@@ -122,16 +122,18 @@ public sealed class ShazamRelatedRuntimeService(IWebHostEnvironment environment,
             lock (_gate) { if (ReferenceEquals(_session, session)) _session = null; }
             foreach (var entry in session.Pending)
                 if (session.Pending.TryRemove(entry.Key, out var completion)) completion.TrySetException(new HttpRequestException("shazam_helper_stopped"));
-            try { if (!session.Process.HasExited) session.Process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            try { if (!session.Process.HasExited) session.Process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException ex) { logger.LogDebug(ex, "Shazam related helper process exited before teardown kill."); }
             session.Process.Dispose();
         }
     }
-    private static async Task DrainErrorsAsync(Session session)
+    private async Task DrainErrorsAsync(Session session)
     {
         // Never forward raw runtime/HTTP error text, even if a dependency prints it.
         var buffer = new char[1024];
         try { while (await session.Process.StandardError.ReadAsync(buffer) > 0) { } }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException) { }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        { logger.LogDebug(ex, "Shazam related helper error stream ended."); }
     }
     public async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -139,7 +141,7 @@ public sealed class ShazamRelatedRuntimeService(IWebHostEnvironment environment,
         lock (_gate) { _stopped = true; session = _session; _session = null; }
         if (session is null) return;
         try { if (!session.Process.HasExited) session.Process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
+        catch (InvalidOperationException ex) { logger.LogDebug(ex, "Shazam related helper process exited before stop kill."); }
         if (session.Reader is not null) await session.Reader.WaitAsync(cancellationToken);
         if (session.ErrorReader is not null) await session.ErrorReader.WaitAsync(cancellationToken);
     }

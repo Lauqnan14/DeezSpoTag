@@ -19,7 +19,6 @@ using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Download.Shared;
-using DeezSpoTag.Services.Download.Soulseek;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Library;

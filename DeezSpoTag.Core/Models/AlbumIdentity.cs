@@ -34,9 +34,14 @@ public sealed record ProviderAlbumIdentity(
     }
 
     private static string? PreferIdentityValue(string? established, string? candidate)
-        => string.IsNullOrWhiteSpace(established)
-            ? string.IsNullOrWhiteSpace(candidate) ? null : candidate.Trim()
-            : established.Trim();
+    {
+        if (!string.IsNullOrWhiteSpace(established))
+        {
+            return established.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(candidate) ? null : candidate.Trim();
+    }
 }
 
 public sealed record AlbumIdentity(
@@ -124,11 +129,9 @@ public sealed record AlbumIdentity(
 
         var values = new Dictionary<string, ProviderAlbumIdentity>(StringComparer.OrdinalIgnoreCase);
         AddProviderIdentities(values, ProviderIdentities);
-        values[key] = !overwrite && values.TryGetValue(key, out var established) && !established.IsEmpty
+        values[key] = !overwrite && values.TryGetValue(key, out var established)
             ? established.CoalesceWith(value)
-            : (overwrite
-                ? value
-                : (values.TryGetValue(key, out var current) ? current.CoalesceWith(value) : value));
+            : value;
 
         return this with { ProviderIdentities = values.Count == 0 ? null : values };
     }

@@ -174,16 +174,13 @@ public static class DjPlaylistEvaluator
         var affinities = request.SeedAffinities
             ?? new Dictionary<long, IReadOnlyDictionary<long, double>>();
 
-        var measured = new List<double>(trackIds.Count);
-        foreach (var trackId in trackIds)
-        {
-            if (affinities.TryGetValue(trackId, out var perSeed)
-                && perSeed.TryGetValue(opening, out var value)
-                && double.IsFinite(value))
-            {
-                measured.Add(ClampSimilarity(value));
-            }
-        }
+        var measured = trackIds
+            .SelectMany(trackId => affinities.TryGetValue(trackId, out var perSeed)
+                    && perSeed.TryGetValue(opening, out var value)
+                    && double.IsFinite(value)
+                ? new[] { ClampSimilarity(value) }
+                : Array.Empty<double>())
+            .ToList();
 
         if (measured.Count < 2)
         {
