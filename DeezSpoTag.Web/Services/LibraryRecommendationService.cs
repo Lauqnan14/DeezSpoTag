@@ -748,8 +748,10 @@ public sealed class LibraryRecommendationService
     internal static DateTimeOffset DailyBoundaryUtc(DateOnly day, TimeOnly time, TimeZoneInfo zone)
         => new(TimeZoneInfo.ConvertTimeToUtc(day.ToDateTime(time, DateTimeKind.Unspecified), zone));
 
+    private static readonly TimeOnly AutomaticDailyCutoff = new(20, 0);
+
     internal static bool AutomaticDailyAllowed(DateTimeOffset nowLocal)
-        => nowLocal.TimeOfDay < TimeSpan.FromHours(22);
+        => TimeOnly.FromDateTime(nowLocal.DateTime) < AutomaticDailyCutoff;
 
     private RecommendationDetailDto StampDailyResponse(RecommendationDetailDto detail, DateOnly day)
     {
@@ -786,7 +788,7 @@ public sealed class LibraryRecommendationService
             var reasons = state?.Status == "failed" ? ResolveGenerationStateReasonCodes(state) : new[] { GenerationQueuedReason };
             var unavailable = CreateUnavailableRecommendationDetail(scope, artwork, targetDay, reasons);
             var unavailableStatus = late ? "waiting" : state?.Status == "failed" ? "failed" : "generating";
-            var unavailableMessage = late ? "Today's selection is empty. Automatic recommendations resume at midnight (22:00 cutoff)."
+            var unavailableMessage = late ? "Today's selection is empty. Automatic recommendations resume at midnight (20:00 cutoff)."
                 : state?.Status == "failed" ? "Today's selection could not be generated. " + BuildRecommendationUnavailableMessage(reasons)
                 : "Today's selection is being prepared. No expired daily playlist is shown.";
             return StampDailyResponse(unavailable with { Status = unavailableStatus, Message = unavailableMessage,
@@ -823,7 +825,7 @@ public sealed class LibraryRecommendationService
             : !complete
             ? (published ? "Replacement selection is incomplete. " : "Today's initial selection is not ready; no partial playlist is published. ")
                 + BuildDailyShortfallMessage(shortages ?? new Dictionary<string,int>()) + " " + progress + ". "
-                + (late ? "Automatic collection resumes at midnight (22:00 cutoff). " : "")
+                + (late ? "Automatic collection resumes at midnight (20:00 cutoff). " : "")
                 + (exhausted.Count > 0 ? "Eligible starting songs exhausted for " + string.Join(", ", exhausted) + ". " : "")
                 + $"{reserves} replacement suggestions available."
             : $"{selected.Count}/{savedCount} tracks. {progress}. {reserves} replacement suggestions available.";
@@ -1649,7 +1651,7 @@ public sealed class LibraryRecommendationService
             await RunRecommendationMaintenanceAsync($"recommendation-maintenance:{scope.StationId}:{today:yyyyMMdd}", async () =>
             {
                 if (_settings?.LoadSettings().DailyRecommendations.IsDisabled == true || !AutomaticDailyAllowed(_timeProvider.GetLocalNow())) return;
-                var remaining=DailyBoundaryUtc(today,new TimeOnly(22,0),_timeProvider.LocalTimeZone)-_timeProvider.GetUtcNow();
+                var remaining=DailyBoundaryUtc(today,AutomaticDailyCutoff,_timeProvider.LocalTimeZone)-_timeProvider.GetUtcNow();
                 using var cutoff = new CancellationTokenSource(remaining>TimeSpan.Zero ? remaining : TimeSpan.Zero,_timeProvider);
                 using var work = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,cutoff.Token);
                 var maintenanceToken = work.Token;
@@ -1847,7 +1849,7 @@ public sealed class LibraryRecommendationService
         if (!historical && (dayLocal != operationDay || (automatic && !AutomaticDailyAllowed(_timeProvider.GetLocalNow())))) return false;
         var callerToken = cancellationToken;
         var deadline = historical ? (DateTimeOffset?)null : DailyBoundaryUtc(automatic ? dayLocal : dayLocal.AddDays(1),
-            automatic ? new TimeOnly(22,0) : TimeOnly.MinValue, _timeProvider.LocalTimeZone);
+            automatic ? AutomaticDailyCutoff : TimeOnly.MinValue, _timeProvider.LocalTimeZone);
         using var dayEnded = deadline.HasValue ? new CancellationTokenSource(
             deadline.Value > _timeProvider.GetUtcNow() ? deadline.Value - _timeProvider.GetUtcNow() : TimeSpan.Zero, _timeProvider) : null;
         using var dailyWork = dayEnded is null ? null : CancellationTokenSource.CreateLinkedTokenSource(callerToken,dayEnded.Token);

@@ -291,6 +291,80 @@ public sealed class ArtistMetadataAutomationResilienceTest
     }
 
     [Fact]
+    public async Task FreshBiographyDisplaysBeforeSelectionAndPreservesTheUsersProfileChoice()
+    {
+        var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
+        var start = source.IndexOf("async function loadArtistBiographiesFromCache", StringComparison.Ordinal);
+        var end = source.IndexOf("const artistCacheRuns =", start, StringComparison.Ordinal);
+        var script = """
+            const assert = require('node:assert/strict');
+            const libraryState = {appleExtras:{}};
+            let rows = [{source:'lastfm',sourceId:'alias-profile',biography:'Fresh verified biography',selected:false}];
+            const options = ['spotify','lastfm'].map(value => ({value,dataset:{},selected:value==='spotify'}));
+            const selector = {dataset:{},options,get value() {return options.find(o=>o.selected)?.value;},
+                querySelectorAll: query => query.includes('data-profile-option') ? [] : options};
+            const document = {getElementById:()=>selector};
+            const getCurrentLibraryArtistId = ()=>17;
+            const getSelectedArtistBiographyIdentity = ()=>options.find(o=>o.selected)?.dataset.sourceId ?? null;
+            const fetchJsonOptional = async()=>({sources:rows,selected:'spotify'});
+            const normalizeArtistBiographyForSync = value=>value.trim();
+            const updateArtistBiographySourceControls = ()=>{};
+            const applySelectedArtistBiographySource = ()=>{};
+            """ + source[start..end] + """
+            (async()=>{
+                await loadArtistBiographiesFromCache(17);
+                assert.equal(selector.value,'lastfm');
+                assert.equal(getSelectedArtistBiographyIdentity(),'alias-profile');
+                selector.dataset.userSelected='true';
+                rows=[{source:'spotify',sourceId:'primary-profile',biography:'Other biography',selected:true},...rows];
+                await loadArtistBiographiesFromCache(17);
+                assert.equal(selector.value,'lastfm');
+                assert.equal(getSelectedArtistBiographyIdentity(),'alias-profile');
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        using var process = Process.Start(new ProcessStartInfo("node")
+        { RedirectStandardInput = true, RedirectStandardError = true, UseShellExecute = false })!;
+        await process.StandardInput.WriteAsync(script);
+        process.StandardInput.Close();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(process.ExitCode == 0, await process.StandardError.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task ReplacedCacheWatcherCannotRenderOrRemoveItsSuccessor()
+    {
+        var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
+        var start = source.IndexOf("async function followArtistCacheRun", StringComparison.Ordinal);
+        var end = source.IndexOf("// Explicit per-source live refresh", start, StringComparison.Ordinal);
+        var script = """
+            const assert = require('node:assert/strict');
+            const artistCacheRuns = new Map();
+            const libraryState = {};
+            const document = {getElementById:()=>null};
+            const getCurrentLibraryArtistId = ()=>17;
+            const setSpotifyCacheStatus = ()=>{};
+            let release;
+            const fetchJson = ()=>new Promise(resolve=>release=resolve);
+            const reloadCachedArtistPanels = ()=>assert.fail('A replaced watcher must not render');
+            """ + source[start..end] + """
+            (async()=>{
+                const prior=followArtistCacheRun(17,{queued:true,runId:'same-run'});
+                const replacement={runId:'same-run'};
+                artistCacheRuns.set('17',replacement);
+                release({revision:'changed',status:{runId:'same-run',runState:'running'}});
+                await prior;
+                assert.equal(artistCacheRuns.get('17'),replacement);
+            })().catch(error=>{console.error(error);process.exitCode=1;});
+            """;
+        using var process = Process.Start(new ProcessStartInfo("node")
+        { RedirectStandardInput = true, RedirectStandardError = true, UseShellExecute = false })!;
+        await process.StandardInput.WriteAsync(script);
+        process.StandardInput.Close();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(process.ExitCode == 0, await process.StandardError.ReadToEndAsync());
+    }
+
+    [Fact]
     public void ArtistPageDisplaysCachedResultsWhileRefreshIsStillRunning()
     {
         var source = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "library.js"));

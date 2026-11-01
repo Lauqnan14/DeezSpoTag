@@ -790,7 +790,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 }
                 Assert.Fail("Shared cache job did not reach a persisted outcome.");
             }
-            foreach (var failure in new[] {"http503", "http429", "timeout", "required-write", "journal"})
+            foreach (var failure in new[] {"http503", "http429", "timeout", "provider-cancel", "required-write", "journal"})
             {
                 var priorClock = coordinator.GetStatus().LastCacheRefreshUtc;
                 provider.OnRequest = failure == "journal" ? () => System.IO.Directory.CreateDirectory(
@@ -798,6 +798,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 provider.Failed = failure is "http503" or "http429";
                 provider.FailureStatus = failure == "http429" ? System.Net.HttpStatusCode.TooManyRequests : System.Net.HttpStatusCode.ServiceUnavailable;
                 provider.Delay = failure == "timeout";
+                provider.CancelRequest = failure == "provider-cancel";
                 async System.Threading.Tasks.Task RenameBiographyTable(bool restore)
                 {
                     await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+System.IO.Path.Combine(env.ContentRootPath,"library.db"));
@@ -826,6 +827,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
                 provider.OnRequest=null;
                 provider.Failed = false;
                 provider.Delay = false;
+                provider.CancelRequest = false;
                 if (failure == "http429")
                 {
                     // Advance only the isolated fixture's backoff clock; production limits remain unchanged.
@@ -936,6 +938,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
         public bool Failed = true;
         public bool Empty;
         public bool Delay;
+        public bool CancelRequest;
         public System.Net.HttpStatusCode FailureStatus = System.Net.HttpStatusCode.ServiceUnavailable;
         public int Calls;
         public System.Net.Http.HttpClient CreateClient(string name) => new(new ProfileHandler(this));
@@ -947,6 +950,7 @@ INSERT INTO track_local(track_id,audio_file_id) VALUES(1,1);";
             owner.Calls++;
             owner.OnRequest?.Invoke();
             owner.Entered?.TrySetResult();
+            if (owner.CancelRequest) throw new OperationCanceledException("Provider cancelled without cancelling the metadata run.");
             if(owner.Release is not null) await owner.Release.Task.WaitAsync(token);
             if(owner.Delay) await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(2),token);
             var requestedArtist = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri!.Query)["artist"].FirstOrDefault() ?? "Fixture Artist";

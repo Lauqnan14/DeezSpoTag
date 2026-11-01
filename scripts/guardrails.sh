@@ -125,7 +125,10 @@ if [[ "$MODE" == "changed" ]]; then
           selected+=("${name%.cs}")
         fi
         continue ;;
-      *.md|.gitignore|LICENSE*|docs/*|*.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico) continue ;;
+      *.md|.gitignore|LICENSE*|docs/*)
+        add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
+      *.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg|*.ico)
+        add_tests_matching '^AssetUrlGuardrailTest$' ;;
       scripts/guardrails.sh|.githooks/pre-push|.github/workflows/*|.gitea/workflows/*|Dockerfile*)
         add_tests_matching '^PublishingWorkflowGuardrailTest$' ;;
       DeezSpoTag.Core/Models/Album.cs|DeezSpoTag.Core/Utils/AlbumTitleNormalizer.cs)

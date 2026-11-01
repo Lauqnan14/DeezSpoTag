@@ -461,10 +461,14 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         Assert.All(quotas,p=>Assert.Equal(p.Value,ready.Tracks.Count(t=>t.RecommendationOrigin==p.Key)));
     }
 
-    [Fact]
-    public async Task DailyShortfallStaysPrivateAndPreservesSavedAiPolicy()
+    [Theory]
+    [InlineData(12, "refilling")]
+    [InlineData(20, "waiting")]
+    [InlineData(23, "waiting")]
+    public async Task DailyShortfallStaysPrivateAndPreservesSavedAiPolicy(int hour, string expectedStatus)
     {
-        var day = DateOnly.FromDateTime(DateTime.Now);
+        var clock = new ArtworkClock(hour);
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
         var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
         var quotas = new Dictionary<string, int> { ["deezer"] = 20 };
         var rows = Enumerable.Range(1, 20).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
@@ -474,10 +478,10 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
         Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
         Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", id,
-            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = rows, TrackCount = 20,
+            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = clock.GetUtcNow(), Tracks = rows, TrackCount = 20,
                 Allocations = quotas, AiFilterMode = DailyRecommendationAiFilterMode.Strict, Diagnostics = diagnostics })));
-        var result = (await Service().RejectRecommendationTrackAsync(new(key.LibraryId, Folder.Id, id, "1", null, "Track 1", "Artist 1")))!;
-        Assert.Equal("refilling", result.Status);
+        var result = (await Service(clock).RejectRecommendationTrackAsync(new(key.LibraryId, Folder.Id, id, "1", null, "Track 1", "Artist 1")))!;
+        Assert.Equal(expectedStatus, result.Status);
         Assert.Empty(result.Tracks);
         Assert.Equal(1, result.Diagnostics!.MissingSourceCounts["deezer"]);
         Assert.Equal(0, result.Diagnostics.DestinationCount);
@@ -523,21 +527,25 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         Assert.Equal(count, smaller.WeeklyTrackCount);
     }
 
-    [Fact]
-    public async Task InitialPartialSavedDailySelectionRemainsPrivateAfterRestart()
+    [Theory]
+    [InlineData(12, "generating")]
+    [InlineData(20, "waiting")]
+    [InlineData(23, "waiting")]
+    public async Task InitialPartialSavedDailySelectionRemainsPrivateAfterRestart(int hour, string expectedStatus)
     {
-        var day = DateOnly.FromDateTime(DateTime.Now);
+        var clock = new ArtworkClock(hour);
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
         var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
         var rows = Enumerable.Range(1, 10).Select(n => new RecommendationTrackDto(n.ToString(), "Track " + n, 180, "", n,
             new("artist" + n, "Artist " + n), new("album", "Album", ""), RecommendationOrigin: "deezer")).ToArray();
         var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
         Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
         Assert.True(await Repository.PublishRecommendationSnapshotAsync(key, "recommendations-daily-pool", id,
-            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = DateTimeOffset.UtcNow, Tracks = rows, TrackCount = 20,
+            $"v1:{day:yyyyMMdd}", JsonSerializer.Serialize(new { SeedScopeKey = id, GeneratedAtUtc = clock.GetUtcNow(), Tracks = rows, TrackCount = 20,
                 Allocations = new Dictionary<string, int> { ["deezer"] = 10, ["tidal"] = 10 }, Status = "partial" })));
-        var result = (await Service().GetRecommendationsAsync(key.LibraryId, id))!;
+        var result = (await Service(clock).GetRecommendationsAsync(key.LibraryId, id))!;
         Assert.Empty(result.Tracks);
-        Assert.Equal("generating", result.Status);
+        Assert.Equal(expectedStatus, result.Status);
         Assert.Contains("tidal", result.Message!, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(20, result.DailyTrackCount);
     }
@@ -577,12 +585,13 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
     [Fact]
     public async Task SourceShortageIsReportedInsteadOfSuccessfulGeneration()
     {
-        var day = DateOnly.FromDateTime(DateTime.Now);
+        var clock = new ArtworkClock();
+        var day = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
         var id = $"daily-rotation:l{Folder.LibraryId}:f{Folder.Id}";
         var key = new RecommendationGenerationStateKey(Folder.LibraryId!.Value, Folder.Id, id, day);
         Assert.True(await Repository.TryStartRecommendationGenerationAsync(key, "test"));
         await Repository.FailRecommendationGenerationAsync(key, "shazam_allocation_incomplete", "shazam_allocation_incomplete");
-        var detail = (await Service().GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
+        var detail = (await Service(clock).GetRecommendationsAsync(Folder.LibraryId.Value, id))!;
         Assert.Equal("failed", detail.Status);
         Assert.Empty(detail.Tracks);
         Assert.Contains("shazam_allocation_incomplete", detail.ReasonCodes!);
@@ -658,9 +667,9 @@ public sealed class RecommendationCacheServingTest : IAsyncLifetime
         }
     }
 
-    private sealed class ArtworkClock : TimeProvider
+    private sealed class ArtworkClock(int hour = 12) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => new(2026, 10, 9, hour, 0, 0, TimeSpan.Zero);
         public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
     }
 

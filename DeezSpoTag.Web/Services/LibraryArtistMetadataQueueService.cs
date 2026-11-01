@@ -323,7 +323,7 @@ public sealed class LibraryArtistMetadataQueueService : BackgroundService
                         && retained.Run?.Paused != true)
                         _channel.Writer.TryWrite(retained);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellation.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Artist metadata fetch failed for {ArtistName}; work retained.", item.ArtistName);
                 lock (_queueLock)
@@ -422,7 +422,7 @@ public sealed class LibraryArtistMetadataQueueService : BackgroundService
                 record = new(next, result.IsComplete ? ArtistRunOutcomes.Succeeded : ArtistRunOutcomes.Failed, CacheWork: result.Work);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Artist cache refresh failed for {ArtistId}; work retained.", next);
                 record = new(next, ArtistRunOutcomes.Failed, CacheWork:

@@ -266,8 +266,71 @@ public sealed class PublishingWorkflowGuardrailTest
         await fixture.CommitFileAsync("docs/example.md", "documentation only");
         var result = await fixture.RunAsync();
         Assert.Equal(0, result.ExitCode);
-        Assert.Single(fixture.Calls);
-        Assert.StartsWith("build DeezSpoTag.Web/", fixture.Calls[0]);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.StartsWith("build DeezSpoTag.Tests/", fixture.Calls[0]);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests.PublishingWorkflowGuardrailTest.", fixture.Calls[1]);
+        Assert.DoesNotContain("AutoTag", fixture.Calls[1]);
+    }
+
+    [Theory]
+    [InlineData("AGENTS.md", "PublishingWorkflowGuardrailTest")]
+    [InlineData(".gitignore", "PublishingWorkflowGuardrailTest")]
+    [InlineData("DeezSpoTag.Web/wwwroot/images/fixture.png", "AssetUrlGuardrailTest")]
+    public async Task WorkflowAndIgnoreChanges_RunPublishingValidation(string path, string expectedTest)
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        await fixture.CommitFileAsync(path, "workflow policy change");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests." + expectedTest + ".", fixture.Calls[1]);
+    }
+
+    [Theory]
+    [InlineData("AGENTS.md", true)]
+    [InlineData("DeezSpoTag.Tests/PublicationPolicyTest.cs", false)]
+    [InlineData("DeezSpoTag.Web/Tools/shazam_related/runtime.test.mjs", false)]
+    [InlineData("DeezSpoTag.Web/Tools/shazam_related/runtime.ts", false)]
+    [InlineData("DeezSpoTag.Web/Tools/shazam_related/runtime.mjs", true)]
+    [InlineData("DeezSpoTag.Web/Tools/shazam_related/node_modules/fixture.js", true)]
+    [InlineData("docs/superpowers/plans/temporary-plan.md", true)]
+    [InlineData("DeezSpoTag.Web/Reports/temporary-log.txt", true)]
+    [InlineData("DeezSpoTag.Web/appsettings.Local.json", true)]
+    public async Task RequiredSourceIsTrackableAndTemporaryOrPrivateFilesStayIgnored(string path, bool ignored)
+    {
+        var start = new ProcessStartInfo("git") { WorkingDirectory = ResolveSrcRoot(),
+            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var argument in new[] { "check-ignore", "--no-index", "--", path }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(ignored ? 0 : 1, process.ExitCode);
+        var output = await process.StandardOutput.ReadToEndAsync();
+        Assert.Equal(ignored, !string.IsNullOrWhiteSpace(output));
+    }
+
+    [Fact]
+    public async Task PendingIntegrationAreas_HaveExecutableAffectedTestMappings()
+    {
+        using var fixture = await GuardrailFixture.CreateAsync();
+        var areas = new[] {
+            ("DeezSpoTag.Core/Models/Album.cs", "AlbumAwarenessTest"),
+            ("DeezSpoTag.Core/Utils/FeaturedTitleMarker.cs", "FeaturedTitleMoveModeTest"),
+            ("DeezSpoTag.Core/Models/Settings/MultiQualityDownloadSettings.cs", "DownloadEngineSettingsHelperTest"),
+            ("DeezSpoTag.Integrations/Deezer/DeezerSessionManager.cs", "DeezerAuthenticationPathGuardrailTest"),
+            ("DeezSpoTag.Web/Controllers/Api/AutoPlaylistsApiController.cs", "AutoPlaylistsControllerBehaviorTest"),
+            ("DeezSpoTag.Web/Services/Audiomack/AudiomackApiClient.cs", "AudiomackPlatformTest"),
+            ("DeezSpoTag.Web/Services/PlatformSyncConnectionProvider.cs", "PlaylistSyncReadinessTest"),
+            ("DeezSpoTag.Web/Tools/shazam_related/runtime.ts", "ShazamRelatedRuntimeTest"),
+            ("DeezSpoTag.Web/Views/Library/Artist.cshtml", "ArtistVisualPickerNoDeletionGuardrailTest"),
+            ("DeezSpoTag.Web/wwwroot/css/themes.css", "NotificationPreferenceWiringTest"),
+            ("DeezSpoTag.Web/wwwroot/js/user-preferences.js", "DailyRecommendationSettingsTest"),
+            ("Tools/AppleMusicWrapper/runv2/go.mod", "PublishingWorkflowGuardrailTest"),
+            ("navidrome plugin/deezspotag-metadata/plugin.wasm", "MetadataAgentArtistResolutionTest") };
+        foreach (var (path, _) in areas) await fixture.CommitFileAsync(path, "fixture change");
+        var result = await fixture.RunAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, fixture.Calls.Length);
+        foreach (var (_, test) in areas) Assert.Contains("FullyQualifiedName~DeezSpoTag.Tests." + test + ".", fixture.Calls[1]);
     }
 
     [Fact]

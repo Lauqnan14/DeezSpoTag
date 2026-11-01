@@ -15,12 +15,12 @@ namespace DeezSpoTag.Tests;
 public sealed class RecommendationSchedulingTest
 {
     [Theory]
-    [InlineData("Africa/Nairobi", "2026-10-24T18:59:59Z", true)]
-    [InlineData("Africa/Nairobi", "2026-10-24T19:00:00Z", false)]
+    [InlineData("Africa/Nairobi", "2026-10-24T16:59:59Z", true)]
+    [InlineData("Africa/Nairobi", "2026-10-24T17:00:00Z", false)]
     [InlineData("Africa/Nairobi", "2026-10-24T20:00:00Z", false)]
     [InlineData("Africa/Nairobi", "2026-10-24T21:00:00Z", true)]
-    [InlineData("America/New_York", "2026-10-25T01:59:59Z", true)]
-    [InlineData("America/New_York", "2026-10-25T02:00:00Z", false)]
+    [InlineData("America/New_York", "2026-10-24T23:59:59Z", true)]
+    [InlineData("America/New_York", "2026-10-25T00:00:00Z", false)]
     [InlineData("America/New_York", "2026-10-25T03:00:00Z", false)]
     [InlineData("America/New_York", "2026-10-25T04:00:00Z", true)]
     public void DailyCutoffUsesTheConfiguredCalendarDay(string zone,string utc,bool allowed)
@@ -38,8 +38,9 @@ public sealed class RecommendationSchedulingTest
             DateOnly.Parse(day).AddDays(1),TimeOnly.MinValue,TimeZoneInfo.FindSystemTimeZoneById(zone)));
 
     [Theory]
-    [InlineData(21,59,true)]
-    [InlineData(22,0,false)]
+    [InlineData(19,59,true)]
+    [InlineData(20,0,false)]
+    [InlineData(21,0,false)]
     [InlineData(23,0,false)]
     [InlineData(0,0,true)]
     public async Task AutomaticServiceSkipsLateGenerationButManualRebuildRemainsAvailable(int hour,int minute,bool automatic)
@@ -56,7 +57,7 @@ public sealed class RecommendationSchedulingTest
             if (!automatic)
             {
                 var response=(await service.GetRecommendationsAsync(fixture.Folder.LibraryId.Value,station))!;
-                Assert.Equal("waiting",response.Status);Assert.Empty(response.Tracks);Assert.Contains("22:00",response.Message!);
+                Assert.Equal("waiting",response.Status);Assert.Empty(response.Tracks);Assert.Contains("20:00",response.Message!);
                 await service.RebuildRecommendationsAsync(fixture.Folder.LibraryId.Value,station);
                 Assert.NotNull(await fixture.Repository.GetRecommendationGenerationStateAsync(fixture.Folder.LibraryId.Value,fixture.Folder.Id,station,day));
             }
