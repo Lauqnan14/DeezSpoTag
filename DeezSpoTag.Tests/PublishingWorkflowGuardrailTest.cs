@@ -321,6 +321,7 @@ public sealed class PublishingWorkflowGuardrailTest
             ("DeezSpoTag.Web/Services/Audiomack/AudiomackApiClient.cs", "AudiomackPlatformTest"),
             ("DeezSpoTag.Web/Services/PlatformSyncConnectionProvider.cs", "PlaylistSyncReadinessTest"),
             ("DeezSpoTag.Web/Tools/shazam_related/runtime.ts", "ShazamRelatedRuntimeTest"),
+            ("DeezSpoTag.Web/Views/Artist/Index.cshtml", "LibraryArtistCatalogueBrowserTest"),
             ("DeezSpoTag.Web/Views/Library/Artist.cshtml", "ArtistVisualPickerNoDeletionGuardrailTest"),
             ("DeezSpoTag.Web/wwwroot/css/themes.css", "NotificationPreferenceWiringTest"),
             ("DeezSpoTag.Web/wwwroot/js/user-preferences.js", "DailyRecommendationSettingsTest"),

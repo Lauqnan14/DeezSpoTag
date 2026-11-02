@@ -149,6 +149,8 @@ if [[ "$MODE" == "changed" ]]; then
         add_tests_matching '^(Shazam|DailyRecommendationSettings|RecommendationCacheServing)' ;;
       DeezSpoTag.Web/Tools/spotify_librespot/deezspot-spotizerr-phoenix/deezspot_spotizerr_phoenix.egg-info/*)
         add_tests_matching '^(SpotifyCredentialsGenerationGuardrail|TidalSpotifyResolutionGuardrail)Test$' ;;
+      DeezSpoTag.Web/Views/Artist/Index.cshtml)
+        add_tests_matching '^LibraryArtistCatalogueBrowserTest$' ;;
       DeezSpoTag.Web/Views/Library/Artist.cshtml|DeezSpoTag.Web/wwwroot/css/library-artist-hero.css|DeezSpoTag.Web/wwwroot/css/library.css)
         add_tests_matching '^(ArtistMetadataAliasLookup|ArtistVisualPickerNoDeletionGuardrail|ArtistMetadataAutomationResilience|LibraryArtistCatalogueBrowser|PlaylistRemovalSafety)Test$' ;;
       DeezSpoTag.Web/wwwroot/css/themes.css)

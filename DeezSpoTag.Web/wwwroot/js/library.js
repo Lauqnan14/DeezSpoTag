@@ -4873,11 +4873,10 @@ function renderSpotifyRelatedArtists(artists) {
             `;
         }
         const spotifyUrl = toSafeHttpUrl(artist.sourceUrl || '');
-        const deezerId = String(artist.deezerId || '');
         const spotifyId = String(artist.id || '');
         return `
             <div class="related-artist-card">
-                <button class="related-artist-link" type="button" data-spotify-url="${escapeHtml(spotifyUrl)}" data-deezer-id="${escapeHtml(deezerId)}" data-spotify-id="${escapeHtml(spotifyId)}">
+                <button class="related-artist-link" type="button" data-spotify-url="${escapeHtml(spotifyUrl)}" data-artist-name="${escapeHtml(artist.name || '')}" data-spotify-id="${escapeHtml(spotifyId)}">
                     <div class="related-artist-card__avatar">${coverMarkup}</div>
                     <div class="related-artist-card__name">${escapeHtml(artist.name || '')}</div>
                 </button>
@@ -4887,22 +4886,24 @@ function renderSpotifyRelatedArtists(artists) {
 
     container.querySelectorAll('.related-artist-link').forEach((button) => {
         button.addEventListener('click', async () => {
-            const deezerId = button.dataset.deezerId;
-            if (deezerId) {
-                globalThis.location.href = `/Artist?id=${encodeURIComponent(deezerId)}&source=deezer`;
+            await ensureLocalArtistIndex();
+            const normalized = normalizeArtistName(button.dataset.artistName);
+            const localId = normalized ? libraryState.localArtistIndex.get(normalized) : null;
+            if (localId) {
+                globalThis.location.href = buildLibraryScopedUrl(`/Library/Artist/${localId}`);
                 return;
             }
 
             const spotifyId = button.dataset.spotifyId;
             if (spotifyId) {
-                globalThis.location.href = `/Artist?id=${encodeURIComponent(spotifyId)}&source=spotify`;
+                globalThis.location.href = `/Artist?id=${encodeURIComponent(spotifyId)}&source=spotify&refresh=1`;
                 return;
             }
 
             const spotifyUrl = button.dataset.spotifyUrl;
             const parsed = spotifyUrlHelpers.parseSpotifyUrl(spotifyUrl || '');
             if (parsed?.type === 'artist' && parsed.id) {
-                globalThis.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=spotify`;
+                globalThis.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=spotify&refresh=1`;
                 return;
             }
 

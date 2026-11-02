@@ -730,7 +730,10 @@ async function loadArtist(artistId) {
             displayArtist(formattedArtistData);
         }
 
-        let response = await fetch(`/api/artist-page?id=${artistId}&source=${currentArtistSource}`);
+        // Opening an external Spotify artist explicitly requests its Pathfinder page,
+        // including direct and previously saved links without a refresh query flag.
+        const refreshSpotify = currentArtistSource === 'spotify';
+        let response = await fetch(`/api/artist-page?id=${artistId}&source=${currentArtistSource}${refreshSpotify ? '&refresh=1' : ''}`);
         if (!response.ok) {
             throw new Error(`Failed to load artist: ${response.status}`);
         }
