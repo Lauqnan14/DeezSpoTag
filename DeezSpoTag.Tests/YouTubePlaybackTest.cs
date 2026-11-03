@@ -21,6 +21,50 @@ namespace DeezSpoTag.Tests;
 public sealed class YouTubePlaybackTest
 {
     [Fact]
+    public async Task RuntimeSetupPinsPatchedTransitivePackagesWithoutReplacingExistingDependencies()
+    {
+        var script = File.ReadAllText(PartialSourceReader.ResolvePrimaryPath("scripts", "setup-youtube-playback-runtime.sh"));
+        const string startMarker = "node --input-type=commonjs <<'JS'\n";
+        var start = script.IndexOf(startMarker, StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        start += startMarker.Length;
+        var end = script.IndexOf("\nJS", start, StringComparison.Ordinal);
+        Assert.True(end > start);
+        var directory = Path.Join(Path.GetTempPath(), "youtube-runtime-pins-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Join(directory, "package.json"),
+                """{"dependencies":{"express":"^5.2.1"},"overrides":{"basic-ftp":"6.2.1"}}""");
+            var info = new System.Diagnostics.ProcessStartInfo("node")
+            {
+                WorkingDirectory = directory, UseShellExecute = false,
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            info.ArgumentList.Add("--input-type=commonjs");
+            using var process = System.Diagnostics.Process.Start(info)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.StandardInput.WriteAsync(script[start..end]);
+            process.StandardInput.Close();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await process.WaitForExitAsync(timeout.Token);
+            Assert.True(process.ExitCode == 0, await error);
+            await output;
+            using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Join(directory, "package.json")));
+            var overrides = manifest.RootElement.GetProperty("overrides");
+            Assert.Equal("2.4.0", overrides.GetProperty("body-parser").GetString());
+            Assert.Equal("10.7.5", overrides.GetProperty("ip-address").GetString());
+            Assert.Equal("6.17.1", overrides.GetProperty("qs").GetString());
+            Assert.Equal("7.30.1", overrides.GetProperty("undici").GetString());
+            Assert.Equal("1.16.2", overrides.GetProperty("follow-redirects").GetString());
+            Assert.Equal("6.2.1", overrides.GetProperty("basic-ftp").GetString());
+            Assert.Equal("^5.2.1", manifest.RootElement.GetProperty("dependencies").GetProperty("express").GetString());
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
     public async Task NonMusicSegments_FilterValidateAndSort()
     {
         using var http = new HttpClient(new SegmentHandler(HttpStatusCode.OK, """

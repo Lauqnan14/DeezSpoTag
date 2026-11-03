@@ -37,7 +37,10 @@ const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
 manifest.overrides = {
   ...manifest.overrides,
   undici: '7.30.1',
-  'follow-redirects': '1.16.2'
+  'follow-redirects': '1.16.2',
+  'body-parser': '2.4.0',
+  'ip-address': '10.7.5',
+  qs: '6.17.1'
 };
 fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
 JS
